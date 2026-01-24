@@ -34,8 +34,6 @@
             librsvg
             linuxConsoleTools
             lldb
-            openssl
-            openssl.dev
             pkg-config
             python313Packages.aiohttp
             python313Packages.tomlkit
