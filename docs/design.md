@@ -390,23 +390,23 @@ discovery = []                     # SSDP TV discovery (future)
 **Implementation Note**: Uses custom `InsecureCertVerifier` in `connection.rs` to accept
 LG TV's self-signed certificates with rustls.
 
-### System Daemon (`orlgtvd`)
+### System Daemon (`orlgtvd`) - IMPLEMENTED
 
 ```toml
 [dependencies]
-orlgtv-core = { path = "../orlgtv-core", features = ["discovery"] }
+orlgtv-core = { path = "../orlgtv-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
-zbus = "4"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 tracing-subscriber = "0.3"
 ```
 
-### User Session Service (`orlgtv-session`)
+### User Session Service (`orlgtv-session`) - Phase 3
 
 ```toml
 [dependencies]
 orlgtv-core = { path = "../orlgtv-core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-zbus = "4"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 tracing-subscriber = "0.3"
 ```
 
@@ -422,26 +422,24 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
 
-**Note**: CLI currently connects directly to TVs (Phase 1). In Phase 2, it will
-communicate with `orlgtvd` via D-Bus instead, adding `zbus = "4"` dependency.
+**Note**: CLI currently connects directly to TVs. D-Bus integration is optional
+for future work (see `docs/phase2-remaining.md`).
 
-### Tray (`orlgtv-tray`)
+### Tray (`orlgtv-tray`) - Phase 4
 
 ```toml
 [dependencies]
-orlgtv-core = { path = "../orlgtv-core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-zbus = "4"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 ksni = "0.2"
 ```
 
-### GUI (`orlgtv-gui`)
+### GUI (`orlgtv-gui`) - Phase 5
 
 ```toml
 [dependencies]
-orlgtv-core = { path = "../orlgtv-core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-zbus = "4"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 slint = "1"
 ```
 
@@ -533,15 +531,17 @@ EXAMPLES:
 - Added backlight control to MVP (originally planned for later)
 - CLI connects directly to TVs; D-Bus integration deferred to Phase 2
 
-### Phase 2: System Daemon
+### Phase 2: System Daemon - COMPLETE
 
 **Goal**: Background service with D-Bus API.
 
-1. `orlgtvd`: System service with D-Bus interface
-2. TV connection management (reconnection logic)
-3. Boot-time WoL
-4. SSDP discovery
-5. TV pairing flow
+**Implemented** (see `crates/orlgtvd/`):
+1. `orlgtvd`: System service with D-Bus interface (`org.orlgtv.Daemon1`)
+2. TV connection management with automatic reconnection (exponential backoff)
+3. Boot-time WoL for configured TVs
+4. TV pairing/removal via D-Bus with config persistence
+5. TvStateChanged signal emission on connect/disconnect
+6. Config reload via SIGHUP or D-Bus ReloadConfig
 
 ### Phase 3: User Session Integration
 
