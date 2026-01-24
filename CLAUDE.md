@@ -9,6 +9,7 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 - **LG OLED evo C3 42"** (OLED42C3PUA) - 2023 model
 - **LG G4 65"** (OLED65G4SUB) - 2024 model
 - Linux desktop with Nvidia GPU (no HDMI-CEC support)
+- KDE Plasma desktop environment
 
 ## Core Objectives
 
@@ -25,44 +26,95 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 - **Wake-on-LAN**: Required for power-on (TV network may be inactive in standby)
 - **Async**: Use tokio runtime for non-blocking I/O
 
+## Implementation Status
+
+### Phase 1: Core Library + CLI (COMPLETE)
+
+- [x] `orlgtv-core`: WebSocket client, SSAP protocol, WoL, config parsing
+- [x] `orlgtv-cli`: Power, screen, input, volume, brightness, status commands
+- [x] TV pairing flow with client key persistence
+- [x] Multi-TV configuration support
+
+### Phase 2: System Daemon (NEXT)
+
+- [ ] `orlgtvd`: Systemd system service with D-Bus API
+- [ ] TV connection management with reconnection logic
+- [ ] Boot-time WoL
+- [ ] SSDP discovery
+
+### Phase 3-5: Future
+
+- Phase 3: `orlgtv-session` user service (D-Bus session events)
+- Phase 4: `orlgtv-tray` (ksni StatusNotifierItem)
+- Phase 5: `orlgtv-gui` (Slint configuration UI)
+
+## Current Project Structure
+
+```
+orlgtv/
+├── Cargo.toml                    # Workspace root
+├── crates/
+│   ├── orlgtv-core/              # Core library
+│   │   └── src/
+│   │       ├── lib.rs            # Public API exports
+│   │       ├── client.rs         # WebOsClient - high-level API
+│   │       ├── connection.rs     # WebSocket with rustls TLS
+│   │       ├── protocol.rs       # SSAP message types
+│   │       ├── endpoints.rs      # API endpoint constants
+│   │       ├── config.rs         # TOML config (XDG paths)
+│   │       ├── state.rs          # TvState, PowerState
+│   │       ├── wol.rs            # Wake-on-LAN
+│   │       └── error.rs          # Error types
+│   │
+│   └── orlgtv-cli/               # CLI tool
+│       └── src/
+│           └── main.rs           # clap-based CLI
+│
+├── docs/
+│   ├── reference.md              # Protocol survey from prior art
+│   └── design.md                 # Full architecture design
+│
+└── CLAUDE.md                     # This file
+```
+
+## Key Implementation Details
+
+### TLS/WebSocket
+- Uses `rustls` (not native-tls) to avoid OpenSSL dependency
+- Custom `InsecureCertVerifier` accepts LG's self-signed certificates
+- Tries wss://port 3001 first, falls back to ws://port 3000
+
+### Configuration
+- User config: `~/.config/orlgtv/config.toml`
+- System config (Phase 2): `/etc/orlgtv/config.toml`
+- Client keys stored in config after TV pairing
+
+### CLI Commands
+```
+orlgtv power on|off       # WoL for power on
+orlgtv screen on|off      # OLED-safe blank
+orlgtv input [ID] [--list]
+orlgtv volume [LEVEL|+N|-N]
+orlgtv mute [on|off|toggle]
+orlgtv brightness [LEVEL]
+orlgtv status
+orlgtv pair <IP> --name NAME --mac MAC
+orlgtv list
+orlgtv remove <ID>
+```
+
 ## Key Crates
 
 | Purpose | Crate |
 |---------|-------|
 | Async runtime | `tokio` |
-| WebSocket | `tokio-tungstenite` |
+| WebSocket | `tokio-tungstenite` + `rustls` |
 | JSON | `serde`, `serde_json` |
-| D-Bus | `zbus` |
+| Config | `toml`, `directories` |
 | CLI | `clap` |
-| Config storage | `directories` |
-
-## Project Structure
-
-```
-orlgtv/
-├── src/
-│   ├── lib.rs           # Public API
-│   ├── client.rs        # WebOsClient
-│   ├── connection.rs    # WebSocket management
-│   ├── protocol.rs      # SSAP types
-│   ├── endpoints.rs     # API endpoints
-│   ├── wol.rs           # Wake-on-LAN
-│   ├── error.rs         # Error types
-│   └── state.rs         # TV state model
-├── docs/
-│   └── reference.md     # Detailed prior art survey
-└── Cargo.toml
-```
-
-## Feature Flags
-
-```toml
-[features]
-default = ["cli"]
-cli = ["clap"]
-daemon = ["zbus"]        # D-Bus integration for desktop events
-discovery = []           # SSDP TV discovery
-```
+| Errors | `thiserror`, `anyhow` |
+| Logging | `tracing`, `tracing-subscriber` |
+| WoL | `socket2` |
 
 ## Known Quirks
 
@@ -72,6 +124,27 @@ discovery = []           # SSDP TV discovery
 - ~1-5 second delay needed between WoL and first command
 - TV closes WebSocket on standby; need reconnection logic
 
+## Phase 2 Implementation Notes
+
+For the system daemon (`orlgtvd`):
+
+1. **D-Bus Interface**: See `docs/design.md` for full interface spec
+   - Service: `org.orlgtv.Daemon`
+   - Object: `/org/orlgtv/Daemon`
+   - Interface: `org.orlgtv.Daemon1`
+
+2. **Key Methods**:
+   - PowerOn/PowerOff, ScreenOn/ScreenOff
+   - SwitchInput, SetVolume, SetBrightness
+   - PairTv, RemoveTv, ListTvs, DiscoverTvs
+
+3. **Dependencies to Add**:
+   - `zbus = "4"` for D-Bus
+   - `ssdp-client` for TV discovery (optional feature)
+
+4. **User Preferences**: KDE Plasma, D-Bus system bus for IPC, PolicyKit for auth
+
 ## Reference Documentation
 
-See [docs/reference.md](docs/reference.md) for detailed protocol documentation, API endpoints, and analysis of existing implementations (LGTVCompanion, bscpylgtv, aiowebostv, etc.).
+- [docs/reference.md](docs/reference.md) - Protocol deep-dive, API endpoints, prior art analysis
+- [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases

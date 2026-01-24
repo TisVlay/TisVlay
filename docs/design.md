@@ -365,28 +365,30 @@ orlgtv/
 
 ## Dependencies
 
-### Core Library (`orlgtv-core`)
+### Core Library (`orlgtv-core`) - IMPLEMENTED
 
 ```toml
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync"] }
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+rustls = "0.23"                    # Changed from native-tls to avoid OpenSSL dependency
+webpki-roots = "0.26"
+futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 thiserror = "1"
 tracing = "0.1"
-
-# Wake-on-LAN
-socket2 = "0.5"
-
-# Optional: SSDP discovery
-ssdp-client = { version = "2", optional = true }
+socket2 = "0.5"                    # Wake-on-LAN
+directories = "5"                  # XDG paths
 
 [features]
 default = []
-discovery = ["ssdp-client"]
+discovery = []                     # SSDP TV discovery (future)
 ```
+
+**Implementation Note**: Uses custom `InsecureCertVerifier` in `connection.rs` to accept
+LG TV's self-signed certificates with rustls.
 
 ### System Daemon (`orlgtvd`)
 
@@ -408,15 +410,20 @@ zbus = "4"
 tracing-subscriber = "0.3"
 ```
 
-### CLI (`orlgtv-cli`)
+### CLI (`orlgtv-cli`) - IMPLEMENTED
 
 ```toml
 [dependencies]
 orlgtv-core = { path = "../orlgtv-core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-zbus = "4"
 clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
+
+**Note**: CLI currently connects directly to TVs (Phase 1). In Phase 2, it will
+communicate with `orlgtvd` via D-Bus instead, adding `zbus = "4"` dependency.
 
 ### Tray (`orlgtv-tray`)
 
@@ -510,14 +517,21 @@ EXAMPLES:
 
 ## Implementation Phases
 
-### Phase 1: Core Library + CLI (MVP)
+### Phase 1: Core Library + CLI (MVP) - COMPLETE
 
 **Goal**: Basic TV control from command line.
 
-1. `orlgtv-core`: WebSocket client, SSAP protocol, WoL
-2. `orlgtv-cli`: Power on/off, screen blank, input switch
-3. Manual configuration (edit TOML by hand)
-4. Single TV support
+**Implemented**:
+1. `orlgtv-core`: WebSocket client with rustls TLS, SSAP protocol, WoL, config parsing
+2. `orlgtv-cli`: Power on/off, screen blank/unblank, input switch, volume, brightness, status
+3. TV pairing flow with client key persistence
+4. Multi-TV configuration support (named profiles)
+5. XDG-compliant config storage (`~/.config/orlgtv/config.toml`)
+
+**Deviations from Plan**:
+- Used `rustls` instead of `native-tls` to avoid OpenSSL system dependency
+- Added brightness control to MVP (originally planned for later)
+- CLI connects directly to TVs; D-Bus integration deferred to Phase 2
 
 ### Phase 2: System Daemon
 
