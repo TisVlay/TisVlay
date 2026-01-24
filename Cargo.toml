@@ -1,57 +1,55 @@
-[package]
-name = "orlgtv"
-version = "0.0.1"
+[workspace]
+resolver = "2"
+members = [
+    "crates/orlgtv-core",
+    "crates/orlgtv-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
-edition = "2024"
-rust-version = "1.91.1"
-description = "Open Remote for LG TVs on Linux"
-documentation = "https://docs.rs/orlgtv/"
-readme = "README.md"
+license = "Apache-2.0"
 homepage = "https://github.com/ruffsl/orlgtv"
 repository = "https://github.com/ruffsl/orlgtv"
-license = "Apache-2.0"
-keywords = [
-    "remote",
-    "lg",
-    "tv",
-    "linux",
-]
+keywords = ["remote", "lg", "tv", "linux", "webos"]
 categories = ["command-line-utilities", "hardware-support"]
-exclude = [
-    ".envrc",
-    ".github/",
-    ".vscode/",
-    "docs/",
-    "flake.*",
-    "flatpak/",
-    "rust-toolchain.toml",
-]
 
-[badges]
-github = { repository = "ruffsl/orlgtv" }
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal"] }
 
-[dependencies]
-clap = { version = "^4.5", features = ["derive"] }
-env_logger = "0.11"
-log = "0.4"
-signal-hook = "0.4"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
-
-# dependencies for system tray
-ashpd = "0.12"
-futures = "0.3"
+# WebSocket
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+rustls = "0.23"
+webpki-roots = "0.26"
 futures-util = "0.3"
-ksni = "^0.3.3"
-notify-rust = "4.11"
-parking_lot = "0.12"
-serde = "1"
-toml = "0.9"
 
-[package.metadata.deb]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Networking (for WoL)
+socket2 = "0.5"
+
+# XDG directories
+directories = "5"
+
+# Internal crates
+orlgtv-core = { path = "crates/orlgtv-core" }
+
+[workspace.metadata.deb]
 section = "utils"
-
-# [profile.release]
-# codegen-units = 1
-# lto = true
-# opt-level = "z"
-# strip = true
