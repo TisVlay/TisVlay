@@ -55,6 +55,8 @@ pub struct DiscoveredTv {
 pub async fn discover_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
     tracing::debug!(timeout_ms = timeout.as_millis(), "Starting SSDP discovery");
 
+    // Deduplicate by IP address since each TV exposes multiple UPnP services
+    // with different UUIDs. We prefer entries with DLNA device names.
     let mut tvs: HashMap<String, DiscoveredTv> = HashMap::new();
 
     // Try multiple search targets for better compatibility.
@@ -81,7 +83,14 @@ pub async fn discover_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
                         if is_lg_tv(&resp) {
                             if let Some(tv) = parse_response(&resp) {
                                 tracing::debug!(id = %tv.id, name = %tv.name, ip = %tv.ip, "Discovered LG TV");
-                                tvs.insert(tv.id.clone(), tv);
+                                // Deduplicate by IP, preferring entries with real DLNA names
+                                // over fallback names like "LG TV (ip)"
+                                let dominated = tvs.get(&tv.ip).is_some_and(|existing| {
+                                    has_dlna_name(existing) && !has_dlna_name(&tv)
+                                });
+                                if !dominated {
+                                    tvs.insert(tv.ip.clone(), tv);
+                                }
                             }
                         }
                     }
@@ -95,6 +104,11 @@ pub async fn discover_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
 
     tracing::info!(count = tvs.len(), "SSDP discovery complete");
     Ok(tvs.into_values().collect())
+}
+
+/// Check if a discovered TV has a real DLNA device name (vs fallback).
+fn has_dlna_name(tv: &DiscoveredTv) -> bool {
+    tv.name.starts_with("[LG]")
 }
 
 /// Check if an SSDP response is from an LG WebOS TV.
