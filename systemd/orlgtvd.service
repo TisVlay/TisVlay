@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=dbus
 BusName=org.orlgtv.Daemon
 ExecStart=/usr/bin/orlgtvd
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 

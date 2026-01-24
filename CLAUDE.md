@@ -42,9 +42,13 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 - [x] TV connection manager with connection pooling
 - [x] Boot-time WoL (sends WoL packets to all configured TVs on startup)
 - [x] Systemd service files and D-Bus configuration
-- [ ] Automatic reconnection with exponential backoff
-- [ ] SSDP discovery (future)
-- [ ] PolicyKit authorization (future)
+- [x] Automatic reconnection with exponential backoff (1s → 2s → 4s → max 10s)
+- [x] PairTv and RemoveTv D-Bus methods for TV management
+- [x] Config reload via SIGHUP or D-Bus ReloadConfig method
+- [x] TvStateChanged D-Bus signal with emission on connect/disconnect
+- [ ] SSDP discovery
+- [ ] PolicyKit authorization
+- [ ] CLI migration to D-Bus (unsure?, CLI currently connects directly)
 
 ### Phase 3-5: Future
 
@@ -142,13 +146,19 @@ orlgtv remove <ID>
 
 ## Phase 2 Implementation Notes
 
-The system daemon (`orlgtvd`) is now implemented:
+The system daemon (`orlgtvd`) is fully implemented:
 
 1. **D-Bus Interface** (`org.orlgtv.Daemon1`):
    - Service: `org.orlgtv.Daemon`
    - Object: `/org/orlgtv/Daemon`
-   - Methods: ListTvs, PowerOn, PowerOff, ScreenOn, ScreenOff, SwitchInput,
-     GetInputs, SetVolume, GetVolume, SetMute, SetBacklight, GetBacklight, GetState
+   - Methods:
+     - TV Management: ListTvs, PairTv, RemoveTv
+     - Power: PowerOn, PowerOff, ScreenOn, ScreenOff
+     - Input: SwitchInput, GetInputs
+     - Audio: SetVolume, GetVolume, SetMute
+     - Picture: SetBacklight, GetBacklight
+     - State: GetState, ReloadConfig
+   - Signal: TvStateChanged (emitted on state changes)
 
 2. **Running the Daemon**:
    ```bash
@@ -169,9 +179,28 @@ The system daemon (`orlgtvd`) is now implemented:
 
    # Screen off:
    busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ScreenOff s "tv-id"
+
+   # Pair new TV:
+   busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 PairTv sss "192.168.1.100" "Living Room" "AA:BB:CC:DD:EE:FF"
+
+   # Remove TV:
+   busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 RemoveTv s "tv-id"
+
+   # Reload config:
+   busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ReloadConfig
    ```
 
-4. **Systemd Installation** (for production):
+4. **Automatic Reconnection**:
+   - When a connection fails, reconnection attempts start automatically
+   - Exponential backoff: 1s → 2s → 4s → 8s → max 10s (configurable via `reconnect_interval_ms`)
+   - Reconnection stops when connection succeeds or TV is removed
+
+5. **Config Reload**:
+   - SIGHUP signal triggers config reload: `kill -HUP $(pidof orlgtvd)`
+   - Or via D-Bus: `busctl call ... ReloadConfig`
+   - Or via systemctl: `systemctl reload orlgtvd`
+
+6. **Systemd Installation** (for production):
    ```bash
    sudo cp systemd/orlgtvd.service /etc/systemd/system/
    sudo cp systemd/org.orlgtv.Daemon.service /usr/share/dbus-1/system-services/

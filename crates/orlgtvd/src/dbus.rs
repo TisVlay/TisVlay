@@ -14,11 +14,15 @@ pub struct DaemonService {
 }
 
 impl DaemonService {
+    /// Create a new D-Bus service with a shared manager.
+    pub fn new_with_shared(manager: Arc<RwLock<TvManager>>) -> Self {
+        Self { manager }
+    }
+
     /// Create a new D-Bus service.
+    #[allow(dead_code)]
     pub fn new(manager: TvManager) -> Self {
-        Self {
-            manager: Arc::new(RwLock::new(manager)),
-        }
+        Self::new_with_shared(Arc::new(RwLock::new(manager)))
     }
 }
 
@@ -62,6 +66,36 @@ impl DaemonService {
         debug!("D-Bus: ListTvs");
         let manager = self.manager.read().await;
         manager.list_tvs().await
+    }
+
+    /// Pair a new TV.
+    ///
+    /// Connects to the TV at the given IP, triggering a pairing prompt on the TV.
+    /// User must accept the prompt on the TV for pairing to succeed.
+    ///
+    /// Arguments:
+    /// - `ip`: TV IP address
+    /// - `name`: Display name for the TV
+    /// - `mac`: MAC address for Wake-on-LAN (optional, empty string if not provided)
+    ///
+    /// Returns: TV ID
+    async fn pair_tv(
+        &self,
+        ip: &str,
+        name: &str,
+        mac: &str,
+    ) -> Result<String, DaemonError> {
+        info!(ip = %ip, name = %name, "D-Bus: PairTv");
+        let manager = self.manager.read().await;
+        let mac_opt = if mac.is_empty() { None } else { Some(mac) };
+        manager.pair_tv(ip, name, mac_opt, None).await.map_err(DaemonError::from)
+    }
+
+    /// Remove a TV from configuration.
+    async fn remove_tv(&self, tv_id: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, "D-Bus: RemoveTv");
+        let manager = self.manager.read().await;
+        manager.remove_tv(tv_id).await.map_err(DaemonError::from)
     }
 
     // -------------------------------------------------------------------------
@@ -170,4 +204,34 @@ impl DaemonService {
         serde_json::to_string(&state)
             .map_err(|e| DaemonError::OperationFailed(format!("JSON serialization failed: {}", e)))
     }
+
+    // -------------------------------------------------------------------------
+    // Configuration
+    // -------------------------------------------------------------------------
+
+    /// Reload configuration from disk.
+    ///
+    /// Adds new TVs, updates existing ones, and removes TVs no longer in config.
+    /// Active connections are preserved if the TV config hasn't changed.
+    async fn reload_config(&self) -> Result<(), DaemonError> {
+        info!("D-Bus: ReloadConfig");
+        let manager = self.manager.read().await;
+        manager.reload_config().await.map_err(DaemonError::from)
+    }
+
+    // -------------------------------------------------------------------------
+    // Signals
+    // -------------------------------------------------------------------------
+
+    /// Signal emitted when TV state changes.
+    ///
+    /// Arguments:
+    /// - `tv_id`: The TV identifier
+    /// - `state`: JSON-encoded state object
+    #[zbus(signal)]
+    pub async fn tv_state_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        tv_id: &str,
+        state: &str,
+    ) -> zbus::Result<()>;
 }
