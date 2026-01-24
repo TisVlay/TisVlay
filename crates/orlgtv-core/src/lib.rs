@@ -39,6 +39,8 @@
 mod client;
 mod config;
 mod connection;
+#[cfg(feature = "discovery")]
+mod discovery;
 mod endpoints;
 mod error;
 mod protocol;
@@ -56,3 +58,6 @@ pub use error::{Error, Result};
 pub use protocol::{ExternalInput, PowerState as ProtocolPowerState, VolumeInfo};
 pub use state::{InputInfo, PowerState, TvState};
 pub use wol::{wake, wake_reliable, wake_to_ip, wake_with_options, MacAddress, WakeOptions};
+
+#[cfg(feature = "discovery")]
+pub use discovery::{discover_tvs, DiscoveredTv};

@@ -68,6 +68,33 @@ impl DaemonService {
         manager.list_tvs().await
     }
 
+    /// Discover LG TVs on the network using SSDP.
+    ///
+    /// Sends an M-SEARCH request and waits for TV responses.
+    ///
+    /// Arguments:
+    /// - `timeout_ms`: How long to wait for TV responses (recommended: 2000-5000)
+    ///
+    /// Returns: Array of (id, name, ip, mac) tuples.
+    /// Note: MAC address will be empty as SSDP doesn't provide it.
+    #[cfg(feature = "discovery")]
+    async fn discover_tvs(
+        &self,
+        timeout_ms: u32,
+    ) -> Result<Vec<(String, String, String, String)>, DaemonError> {
+        info!(timeout_ms = timeout_ms, "D-Bus: DiscoverTvs");
+
+        let tvs =
+            orlgtv_core::discover_tvs(std::time::Duration::from_millis(timeout_ms as u64))
+                .await
+                .map_err(|e| DaemonError::OperationFailed(e.to_string()))?;
+
+        Ok(tvs
+            .into_iter()
+            .map(|tv| (tv.id, tv.name, tv.ip, tv.mac))
+            .collect())
+    }
+
     /// Pair a new TV.
     ///
     /// Connects to the TV at the given IP, triggering a pairing prompt on the TV.

@@ -67,4 +67,8 @@ pub enum Error {
     /// No TVs configured.
     #[error("No TVs configured")]
     NoTvsConfigured,
+
+    /// SSDP discovery failed.
+    #[error("Discovery failed: {0}")]
+    Discovery(String),
 }

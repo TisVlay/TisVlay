@@ -25,6 +25,11 @@ tracing = { workspace = true }
 socket2 = { workspace = true }
 directories = { workspace = true }
 
+# Optional: SSDP discovery
+ssdp-client = { workspace = true, optional = true }
+urlencoding = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+
 [features]
 default = []
-discovery = []  # SSDP TV discovery (future)
+discovery = ["dep:ssdp-client", "dep:urlencoding", "dep:url"]

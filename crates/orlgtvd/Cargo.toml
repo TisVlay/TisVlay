@@ -15,6 +15,10 @@ categories.workspace = true
 name = "orlgtvd"
 path = "src/main.rs"
 
+[features]
+default = ["discovery"]
+discovery = ["orlgtv-core/discovery"]
+
 [dependencies]
 orlgtv-core = { workspace = true }
 tokio = { workspace = true }

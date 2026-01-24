@@ -52,6 +52,11 @@ socket2 = "0.5"
 # XDG directories
 directories = "5"
 
+# SSDP discovery
+ssdp-client = "2"
+urlencoding = "2"
+url = "2"
+
 # Internal crates
 orlgtv-core = { path = "crates/orlgtv-core" }
 
