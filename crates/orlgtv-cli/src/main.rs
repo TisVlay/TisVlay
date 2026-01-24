@@ -50,7 +50,7 @@ enum Commands {
     /// Volume control
     Volume {
         /// Volume level (0-100), or +/- for relative adjustment
-        #[arg(required = false)]
+        #[arg(required = false, allow_hyphen_values = true)]
         level: Option<String>,
     },
 
