@@ -1,0 +1,589 @@
+# orlgtv Design Document
+
+## Overview
+
+**orlgtv** is a Rust utility for controlling LG WebOS TVs from a Linux desktop. It provides power management, HDMI input switching, screen blanking (OLED protection), and volume control via the LG WebOS SSAP protocol over WebSocket.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         User Space                                   │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐                         │
+│  │   CLI    │   │  Tray    │   │   GUI    │                         │
+│  │ orlgtv   │   │  (ksni)  │   │ (Slint)  │                         │
+│  └────┬─────┘   └────┬─────┘   └────┬─────┘                         │
+│       │              │              │                                │
+│       └──────────────┼──────────────┘                                │
+│                      │                                               │
+│                      ▼                                               │
+│  ┌───────────────────────────────────────┐                          │
+│  │         User Session Service          │                          │
+│  │   (D-Bus session events: lock/unlock) │                          │
+│  └───────────────────┬───────────────────┘                          │
+│                      │ D-Bus System Bus                              │
+└──────────────────────┼───────────────────────────────────────────────┘
+                       │
+┌──────────────────────┼───────────────────────────────────────────────┐
+│                      ▼                     System Space              │
+│  ┌───────────────────────────────────────┐                          │
+│  │         orlgtvd (System Daemon)       │                          │
+│  │  - WebSocket connections to TVs       │                          │
+│  │  - Wake-on-LAN at boot                │                          │
+│  │  - Responds to user service requests  │                          │
+│  └───────────────────┬───────────────────┘                          │
+│                      │                                               │
+│                      ▼                                               │
+│              ┌───────────────┐                                       │
+│              │   LG TV(s)    │                                       │
+│              │  WebSocket    │                                       │
+│              │  3000/3001    │                                       │
+│              └───────────────┘                                       │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Components
+
+| Component | Binary | Description |
+|-----------|--------|-------------|
+| **System Daemon** | `orlgtvd` | Systemd system service. Runs at boot, manages TV connections, executes commands. Owns WebSocket connections and client keys. |
+| **User Service** | `orlgtv-session` | Systemd user service. Monitors D-Bus session events (screen lock/unlock, idle). Relays events to system daemon. |
+| **CLI** | `orlgtv` | Command-line interface for manual control. Communicates with daemon via D-Bus. |
+| **Tray App** | `orlgtv-tray` | System tray icon using `ksni`. Quick access menu for common actions. |
+| **GUI** | `orlgtv-gui` | Slint-based configuration window for TV setup, pairing, and settings. |
+
+---
+
+## Inter-Process Communication
+
+### D-Bus System Bus
+
+All user-facing components communicate with `orlgtvd` via D-Bus system bus.
+
+**Service Name**: `org.orlgtv.Daemon`
+
+**Object Path**: `/org/orlgtv/Daemon`
+
+**Interface**: `org.orlgtv.Daemon1`
+
+```xml
+<interface name="org.orlgtv.Daemon1">
+  <!-- TV Discovery -->
+  <method name="DiscoverTvs">
+    <arg name="timeout_ms" type="u" direction="in"/>
+    <arg name="tvs" type="a(ssss)" direction="out"/> <!-- [(id, name, ip, mac)] -->
+  </method>
+
+  <!-- TV Management -->
+  <method name="PairTv">
+    <arg name="ip" type="s" direction="in"/>
+    <arg name="name" type="s" direction="in"/>
+    <arg name="tv_id" type="s" direction="out"/>
+  </method>
+
+  <method name="RemoveTv">
+    <arg name="tv_id" type="s" direction="in"/>
+  </method>
+
+  <method name="ListTvs">
+    <arg name="tvs" type="a(sssb)" direction="out"/> <!-- [(id, name, ip, connected)] -->
+  </method>
+
+  <!-- Power Control -->
+  <method name="PowerOn">
+    <arg name="tv_id" type="s" direction="in"/>
+  </method>
+
+  <method name="PowerOff">
+    <arg name="tv_id" type="s" direction="in"/>
+  </method>
+
+  <method name="ScreenOn">
+    <arg name="tv_id" type="s" direction="in"/>
+  </method>
+
+  <method name="ScreenOff">
+    <arg name="tv_id" type="s" direction="in"/>
+  </method>
+
+  <!-- Input Control -->
+  <method name="SwitchInput">
+    <arg name="tv_id" type="s" direction="in"/>
+    <arg name="input_id" type="s" direction="in"/> <!-- e.g. "HDMI_1" -->
+  </method>
+
+  <method name="GetInputs">
+    <arg name="tv_id" type="s" direction="in"/>
+    <arg name="inputs" type="a(ss)" direction="out"/> <!-- [(id, label)] -->
+  </method>
+
+  <!-- Audio Control -->
+  <method name="SetVolume">
+    <arg name="tv_id" type="s" direction="in"/>
+    <arg name="volume" type="u" direction="in"/>
+  </method>
+
+  <method name="GetVolume">
+    <arg name="tv_id" type="s" direction="in"/>
+    <arg name="volume" type="u" direction="out"/>
+  </method>
+
+  <method name="SetMute">
+    <arg name="tv_id" type="s" direction="in"/>
+    <arg name="mute" type="b" direction="in"/>
+  </method>
+
+  <!-- Picture Control -->
+  <method name="SetBrightness">
+    <arg name="tv_id" type="s" direction="in"/>
+    <arg name="brightness" type="u" direction="in"/> <!-- 0-100, controls OLED pixel brightness -->
+  </method>
+
+  <method name="GetBrightness">
+    <arg name="tv_id" type="s" direction="in"/>
+    <arg name="brightness" type="u" direction="out"/>
+  </method>
+
+  <!-- Signals -->
+  <signal name="TvStateChanged">
+    <arg name="tv_id" type="s"/>
+    <arg name="state" type="s"/> <!-- JSON blob -->
+  </signal>
+</interface>
+```
+
+### PolicyKit Authorization
+
+For privileged operations (pairing, removing TVs), PolicyKit rules control access.
+
+**Policy File**: `/usr/share/polkit-1/actions/org.orlgtv.policy`
+
+```xml
+<policyconfig>
+  <action id="org.orlgtv.pair-tv">
+    <description>Pair a new LG TV</description>
+    <message>Authentication is required to pair a new TV</message>
+    <defaults>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.orlgtv.remove-tv">
+    <description>Remove a paired TV</description>
+    <message>Authentication is required to remove a TV</message>
+    <defaults>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <!-- Basic control allowed for any active user -->
+  <action id="org.orlgtv.control">
+    <description>Control TV power, input, volume</description>
+    <defaults>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+</policyconfig>
+```
+
+---
+
+## Configuration
+
+### System Configuration
+
+**Path**: `/etc/orlgtv/config.toml`
+
+```toml
+# System-wide orlgtv configuration
+
+[daemon]
+# Boot behavior
+wake_on_boot = true
+wake_delay_ms = 3000        # Delay after WoL before sending commands
+
+# Connection settings
+websocket_port = 3001       # 3000 for ws://, 3001 for wss://
+use_tls = true              # Use wss:// (required for newer firmware)
+connect_timeout_ms = 5000
+reconnect_interval_ms = 10000
+
+[logging]
+level = "info"              # trace, debug, info, warn, error
+
+# TV definitions (managed by daemon, edited via GUI/CLI)
+[[tv]]
+id = "living-room"
+name = "Living Room G4"
+ip = "192.168.1.100"
+mac = "AA:BB:CC:DD:EE:FF"
+client_key = "abc123..."    # Obtained during pairing
+default_input = "HDMI_1"    # Input to switch to on wake
+
+[[tv]]
+id = "office-left"
+name = "Office C3 Left"
+ip = "192.168.1.101"
+mac = "AA:BB:CC:DD:EE:01"
+client_key = "def456..."
+default_input = "HDMI_2"
+```
+
+### User Configuration
+
+**Path**: `~/.config/orlgtv/config.toml`
+
+User-specific preferences that supplement system config.
+
+```toml
+[session]
+# D-Bus event responses
+on_screen_lock = "screen_off"     # screen_off | power_off | none
+on_screen_unlock = "screen_on"    # screen_on | power_on | none
+on_idle_timeout = "screen_off"    # Action when idle (before system sleep)
+on_sleep = "power_off"            # suspend/hibernate
+on_wake = "power_on"              # resume
+
+# Idle detection
+idle_timeout_seconds = 300        # 0 to disable
+
+[tray]
+show_volume_slider = true
+show_brightness_slider = true
+show_input_switcher = true
+```
+
+---
+
+## Power & Screen State Machine
+
+```
+                    ┌─────────────────────────────────────┐
+                    │                                     │
+                    ▼                                     │
+              ┌──────────┐                                │
+    WoL ───▶  │    ON    │ ◀─── PowerOn                   │
+              └────┬─────┘                                │
+                   │                                      │
+         ScreenOff │ ScreenOn                             │
+                   ▼                                      │
+              ┌──────────┐                                │
+              │ BLANKED  │  (OLED-safe, instant resume)   │
+              └────┬─────┘                                │
+                   │                                      │
+           PowerOff│                                      │
+                   ▼                                      │
+              ┌──────────┐                                │
+              │ STANDBY  │ ───────────────────────────────┘
+              └──────────┘
+                   │
+           (Network may be inactive,
+            requires WoL to wake)
+```
+
+### Event → Action Mapping
+
+| Event | Default Action | Notes |
+|-------|---------------|-------|
+| System boot | WoL → wait → switch input | Get TV ready for login screen |
+| Screen lock | Screen off (blank) | Instant resume on unlock |
+| Screen unlock | Screen on | Resume from blank |
+| User idle timeout | Screen off | Configurable |
+| System suspend | Power off | Network unavailable during sleep |
+| System resume | WoL → wait → power on | Restore to active state |
+| System shutdown | Power off | Clean shutdown |
+
+---
+
+## Crate Structure
+
+```
+orlgtv/
+├── Cargo.toml                    # Workspace root
+├── crates/
+│   ├── orlgtv-core/              # Core library (shared logic)
+│   │   ├── src/
+│   │   │   ├── lib.rs
+│   │   │   ├── client.rs         # WebOsClient - WebSocket connection
+│   │   │   ├── protocol.rs       # SSAP message types
+│   │   │   ├── endpoints.rs      # API endpoint constants
+│   │   │   ├── wol.rs            # Wake-on-LAN
+│   │   │   ├── discovery.rs      # SSDP TV discovery
+│   │   │   ├── config.rs         # Config parsing
+│   │   │   ├── error.rs          # Error types
+│   │   │   └── state.rs          # TvState model
+│   │   └── Cargo.toml
+│   │
+│   ├── orlgtvd/                  # System daemon
+│   │   ├── src/
+│   │   │   ├── main.rs
+│   │   │   ├── dbus.rs           # D-Bus service implementation
+│   │   │   ├── tv_manager.rs     # Manages TV connections
+│   │   │   └── events.rs         # System event handlers
+│   │   └── Cargo.toml
+│   │
+│   ├── orlgtv-session/           # User session service
+│   │   ├── src/
+│   │   │   ├── main.rs
+│   │   │   ├── session_monitor.rs # Screen lock/idle detection
+│   │   │   └── dbus_client.rs    # Talks to orlgtvd
+│   │   └── Cargo.toml
+│   │
+│   ├── orlgtv-cli/               # CLI tool
+│   │   ├── src/
+│   │   │   └── main.rs
+│   │   └── Cargo.toml
+│   │
+│   ├── orlgtv-tray/              # System tray (ksni)
+│   │   ├── src/
+│   │   │   ├── main.rs
+│   │   │   └── menu.rs
+│   │   └── Cargo.toml
+│   │
+│   └── orlgtv-gui/               # GUI app (Slint)
+│       ├── src/
+│       │   └── main.rs
+│       ├── ui/
+│       │   └── main.slint
+│       └── Cargo.toml
+│
+├── systemd/
+│   ├── orlgtvd.service           # System service unit
+│   └── orlgtv-session.service    # User service unit
+│
+├── polkit/
+│   └── org.orlgtv.policy
+│
+└── docs/
+    ├── reference.md
+    └── design.md
+```
+
+---
+
+## Dependencies
+
+### Core Library (`orlgtv-core`)
+
+```toml
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "1"
+tracing = "0.1"
+
+# Wake-on-LAN
+socket2 = "0.5"
+
+# Optional: SSDP discovery
+ssdp-client = { version = "2", optional = true }
+
+[features]
+default = []
+discovery = ["ssdp-client"]
+```
+
+### System Daemon (`orlgtvd`)
+
+```toml
+[dependencies]
+orlgtv-core = { path = "../orlgtv-core", features = ["discovery"] }
+tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
+zbus = "4"
+tracing-subscriber = "0.3"
+```
+
+### User Session Service (`orlgtv-session`)
+
+```toml
+[dependencies]
+orlgtv-core = { path = "../orlgtv-core" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+zbus = "4"
+tracing-subscriber = "0.3"
+```
+
+### CLI (`orlgtv-cli`)
+
+```toml
+[dependencies]
+orlgtv-core = { path = "../orlgtv-core" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+zbus = "4"
+clap = { version = "4", features = ["derive"] }
+```
+
+### Tray (`orlgtv-tray`)
+
+```toml
+[dependencies]
+orlgtv-core = { path = "../orlgtv-core" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+zbus = "4"
+ksni = "0.2"
+```
+
+### GUI (`orlgtv-gui`)
+
+```toml
+[dependencies]
+orlgtv-core = { path = "../orlgtv-core" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+zbus = "4"
+slint = "1"
+```
+
+---
+
+## CLI Interface
+
+```
+orlgtv - LG WebOS TV Control
+
+USAGE:
+    orlgtv [OPTIONS] <COMMAND>
+
+COMMANDS:
+    discover        Scan for LG TVs on the network
+    pair            Pair a new TV
+    list            List configured TVs
+    remove          Remove a TV from configuration
+
+    power           Power control (on/off)
+    screen          Screen control (blank/unblank)
+    input           Switch HDMI input
+    volume          Volume control
+    mute            Mute/unmute
+    brightness      Brightness/backlight control
+
+    status          Show TV status
+
+OPTIONS:
+    -t, --tv <ID>   Target TV (default: first configured)
+    -v, --verbose   Verbose output
+    -h, --help      Print help
+    -V, --version   Print version
+
+EXAMPLES:
+    orlgtv discover
+    orlgtv pair 192.168.1.100 --name "Living Room"
+    orlgtv power on
+    orlgtv --tv office-left input HDMI_2
+    orlgtv volume 30
+    orlgtv brightness 80
+    orlgtv screen off
+```
+
+---
+
+## System Tray Menu Structure
+
+```
+┌─────────────────────────────┐
+│ 📺 orlgtv                    │
+├─────────────────────────────┤
+│ ▶ Living Room G4      [🟢] │
+│   ├─ Power On/Off           │
+│   ├─ Screen On/Off          │
+│   ├─ Input ▶                │
+│   │    ├─ HDMI 1            │
+│   │    ├─ HDMI 2 ✓          │
+│   │    └─ HDMI 3            │
+│   ├─ Volume [====----] 60   │
+│   └─ Brightness [======--] 80│
+├─────────────────────────────┤
+│ ▶ Office C3 Left      [🔴] │
+│   └─ Wake Up                │
+├─────────────────────────────┤
+│ ⚙ Settings...               │
+│ ❓ About                     │
+│ ⏻ Quit                      │
+└─────────────────────────────┘
+```
+
+---
+
+## Implementation Phases
+
+### Phase 1: Core Library + CLI (MVP)
+
+**Goal**: Basic TV control from command line.
+
+1. `orlgtv-core`: WebSocket client, SSAP protocol, WoL
+2. `orlgtv-cli`: Power on/off, screen blank, input switch
+3. Manual configuration (edit TOML by hand)
+4. Single TV support
+
+### Phase 2: System Daemon
+
+**Goal**: Background service with D-Bus API.
+
+1. `orlgtvd`: System service with D-Bus interface
+2. TV connection management (reconnection logic)
+3. Boot-time WoL
+4. SSDP discovery
+5. TV pairing flow
+
+### Phase 3: User Session Integration
+
+**Goal**: React to desktop events.
+
+1. `orlgtv-session`: User service for D-Bus session events
+2. Screen lock/unlock → screen blank/unblank
+3. Suspend/resume → power off/on
+4. Idle detection
+
+### Phase 4: Tray App
+
+**Goal**: Quick access from system tray.
+
+1. `orlgtv-tray`: ksni-based StatusNotifierItem
+2. Power/screen/input controls
+3. Volume slider
+4. TV status indicators
+
+### Phase 5: GUI Configuration
+
+**Goal**: User-friendly setup and configuration.
+
+1. `orlgtv-gui`: Slint-based settings window
+2. TV discovery and pairing wizard
+3. Per-TV configuration
+4. Session behavior settings
+
+---
+
+## Known Challenges & Mitigations
+
+| Challenge | Mitigation |
+|-----------|------------|
+| TV ignores WoL during pixel refresh | Retry WoL with exponential backoff; inform user if TV unresponsive |
+| Newer firmware requires TLS (wss://) | Default to port 3001; fallback to 3000; accept self-signed certs |
+| Network down during shutdown | Use NetworkManager pre-down dispatcher hook |
+| WebSocket closed on TV standby | Automatic reconnection with backoff |
+| DHCP IP changes | Use MAC address for WoL; re-discover via SSDP |
+| Multi-user shared TV access | System-wide config; PolicyKit for privilege control |
+
+---
+
+## Testing Strategy
+
+1. **Unit tests**: Protocol serialization, config parsing, state machine
+2. **Integration tests**: Mock WebSocket server simulating TV responses
+3. **Manual testing**: Real hardware (C3 42", G4 65")
+4. **CI**: Build and unit tests on GitHub Actions
+
+---
+
+## References
+
+- [Protocol Details](reference.md) - SSAP protocol documentation
+- [LG WebOS API](https://github.com/chros73/bscpylgtv/tree/master/docs)
+- [zbus Documentation](https://docs.rs/zbus)
+- [ksni Documentation](https://docs.rs/ksni)
+- [Slint Documentation](https://docs.slint.dev)
