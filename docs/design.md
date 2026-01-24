@@ -70,7 +70,7 @@ All user-facing components communicate with `orlgtvd` via D-Bus system bus.
 
 ```xml
 <interface name="org.orlgtv.Daemon1">
-  <!-- TV Discovery -->
+  <!-- TV Discovery (requires firewall config for SSDP - see docs/firewall.md) -->
   <method name="DiscoverTvs">
     <arg name="timeout_ms" type="u" direction="in"/>
     <arg name="tvs" type="a(ssss)" direction="out"/> <!-- [(id, name, ip, mac)] -->
@@ -384,7 +384,7 @@ directories = "5"                  # XDG paths
 
 [features]
 default = []
-discovery = []                     # SSDP TV discovery (future)
+discovery = ["ssdp-client", ...]   # SSDP TV discovery (see docs/firewall.md)
 ```
 
 **Implementation Note**: Uses custom `InsecureCertVerifier` in `connection.rs` to accept
