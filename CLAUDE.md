@@ -39,14 +39,24 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 
 - [x] `orlgtvd`: D-Bus service (`org.orlgtv.Daemon1`) - see [crates/orlgtvd/src/](crates/orlgtvd/src/)
 - [x] TV connection manager with pooling, auto-reconnect, boot-time WoL
-- [x] Full D-Bus API: ListTvs, PairTv, RemoveTv, Power/Screen/Input/Volume/Backlight control
+- [x] Full D-Bus API: ListTvs, DiscoverTvs, PairTv, RemoveTv, Power/Screen/Input/Volume/Backlight control
 - [x] TvStateChanged signal emission on connect/disconnect
 - [x] Config reload via SIGHUP or D-Bus ReloadConfig
 - [x] Systemd service files - see [systemd/](systemd/)
+- [x] SSDP discovery (`discovery` feature) - see [docs/firewall.md](docs/firewall.md) for firewall requirements
 
-### Phase 3-5: Future
+### Phase 3: User Session Service (COMPLETE)
 
-- Phase 3: `orlgtv-session` user service (D-Bus session events)
+- [x] `orlgtv-session`: User service monitoring D-Bus session events - see [crates/orlgtv-session/src/](crates/orlgtv-session/src/)
+- [x] Screen lock/unlock detection via `org.freedesktop.ScreenSaver.ActiveChanged`
+- [x] Suspend/resume detection via `org.freedesktop.login1.Manager.PrepareForSleep`
+- [x] Configurable actions per event (screen_on/off, power_on/off, none)
+- [x] Optional idle timeout with polling-based detection
+- [x] SIGHUP for config reload
+- [x] Systemd user service file - see [systemd/orlgtv-session.service](systemd/orlgtv-session.service)
+
+### Phase 4-5: Future
+
 - Phase 4: `orlgtv-tray` (ksni StatusNotifierItem)
 - Phase 5: `orlgtv-gui` (Slint configuration UI)
 
@@ -63,7 +73,8 @@ orlgtv/
 │   │       ├── connection.rs     # WebSocket with rustls TLS
 │   │       ├── protocol.rs       # SSAP message types
 │   │       ├── endpoints.rs      # API endpoint constants
-│   │       ├── config.rs         # TOML config (XDG paths)
+│   │       ├── config.rs         # TOML config (XDG paths), SessionConfig
+│   │       ├── discovery.rs      # SSDP TV discovery (feature-gated)
 │   │       ├── state.rs          # TvState, PowerState
 │   │       ├── wol.rs            # Wake-on-LAN
 │   │       └── error.rs          # Error types
@@ -72,20 +83,29 @@ orlgtv/
 │   │   └── src/
 │   │       └── main.rs           # clap-based CLI
 │   │
-│   └── orlgtvd/                  # System daemon (Phase 2)
+│   ├── orlgtvd/                  # System daemon (Phase 2)
+│   │   └── src/
+│   │       ├── main.rs           # Entry point, signal handling
+│   │       ├── dbus.rs           # D-Bus interface (org.orlgtv.Daemon1)
+│   │       └── tv_manager.rs     # TV connection pool
+│   │
+│   └── orlgtv-session/           # User session service (Phase 3)
 │       └── src/
-│           ├── main.rs           # Entry point, signal handling
-│           ├── dbus.rs           # D-Bus interface (org.orlgtv.Daemon1)
-│           └── tv_manager.rs     # TV connection pool
+│           ├── main.rs           # Entry point, event handling
+│           ├── daemon_client.rs  # D-Bus client for orlgtvd
+│           ├── session_monitor.rs # Screen lock/unlock, suspend/resume
+│           └── idle.rs           # Idle timeout detection
 │
 ├── systemd/
-│   ├── orlgtvd.service           # Systemd service unit
+│   ├── orlgtvd.service           # Systemd system service
+│   ├── orlgtv-session.service    # Systemd user service (Phase 3)
 │   ├── org.orlgtv.Daemon.service # D-Bus activation service
 │   └── org.orlgtv.Daemon.conf    # D-Bus policy configuration
 │
 ├── docs/
 │   ├── reference.md              # Protocol survey from prior art
-│   └── design.md                 # Full architecture design
+│   ├── design.md                 # Full architecture design
+│   └── firewall.md               # SSDP firewall configuration
 │
 └── CLAUDE.md                     # This file
 ```
@@ -101,6 +121,17 @@ orlgtv/
 - User config: `~/.config/orlgtv/config.toml`
 - System config (Phase 2): `/etc/orlgtv/config.toml`
 - Client keys stored in config after TV pairing
+
+### Session Config Example
+```toml
+[session]
+on_screen_lock = "screen_off"    # screen_off | power_off | none
+on_screen_unlock = "screen_on"   # screen_on | power_on | none
+on_sleep = "power_off"
+on_wake = "power_on"
+idle_timeout_seconds = 300       # 0 to disable
+on_idle_timeout = "screen_off"
+```
 
 ### CLI Commands
 ```
@@ -148,6 +179,16 @@ orlgtvd --session
 
 # Production (system bus):
 sudo orlgtvd
+```
+
+### Running the Session Service
+
+```bash
+# Development (with orlgtvd --session):
+orlgtv-session --session-daemon
+
+# Production (as systemd user service):
+systemctl --user enable --now orlgtv-session
 ```
 
 ### Testing with busctl

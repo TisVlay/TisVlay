@@ -543,14 +543,29 @@ EXAMPLES:
 5. TvStateChanged signal emission on connect/disconnect
 6. Config reload via SIGHUP or D-Bus ReloadConfig
 
-### Phase 3: User Session Integration
+### Phase 3: User Session Integration - COMPLETE
 
 **Goal**: React to desktop events.
 
-1. `orlgtv-session`: User service for D-Bus session events
-2. Screen lock/unlock → screen blank/unblank
-3. Suspend/resume → power off/on
-4. Idle detection
+**Implemented** (see `crates/orlgtv-session/`):
+1. `orlgtv-session`: User service monitoring D-Bus session events
+2. Screen lock/unlock detection via `org.freedesktop.ScreenSaver.ActiveChanged`
+3. Suspend/resume detection via `org.freedesktop.login1.Manager.PrepareForSleep`
+4. Idle timeout detection via polling `GetSessionIdleTime`
+5. Configurable actions per event type (`SessionAction` enum)
+6. SIGHUP for config reload
+7. Systemd user service file (`systemd/orlgtv-session.service`)
+
+**Session Configuration** (in `~/.config/orlgtv/config.toml`):
+```toml
+[session]
+on_screen_lock = "screen_off"    # screen_off | power_off | none
+on_screen_unlock = "screen_on"   # screen_on | power_on | none
+on_sleep = "power_off"
+on_wake = "power_on"
+idle_timeout_seconds = 300       # 0 to disable
+on_idle_timeout = "screen_off"
+```
 
 ### Phase 4: Tray App
 

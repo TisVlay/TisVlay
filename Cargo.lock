@@ -850,6 +850,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "orlgtv-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "orlgtv-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
 name = "orlgtvd"
 version = "0.1.0"
 dependencies = [

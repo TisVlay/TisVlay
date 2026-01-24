@@ -1,0 +1,26 @@
+[package]
+name = "orlgtv-session"
+description = "User session service for LG WebOS TV control"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "orlgtv-session"
+path = "src/main.rs"
+
+[dependencies]
+orlgtv-core = { workspace = true }
+tokio = { workspace = true }
+zbus = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+futures-util = { workspace = true }
+clap = { workspace = true }

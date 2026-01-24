@@ -7,6 +7,28 @@ All core Phase 2 functionality is implemented in `crates/orlgtvd/`. See source c
 - [tv_manager.rs](../crates/orlgtvd/src/tv_manager.rs) - Connection management, reconnection, state events
 - [main.rs](../crates/orlgtvd/src/main.rs) - Signal handling, D-Bus setup
 
+**SSDP Discovery**: Implemented behind `discovery` feature flag. See [firewall.md](firewall.md) for Linux firewall requirements.
+
+---
+
+## Phase 3 Status: COMPLETE
+
+User session service implemented in `crates/orlgtv-session/`. See source code for details:
+- [main.rs](../crates/orlgtv-session/src/main.rs) - Entry point, event handling, signal handling
+- [daemon_client.rs](../crates/orlgtv-session/src/daemon_client.rs) - D-Bus client for orlgtvd
+- [session_monitor.rs](../crates/orlgtv-session/src/session_monitor.rs) - Screen lock/suspend detection
+- [idle.rs](../crates/orlgtv-session/src/idle.rs) - Idle timeout polling
+
+**Testing**:
+```bash
+# Development mode (with orlgtvd --session)
+orlgtv-session --session-daemon
+
+# Install as user service
+cp systemd/orlgtv-session.service ~/.config/systemd/user/
+systemctl --user enable --now orlgtv-session
+```
+
 ---
 
 ## Optional Enhancements
@@ -20,56 +42,11 @@ Benefits: Centralized connection management, automatic reconnection, config hand
 
 Implementation: Add `zbus` dependency, create D-Bus client module, add `--direct` flag.
 
-### SSDP Discovery
-
-**Goal**: Automatically discover LG TVs on the network.
-
-Implementation: Add `ssdp-client` crate, search for `urn:lge-com:service:webostv:1`, add `DiscoverTvs` D-Bus method.
-
 ### PolicyKit Authorization
 
 **Goal**: Require authentication for privileged operations (pairing, removing TVs).
 
 Implementation: Create policy file at `polkit/org.orlgtv.policy`, add authorization checks in D-Bus methods.
-
----
-
-## Phase 3: User Session Service (`orlgtv-session`)
-
-**Goal**: React to desktop events (screen lock/unlock, idle, suspend/resume).
-
-### D-Bus Signals to Monitor
-
-- `org.freedesktop.ScreenSaver.ActiveChanged` - screen lock/unlock
-- `org.freedesktop.login1.Session.Lock`/`Unlock` - systemd-logind
-- `org.freedesktop.login1.Manager.PrepareForSleep` - suspend/resume
-
-### User Configuration (`~/.config/orlgtv/config.toml`)
-
-```toml
-[session]
-on_screen_lock = "screen_off"     # screen_off | power_off | none
-on_screen_unlock = "screen_on"    # screen_on | power_on | none
-on_sleep = "power_off"
-on_wake = "power_on"
-```
-
-### Systemd User Service
-
-```ini
-[Unit]
-Description=orlgtv Session Service
-After=graphical-session.target
-PartOf=graphical-session.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/orlgtv-session
-Restart=on-failure
-
-[Install]
-WantedBy=graphical-session.target
-```
 
 ---
 
@@ -104,22 +81,35 @@ Features:
 # Start daemon (development)
 orlgtvd --session
 
+# Start session service (development, in another terminal)
+orlgtv-session --session-daemon
+
 # D-Bus operations
 busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ListTvs
 busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 PowerOn s "tv-id"
 busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ScreenOff s "tv-id"
+
+# Discover TVs (requires firewall config - see docs/firewall.md)
+busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 DiscoverTvs u 3000
 
 # Monitor signals
 busctl --user monitor org.orlgtv.Daemon
 
 # Introspect interface
 busctl --user introspect org.orlgtv.Daemon /org/orlgtv/Daemon
+
+# Test screen lock detection (KDE)
+loginctl lock-session
+
+# Test screen lock detection (freedesktop)
+qdbus org.freedesktop.ScreenSaver /ScreenSaver Lock
 ```
 
 ---
 
 ## Priority
 
-1. **High**: Phase 3 (session service) - desktop integration
-2. **Medium**: SSDP discovery, CLI D-Bus migration
-3. **Lower**: Phase 4 (tray), Phase 5 (GUI), PolicyKit
+1. **High**: ~~Phase 3 (session service)~~ - COMPLETE
+2. **High**: ~~SSDP discovery~~ - COMPLETE
+3. **Medium**: CLI D-Bus migration
+4. **Lower**: Phase 4 (tray), Phase 5 (GUI), PolicyKit

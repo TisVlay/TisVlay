@@ -4,6 +4,7 @@ members = [
     "crates/orlgtv-core",
     "crates/orlgtv-cli",
     "crates/orlgtvd",
+    "crates/orlgtv-session",
 ]
 
 [workspace.package]

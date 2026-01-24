@@ -11,6 +11,10 @@ pub struct Config {
     #[serde(default)]
     pub daemon: DaemonConfig,
 
+    /// Session service settings (user-specific).
+    #[serde(default)]
+    pub session: SessionConfig,
+
     /// Configured TVs.
     #[serde(default)]
     pub tv: Vec<TvConfig>,
@@ -75,6 +79,84 @@ impl Default for DaemonConfig {
             reconnect_interval_ms: default_reconnect_interval(),
         }
     }
+}
+
+/// Session service configuration (user-specific).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    /// Action on screen lock event.
+    #[serde(default = "default_on_lock")]
+    pub on_screen_lock: SessionAction,
+
+    /// Action on screen unlock event.
+    #[serde(default = "default_on_unlock")]
+    pub on_screen_unlock: SessionAction,
+
+    /// Action on system sleep/suspend.
+    #[serde(default = "default_on_sleep")]
+    pub on_sleep: SessionAction,
+
+    /// Action on system wake/resume.
+    #[serde(default = "default_on_wake")]
+    pub on_wake: SessionAction,
+
+    /// Idle timeout in seconds (0 to disable).
+    #[serde(default)]
+    pub idle_timeout_seconds: u64,
+
+    /// Action on idle timeout.
+    #[serde(default = "default_on_idle")]
+    pub on_idle_timeout: SessionAction,
+}
+
+fn default_on_lock() -> SessionAction {
+    SessionAction::ScreenOff
+}
+
+fn default_on_unlock() -> SessionAction {
+    SessionAction::ScreenOn
+}
+
+fn default_on_sleep() -> SessionAction {
+    SessionAction::PowerOff
+}
+
+fn default_on_wake() -> SessionAction {
+    SessionAction::PowerOn
+}
+
+fn default_on_idle() -> SessionAction {
+    SessionAction::ScreenOff
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            on_screen_lock: default_on_lock(),
+            on_screen_unlock: default_on_unlock(),
+            on_sleep: default_on_sleep(),
+            on_wake: default_on_wake(),
+            idle_timeout_seconds: 0, // Disabled by default
+            on_idle_timeout: default_on_idle(),
+        }
+    }
+}
+
+/// Actions the session service can take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionAction {
+    /// Do nothing.
+    #[default]
+    None,
+    /// Turn screen off (OLED-safe blank).
+    ScreenOff,
+    /// Turn screen on.
+    ScreenOn,
+    /// Power off the TV.
+    PowerOff,
+    /// Power on the TV (Wake-on-LAN).
+    PowerOn,
 }
 
 /// Configuration for a single TV.
@@ -274,5 +356,55 @@ default_input = "HDMI_1"
 
         assert!(config.find_tv("tv1").is_some());
         assert!(config.find_tv("tv3").is_none());
+    }
+
+    #[test]
+    fn test_default_session_config() {
+        let config = SessionConfig::default();
+        assert_eq!(config.on_screen_lock, SessionAction::ScreenOff);
+        assert_eq!(config.on_screen_unlock, SessionAction::ScreenOn);
+        assert_eq!(config.on_sleep, SessionAction::PowerOff);
+        assert_eq!(config.on_wake, SessionAction::PowerOn);
+        assert_eq!(config.idle_timeout_seconds, 0);
+        assert_eq!(config.on_idle_timeout, SessionAction::ScreenOff);
+    }
+
+    #[test]
+    fn test_parse_session_config() {
+        let toml = r#"
+[session]
+on_screen_lock = "power_off"
+on_screen_unlock = "power_on"
+on_sleep = "none"
+on_wake = "screen_on"
+idle_timeout_seconds = 300
+on_idle_timeout = "screen_off"
+
+[[tv]]
+id = "test"
+name = "Test"
+ip = "192.168.1.1"
+mac = "AA:BB:CC:DD:EE:FF"
+"#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.session.on_screen_lock, SessionAction::PowerOff);
+        assert_eq!(config.session.on_screen_unlock, SessionAction::PowerOn);
+        assert_eq!(config.session.on_sleep, SessionAction::None);
+        assert_eq!(config.session.on_wake, SessionAction::ScreenOn);
+        assert_eq!(config.session.idle_timeout_seconds, 300);
+        assert_eq!(config.session.on_idle_timeout, SessionAction::ScreenOff);
+    }
+
+    #[test]
+    fn test_session_action_serialization() {
+        assert_eq!(
+            serde_json::to_string(&SessionAction::ScreenOff).unwrap(),
+            "\"screen_off\""
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionAction>("\"power_on\"").unwrap(),
+            SessionAction::PowerOn
+        );
     }
 }
