@@ -9,7 +9,7 @@
 //! - Screen on/off (OLED-safe blanking)
 //! - HDMI input switching
 //! - Volume and mute control
-//! - Brightness control (OLED pixel brightness)
+//! - Backlight control (OLED pixel brightness)
 //!
 //! # Example
 //!

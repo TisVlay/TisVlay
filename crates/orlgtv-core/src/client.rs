@@ -1,7 +1,7 @@
 //! High-level WebOS TV client.
 
 use crate::connection::Connection;
-use crate::endpoints::{audio, input, picture, power, timeouts};
+use crate::endpoints::{audio, input, luna, notification, picture, power, timeouts};
 use crate::error::{Error, Result};
 use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request,
@@ -236,26 +236,58 @@ impl WebOsClient {
     // Picture Control
     // -------------------------------------------------------------------------
 
-    /// Set brightness (OLED pixel brightness, 0-100).
-    pub async fn set_brightness(&mut self, brightness: i32) -> Result<()> {
-        let brightness = brightness.clamp(0, 100);
+    /// Set backlight (OLED pixel brightness, 0-100).
+    ///
+    /// Uses the Luna service workaround via createAlert to bypass permission
+    /// restrictions on the settings API. The alert is automatically closed
+    /// to avoid showing a prompt on the TV.
+    pub async fn set_backlight(&mut self, backlight: i32) -> Result<()> {
+        let backlight = backlight.clamp(0, 100);
 
-        // LG TVs use "backlight" for OLED pixel brightness
-        self.command(
-            picture::SET_SYSTEM_SETTINGS,
-            json!({
-                "category": "picture",
-                "settings": {
-                    "backlight": brightness
-                }
-            }),
-        )
-        .await?;
+        // Build the Luna service parameters
+        let luna_params = json!({
+            "category": "picture",
+            "settings": {
+                "backlight": backlight
+            }
+        });
+
+        // Wrap the Luna call inside an alert payload
+        // This workaround is used by LGTVCompanion to bypass permission restrictions
+        let alert_payload = json!({
+            "message": " ",
+            "buttons": [{
+                "label": "",
+                "onClick": luna::SET_SYSTEM_SETTINGS,
+                "params": luna_params
+            }],
+            "onclose": {
+                "uri": luna::SET_SYSTEM_SETTINGS,
+                "params": luna_params
+            },
+            "onfail": {
+                "uri": luna::SET_SYSTEM_SETTINGS,
+                "params": luna_params
+            }
+        });
+
+        let response = self
+            .command(notification::CREATE_ALERT, alert_payload)
+            .await?;
+
+        // Extract alertId and close the alert to avoid showing a prompt on the TV
+        if let Some(alert_id) = response.payload.get("alertId").and_then(|v| v.as_str()) {
+            tracing::debug!(alert_id, "Closing Luna alert");
+            let _ = self
+                .command(notification::CLOSE_ALERT, json!({"alertId": alert_id}))
+                .await;
+        }
+
         Ok(())
     }
 
-    /// Get current brightness (OLED pixel brightness).
-    pub async fn get_brightness(&mut self) -> Result<i32> {
+    /// Get current backlight (OLED pixel brightness).
+    pub async fn get_backlight(&mut self) -> Result<i32> {
         let response = self
             .command(
                 picture::GET_SYSTEM_SETTINGS,
@@ -266,14 +298,14 @@ impl WebOsClient {
             )
             .await?;
 
-        let brightness = response
+        let backlight = response
             .payload
             .get("settings")
             .and_then(|s| s.get("backlight"))
             .and_then(|v| v.as_i64())
             .unwrap_or(50) as i32;
 
-        Ok(brightness)
+        Ok(backlight)
     }
 
     // -------------------------------------------------------------------------
@@ -300,9 +332,9 @@ impl WebOsClient {
             state.inputs = inputs;
         }
 
-        // Get brightness
-        if let Ok(brightness) = self.get_brightness().await {
-            state.brightness = Some(brightness);
+        // Get backlight
+        if let Ok(backlight) = self.get_backlight().await {
+            state.backlight = Some(backlight);
         }
 
         Ok(state)

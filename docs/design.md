@@ -136,14 +136,14 @@ All user-facing components communicate with `orlgtvd` via D-Bus system bus.
   </method>
 
   <!-- Picture Control -->
-  <method name="SetBrightness">
+  <method name="SetBacklight">
     <arg name="tv_id" type="s" direction="in"/>
-    <arg name="brightness" type="u" direction="in"/> <!-- 0-100, controls OLED pixel brightness -->
+    <arg name="backlight" type="u" direction="in"/> <!-- 0-100, controls OLED pixel brightness -->
   </method>
 
-  <method name="GetBrightness">
+  <method name="GetBacklight">
     <arg name="tv_id" type="s" direction="in"/>
-    <arg name="brightness" type="u" direction="out"/>
+    <arg name="backlight" type="u" direction="out"/>
   </method>
 
   <!-- Signals -->
@@ -251,7 +251,7 @@ idle_timeout_seconds = 300        # 0 to disable
 
 [tray]
 show_volume_slider = true
-show_brightness_slider = true
+show_backlight_slider = true
 show_input_switcher = true
 ```
 
@@ -466,7 +466,7 @@ COMMANDS:
     input           Switch HDMI input
     volume          Volume control
     mute            Mute/unmute
-    brightness      Brightness/backlight control
+    backlight       Backlight control
 
     status          Show TV status
 
@@ -482,7 +482,7 @@ EXAMPLES:
     orlgtv power on
     orlgtv --tv office-left input HDMI_2
     orlgtv volume 30
-    orlgtv brightness 80
+    orlgtv backlight 80
     orlgtv screen off
 ```
 
@@ -502,7 +502,7 @@ EXAMPLES:
 │   │    ├─ HDMI 2 ✓          │
 │   │    └─ HDMI 3            │
 │   ├─ Volume [====----] 60   │
-│   └─ Brightness [======--] 80│
+│   └─ Backlight [======--] 80│
 ├─────────────────────────────┤
 │ ▶ Office C3 Left      [🔴] │
 │   └─ Wake Up                │
@@ -523,14 +523,14 @@ EXAMPLES:
 
 **Implemented**:
 1. `orlgtv-core`: WebSocket client with rustls TLS, SSAP protocol, WoL, config parsing
-2. `orlgtv-cli`: Power on/off, screen blank/unblank, input switch, volume, brightness, status
+2. `orlgtv-cli`: Power on/off, screen blank/unblank, input switch, volume, backlight, status
 3. TV pairing flow with client key persistence
 4. Multi-TV configuration support (named profiles)
 5. XDG-compliant config storage (`~/.config/orlgtv/config.toml`)
 
 **Deviations from Plan**:
 - Used `rustls` instead of `native-tls` to avoid OpenSSL system dependency
-- Added brightness control to MVP (originally planned for later)
+- Added backlight control to MVP (originally planned for later)
 - CLI connects directly to TVs; D-Bus integration deferred to Phase 2
 
 ### Phase 2: System Daemon

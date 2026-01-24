@@ -15,8 +15,8 @@ pub struct TvState {
     pub muted: Option<bool>,
     /// Current input ID (e.g., "HDMI_1").
     pub current_input: Option<String>,
-    /// Current brightness level (0-100, OLED pixel brightness).
-    pub brightness: Option<i32>,
+    /// Current backlight level (0-100, OLED pixel brightness).
+    pub backlight: Option<i32>,
     /// Current foreground app ID.
     pub current_app: Option<String>,
     /// Available inputs.

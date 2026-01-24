@@ -31,7 +31,7 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 ### Phase 1: Core Library + CLI (COMPLETE)
 
 - [x] `orlgtv-core`: WebSocket client, SSAP protocol, WoL, config parsing
-- [x] `orlgtv-cli`: Power, screen, input, volume, brightness, status commands
+- [x] `orlgtv-cli`: Power, screen, input, volume, backlight, status commands
 - [x] TV pairing flow with client key persistence
 - [x] Multi-TV configuration support
 
@@ -96,7 +96,7 @@ orlgtv screen on|off      # OLED-safe blank
 orlgtv input [ID] [--list]
 orlgtv volume [LEVEL|+N|-N]
 orlgtv mute [on|off|toggle]
-orlgtv brightness [LEVEL]
+orlgtv backlight [LEVEL]
 orlgtv status
 orlgtv pair <IP> --name NAME --mac MAC
 orlgtv list
@@ -135,7 +135,7 @@ For the system daemon (`orlgtvd`):
 
 2. **Key Methods**:
    - PowerOn/PowerOff, ScreenOn/ScreenOff
-   - SwitchInput, SetVolume, SetBrightness
+   - SwitchInput, SetVolume, SetBacklight
    - PairTv, RemoveTv, ListTvs, DiscoverTvs
 
 3. **Dependencies to Add**:

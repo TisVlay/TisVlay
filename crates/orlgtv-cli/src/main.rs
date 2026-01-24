@@ -61,9 +61,9 @@ enum Commands {
         state: String,
     },
 
-    /// Brightness control (OLED pixel brightness)
-    Brightness {
-        /// Brightness level (0-100)
+    /// Backlight control (OLED pixel brightness)
+    Backlight {
+        /// Backlight level (0-100)
         #[arg(required = false)]
         level: Option<i32>,
     },
@@ -255,16 +255,16 @@ async fn run_tv_command(command: Commands, tv: &TvConfig, _config: &mut Config) 
             client.set_mute(mute).await?;
             println!("Mute: {}", if mute { "on" } else { "off" });
         }
-        Commands::Brightness { level } => {
+        Commands::Backlight { level } => {
             let mut client = connect_tv(tv).await?;
             match level {
                 None => {
-                    let brightness = client.get_brightness().await?;
-                    println!("Brightness: {}", brightness);
+                    let backlight = client.get_backlight().await?;
+                    println!("Backlight: {}", backlight);
                 }
                 Some(level) => {
-                    client.set_brightness(level).await?;
-                    println!("Brightness set to: {}", level);
+                    client.set_backlight(level).await?;
+                    println!("Backlight set to: {}", level);
                 }
             }
         }
@@ -282,8 +282,8 @@ async fn run_tv_command(command: Commands, tv: &TvConfig, _config: &mut Config) 
                 let muted = state.muted.map(|m| if m { " (muted)" } else { "" }).unwrap_or("");
                 println!("Volume: {}{}", vol, muted);
             }
-            if let Some(brightness) = state.brightness {
-                println!("Brightness: {}", brightness);
+            if let Some(backlight) = state.backlight {
+                println!("Backlight: {}", backlight);
             }
             if !state.inputs.is_empty() {
                 println!("Inputs:");

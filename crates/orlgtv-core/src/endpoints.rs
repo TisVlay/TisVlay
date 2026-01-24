@@ -66,13 +66,13 @@ pub mod audio {
 /// Picture/display settings endpoints.
 pub mod picture {
     /// Get system settings by category.
-    /// Payload: `{"category": "picture", "keys": ["brightness", "backlight", "contrast"]}`
+    /// Payload: `{"category": "picture", "keys": ["contrast", "backlight", "brightness", "color"]}`
     pub const GET_SYSTEM_SETTINGS: &str = "ssap://settings/getSystemSettings";
 
-    /// Set system settings (Luna service).
-    /// Payload: `{"category": "picture", "settings": {"backlight": 80}}`
-    pub const SET_SYSTEM_SETTINGS: &str =
-        "ssap://com.webos.settingsservice/setSystemSettings";
+    // NOTE: SET_SYSTEM_SETTINGS (ssap://settings/setSystemSettings) returns
+    // "401 insufficient permissions" even with READ_SETTINGS/WRITE_SETTINGS
+    // permissions in the manifest. We use the Luna workaround via createAlert
+    // instead (see client.rs set_backlight and luna::SET_SYSTEM_SETTINGS).
 }
 
 /// Application control endpoints.
@@ -118,6 +118,48 @@ pub mod notification {
     /// Show a toast notification.
     /// Payload: `{"message": "Hello!"}`
     pub const CREATE_TOAST: &str = "ssap://system.notifications/createToast";
+
+    /// Create an alert with buttons/actions.
+    /// Used as a workaround to call Luna services that require elevated permissions.
+    pub const CREATE_ALERT: &str = "ssap://system.notifications/createAlert";
+
+    /// Close an alert by ID.
+    /// Payload: `{"alertId": "com.webos.service.apiadapter-12345"}`
+    pub const CLOSE_ALERT: &str = "ssap://system.notifications/closeAlert";
+}
+
+/// Luna service URIs (used via createAlert workaround).
+///
+/// # Background
+///
+/// The SSAP settings API (`ssap://settings/setSystemSettings`) returns
+/// "401 insufficient permissions" for certain settings like backlight,
+/// even when `READ_SETTINGS` and `WRITE_SETTINGS` permissions are in the
+/// manifest and the TV has been re-paired.
+///
+/// LGTVCompanion discovered a workaround: wrap Luna service calls inside
+/// a `createAlert` notification. The alert's `onclose`/`onfail` handlers
+/// can invoke Luna services directly, bypassing SSAP permission checks.
+///
+/// # Usage
+///
+/// 1. Send `createAlert` with Luna URI in `buttons[].onClick`, `onclose.uri`, `onfail.uri`
+/// 2. Extract `alertId` from response
+/// 3. Immediately send `closeAlert` with that `alertId` to dismiss without user interaction
+///
+/// See `WebOsClient::set_backlight()` for implementation.
+///
+/// # Future Work
+///
+/// If LG fixes the permissions issue, we could try:
+/// - Adding `WRITE_SETTINGS` permission to manifest
+/// - Re-pairing with TV
+/// - Using `ssap://settings/setSystemSettings` directly
+/// - Or the calibration API: `ssap://externalpq/setExternalPqData` (used by bscpylgtv)
+pub mod luna {
+    /// Set system settings via Luna service.
+    /// Payload: `{"category": "picture", "settings": {"backlight": 50}}`
+    pub const SET_SYSTEM_SETTINGS: &str = "luna://com.webos.settingsservice/setSystemSettings";
 }
 
 /// Button names for remote input socket.
