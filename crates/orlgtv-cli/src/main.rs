@@ -247,7 +247,7 @@ async fn run_tv_command(command: Commands, tv: &TvConfig, _config: &mut Config) 
                 "on" | "true" | "1" => true,
                 "off" | "false" | "0" => false,
                 "toggle" => {
-                    let current = client.get_volume().await?.muted;
+                    let current = client.get_mute().await?;
                     !current
                 }
                 _ => anyhow::bail!("Invalid mute state: {}. Use on/off/toggle", state),

@@ -5,7 +5,7 @@ use crate::endpoints::{audio, input, picture, power, timeouts};
 use crate::error::{Error, Result};
 use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request,
-    Response, ResponseType, VolumeInfo,
+    Response, ResponseType, VolumeInfo, VolumeResponse,
 };
 use crate::state::{InputInfo, PowerState, TvState};
 use crate::wol::{self, MacAddress};
@@ -197,14 +197,27 @@ impl WebOsClient {
     /// Get the current volume.
     pub async fn get_volume(&mut self) -> Result<VolumeInfo> {
         let response = self.command(audio::GET_VOLUME, json!({})).await?;
-        let info: VolumeInfo = serde_json::from_value(response.payload)?;
-        Ok(info)
+        let vol_response: VolumeResponse = serde_json::from_value(response.payload)?;
+        vol_response
+            .into_volume_info()
+            .ok_or_else(|| Error::InvalidResponse("No volume in response".to_string()))
     }
 
     /// Set mute state.
     pub async fn set_mute(&mut self, mute: bool) -> Result<()> {
         self.command(audio::SET_MUTE, json!({"mute": mute})).await?;
         Ok(())
+    }
+
+    /// Get current mute state.
+    pub async fn get_mute(&mut self) -> Result<bool> {
+        let response = self.command(audio::GET_MUTE, json!({})).await?;
+        let muted = response
+            .payload
+            .get("mute")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        Ok(muted)
     }
 
     /// Increase volume by one step.

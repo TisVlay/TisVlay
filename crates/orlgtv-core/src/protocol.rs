@@ -212,17 +212,46 @@ pub struct PowerState {
     pub processing: Option<String>,
 }
 
-/// Volume response.
+/// Volume response wrapper (TV returns volume inside volumeStatus).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeResponse {
+    /// Volume status (may be nested or at top level).
+    #[serde(default)]
+    pub volume_status: Option<VolumeInfo>,
+    /// Direct volume (some responses put it at top level).
+    #[serde(default)]
+    pub volume: Option<i32>,
+    /// Direct muted (some responses put it at top level).
+    #[serde(default)]
+    pub muted: Option<bool>,
+}
+
+impl VolumeResponse {
+    /// Extract volume info, handling both nested and flat response formats.
+    pub fn into_volume_info(self) -> Option<VolumeInfo> {
+        if let Some(status) = self.volume_status {
+            Some(status)
+        } else if let Some(volume) = self.volume {
+            Some(VolumeInfo {
+                volume,
+                muted: self.muted.unwrap_or(false),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+/// Volume info.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VolumeInfo {
     /// Current volume level (0-100).
     pub volume: i32,
     /// Whether audio is muted.
-    pub muted: bool,
-    /// Volume UI state.
     #[serde(default)]
-    pub volume_ui: Option<String>,
+    pub muted: bool,
 }
 
 /// External input info.
