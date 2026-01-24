@@ -36,6 +36,7 @@
             lldb
             pkg-config
             socat
+            tcpdump
             python313Packages.aiohttp
             python313Packages.tomlkit
             rust
