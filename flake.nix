@@ -35,6 +35,7 @@
             linuxConsoleTools
             lldb
             pkg-config
+            socat
             python313Packages.aiohttp
             python313Packages.tomlkit
             rust
