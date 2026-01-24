@@ -35,12 +35,16 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 - [x] TV pairing flow with client key persistence
 - [x] Multi-TV configuration support
 
-### Phase 2: System Daemon (NEXT)
+### Phase 2: System Daemon (IN PROGRESS)
 
-- [ ] `orlgtvd`: Systemd system service with D-Bus API
-- [ ] TV connection management with reconnection logic
-- [ ] Boot-time WoL
-- [ ] SSDP discovery
+- [x] `orlgtvd`: D-Bus service with session/system bus support
+- [x] D-Bus interface (`org.orlgtv.Daemon1`) with all TV control methods
+- [x] TV connection manager with connection pooling
+- [x] Boot-time WoL (sends WoL packets to all configured TVs on startup)
+- [x] Systemd service files and D-Bus configuration
+- [ ] Automatic reconnection with exponential backoff
+- [ ] SSDP discovery (future)
+- [ ] PolicyKit authorization (future)
 
 ### Phase 3-5: Future
 
@@ -66,9 +70,20 @@ orlgtv/
 │   │       ├── wol.rs            # Wake-on-LAN
 │   │       └── error.rs          # Error types
 │   │
-│   └── orlgtv-cli/               # CLI tool
+│   ├── orlgtv-cli/               # CLI tool
+│   │   └── src/
+│   │       └── main.rs           # clap-based CLI
+│   │
+│   └── orlgtvd/                  # System daemon (Phase 2)
 │       └── src/
-│           └── main.rs           # clap-based CLI
+│           ├── main.rs           # Entry point, signal handling
+│           ├── dbus.rs           # D-Bus interface (org.orlgtv.Daemon1)
+│           └── tv_manager.rs     # TV connection pool
+│
+├── systemd/
+│   ├── orlgtvd.service           # Systemd service unit
+│   ├── org.orlgtv.Daemon.service # D-Bus activation service
+│   └── org.orlgtv.Daemon.conf    # D-Bus policy configuration
 │
 ├── docs/
 │   ├── reference.md              # Protocol survey from prior art
@@ -112,6 +127,7 @@ orlgtv remove <ID>
 | JSON | `serde`, `serde_json` |
 | Config | `toml`, `directories` |
 | CLI | `clap` |
+| D-Bus | `zbus` |
 | Errors | `thiserror`, `anyhow` |
 | Logging | `tracing`, `tracing-subscriber` |
 | WoL | `socket2` |
@@ -126,23 +142,43 @@ orlgtv remove <ID>
 
 ## Phase 2 Implementation Notes
 
-For the system daemon (`orlgtvd`):
+The system daemon (`orlgtvd`) is now implemented:
 
-1. **D-Bus Interface**: See `docs/design.md` for full interface spec
+1. **D-Bus Interface** (`org.orlgtv.Daemon1`):
    - Service: `org.orlgtv.Daemon`
    - Object: `/org/orlgtv/Daemon`
-   - Interface: `org.orlgtv.Daemon1`
+   - Methods: ListTvs, PowerOn, PowerOff, ScreenOn, ScreenOff, SwitchInput,
+     GetInputs, SetVolume, GetVolume, SetMute, SetBacklight, GetBacklight, GetState
 
-2. **Key Methods**:
-   - PowerOn/PowerOff, ScreenOn/ScreenOff
-   - SwitchInput, SetVolume, SetBacklight
-   - PairTv, RemoveTv, ListTvs, DiscoverTvs
+2. **Running the Daemon**:
+   ```bash
+   # Development (session bus):
+   orlgtvd --session
 
-3. **Dependencies to Add**:
-   - `zbus = "4"` for D-Bus
-   - `ssdp-client` for TV discovery (optional feature)
+   # Production (system bus, requires D-Bus config installed):
+   sudo orlgtvd
+   ```
 
-4. **User Preferences**: KDE Plasma, D-Bus system bus for IPC, PolicyKit for auth
+3. **Testing with busctl**:
+   ```bash
+   # List TVs:
+   busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ListTvs
+
+   # Power on TV:
+   busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 PowerOn s "tv-id"
+
+   # Screen off:
+   busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ScreenOff s "tv-id"
+   ```
+
+4. **Systemd Installation** (for production):
+   ```bash
+   sudo cp systemd/orlgtvd.service /etc/systemd/system/
+   sudo cp systemd/org.orlgtv.Daemon.service /usr/share/dbus-1/system-services/
+   sudo cp systemd/org.orlgtv.Daemon.conf /etc/dbus-1/system.d/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now orlgtvd
+   ```
 
 ## Reference Documentation
 

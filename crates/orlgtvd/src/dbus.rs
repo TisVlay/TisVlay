@@ -1,0 +1,173 @@
+//! D-Bus interface implementation.
+//!
+//! Implements the `org.orlgtv.Daemon1` interface for TV control.
+
+use crate::tv_manager::TvManager;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{debug, info};
+use zbus::interface;
+
+/// D-Bus service for TV control.
+pub struct DaemonService {
+    manager: Arc<RwLock<TvManager>>,
+}
+
+impl DaemonService {
+    /// Create a new D-Bus service.
+    pub fn new(manager: TvManager) -> Self {
+        Self {
+            manager: Arc::new(RwLock::new(manager)),
+        }
+    }
+}
+
+/// D-Bus error type for orlgtv.
+#[derive(Debug, Clone, zbus::DBusError)]
+#[zbus(prefix = "org.orlgtv.Error")]
+pub enum DaemonError {
+    /// TV not found.
+    TvNotFound(String),
+    /// TV not connected.
+    NotConnected(String),
+    /// Connection failed.
+    ConnectionFailed(String),
+    /// Operation failed.
+    OperationFailed(String),
+}
+
+impl From<String> for DaemonError {
+    fn from(s: String) -> Self {
+        if s.contains("not found") {
+            DaemonError::TvNotFound(s)
+        } else if s.contains("Not connected") {
+            DaemonError::NotConnected(s)
+        } else if s.contains("Connection failed") {
+            DaemonError::ConnectionFailed(s)
+        } else {
+            DaemonError::OperationFailed(s)
+        }
+    }
+}
+
+#[interface(name = "org.orlgtv.Daemon1")]
+impl DaemonService {
+    // -------------------------------------------------------------------------
+    // TV Management
+    // -------------------------------------------------------------------------
+
+    /// List configured TVs.
+    /// Returns: [(id, name, ip, connected)]
+    async fn list_tvs(&self) -> Vec<(String, String, String, bool)> {
+        debug!("D-Bus: ListTvs");
+        let manager = self.manager.read().await;
+        manager.list_tvs().await
+    }
+
+    // -------------------------------------------------------------------------
+    // Power Control
+    // -------------------------------------------------------------------------
+
+    /// Power on a TV using Wake-on-LAN.
+    async fn power_on(&self, tv_id: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, "D-Bus: PowerOn");
+        let manager = self.manager.read().await;
+        manager.power_on(tv_id).await.map_err(DaemonError::from)
+    }
+
+    /// Power off a TV.
+    async fn power_off(&self, tv_id: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, "D-Bus: PowerOff");
+        let manager = self.manager.read().await;
+        manager.power_off(tv_id).await.map_err(DaemonError::from)
+    }
+
+    /// Turn screen on (resume from blank).
+    async fn screen_on(&self, tv_id: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, "D-Bus: ScreenOn");
+        let manager = self.manager.read().await;
+        manager.screen_on(tv_id).await.map_err(DaemonError::from)
+    }
+
+    /// Turn screen off (OLED-safe blank).
+    async fn screen_off(&self, tv_id: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, "D-Bus: ScreenOff");
+        let manager = self.manager.read().await;
+        manager.screen_off(tv_id).await.map_err(DaemonError::from)
+    }
+
+    // -------------------------------------------------------------------------
+    // Input Control
+    // -------------------------------------------------------------------------
+
+    /// Switch to a specific input.
+    async fn switch_input(&self, tv_id: &str, input_id: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, input_id = %input_id, "D-Bus: SwitchInput");
+        let manager = self.manager.read().await;
+        manager.switch_input(tv_id, input_id).await.map_err(DaemonError::from)
+    }
+
+    /// Get available inputs.
+    /// Returns: [(id, label)]
+    async fn get_inputs(&self, tv_id: &str) -> Result<Vec<(String, String)>, DaemonError> {
+        debug!(tv_id = %tv_id, "D-Bus: GetInputs");
+        let manager = self.manager.read().await;
+        manager.get_inputs(tv_id).await.map_err(DaemonError::from)
+    }
+
+    // -------------------------------------------------------------------------
+    // Audio Control
+    // -------------------------------------------------------------------------
+
+    /// Set volume (0-100).
+    async fn set_volume(&self, tv_id: &str, volume: u32) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, volume = volume, "D-Bus: SetVolume");
+        let manager = self.manager.read().await;
+        manager.set_volume(tv_id, volume).await.map_err(DaemonError::from)
+    }
+
+    /// Get current volume.
+    async fn get_volume(&self, tv_id: &str) -> Result<u32, DaemonError> {
+        debug!(tv_id = %tv_id, "D-Bus: GetVolume");
+        let manager = self.manager.read().await;
+        manager.get_volume(tv_id).await.map_err(DaemonError::from)
+    }
+
+    /// Set mute state.
+    async fn set_mute(&self, tv_id: &str, mute: bool) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, mute = mute, "D-Bus: SetMute");
+        let manager = self.manager.read().await;
+        manager.set_mute(tv_id, mute).await.map_err(DaemonError::from)
+    }
+
+    // -------------------------------------------------------------------------
+    // Picture Control
+    // -------------------------------------------------------------------------
+
+    /// Set backlight (OLED pixel brightness, 0-100).
+    async fn set_backlight(&self, tv_id: &str, backlight: u32) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, backlight = backlight, "D-Bus: SetBacklight");
+        let manager = self.manager.read().await;
+        manager.set_backlight(tv_id, backlight).await.map_err(DaemonError::from)
+    }
+
+    /// Get current backlight.
+    async fn get_backlight(&self, tv_id: &str) -> Result<u32, DaemonError> {
+        debug!(tv_id = %tv_id, "D-Bus: GetBacklight");
+        let manager = self.manager.read().await;
+        manager.get_backlight(tv_id).await.map_err(DaemonError::from)
+    }
+
+    // -------------------------------------------------------------------------
+    // State
+    // -------------------------------------------------------------------------
+
+    /// Get TV state as JSON.
+    async fn get_state(&self, tv_id: &str) -> Result<String, DaemonError> {
+        debug!(tv_id = %tv_id, "D-Bus: GetState");
+        let manager = self.manager.read().await;
+        let state = manager.get_state(tv_id).await.map_err(DaemonError::from)?;
+        serde_json::to_string(&state)
+            .map_err(|e| DaemonError::OperationFailed(format!("JSON serialization failed: {}", e)))
+    }
+}

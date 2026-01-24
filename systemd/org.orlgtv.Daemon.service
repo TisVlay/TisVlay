@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.orlgtv.Daemon
+Exec=/usr/bin/orlgtvd
+User=root
