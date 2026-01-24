@@ -157,7 +157,7 @@ impl Connection {
         let json = serde_json::to_string(request)?;
         tracing::trace!(id = %request.id, msg_type = ?request.msg_type, "Sending request");
 
-        self.stream.send(Message::Text(json.into())).await?;
+        self.stream.send(Message::Text(json)).await?;
         Ok(())
     }
 

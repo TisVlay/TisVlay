@@ -45,18 +45,13 @@ impl StateChangeEvent {
 const MIN_RECONNECT_DELAY_MS: u64 = 1000;
 
 /// Reconnection state for a TV.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum ReconnectState {
     /// Not attempting reconnection.
+    #[default]
     Idle,
     /// Reconnection in progress with current backoff delay.
     Reconnecting { delay_ms: u64 },
-}
-
-impl Default for ReconnectState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 /// Managed TV connection state.
