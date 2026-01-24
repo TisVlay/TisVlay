@@ -79,16 +79,14 @@ impl DaemonService {
     /// - `mac`: MAC address for Wake-on-LAN (optional, empty string if not provided)
     ///
     /// Returns: TV ID
-    async fn pair_tv(
-        &self,
-        ip: &str,
-        name: &str,
-        mac: &str,
-    ) -> Result<String, DaemonError> {
+    async fn pair_tv(&self, ip: &str, name: &str, mac: &str) -> Result<String, DaemonError> {
         info!(ip = %ip, name = %name, "D-Bus: PairTv");
         let manager = self.manager.read().await;
         let mac_opt = if mac.is_empty() { None } else { Some(mac) };
-        manager.pair_tv(ip, name, mac_opt, None).await.map_err(DaemonError::from)
+        manager
+            .pair_tv(ip, name, mac_opt, None)
+            .await
+            .map_err(DaemonError::from)
     }
 
     /// Remove a TV from configuration.
@@ -138,7 +136,10 @@ impl DaemonService {
     async fn switch_input(&self, tv_id: &str, input_id: &str) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, input_id = %input_id, "D-Bus: SwitchInput");
         let manager = self.manager.read().await;
-        manager.switch_input(tv_id, input_id).await.map_err(DaemonError::from)
+        manager
+            .switch_input(tv_id, input_id)
+            .await
+            .map_err(DaemonError::from)
     }
 
     /// Get available inputs.
@@ -157,7 +158,10 @@ impl DaemonService {
     async fn set_volume(&self, tv_id: &str, volume: u32) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, volume = volume, "D-Bus: SetVolume");
         let manager = self.manager.read().await;
-        manager.set_volume(tv_id, volume).await.map_err(DaemonError::from)
+        manager
+            .set_volume(tv_id, volume)
+            .await
+            .map_err(DaemonError::from)
     }
 
     /// Get current volume.
@@ -171,7 +175,10 @@ impl DaemonService {
     async fn set_mute(&self, tv_id: &str, mute: bool) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, mute = mute, "D-Bus: SetMute");
         let manager = self.manager.read().await;
-        manager.set_mute(tv_id, mute).await.map_err(DaemonError::from)
+        manager
+            .set_mute(tv_id, mute)
+            .await
+            .map_err(DaemonError::from)
     }
 
     // -------------------------------------------------------------------------
@@ -182,14 +189,20 @@ impl DaemonService {
     async fn set_backlight(&self, tv_id: &str, backlight: u32) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, backlight = backlight, "D-Bus: SetBacklight");
         let manager = self.manager.read().await;
-        manager.set_backlight(tv_id, backlight).await.map_err(DaemonError::from)
+        manager
+            .set_backlight(tv_id, backlight)
+            .await
+            .map_err(DaemonError::from)
     }
 
     /// Get current backlight.
     async fn get_backlight(&self, tv_id: &str) -> Result<u32, DaemonError> {
         debug!(tv_id = %tv_id, "D-Bus: GetBacklight");
         let manager = self.manager.read().await;
-        manager.get_backlight(tv_id).await.map_err(DaemonError::from)
+        manager
+            .get_backlight(tv_id)
+            .await
+            .map_err(DaemonError::from)
     }
 
     // -------------------------------------------------------------------------

@@ -142,11 +142,12 @@ impl Config {
     ///
     /// Uses XDG directories: `~/.config/orlgtv/config.toml`
     pub fn config_path() -> Result<PathBuf> {
-        let dirs = directories::ProjectDirs::from("", "", "orlgtv")
-            .ok_or_else(|| Error::Io(std::io::Error::new(
+        let dirs = directories::ProjectDirs::from("", "", "orlgtv").ok_or_else(|| {
+            Error::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine config directory",
-            )))?;
+            ))
+        })?;
 
         Ok(dirs.config_dir().join("config.toml"))
     }
@@ -192,7 +193,12 @@ impl Config {
 
 impl TvConfig {
     /// Create a new TV configuration.
-    pub fn new(id: impl Into<String>, name: impl Into<String>, ip: impl Into<String>, mac: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        ip: impl Into<String>,
+        mac: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
@@ -253,8 +259,18 @@ default_input = "HDMI_1"
     #[test]
     fn test_find_tv() {
         let mut config = Config::default();
-        config.tv.push(TvConfig::new("tv1", "TV 1", "192.168.1.1", "AA:BB:CC:DD:EE:01"));
-        config.tv.push(TvConfig::new("tv2", "TV 2", "192.168.1.2", "AA:BB:CC:DD:EE:02"));
+        config.tv.push(TvConfig::new(
+            "tv1",
+            "TV 1",
+            "192.168.1.1",
+            "AA:BB:CC:DD:EE:01",
+        ));
+        config.tv.push(TvConfig::new(
+            "tv2",
+            "TV 2",
+            "192.168.1.2",
+            "AA:BB:CC:DD:EE:02",
+        ));
 
         assert!(config.find_tv("tv1").is_some());
         assert!(config.find_tv("tv3").is_none());

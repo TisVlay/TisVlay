@@ -116,7 +116,13 @@ impl TvManager {
     ///
     /// Returns the manager, a task handle for the reconnection worker, and a receiver
     /// for state change events.
-    pub fn new(config: Config) -> (Self, JoinHandle<()>, mpsc::UnboundedReceiver<StateChangeEvent>) {
+    pub fn new(
+        config: Config,
+    ) -> (
+        Self,
+        JoinHandle<()>,
+        mpsc::UnboundedReceiver<StateChangeEvent>,
+    ) {
         let mut tvs = HashMap::new();
         for tv_config in &config.tv {
             tvs.insert(tv_config.id.clone(), ManagedTv::new(tv_config.clone()));
@@ -199,7 +205,9 @@ impl TvManager {
     /// Connect to a TV, returning the client for use.
     async fn connect(&self, tv_id: &str) -> Result<(), String> {
         let mut tvs = self.tvs.write().await;
-        let tv = tvs.get_mut(tv_id).ok_or_else(|| format!("TV not found: {}", tv_id))?;
+        let tv = tvs
+            .get_mut(tv_id)
+            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
 
         if tv.client.is_some() {
             return Ok(());
@@ -254,7 +262,11 @@ impl TvManager {
         }
 
         // Send reconnection request to worker
-        if let Err(e) = self.reconnect_tx.send(ManagerMsg::Reconnect(tv_id.to_string())).await {
+        if let Err(e) = self
+            .reconnect_tx
+            .send(ManagerMsg::Reconnect(tv_id.to_string()))
+            .await
+        {
             error!(tv_id = %tv_id, error = %e, "Failed to send reconnect request");
         }
     }
@@ -264,14 +276,20 @@ impl TvManager {
     /// Connects if not already connected, then executes the command.
     pub async fn with_client<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
     where
-        F: FnOnce(&mut WebOsClient) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, orlgtv_core::Error>> + Send + '_>>,
+        F: FnOnce(
+            &mut WebOsClient,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<T, orlgtv_core::Error>> + Send + '_>,
+        >,
     {
         // First try to connect if needed
         self.connect(tv_id).await?;
 
         // Then execute the command
         let mut tvs = self.tvs.write().await;
-        let tv = tvs.get_mut(tv_id).ok_or_else(|| format!("TV not found: {}", tv_id))?;
+        let tv = tvs
+            .get_mut(tv_id)
+            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
 
         let client = tv.client.as_mut().ok_or("Not connected")?;
 
@@ -301,7 +319,9 @@ impl TvManager {
 
     /// Power on a TV using Wake-on-LAN.
     pub async fn power_on(&self, tv_id: &str) -> Result<(), String> {
-        let config = self.get_tv_config(tv_id).await
+        let config = self
+            .get_tv_config(tv_id)
+            .await
             .ok_or_else(|| format!("TV not found: {}", tv_id))?;
 
         let mac = &config.mac;
@@ -320,9 +340,11 @@ impl TvManager {
         if let Some(default_input) = &config.default_input {
             info!(tv_id = %tv_id, input = %default_input, "Switching to default input");
             let input = default_input.clone();
-            let _ = self.with_client(tv_id, |client| {
-                Box::pin(async move { client.switch_input(&input).await })
-            }).await;
+            let _ = self
+                .with_client(tv_id, |client| {
+                    Box::pin(async move { client.switch_input(&input).await })
+                })
+                .await;
         }
 
         Ok(())
@@ -332,21 +354,24 @@ impl TvManager {
     pub async fn power_off(&self, tv_id: &str) -> Result<(), String> {
         self.with_client(tv_id, |client| {
             Box::pin(async move { client.power_off().await })
-        }).await
+        })
+        .await
     }
 
     /// Turn screen on.
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), String> {
         self.with_client(tv_id, |client| {
             Box::pin(async move { client.screen_on().await })
-        }).await
+        })
+        .await
     }
 
     /// Turn screen off.
     pub async fn screen_off(&self, tv_id: &str) -> Result<(), String> {
         self.with_client(tv_id, |client| {
             Box::pin(async move { client.screen_off().await })
-        }).await
+        })
+        .await
     }
 
     /// Switch input.
@@ -354,7 +379,8 @@ impl TvManager {
         let input = input_id.to_string();
         self.with_client(tv_id, |client| {
             Box::pin(async move { client.switch_input(&input).await })
-        }).await
+        })
+        .await
     }
 
     /// Get available inputs.
@@ -364,14 +390,16 @@ impl TvManager {
                 let inputs = client.get_inputs().await?;
                 Ok(inputs.into_iter().map(|i| (i.id, i.label)).collect())
             })
-        }).await
+        })
+        .await
     }
 
     /// Set volume.
     pub async fn set_volume(&self, tv_id: &str, volume: u32) -> Result<(), String> {
         self.with_client(tv_id, |client| {
             Box::pin(async move { client.set_volume(volume as i32).await })
-        }).await
+        })
+        .await
     }
 
     /// Get volume.
@@ -381,21 +409,24 @@ impl TvManager {
                 let info = client.get_volume().await?;
                 Ok(info.volume as u32)
             })
-        }).await
+        })
+        .await
     }
 
     /// Set mute.
     pub async fn set_mute(&self, tv_id: &str, mute: bool) -> Result<(), String> {
         self.with_client(tv_id, |client| {
             Box::pin(async move { client.set_mute(mute).await })
-        }).await
+        })
+        .await
     }
 
     /// Set backlight.
     pub async fn set_backlight(&self, tv_id: &str, backlight: u32) -> Result<(), String> {
         self.with_client(tv_id, |client| {
             Box::pin(async move { client.set_backlight(backlight as i32).await })
-        }).await
+        })
+        .await
     }
 
     /// Get backlight.
@@ -405,14 +436,16 @@ impl TvManager {
                 let backlight = client.get_backlight().await?;
                 Ok(backlight as u32)
             })
-        }).await
+        })
+        .await
     }
 
     /// Get TV state.
     pub async fn get_state(&self, tv_id: &str) -> Result<TvState, String> {
         self.with_client(tv_id, |client| {
             Box::pin(async move { client.get_state().await })
-        }).await
+        })
+        .await
     }
 
     /// Pair a new TV.
@@ -499,14 +532,18 @@ impl TvManager {
     fn save_tv_config(&self, tv_config: &TvConfig) -> Result<(), String> {
         let mut config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
         config.upsert_tv(tv_config.clone());
-        config.save().map_err(|e| format!("Failed to save config: {}", e))
+        config
+            .save()
+            .map_err(|e| format!("Failed to save config: {}", e))
     }
 
     /// Delete a TV from the configuration file.
     fn delete_tv_config(&self, tv_id: &str) -> Result<(), String> {
         let mut config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
         config.remove_tv(tv_id);
-        config.save().map_err(|e| format!("Failed to save config: {}", e))
+        config
+            .save()
+            .map_err(|e| format!("Failed to save config: {}", e))
     }
 
     /// Reload configuration from disk.
@@ -521,7 +558,8 @@ impl TvManager {
         let mut tvs = self.tvs.write().await;
 
         // Track IDs from new config
-        let new_ids: std::collections::HashSet<_> = new_config.tv.iter().map(|t| t.id.clone()).collect();
+        let new_ids: std::collections::HashSet<_> =
+            new_config.tv.iter().map(|t| t.id.clone()).collect();
 
         // Remove TVs that are no longer in config
         let old_ids: Vec<_> = tvs.keys().cloned().collect();
@@ -536,7 +574,9 @@ impl TvManager {
         for tv_config in new_config.tv {
             if let Some(existing) = tvs.get_mut(&tv_config.id) {
                 // Update config if changed (preserve connection if possible)
-                if existing.config.ip != tv_config.ip || existing.config.client_key != tv_config.client_key {
+                if existing.config.ip != tv_config.ip
+                    || existing.config.client_key != tv_config.client_key
+                {
                     info!(tv_id = %tv_config.id, "Updating TV config (will reconnect)");
                     existing.client = None;
                     existing.reconnect_state = ReconnectState::Idle;

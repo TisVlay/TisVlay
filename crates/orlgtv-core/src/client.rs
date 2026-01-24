@@ -4,8 +4,8 @@ use crate::connection::Connection;
 use crate::endpoints::{audio, input, luna, notification, picture, power, timeouts};
 use crate::error::{Error, Result};
 use crate::protocol::{
-    ExternalInputList, RegisterPayload, RegisteredPayload, Request,
-    Response, ResponseType, VolumeInfo, VolumeResponse,
+    ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
+    VolumeInfo, VolumeResponse,
 };
 use crate::state::{InputInfo, PowerState, TvState};
 use crate::wol::{self, MacAddress};

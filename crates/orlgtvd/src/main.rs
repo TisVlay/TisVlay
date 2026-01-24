@@ -127,7 +127,9 @@ async fn state_change_signal_emitter(
         // Create signal emitter for the D-Bus object path
         match SignalEmitter::new(&connection, DBUS_PATH) {
             Ok(emitter) => {
-                if let Err(e) = DaemonService::tv_state_changed(&emitter, &event.tv_id, &event.state_json).await {
+                if let Err(e) =
+                    DaemonService::tv_state_changed(&emitter, &event.tv_id, &event.state_json).await
+                {
                     warn!(error = %e, "Failed to emit TvStateChanged signal");
                 }
             }

@@ -89,8 +89,7 @@ pub mod app {
     pub const LIST_APPS: &str = "ssap://com.webos.applicationManager/listApps";
 
     /// Get current/foreground application.
-    pub const GET_FOREGROUND_APP: &str =
-        "ssap://com.webos.applicationManager/getForegroundAppInfo";
+    pub const GET_FOREGROUND_APP: &str = "ssap://com.webos.applicationManager/getForegroundAppInfo";
 
     /// List running applications.
     pub const LIST_LAUNCH_POINTS: &str = "ssap://com.webos.applicationManager/listLaunchPoints";

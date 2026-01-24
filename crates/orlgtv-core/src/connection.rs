@@ -112,12 +112,8 @@ impl Connection {
 
         let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config));
 
-        let connect_fut = tokio_tungstenite::connect_async_tls_with_config(
-            url,
-            None,
-            false,
-            Some(connector),
-        );
+        let connect_fut =
+            tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(connector));
 
         let (stream, response) = timeout(connect_timeout, connect_fut)
             .await

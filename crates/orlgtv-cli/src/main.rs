@@ -274,12 +274,12 @@ async fn run_tv_command(command: Commands, tv: &TvConfig, _config: &mut Config) 
 
             println!("TV: {} ({})", tv.name, tv.ip);
             println!("Power: {}", if state.is_on { "on" } else { "off" });
-            println!(
-                "Screen: {}",
-                if state.is_screen_on { "on" } else { "off" }
-            );
+            println!("Screen: {}", if state.is_screen_on { "on" } else { "off" });
             if let Some(vol) = state.volume {
-                let muted = state.muted.map(|m| if m { " (muted)" } else { "" }).unwrap_or("");
+                let muted = state
+                    .muted
+                    .map(|m| if m { " (muted)" } else { "" })
+                    .unwrap_or("");
                 println!("Volume: {}{}", vol, muted);
             }
             if let Some(backlight) = state.backlight {
@@ -327,7 +327,10 @@ async fn power_on(tv: &TvConfig) -> Result<()> {
             client.close().await?;
         }
         Err(e) => {
-            tracing::warn!("Could not connect after WoL: {}. TV may still be booting.", e);
+            tracing::warn!(
+                "Could not connect after WoL: {}. TV may still be booting.",
+                e
+            );
             println!("TV may still be booting. Try again in a few seconds.");
         }
     }
@@ -349,7 +352,10 @@ fn list_tvs(config: &Config) {
         } else {
             "not paired"
         };
-        println!("  {} - {} ({}) [{}]{}", tv.id, tv.name, tv.ip, paired, default);
+        println!(
+            "  {} - {} ({}) [{}]{}",
+            tv.id, tv.name, tv.ip, paired, default
+        );
     }
 }
 
