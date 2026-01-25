@@ -156,27 +156,26 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
         DaemonClient::new_session().await
     } else {
         DaemonClient::new_system().await
-    };
+    }
+    .context("Failed to connect to D-Bus")?;
 
-    let client = match client {
-        Ok(c) => c,
-        Err(e) => {
-            let bus = if cli.user { "session" } else { "system" };
-            eprintln!("Error: Could not connect to tisvlayd on {} bus.", bus);
+    // Check if daemon is actually available before making calls
+    if !client.is_available().await {
+        let bus = if cli.user { "session" } else { "system" };
+        eprintln!("Error: tisvlayd is not running on the {} bus.", bus);
+        eprintln!();
+        if cli.user {
+            eprintln!("Start the daemon with: tisvlayd --session");
+        } else {
+            eprintln!("Start the daemon with: systemctl start tisvlayd");
             eprintln!();
-            if cli.user {
-                eprintln!("Make sure tisvlayd is running with: tisvlayd --session");
-            } else {
-                eprintln!("Make sure tisvlayd is running: systemctl status tisvlayd");
-                eprintln!();
-                eprintln!("For development, you can use: tisvlayd --session");
-                eprintln!("Then run CLI with: tisvlay --user <command>");
-            }
-            eprintln!();
-            eprintln!("Or use --no-daemon to connect directly to the TV.");
-            return Err(e);
+            eprintln!("For development, you can use: tisvlayd --session");
+            eprintln!("Then run CLI with: tisvlay --user <command>");
         }
-    };
+        eprintln!();
+        eprintln!("Or use --no-daemon to connect directly to the TV.");
+        std::process::exit(1);
+    }
 
     // Get TV ID (required for most commands)
     let tv_id = get_tv_id_for_daemon(&client, cli.tv.as_deref()).await;
