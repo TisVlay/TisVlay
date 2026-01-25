@@ -52,7 +52,10 @@ impl IdleMonitor {
         let conn = match zbus::Connection::session().await {
             Ok(c) => c,
             Err(e) => {
-                error!("Failed to connect to session D-Bus for idle monitoring: {}", e);
+                error!(
+                    "Failed to connect to session D-Bus for idle monitoring: {}",
+                    e
+                );
                 return;
             }
         };

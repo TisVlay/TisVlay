@@ -175,8 +175,8 @@ pub fn start_wayland_idle_monitor(
     })?;
 
     // Initialize the event queue and registry
-    let (globals, event_queue): (GlobalList, EventQueue<WaylandState>) =
-        registry_queue_init(&conn).map_err(|e| {
+    let (globals, event_queue): (GlobalList, EventQueue<WaylandState>) = registry_queue_init(&conn)
+        .map_err(|e| {
             WaylandIdleError::ConnectionFailed(format!("Failed to initialize registry: {}", e))
         })?;
 
@@ -198,9 +198,7 @@ pub fn start_wayland_idle_monitor(
     let seat_global = global_list
         .iter()
         .find(|g| g.interface == "wl_seat")
-        .ok_or_else(|| {
-            WaylandIdleError::ProtocolNotSupported("wl_seat not available".to_string())
-        })?
+        .ok_or_else(|| WaylandIdleError::ProtocolNotSupported("wl_seat not available".to_string()))?
         .clone();
 
     info!(
@@ -254,8 +252,12 @@ fn run_wayland_idle_loop(
 
     // Bind to the idle notifier with explicit version (capped at what we support)
     let notifier_version = notifier_global.version.min(EXT_IDLE_NOTIFIER_VERSION);
-    let notifier: ExtIdleNotifierV1 =
-        registry.bind(notifier_global.name, notifier_version, &qhandle, notifier_version);
+    let notifier: ExtIdleNotifierV1 = registry.bind(
+        notifier_global.name,
+        notifier_version,
+        &qhandle,
+        notifier_version,
+    );
 
     // Create the idle notification with our timeout
     let notification = notifier.get_idle_notification(IDLE_TIMEOUT_MS, &seat, &qhandle, ());
