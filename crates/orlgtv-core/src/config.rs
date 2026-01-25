@@ -92,6 +92,15 @@ pub struct SessionConfig {
     #[serde(default = "default_on_unlock")]
     pub on_screen_unlock: SessionAction,
 
+    /// Action when user interacts with the lock screen (before unlocking).
+    /// This fires when the user moves the mouse or presses a key while locked,
+    /// allowing the TV to unblank so the user can see the password prompt.
+    ///
+    /// Detected via Wayland ext-idle-notify-v1 protocol on supported compositors
+    /// (KDE Plasma 6+, Sway, Hyprland, GNOME, etc.).
+    #[serde(default = "default_on_greeter_wake")]
+    pub on_greeter_wake: SessionAction,
+
     /// Action on system sleep/suspend.
     #[serde(default = "default_on_sleep")]
     pub on_sleep: SessionAction,
@@ -129,11 +138,16 @@ fn default_on_idle() -> SessionAction {
     SessionAction::ScreenOff
 }
 
+fn default_on_greeter_wake() -> SessionAction {
+    SessionAction::ScreenOn
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             on_screen_lock: default_on_lock(),
             on_screen_unlock: default_on_unlock(),
+            on_greeter_wake: default_on_greeter_wake(),
             on_sleep: default_on_sleep(),
             on_wake: default_on_wake(),
             idle_timeout_seconds: 0, // Disabled by default
@@ -363,6 +377,7 @@ default_input = "HDMI_1"
         let config = SessionConfig::default();
         assert_eq!(config.on_screen_lock, SessionAction::ScreenOff);
         assert_eq!(config.on_screen_unlock, SessionAction::ScreenOn);
+        assert_eq!(config.on_greeter_wake, SessionAction::ScreenOn);
         assert_eq!(config.on_sleep, SessionAction::PowerOff);
         assert_eq!(config.on_wake, SessionAction::PowerOn);
         assert_eq!(config.idle_timeout_seconds, 0);
@@ -375,6 +390,7 @@ default_input = "HDMI_1"
 [session]
 on_screen_lock = "power_off"
 on_screen_unlock = "power_on"
+on_greeter_wake = "none"
 on_sleep = "none"
 on_wake = "screen_on"
 idle_timeout_seconds = 300
@@ -390,6 +406,7 @@ mac = "AA:BB:CC:DD:EE:FF"
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.session.on_screen_lock, SessionAction::PowerOff);
         assert_eq!(config.session.on_screen_unlock, SessionAction::PowerOn);
+        assert_eq!(config.session.on_greeter_wake, SessionAction::None);
         assert_eq!(config.session.on_sleep, SessionAction::None);
         assert_eq!(config.session.on_wake, SessionAction::ScreenOn);
         assert_eq!(config.session.idle_timeout_seconds, 300);

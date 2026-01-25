@@ -239,15 +239,20 @@ User-specific preferences that supplement system config.
 
 ```toml
 [session]
-# D-Bus event responses
+# Screen lock/unlock
 on_screen_lock = "screen_off"     # screen_off | power_off | none
 on_screen_unlock = "screen_on"    # screen_on | power_on | none
-on_idle_timeout = "screen_off"    # Action when idle (before system sleep)
+
+# Greeter wake: unblank TV when user interacts with lock screen (Wayland only)
+on_greeter_wake = "screen_on"     # screen_on | power_on | none
+
+# Suspend/resume
 on_sleep = "power_off"            # suspend/hibernate
 on_wake = "power_on"              # resume
 
 # Idle detection
 idle_timeout_seconds = 300        # 0 to disable
+on_idle_timeout = "screen_off"    # Action when idle
 
 [tray]
 show_volume_slider = true
@@ -289,6 +294,7 @@ show_input_switcher = true
 |-------|---------------|-------|
 | System boot | WoL → wait → switch input | Get TV ready for login screen |
 | Screen lock | Screen off (blank) | Instant resume on unlock |
+| Greeter wake | Screen on | User interacted with lock screen (Wayland only) |
 | Screen unlock | Screen on | Resume from blank |
 | User idle timeout | Screen off | Configurable |
 | System suspend | Power off | Network unavailable during sleep |
@@ -327,8 +333,10 @@ orlgtv/
 │   ├── orlgtv-session/           # User session service
 │   │   ├── src/
 │   │   │   ├── main.rs
-│   │   │   ├── session_monitor.rs # Screen lock/idle detection
-│   │   │   └── dbus_client.rs    # Talks to orlgtvd
+│   │   │   ├── session_monitor.rs # Screen lock/suspend detection
+│   │   │   ├── wayland_idle.rs   # Wayland greeter wake detection
+│   │   │   ├── idle.rs           # Idle timeout polling
+│   │   │   └── daemon_client.rs  # Talks to orlgtvd
 │   │   └── Cargo.toml
 │   │
 │   ├── orlgtv-cli/               # CLI tool
@@ -400,7 +408,7 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 tracing-subscriber = "0.3"
 ```
 
-### User Session Service (`orlgtv-session`) - Phase 3
+### User Session Service (`orlgtv-session`) - COMPLETE
 
 ```toml
 [dependencies]
@@ -408,6 +416,10 @@ orlgtv-core = { path = "../orlgtv-core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 tracing-subscriber = "0.3"
+
+# Wayland greeter wake detection
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 ```
 
 ### CLI (`orlgtv-cli`) - IMPLEMENTED
@@ -551,16 +563,20 @@ EXAMPLES:
 1. `orlgtv-session`: User service monitoring D-Bus session events
 2. Screen lock/unlock detection via `org.freedesktop.ScreenSaver.ActiveChanged`
 3. Suspend/resume detection via `org.freedesktop.login1.Manager.PrepareForSleep`
-4. Idle timeout detection via polling `GetSessionIdleTime`
-5. Configurable actions per event type (`SessionAction` enum)
-6. SIGHUP for config reload
-7. Systemd user service file (`systemd/orlgtv-session.service`)
+4. Greeter wake detection via Wayland `ext-idle-notify-v1` protocol
+5. Idle timeout detection via polling `GetSessionIdleTime`
+6. Configurable actions per event type (`SessionAction` enum)
+7. SIGHUP for config reload
+8. Systemd user service file (`systemd/orlgtv-session.service`)
+
+**Greeter Wake Detection**: When the screen is locked and the user moves the mouse or presses a key, the TV unblanks so the user can see the password prompt. This uses the Wayland `ext-idle-notify-v1` protocol, supported on KDE Plasma 6+, Sway, Hyprland, GNOME, and other modern compositors. Falls back gracefully on X11 or when protocol unavailable.
 
 **Session Configuration** (in `~/.config/orlgtv/config.toml`):
 ```toml
 [session]
 on_screen_lock = "screen_off"    # screen_off | power_off | none
 on_screen_unlock = "screen_on"   # screen_on | power_on | none
+on_greeter_wake = "screen_on"    # unblank TV when interacting with lock screen (Wayland only)
 on_sleep = "power_off"
 on_wake = "power_on"
 idle_timeout_seconds = 300       # 0 to disable
@@ -597,6 +613,8 @@ on_idle_timeout = "screen_off"
 | WebSocket closed on TV standby | Automatic reconnection with backoff |
 | DHCP IP changes | Use MAC address for WoL; re-discover via SSDP |
 | Multi-user shared TV access | System-wide config; PolicyKit for privilege control |
+| Wayland protocol version mismatch | Explicit version binding; cap at library-supported version |
+| Greeter wake unavailable on X11 | Feature requires Wayland; X11 users won't see TV unblank on lock screen interaction |
 
 ---
 

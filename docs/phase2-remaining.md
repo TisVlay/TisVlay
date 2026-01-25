@@ -17,7 +17,10 @@ User session service implemented in `crates/orlgtv-session/`. See source code fo
 - [main.rs](../crates/orlgtv-session/src/main.rs) - Entry point, event handling, signal handling
 - [daemon_client.rs](../crates/orlgtv-session/src/daemon_client.rs) - D-Bus client for orlgtvd
 - [session_monitor.rs](../crates/orlgtv-session/src/session_monitor.rs) - Screen lock/suspend detection
+- [wayland_idle.rs](../crates/orlgtv-session/src/wayland_idle.rs) - Wayland greeter wake detection
 - [idle.rs](../crates/orlgtv-session/src/idle.rs) - Idle timeout polling
+
+See [design.md](design.md#phase-3-user-session-integration---complete) for greeter wake detection details.
 
 **Testing**:
 ```bash

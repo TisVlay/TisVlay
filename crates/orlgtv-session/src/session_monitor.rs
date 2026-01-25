@@ -4,6 +4,8 @@
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use zbus::proxy;
@@ -15,6 +17,10 @@ pub enum SessionEvent {
     ScreenLocked,
     /// Screen was unlocked.
     ScreenUnlocked,
+    /// User interaction detected while locked (greeter becoming visible).
+    /// This fires when the user moves the mouse or presses a key while locked,
+    /// before they actually unlock. Detected via Wayland ext-idle-notify-v1 protocol.
+    GreeterWake,
     /// System is about to suspend/hibernate.
     PrepareForSleep,
     /// System just resumed from suspend/hibernate.
@@ -30,6 +36,7 @@ impl std::fmt::Display for SessionEvent {
         match self {
             Self::ScreenLocked => write!(f, "ScreenLocked"),
             Self::ScreenUnlocked => write!(f, "ScreenUnlocked"),
+            Self::GreeterWake => write!(f, "GreeterWake"),
             Self::PrepareForSleep => write!(f, "PrepareForSleep"),
             Self::ResumeFromSleep => write!(f, "ResumeFromSleep"),
             Self::IdleTimeout => write!(f, "IdleTimeout"),
@@ -51,6 +58,7 @@ trait ScreenSaver {
     fn active_changed(&self, active: bool) -> zbus::Result<()>;
 
     /// Get the session idle time in seconds.
+    /// Used by the idle timeout feature.
     fn get_session_idle_time(&self) -> zbus::Result<u32>;
 }
 
@@ -81,8 +89,9 @@ impl SessionMonitor {
     /// Start monitoring session events.
     ///
     /// This spawns background tasks to listen for D-Bus signals.
-    /// Returns handles that should be kept alive for monitoring to continue.
-    pub async fn start(&self) -> Result<()> {
+    /// Returns an `Arc<AtomicBool>` that tracks whether the screen is currently locked.
+    /// This can be shared with the Wayland idle monitor for greeter wake detection.
+    pub async fn start(&self) -> Result<Arc<AtomicBool>> {
         // Connect to session bus for ScreenSaver signals
         let session_conn = zbus::Connection::session()
             .await
@@ -93,10 +102,14 @@ impl SessionMonitor {
             .await
             .context("Failed to connect to system D-Bus")?;
 
+        // Shared state for tracking if screen is locked
+        let is_locked = Arc::new(AtomicBool::new(false));
+
         // Start ScreenSaver monitor
         let tx1 = self.event_tx.clone();
+        let is_locked_clone = is_locked.clone();
         tokio::spawn(async move {
-            if let Err(e) = monitor_screen_saver(session_conn, tx1).await {
+            if let Err(e) = monitor_screen_saver(session_conn, tx1, is_locked_clone).await {
                 error!("ScreenSaver monitor failed: {}", e);
             }
         });
@@ -110,7 +123,7 @@ impl SessionMonitor {
         });
 
         info!("Session monitor started");
-        Ok(())
+        Ok(is_locked)
     }
 }
 
@@ -118,6 +131,7 @@ impl SessionMonitor {
 async fn monitor_screen_saver(
     conn: zbus::Connection,
     tx: mpsc::UnboundedSender<SessionEvent>,
+    is_locked: Arc<AtomicBool>,
 ) -> Result<()> {
     let proxy = ScreenSaverProxy::new(&conn)
         .await
@@ -134,6 +148,10 @@ async fn monitor_screen_saver(
         match signal.args() {
             Ok(args) => {
                 let active = args.active;
+
+                // Update locked state for Wayland greeter wake detection
+                is_locked.store(active, Ordering::SeqCst);
+
                 let event = if active {
                     SessionEvent::ScreenLocked
                 } else {
@@ -195,6 +213,9 @@ async fn monitor_login1(
 }
 
 /// Get the session idle time in seconds from the ScreenSaver interface.
+///
+/// Used by the idle timeout feature. Note: This may not be supported on all
+/// platforms (e.g., KDE Plasma Wayland). The idle.rs module handles failures gracefully.
 pub async fn get_session_idle_time(conn: &zbus::Connection) -> Result<u32> {
     let proxy = ScreenSaverProxy::new(conn)
         .await

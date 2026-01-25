@@ -94,6 +94,7 @@ orlgtv/
 │           ├── main.rs           # Entry point, event handling
 │           ├── daemon_client.rs  # D-Bus client for orlgtvd
 │           ├── session_monitor.rs # Screen lock/unlock, suspend/resume
+│           ├── wayland_idle.rs   # Wayland greeter wake detection
 │           └── idle.rs           # Idle timeout detection
 │
 ├── systemd/
@@ -127,11 +128,14 @@ orlgtv/
 [session]
 on_screen_lock = "screen_off"    # screen_off | power_off | none
 on_screen_unlock = "screen_on"   # screen_on | power_on | none
+on_greeter_wake = "screen_on"    # unblank TV on lock screen interaction (Wayland only)
 on_sleep = "power_off"
 on_wake = "power_on"
 idle_timeout_seconds = 300       # 0 to disable
 on_idle_timeout = "screen_off"
 ```
+
+See [docs/design.md](docs/design.md#phase-3-user-session-integration---complete) for greeter wake detection details.
 
 ### CLI Commands
 ```
@@ -157,6 +161,7 @@ orlgtv remove <ID>
 | Config | `toml`, `directories` |
 | CLI | `clap` |
 | D-Bus | `zbus` |
+| Wayland | `wayland-client`, `wayland-protocols` |
 | Errors | `thiserror`, `anyhow` |
 | Logging | `tracing`, `tracing-subscriber` |
 | WoL | `socket2` |

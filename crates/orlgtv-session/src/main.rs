@@ -6,6 +6,7 @@
 mod daemon_client;
 mod idle;
 mod session_monitor;
+mod wayland_idle;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -84,9 +85,23 @@ async fn main() -> Result<()> {
     // Create event channel
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-    // Start session monitor
+    // Start session monitor (returns is_locked state for Wayland idle monitor)
     let monitor = SessionMonitor::new(event_tx.clone());
-    monitor.start().await.context("Failed to start session monitor")?;
+    let is_locked = monitor
+        .start()
+        .await
+        .context("Failed to start session monitor")?;
+
+    // Start Wayland idle monitor for greeter wake detection
+    match wayland_idle::start_wayland_idle_monitor(event_tx.clone(), is_locked) {
+        Ok(()) => {
+            info!("Wayland greeter wake detection enabled");
+        }
+        Err(e) => {
+            // Not fatal - Wayland may not be available (X11, SSH, etc.)
+            warn!("Wayland greeter wake detection unavailable: {}", e);
+        }
+    }
 
     // Start idle monitor if enabled
     let idle_timeout = {
@@ -133,6 +148,7 @@ async fn event_handler(
             match event {
                 SessionEvent::ScreenLocked => cfg.session.on_screen_lock,
                 SessionEvent::ScreenUnlocked => cfg.session.on_screen_unlock,
+                SessionEvent::GreeterWake => cfg.session.on_greeter_wake,
                 SessionEvent::PrepareForSleep => cfg.session.on_sleep,
                 SessionEvent::ResumeFromSleep => cfg.session.on_wake,
                 SessionEvent::IdleTimeout => cfg.session.on_idle_timeout,

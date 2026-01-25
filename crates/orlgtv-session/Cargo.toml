@@ -24,3 +24,7 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 futures-util = { workspace = true }
 clap = { workspace = true }
+
+# Wayland idle detection (greeter wake on Wayland compositors)
+wayland-client = { workspace = true }
+wayland-protocols = { workspace = true }

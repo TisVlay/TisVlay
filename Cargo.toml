@@ -58,6 +58,10 @@ ssdp-client = "2"
 urlencoding = "2"
 url = "2"
 
+# Wayland (for idle detection)
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+
 # Internal crates
 orlgtv-core = { path = "crates/orlgtv-core" }
 
