@@ -2,7 +2,7 @@
 //!
 //! Manages WebSocket connections to multiple TVs with automatic reconnection.
 
-use orlgtv_core::{Config, TvConfig, TvState, WebOsClient};
+use tisvlay_core::{Config, TvConfig, TvState, WebOsClient};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -165,7 +165,7 @@ impl TvManager {
         for (id, tv) in tvs.iter() {
             let mac = &tv.config.mac;
             info!(tv_id = %id, mac = %mac, "Sending WoL packet");
-            if let Err(e) = orlgtv_core::wake_tv(mac) {
+            if let Err(e) = tisvlay_core::wake_tv(mac) {
                 warn!(tv_id = %id, error = %e, "Failed to send WoL");
             }
         }
@@ -274,7 +274,7 @@ impl TvManager {
         F: FnOnce(
             &mut WebOsClient,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<T, orlgtv_core::Error>> + Send + '_>,
+            Box<dyn std::future::Future<Output = Result<T, tisvlay_core::Error>> + Send + '_>,
         >,
     {
         // First try to connect if needed
@@ -322,7 +322,7 @@ impl TvManager {
         let mac = &config.mac;
 
         info!(tv_id = %tv_id, mac = %mac, "Sending WoL packet");
-        orlgtv_core::wake_tv(mac).map_err(|e| format!("WoL failed: {}", e))?;
+        tisvlay_core::wake_tv(mac).map_err(|e| format!("WoL failed: {}", e))?;
 
         // Wait for TV to wake
         let delay = Duration::from_millis(self.config.daemon.wake_delay_ms);

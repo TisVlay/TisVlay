@@ -18,7 +18,7 @@
             },
             "cwd": "${workspaceFolder}",
             "env": {
-                "RUST_LOG": "orlgtv=debug"
+                "RUST_LOG": "tisvlay=debug"
             }
         }
     ]

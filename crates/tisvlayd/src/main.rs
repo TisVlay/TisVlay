@@ -1,4 +1,4 @@
-//! orlgtvd - LG WebOS TV Control Daemon
+//! tisvlayd - LG WebOS TV Control Daemon
 //!
 //! A systemd system service that provides D-Bus API for controlling LG WebOS TVs.
 
@@ -7,7 +7,7 @@ mod tv_manager;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use orlgtv_core::Config;
+use tisvlay_core::Config;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
@@ -18,14 +18,14 @@ use crate::dbus::DaemonService;
 use crate::tv_manager::{StateChangeEvent, TvManager};
 
 /// D-Bus service name.
-pub const DBUS_NAME: &str = "org.orlgtv.Daemon";
+pub const DBUS_NAME: &str = "org.tisvlay.Daemon";
 
 /// D-Bus object path.
-pub const DBUS_PATH: &str = "/org/orlgtv/Daemon";
+pub const DBUS_PATH: &str = "/org/tisvlay/Daemon";
 
 /// LG WebOS TV Control Daemon
 #[derive(Parser, Debug)]
-#[command(name = "orlgtvd", version, about)]
+#[command(name = "tisvlayd", version, about)]
 struct Args {
     /// Use session bus instead of system bus (for development/testing)
     #[arg(long)]
@@ -39,10 +39,10 @@ async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::registry()
         .with(fmt::layer())
-        .with(EnvFilter::from_default_env().add_directive("orlgtvd=info".parse()?))
+        .with(EnvFilter::from_default_env().add_directive("tisvlayd=info".parse()?))
         .init();
 
-    info!("orlgtvd starting...");
+    info!("tisvlayd starting...");
 
     // Load configuration
     let config = match Config::load() {

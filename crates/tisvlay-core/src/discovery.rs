@@ -40,11 +40,11 @@ pub struct DiscoveredTv {
 /// # Example
 ///
 /// ```no_run
-/// use orlgtv_core::discover_tvs;
+/// use tisvlay_core::discover_tvs;
 /// use std::time::Duration;
 ///
 /// #[tokio::main]
-/// async fn main() -> orlgtv_core::Result<()> {
+/// async fn main() -> tisvlay_core::Result<()> {
 ///     let tvs = discover_tvs(Duration::from_secs(3)).await?;
 ///     for tv in tvs {
 ///         println!("Found: {} at {}", tv.name, tv.ip);

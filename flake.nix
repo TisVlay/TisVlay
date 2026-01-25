@@ -1,5 +1,5 @@
 {
-  description = "orlgtv Rust development environment";
+  description = "tisvlay Rust development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

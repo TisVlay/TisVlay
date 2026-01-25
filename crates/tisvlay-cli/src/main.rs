@@ -1,12 +1,12 @@
-//! orlgtv - CLI tool for LG WebOS TV control.
+//! tisvlay - CLI tool for LG WebOS TV control.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use orlgtv_core::{Config, TvConfig, WebOsClient};
+use tisvlay_core::{Config, TvConfig, WebOsClient};
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(name = "orlgtv")]
+#[command(name = "tisvlay")]
 #[command(author, version, about = "LG WebOS TV Control")]
 #[command(propagate_version = true)]
 struct Cli {
@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
 
 fn get_tv(config: &Config, tv_id: Option<&str>) -> Result<TvConfig> {
     if config.tv.is_empty() {
-        anyhow::bail!("No TVs configured. Use 'orlgtv pair <ip>' to add a TV.");
+        anyhow::bail!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
     }
 
     match tv_id {
@@ -308,7 +308,7 @@ async fn power_on(tv: &TvConfig) -> Result<()> {
     }
 
     tracing::info!(tv = %tv.name, mac = %tv.mac, "Sending Wake-on-LAN");
-    orlgtv_core::wake_tv(&tv.mac)?;
+    tisvlay_core::wake_tv(&tv.mac)?;
     println!("Wake-on-LAN packet sent to {}", tv.name);
 
     // Wait for TV to boot
@@ -340,7 +340,7 @@ async fn power_on(tv: &TvConfig) -> Result<()> {
 
 fn list_tvs(config: &Config) {
     if config.tv.is_empty() {
-        println!("No TVs configured. Use 'orlgtv pair <ip>' to add a TV.");
+        println!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
         return;
     }
 
@@ -405,7 +405,7 @@ async fn pair_tv(
 
     if !has_mac {
         println!("\nNote: No MAC address provided. Wake-on-LAN will not work.");
-        println!("Add MAC with: orlgtv pair {} --mac AA:BB:CC:DD:EE:FF", ip);
+        println!("Add MAC with: tisvlay pair {} --mac AA:BB:CC:DD:EE:FF", ip);
     }
 
     client.close().await?;

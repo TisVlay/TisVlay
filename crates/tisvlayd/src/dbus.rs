@@ -1,6 +1,6 @@
 //! D-Bus interface implementation.
 //!
-//! Implements the `org.orlgtv.Daemon1` interface for TV control.
+//! Implements the `org.tisvlay.Daemon1` interface for TV control.
 
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
@@ -26,9 +26,9 @@ impl DaemonService {
     }
 }
 
-/// D-Bus error type for orlgtv.
+/// D-Bus error type for tisvlay.
 #[derive(Debug, Clone, zbus::DBusError)]
-#[zbus(prefix = "org.orlgtv.Error")]
+#[zbus(prefix = "org.tisvlay.Error")]
 pub enum DaemonError {
     /// TV not found.
     TvNotFound(String),
@@ -54,7 +54,7 @@ impl From<String> for DaemonError {
     }
 }
 
-#[interface(name = "org.orlgtv.Daemon1")]
+#[interface(name = "org.tisvlay.Daemon1")]
 impl DaemonService {
     // -------------------------------------------------------------------------
     // TV Management
@@ -84,7 +84,7 @@ impl DaemonService {
     ) -> Result<Vec<(String, String, String, String)>, DaemonError> {
         info!(timeout_ms = timeout_ms, "D-Bus: DiscoverTvs");
 
-        let tvs = orlgtv_core::discover_tvs(std::time::Duration::from_millis(timeout_ms as u64))
+        let tvs = tisvlay_core::discover_tvs(std::time::Duration::from_millis(timeout_ms as u64))
             .await
             .map_err(|e| DaemonError::OperationFailed(e.to_string()))?;
 

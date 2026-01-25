@@ -1,13 +1,13 @@
 [Unit]
 Description=LG WebOS TV Control Daemon
-Documentation=https://github.com/ruffsl/orlgtv
+Documentation=https://github.com/ruffsl/tisvlay
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=dbus
-BusName=org.orlgtv.Daemon
-ExecStart=/usr/bin/orlgtvd
+BusName=org.tisvlay.Daemon
+ExecStart=/usr/bin/tisvlayd
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -19,7 +19,7 @@ PrivateTmp=true
 NoNewPrivileges=true
 
 # Allow access to config directory
-ReadWritePaths=/etc/orlgtv
+ReadWritePaths=/etc/tisvlay
 
 [Install]
 WantedBy=multi-user.target

@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/orlgtv-core",
-    "crates/orlgtv-cli",
-    "crates/orlgtvd",
-    "crates/orlgtv-session",
+    "crates/tisvlay-core",
+    "crates/tisvlay-cli",
+    "crates/tisvlayd",
+    "crates/tisvlay-session",
 ]
 
 [workspace.package]
@@ -13,8 +13,8 @@ edition = "2021"
 rust-version = "1.75"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"
-homepage = "https://github.com/ruffsl/orlgtv"
-repository = "https://github.com/ruffsl/orlgtv"
+homepage = "https://github.com/ruffsl/tisvlay"
+repository = "https://github.com/ruffsl/tisvlay"
 keywords = ["remote", "lg", "tv", "linux", "webos"]
 categories = ["command-line-utilities", "hardware-support"]
 
@@ -63,7 +63,7 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 # Internal crates
-orlgtv-core = { path = "crates/orlgtv-core" }
+tisvlay-core = { path = "crates/tisvlay-core" }
 
 [workspace.metadata.deb]
 section = "utils"

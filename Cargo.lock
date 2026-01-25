@@ -823,71 +823,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orlgtv-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "orlgtv-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "orlgtv-core"
-version = "0.1.0"
-dependencies = [
- "directories",
- "futures-util",
- "rustls",
- "serde",
- "serde_json",
- "socket2 0.5.10",
- "ssdp-client",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
- "toml",
- "tracing",
- "url",
- "urlencoding",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "orlgtv-session"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-util",
- "orlgtv-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "wayland-client",
- "wayland-protocols",
- "zbus",
-]
-
-[[package]]
-name = "orlgtvd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-util",
- "orlgtv-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1337,6 +1272,71 @@ checksum = "42d3e9c45c09de15d06dd8acf5f4e0e399e85927b7f00711024eb7ae10fa4869"
 dependencies = [
  "displaydoc",
  "zerovec",
+]
+
+[[package]]
+name = "tisvlay-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tisvlay-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tisvlay-core"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "futures-util",
+ "rustls",
+ "serde",
+ "serde_json",
+ "socket2 0.5.10",
+ "ssdp-client",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tracing",
+ "url",
+ "urlencoding",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "tisvlay-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "tisvlay-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "zbus",
+]
+
+[[package]]
+name = "tisvlayd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tisvlay-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]

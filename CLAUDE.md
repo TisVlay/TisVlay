@@ -1,4 +1,4 @@
-# orlgtv - LG WebOS TV Control for Linux (Rust)
+# tisvlay - LG WebOS TV Control for Linux (Rust)
 
 ## Project Overview
 
@@ -30,14 +30,14 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 
 ### Phase 1: Core Library + CLI (COMPLETE)
 
-- [x] `orlgtv-core`: WebSocket client, SSAP protocol, WoL, config parsing
-- [x] `orlgtv-cli`: Power, screen, input, volume, backlight, status commands
+- [x] `tisvlay-core`: WebSocket client, SSAP protocol, WoL, config parsing
+- [x] `tisvlay-cli`: Power, screen, input, volume, backlight, status commands
 - [x] TV pairing flow with client key persistence
 - [x] Multi-TV configuration support
 
 ### Phase 2: System Daemon (COMPLETE)
 
-- [x] `orlgtvd`: D-Bus service (`org.orlgtv.Daemon1`) - see [crates/orlgtvd/src/](crates/orlgtvd/src/)
+- [x] `tisvlayd`: D-Bus service (`org.tisvlay.Daemon1`) - see [crates/tisvlayd/src/](crates/tisvlayd/src/)
 - [x] TV connection manager with pooling, auto-reconnect, boot-time WoL
 - [x] Full D-Bus API: ListTvs, DiscoverTvs, PairTv, RemoveTv, Power/Screen/Input/Volume/Backlight control
 - [x] TvStateChanged signal emission on connect/disconnect
@@ -47,26 +47,26 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 
 ### Phase 3: User Session Service (COMPLETE)
 
-- [x] `orlgtv-session`: User service monitoring D-Bus session events - see [crates/orlgtv-session/src/](crates/orlgtv-session/src/)
+- [x] `tisvlay-session`: User service monitoring D-Bus session events - see [crates/tisvlay-session/src/](crates/tisvlay-session/src/)
 - [x] Screen lock/unlock detection via `org.freedesktop.ScreenSaver.ActiveChanged`
 - [x] Suspend/resume detection via `org.freedesktop.login1.Manager.PrepareForSleep`
 - [x] Configurable actions per event (screen_on/off, power_on/off, none)
 - [x] Optional idle timeout with polling-based detection
 - [x] SIGHUP for config reload
-- [x] Systemd user service file - see [systemd/orlgtv-session.service](systemd/orlgtv-session.service)
+- [x] Systemd user service file - see [systemd/tisvlay-session.service](systemd/tisvlay-session.service)
 
 ### Phase 4-5: Future
 
-- Phase 4: `orlgtv-tray` (ksni StatusNotifierItem)
-- Phase 5: `orlgtv-gui` (Slint configuration UI)
+- Phase 4: `tisvlay-tray` (ksni StatusNotifierItem)
+- Phase 5: `tisvlay-gui` (Slint configuration UI)
 
 ## Current Project Structure
 
 ```
-orlgtv/
+tisvlay/
 ├── Cargo.toml                    # Workspace root
 ├── crates/
-│   ├── orlgtv-core/              # Core library
+│   ├── tisvlay-core/              # Core library
 │   │   └── src/
 │   │       ├── lib.rs            # Public API exports
 │   │       ├── client.rs         # WebOsClient - high-level API
@@ -79,29 +79,29 @@ orlgtv/
 │   │       ├── wol.rs            # Wake-on-LAN
 │   │       └── error.rs          # Error types
 │   │
-│   ├── orlgtv-cli/               # CLI tool
+│   ├── tisvlay-cli/               # CLI tool
 │   │   └── src/
 │   │       └── main.rs           # clap-based CLI
 │   │
-│   ├── orlgtvd/                  # System daemon (Phase 2)
+│   ├── tisvlayd/                  # System daemon (Phase 2)
 │   │   └── src/
 │   │       ├── main.rs           # Entry point, signal handling
-│   │       ├── dbus.rs           # D-Bus interface (org.orlgtv.Daemon1)
+│   │       ├── dbus.rs           # D-Bus interface (org.tisvlay.Daemon1)
 │   │       └── tv_manager.rs     # TV connection pool
 │   │
-│   └── orlgtv-session/           # User session service (Phase 3)
+│   └── tisvlay-session/           # User session service (Phase 3)
 │       └── src/
 │           ├── main.rs           # Entry point, event handling
-│           ├── daemon_client.rs  # D-Bus client for orlgtvd
+│           ├── daemon_client.rs  # D-Bus client for tisvlayd
 │           ├── session_monitor.rs # Screen lock/unlock, suspend/resume
 │           ├── wayland_idle.rs   # Wayland greeter wake detection
 │           └── idle.rs           # Idle timeout detection
 │
 ├── systemd/
-│   ├── orlgtvd.service           # Systemd system service
-│   ├── orlgtv-session.service    # Systemd user service (Phase 3)
-│   ├── org.orlgtv.Daemon.service # D-Bus activation service
-│   └── org.orlgtv.Daemon.conf    # D-Bus policy configuration
+│   ├── tisvlayd.service           # Systemd system service
+│   ├── tisvlay-session.service    # Systemd user service (Phase 3)
+│   ├── org.tisvlay.Daemon.service # D-Bus activation service
+│   └── org.tisvlay.Daemon.conf    # D-Bus policy configuration
 │
 ├── docs/
 │   ├── reference.md              # Protocol survey from prior art
@@ -119,8 +119,8 @@ orlgtv/
 - Tries wss://port 3001 first, falls back to ws://port 3000
 
 ### Configuration
-- User config: `~/.config/orlgtv/config.toml`
-- System config (Phase 2): `/etc/orlgtv/config.toml`
+- User config: `~/.config/tisvlay/config.toml`
+- System config (Phase 2): `/etc/tisvlay/config.toml`
 - Client keys stored in config after TV pairing
 
 ### Session Config Example
@@ -139,16 +139,16 @@ See [docs/design.md](docs/design.md#phase-3-user-session-integration---complete)
 
 ### CLI Commands
 ```
-orlgtv power on|off       # WoL for power on
-orlgtv screen on|off      # OLED-safe blank
-orlgtv input [ID] [--list]
-orlgtv volume [LEVEL|+N|-N]
-orlgtv mute [on|off|toggle]
-orlgtv backlight [LEVEL]
-orlgtv status
-orlgtv pair <IP> --name NAME --mac MAC
-orlgtv list
-orlgtv remove <ID>
+tisvlay power on|off       # WoL for power on
+tisvlay screen on|off      # OLED-safe blank
+tisvlay input [ID] [--list]
+tisvlay volume [LEVEL|+N|-N]
+tisvlay mute [on|off|toggle]
+tisvlay backlight [LEVEL]
+tisvlay status
+tisvlay pair <IP> --name NAME --mac MAC
+tisvlay list
+tisvlay remove <ID>
 ```
 
 ## Key Crates
@@ -180,45 +180,45 @@ orlgtv remove <ID>
 
 ```bash
 # Development (session bus):
-orlgtvd --session
+tisvlayd --session
 
 # Production (system bus):
-sudo orlgtvd
+sudo tisvlayd
 ```
 
 ### Running the Session Service
 
 ```bash
-# Development (with orlgtvd --session):
-orlgtv-session --session-daemon
+# Development (with tisvlayd --session):
+tisvlay-session --session-daemon
 
 # Production (as systemd user service):
-systemctl --user enable --now orlgtv-session
+systemctl --user enable --now tisvlay-session
 ```
 
 ### Testing with busctl
 
 ```bash
 # List TVs
-busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ListTvs
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Daemon org.tisvlay.Daemon1 ListTvs
 
 # Control TV
-busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 PowerOn s "tv-id"
-busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ScreenOff s "tv-id"
-busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 SetMute sb "tv-id" true
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Daemon org.tisvlay.Daemon1 PowerOn s "tv-id"
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Daemon org.tisvlay.Daemon1 ScreenOff s "tv-id"
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Daemon org.tisvlay.Daemon1 SetMute sb "tv-id" true
 
 # Monitor signals
-busctl --user monitor org.orlgtv.Daemon
+busctl --user monitor org.tisvlay.Daemon
 ```
 
 ### Systemd Installation
 
 ```bash
-sudo cp systemd/orlgtvd.service /etc/systemd/system/
-sudo cp systemd/org.orlgtv.Daemon.service /usr/share/dbus-1/system-services/
-sudo cp systemd/org.orlgtv.Daemon.conf /etc/dbus-1/system.d/
+sudo cp systemd/tisvlayd.service /etc/systemd/system/
+sudo cp systemd/org.tisvlay.Daemon.service /usr/share/dbus-1/system-services/
+sudo cp systemd/org.tisvlay.Daemon.conf /etc/dbus-1/system.d/
 sudo systemctl daemon-reload
-sudo systemctl enable --now orlgtvd
+sudo systemctl enable --now tisvlayd
 ```
 
 ## Reference Documentation

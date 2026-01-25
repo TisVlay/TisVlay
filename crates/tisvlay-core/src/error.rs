@@ -1,4 +1,4 @@
-//! Error types for orlgtv-core.
+//! Error types for tisvlay-core.
 
 use std::io;
 

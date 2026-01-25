@@ -1,4 +1,4 @@
-//! orlgtv-core - Core library for LG WebOS TV control.
+//! tisvlay-core - Core library for LG WebOS TV control.
 //!
 //! This crate provides a Rust API for controlling LG WebOS TVs using the
 //! SSAP (Simple Service Access Protocol) over WebSocket.
@@ -14,10 +14,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use orlgtv_core::{WebOsClient, Config};
+//! use tisvlay_core::{WebOsClient, Config};
 //!
 //! #[tokio::main]
-//! async fn main() -> orlgtv_core::Result<()> {
+//! async fn main() -> tisvlay_core::Result<()> {
 //!     // Load configuration
 //!     let config = Config::load()?;
 //!     let tv = config.default_tv().expect("No TVs configured");

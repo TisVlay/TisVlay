@@ -1,7 +1,7 @@
-//! orlgtv-session - User session service for LG WebOS TV control.
+//! tisvlay-session - User session service for LG WebOS TV control.
 //!
 //! Monitors desktop D-Bus events (screen lock/unlock, suspend/resume, idle)
-//! and controls TVs through the system daemon (`orlgtvd`).
+//! and controls TVs through the system daemon (`tisvlayd`).
 
 mod daemon_client;
 mod idle;
@@ -12,21 +12,21 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use daemon_client::DaemonClient;
 use idle::IdleMonitor;
-use orlgtv_core::{Config, SessionAction};
+use tisvlay_core::{Config, SessionAction};
 use session_monitor::{SessionEvent, SessionMonitor};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-/// orlgtv session service - monitors desktop events and controls TVs.
+/// tisvlay session service - monitors desktop events and controls TVs.
 #[derive(Parser, Debug)]
-#[command(name = "orlgtv-session", version, about)]
+#[command(name = "tisvlay-session", version, about)]
 struct Args {
     /// Use session bus for daemon communication (development mode).
     ///
-    /// By default, orlgtv-session connects to the system bus to communicate
-    /// with orlgtvd. Use this flag when running orlgtvd with --session.
+    /// By default, tisvlay-session connects to the system bus to communicate
+    /// with tisvlayd. Use this flag when running tisvlayd with --session.
     #[arg(long)]
     session_daemon: bool,
 }
@@ -38,14 +38,14 @@ async fn main() -> Result<()> {
         .with(fmt::layer())
         .with(
             EnvFilter::from_default_env()
-                .add_directive("orlgtv_session=info".parse()?)
+                .add_directive("tisvlay_session=info".parse()?)
                 .add_directive("zbus=warn".parse()?),
         )
         .init();
 
     let args = Args::parse();
 
-    info!("orlgtv-session starting...");
+    info!("tisvlay-session starting...");
 
     // Load configuration
     let config = match Config::load() {

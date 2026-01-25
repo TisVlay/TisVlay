@@ -1,5 +1,5 @@
 [package]
-name = "orlgtv-core"
+name = "tisvlay-core"
 description = "Core library for LG WebOS TV control via SSAP protocol"
 version.workspace = true
 edition.workspace = true

@@ -1,4 +1,4 @@
-# orlgtv
+# tisvlay
 
 Open Remote for LG TVs on Linux - Control LG WebOS TVs from your Linux desktop.
 
@@ -15,9 +15,9 @@ Open Remote for LG TVs on Linux - Control LG WebOS TVs from your Linux desktop.
 
 | Component | Description |
 |-----------|-------------|
-| `orlgtv` | CLI tool for direct TV control |
-| `orlgtvd` | System daemon with D-Bus interface |
-| `orlgtv-session` | User service for desktop event integration |
+| `tisvlay` | CLI tool for direct TV control |
+| `tisvlayd` | System daemon with D-Bus interface |
+| `tisvlay-session` | User service for desktop event integration |
 
 ## Quick Start
 
@@ -26,13 +26,13 @@ Open Remote for LG TVs on Linux - Control LG WebOS TVs from your Linux desktop.
 cargo build --release
 
 # Pair with your TV (shows prompt on TV screen)
-orlgtv pair 192.168.1.100 --name "Living Room" --mac AA:BB:CC:DD:EE:FF
+tisvlay pair 192.168.1.100 --name "Living Room" --mac AA:BB:CC:DD:EE:FF
 
 # Control the TV
-orlgtv power on
-orlgtv screen off
-orlgtv input HDMI_1
-orlgtv volume 25
+tisvlay power on
+tisvlay screen off
+tisvlay input HDMI_1
+tisvlay volume 25
 ```
 
 ## Session Service
@@ -40,7 +40,7 @@ orlgtv volume 25
 The session service automatically controls your TV based on desktop events:
 
 ```toml
-# ~/.config/orlgtv/config.toml
+# ~/.config/tisvlay/config.toml
 [session]
 on_screen_lock = "screen_off"
 on_screen_unlock = "screen_on"

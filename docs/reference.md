@@ -402,7 +402,7 @@ MAIN_WS_MAX_MSG_SIZE = 8 * 1024 * 1024  # 8MB for channel lists
 ### Core Library Design
 
 ```
-orlgtv/
+tisvlay/
 ├── src/
 │   ├── lib.rs           # Public API
 │   ├── client.rs        # WebOsClient implementation

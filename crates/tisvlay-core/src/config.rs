@@ -236,9 +236,9 @@ impl Config {
 
     /// Get the default configuration file path.
     ///
-    /// Uses XDG directories: `~/.config/orlgtv/config.toml`
+    /// Uses XDG directories: `~/.config/tisvlay/config.toml`
     pub fn config_path() -> Result<PathBuf> {
-        let dirs = directories::ProjectDirs::from("", "", "orlgtv").ok_or_else(|| {
+        let dirs = directories::ProjectDirs::from("", "", "tisvlay").ok_or_else(|| {
             Error::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Could not determine config directory",
@@ -250,9 +250,9 @@ impl Config {
 
     /// Get the system-wide configuration file path.
     ///
-    /// Returns `/etc/orlgtv/config.toml`.
+    /// Returns `/etc/tisvlay/config.toml`.
     pub fn system_config_path() -> PathBuf {
-        PathBuf::from("/etc/orlgtv/config.toml")
+        PathBuf::from("/etc/tisvlay/config.toml")
     }
 
     /// Find a TV by ID.

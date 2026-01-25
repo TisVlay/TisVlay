@@ -1,24 +1,24 @@
-//! Client for communicating with orlgtvd system daemon.
+//! Client for communicating with tisvlayd system daemon.
 //!
-//! Uses D-Bus to call methods on the `org.orlgtv.Daemon1` interface.
+//! Uses D-Bus to call methods on the `org.tisvlay.Daemon1` interface.
 
 use anyhow::{Context, Result};
 use tracing::{debug, warn};
 use zbus::proxy;
 
-/// D-Bus service name for orlgtvd.
-const DAEMON_SERVICE: &str = "org.orlgtv.Daemon";
+/// D-Bus service name for tisvlayd.
+const DAEMON_SERVICE: &str = "org.tisvlay.Daemon";
 
-/// D-Bus object path for orlgtvd.
-const DAEMON_PATH: &str = "/org/orlgtv/Daemon";
+/// D-Bus object path for tisvlayd.
+const DAEMON_PATH: &str = "/org/tisvlay/Daemon";
 
-/// D-Bus proxy for the orlgtv daemon.
+/// D-Bus proxy for the tisvlay daemon.
 #[proxy(
-    interface = "org.orlgtv.Daemon1",
-    default_service = "org.orlgtv.Daemon",
-    default_path = "/org/orlgtv/Daemon"
+    interface = "org.tisvlay.Daemon1",
+    default_service = "org.tisvlay.Daemon",
+    default_path = "/org/tisvlay/Daemon"
 )]
-trait OrlgtvDaemon {
+trait TisvlayDaemon {
     /// List configured TVs.
     /// Returns: [(id, name, ip, connected)]
     fn list_tvs(&self) -> zbus::Result<Vec<(String, String, String, bool)>>;
@@ -36,10 +36,10 @@ trait OrlgtvDaemon {
     fn power_off(&self, tv_id: &str) -> zbus::Result<()>;
 }
 
-/// Client for communicating with the orlgtv system daemon.
+/// Client for communicating with the tisvlay system daemon.
 #[derive(Clone)]
 pub struct DaemonClient {
-    proxy: OrlgtvDaemonProxy<'static>,
+    proxy: TisvlayDaemonProxy<'static>,
 }
 
 impl DaemonClient {
@@ -63,12 +63,12 @@ impl DaemonClient {
 
     /// Create a client from an existing connection.
     async fn from_connection(connection: zbus::Connection) -> Result<Self> {
-        let proxy = OrlgtvDaemonProxy::builder(&connection)
+        let proxy = TisvlayDaemonProxy::builder(&connection)
             .destination(DAEMON_SERVICE)?
             .path(DAEMON_PATH)?
             .build()
             .await
-            .context("Failed to create D-Bus proxy for orlgtvd")?;
+            .context("Failed to create D-Bus proxy for tisvlayd")?;
 
         Ok(Self { proxy })
     }

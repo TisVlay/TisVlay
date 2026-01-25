@@ -2,10 +2,10 @@
 
 ## Phase 2 Status: COMPLETE
 
-All core Phase 2 functionality is implemented in `crates/orlgtvd/`. See source code for details:
-- [dbus.rs](../crates/orlgtvd/src/dbus.rs) - D-Bus interface (`org.orlgtv.Daemon1`)
-- [tv_manager.rs](../crates/orlgtvd/src/tv_manager.rs) - Connection management, reconnection, state events
-- [main.rs](../crates/orlgtvd/src/main.rs) - Signal handling, D-Bus setup
+All core Phase 2 functionality is implemented in `crates/tisvlayd/`. See source code for details:
+- [dbus.rs](../crates/tisvlayd/src/dbus.rs) - D-Bus interface (`org.tisvlay.Daemon1`)
+- [tv_manager.rs](../crates/tisvlayd/src/tv_manager.rs) - Connection management, reconnection, state events
+- [main.rs](../crates/tisvlayd/src/main.rs) - Signal handling, D-Bus setup
 
 **SSDP Discovery**: Implemented behind `discovery` feature flag. See [firewall.md](firewall.md) for Linux firewall requirements.
 
@@ -13,23 +13,23 @@ All core Phase 2 functionality is implemented in `crates/orlgtvd/`. See source c
 
 ## Phase 3 Status: COMPLETE
 
-User session service implemented in `crates/orlgtv-session/`. See source code for details:
-- [main.rs](../crates/orlgtv-session/src/main.rs) - Entry point, event handling, signal handling
-- [daemon_client.rs](../crates/orlgtv-session/src/daemon_client.rs) - D-Bus client for orlgtvd
-- [session_monitor.rs](../crates/orlgtv-session/src/session_monitor.rs) - Screen lock/suspend detection
-- [wayland_idle.rs](../crates/orlgtv-session/src/wayland_idle.rs) - Wayland greeter wake detection
-- [idle.rs](../crates/orlgtv-session/src/idle.rs) - Idle timeout polling
+User session service implemented in `crates/tisvlay-session/`. See source code for details:
+- [main.rs](../crates/tisvlay-session/src/main.rs) - Entry point, event handling, signal handling
+- [daemon_client.rs](../crates/tisvlay-session/src/daemon_client.rs) - D-Bus client for tisvlayd
+- [session_monitor.rs](../crates/tisvlay-session/src/session_monitor.rs) - Screen lock/suspend detection
+- [wayland_idle.rs](../crates/tisvlay-session/src/wayland_idle.rs) - Wayland greeter wake detection
+- [idle.rs](../crates/tisvlay-session/src/idle.rs) - Idle timeout polling
 
 See [design.md](design.md#phase-3-user-session-integration---complete) for greeter wake detection details.
 
 **Testing**:
 ```bash
-# Development mode (with orlgtvd --session)
-orlgtv-session --session-daemon
+# Development mode (with tisvlayd --session)
+tisvlay-session --session-daemon
 
 # Install as user service
-cp systemd/orlgtv-session.service ~/.config/systemd/user/
-systemctl --user enable --now orlgtv-session
+cp systemd/tisvlay-session.service ~/.config/systemd/user/
+systemctl --user enable --now tisvlay-session
 ```
 
 ---
@@ -49,11 +49,11 @@ Implementation: Add `zbus` dependency, create D-Bus client module, add `--direct
 
 **Goal**: Require authentication for privileged operations (pairing, removing TVs).
 
-Implementation: Create policy file at `polkit/org.orlgtv.policy`, add authorization checks in D-Bus methods.
+Implementation: Create policy file at `polkit/org.tisvlay.policy`, add authorization checks in D-Bus methods.
 
 ---
 
-## Phase 4: System Tray (`orlgtv-tray`)
+## Phase 4: System Tray (`tisvlay-tray`)
 
 **Goal**: StatusNotifierItem tray icon for quick TV control using `ksni`.
 
@@ -66,7 +66,7 @@ Features:
 
 ---
 
-## Phase 5: GUI Configuration (`orlgtv-gui`)
+## Phase 5: GUI Configuration (`tisvlay-gui`)
 
 **Goal**: Slint-based configuration UI.
 
@@ -82,24 +82,24 @@ Features:
 
 ```bash
 # Start daemon (development)
-orlgtvd --session
+tisvlayd --session
 
 # Start session service (development, in another terminal)
-orlgtv-session --session-daemon
+tisvlay-session --session-daemon
 
 # D-Bus operations
-busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ListTvs
-busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 PowerOn s "tv-id"
-busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 ScreenOff s "tv-id"
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Daemon org.tisvlay.Daemon1 ListTvs
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Daemon org.tisvlay.Daemon1 PowerOn s "tv-id"
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Daemon org.tisvlay.Daemon1 ScreenOff s "tv-id"
 
 # Discover TVs (requires firewall config - see docs/firewall.md)
-busctl --user call org.orlgtv.Daemon /org/orlgtv/Daemon org.orlgtv.Daemon1 DiscoverTvs u 3000
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Daemon org.tisvlay.Daemon1 DiscoverTvs u 3000
 
 # Monitor signals
-busctl --user monitor org.orlgtv.Daemon
+busctl --user monitor org.tisvlay.Daemon
 
 # Introspect interface
-busctl --user introspect org.orlgtv.Daemon /org/orlgtv/Daemon
+busctl --user introspect org.tisvlay.Daemon /org/tisvlay/Daemon
 
 # Test screen lock detection (KDE)
 loginctl lock-session

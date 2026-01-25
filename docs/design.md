@@ -1,8 +1,8 @@
-# orlgtv Design Document
+# tisvlay Design Document
 
 ## Overview
 
-**orlgtv** is a Rust utility for controlling LG WebOS TVs from a Linux desktop. It provides power management, HDMI input switching, screen blanking (OLED protection), and volume control via the LG WebOS SSAP protocol over WebSocket.
+**tisvlay** is a Rust utility for controlling LG WebOS TVs from a Linux desktop. It provides power management, HDMI input switching, screen blanking (OLED protection), and volume control via the LG WebOS SSAP protocol over WebSocket.
 
 ---
 
@@ -13,7 +13,7 @@
 │                         User Space                                   │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐                         │
 │  │   CLI    │   │  Tray    │   │   GUI    │                         │
-│  │ orlgtv   │   │  (ksni)  │   │ (Slint)  │                         │
+│  │ tisvlay   │   │  (ksni)  │   │ (Slint)  │                         │
 │  └────┬─────┘   └────┬─────┘   └────┬─────┘                         │
 │       │              │              │                                │
 │       └──────────────┼──────────────┘                                │
@@ -29,7 +29,7 @@
 ┌──────────────────────┼───────────────────────────────────────────────┐
 │                      ▼                     System Space              │
 │  ┌───────────────────────────────────────┐                          │
-│  │         orlgtvd (System Daemon)       │                          │
+│  │         tisvlayd (System Daemon)       │                          │
 │  │  - WebSocket connections to TVs       │                          │
 │  │  - Wake-on-LAN at boot                │                          │
 │  │  - Responds to user service requests  │                          │
@@ -48,11 +48,11 @@
 
 | Component | Binary | Description |
 |-----------|--------|-------------|
-| **System Daemon** | `orlgtvd` | Systemd system service. Runs at boot, manages TV connections, executes commands. Owns WebSocket connections and client keys. |
-| **User Service** | `orlgtv-session` | Systemd user service. Monitors D-Bus session events (screen lock/unlock, idle). Relays events to system daemon. |
-| **CLI** | `orlgtv` | Command-line interface for manual control. Communicates with daemon via D-Bus. |
-| **Tray App** | `orlgtv-tray` | System tray icon using `ksni`. Quick access menu for common actions. |
-| **GUI** | `orlgtv-gui` | Slint-based configuration window for TV setup, pairing, and settings. |
+| **System Daemon** | `tisvlayd` | Systemd system service. Runs at boot, manages TV connections, executes commands. Owns WebSocket connections and client keys. |
+| **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (screen lock/unlock, idle). Relays events to system daemon. |
+| **CLI** | `tisvlay` | Command-line interface for manual control. Communicates with daemon via D-Bus. |
+| **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Quick access menu for common actions. |
+| **GUI** | `tisvlay-gui` | Slint-based configuration window for TV setup, pairing, and settings. |
 
 ---
 
@@ -60,16 +60,16 @@
 
 ### D-Bus System Bus
 
-All user-facing components communicate with `orlgtvd` via D-Bus system bus.
+All user-facing components communicate with `tisvlayd` via D-Bus system bus.
 
-**Service Name**: `org.orlgtv.Daemon`
+**Service Name**: `org.tisvlay.Daemon`
 
-**Object Path**: `/org/orlgtv/Daemon`
+**Object Path**: `/org/tisvlay/Daemon`
 
-**Interface**: `org.orlgtv.Daemon1`
+**Interface**: `org.tisvlay.Daemon1`
 
 ```xml
-<interface name="org.orlgtv.Daemon1">
+<interface name="org.tisvlay.Daemon1">
   <!-- TV Discovery (requires firewall config for SSDP - see docs/firewall.md) -->
   <method name="DiscoverTvs">
     <arg name="timeout_ms" type="u" direction="in"/>
@@ -158,11 +158,11 @@ All user-facing components communicate with `orlgtvd` via D-Bus system bus.
 
 For privileged operations (pairing, removing TVs), PolicyKit rules control access.
 
-**Policy File**: `/usr/share/polkit-1/actions/org.orlgtv.policy`
+**Policy File**: `/usr/share/polkit-1/actions/org.tisvlay.policy`
 
 ```xml
 <policyconfig>
-  <action id="org.orlgtv.pair-tv">
+  <action id="org.tisvlay.pair-tv">
     <description>Pair a new LG TV</description>
     <message>Authentication is required to pair a new TV</message>
     <defaults>
@@ -170,7 +170,7 @@ For privileged operations (pairing, removing TVs), PolicyKit rules control acces
     </defaults>
   </action>
 
-  <action id="org.orlgtv.remove-tv">
+  <action id="org.tisvlay.remove-tv">
     <description>Remove a paired TV</description>
     <message>Authentication is required to remove a TV</message>
     <defaults>
@@ -179,7 +179,7 @@ For privileged operations (pairing, removing TVs), PolicyKit rules control acces
   </action>
 
   <!-- Basic control allowed for any active user -->
-  <action id="org.orlgtv.control">
+  <action id="org.tisvlay.control">
     <description>Control TV power, input, volume</description>
     <defaults>
       <allow_active>yes</allow_active>
@@ -194,10 +194,10 @@ For privileged operations (pairing, removing TVs), PolicyKit rules control acces
 
 ### System Configuration
 
-**Path**: `/etc/orlgtv/config.toml`
+**Path**: `/etc/tisvlay/config.toml`
 
 ```toml
-# System-wide orlgtv configuration
+# System-wide tisvlay configuration
 
 [daemon]
 # Boot behavior
@@ -233,7 +233,7 @@ default_input = "HDMI_2"
 
 ### User Configuration
 
-**Path**: `~/.config/orlgtv/config.toml`
+**Path**: `~/.config/tisvlay/config.toml`
 
 User-specific preferences that supplement system config.
 
@@ -306,10 +306,10 @@ show_input_switcher = true
 ## Crate Structure
 
 ```
-orlgtv/
+tisvlay/
 ├── Cargo.toml                    # Workspace root
 ├── crates/
-│   ├── orlgtv-core/              # Core library (shared logic)
+│   ├── tisvlay-core/              # Core library (shared logic)
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── client.rs         # WebOsClient - WebSocket connection
@@ -322,7 +322,7 @@ orlgtv/
 │   │   │   └── state.rs          # TvState model
 │   │   └── Cargo.toml
 │   │
-│   ├── orlgtvd/                  # System daemon
+│   ├── tisvlayd/                  # System daemon
 │   │   ├── src/
 │   │   │   ├── main.rs
 │   │   │   ├── dbus.rs           # D-Bus service implementation
@@ -330,27 +330,27 @@ orlgtv/
 │   │   │   └── events.rs         # System event handlers
 │   │   └── Cargo.toml
 │   │
-│   ├── orlgtv-session/           # User session service
+│   ├── tisvlay-session/           # User session service
 │   │   ├── src/
 │   │   │   ├── main.rs
 │   │   │   ├── session_monitor.rs # Screen lock/suspend detection
 │   │   │   ├── wayland_idle.rs   # Wayland greeter wake detection
 │   │   │   ├── idle.rs           # Idle timeout polling
-│   │   │   └── daemon_client.rs  # Talks to orlgtvd
+│   │   │   └── daemon_client.rs  # Talks to tisvlayd
 │   │   └── Cargo.toml
 │   │
-│   ├── orlgtv-cli/               # CLI tool
+│   ├── tisvlay-cli/               # CLI tool
 │   │   ├── src/
 │   │   │   └── main.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── orlgtv-tray/              # System tray (ksni)
+│   ├── tisvlay-tray/              # System tray (ksni)
 │   │   ├── src/
 │   │   │   ├── main.rs
 │   │   │   └── menu.rs
 │   │   └── Cargo.toml
 │   │
-│   └── orlgtv-gui/               # GUI app (Slint)
+│   └── tisvlay-gui/               # GUI app (Slint)
 │       ├── src/
 │       │   └── main.rs
 │       ├── ui/
@@ -358,11 +358,11 @@ orlgtv/
 │       └── Cargo.toml
 │
 ├── systemd/
-│   ├── orlgtvd.service           # System service unit
-│   └── orlgtv-session.service    # User service unit
+│   ├── tisvlayd.service           # System service unit
+│   └── tisvlay-session.service    # User service unit
 │
 ├── polkit/
-│   └── org.orlgtv.policy
+│   └── org.tisvlay.policy
 │
 └── docs/
     ├── reference.md
@@ -373,7 +373,7 @@ orlgtv/
 
 ## Dependencies
 
-### Core Library (`orlgtv-core`) - IMPLEMENTED
+### Core Library (`tisvlay-core`) - IMPLEMENTED
 
 ```toml
 [dependencies]
@@ -398,21 +398,21 @@ discovery = ["ssdp-client", ...]   # SSDP TV discovery (see docs/firewall.md)
 **Implementation Note**: Uses custom `InsecureCertVerifier` in `connection.rs` to accept
 LG TV's self-signed certificates with rustls.
 
-### System Daemon (`orlgtvd`) - IMPLEMENTED
+### System Daemon (`tisvlayd`) - IMPLEMENTED
 
 ```toml
 [dependencies]
-orlgtv-core = { path = "../orlgtv-core" }
+tisvlay-core = { path = "../tisvlay-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 tracing-subscriber = "0.3"
 ```
 
-### User Session Service (`orlgtv-session`) - COMPLETE
+### User Session Service (`tisvlay-session`) - COMPLETE
 
 ```toml
 [dependencies]
-orlgtv-core = { path = "../orlgtv-core" }
+tisvlay-core = { path = "../tisvlay-core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 tracing-subscriber = "0.3"
@@ -422,11 +422,11 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 ```
 
-### CLI (`orlgtv-cli`) - IMPLEMENTED
+### CLI (`tisvlay-cli`) - IMPLEMENTED
 
 ```toml
 [dependencies]
-orlgtv-core = { path = "../orlgtv-core" }
+tisvlay-core = { path = "../tisvlay-core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
@@ -437,7 +437,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 **Note**: CLI currently connects directly to TVs. D-Bus integration is optional
 for future work (see `docs/phase2-remaining.md`).
 
-### Tray (`orlgtv-tray`) - Phase 4
+### Tray (`tisvlay-tray`) - Phase 4
 
 ```toml
 [dependencies]
@@ -446,7 +446,7 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 ksni = "0.2"
 ```
 
-### GUI (`orlgtv-gui`) - Phase 5
+### GUI (`tisvlay-gui`) - Phase 5
 
 ```toml
 [dependencies]
@@ -460,10 +460,10 @@ slint = "1"
 ## CLI Interface
 
 ```
-orlgtv - LG WebOS TV Control
+tisvlay - LG WebOS TV Control
 
 USAGE:
-    orlgtv [OPTIONS] <COMMAND>
+    tisvlay [OPTIONS] <COMMAND>
 
 COMMANDS:
     discover        Scan for LG TVs on the network
@@ -487,13 +487,13 @@ OPTIONS:
     -V, --version   Print version
 
 EXAMPLES:
-    orlgtv discover
-    orlgtv pair 192.168.1.100 --name "Living Room"
-    orlgtv power on
-    orlgtv --tv office-left input HDMI_2
-    orlgtv volume 30
-    orlgtv backlight 80
-    orlgtv screen off
+    tisvlay discover
+    tisvlay pair 192.168.1.100 --name "Living Room"
+    tisvlay power on
+    tisvlay --tv office-left input HDMI_2
+    tisvlay volume 30
+    tisvlay backlight 80
+    tisvlay screen off
 ```
 
 ---
@@ -502,7 +502,7 @@ EXAMPLES:
 
 ```
 ┌─────────────────────────────┐
-│ 📺 orlgtv                    │
+│ 📺 tisvlay                    │
 ├─────────────────────────────┤
 │ ▶ Living Room G4      [🟢] │
 │   ├─ Power On/Off           │
@@ -532,11 +532,11 @@ EXAMPLES:
 **Goal**: Basic TV control from command line.
 
 **Implemented**:
-1. `orlgtv-core`: WebSocket client with rustls TLS, SSAP protocol, WoL, config parsing
-2. `orlgtv-cli`: Power on/off, screen blank/unblank, input switch, volume, backlight, status
+1. `tisvlay-core`: WebSocket client with rustls TLS, SSAP protocol, WoL, config parsing
+2. `tisvlay-cli`: Power on/off, screen blank/unblank, input switch, volume, backlight, status
 3. TV pairing flow with client key persistence
 4. Multi-TV configuration support (named profiles)
-5. XDG-compliant config storage (`~/.config/orlgtv/config.toml`)
+5. XDG-compliant config storage (`~/.config/tisvlay/config.toml`)
 
 **Deviations from Plan**:
 - Used `rustls` instead of `native-tls` to avoid OpenSSL system dependency
@@ -547,8 +547,8 @@ EXAMPLES:
 
 **Goal**: Background service with D-Bus API.
 
-**Implemented** (see `crates/orlgtvd/`):
-1. `orlgtvd`: System service with D-Bus interface (`org.orlgtv.Daemon1`)
+**Implemented** (see `crates/tisvlayd/`):
+1. `tisvlayd`: System service with D-Bus interface (`org.tisvlay.Daemon1`)
 2. TV connection management with automatic reconnection (exponential backoff)
 3. Boot-time WoL for configured TVs
 4. TV pairing/removal via D-Bus with config persistence
@@ -559,19 +559,19 @@ EXAMPLES:
 
 **Goal**: React to desktop events.
 
-**Implemented** (see `crates/orlgtv-session/`):
-1. `orlgtv-session`: User service monitoring D-Bus session events
+**Implemented** (see `crates/tisvlay-session/`):
+1. `tisvlay-session`: User service monitoring D-Bus session events
 2. Screen lock/unlock detection via `org.freedesktop.ScreenSaver.ActiveChanged`
 3. Suspend/resume detection via `org.freedesktop.login1.Manager.PrepareForSleep`
 4. Greeter wake detection via Wayland `ext-idle-notify-v1` protocol
 5. Idle timeout detection via polling `GetSessionIdleTime`
 6. Configurable actions per event type (`SessionAction` enum)
 7. SIGHUP for config reload
-8. Systemd user service file (`systemd/orlgtv-session.service`)
+8. Systemd user service file (`systemd/tisvlay-session.service`)
 
 **Greeter Wake Detection**: When the screen is locked and the user moves the mouse or presses a key, the TV unblanks so the user can see the password prompt. This uses the Wayland `ext-idle-notify-v1` protocol, supported on KDE Plasma 6+, Sway, Hyprland, GNOME, and other modern compositors. Falls back gracefully on X11 or when protocol unavailable.
 
-**Session Configuration** (in `~/.config/orlgtv/config.toml`):
+**Session Configuration** (in `~/.config/tisvlay/config.toml`):
 ```toml
 [session]
 on_screen_lock = "screen_off"    # screen_off | power_off | none
@@ -587,7 +587,7 @@ on_idle_timeout = "screen_off"
 
 **Goal**: Quick access from system tray.
 
-1. `orlgtv-tray`: ksni-based StatusNotifierItem
+1. `tisvlay-tray`: ksni-based StatusNotifierItem
 2. Power/screen/input controls
 3. Volume slider
 4. TV status indicators
@@ -596,7 +596,7 @@ on_idle_timeout = "screen_off"
 
 **Goal**: User-friendly setup and configuration.
 
-1. `orlgtv-gui`: Slint-based settings window
+1. `tisvlay-gui`: Slint-based settings window
 2. TV discovery and pairing wizard
 3. Per-TV configuration
 4. Session behavior settings

@@ -1,5 +1,5 @@
 [package]
-name = "orlgtv-session"
+name = "tisvlay-session"
 description = "User session service for LG WebOS TV control"
 version.workspace = true
 edition.workspace = true
@@ -12,11 +12,11 @@ keywords.workspace = true
 categories.workspace = true
 
 [[bin]]
-name = "orlgtv-session"
+name = "tisvlay-session"
 path = "src/main.rs"
 
 [dependencies]
-orlgtv-core = { workspace = true }
+tisvlay-core = { workspace = true }
 tokio = { workspace = true }
 zbus = { workspace = true }
 tracing = { workspace = true }

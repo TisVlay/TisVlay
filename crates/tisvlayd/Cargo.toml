@@ -1,5 +1,5 @@
 [package]
-name = "orlgtvd"
+name = "tisvlayd"
 description = "System daemon for LG WebOS TV control via D-Bus"
 version.workspace = true
 edition.workspace = true
@@ -12,15 +12,15 @@ keywords.workspace = true
 categories.workspace = true
 
 [[bin]]
-name = "orlgtvd"
+name = "tisvlayd"
 path = "src/main.rs"
 
 [features]
 default = ["discovery"]
-discovery = ["orlgtv-core/discovery"]
+discovery = ["tisvlay-core/discovery"]
 
 [dependencies]
-orlgtv-core = { workspace = true }
+tisvlay-core = { workspace = true }
 tokio = { workspace = true }
 zbus = { workspace = true }
 serde = { workspace = true }
