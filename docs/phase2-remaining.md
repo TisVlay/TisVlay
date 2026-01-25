@@ -34,22 +34,60 @@ systemctl --user enable --now tisvlay-session
 
 ---
 
-## Optional Enhancements
-
-### CLI D-Bus Migration
+## Phase 4a: CLI D-Bus Migration
 
 **Current**: CLI connects directly to TVs via WebSocket.
-**Goal**: CLI uses daemon via D-Bus, with `--direct` fallback.
+**Goal**: CLI uses daemon via D-Bus by default, with `--no-daemon` fallback.
 
 Benefits: Centralized connection management, automatic reconnection, config handled by daemon.
 
-Implementation: Add `zbus` dependency, create D-Bus client module, add `--direct` flag.
+Implementation:
+- Add `zbus` dependency to `tisvlay-cli`
+- Extract D-Bus client code from `tisvlay-session/daemon_client.rs` to shared module
+- Add `--no-daemon` flag for direct WebSocket connections (troubleshooting/development)
+- D-Bus activation starts daemon on-demand if not running
+
+---
+
+## Deferred Tasks
+
+### User Configuration Documentation
+
+**Goal**: Document all possible user configuration behaviors and settings.
+
+Scope:
+- Session event actions (`on_screen_lock`, `on_screen_unlock`, `on_greeter_wake`, etc.)
+- Idle timeout configuration
+- Per-TV settings (future)
+- Tray preferences (future)
+
+**Status**: Deferred to later phase (after tray/GUI work clarifies requirements).
+
+### Packaging and Distribution
+
+**Goal**: Provide native packages for major Linux distributions.
+
+Scope:
+- Debian/Ubuntu `.deb` packages
+- Fedora/RHEL `.rpm` packages
+- Arch Linux `PKGBUILD`
+- NixOS flake/package
+
+Considerations:
+- System daemon requires native packaging (systemd, D-Bus, polkit integration)
+- Flatpak limitations: cannot install systemd services, no raw sockets for WoL
+- Split packages: `tisvlay` (daemon + CLI) vs `tisvlay-tray` vs `tisvlay-gui`
+- `cargo install` provides basic functionality; full system integration requires native packages
+
+**Status**: Deferred until core functionality stabilizes.
 
 ### PolicyKit Authorization
 
 **Goal**: Require authentication for privileged operations (pairing, removing TVs).
 
 Implementation: Create policy file at `polkit/org.tisvlay.policy`, add authorization checks in D-Bus methods.
+
+**Status**: Deferred to Phase 5 (GUI) or later.
 
 ---
 
@@ -112,7 +150,9 @@ qdbus org.freedesktop.ScreenSaver /ScreenSaver Lock
 
 ## Priority
 
-1. **High**: ~~Phase 3 (session service)~~ - COMPLETE
-2. **High**: ~~SSDP discovery~~ - COMPLETE
-3. **Medium**: CLI D-Bus migration
-4. **Lower**: Phase 4 (tray), Phase 5 (GUI), PolicyKit
+1. ~~Phase 1 (core library + CLI)~~ - COMPLETE
+2. ~~Phase 2 (system daemon)~~ - COMPLETE
+3. ~~Phase 3 (session service)~~ - COMPLETE
+4. **Next**: Phase 4a (CLI D-Bus migration)
+5. **Next**: Phase 4b (tray app)
+6. **Later**: Phase 5 (GUI), user config docs, packaging, PolicyKit
