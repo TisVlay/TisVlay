@@ -1,6 +1,6 @@
 # tisvlay
 
-Open Remote for LG TVs on Linux - Control LG WebOS TVs from your Linux desktop.
+TV Display control for Linux
 
 ## Features
 
