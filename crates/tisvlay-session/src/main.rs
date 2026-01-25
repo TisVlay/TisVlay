@@ -3,16 +3,14 @@
 //! Monitors desktop D-Bus events (screen lock/unlock, suspend/resume, idle)
 //! and controls TVs through the system daemon (`tisvlayd`).
 
-mod daemon_client;
 mod idle;
 mod session_monitor;
 mod wayland_idle;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use daemon_client::DaemonClient;
 use idle::IdleMonitor;
-use tisvlay_core::{Config, SessionAction};
+use tisvlay_core::{Config, DaemonClient, SessionAction};
 use session_monitor::{SessionEvent, SessionMonitor};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -23,12 +21,12 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 #[derive(Parser, Debug)]
 #[command(name = "tisvlay-session", version, about)]
 struct Args {
-    /// Use session bus for daemon communication (development mode).
+    /// Use session bus instead of system D-Bus (e.g. with `tisvlayd --session`)
     ///
     /// By default, tisvlay-session connects to the system bus to communicate
     /// with tisvlayd. Use this flag when running tisvlayd with --session.
     #[arg(long)]
-    session_daemon: bool,
+    user: bool,
 }
 
 #[tokio::main]
@@ -66,8 +64,8 @@ async fn main() -> Result<()> {
     let config = Arc::new(RwLock::new(config));
 
     // Create daemon client
-    let daemon = if args.session_daemon {
-        info!("Using session bus for daemon communication (development mode)");
+    let daemon = if args.user {
+        info!("Using user/session bus for daemon communication (development mode)");
         DaemonClient::new_session().await
     } else {
         info!("Using system bus for daemon communication");

@@ -1280,6 +1280,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "serde_json",
  "tisvlay-core",
  "tokio",
  "tracing",
@@ -1290,6 +1291,7 @@ dependencies = [
 name = "tisvlay-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "directories",
  "futures-util",
  "rustls",
@@ -1305,6 +1307,7 @@ dependencies = [
  "url",
  "urlencoding",
  "webpki-roots 0.26.11",
+ "zbus",
 ]
 
 [[package]]

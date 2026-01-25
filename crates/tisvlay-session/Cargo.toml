@@ -16,7 +16,7 @@ name = "tisvlay-session"
 path = "src/main.rs"
 
 [dependencies]
-tisvlay-core = { workspace = true }
+tisvlay-core = { workspace = true, features = ["dbus"] }
 tokio = { workspace = true }
 zbus = { workspace = true }
 tracing = { workspace = true }

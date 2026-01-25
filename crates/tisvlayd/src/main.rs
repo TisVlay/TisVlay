@@ -28,6 +28,9 @@ pub const DBUS_PATH: &str = "/org/tisvlay/Daemon";
 #[command(name = "tisvlayd", version, about)]
 struct Args {
     /// Use session bus instead of system bus (for development/testing)
+    ///
+    /// By default, tisvlay connects to the system bus.
+    /// Use this flag when running tisvlayd via user session.
     #[arg(long)]
     session: bool,
 }

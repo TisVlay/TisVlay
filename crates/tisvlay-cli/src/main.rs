@@ -1,9 +1,12 @@
 //! tisvlay - CLI tool for LG WebOS TV control.
+//!
+//! By default, communicates with the system daemon via D-Bus.
+//! Use `--no-daemon` for direct WebSocket connections.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tisvlay_core::{Config, TvConfig, WebOsClient};
 use std::time::Duration;
+use tisvlay_core::{Config, DaemonClient, TvConfig, TvState, WebOsClient};
 
 #[derive(Parser)]
 #[command(name = "tisvlay")]
@@ -17,6 +20,14 @@ struct Cli {
     /// Enable verbose output
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Connect directly to TV instead of using the daemon
+    #[arg(long, global = true, conflicts_with = "user")]
+    no_daemon: bool,
+
+    /// Use session bus instead of system D-Bus (e.g. with `tisvlayd --session`)
+    #[arg(long, global = true, conflicts_with = "no_daemon")]
+    user: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -120,7 +131,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging
-    let log_level = if cli.verbose { "debug" } else { "info" };
+    let log_level = if cli.verbose { "debug" } else { "warn" };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -129,6 +140,237 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
+    if cli.no_daemon {
+        run_direct_mode(cli).await
+    } else {
+        run_daemon_mode(cli).await
+    }
+}
+
+// =============================================================================
+// D-Bus Daemon Mode
+// =============================================================================
+
+async fn run_daemon_mode(cli: Cli) -> Result<()> {
+    let client = if cli.user {
+        DaemonClient::new_session().await
+    } else {
+        DaemonClient::new_system().await
+    };
+
+    let client = match client {
+        Ok(c) => c,
+        Err(e) => {
+            let bus = if cli.user { "session" } else { "system" };
+            eprintln!("Error: Could not connect to tisvlayd on {} bus.", bus);
+            eprintln!();
+            if cli.user {
+                eprintln!("Make sure tisvlayd is running with: tisvlayd --session");
+            } else {
+                eprintln!("Make sure tisvlayd is running: systemctl status tisvlayd");
+                eprintln!();
+                eprintln!("For development, you can use: tisvlayd --session");
+                eprintln!("Then run CLI with: tisvlay --user <command>");
+            }
+            eprintln!();
+            eprintln!("Or use --no-daemon to connect directly to the TV.");
+            return Err(e);
+        }
+    };
+
+    // Get TV ID (required for most commands)
+    let tv_id = get_tv_id_for_daemon(&client, cli.tv.as_deref()).await;
+
+    match cli.command {
+        Commands::List => {
+            let tvs = client.list_tvs().await?;
+            if tvs.is_empty() {
+                println!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
+            } else {
+                println!("Configured TVs:");
+                for (i, (id, name, ip, connected)) in tvs.iter().enumerate() {
+                    let default = if i == 0 { " (default)" } else { "" };
+                    let status = if *connected { "connected" } else { "disconnected" };
+                    println!("  {} - {} ({}) [{}]{}", id, name, ip, status, default);
+                }
+            }
+        }
+
+        Commands::Pair { ip, name, mac, id } => {
+            let tv_name = name.unwrap_or_else(|| format!("TV at {}", ip));
+            println!("Connecting to TV at {}...", ip);
+            println!("Please accept the pairing request on your TV.");
+
+            let tv_id = client.pair_tv(&ip, &tv_name, mac.as_deref()).await?;
+            println!("TV '{}' paired successfully with ID: {}", tv_name, tv_id);
+
+            if let Some(id) = id {
+                println!("Note: Custom ID '{}' was requested but daemon assigns IDs automatically.", id);
+            }
+
+            if mac.is_none() {
+                println!("\nNote: No MAC address provided. Wake-on-LAN will not work.");
+                println!("You can update the MAC address in the config file.");
+            }
+        }
+
+        Commands::Remove { tv_id } => {
+            client.remove_tv(&tv_id).await?;
+            println!("TV '{}' removed", tv_id);
+        }
+
+        Commands::Power { action } => {
+            let tv_id = tv_id?;
+            match action {
+                PowerAction::On => {
+                    client.power_on(&tv_id).await?;
+                    println!("Wake-on-LAN sent to TV");
+                }
+                PowerAction::Off => {
+                    client.power_off(&tv_id).await?;
+                    println!("TV powered off");
+                }
+            }
+        }
+
+        Commands::Screen { action } => {
+            let tv_id = tv_id?;
+            match action {
+                ScreenAction::On => {
+                    client.screen_on(&tv_id).await?;
+                    println!("Screen turned on");
+                }
+                ScreenAction::Off => {
+                    client.screen_off(&tv_id).await?;
+                    println!("Screen turned off (OLED-safe blank)");
+                }
+            }
+        }
+
+        Commands::Input { input_id, list } => {
+            let tv_id = tv_id?;
+            if list || input_id.is_none() {
+                let inputs = client.get_inputs(&tv_id).await?;
+                println!("Available inputs:");
+                for (id, label) in inputs {
+                    println!("  {} - {}", id, label);
+                }
+            }
+            if let Some(id) = input_id {
+                client.switch_input(&tv_id, &id).await?;
+                println!("Switched to input: {}", id);
+            }
+        }
+
+        Commands::Volume { level } => {
+            let tv_id = tv_id?;
+            match level {
+                None => {
+                    let volume = client.get_volume(&tv_id).await?;
+                    println!("Volume: {}", volume);
+                }
+                Some(level) => {
+                    if level.starts_with('+') || level.starts_with('-') {
+                        // Relative adjustment
+                        let delta: i32 = level.parse()?;
+                        let current = client.get_volume(&tv_id).await? as i32;
+                        let new_level = (current + delta).clamp(0, 100) as u32;
+                        client.set_volume(&tv_id, new_level).await?;
+                        println!("Volume: {} -> {}", current, new_level);
+                    } else {
+                        let level: u32 = level.parse()?;
+                        client.set_volume(&tv_id, level).await?;
+                        println!("Volume set to: {}", level);
+                    }
+                }
+            }
+        }
+
+        Commands::Mute { state } => {
+            let tv_id = tv_id?;
+            // Note: D-Bus API doesn't have get_mute, so we get state for toggle
+            let mute = match state.to_lowercase().as_str() {
+                "on" | "true" | "1" => true,
+                "off" | "false" | "0" => false,
+                "toggle" => {
+                    // Get current state to toggle
+                    let state = client.get_state(&tv_id).await?;
+                    !state.muted.unwrap_or(false)
+                }
+                _ => anyhow::bail!("Invalid mute state: {}. Use on/off/toggle", state),
+            };
+            client.set_mute(&tv_id, mute).await?;
+            println!("Mute: {}", if mute { "on" } else { "off" });
+        }
+
+        Commands::Backlight { level } => {
+            let tv_id = tv_id?;
+            match level {
+                None => {
+                    let backlight = client.get_backlight(&tv_id).await?;
+                    println!("Backlight: {}", backlight);
+                }
+                Some(level) => {
+                    client.set_backlight(&tv_id, level as u32).await?;
+                    println!("Backlight set to: {}", level);
+                }
+            }
+        }
+
+        Commands::Status => {
+            let tv_id = tv_id?;
+            let state = client.get_state(&tv_id).await?;
+            print_tv_status(&tv_id, &state);
+        }
+    }
+
+    Ok(())
+}
+
+async fn get_tv_id_for_daemon(
+    client: &DaemonClient,
+    requested_id: Option<&str>,
+) -> Result<String> {
+    match requested_id {
+        Some(id) => Ok(id.to_string()),
+        None => {
+            let tvs = client.list_tvs().await?;
+            if tvs.is_empty() {
+                anyhow::bail!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
+            }
+            Ok(tvs[0].0.clone())
+        }
+    }
+}
+
+fn print_tv_status(tv_id: &str, state: &TvState) {
+    println!("TV: {}", tv_id);
+    println!("Power: {}", if state.is_on { "on" } else { "off" });
+    println!("Screen: {}", if state.is_screen_on { "on" } else { "off" });
+    if let Some(vol) = state.volume {
+        let muted = state
+            .muted
+            .map(|m| if m { " (muted)" } else { "" })
+            .unwrap_or("");
+        println!("Volume: {}{}", vol, muted);
+    }
+    if let Some(backlight) = state.backlight {
+        println!("Backlight: {}", backlight);
+    }
+    if !state.inputs.is_empty() {
+        println!("Inputs:");
+        for input in &state.inputs {
+            let connected = if input.connected { " *" } else { "" };
+            println!("  {} - {}{}", input.id, input.label, connected);
+        }
+    }
+}
+
+// =============================================================================
+// Direct WebSocket Mode (--no-daemon)
+// =============================================================================
+
+async fn run_direct_mode(cli: Cli) -> Result<()> {
     // Load configuration
     let mut config = Config::load().context("Failed to load configuration")?;
 
@@ -137,15 +379,15 @@ async fn main() -> Result<()> {
             list_tvs(&config);
         }
         Commands::Pair { ip, name, mac, id } => {
-            pair_tv(&mut config, &ip, name, mac, id).await?;
+            pair_tv_direct(&mut config, &ip, name, mac, id).await?;
         }
         Commands::Remove { tv_id } => {
-            remove_tv(&mut config, &tv_id)?;
+            remove_tv_direct(&mut config, &tv_id)?;
         }
         _ => {
             // Commands that require a TV connection
             let tv = get_tv(&config, cli.tv.as_deref())?;
-            run_tv_command(cli.command, &tv, &mut config).await?;
+            run_tv_command_direct(cli.command, &tv, &mut config).await?;
         }
     }
 
@@ -177,11 +419,11 @@ async fn connect_tv(tv: &TvConfig) -> Result<WebOsClient> {
         .with_context(|| format!("Failed to connect to TV '{}' at {}", tv.name, tv.ip))
 }
 
-async fn run_tv_command(command: Commands, tv: &TvConfig, _config: &mut Config) -> Result<()> {
+async fn run_tv_command_direct(command: Commands, tv: &TvConfig, _config: &mut Config) -> Result<()> {
     match command {
         Commands::Power { action } => match action {
             PowerAction::On => {
-                power_on(tv).await?;
+                power_on_direct(tv).await?;
             }
             PowerAction::Off => {
                 let mut client = connect_tv(tv).await?;
@@ -299,7 +541,7 @@ async fn run_tv_command(command: Commands, tv: &TvConfig, _config: &mut Config) 
     Ok(())
 }
 
-async fn power_on(tv: &TvConfig) -> Result<()> {
+async fn power_on_direct(tv: &TvConfig) -> Result<()> {
     if tv.mac.is_empty() {
         anyhow::bail!(
             "MAC address not configured for TV '{}'. Cannot use Wake-on-LAN.",
@@ -359,7 +601,7 @@ fn list_tvs(config: &Config) {
     }
 }
 
-async fn pair_tv(
+async fn pair_tv_direct(
     config: &mut Config,
     ip: &str,
     name: Option<String>,
@@ -412,7 +654,7 @@ async fn pair_tv(
     Ok(())
 }
 
-fn remove_tv(config: &mut Config, tv_id: &str) -> Result<()> {
+fn remove_tv_direct(config: &mut Config, tv_id: &str) -> Result<()> {
     if config.remove_tv(tv_id) {
         config.save().context("Failed to save configuration")?;
         println!("TV '{}' removed", tv_id);

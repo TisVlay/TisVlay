@@ -55,9 +55,16 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 - [x] SIGHUP for config reload
 - [x] Systemd user service file - see [systemd/tisvlay-session.service](systemd/tisvlay-session.service)
 
-### Phase 4-5: Future
+### Phase 4a: CLI D-Bus Migration (COMPLETE)
 
-- Phase 4: `tisvlay-tray` (ksni StatusNotifierItem)
+- [x] CLI uses D-Bus by default to communicate with daemon
+- [x] `--no-daemon` flag for direct WebSocket connections
+- [x] `--user` flag for user/session bus (development mode)
+- [x] Shared `DaemonClient` in `tisvlay-core` (feature-gated: `dbus`)
+
+### Phase 4b-5: Future
+
+- Phase 4b: `tisvlay-tray` (ksni StatusNotifierItem)
 - Phase 5: `tisvlay-gui` (Slint configuration UI)
 
 ## Current Project Structure
@@ -74,6 +81,7 @@ tisvlay/
 │   │       ├── protocol.rs       # SSAP message types
 │   │       ├── endpoints.rs      # API endpoint constants
 │   │       ├── config.rs         # TOML config (XDG paths), SessionConfig
+│   │       ├── dbus_client.rs    # D-Bus client for tisvlayd (feature-gated)
 │   │       ├── discovery.rs      # SSDP TV discovery (feature-gated)
 │   │       ├── state.rs          # TvState, PowerState
 │   │       ├── wol.rs            # Wake-on-LAN
@@ -92,7 +100,6 @@ tisvlay/
 │   └── tisvlay-session/           # User session service (Phase 3)
 │       └── src/
 │           ├── main.rs           # Entry point, event handling
-│           ├── daemon_client.rs  # D-Bus client for tisvlayd
 │           ├── session_monitor.rs # Screen lock/unlock, suspend/resume
 │           ├── wayland_idle.rs   # Wayland greeter wake detection
 │           └── idle.rs           # Idle timeout detection
@@ -139,6 +146,7 @@ See [docs/design.md](docs/design.md#phase-3-user-session-integration---complete)
 
 ### CLI Commands
 ```
+# By default, CLI uses D-Bus to communicate with tisvlayd
 tisvlay power on|off       # WoL for power on
 tisvlay screen on|off      # OLED-safe blank
 tisvlay input [ID] [--list]
@@ -149,6 +157,11 @@ tisvlay status
 tisvlay pair <IP> --name NAME --mac MAC
 tisvlay list
 tisvlay remove <ID>
+
+# Global flags
+tisvlay --no-daemon <cmd>        # Direct WebSocket (no daemon)
+tisvlay --user <cmd>             # Use user/session bus (development)
+tisvlay --tv <ID> <cmd>          # Target specific TV
 ```
 
 ## Key Crates
@@ -190,7 +203,7 @@ sudo tisvlayd
 
 ```bash
 # Development (with tisvlayd --session):
-tisvlay-session --session-daemon
+tisvlay-session --user
 
 # Production (as systemd user service):
 systemctl --user enable --now tisvlay-session

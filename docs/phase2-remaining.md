@@ -15,7 +15,6 @@ All core Phase 2 functionality is implemented in `crates/tisvlayd/`. See source 
 
 User session service implemented in `crates/tisvlay-session/`. See source code for details:
 - [main.rs](../crates/tisvlay-session/src/main.rs) - Entry point, event handling, signal handling
-- [daemon_client.rs](../crates/tisvlay-session/src/daemon_client.rs) - D-Bus client for tisvlayd
 - [session_monitor.rs](../crates/tisvlay-session/src/session_monitor.rs) - Screen lock/suspend detection
 - [wayland_idle.rs](../crates/tisvlay-session/src/wayland_idle.rs) - Wayland greeter wake detection
 - [idle.rs](../crates/tisvlay-session/src/idle.rs) - Idle timeout polling
@@ -25,7 +24,7 @@ See [design.md](design.md#phase-3-user-session-integration---complete) for greet
 **Testing**:
 ```bash
 # Development mode (with tisvlayd --session)
-tisvlay-session --session-daemon
+tisvlay-session --user
 
 # Install as user service
 cp systemd/tisvlay-session.service ~/.config/systemd/user/
@@ -34,18 +33,31 @@ systemctl --user enable --now tisvlay-session
 
 ---
 
-## Phase 4a: CLI D-Bus Migration
+## Phase 4a Status: COMPLETE
 
-**Current**: CLI connects directly to TVs via WebSocket.
-**Goal**: CLI uses daemon via D-Bus by default, with `--no-daemon` fallback.
+CLI D-Bus migration implemented. See source code for details:
+- [dbus_client.rs](../crates/tisvlay-core/src/dbus_client.rs) - Shared D-Bus client (feature-gated: `dbus`)
+- [main.rs](../crates/tisvlay-cli/src/main.rs) - CLI with D-Bus and direct modes
 
-Benefits: Centralized connection management, automatic reconnection, config handled by daemon.
+**Features**:
+- CLI uses D-Bus by default to communicate with `tisvlayd`
+- `--no-daemon` flag for direct WebSocket connections (troubleshooting/development)
+- `--user` flag for development with `tisvlayd --session`
+- Shared `DaemonClient` in `tisvlay-core` used by both CLI and session service
 
-Implementation:
-- Add `zbus` dependency to `tisvlay-cli`
-- Extract D-Bus client code from `tisvlay-session/daemon_client.rs` to shared module
-- Add `--no-daemon` flag for direct WebSocket connections (troubleshooting/development)
-- D-Bus activation starts daemon on-demand if not running
+**Testing**:
+```bash
+# D-Bus mode (default) - requires tisvlayd running
+tisvlay list
+tisvlay screen off
+
+# Development mode (with tisvlayd --session)
+tisvlay --user list
+
+# Direct mode (no daemon needed)
+tisvlay --no-daemon list
+tisvlay --no-daemon screen off
+```
 
 ---
 
@@ -153,6 +165,6 @@ qdbus org.freedesktop.ScreenSaver /ScreenSaver Lock
 1. ~~Phase 1 (core library + CLI)~~ - COMPLETE
 2. ~~Phase 2 (system daemon)~~ - COMPLETE
 3. ~~Phase 3 (session service)~~ - COMPLETE
-4. **Next**: Phase 4a (CLI D-Bus migration)
+4. ~~Phase 4a (CLI D-Bus migration)~~ - COMPLETE
 5. **Next**: Phase 4b (tray app)
 6. **Later**: Phase 5 (GUI), user config docs, packaging, PolicyKit
