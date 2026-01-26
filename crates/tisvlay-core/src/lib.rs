@@ -107,4 +107,4 @@ pub use wol::{wake, wake_reliable, wake_to_ip, wake_with_options, MacAddress, Wa
 // =============================================================================
 
 #[cfg(feature = "dbus")]
-pub use dbus_client::{DaemonClient, DAEMON_PATH, DAEMON_SERVICE};
+pub use dbus_client::{DaemonClient, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH, TvInfo};

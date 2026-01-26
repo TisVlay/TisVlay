@@ -1,7 +1,10 @@
-//! tisvlay-session - User session service for LG WebOS TV control.
+//! tisvlay-session - User session service for TV control.
 //!
 //! Monitors desktop D-Bus events (screen lock/unlock, suspend/resume, idle)
 //! and controls TVs through the system daemon (`tisvlayd`).
+//!
+//! Each TV can have its own profile that defines different behaviors for
+//! system events. See the configuration documentation for details.
 
 mod idle;
 mod session_monitor;
@@ -10,7 +13,7 @@ mod wayland_idle;
 use anyhow::{Context, Result};
 use clap::Parser;
 use idle::IdleMonitor;
-use tisvlay_core::{Config, DaemonClient, SessionAction};
+use tisvlay_core::{Config, DaemonClient, ProfileConfig, SessionAction};
 use session_monitor::{SessionEvent, SessionMonitor};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -48,9 +51,11 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = match Config::load() {
         Ok(config) => {
+            // Calculate effective idle timeout (minimum non-zero across all TV profiles)
+            let idle_timeout = effective_idle_timeout(&config);
             info!(
                 tvs = config.tv.len(),
-                idle_timeout = config.session.idle_timeout_seconds,
+                idle_timeout = idle_timeout,
                 "Loaded configuration"
             );
             config
@@ -101,17 +106,20 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Start idle monitor if enabled
+    // Start idle monitor if enabled (using minimum non-zero timeout across all profiles)
     let idle_timeout = {
         let cfg = config.read().await;
-        cfg.session.idle_timeout_seconds
+        effective_idle_timeout(&cfg)
     };
 
     if idle_timeout > 0 {
+        info!(timeout = idle_timeout, "Starting idle monitor");
         let idle_monitor = IdleMonitor::new(idle_timeout, event_tx.clone());
         tokio::spawn(async move {
             idle_monitor.run().await;
         });
+    } else {
+        debug!("Idle monitoring disabled (no TVs have idle_timeout_seconds set)");
     }
 
     // Spawn event handler
@@ -133,6 +141,10 @@ async fn main() -> Result<()> {
 }
 
 /// Handle session events by executing configured actions.
+///
+/// For each event, we iterate through all configured TVs and apply the action
+/// defined in each TV's profile. This allows different TVs to respond differently
+/// to the same event (e.g., gaming TV ignores screen lock, desk TV blanks).
 async fn event_handler(
     mut event_rx: mpsc::UnboundedReceiver<SessionEvent>,
     config: Arc<RwLock<Config>>,
@@ -141,75 +153,85 @@ async fn event_handler(
     info!("Event handler started");
 
     while let Some(event) = event_rx.recv().await {
-        let action = {
+        info!(event = %event, "Processing session event");
+
+        // Get TV configurations and their profiles
+        let tv_actions: Vec<(String, SessionAction)> = {
             let cfg = config.read().await;
-            match event {
-                SessionEvent::ScreenLocked => cfg.session.on_screen_lock,
-                SessionEvent::ScreenUnlocked => cfg.session.on_screen_unlock,
-                SessionEvent::GreeterWake => cfg.session.on_greeter_wake,
-                SessionEvent::PrepareForSleep => cfg.session.on_sleep,
-                SessionEvent::ResumeFromSleep => cfg.session.on_wake,
-                SessionEvent::IdleTimeout => cfg.session.on_idle_timeout,
-                SessionEvent::IdleResume => SessionAction::ScreenOn, // Always resume from idle
-            }
+            cfg.tv
+                .iter()
+                .map(|tv| {
+                    let profile = cfg.get_profile_for_tv(tv);
+                    let action = get_action_for_event(&event, &profile);
+                    (tv.id.clone(), action)
+                })
+                .collect()
         };
 
-        info!(event = %event, action = ?action, "Processing session event");
+        // Execute action for each TV
+        let mut success_count = 0;
+        for (tv_id, action) in tv_actions {
+            if action == SessionAction::None {
+                debug!(tv_id = %tv_id, "Action is None, skipping");
+                continue;
+            }
 
-        if action == SessionAction::None {
-            debug!("Action is None, skipping");
-            continue;
+            debug!(tv_id = %tv_id, action = ?action, "Executing action");
+            if let Err(e) = execute_action_for_tv(&daemon, &tv_id, action).await {
+                warn!(tv_id = %tv_id, error = %e, "Action failed");
+            } else {
+                success_count += 1;
+            }
         }
 
-        execute_action(&daemon, action).await;
+        if success_count > 0 {
+            info!(event = %event, count = success_count, "Event processed");
+        }
     }
 
     info!("Event handler stopped");
 }
 
-/// Execute an action on all configured TVs.
-async fn execute_action(daemon: &DaemonClient, action: SessionAction) {
-    let action_name = format!("{:?}", action);
-
-    let success_count = match action {
-        SessionAction::ScreenOff => {
-            daemon
-                .execute_on_all_tvs(&action_name, |tv_id| {
-                    let d = daemon.clone();
-                    async move { d.screen_off(&tv_id).await }
-                })
-                .await
-        }
-        SessionAction::ScreenOn => {
-            daemon
-                .execute_on_all_tvs(&action_name, |tv_id| {
-                    let d = daemon.clone();
-                    async move { d.screen_on(&tv_id).await }
-                })
-                .await
-        }
-        SessionAction::PowerOff => {
-            daemon
-                .execute_on_all_tvs(&action_name, |tv_id| {
-                    let d = daemon.clone();
-                    async move { d.power_off(&tv_id).await }
-                })
-                .await
-        }
-        SessionAction::PowerOn => {
-            daemon
-                .execute_on_all_tvs(&action_name, |tv_id| {
-                    let d = daemon.clone();
-                    async move { d.power_on(&tv_id).await }
-                })
-                .await
-        }
-        SessionAction::None => 0,
-    };
-
-    if success_count > 0 {
-        info!(action = %action_name, count = success_count, "Action completed");
+/// Get the action for a session event from a profile.
+fn get_action_for_event(event: &SessionEvent, profile: &ProfileConfig) -> SessionAction {
+    match event {
+        SessionEvent::ScreenLocked => profile.on_screen_lock,
+        SessionEvent::ScreenUnlocked => profile.on_screen_unlock,
+        SessionEvent::GreeterWake => profile.on_greeter_wake,
+        SessionEvent::PrepareForSleep => profile.on_sleep,
+        SessionEvent::ResumeFromSleep => profile.on_wake,
+        SessionEvent::IdleTimeout => profile.on_idle_timeout,
+        SessionEvent::IdleResume => SessionAction::ScreenOn, // Always resume from idle
     }
+}
+
+/// Execute an action on a specific TV.
+async fn execute_action_for_tv(
+    daemon: &DaemonClient,
+    tv_id: &str,
+    action: SessionAction,
+) -> anyhow::Result<()> {
+    match action {
+        SessionAction::ScreenOff => daemon.screen_off(tv_id).await,
+        SessionAction::ScreenOn => daemon.screen_on(tv_id).await,
+        SessionAction::PowerOff => daemon.power_off(tv_id).await,
+        SessionAction::PowerOn => daemon.power_on(tv_id).await,
+        SessionAction::None => Ok(()),
+    }
+}
+
+/// Calculate the effective idle timeout for the session service.
+///
+/// Returns the minimum non-zero idle_timeout_seconds across all TV profiles.
+/// If all profiles have idle disabled (0), returns 0.
+fn effective_idle_timeout(config: &Config) -> u64 {
+    config
+        .tv
+        .iter()
+        .map(|tv| config.get_profile_for_tv(tv).idle_timeout_seconds)
+        .filter(|&timeout| timeout > 0)
+        .min()
+        .unwrap_or(0)
 }
 
 /// Wait for SIGTERM, SIGINT (shutdown) or SIGHUP (reload).
@@ -234,12 +256,16 @@ async fn wait_for_signals(config: Arc<RwLock<Config>>) {
                 info!("Received SIGHUP, reloading configuration...");
                 match Config::load() {
                     Ok(new_config) => {
+                        let idle_timeout = effective_idle_timeout(&new_config);
                         let mut cfg = config.write().await;
                         *cfg = new_config;
                         info!(
-                            idle_timeout = cfg.session.idle_timeout_seconds,
+                            idle_timeout = idle_timeout,
+                            tvs = cfg.tv.len(),
                             "Configuration reloaded"
                         );
+                        // Note: idle timeout changes require restart to take effect
+                        // since the idle monitor is started once at launch
                     }
                     Err(e) => {
                         error!("Failed to reload config: {}", e);

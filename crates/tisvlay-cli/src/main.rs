@@ -188,10 +188,13 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
                 println!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
             } else {
                 println!("Configured TVs:");
-                for (i, (id, name, ip, connected)) in tvs.iter().enumerate() {
+                for (i, tv) in tvs.iter().enumerate() {
                     let default = if i == 0 { " (default)" } else { "" };
-                    let status = if *connected { "connected" } else { "disconnected" };
-                    println!("  {} - {} ({}) [{}]{}", id, name, ip, status, default);
+                    let status = if tv.connected { "connected" } else { "disconnected" };
+                    println!(
+                        "  {} - {} ({}) [{}] <{}>{}",
+                        tv.id, tv.name, tv.ip, status, tv.vendor, default
+                    );
                 }
             }
         }
@@ -338,7 +341,7 @@ async fn get_tv_id_for_daemon(
             if tvs.is_empty() {
                 anyhow::bail!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
             }
-            Ok(tvs[0].0.clone())
+            Ok(tvs[0].id.clone())
         }
     }
 }
