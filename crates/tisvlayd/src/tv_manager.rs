@@ -443,10 +443,12 @@ impl TvManager {
         // Try to connect
         self.connect(tv_id).await?;
 
-        // Switch to default input if configured
-        if let Some(default_input) = &config.default_input {
-            info!(tv_id = %tv_id, input = %default_input, "Switching to default input");
-            let _ = self.switch_input(tv_id, default_input).await;
+        // Switch to default input if configured (LG-specific)
+        if let Some(ref lg) = config.lg {
+            if let Some(ref default_input) = lg.default_input {
+                info!(tv_id = %tv_id, input = %default_input, "Switching to default input");
+                let _ = self.switch_input(tv_id, default_input).await;
+            }
         }
 
         Ok(())
@@ -669,8 +671,6 @@ impl TvManager {
             profile: "default".to_string(),
             hdmi_input: None,
             only_when_active: false,
-            client_key: client_key.clone(),
-            default_input: None,
             lg: if vendor == "lg" {
                 Some(tisvlay_core::LgVendorConfig {
                     client_key,
@@ -772,9 +772,9 @@ impl TvManager {
         for tv_config in new_config.tv {
             if let Some(existing) = tvs.get_mut(&tv_config.id) {
                 // Update config if changed (preserve connection if possible)
-                if existing.config.ip != tv_config.ip
-                    || existing.config.client_key != tv_config.client_key
-                {
+                let ip_changed = existing.config.ip != tv_config.ip;
+                let lg_changed = existing.config.lg != tv_config.lg;
+                if ip_changed || lg_changed {
                     info!(tv_id = %tv_config.id, "Updating TV config (will reconnect)");
                     if let Some(mut conn) = existing.connection.take() {
                         let _ = conn.close().await;

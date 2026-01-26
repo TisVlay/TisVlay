@@ -355,19 +355,6 @@ pub struct TvConfig {
     pub only_when_active: bool,
 
     // =========================================================================
-    // Legacy fields (still supported for backwards compatibility)
-    // =========================================================================
-    /// Client key obtained during pairing (LG WebOS).
-    /// Deprecated: Use `[tv.lg] client_key` instead.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_key: Option<String>,
-
-    /// Default HDMI input to switch to on wake (LG WebOS).
-    /// Deprecated: Use `[tv.lg] default_input` instead.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_input: Option<String>,
-
-    // =========================================================================
     // Vendor-specific configuration
     // =========================================================================
     /// LG WebOS specific configuration.
@@ -377,7 +364,7 @@ pub struct TvConfig {
 }
 
 /// LG WebOS specific configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LgVendorConfig {
     /// Client key obtained during pairing.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -534,8 +521,6 @@ impl TvConfig {
             profile: default_profile(),
             hdmi_input: None,
             only_when_active: false,
-            client_key: None,
-            default_input: None,
             lg: None,
         }
     }
@@ -552,28 +537,6 @@ impl TvConfig {
             vendor: vendor.into(),
             ..Self::new(id, name, ip, mac)
         }
-    }
-
-    /// Set the client key (legacy method, sets on both legacy field and lg config).
-    pub fn with_client_key(mut self, key: impl Into<String>) -> Self {
-        let key = key.into();
-        self.client_key = Some(key.clone());
-        self.lg = Some(LgVendorConfig {
-            client_key: Some(key),
-            default_input: self.lg.as_ref().and_then(|lg| lg.default_input.clone()),
-        });
-        self
-    }
-
-    /// Set the default input (legacy method).
-    pub fn with_default_input(mut self, input: impl Into<String>) -> Self {
-        let input = input.into();
-        self.default_input = Some(input.clone());
-        self.lg = Some(LgVendorConfig {
-            client_key: self.lg.as_ref().and_then(|lg| lg.client_key.clone()),
-            default_input: Some(input),
-        });
-        self
     }
 
     /// Set the vendor.
@@ -605,30 +568,6 @@ impl TvConfig {
         self.lg = Some(lg);
         self
     }
-
-    /// Get the effective client key (checks both legacy and vendor-specific fields).
-    pub fn effective_client_key(&self) -> Option<&str> {
-        // Prefer vendor-specific config
-        if let Some(ref lg) = self.lg {
-            if let Some(ref key) = lg.client_key {
-                return Some(key);
-            }
-        }
-        // Fall back to legacy field
-        self.client_key.as_deref()
-    }
-
-    /// Get the effective default input (checks both legacy and vendor-specific fields).
-    pub fn effective_default_input(&self) -> Option<&str> {
-        // Prefer vendor-specific config
-        if let Some(ref lg) = self.lg {
-            if let Some(ref input) = lg.default_input {
-                return Some(input);
-            }
-        }
-        // Fall back to legacy field
-        self.default_input.as_deref()
-    }
 }
 
 #[cfg(test)]
@@ -644,31 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_legacy_config() {
-        let toml = r#"
-[daemon]
-wake_on_boot = true
-wake_delay_ms = 5000
-
-[[tv]]
-id = "living-room"
-name = "Living Room TV"
-ip = "192.168.1.100"
-mac = "AA:BB:CC:DD:EE:FF"
-client_key = "abc123"
-default_input = "HDMI_1"
-"#;
-
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.tv.len(), 1);
-        assert_eq!(config.tv[0].id, "living-room");
-        assert_eq!(config.tv[0].client_key, Some("abc123".to_string()));
-        assert_eq!(config.tv[0].vendor, "lg"); // Default vendor
-        assert_eq!(config.tv[0].profile, "default"); // Default profile
-    }
-
-    #[test]
-    fn test_parse_new_config_format() {
+    fn test_parse_config() {
         let toml = r#"
 [profiles.default]
 on_screen_lock = "screen_off"
@@ -713,20 +628,16 @@ default_input = "HDMI_1"
     }
 
     #[test]
-    fn test_effective_client_key() {
-        // Legacy format
+    fn test_lg_config() {
         let tv = TvConfig::new("test", "Test", "192.168.1.1", "AA:BB:CC:DD:EE:FF")
-            .with_client_key("legacy_key");
-        assert_eq!(tv.effective_client_key(), Some("legacy_key"));
+            .with_lg_config(LgVendorConfig {
+                client_key: Some("test_key".to_string()),
+                default_input: Some("HDMI_1".to_string()),
+            });
 
-        // Vendor-specific config takes precedence
-        let mut tv = TvConfig::new("test", "Test", "192.168.1.1", "AA:BB:CC:DD:EE:FF");
-        tv.client_key = Some("legacy_key".to_string());
-        tv.lg = Some(LgVendorConfig {
-            client_key: Some("vendor_key".to_string()),
-            default_input: None,
-        });
-        assert_eq!(tv.effective_client_key(), Some("vendor_key"));
+        let lg = tv.lg.as_ref().unwrap();
+        assert_eq!(lg.client_key, Some("test_key".to_string()));
+        assert_eq!(lg.default_input, Some("HDMI_1".to_string()));
     }
 
     #[test]

@@ -417,7 +417,8 @@ fn get_tv(config: &Config, tv_id: Option<&str>) -> Result<TvConfig> {
 async fn connect_tv(tv: &TvConfig) -> Result<WebOsClient> {
     tracing::info!(tv = %tv.name, ip = %tv.ip, "Connecting to TV");
 
-    WebOsClient::connect(&tv.ip, tv.client_key.clone())
+    let client_key = tv.lg.as_ref().and_then(|lg| lg.client_key.clone());
+    WebOsClient::connect(&tv.ip, client_key)
         .await
         .with_context(|| format!("Failed to connect to TV '{}' at {}", tv.name, tv.ip))
 }
@@ -562,12 +563,15 @@ async fn power_on_direct(tv: &TvConfig) -> Result<()> {
     tokio::time::sleep(delay).await;
 
     // Try to connect and switch to default input if configured
-    match WebOsClient::connect(&tv.ip, tv.client_key.clone()).await {
+    let client_key = tv.lg.as_ref().and_then(|lg| lg.client_key.clone());
+    match WebOsClient::connect(&tv.ip, client_key).await {
         Ok(mut client) => {
             println!("Connected to TV");
-            if let Some(ref input) = tv.default_input {
-                client.switch_input(input).await?;
-                println!("Switched to input: {}", input);
+            if let Some(ref lg) = tv.lg {
+                if let Some(ref input) = lg.default_input {
+                    client.switch_input(input).await?;
+                    println!("Switched to input: {}", input);
+                }
             }
             client.close().await?;
         }
@@ -592,14 +596,15 @@ fn list_tvs(config: &Config) {
     println!("Configured TVs:");
     for (i, tv) in config.tv.iter().enumerate() {
         let default = if i == 0 { " (default)" } else { "" };
-        let paired = if tv.client_key.is_some() {
-            "paired"
-        } else {
-            "not paired"
-        };
+        let paired = tv
+            .lg
+            .as_ref()
+            .and_then(|lg| lg.client_key.as_ref())
+            .is_some();
+        let status = if paired { "paired" } else { "not paired" };
         println!(
-            "  {} - {} ({}) [{}]{}",
-            tv.id, tv.name, tv.ip, paired, default
+            "  {} - {} ({}) [{}] <{}>{}",
+            tv.id, tv.name, tv.ip, status, tv.vendor, default
         );
     }
 }
@@ -642,8 +647,7 @@ async fn pair_tv_direct(
         profile: "default".to_string(),
         hdmi_input: None,
         only_when_active: false,
-        client_key: Some(client_key.clone()),
-        default_input: None,
+        // Vendor-specific config
         lg: Some(tisvlay_core::LgVendorConfig {
             client_key: Some(client_key),
             default_input: None,
