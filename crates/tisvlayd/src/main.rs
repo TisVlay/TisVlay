@@ -1,29 +1,26 @@
-//! tisvlayd - LG WebOS TV Control Daemon
+//! tisvlayd - TV Control Daemon
 //!
-//! A systemd system service that provides D-Bus API for controlling LG WebOS TVs.
+//! A systemd system service that provides D-Bus API for controlling TVs.
+//! Supports multiple TV vendors through a backend registry system.
 
 mod dbus;
+mod registry;
 mod tv_manager;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tisvlay_core::Config;
 use std::sync::Arc;
+use tisvlay_core::Config;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use zbus::object_server::SignalEmitter;
 
-use crate::dbus::DaemonService;
+use crate::dbus::{register_tv_interfaces, tv_path, ManagerService, TvService, DBUS_NAME, MANAGER_PATH};
+use crate::registry::create_default_registry;
 use crate::tv_manager::{StateChangeEvent, TvManager};
 
-/// D-Bus service name.
-pub const DBUS_NAME: &str = "org.tisvlay.Daemon";
-
-/// D-Bus object path.
-pub const DBUS_PATH: &str = "/org/tisvlay/Daemon";
-
-/// LG WebOS TV Control Daemon
+/// TV Control Daemon
 #[derive(Parser, Debug)]
 #[command(name = "tisvlayd", version, about)]
 struct Args {
@@ -59,8 +56,18 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Create backend registry
+    let registry = Arc::new(create_default_registry());
+    info!(
+        vendors = ?registry.supported_vendors(),
+        "Backend registry initialized"
+    );
+
     // Create TV manager (returns manager, reconnection worker handle, and state change receiver)
-    let (tv_manager, reconnect_worker, state_change_rx) = TvManager::new(config);
+    let (tv_manager, reconnect_worker, state_change_rx) = TvManager::new(config, registry.clone());
+
+    // Get list of configured TV IDs before wrapping in RwLock
+    let tv_ids: Vec<String> = tv_manager.list_tv_ids().await;
 
     // Wrap manager in Arc<RwLock> for sharing between D-Bus service and signal handler
     let shared_manager = Arc::new(RwLock::new(tv_manager));
@@ -71,9 +78,6 @@ async fn main() -> Result<()> {
         manager.boot_wake().await;
     }
 
-    // Create D-Bus service with shared manager
-    let service = DaemonService::new_with_shared(shared_manager.clone());
-
     // Connect to D-Bus (session or system bus)
     let builder = if args.session {
         info!("Using session bus (development mode)");
@@ -83,16 +87,33 @@ async fn main() -> Result<()> {
         zbus::connection::Builder::system().context("Failed to connect to system D-Bus")?
     };
 
+    // Build connection and request name
     let connection = builder
         .name(DBUS_NAME)
         .context("Failed to request D-Bus name")?
-        .serve_at(DBUS_PATH, service)
-        .context("Failed to serve D-Bus interface")?
         .build()
         .await
         .context("Failed to build D-Bus connection")?;
 
-    info!("D-Bus service registered at {}", DBUS_NAME);
+    // Create and register manager service at /org/tisvlay/Manager
+    let manager_service = ManagerService::new(shared_manager.clone(), registry.clone());
+    connection
+        .object_server()
+        .at(MANAGER_PATH, manager_service)
+        .await
+        .context("Failed to serve Manager interface")?;
+    info!("Manager interface registered at {}", MANAGER_PATH);
+
+    // Register per-TV D-Bus objects at /org/tisvlay/Tv/{id}
+    for tv_id in &tv_ids {
+        let path = tv_path(tv_id);
+        register_tv_interfaces(&connection, &path, tv_id.clone(), shared_manager.clone())
+            .await
+            .with_context(|| format!("Failed to serve TV interface at {}", path))?;
+        info!(tv_id = %tv_id, path = %path, "TV interface registered");
+    }
+
+    info!("D-Bus service registered as {}", DBUS_NAME);
 
     // Spawn task to emit state change signals
     let signal_worker = tokio::spawn(state_change_signal_emitter(
@@ -125,19 +146,19 @@ async fn state_change_signal_emitter(
     info!("State change signal emitter started");
 
     while let Some(event) = rx.recv().await {
-        debug!(tv_id = %event.tv_id, "Emitting TvStateChanged signal");
+        debug!(tv_id = %event.tv_id, "Emitting state change signals");
 
-        // Create signal emitter for the D-Bus object path
-        match SignalEmitter::new(&connection, DBUS_PATH) {
+        // Emit on the per-TV object path
+        let path = tv_path(&event.tv_id);
+        match SignalEmitter::new(&connection, path.as_str()) {
             Ok(emitter) => {
-                if let Err(e) =
-                    DaemonService::tv_state_changed(&emitter, &event.tv_id, &event.state_json).await
-                {
-                    warn!(error = %e, "Failed to emit TvStateChanged signal");
+                // Emit StateChanged signal
+                if let Err(e) = TvService::state_changed(&emitter, &event.state_json).await {
+                    warn!(error = %e, tv_id = %event.tv_id, "Failed to emit StateChanged signal");
                 }
             }
             Err(e) => {
-                warn!(error = %e, "Failed to create signal emitter");
+                warn!(error = %e, tv_id = %event.tv_id, "Failed to create signal emitter");
             }
         }
     }
