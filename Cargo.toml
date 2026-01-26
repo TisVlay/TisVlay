@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/tisvlay-core",
+    "crates/tisvlay-lg",
     "crates/tisvlay-cli",
     "crates/tisvlayd",
     "crates/tisvlay-session",
@@ -37,6 +38,12 @@ toml = "0.8"
 thiserror = "1"
 anyhow = "1"
 
+# Async traits
+async-trait = "0.1"
+
+# Bitflags
+bitflags = "2"
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -64,6 +71,7 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 # Internal crates
 tisvlay-core = { path = "crates/tisvlay-core" }
+tisvlay-lg = { path = "crates/tisvlay-lg" }
 
 [workspace.metadata.deb]
 section = "utils"

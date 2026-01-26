@@ -17,10 +17,11 @@ path = "src/main.rs"
 
 [features]
 default = ["discovery"]
-discovery = ["tisvlay-core/discovery"]
+discovery = ["tisvlay-lg/discovery"]
 
 [dependencies]
 tisvlay-core = { workspace = true }
+tisvlay-lg = { workspace = true }
 tokio = { workspace = true }
 zbus = { workspace = true }
 serde = { workspace = true }

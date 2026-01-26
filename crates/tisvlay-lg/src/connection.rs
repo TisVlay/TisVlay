@@ -1,8 +1,8 @@
 //! WebSocket connection management.
 
 use crate::endpoints::{WSS_PORT, WS_PORT};
-use crate::error::{Error, Result};
 use crate::protocol::{Request, Response};
+use tisvlay_core::{Error, Result};
 use futures_util::{SinkExt, StreamExt};
 use rustls::pki_types::ServerName;
 use std::sync::Arc;
@@ -230,7 +230,7 @@ impl Connection {
     }
 
     /// Close the connection.
-    pub async fn close(mut self) -> Result<()> {
+    pub async fn close(&mut self) -> Result<()> {
         self.stream.close(None).await?;
         Ok(())
     }

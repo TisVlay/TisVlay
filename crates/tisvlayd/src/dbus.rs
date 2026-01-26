@@ -84,7 +84,7 @@ impl DaemonService {
     ) -> Result<Vec<(String, String, String, String)>, DaemonError> {
         info!(timeout_ms = timeout_ms, "D-Bus: DiscoverTvs");
 
-        let tvs = tisvlay_core::discover_tvs(std::time::Duration::from_millis(timeout_ms as u64))
+        let tvs = tisvlay_lg::discover_lg_tvs(std::time::Duration::from_millis(timeout_ms as u64))
             .await
             .map_err(|e| DaemonError::OperationFailed(e.to_string()))?;
 

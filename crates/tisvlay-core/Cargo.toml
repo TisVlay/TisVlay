@@ -1,6 +1,6 @@
 [package]
 name = "tisvlay-core"
-description = "Core library for LG WebOS TV control via SSAP protocol"
+description = "Core library for multi-vendor TV control"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,6 +24,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 socket2 = { workspace = true }
 directories = { workspace = true }
+
+# Multi-vendor abstractions
+async-trait = { workspace = true }
+bitflags = { workspace = true }
 
 # Optional: SSDP discovery
 ssdp-client = { workspace = true, optional = true }

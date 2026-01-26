@@ -1,27 +1,12 @@
-//! SSDP TV discovery.
+//! LG WebOS TV discovery via SSDP.
 //!
 //! Discovers LG WebOS TVs on the local network using SSDP multicast.
 
-use crate::error::Result;
 use futures_util::StreamExt;
 use ssdp_client::{SearchTarget, URN};
 use std::collections::HashMap;
 use std::time::Duration;
-
-/// Information about a discovered TV.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredTv {
-    /// Unique identifier from USN header (UUID).
-    pub id: String,
-    /// TV friendly name from DLNADeviceName.lge.com header.
-    pub name: String,
-    /// IP address of the TV.
-    pub ip: String,
-    /// MAC address (empty - not available via SSDP).
-    pub mac: String,
-    /// Location URL for device description.
-    pub location: String,
-}
+use tisvlay_core::{DiscoveredTv, Result};
 
 /// Discover LG TVs on the network using SSDP.
 ///
@@ -36,24 +21,8 @@ pub struct DiscoveredTv {
 ///
 /// A list of discovered TVs. Returns an empty list if no TVs are found
 /// (not finding TVs is not an error).
-///
-/// # Example
-///
-/// ```no_run
-/// use tisvlay_core::discover_tvs;
-/// use std::time::Duration;
-///
-/// #[tokio::main]
-/// async fn main() -> tisvlay_core::Result<()> {
-///     let tvs = discover_tvs(Duration::from_secs(3)).await?;
-///     for tv in tvs {
-///         println!("Found: {} at {}", tv.name, tv.ip);
-///     }
-///     Ok(())
-/// }
-/// ```
-pub async fn discover_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
-    tracing::debug!(timeout_ms = timeout.as_millis(), "Starting SSDP discovery");
+pub async fn discover_lg_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
+    tracing::debug!(timeout_ms = timeout.as_millis(), "Starting LG SSDP discovery");
 
     // Deduplicate by IP address since each TV exposes multiple UPnP services
     // with different UUIDs. We prefer entries with DLNA device names.
@@ -102,7 +71,7 @@ pub async fn discover_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
         }
     }
 
-    tracing::info!(count = tvs.len(), "SSDP discovery complete");
+    tracing::info!(count = tvs.len(), "LG SSDP discovery complete");
     Ok(tvs.into_values().collect())
 }
 
@@ -140,6 +109,7 @@ fn parse_response(resp: &ssdp_client::SearchResponse) -> Option<DiscoveredTv> {
         name,
         ip,
         mac: String::new(),
+        vendor: crate::VENDOR_ID.to_string(),
         location: location.to_string(),
     })
 }

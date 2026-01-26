@@ -6,7 +6,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::time::Duration;
-use tisvlay_core::{Config, DaemonClient, TvConfig, TvState, WebOsClient};
+use tisvlay_core::{Config, DaemonClient, TvConfig, TvState};
+use tisvlay_lg::WebOsClient;
 
 #[derive(Parser)]
 #[command(name = "tisvlay")]
@@ -549,7 +550,7 @@ async fn power_on_direct(tv: &TvConfig) -> Result<()> {
     }
 
     tracing::info!(tv = %tv.name, mac = %tv.mac, "Sending Wake-on-LAN");
-    tisvlay_core::wake_tv(&tv.mac)?;
+    tisvlay_lg::wake_tv(&tv.mac)?;
     println!("Wake-on-LAN packet sent to {}", tv.name);
 
     // Wait for TV to boot
@@ -610,7 +611,7 @@ async fn pair_tv_direct(
     println!("Connecting to TV at {}...", ip);
     println!("Please accept the pairing request on your TV.");
 
-    let client = WebOsClient::connect(ip, None)
+    let mut client = WebOsClient::connect(ip, None)
         .await
         .context("Failed to connect to TV")?;
 
@@ -634,8 +635,16 @@ async fn pair_tv_direct(
         name: name.clone(),
         ip: ip.to_string(),
         mac: mac.unwrap_or_default(),
-        client_key: Some(client_key),
+        vendor: "lg".to_string(),
+        profile: "default".to_string(),
+        hdmi_input: None,
+        only_when_active: false,
+        client_key: Some(client_key.clone()),
         default_input: None,
+        lg: Some(tisvlay_core::LgVendorConfig {
+            client_key: Some(client_key),
+            default_input: None,
+        }),
     };
 
     config.upsert_tv(tv);

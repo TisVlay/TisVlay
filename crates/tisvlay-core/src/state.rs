@@ -88,3 +88,55 @@ impl TvState {
         self.is_screen_on = !matches!(state, PowerState::ScreenOff | PowerState::Standby);
     }
 }
+
+/// Information about a discovered TV on the network.
+///
+/// This is returned by discovery mechanisms (SSDP, mDNS, etc.) and contains
+/// enough information to identify and connect to the TV.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredTv {
+    /// Unique identifier (e.g., UUID from SSDP USN header).
+    pub id: String,
+    /// TV friendly name.
+    pub name: String,
+    /// IP address of the TV.
+    pub ip: String,
+    /// MAC address (may be empty if not available from discovery protocol).
+    pub mac: String,
+    /// Vendor identifier (e.g., "lg", "samsung").
+    pub vendor: String,
+    /// Location URL for device description (vendor-specific).
+    #[serde(default)]
+    pub location: String,
+}
+
+impl DiscoveredTv {
+    /// Create a new discovered TV entry.
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        ip: impl Into<String>,
+        vendor: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            ip: ip.into(),
+            mac: String::new(),
+            vendor: vendor.into(),
+            location: String::new(),
+        }
+    }
+
+    /// Set the MAC address.
+    pub fn with_mac(mut self, mac: impl Into<String>) -> Self {
+        self.mac = mac.into();
+        self
+    }
+
+    /// Set the location URL.
+    pub fn with_location(mut self, location: impl Into<String>) -> Self {
+        self.location = location.into();
+        self
+    }
+}

@@ -1,20 +1,35 @@
-//! tisvlay-core - Core library for LG WebOS TV control.
+//! tisvlay-core - Core library for multi-vendor TV control.
 //!
-//! This crate provides a Rust API for controlling LG WebOS TVs using the
-//! SSAP (Simple Service Access Protocol) over WebSocket.
+//! This crate provides the core abstractions, traits, and types for controlling
+//! TVs from multiple vendors. The actual vendor implementations live in separate
+//! crates (e.g., `tisvlay-lg` for LG WebOS TVs).
+//!
+//! # Architecture
+//!
+//! ```text
+//! tisvlay-core (this crate)
+//! ├── traits: TvBackend, TvConnection, feature traits
+//! ├── capabilities: Capability flags for feature detection
+//! ├── pairing: Unified pairing state machine
+//! ├── config: Profile-based configuration
+//! ├── state: TV state types
+//! ├── error: Vendor-agnostic errors
+//! └── wol: Wake-on-LAN (generic)
+//!
+//! tisvlay-lg (separate crate)
+//! └── LG WebOS implementation of traits
+//! ```
 //!
 //! # Features
 //!
-//! - Power on/off (Wake-on-LAN for power on)
-//! - Screen on/off (OLED-safe blanking)
-//! - HDMI input switching
-//! - Volume and mute control
-//! - Backlight control (OLED pixel brightness)
+//! - `discovery` - Network discovery support (SSDP)
+//! - `dbus` - D-Bus client for communicating with tisvlayd
 //!
 //! # Example
 //!
-//! ```no_run
-//! use tisvlay_core::{WebOsClient, Config};
+//! ```ignore
+//! use tisvlay_core::{Config, TvConnector, Capabilities};
+//! use tisvlay_lg::LgConnector;
 //!
 //! #[tokio::main]
 //! async fn main() -> tisvlay_core::Result<()> {
@@ -22,47 +37,74 @@
 //!     let config = Config::load()?;
 //!     let tv = config.default_tv().expect("No TVs configured");
 //!
-//!     // Connect to TV
-//!     let mut client = WebOsClient::connect(&tv.ip, tv.client_key.clone()).await?;
+//!     // Connect using the appropriate backend
+//!     let connector = LgConnector::new();
+//!     let mut connection = connector.connect(
+//!         &tv.ip,
+//!         tv.mac.as_deref(),
+//!         &tv.lg.unwrap_or_default(),
+//!     ).await?;
 //!
-//!     // Set volume to 30
-//!     client.set_volume(30).await?;
+//!     // Check capabilities
+//!     if connection.capabilities().contains(Capabilities::VOLUME) {
+//!         // Cast to VolumeControl trait to use volume methods
+//!         // ...
+//!     }
 //!
-//!     // Turn off screen (OLED-safe)
-//!     client.screen_off().await?;
-//!
-//!     client.close().await?;
+//!     connection.close().await?;
 //!     Ok(())
 //! }
 //! ```
 
-mod client;
+// Core modules (always available)
+mod capabilities;
 mod config;
-mod connection;
+mod error;
+mod pairing;
+mod state;
+mod traits;
+pub mod wol;
+
+// Optional modules
 #[cfg(feature = "dbus")]
 mod dbus_client;
-#[cfg(feature = "discovery")]
-mod discovery;
-mod endpoints;
-mod error;
-mod protocol;
-mod state;
-mod wol;
 
-// Public re-exports
-pub use client::{wake_and_connect, wake_and_wait, wake_tv, WebOsClient};
-pub use config::{Config, DaemonConfig, SessionAction, SessionConfig, TvConfig};
-pub use endpoints::{
-    audio as audio_endpoints, buttons, input as input_endpoints, picture as picture_endpoints,
-    power as power_endpoints, timeouts, WSS_PORT, WS_PORT,
+// =============================================================================
+// Public re-exports: Core abstractions
+// =============================================================================
+
+// Traits
+pub use traits::{
+    BacklightControl, InputControl, PowerControl, ScreenControl, TvBackend, TvConnection,
+    TvConnector, TvDiscovery, VolumeControl,
 };
+
+// Capabilities
+pub use capabilities::Capabilities;
+
+// Pairing
+pub use pairing::{
+    Credentials, InputType, PairingCommand, PairingError, PairingErrorCode, PairingSession,
+    PairingState,
+};
+
+// Configuration
+pub use config::{
+    Config, DaemonConfig, LgVendorConfig, ProfileConfig, SessionAction, SessionConfig, TvConfig,
+};
+
+// State
+pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
+
+// Errors
 pub use error::{Error, Result};
-pub use protocol::{ExternalInput, PowerState as ProtocolPowerState, VolumeInfo};
-pub use state::{InputInfo, PowerState, TvState};
+
+// Wake-on-LAN
 pub use wol::{wake, wake_reliable, wake_to_ip, wake_with_options, MacAddress, WakeOptions};
+
+// =============================================================================
+// Public re-exports: Optional features
+// =============================================================================
 
 #[cfg(feature = "dbus")]
 pub use dbus_client::{DaemonClient, DAEMON_PATH, DAEMON_SERVICE};
-
-#[cfg(feature = "discovery")]
-pub use discovery::{discover_tvs, DiscoveredTv};

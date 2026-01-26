@@ -1282,6 +1282,7 @@ dependencies = [
  "clap",
  "serde_json",
  "tisvlay-core",
+ "tisvlay-lg",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1292,6 +1293,8 @@ name = "tisvlay-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "bitflags",
  "directories",
  "futures-util",
  "rustls",
@@ -1308,6 +1311,25 @@ dependencies = [
  "urlencoding",
  "webpki-roots 0.26.11",
  "zbus",
+]
+
+[[package]]
+name = "tisvlay-lg"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "rustls",
+ "serde",
+ "serde_json",
+ "ssdp-client",
+ "tisvlay-core",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+ "urlencoding",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -1336,6 +1358,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tisvlay-core",
+ "tisvlay-lg",
  "tokio",
  "tracing",
  "tracing-subscriber",

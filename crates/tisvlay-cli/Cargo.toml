@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 tisvlay-core = { workspace = true, features = ["dbus"] }
+tisvlay-lg = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

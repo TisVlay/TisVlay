@@ -2,13 +2,12 @@
 
 use crate::connection::Connection;
 use crate::endpoints::{audio, input, luna, notification, picture, power, timeouts};
-use crate::error::{Error, Result};
 use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
     VolumeInfo, VolumeResponse,
 };
-use crate::state::{InputInfo, PowerState, TvState};
-use crate::wol::{self, MacAddress};
+use tisvlay_core::wol::{self, MacAddress};
+use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
 use serde_json::{json, Value};
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,8 +15,8 @@ use std::time::Duration;
 
 /// Client for controlling an LG WebOS TV.
 pub struct WebOsClient {
-    /// WebSocket connection.
-    conn: Connection,
+    /// WebSocket connection (None if closed).
+    conn: Option<Connection>,
     /// Client key for authentication.
     client_key: Option<String>,
     /// Request ID counter.
@@ -36,7 +35,7 @@ impl WebOsClient {
         let conn = Connection::connect(host, connect_timeout).await?;
 
         let mut client = Self {
-            conn,
+            conn: Some(conn),
             client_key: client_key.clone(),
             request_id: AtomicU64::new(1),
             timeout: Duration::from_millis(timeouts::REQUEST_MS),
@@ -49,6 +48,16 @@ impl WebOsClient {
         Ok(client)
     }
 
+    /// Check if the connection is still active.
+    pub fn is_connected(&self) -> bool {
+        self.conn.is_some()
+    }
+
+    /// Get a mutable reference to the connection, returning an error if closed.
+    fn conn_mut(&mut self) -> Result<&mut Connection> {
+        self.conn.as_mut().ok_or(Error::ConnectionClosed)
+    }
+
     /// Register with the TV and get a client key.
     async fn register(&mut self, existing_key: Option<String>) -> Result<String> {
         let payload = RegisterPayload::new(existing_key);
@@ -56,7 +65,7 @@ impl WebOsClient {
 
         // Use longer timeout for pairing (user needs to accept on TV)
         let pairing_timeout = Duration::from_millis(timeouts::PAIRING_MS);
-        self.conn.send(&request).await?;
+        self.conn_mut()?.send(&request).await?;
 
         // Wait for registered response
         let deadline = tokio::time::Instant::now() + pairing_timeout;
@@ -67,7 +76,7 @@ impl WebOsClient {
                 return Err(Error::PairingTimeout);
             }
 
-            let response = self.conn.recv_timeout(remaining).await?;
+            let response = self.conn_mut()?.recv_timeout(remaining).await?;
 
             match response.msg_type {
                 ResponseType::Registered => {
@@ -106,7 +115,8 @@ impl WebOsClient {
     /// Send a command and get the response.
     async fn command(&mut self, uri: &str, payload: Value) -> Result<Response> {
         let request = Request::command(self.next_id(), uri, payload);
-        let response = self.conn.request(&request, self.timeout).await?;
+        let timeout = self.timeout;
+        let response = self.conn_mut()?.request(&request, timeout).await?;
 
         if response.msg_type == ResponseType::Error {
             if let Some(error) = response.error {
@@ -341,8 +351,12 @@ impl WebOsClient {
     }
 
     /// Close the connection.
-    pub async fn close(self) -> Result<()> {
-        self.conn.close().await
+    pub async fn close(&mut self) -> Result<()> {
+        if let Some(mut conn) = self.conn.take() {
+            conn.close().await
+        } else {
+            Ok(())
+        }
     }
 }
 

@@ -14,9 +14,9 @@
 //!
 //!     // List all configured TVs
 //!     let tvs = client.list_tvs().await?;
-//!     for (id, name, ip, connected) in tvs {
+//!     for (id, name, ip, connected) in &tvs {
 //!         println!("{}: {} ({}) - {}", id, name, ip,
-//!             if connected { "connected" } else { "disconnected" });
+//!             if *connected { "connected" } else { "disconnected" });
 //!     }
 //!
 //!     // Turn off screen on first TV

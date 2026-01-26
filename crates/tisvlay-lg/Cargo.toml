@@ -1,0 +1,42 @@
+[package]
+name = "tisvlay-lg"
+description = "LG WebOS TV backend for tisvlay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# Core abstractions
+tisvlay-core = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# WebSocket
+tokio-tungstenite = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
+futures-util = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Optional: SSDP discovery
+ssdp-client = { workspace = true, optional = true }
+urlencoding = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+
+[features]
+default = []
+discovery = ["dep:ssdp-client", "dep:urlencoding", "dep:url"]

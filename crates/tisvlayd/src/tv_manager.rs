@@ -2,7 +2,8 @@
 //!
 //! Manages WebSocket connections to multiple TVs with automatic reconnection.
 
-use tisvlay_core::{Config, TvConfig, TvState, WebOsClient};
+use tisvlay_core::{Config, TvConfig, TvState};
+use tisvlay_lg::WebOsClient;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -165,7 +166,7 @@ impl TvManager {
         for (id, tv) in tvs.iter() {
             let mac = &tv.config.mac;
             info!(tv_id = %id, mac = %mac, "Sending WoL packet");
-            if let Err(e) = tisvlay_core::wake_tv(mac) {
+            if let Err(e) = tisvlay_lg::wake_tv(mac) {
                 warn!(tv_id = %id, error = %e, "Failed to send WoL");
             }
         }
@@ -322,7 +323,7 @@ impl TvManager {
         let mac = &config.mac;
 
         info!(tv_id = %tv_id, mac = %mac, "Sending WoL packet");
-        tisvlay_core::wake_tv(mac).map_err(|e| format!("WoL failed: {}", e))?;
+        tisvlay_lg::wake_tv(mac).map_err(|e| format!("WoL failed: {}", e))?;
 
         // Wait for TV to wake
         let delay = Duration::from_millis(self.config.daemon.wake_delay_ms);
@@ -483,8 +484,16 @@ impl TvManager {
             name: name.to_string(),
             ip: ip.to_string(),
             mac: mac.unwrap_or("").to_string(),
-            client_key: Some(client_key),
+            vendor: "lg".to_string(),
+            profile: "default".to_string(),
+            hdmi_input: None,
+            only_when_active: false,
+            client_key: Some(client_key.clone()),
             default_input: None,
+            lg: Some(tisvlay_core::LgVendorConfig {
+                client_key: Some(client_key),
+                default_input: None,
+            }),
         };
 
         // Add to managed TVs
