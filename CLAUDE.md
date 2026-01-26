@@ -67,6 +67,30 @@ A Rust utility to control LG WebOS TVs from a Linux desktop connected via HDMI. 
 - Phase 4b: `tisvlay-tray` (ksni StatusNotifierItem)
 - Phase 5: `tisvlay-gui` (Slint configuration UI)
 
+### Multi-Vendor Refactor (PLANNED)
+
+Before proceeding with GUI/tray work, refactor to support multiple TV vendors beyond LG WebOS.
+
+**Design Documents**:
+- [docs/multi-vendor-design.md](docs/multi-vendor-design.md) - Full architecture specification
+- [docs/multi-vendor-implementation-plan.md](docs/multi-vendor-implementation-plan.md) - Phased implementation
+- [docs/multi-vendor-discussion.md](docs/multi-vendor-discussion.md) - Design rationale and Q&A
+
+**Key Architectural Decisions**:
+- Separate crates per vendor: `tisvlay-lg`, `tisvlay-samsung`, etc.
+- Core traits in `tisvlay-core`: `TvBackend`, `TvConnection`, feature traits
+- Capability bitflags for runtime feature detection
+- D-Bus redesign: per-TV objects at `/org/tisvlay/Tv/{id}` with feature interfaces
+- Profile-based config for multi-TV setups with display-aware control
+- Signal-based pairing state machine for diverse auth mechanisms
+
+**Implementation Phases**:
+1. **Phase 1**: Core abstractions (traits.rs, capabilities.rs, pairing.rs, config updates)
+2. **Phase 2**: Extract LG code to `tisvlay-lg` crate
+3. **Phase 3**: Daemon refactor with new D-Bus interface (Manager1 + per-TV Tv1.*)
+4. **Phase 4**: CLI & session service updates
+5. **Phase 5**: Testing & documentation
+
 ## Current Project Structure
 
 ```
