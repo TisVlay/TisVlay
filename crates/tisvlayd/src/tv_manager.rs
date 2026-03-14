@@ -357,6 +357,8 @@ impl TvManager {
     /// Execute a command on a TV connection.
     ///
     /// Connects if not already connected, then executes the command.
+    /// On fatal connection errors (e.g., stale WebSocket from TV idle
+    /// timeout), reconnects and retries the command once.
     async fn with_connection<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
     where
         F: FnOnce(&mut dyn TvConnection) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
@@ -382,24 +384,48 @@ impl TvManager {
 
                 if e.is_connection_fatal() {
                     // Fatal error: connection is broken, tear down and reconnect
-                    error!(tv_id = %tv_id, error = %e, "Command failed (connection error)");
+                    warn!(tv_id = %tv_id, error = %e, "Command failed (connection error), will retry");
                     tv.connection = None;
                     tv.last_error = Some(msg.clone());
 
                     let event = StateChangeEvent::connection_change(tv_id, false, Some(&msg));
-                    let tv_id_owned = tv_id.to_string();
                     drop(tvs);
-
                     self.emit_state_change(event);
-                    self.trigger_reconnect(&tv_id_owned).await;
+
+                    // Reconnect and return — caller should retry via with_connection_retry
+                    Err(msg)
                 } else {
                     // Non-fatal error (e.g., TV returned application error for
                     // idempotent operation like screen_on when already on).
                     // Keep the connection alive.
                     warn!(tv_id = %tv_id, error = %e, "Command failed (non-fatal)");
+                    Err(msg)
                 }
+            }
+        }
+    }
 
-                Err(msg)
+    /// Execute a command with one automatic retry on connection failure.
+    ///
+    /// If the first attempt fails due to a stale connection (e.g., TV closed
+    /// the WebSocket after idle timeout), reconnects and retries the command.
+    async fn with_connection_retry<F1, F2, T>(
+        &self,
+        tv_id: &str,
+        f1: F1,
+        f2: F2,
+    ) -> Result<T, String>
+    where
+        F1: FnOnce(&mut dyn TvConnection) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
+        F2: FnOnce(&mut dyn TvConnection) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
+    {
+        match self.with_connection(tv_id, f1).await {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                // First attempt failed — reconnect and retry
+                info!(tv_id = %tv_id, "Retrying after reconnection");
+                self.reconnect(tv_id).await?;
+                self.with_connection(tv_id, f2).await
             }
         }
     }
@@ -477,9 +503,11 @@ impl TvManager {
     /// the TV is shutting down and the transport (e.g., WebSocket) will close.
     pub async fn power_off(&self, tv_id: &str) -> Result<(), String> {
         let result = self
-            .with_connection(tv_id, |conn| {
-                Box::pin(async move { conn.power_off().await })
-            })
+            .with_connection_retry(
+                tv_id,
+                |conn| Box::pin(async move { conn.power_off().await }),
+                |conn| Box::pin(async move { conn.power_off().await }),
+            )
             .await;
 
         // Drop the connection regardless of result — the TV is going to shut down
@@ -509,17 +537,21 @@ impl TvManager {
 
     /// Turn screen on.
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), String> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.screen_on().await })
-        })
+        self.with_connection_retry(
+            tv_id,
+            |conn| Box::pin(async move { conn.screen_on().await }),
+            |conn| Box::pin(async move { conn.screen_on().await }),
+        )
         .await
     }
 
     /// Turn screen off.
     pub async fn screen_off(&self, tv_id: &str) -> Result<(), String> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.screen_off().await })
-        })
+        self.with_connection_retry(
+            tv_id,
+            |conn| Box::pin(async move { conn.screen_off().await }),
+            |conn| Box::pin(async move { conn.screen_off().await }),
+        )
         .await
     }
 
