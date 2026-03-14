@@ -16,7 +16,7 @@
 //!     // List all configured TVs
 //!     let tvs = client.list_tvs().await?;
 //!     for tv in &tvs {
-//!         println!("{}: {} ({}) - {}", tv.id, tv.name, tv.ip,
+//!         println!("{}: {} ({}) - {}", tv.id, tv.name, tv.address,
 //!             if tv.connected { "connected" } else { "disconnected" });
 //!     }
 //!
@@ -84,8 +84,9 @@ trait TisvlayManager {
     fn get_supported_vendors(&self) -> zbus::Result<Vec<(String, String)>>;
 
     /// Add a TV.
+    /// config_json: vendor-specific connection parameters as JSON
     /// Returns: TV object path
-    fn add_tv(&self, ip: &str, name: &str, vendor: &str, mac: &str) -> zbus::Result<OwnedObjectPath>;
+    fn add_tv(&self, name: &str, vendor: &str, config_json: &str) -> zbus::Result<OwnedObjectPath>;
 
     /// Remove a TV.
     fn remove_tv(&self, tv_path: &OwnedObjectPath) -> zbus::Result<()>;
@@ -116,9 +117,9 @@ trait TisvlayTv {
     #[zbus(property)]
     fn vendor(&self) -> zbus::Result<String>;
 
-    /// TV IP address.
+    /// TV address (transport-agnostic display address).
     #[zbus(property)]
-    fn ip(&self) -> zbus::Result<String>;
+    fn address(&self) -> zbus::Result<String>;
 
     /// Whether the TV is currently connected.
     #[zbus(property)]
@@ -237,8 +238,8 @@ pub struct TvInfo {
     pub id: String,
     /// Display name.
     pub name: String,
-    /// IP address.
-    pub ip: String,
+    /// Transport-agnostic display address (e.g. IP, serial port, CEC address).
+    pub address: String,
     /// Vendor ID.
     pub vendor: String,
     /// Whether connected.
@@ -429,7 +430,7 @@ impl DaemonClient {
                 let info = TvInfo {
                     id: proxies.base.id().await.unwrap_or_default(),
                     name: proxies.base.name().await.unwrap_or_default(),
-                    ip: proxies.base.ip().await.unwrap_or_default(),
+                    address: proxies.base.address().await.unwrap_or_default(),
                     vendor: proxies.base.vendor().await.unwrap_or_default(),
                     connected: proxies.base.connected().await.unwrap_or(false),
                     path: path_str.to_string(),
@@ -449,7 +450,7 @@ impl DaemonClient {
 
     /// Discover TVs on the network.
     ///
-    /// Returns a vector of tuples: `(id, name, ip, mac, vendor)`.
+    /// Returns a vector of tuples: `(id, name, address, hardware_id, vendor)`.
     pub async fn discover_tvs(
         &self,
         timeout_ms: u32,
@@ -475,14 +476,17 @@ impl DaemonClient {
     /// This connects to the TV and triggers a pairing prompt on the TV screen.
     /// The user must accept the prompt for pairing to succeed.
     ///
+    /// `config_json` contains vendor-specific connection parameters as JSON
+    /// (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG).
+    ///
     /// Returns the TV ID assigned to the new TV.
-    pub async fn pair_tv(&self, ip: &str, name: &str, mac: Option<&str>) -> Result<String> {
-        debug!(ip = %ip, name = %name, "Pairing TV via daemon");
+    pub async fn pair_tv(&self, name: &str, vendor: &str, config_json: &str) -> Result<String> {
+        debug!(name = %name, vendor = %vendor, "Pairing TV via daemon");
         let path = self
             .manager
-            .add_tv(ip, name, "lg", mac.unwrap_or(""))
+            .add_tv(name, vendor, config_json)
             .await
-            .with_context(|| format!("Failed to pair TV at {}", ip))?;
+            .with_context(|| format!("Failed to pair TV '{}'", name))?;
 
         // Extract TV ID from path
         let tv_id = path

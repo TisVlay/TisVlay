@@ -19,6 +19,9 @@ tisvlay-core.workspace = true
 # Vendor implementations (only this crate imports these)
 tisvlay-lg.workspace = true
 
+# Serialization
+toml.workspace = true
+
 # Async
 async-trait.workspace = true
 

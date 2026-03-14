@@ -7,13 +7,21 @@ use crate::config::LgVendorConfig;
 use async_trait::async_trait;
 use std::any::Any;
 use tisvlay_core::{
-    BacklightControl, Capabilities, Credentials, Error, InputControl, InputInfo, PairingCommand,
-    PairingSession, PairingState, PowerControl, PowerState, Result, ScreenControl, TvBackend,
-    TvConnection, TvConnector, TvState, VolumeControl,
+    BacklightControl, Capabilities, Credentials, Error, InputControl, InputInfo, MacAddress,
+    PairingCommand, PairingSession, PairingState, PowerControl, PowerState, Result, ScreenControl,
+    TvBackend, TvConnection, TvConnector, TvState, VolumeControl,
 };
 #[cfg(feature = "discovery")]
 use tisvlay_core::{DiscoveredTv, TvDiscovery};
 use tracing::{debug, info, warn};
+
+/// Helper to deserialize LgVendorConfig from a toml::Value.
+fn parse_config(vendor_config: &toml::Value) -> Result<LgVendorConfig> {
+    vendor_config
+        .clone()
+        .try_into()
+        .map_err(|e| Error::backend("lg", format!("Invalid vendor config: {}", e)))
+}
 
 /// LG WebOS backend.
 ///
@@ -38,7 +46,7 @@ impl TvBackend for LgBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::LG_ALL
+        Capabilities::ALL
     }
 }
 
@@ -55,7 +63,7 @@ impl LgConnection {
     pub fn new(client: WebOsClient) -> Self {
         Self {
             client,
-            capabilities: Capabilities::LG_ALL,
+            capabilities: Capabilities::ALL,
         }
     }
 
@@ -99,15 +107,80 @@ impl TvConnection for LgConnection {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+
+    // =========================================================================
+    // Feature methods (overriding TvConnection defaults)
+    // =========================================================================
+
+    async fn power_off(&mut self) -> Result<()> {
+        self.client.power_off().await
+    }
+
+    async fn get_power_state(&mut self) -> Result<PowerState> {
+        self.client.get_power_state().await
+    }
+
+    async fn screen_on(&mut self) -> Result<()> {
+        self.client.screen_on().await
+    }
+
+    async fn screen_off(&mut self) -> Result<()> {
+        self.client.screen_off().await
+    }
+
+    async fn is_screen_on(&mut self) -> Result<bool> {
+        let state = self.client.get_power_state().await?;
+        Ok(!matches!(state, PowerState::ScreenOff))
+    }
+
+    async fn set_volume(&mut self, level: u8) -> Result<()> {
+        self.client.set_volume(level as i32).await
+    }
+
+    async fn get_volume(&mut self) -> Result<u8> {
+        let info = self.client.get_volume().await?;
+        Ok(info.volume as u8)
+    }
+
+    async fn set_mute(&mut self, mute: bool) -> Result<()> {
+        self.client.set_mute(mute).await
+    }
+
+    async fn is_muted(&mut self) -> Result<bool> {
+        let info = self.client.get_volume().await?;
+        Ok(info.muted)
+    }
+
+    async fn switch_input(&mut self, input_id: &str) -> Result<()> {
+        self.client.switch_input(input_id).await
+    }
+
+    async fn get_current_input(&mut self) -> Result<Option<String>> {
+        let state = self.client.get_state().await?;
+        Ok(state.current_input)
+    }
+
+    async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> {
+        self.client.get_inputs().await
+    }
+
+    async fn set_backlight(&mut self, level: u8) -> Result<()> {
+        self.client.set_backlight(level as i32).await
+    }
+
+    async fn get_backlight(&mut self) -> Result<u8> {
+        let level = self.client.get_backlight().await?;
+        Ok(level as u8)
+    }
 }
+
+// Keep separate feature trait impls for use as trait bounds in generic code.
 
 #[async_trait]
 impl PowerControl for LgConnection {
     async fn power_on(&mut self) -> Result<()> {
-        // Power on requires WoL, which needs MAC address
-        // The daemon handles this at a higher level
         Err(Error::not_supported(
-            "Power on via connection not supported - use Wake-on-LAN",
+            "Power on via connection not supported - use TvConnector::wake()",
             Capabilities::POWER,
         ))
     }
@@ -204,25 +277,41 @@ impl Default for LgConnector {
 
 #[async_trait]
 impl TvConnector for LgConnector {
-    async fn connect(
-        &self,
-        ip: &str,
-        _mac: Option<&str>,
-        vendor_config: &(dyn Any + Send + Sync),
-    ) -> Result<Box<dyn TvConnection>> {
-        let config = vendor_config
-            .downcast_ref::<LgVendorConfig>()
-            .ok_or_else(|| Error::backend("lg", "Invalid vendor config type"))?;
+    async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
+        let config = parse_config(vendor_config)?;
 
-        debug!(ip = %ip, has_key = config.client_key.is_some(), "Connecting to LG TV");
+        debug!(ip = %config.ip, has_key = config.client_key.is_some(), "Connecting to LG TV");
 
-        let client = WebOsClient::connect(ip, config.client_key.clone()).await?;
+        let client = WebOsClient::connect(&config.ip, config.client_key).await?;
         Ok(Box::new(LgConnection::new(client)))
     }
 
-    fn start_pairing(&self, ip: &str) -> PairingSession {
+    fn display_address(&self, vendor_config: &toml::Value) -> String {
+        parse_config(vendor_config)
+            .map(|c| c.ip)
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+
+    fn supports_wake(&self, vendor_config: &toml::Value) -> bool {
+        parse_config(vendor_config)
+            .map(|c| c.mac.is_some())
+            .unwrap_or(false)
+    }
+
+    async fn wake(&self, vendor_config: &toml::Value) -> Result<()> {
+        let config = parse_config(vendor_config)?;
+        if let Some(ref mac) = config.mac {
+            let mac_addr = MacAddress::parse(mac)?;
+            tisvlay_core::wol::wake(&mac_addr)?;
+        }
+        Ok(())
+    }
+
+    fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
+        let config = parse_config(vendor_config)?;
+        let ip = config.ip.clone();
+
         let (session, mut command_rx, state_tx) = PairingSession::create();
-        let ip = ip.to_string();
 
         // Spawn the pairing task
         tokio::spawn(async move {
@@ -281,7 +370,18 @@ impl TvConnector for LgConnector {
             }
         });
 
-        session
+        Ok(session)
+    }
+
+    fn build_config_from_pairing(
+        &self,
+        pairing_params: &toml::Value,
+        credentials: &Credentials,
+    ) -> Result<toml::Value> {
+        let mut config = parse_config(pairing_params)?;
+        config.client_key = Some(credentials.data.clone());
+        toml::Value::try_from(&config)
+            .map_err(|e| Error::backend("lg", format!("Failed to serialize config: {}", e)))
     }
 }
 

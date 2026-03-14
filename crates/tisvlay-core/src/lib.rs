@@ -28,27 +28,22 @@
 //! # Example
 //!
 //! ```ignore
-//! use tisvlay_core::{Config, TvConnector, Capabilities};
-//! use tisvlay_lg::LgConnector;
+//! use tisvlay_core::{Config, Capabilities};
+//! use tisvlay_backends::create_registry;
 //!
 //! #[tokio::main]
 //! async fn main() -> tisvlay_core::Result<()> {
-//!     // Load configuration
 //!     let config = Config::load()?;
 //!     let tv = config.default_tv().expect("No TVs configured");
+//!     let registry = create_registry();
 //!
-//!     // Connect using the appropriate backend
-//!     let connector = LgConnector::new();
-//!     let mut connection = connector.connect(
-//!         &tv.ip,
-//!         tv.mac.as_deref(),
-//!         &tv.lg.unwrap_or_default(),
-//!     ).await?;
+//!     // Connect via the registry (vendor/transport-agnostic)
+//!     let mut connection = registry.connect_tv(tv)?;
 //!
-//!     // Check capabilities
+//!     // Feature methods are directly on TvConnection
 //!     if connection.capabilities().contains(Capabilities::VOLUME) {
-//!         // Cast to VolumeControl trait to use volume methods
-//!         // ...
+//!         let vol = connection.get_volume().await?;
+//!         println!("Volume: {}", vol);
 //!     }
 //!
 //!     connection.close().await?;

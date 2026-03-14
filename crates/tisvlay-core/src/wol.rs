@@ -1,6 +1,6 @@
 //! Wake-on-LAN implementation.
 //!
-//! Sends "magic packets" to wake LG TVs from standby mode.
+//! Sends "magic packets" to wake devices from standby mode.
 
 use crate::error::{Error, Result};
 use socket2::{Domain, Protocol, Socket, Type};

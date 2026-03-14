@@ -79,8 +79,8 @@ bitflags! {
         /// (via SSDP, mDNS, or vendor-specific protocols).
         const DISCOVERY = 0b1000_0000;
 
-        /// All capabilities that LG WebOS typically supports.
-        const LG_ALL = Self::POWER.bits()
+        /// All capabilities combined.
+        const ALL = Self::POWER.bits()
             | Self::SCREEN.bits()
             | Self::VOLUME.bits()
             | Self::MUTE.bits()
@@ -227,8 +227,8 @@ mod tests {
     }
 
     #[test]
-    fn test_capabilities_all_lg() {
-        let caps = Capabilities::LG_ALL;
+    fn test_capabilities_all() {
+        let caps = Capabilities::ALL;
         let strings = caps.to_strings();
 
         assert_eq!(strings.len(), 8);

@@ -14,12 +14,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tisvlay_core::{Capabilities, TvConnection, TvConnector, TvDiscovery};
+use tisvlay_core::{Capabilities, Credentials, PairingSession, TvConfig, TvConnection, TvConnector, TvDiscovery};
 
 // Re-export core types for convenience
 pub use tisvlay_core::{
-    Capabilities as TvCapabilities, Config, DiscoveredTv, Error, InputInfo, PairingSession,
-    PairingState, PowerState, ProfileConfig, Result, SessionAction, TvConfig, TvState,
+    Capabilities as TvCapabilities, Config, DiscoveredTv, Error, InputInfo, PairingSession as PairSession,
+    PairingState, PowerState, ProfileConfig, Result, SessionAction, TvConfig as TvCfg, TvState,
 };
 
 /// A registered vendor backend.
@@ -39,7 +39,8 @@ pub struct RegisteredBackend {
 /// Registry of vendor backends.
 ///
 /// This registry holds all available vendor backends and provides methods
-/// to create connections based on vendor ID.
+/// to create connections based on vendor ID. All transport details are
+/// handled by the connectors — the registry is fully transport-agnostic.
 pub struct BackendRegistry {
     backends: HashMap<&'static str, RegisteredBackend>,
 }
@@ -78,6 +79,14 @@ impl BackendRegistry {
         self.backends.get(vendor_id)
     }
 
+    /// Get the connector for a vendor.
+    pub fn get_connector(&self, vendor_id: &str) -> tisvlay_core::Result<&dyn TvConnector> {
+        let backend = self
+            .get(vendor_id)
+            .ok_or_else(|| tisvlay_core::Error::UnknownVendor(vendor_id.to_string()))?;
+        Ok(backend.connector.as_ref())
+    }
+
     /// Get all registered backends.
     pub fn all(&self) -> impl Iterator<Item = &RegisteredBackend> {
         self.backends.values()
@@ -91,19 +100,80 @@ impl BackendRegistry {
             .collect()
     }
 
-    /// Connect to a TV using the appropriate backend.
-    pub async fn connect(
-        &self,
-        vendor_id: &str,
-        ip: &str,
-        mac: Option<&str>,
-        vendor_config: &(dyn std::any::Any + Send + Sync),
-    ) -> tisvlay_core::Result<Box<dyn TvConnection>> {
-        let backend = self
-            .get(vendor_id)
-            .ok_or_else(|| tisvlay_core::Error::UnknownVendor(vendor_id.to_string()))?;
+    // =========================================================================
+    // TvConfig-based convenience methods (vendor/transport-agnostic)
+    // =========================================================================
 
-        backend.connector.connect(ip, mac, vendor_config).await
+    /// Connect to a TV using its config.
+    ///
+    /// Looks up the vendor, extracts the vendor config section, and delegates
+    /// to the appropriate connector. The caller never needs to know vendor
+    /// or transport details.
+    pub async fn connect_tv(
+        &self,
+        tv_config: &TvConfig,
+    ) -> tisvlay_core::Result<Box<dyn TvConnection>> {
+        let connector = self.get_connector(&tv_config.vendor)?;
+        let vendor_config = tv_config
+            .get_raw_vendor_value()
+            .ok_or_else(|| {
+                tisvlay_core::Error::backend(
+                    &tv_config.vendor,
+                    format!("No vendor config for TV '{}'", tv_config.id),
+                )
+            })?;
+        connector.connect(vendor_config).await
+    }
+
+    /// Get a human-readable display address for a TV.
+    pub fn display_address(&self, tv_config: &TvConfig) -> String {
+        self.get_connector(&tv_config.vendor)
+            .ok()
+            .and_then(|c| tv_config.get_raw_vendor_value().map(|v| c.display_address(v)))
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    /// Check if a TV's transport supports waking.
+    pub fn supports_wake(&self, tv_config: &TvConfig) -> bool {
+        self.get_connector(&tv_config.vendor)
+            .ok()
+            .and_then(|c| tv_config.get_raw_vendor_value().map(|v| c.supports_wake(v)))
+            .unwrap_or(false)
+    }
+
+    /// Wake a TV from standby.
+    pub async fn wake_tv(&self, tv_config: &TvConfig) -> tisvlay_core::Result<()> {
+        let connector = self.get_connector(&tv_config.vendor)?;
+        let vendor_config = tv_config
+            .get_raw_vendor_value()
+            .ok_or_else(|| {
+                tisvlay_core::Error::backend(
+                    &tv_config.vendor,
+                    format!("No vendor config for TV '{}'", tv_config.id),
+                )
+            })?;
+        connector.wake(vendor_config).await
+    }
+
+    /// Start pairing with a new device.
+    pub fn start_pairing(
+        &self,
+        vendor: &str,
+        vendor_config: &toml::Value,
+    ) -> tisvlay_core::Result<PairingSession> {
+        let connector = self.get_connector(vendor)?;
+        connector.start_pairing(vendor_config)
+    }
+
+    /// Build vendor config from pairing results.
+    pub fn build_config_from_pairing(
+        &self,
+        vendor: &str,
+        pairing_params: &toml::Value,
+        credentials: &Credentials,
+    ) -> tisvlay_core::Result<toml::Value> {
+        let connector = self.get_connector(vendor)?;
+        connector.build_config_from_pairing(pairing_params, credentials)
     }
 
     /// Discover TVs using all backends that support discovery.
@@ -161,7 +231,7 @@ pub fn create_registry() -> BackendRegistry {
     registry.register(
         tisvlay_lg::VENDOR_ID,
         tisvlay_lg::VENDOR_NAME,
-        Capabilities::LG_ALL,
+        Capabilities::ALL,
         lg_connector,
         lg_discovery,
     );

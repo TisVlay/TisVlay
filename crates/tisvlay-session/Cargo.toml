@@ -1,6 +1,6 @@
 [package]
 name = "tisvlay-session"
-description = "User session service for LG WebOS TV control"
+description = "User session service for TV control"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

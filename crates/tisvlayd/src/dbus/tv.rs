@@ -76,14 +76,14 @@ impl TvService {
             .unwrap_or_default()
     }
 
-    /// TV IP address.
+    /// TV display address (vendor-specific, e.g. IP address).
     #[zbus(property)]
-    async fn ip(&self) -> String {
+    async fn address(&self) -> String {
         let manager = self.manager.read().await;
         manager
             .get_tv_info(&self.tv_id)
             .await
-            .map(|info| info.ip)
+            .map(|info| info.address)
             .unwrap_or_default()
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "tisvlayd"
-description = "System daemon for LG WebOS TV control via D-Bus"
+description = "System daemon for multi-vendor TV control via D-Bus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,12 +22,11 @@ discovery = ["tisvlay-backends/discovery"]
 [dependencies]
 tisvlay-core = { workspace = true }
 tisvlay-backends = { workspace = true }
-# tisvlay-lg is accessed through tisvlay-backends, but we need it for LgConfig type
-tisvlay-lg = { workspace = true }
 tokio = { workspace = true }
 zbus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }

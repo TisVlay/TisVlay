@@ -1,17 +1,17 @@
-//! tisvlay - CLI tool for LG WebOS TV control.
+//! tisvlay - CLI tool for TV control.
 //!
 //! By default, communicates with the system daemon via D-Bus.
-//! Use `--no-daemon` for direct WebSocket connections.
+//! Use `--no-daemon` for direct connections via the backend registry.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::time::Duration;
+use tisvlay_backends::{BackendRegistry, create_registry};
 use tisvlay_core::{Config, DaemonClient, TvConfig, TvState};
-use tisvlay_lg::WebOsClient;
 
 #[derive(Parser)]
 #[command(name = "tisvlay")]
-#[command(author, version, about = "LG WebOS TV Control")]
+#[command(author, version, about = "TV Control")]
 #[command(propagate_version = true)]
 struct Cli {
     /// Target TV ID (default: first configured TV)
@@ -85,20 +85,24 @@ enum Commands {
 
     /// Pair a new TV
     Pair {
-        /// TV IP address
-        ip: String,
+        /// TV address (e.g., IP address, serial port)
+        address: String,
 
         /// TV name
         #[arg(short, long)]
         name: Option<String>,
 
-        /// TV MAC address (for Wake-on-LAN)
-        #[arg(short, long)]
-        mac: Option<String>,
+        /// Hardware ID for wake support (e.g., MAC address for WoL)
+        #[arg(short = 'w', long)]
+        wake_id: Option<String>,
 
         /// TV ID (default: derived from name)
         #[arg(long)]
         id: Option<String>,
+
+        /// Vendor backend to use
+        #[arg(long, default_value = "lg")]
+        vendor: String,
     },
 
     /// List configured TVs
@@ -185,7 +189,7 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
         Commands::List => {
             let tvs = client.list_tvs().await?;
             if tvs.is_empty() {
-                println!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
+                println!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
             } else {
                 println!("Configured TVs:");
                 for (i, tv) in tvs.iter().enumerate() {
@@ -193,26 +197,28 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
                     let status = if tv.connected { "connected" } else { "disconnected" };
                     println!(
                         "  {} - {} ({}) [{}] <{}>{}",
-                        tv.id, tv.name, tv.ip, status, tv.vendor, default
+                        tv.id, tv.name, tv.address, status, tv.vendor, default
                     );
                 }
             }
         }
 
-        Commands::Pair { ip, name, mac, id } => {
-            let tv_name = name.unwrap_or_else(|| format!("TV at {}", ip));
-            println!("Connecting to TV at {}...", ip);
+        Commands::Pair { address, name, wake_id, id, vendor } => {
+            let tv_name = name.unwrap_or_else(|| format!("TV at {}", address));
+            println!("Connecting to TV at {}...", address);
             println!("Please accept the pairing request on your TV.");
 
-            let tv_id = client.pair_tv(&ip, &tv_name, mac.as_deref()).await?;
+            // Build vendor-specific config JSON for the daemon
+            let config_json = build_pairing_config_json(&vendor, &address, wake_id.as_deref());
+            let tv_id = client.pair_tv(&tv_name, &vendor, &config_json).await?;
             println!("TV '{}' paired successfully with ID: {}", tv_name, tv_id);
 
             if let Some(id) = id {
                 println!("Note: Custom ID '{}' was requested but daemon assigns IDs automatically.", id);
             }
 
-            if mac.is_none() {
-                println!("\nNote: No MAC address provided. Wake-on-LAN will not work.");
+            if wake_id.is_none() {
+                println!("\nNote: No wake ID (MAC address) provided. Wake-on-LAN will not work.");
                 println!("You can update the MAC address in the config file.");
             }
         }
@@ -227,7 +233,7 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
             match action {
                 PowerAction::On => {
                     client.power_on(&tv_id).await?;
-                    println!("Wake-on-LAN sent to TV");
+                    println!("Wake signal sent to TV");
                 }
                 PowerAction::Off => {
                     client.power_off(&tv_id).await?;
@@ -291,12 +297,10 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
 
         Commands::Mute { state } => {
             let tv_id = tv_id?;
-            // Note: D-Bus API doesn't have get_mute, so we get state for toggle
             let mute = match state.to_lowercase().as_str() {
                 "on" | "true" | "1" => true,
                 "off" | "false" | "0" => false,
                 "toggle" => {
-                    // Get current state to toggle
                     let state = client.get_state(&tv_id).await?;
                     !state.muted.unwrap_or(false)
                 }
@@ -330,6 +334,27 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// Build vendor-specific config JSON for pairing via daemon.
+fn build_pairing_config_json(vendor: &str, address: &str, wake_id: Option<&str>) -> String {
+    match vendor {
+        "lg" => {
+            let mut config = serde_json::json!({"ip": address});
+            if let Some(mac) = wake_id {
+                config["mac"] = serde_json::Value::String(mac.to_string());
+            }
+            config.to_string()
+        }
+        _ => {
+            // Generic: just pass address
+            let mut config = serde_json::json!({"address": address});
+            if let Some(wid) = wake_id {
+                config["wake_id"] = serde_json::Value::String(wid.to_string());
+            }
+            config.to_string()
+        }
+    }
+}
+
 async fn get_tv_id_for_daemon(
     client: &DaemonClient,
     requested_id: Option<&str>,
@@ -339,7 +364,7 @@ async fn get_tv_id_for_daemon(
         None => {
             let tvs = client.list_tvs().await?;
             if tvs.is_empty() {
-                anyhow::bail!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
+                anyhow::bail!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
             }
             Ok(tvs[0].id.clone())
         }
@@ -370,27 +395,26 @@ fn print_tv_status(tv_id: &str, state: &TvState) {
 }
 
 // =============================================================================
-// Direct WebSocket Mode (--no-daemon)
+// Direct Mode (--no-daemon) — uses BackendRegistry, fully vendor-agnostic
 // =============================================================================
 
 async fn run_direct_mode(cli: Cli) -> Result<()> {
-    // Load configuration
     let mut config = Config::load().context("Failed to load configuration")?;
+    let registry = create_registry();
 
     match cli.command {
         Commands::List => {
-            list_tvs(&config);
+            list_tvs(&config, &registry);
         }
-        Commands::Pair { ip, name, mac, id } => {
-            pair_tv_direct(&mut config, &ip, name, mac, id).await?;
+        Commands::Pair { address, name, wake_id, id, vendor } => {
+            pair_tv_direct(&mut config, &registry, &address, name, wake_id, id, &vendor).await?;
         }
         Commands::Remove { tv_id } => {
             remove_tv_direct(&mut config, &tv_id)?;
         }
         _ => {
-            // Commands that require a TV connection
             let tv = get_tv(&config, cli.tv.as_deref())?;
-            run_tv_command_direct(cli.command, &tv, &mut config).await?;
+            run_tv_command_direct(cli.command, &tv, &registry).await?;
         }
     }
 
@@ -399,7 +423,7 @@ async fn run_direct_mode(cli: Cli) -> Result<()> {
 
 fn get_tv(config: &Config, tv_id: Option<&str>) -> Result<TvConfig> {
     if config.tv.is_empty() {
-        anyhow::bail!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
+        anyhow::bail!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
     }
 
     match tv_id {
@@ -414,49 +438,38 @@ fn get_tv(config: &Config, tv_id: Option<&str>) -> Result<TvConfig> {
     }
 }
 
-async fn connect_tv(tv: &TvConfig) -> Result<WebOsClient> {
-    // Get IP and client key from vendor-specific config
-    let lg_config = tv
-        .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
-        .ok_or_else(|| anyhow::anyhow!("No LG config found for TV '{}'", tv.name))?;
-
-    let ip = &lg_config.ip;
-    tracing::info!(tv = %tv.name, ip = %ip, "Connecting to TV");
-
-    WebOsClient::connect(ip, lg_config.client_key.clone())
-        .await
-        .with_context(|| format!("Failed to connect to TV '{}' at {}", tv.name, ip))
-}
-
-async fn run_tv_command_direct(command: Commands, tv: &TvConfig, _config: &mut Config) -> Result<()> {
+async fn run_tv_command_direct(command: Commands, tv: &TvConfig, registry: &BackendRegistry) -> Result<()> {
     match command {
         Commands::Power { action } => match action {
             PowerAction::On => {
-                power_on_direct(tv).await?;
+                power_on_direct(tv, registry).await?;
             }
             PowerAction::Off => {
-                let mut client = connect_tv(tv).await?;
-                client.power_off().await?;
+                let mut conn = registry.connect_tv(tv).await
+                    .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
+                conn.power_off().await?;
                 println!("TV powered off");
             }
         },
         Commands::Screen { action } => {
-            let mut client = connect_tv(tv).await?;
+            let mut conn = registry.connect_tv(tv).await
+                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
             match action {
                 ScreenAction::On => {
-                    client.screen_on().await?;
+                    conn.screen_on().await?;
                     println!("Screen turned on");
                 }
                 ScreenAction::Off => {
-                    client.screen_off().await?;
+                    conn.screen_off().await?;
                     println!("Screen turned off (OLED-safe blank)");
                 }
             }
         }
         Commands::Input { input_id, list } => {
-            let mut client = connect_tv(tv).await?;
+            let mut conn = registry.connect_tv(tv).await
+                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
             if list || input_id.is_none() {
-                let inputs = client.get_inputs().await?;
+                let inputs = conn.list_inputs().await?;
                 println!("Available inputs:");
                 for input in inputs {
                     let connected = if input.connected { " [connected]" } else { "" };
@@ -464,88 +477,72 @@ async fn run_tv_command_direct(command: Commands, tv: &TvConfig, _config: &mut C
                 }
             }
             if let Some(id) = input_id {
-                client.switch_input(&id).await?;
+                conn.switch_input(&id).await?;
                 println!("Switched to input: {}", id);
             }
         }
         Commands::Volume { level } => {
-            let mut client = connect_tv(tv).await?;
+            let mut conn = registry.connect_tv(tv).await
+                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
             match level {
                 None => {
-                    let info = client.get_volume().await?;
-                    let muted = if info.muted { " (muted)" } else { "" };
-                    println!("Volume: {}{}", info.volume, muted);
+                    let vol = conn.get_volume().await?;
+                    let muted = conn.is_muted().await.unwrap_or(false);
+                    let muted_str = if muted { " (muted)" } else { "" };
+                    println!("Volume: {}{}", vol, muted_str);
                 }
                 Some(level) => {
                     if level.starts_with('+') || level.starts_with('-') {
-                        // Relative adjustment
                         let delta: i32 = level.parse()?;
-                        let current = client.get_volume().await?.volume;
+                        let current = conn.get_volume().await? as i32;
                         let new_level = (current + delta).clamp(0, 100);
-                        client.set_volume(new_level).await?;
+                        conn.set_volume(new_level as u8).await?;
                         println!("Volume: {} -> {}", current, new_level);
                     } else {
-                        let level: i32 = level.parse()?;
-                        client.set_volume(level).await?;
+                        let level: u8 = level.parse()?;
+                        conn.set_volume(level).await?;
                         println!("Volume set to: {}", level);
                     }
                 }
             }
         }
         Commands::Mute { state } => {
-            let mut client = connect_tv(tv).await?;
+            let mut conn = registry.connect_tv(tv).await
+                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
             let mute = match state.to_lowercase().as_str() {
                 "on" | "true" | "1" => true,
                 "off" | "false" | "0" => false,
                 "toggle" => {
-                    let current = client.get_mute().await?;
+                    let current = conn.is_muted().await?;
                     !current
                 }
                 _ => anyhow::bail!("Invalid mute state: {}. Use on/off/toggle", state),
             };
-            client.set_mute(mute).await?;
+            conn.set_mute(mute).await?;
             println!("Mute: {}", if mute { "on" } else { "off" });
         }
         Commands::Backlight { level } => {
-            let mut client = connect_tv(tv).await?;
+            let mut conn = registry.connect_tv(tv).await
+                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
             match level {
                 None => {
-                    let backlight = client.get_backlight().await?;
+                    let backlight = conn.get_backlight().await?;
                     println!("Backlight: {}", backlight);
                 }
                 Some(level) => {
-                    client.set_backlight(level).await?;
+                    conn.set_backlight(level as u8).await?;
                     println!("Backlight set to: {}", level);
                 }
             }
         }
         Commands::Status => {
-            let lg_config = tv
-                .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
-                .ok_or_else(|| anyhow::anyhow!("No LG config found for TV '{}'", tv.name))?;
-            let mut client = connect_tv(tv).await?;
-            let state = client.get_state().await?;
+            let display_addr = registry.display_address(tv);
+            let mut conn = registry.connect_tv(tv).await
+                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
+            let state = conn.get_state().await?;
 
-            println!("TV: {} ({})", tv.name, lg_config.ip);
-            println!("Power: {}", if state.is_on { "on" } else { "off" });
-            println!("Screen: {}", if state.is_screen_on { "on" } else { "off" });
-            if let Some(vol) = state.volume {
-                let muted = state
-                    .muted
-                    .map(|m| if m { " (muted)" } else { "" })
-                    .unwrap_or("");
-                println!("Volume: {}{}", vol, muted);
-            }
-            if let Some(backlight) = state.backlight {
-                println!("Backlight: {}", backlight);
-            }
-            if !state.inputs.is_empty() {
-                println!("Inputs:");
-                for input in &state.inputs {
-                    let connected = if input.connected { " *" } else { "" };
-                    println!("  {} - {}{}", input.id, input.label, connected);
-                }
-            }
+            println!("TV: {} ({})", tv.name, display_addr);
+            print_tv_status(&tv.id, &state);
         }
         _ => unreachable!(),
     }
@@ -553,41 +550,38 @@ async fn run_tv_command_direct(command: Commands, tv: &TvConfig, _config: &mut C
     Ok(())
 }
 
-async fn power_on_direct(tv: &TvConfig) -> Result<()> {
-    // Get MAC from vendor-specific config
-    let lg_config = tv
-        .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
-        .ok_or_else(|| anyhow::anyhow!("No LG config found for TV '{}'", tv.name))?;
-
-    let mac = lg_config.mac.as_ref()
-        .ok_or_else(|| anyhow::anyhow!(
-            "MAC address not configured for TV '{}'. Cannot use Wake-on-LAN.",
+async fn power_on_direct(tv: &TvConfig, registry: &BackendRegistry) -> Result<()> {
+    if !registry.supports_wake(tv) {
+        anyhow::bail!(
+            "Wake not supported for TV '{}'. No wake ID (MAC address) configured.",
             tv.name
-        ))?;
+        );
+    }
 
-    tracing::info!(tv = %tv.name, mac = %mac, "Sending Wake-on-LAN");
-    tisvlay_lg::wake_tv(mac)?;
-    println!("Wake-on-LAN packet sent to {}", tv.name);
+    let display_addr = registry.display_address(tv);
+    tracing::info!(tv = %tv.name, address = %display_addr, "Waking TV");
+    registry.wake_tv(tv).await?;
+    println!("Wake signal sent to {}", tv.name);
 
     // Wait for TV to boot
     let delay = Duration::from_millis(3000);
     println!("Waiting {}ms for TV to wake up...", delay.as_millis());
     tokio::time::sleep(delay).await;
 
-    // Try to connect and switch to default input if configured
-    let client_key = lg_config.client_key.clone();
-    match WebOsClient::connect(&lg_config.ip, client_key).await {
-        Ok(mut client) => {
+    // Try to connect
+    match registry.connect_tv(tv).await {
+        Ok(mut conn) => {
             println!("Connected to TV");
-            if let Some(ref input) = lg_config.default_input {
-                client.switch_input(input).await?;
+            // Switch to configured input if available
+            if let Some(ref input) = tv.hdmi_input {
+                conn.switch_input(input).await?;
                 println!("Switched to input: {}", input);
             }
-            client.close().await?;
+            conn.close().await?;
         }
         Err(e) => {
             tracing::warn!(
-                "Could not connect after WoL: {}. TV may still be booting.",
+                "Could not connect after wake: {}. TV may still be booting.",
                 e
             );
             println!("TV may still be booting. Try again in a few seconds.");
@@ -597,53 +591,51 @@ async fn power_on_direct(tv: &TvConfig) -> Result<()> {
     Ok(())
 }
 
-fn list_tvs(config: &Config) {
+fn list_tvs(config: &Config, registry: &BackendRegistry) {
     if config.tv.is_empty() {
-        println!("No TVs configured. Use 'tisvlay pair <ip>' to add a TV.");
+        println!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
         return;
     }
 
     println!("Configured TVs:");
     for (i, tv) in config.tv.iter().enumerate() {
         let default = if i == 0 { " (default)" } else { "" };
-        // Extract vendor-specific config to get ip and pairing status
-        let (ip, paired) = if tv.vendor == "lg" {
-            if let Some(lg_config) = tv.get_vendor_config::<tisvlay_lg::LgVendorConfig>() {
-                (lg_config.ip.clone(), lg_config.client_key.is_some())
-            } else {
-                ("unknown".to_string(), false)
-            }
-        } else {
-            ("unknown".to_string(), false)
-        };
+        let addr = registry.display_address(tv);
+        let paired = tv.get_raw_vendor_value()
+            .and_then(|v| v.get("client_key"))
+            .is_some();
         let status = if paired { "paired" } else { "not paired" };
         println!(
             "  {} - {} ({}) [{}] <{}>{}",
-            tv.id, tv.name, ip, status, tv.vendor, default
+            tv.id, tv.name, addr, status, tv.vendor, default
         );
     }
 }
 
 async fn pair_tv_direct(
     config: &mut Config,
-    ip: &str,
+    registry: &BackendRegistry,
+    address: &str,
     name: Option<String>,
-    mac: Option<String>,
+    wake_id: Option<String>,
     id: Option<String>,
+    vendor: &str,
 ) -> Result<()> {
-    println!("Connecting to TV at {}...", ip);
+    println!("Connecting to TV at {}...", address);
     println!("Please accept the pairing request on your TV.");
 
-    let mut client = WebOsClient::connect(ip, None)
-        .await
-        .context("Failed to connect to TV")?;
+    // Build initial vendor config for pairing
+    let pairing_config = build_pairing_toml_value(vendor, address, wake_id.as_deref());
 
-    let client_key = client
-        .client_key()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get client key"))?
-        .to_string();
+    // Start pairing via the registry
+    let mut session = registry.start_pairing(vendor, &pairing_config)?;
+    let credentials = session.wait_for_completion().await
+        .map_err(|e| anyhow::anyhow!("Pairing failed: {}", e))?;
 
-    let name = name.unwrap_or_else(|| format!("TV at {}", ip));
+    // Build final vendor config with credentials
+    let final_config = registry.build_config_from_pairing(vendor, &pairing_config, &credentials)?;
+
+    let name = name.unwrap_or_else(|| format!("TV at {}", address));
     let id = id.unwrap_or_else(|| {
         name.to_lowercase()
             .replace(' ', "-")
@@ -652,32 +644,41 @@ async fn pair_tv_direct(
             .collect()
     });
 
-    let has_mac = mac.is_some();
-    // Create vendor-specific config with connection parameters
-    let lg_config = tisvlay_lg::LgVendorConfig {
-        ip: ip.to_string(),
-        mac,
-        client_key: Some(client_key),
-        default_input: None,
-    };
-    // Create TV config with vendor-specific config
-    let tv = TvConfig::new(id.clone(), name.clone())
-        .with_vendor("lg")
-        .with_vendor_config(&lg_config);
+    let mut tv_config = TvConfig::new(id.clone(), name.clone()).with_vendor(vendor);
+    tv_config.vendor_config.insert(vendor.to_string(), final_config);
 
-    config.upsert_tv(tv);
+    config.upsert_tv(tv_config);
     config.save().context("Failed to save configuration")?;
 
     println!("TV '{}' paired successfully!", name);
     println!("Config saved to: {:?}", Config::config_path()?);
 
-    if !has_mac {
-        println!("\nNote: No MAC address provided. Wake-on-LAN will not work.");
-        println!("Add MAC with: tisvlay pair {} --mac AA:BB:CC:DD:EE:FF", ip);
+    if wake_id.is_none() {
+        println!("\nNote: No wake ID (MAC address) provided. Wake-on-LAN will not work.");
+        println!("Add MAC with: tisvlay pair {} --wake-id AA:BB:CC:DD:EE:FF --vendor {}", address, vendor);
     }
 
-    client.close().await?;
     Ok(())
+}
+
+/// Build a toml::Value for pairing params from CLI args.
+fn build_pairing_toml_value(vendor: &str, address: &str, wake_id: Option<&str>) -> toml::Value {
+    let mut table = toml::map::Map::new();
+    match vendor {
+        "lg" => {
+            table.insert("ip".to_string(), toml::Value::String(address.to_string()));
+            if let Some(mac) = wake_id {
+                table.insert("mac".to_string(), toml::Value::String(mac.to_string()));
+            }
+        }
+        _ => {
+            table.insert("address".to_string(), toml::Value::String(address.to_string()));
+            if let Some(wid) = wake_id {
+                table.insert("wake_id".to_string(), toml::Value::String(wid.to_string()));
+            }
+        }
+    }
+    toml::Value::Table(table)
 }
 
 fn remove_tv_direct(config: &mut Config, tv_id: &str) -> Result<()> {

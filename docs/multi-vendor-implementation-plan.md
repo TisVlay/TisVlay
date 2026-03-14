@@ -14,7 +14,7 @@ See [multi-vendor-design.md](multi-vendor-design.md) for the full architecture a
 | 2 | LG Backend Extraction | ✅ Complete |
 | 3 | Daemon Refactor | ✅ Complete |
 | 4 | CLI & Session Service | ✅ Complete |
-| 4.5 | Abstraction Cleanup | 🔄 In Progress |
+| 4.5 | Abstraction Cleanup | ✅ Complete |
 | 5 | Testing & Documentation | ⏳ Pending |
 
 ---
@@ -305,9 +305,9 @@ tisvlay-session --user &
 
 ---
 
-## Phase 4.5: Abstraction Cleanup 🔄
+## Phase 4.5: Abstraction Cleanup ✅
 
-**Status**: In Progress
+**Status**: Complete
 
 **Goal**: Eliminate leaky abstractions where LG/WebOS-specific code bleeds through the vendor-agnostic layers.
 
@@ -451,7 +451,9 @@ default_input = "HDMI_1"
 - CLI and daemon import `tisvlay-backends`, not vendor crates directly
 - No `if vendor == "lg"` checks or downcasts in daemon/CLI
 
-### Completion Notes (Partial)
+### Completion Notes
+
+All tasks completed. The daemon and CLI are now fully vendor-agnostic and transport-agnostic.
 
 **Completed tasks:**
 
@@ -463,28 +465,53 @@ default_input = "HDMI_1"
 
 2. ✅ **Moved IP/MAC to vendor-specific config**
    - Removed `ip` and `mac` from root `TvConfig`
-   - Added `ip: String` and `mac: Option<String>` to `LgVendorConfig`
+   - `TvConfig.vendor_config` uses `#[serde(flatten)]` with `HashMap<String, toml::Value>` for vendor sections
+   - `get_raw_vendor_value()` returns the raw `toml::Value` for the vendor section
    - Updated all config parsing tests
-   - Updated all usages in daemon (`tv_manager.rs`) and CLI (`main.rs`)
 
 3. ✅ **Updated daemon to use `tisvlay-backends`**
-   - Daemon's `registry.rs` now re-exports from `tisvlay-backends`
-   - `create_default_registry()` calls `tisvlay_backends::create_registry()`
-   - Daemon still imports `tisvlay-lg` for `LgConfig` type (needed until task 6)
+   - Daemon's `registry.rs` re-exports from `tisvlay-backends`
+   - Daemon no longer depends on `tisvlay-lg` at all
+   - All TV operations go through `BackendRegistry` convenience methods
 
-**Remaining tasks:**
+4. ✅ **Flattened feature methods into `TvConnection` trait**
+   - `TvConnection` now has all feature methods directly (power_off, screen_on, set_volume, etc.)
+   - Default implementations return `Error::NotSupported`
+   - Backends only override methods they support
+   - Separate feature traits (`PowerControl`, `ScreenControl`, etc.) still exist for use as trait bounds
+   - No downcasting needed; callers use `capabilities()` to check and call methods directly
 
-4. ⏳ **Extend TvConnection trait with feature trait bounds** - Deferred
-5. ⏳ **Update CLI to use `tisvlay-backends`** - CLI still uses `tisvlay_lg::WebOsClient` directly for `--no-daemon` mode
-6. ⏳ **Eliminate vendor string checks and downcasts** - Daemon still has downcasts to `LgConnection`
+5. ✅ **Updated CLI to use `tisvlay-backends`**
+   - CLI no longer depends on `tisvlay-lg`
+   - `--no-daemon` mode uses `registry.connect_tv()` for vendor-agnostic connections
+   - `pair` command takes `--vendor` (default "lg") and `--wake-id` instead of `--mac`
+   - Positional `address` arg instead of `ip`
 
-**Note**: Tasks 4-6 require significant refactoring of the trait system to eliminate downcasting. This is tracked as future work since the current implementation functions correctly.
+6. ✅ **Eliminated vendor string checks and downcasts**
+   - No `if vendor == "lg"` checks or `downcast_mut::<LgConnection>()` in daemon or CLI
+   - Feature methods called directly on `dyn TvConnection`
+   - `TvConnector::connect()` takes `&toml::Value` (vendor config), not `(ip, mac, &dyn Any)`
+   - `TvConnector` also provides `display_address()`, `supports_wake()`, `wake()`, `start_pairing()`, `build_config_from_pairing()`
+   - `BackendRegistry` wraps these with `TvConfig`-based convenience methods
+
+7. ✅ **Transport-agnostic connector interface**
+   - `TvConnector::connect(&self, vendor_config: &toml::Value)` -- fully transport-agnostic
+   - `display_address()` returns human-readable address for logging/UI
+   - `supports_wake()` and `wake()` abstract over WoL, CEC power-on, etc.
+   - `start_pairing()` and `build_config_from_pairing()` abstract over pairing flows
+
+8. ✅ **D-Bus interface updated**
+   - `Tv1.Ip` property renamed to `Tv1.Address`
+   - `Manager1.AddTv(ip, name, vendor, mac)` changed to `AddTv(name, vendor, config_json)`
+   - `DaemonClient.pair_tv(ip, name, mac)` changed to `pair_tv(name, vendor, config_json)`
+   - `DiscoveredTv` fields: `ip` -> `address`, `mac` -> `hardware_id`
+   - `Capabilities::LG_ALL` renamed to `Capabilities::ALL`
 
 ---
 
 ## Phase 5: Testing & Documentation ⏳
 
-**Status**: Pending (blocked by Phase 4.5)
+**Status**: Pending
 
 **Goal**: Ensure everything works and document the architecture.
 
@@ -540,7 +567,7 @@ cargo doc --workspace --no-deps
 
 ```
 Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 4.5
-   ✅          ✅          ✅          ✅          🔄
+   ✅          ✅          ✅          ✅          ✅
                                                   │
                                                   ▼
                                               Phase 5
@@ -551,8 +578,8 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 4.
 - **Phase 2** must complete before Phase 3 (backend needed for daemon) ✅
 - **Phase 3** must complete before Phase 4 (new D-Bus interface needed) ✅
 - **Phase 4** must complete before Phase 4.5 (need working system to refactor) ✅
-- **Phase 4.5** partially complete (tisvlay-backends crate created, ip/mac moved) 🔄
-- **Phase 5** can start once Phase 4.5 core tasks complete ⏳
+- **Phase 4.5** complete (transport-agnostic abstractions, no vendor leaks) ✅
+- **Phase 5** can start now ⏳
 
 ---
 
@@ -564,7 +591,7 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 4.
 | 2 | 8 | 3 | High | ✅ Complete |
 | 3 | 4 | 3 | High | ✅ Complete |
 | 4 | 0 | 4 | Medium | ✅ Complete |
-| 4.5 | 3 | 9 | Medium | 🔄 In Progress |
+| 4.5 | 3 | 9 | Medium | ✅ Complete |
 | 5 | 2 | 3 | Low | ⏳ Pending |
 | **Total** | **20** | **25** | | |
 

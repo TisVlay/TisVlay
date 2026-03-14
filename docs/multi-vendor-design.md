@@ -2,7 +2,7 @@
 
 This document describes the architecture for refactoring tisvlay from an LG WebOS-specific implementation to a vendor-agnostic architecture supporting multiple TV manufacturers.
 
-> **Implementation Status**: Phases 1-4 complete; Phase 4.5 (abstraction cleanup) pending. See [multi-vendor-implementation-plan.md](multi-vendor-implementation-plan.md) for details.
+> **Implementation Status**: Phases 1-4.5 complete. See [multi-vendor-implementation-plan.md](multi-vendor-implementation-plan.md) for details.
 
 ## Executive Summary
 
@@ -165,6 +165,27 @@ This ensures:
 
 ## Core Traits
 
+### Trait Hierarchy
+
+```text
+TvBackend (metadata: vendor_id, vendor_name, capabilities)
+    |
+    +-- TvConnector (factory: connect, wake, pair, display_address)
+    |
+    +-- TvDiscovery (network discovery)
+
+TvConnection (base + feature methods with default not-supported impls)
+    +-- power_off, get_power_state
+    +-- screen_on, screen_off, is_screen_on
+    +-- set_volume, get_volume, set_mute, is_muted
+    +-- switch_input, get_current_input, list_inputs
+    +-- set_backlight, get_backlight
+```
+
+### Transport Agnosticism
+
+The connector interface is fully transport-agnostic. All transport details (IP addresses, serial ports, CEC addresses, etc.) are encapsulated in the vendor config (`toml::Value`), which only the vendor crate knows how to interpret. The daemon and CLI never see transport-specific types.
+
 ### tisvlay-core/src/traits.rs
 
 ```rust
@@ -172,95 +193,87 @@ use async_trait::async_trait;
 use crate::{Capabilities, TvState, PairingSession, DiscoveredTv, Error, Result};
 
 /// Core trait that all TV backends must implement.
-#[async_trait]
 pub trait TvBackend: Send + Sync + 'static {
-    /// Unique identifier for this backend (e.g., "lg", "samsung").
     fn vendor_id(&self) -> &'static str;
-
-    /// Human-readable vendor name.
     fn vendor_name(&self) -> &'static str;
-
-    /// Capabilities this backend supports.
     fn capabilities(&self) -> Capabilities;
 }
 
 /// Connection to a specific TV instance.
+///
+/// Feature methods have default implementations that return Error::NotSupported,
+/// so backends only need to override the methods they support. Use capabilities()
+/// to check which features are available before calling feature methods.
 #[async_trait]
 pub trait TvConnection: Send + Sync {
-    /// Get the backend this connection belongs to.
-    fn backend(&self) -> &dyn TvBackend;
-
-    /// Check if the connection is active.
+    fn vendor_id(&self) -> &'static str;
     fn is_connected(&self) -> bool;
-
-    /// Get current TV state.
     async fn get_state(&mut self) -> Result<TvState>;
+    async fn close(&mut self) -> Result<()>;
+    fn capabilities(&self) -> Capabilities;
 
-    /// Close the connection.
-    async fn close(self: Box<Self>) -> Result<()>;
-}
+    // Power control (default: not supported)
+    async fn power_off(&mut self) -> Result<()> { Err(Error::not_supported("power_off", Capabilities::POWER)) }
+    async fn get_power_state(&mut self) -> Result<PowerState> { Err(Error::not_supported("get_power_state", Capabilities::POWER)) }
 
-/// Power control capability.
-#[async_trait]
-pub trait PowerControl: TvConnection {
-    async fn power_on(&mut self) -> Result<()>;
-    async fn power_off(&mut self) -> Result<()>;
-    async fn get_power_state(&mut self) -> Result<PowerState>;
-}
+    // Screen control (default: not supported)
+    async fn screen_on(&mut self) -> Result<()> { Err(Error::not_supported("screen_on", Capabilities::SCREEN)) }
+    async fn screen_off(&mut self) -> Result<()> { Err(Error::not_supported("screen_off", Capabilities::SCREEN)) }
+    async fn is_screen_on(&mut self) -> Result<bool> { Err(Error::not_supported("is_screen_on", Capabilities::SCREEN)) }
 
-/// Screen blanking capability (OLED-safe).
-#[async_trait]
-pub trait ScreenControl: TvConnection {
-    async fn screen_on(&mut self) -> Result<()>;
-    async fn screen_off(&mut self) -> Result<()>;
-    async fn is_screen_on(&mut self) -> Result<bool>;
-}
+    // Volume control (default: not supported)
+    async fn set_volume(&mut self, _level: u8) -> Result<()> { Err(Error::not_supported("set_volume", Capabilities::VOLUME)) }
+    async fn get_volume(&mut self) -> Result<u8> { Err(Error::not_supported("get_volume", Capabilities::VOLUME)) }
+    async fn set_mute(&mut self, _mute: bool) -> Result<()> { Err(Error::not_supported("set_mute", Capabilities::MUTE)) }
+    async fn is_muted(&mut self) -> Result<bool> { Err(Error::not_supported("is_muted", Capabilities::MUTE)) }
 
-/// Volume control capability.
-#[async_trait]
-pub trait VolumeControl: TvConnection {
-    async fn set_volume(&mut self, level: u8) -> Result<()>;
-    async fn get_volume(&mut self) -> Result<u8>;
-    async fn set_mute(&mut self, mute: bool) -> Result<()>;
-    async fn is_muted(&mut self) -> Result<bool>;
-}
+    // Input control (default: not supported)
+    async fn switch_input(&mut self, _input_id: &str) -> Result<()> { Err(Error::not_supported("switch_input", Capabilities::INPUT)) }
+    async fn get_current_input(&mut self) -> Result<Option<String>> { Err(Error::not_supported("get_current_input", Capabilities::INPUT)) }
+    async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> { Err(Error::not_supported("list_inputs", Capabilities::INPUT)) }
 
-/// Input switching capability.
-#[async_trait]
-pub trait InputControl: TvConnection {
-    async fn switch_input(&mut self, input_id: &str) -> Result<()>;
-    async fn get_current_input(&mut self) -> Result<Option<String>>;
-    async fn list_inputs(&mut self) -> Result<Vec<InputInfo>>;
-}
-
-/// Backlight/brightness control (OLED pixel brightness).
-#[async_trait]
-pub trait BacklightControl: TvConnection {
-    async fn set_backlight(&mut self, level: u8) -> Result<()>;
-    async fn get_backlight(&mut self) -> Result<u8>;
+    // Backlight control (default: not supported)
+    async fn set_backlight(&mut self, _level: u8) -> Result<()> { Err(Error::not_supported("set_backlight", Capabilities::BACKLIGHT)) }
+    async fn get_backlight(&mut self) -> Result<u8> { Err(Error::not_supported("get_backlight", Capabilities::BACKLIGHT)) }
 }
 
 /// Factory for creating connections to TVs.
+///
+/// All transport details are encapsulated in vendor_config (toml::Value).
+/// The connector deserializes it into its own config type internally.
 #[async_trait]
 pub trait TvConnector: Send + Sync {
-    /// Connect to a TV with existing credentials.
-    async fn connect(
-        &self,
-        config: &TvConfig,
-        vendor_config: &dyn std::any::Any,
-    ) -> Result<Box<dyn TvConnection>>;
+    /// Connect to a TV using vendor-specific config.
+    async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>>;
 
-    /// Start pairing with a new TV.
-    fn start_pairing(&self, ip: &str) -> PairingSession;
+    /// Human-readable address for logging and UI (e.g., IP, serial port, CEC address).
+    fn display_address(&self, vendor_config: &toml::Value) -> String;
+
+    /// Whether this transport supports waking the device from standby.
+    fn supports_wake(&self, vendor_config: &toml::Value) -> bool;
+
+    /// Wake the device from standby (e.g., WoL, CEC power-on).
+    async fn wake(&self, vendor_config: &toml::Value) -> Result<()>;
+
+    /// Start pairing with a new device.
+    fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession>;
+
+    /// Build vendor config from pairing results for persistence.
+    fn build_config_from_pairing(
+        &self,
+        pairing_params: &toml::Value,
+        credentials: &Credentials,
+    ) -> Result<toml::Value>;
 }
 
 /// Discovery of TVs on the network.
 #[async_trait]
 pub trait TvDiscovery: Send + Sync {
-    /// Discover TVs on the local network.
     async fn discover(&self, timeout: std::time::Duration) -> Result<Vec<DiscoveredTv>>;
 }
 ```
+
+Separate feature traits (`PowerControl`, `ScreenControl`, `VolumeControl`, `InputControl`, `BacklightControl`) still exist for use as trait bounds in generic code, but `TvConnection` is the primary interface used by the daemon and CLI.
 
 ### tisvlay-core/src/capabilities.rs
 
@@ -271,30 +284,18 @@ bitflags! {
     /// Capabilities a TV backend may support.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Capabilities: u32 {
-        const POWER        = 0b0000_0001;  // Power on/off
-        const SCREEN       = 0b0000_0010;  // Screen blank (OLED-safe)
-        const VOLUME       = 0b0000_0100;  // Volume control
-        const MUTE         = 0b0000_1000;  // Mute control
-        const INPUT        = 0b0001_0000;  // Input switching
-        const BACKLIGHT    = 0b0010_0000;  // Backlight/brightness
-        const WOL          = 0b0100_0000;  // Wake-on-LAN support
-        const DISCOVERY    = 0b1000_0000;  // Network discovery
-    }
-}
-
-impl Capabilities {
-    /// Convert to D-Bus-friendly string array.
-    pub fn to_strings(&self) -> Vec<&'static str> {
-        let mut caps = Vec::new();
-        if self.contains(Self::POWER) { caps.push("power"); }
-        if self.contains(Self::SCREEN) { caps.push("screen"); }
-        if self.contains(Self::VOLUME) { caps.push("volume"); }
-        if self.contains(Self::MUTE) { caps.push("mute"); }
-        if self.contains(Self::INPUT) { caps.push("input"); }
-        if self.contains(Self::BACKLIGHT) { caps.push("backlight"); }
-        if self.contains(Self::WOL) { caps.push("wol"); }
-        if self.contains(Self::DISCOVERY) { caps.push("discovery"); }
-        caps
+        const POWER        = 0b0000_0001;
+        const SCREEN       = 0b0000_0010;
+        const VOLUME       = 0b0000_0100;
+        const MUTE         = 0b0000_1000;
+        const INPUT        = 0b0001_0000;
+        const BACKLIGHT    = 0b0010_0000;
+        const WOL          = 0b0100_0000;
+        const DISCOVERY    = 0b1000_0000;
+        const ALL          = Self::POWER.bits() | Self::SCREEN.bits()
+                           | Self::VOLUME.bits() | Self::MUTE.bits()
+                           | Self::INPUT.bits() | Self::BACKLIGHT.bits()
+                           | Self::WOL.bits() | Self::DISCOVERY.bits();
     }
 }
 ```
@@ -318,14 +319,16 @@ impl Capabilities {
   <method name="DiscoverTvs">
     <arg name="timeout_ms" type="u" direction="in"/>
     <arg name="tvs" type="a(sssss)" direction="out"/>
-    <!-- Returns: [(id, name, ip, mac, vendor)] -->
+    <!-- Returns: [(id, name, address, hardware_id, vendor)] -->
   </method>
 
   <!-- TV Management -->
   <method name="AddTv">
-    <arg name="ip" type="s" direction="in"/>
     <arg name="name" type="s" direction="in"/>
     <arg name="vendor" type="s" direction="in"/>
+    <arg name="config_json" type="s" direction="in"/>
+    <!-- config_json: vendor-specific connection params as JSON -->
+    <!-- e.g., {"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"} for LG -->
     <arg name="tv_path" type="o" direction="out"/>
   </method>
 
@@ -359,7 +362,7 @@ impl Capabilities {
   <property name="Id" type="s" access="read"/>
   <property name="Name" type="s" access="read"/>
   <property name="Vendor" type="s" access="read"/>
-  <property name="Ip" type="s" access="read"/>
+  <property name="Address" type="s" access="read"/>  <!-- transport-agnostic display address -->
   <property name="Connected" type="b" access="read"/>
   <property name="Capabilities" type="as" access="read"/>
 
@@ -515,95 +518,52 @@ default_input = "HDMI_2"
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
-    pub profiles: HashMap<String, ProfileConfig>,
-
-    #[serde(default)]
     pub daemon: DaemonConfig,
-
+    #[serde(default)]
+    pub profiles: HashMap<String, ProfileConfig>,
     #[serde(default)]
     pub tv: Vec<TvConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProfileConfig {
-    #[serde(default)]
-    pub on_screen_lock: SessionAction,
-    #[serde(default)]
-    pub on_screen_unlock: SessionAction,
-    #[serde(default)]
-    pub on_greeter_wake: SessionAction,
-    #[serde(default)]
-    pub on_sleep: SessionAction,
-    #[serde(default)]
-    pub on_wake: SessionAction,
-    #[serde(default)]
-    pub idle_timeout_seconds: u64,
-    #[serde(default)]
-    pub on_idle_timeout: SessionAction,
 }
 
 /// TV configuration - vendor-agnostic identity and behavior settings.
 /// Connection parameters (ip, mac, etc.) are in vendor-specific sections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvConfig {
-    /// Unique identifier for this TV.
     pub id: String,
-    /// Human-readable display name.
     pub name: String,
-    /// Vendor/backend to use (e.g., "lg", "samsung").
+    #[serde(default = "default_vendor")]
     pub vendor: String,
-
-    /// Profile name for session behavior.
     #[serde(default = "default_profile")]
     pub profile: String,
-
-    // Display-aware settings
-    /// HDMI input this PC is connected to.
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hdmi_input: Option<String>,
-    /// Only control when TV is on the specified input.
     #[serde(default)]
     pub only_when_active: bool,
 
-    // Vendor-specific config (only one will be present)
-    // Contains connection parameters specific to each vendor
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lg: Option<LgVendorConfig>,
-    // Future: samsung, sony, roku, serial, etc.
-}
-
-fn default_profile() -> String {
-    "default".to_string()
-}
-
-/// LG WebOS specific configuration.
-/// Contains connection parameters and LG-specific settings.
-// Note: Defined in tisvlay-core/src/config.rs for simpler serde handling
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LgVendorConfig {
-    /// IP address for WebSocket connection.
-    pub ip: String,
-    /// MAC address for Wake-on-LAN.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mac: Option<String>,
-    /// Client key obtained during pairing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_key: Option<String>,
-    /// Default HDMI input to switch to on wake.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_input: Option<String>,
+    /// Vendor-specific configuration (flattened).
+    /// Captures vendor-specific fields (e.g., `lg = { ip = "...", client_key = "..." }`).
+    /// Use `get_vendor_config::<T>()` to deserialize, or `get_raw_vendor_value()`
+    /// to pass the raw toml::Value to a TvConnector.
+    #[serde(flatten)]
+    pub vendor_config: HashMap<String, toml::Value>,
 }
 ```
+
+Key design: `TvConfig` does not contain any typed vendor config (no `Option<LgVendorConfig>`). Instead, vendor configs are captured as raw `toml::Value` via `#[serde(flatten)]`. This means `tisvlay-core` has zero knowledge of vendor-specific types. Vendor crates define their own config structs (e.g., `LgVendorConfig` in `tisvlay-lg/src/config.rs`) and deserialize from the `toml::Value` internally.
 
 ---
 
 ## Migration Notes
 
 ### Breaking Changes
-- D-Bus interface completely redesigned (per-TV objects)
+- D-Bus interface completely redesigned (per-TV objects at `/org/tisvlay/Tv/{id}`)
+- D-Bus `Tv1.Ip` property renamed to `Tv1.Address` (transport-agnostic)
+- D-Bus `Manager1.AddTv` signature changed: `(ip, name, vendor, mac)` -> `(name, vendor, config_json)`
 - Config file format changed (profiles, nested vendor config)
 - `ip` and `mac` moved from root `[[tv]]` to vendor-specific `[tv.lg]` section
-- CLI output format may change
+- CLI `pair` command: positional arg changed from `ip` to `address`, `--mac` to `--wake-id`, added `--vendor`
+- `DiscoveredTv` fields renamed: `ip` -> `address`, `mac` -> `hardware_id`
+- `Capabilities::LG_ALL` renamed to `Capabilities::ALL`
 
 ### Migration Path
 1. Old configs will not parse - users need to migrate manually

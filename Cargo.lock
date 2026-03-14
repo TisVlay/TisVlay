@@ -1282,6 +1282,7 @@ dependencies = [
  "tisvlay-core",
  "tisvlay-lg",
  "tokio",
+ "toml",
  "tracing",
 ]
 
@@ -1292,9 +1293,10 @@ dependencies = [
  "anyhow",
  "clap",
  "serde_json",
+ "tisvlay-backends",
  "tisvlay-core",
- "tisvlay-lg",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1337,6 +1339,7 @@ dependencies = [
  "tisvlay-core",
  "tokio",
  "tokio-tungstenite",
+ "toml",
  "tracing",
  "url",
  "urlencoding",
@@ -1370,8 +1373,8 @@ dependencies = [
  "serde_json",
  "tisvlay-backends",
  "tisvlay-core",
- "tisvlay-lg",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "zbus",

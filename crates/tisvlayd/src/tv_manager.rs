@@ -6,10 +6,7 @@ use crate::registry::BackendRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tisvlay_core::{
-    BacklightControl, Capabilities, Config, InputControl, PowerControl, PowerState, ScreenControl,
-    TvConfig, TvConnection, TvState, VolumeControl,
-};
+use tisvlay_core::{Capabilities, Config, PowerState, TvConfig, TvConnection, TvState};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -50,8 +47,8 @@ impl StateChangeEvent {
 pub struct TvInfo {
     pub id: String,
     pub name: String,
-    /// IP address (extracted from vendor-specific config).
-    pub ip: String,
+    /// Display address (extracted from vendor-specific config via connector).
+    pub address: String,
     pub vendor: String,
 }
 
@@ -199,26 +196,10 @@ impl TvManager {
         let tvs = self.tvs.read().await;
 
         for (id, tv) in tvs.iter() {
-            // Get MAC from vendor-specific config
-            let mac = if tv.config.vendor == "lg" {
-                tv.config
-                    .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
-                    .and_then(|lg| lg.mac)
-            } else {
-                None
-            };
-
-            if let Some(mac) = mac {
-                info!(tv_id = %id, mac = %mac, "Sending WoL packet");
-                match tisvlay_core::MacAddress::parse(&mac) {
-                    Ok(mac_addr) => {
-                        if let Err(e) = tisvlay_core::wol::wake(&mac_addr) {
-                            warn!(tv_id = %id, error = %e, "Failed to send WoL");
-                        }
-                    }
-                    Err(e) => {
-                        warn!(tv_id = %id, error = %e, "Invalid MAC address");
-                    }
+            if self.registry.supports_wake(&tv.config) {
+                info!(tv_id = %id, "Waking TV");
+                if let Err(e) = self.registry.wake_tv(&tv.config).await {
+                    warn!(tv_id = %id, error = %e, "Failed to wake TV");
                 }
             }
         }
@@ -240,16 +221,8 @@ impl TvManager {
         let tvs = self.tvs.read().await;
         tvs.iter()
             .map(|(id, tv)| {
-                // Get IP from vendor-specific config
-                let ip = if tv.config.vendor == "lg" {
-                    tv.config
-                        .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
-                        .map(|lg| lg.ip)
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                (id.clone(), tv.config.name.clone(), ip, tv.is_connected())
+                let address = self.registry.display_address(&tv.config);
+                (id.clone(), tv.config.name.clone(), address, tv.is_connected())
             })
             .collect()
     }
@@ -258,19 +231,11 @@ impl TvManager {
     pub async fn get_tv_info(&self, tv_id: &str) -> Option<TvInfo> {
         let tvs = self.tvs.read().await;
         tvs.get(tv_id).map(|tv| {
-            // Get IP from vendor-specific config
-            let ip = if tv.config.vendor == "lg" {
-                tv.config
-                    .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
-                    .map(|lg| lg.ip)
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
+            let address = self.registry.display_address(&tv.config);
             TvInfo {
                 id: tv.config.id.clone(),
                 name: tv.config.name.clone(),
-                ip,
+                address,
                 vendor: tv.config.vendor.clone(),
             }
         })
@@ -297,7 +262,7 @@ impl TvManager {
     /// Connect to a TV, returning success/failure.
     async fn connect(&self, tv_id: &str) -> Result<(), String> {
         // Get config first (read lock)
-        let (ip, vendor, vendor_config) = {
+        let (display_addr, config) = {
             let tvs = self.tvs.read().await;
             let tv = tvs
                 .get(tv_id)
@@ -307,29 +272,18 @@ impl TvManager {
                 return Ok(());
             }
 
-            let vendor = tv.config.vendor.clone();
+            let display_addr = self.registry.display_address(&tv.config);
+            let config = tv.config.clone();
 
-            // Get IP and vendor config from vendor-specific section
-            let (ip, vendor_config): (String, Box<dyn std::any::Any + Send + Sync>) =
-                if vendor == "lg" {
-                    let lg_config: tisvlay_lg::LgVendorConfig = tv
-                        .config
-                        .get_vendor_config()
-                        .ok_or_else(|| format!("No LG config found for TV: {}", tv_id))?;
-                    (lg_config.ip.clone(), Box::new(lg_config))
-                } else {
-                    return Err(format!("Unknown vendor: {}", vendor));
-                };
-
-            (ip, vendor, vendor_config)
+            (display_addr, config)
         };
 
-        info!(tv_id = %tv_id, ip = %ip, vendor = %vendor, "Connecting to TV");
+        info!(tv_id = %tv_id, address = %display_addr, vendor = %config.vendor, "Connecting to TV");
 
         // Connect using registry (no lock held)
         let connection = self
             .registry
-            .connect(&vendor, &ip, None, vendor_config.as_ref())
+            .connect_tv(&config)
             .await
             .map_err(|e| format!("Connection failed: {}", e))?;
 
@@ -454,22 +408,17 @@ impl TvManager {
             .await
             .ok_or_else(|| format!("TV not found: {}", tv_id))?;
 
-        // Get MAC and default_input from vendor-specific config
-        let (mac, default_input) = if config.vendor == "lg" {
-            let lg_config = config
-                .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
-                .ok_or_else(|| "No LG config found".to_string())?;
-            (lg_config.mac, lg_config.default_input)
-        } else {
-            return Err(format!("Unknown vendor: {}", config.vendor));
-        };
+        if !self.registry.supports_wake(&config) {
+            return Err("Wake not supported for this TV".to_string());
+        }
 
-        let mac = mac.ok_or_else(|| "MAC address not configured for Wake-on-LAN".to_string())?;
+        let display_addr = self.registry.display_address(&config);
+        info!(tv_id = %tv_id, address = %display_addr, "Waking TV");
 
-        info!(tv_id = %tv_id, mac = %mac, "Sending WoL packet");
-        let mac_addr = tisvlay_core::MacAddress::parse(&mac)
-            .map_err(|e| format!("Invalid MAC address: {}", e))?;
-        tisvlay_core::wol::wake(&mac_addr).map_err(|e| format!("WoL failed: {}", e))?;
+        self.registry
+            .wake_tv(&config)
+            .await
+            .map_err(|e| format!("Wake failed: {}", e))?;
 
         // Wait for TV to wake
         let delay = Duration::from_millis(self.config.daemon.wake_delay_ms);
@@ -478,27 +427,21 @@ impl TvManager {
         // Try to connect
         self.connect(tv_id).await?;
 
-        // Switch to default input if configured
-        if let Some(ref input) = default_input {
-            info!(tv_id = %tv_id, input = %input, "Switching to default input");
-            let _ = self.switch_input(tv_id, input).await;
-        }
-
         Ok(())
     }
 
     /// Power off a TV.
     pub async fn power_off(&self, tv_id: &str) -> Result<(), String> {
-        self.with_power_control(tv_id, |power| {
-            Box::pin(async move { power.power_off().await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.power_off().await })
         })
         .await
     }
 
     /// Get power state.
     pub async fn get_power_state(&self, tv_id: &str) -> Result<PowerState, String> {
-        self.with_power_control(tv_id, |power| {
-            Box::pin(async move { power.get_power_state().await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.get_power_state().await })
         })
         .await
     }
@@ -509,24 +452,24 @@ impl TvManager {
 
     /// Turn screen on.
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), String> {
-        self.with_screen_control(tv_id, |screen| {
-            Box::pin(async move { screen.screen_on().await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.screen_on().await })
         })
         .await
     }
 
     /// Turn screen off.
     pub async fn screen_off(&self, tv_id: &str) -> Result<(), String> {
-        self.with_screen_control(tv_id, |screen| {
-            Box::pin(async move { screen.screen_off().await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.screen_off().await })
         })
         .await
     }
 
     /// Check if screen is on.
     pub async fn is_screen_on(&self, tv_id: &str) -> Result<bool, String> {
-        self.with_screen_control(tv_id, |screen| {
-            Box::pin(async move { screen.is_screen_on().await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.is_screen_on().await })
         })
         .await
     }
@@ -537,32 +480,32 @@ impl TvManager {
 
     /// Set volume.
     pub async fn set_volume(&self, tv_id: &str, volume: u32) -> Result<(), String> {
-        self.with_volume_control(tv_id, |vol| {
-            Box::pin(async move { vol.set_volume(volume as u8).await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.set_volume(volume as u8).await })
         })
         .await
     }
 
     /// Get volume.
     pub async fn get_volume(&self, tv_id: &str) -> Result<u32, String> {
-        self.with_volume_control(tv_id, |vol| {
-            Box::pin(async move { vol.get_volume().await.map(|v| v as u32) })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.get_volume().await.map(|v| v as u32) })
         })
         .await
     }
 
     /// Set mute.
     pub async fn set_mute(&self, tv_id: &str, mute: bool) -> Result<(), String> {
-        self.with_volume_control(tv_id, |vol| {
-            Box::pin(async move { vol.set_mute(mute).await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.set_mute(mute).await })
         })
         .await
     }
 
     /// Check if muted.
     pub async fn is_muted(&self, tv_id: &str) -> Result<bool, String> {
-        self.with_volume_control(tv_id, |vol| {
-            Box::pin(async move { vol.is_muted().await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.is_muted().await })
         })
         .await
     }
@@ -574,25 +517,25 @@ impl TvManager {
     /// Switch input.
     pub async fn switch_input(&self, tv_id: &str, input_id: &str) -> Result<(), String> {
         let input = input_id.to_string();
-        self.with_input_control(tv_id, |inp| {
-            Box::pin(async move { inp.switch_input(&input).await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.switch_input(&input).await })
         })
         .await
     }
 
     /// Get current input.
     pub async fn get_current_input(&self, tv_id: &str) -> Result<Option<String>, String> {
-        self.with_input_control(tv_id, |inp| {
-            Box::pin(async move { inp.get_current_input().await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.get_current_input().await })
         })
         .await
     }
 
     /// Get available inputs.
     pub async fn get_inputs(&self, tv_id: &str) -> Result<Vec<(String, String)>, String> {
-        self.with_input_control(tv_id, |inp| {
+        self.with_connection(tv_id, |conn| {
             Box::pin(async move {
-                let inputs = inp.list_inputs().await?;
+                let inputs = conn.list_inputs().await?;
                 Ok(inputs.into_iter().map(|i| (i.id, i.label)).collect())
             })
         })
@@ -605,16 +548,16 @@ impl TvManager {
 
     /// Set backlight.
     pub async fn set_backlight(&self, tv_id: &str, backlight: u32) -> Result<(), String> {
-        self.with_backlight_control(tv_id, |bl| {
-            Box::pin(async move { bl.set_backlight(backlight as u8).await })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.set_backlight(backlight as u8).await })
         })
         .await
     }
 
     /// Get backlight.
     pub async fn get_backlight(&self, tv_id: &str) -> Result<u32, String> {
-        self.with_backlight_control(tv_id, |bl| {
-            Box::pin(async move { bl.get_backlight().await.map(|v| v as u32) })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.get_backlight().await.map(|v| v as u32) })
         })
         .await
     }
@@ -651,39 +594,30 @@ impl TvManager {
     /// Pair a new TV.
     pub async fn pair_tv(
         &self,
-        ip: &str,
         name: &str,
         vendor: &str,
-        mac: Option<&str>,
+        vendor_config: toml::Value,
         id: Option<&str>,
     ) -> Result<String, String> {
-        info!(ip = %ip, name = %name, vendor = %vendor, "Pairing TV");
+        info!(name = %name, vendor = %vendor, "Pairing TV");
 
-        // Connect to TV using registry (this triggers pairing prompt)
-        let backend = self
+        // Start pairing via registry
+        let mut session = self
             .registry
-            .get(vendor)
-            .ok_or_else(|| format!("Unknown vendor: {}", vendor))?;
+            .start_pairing(vendor, &vendor_config)
+            .map_err(|e| format!("Failed to start pairing: {}", e))?;
 
-        // For LG, we need an empty config to trigger pairing
-        let empty_config = tisvlay_lg::LgVendorConfig::default();
-        let connection = backend
-            .connector
-            .connect(ip, mac, &empty_config)
+        // Wait for pairing to complete
+        let credentials = session
+            .wait_for_completion()
             .await
-            .map_err(|e| format!("Failed to connect to TV: {}", e))?;
+            .map_err(|e| format!("Pairing failed: {}", e))?;
 
-        // Get client key from the connection (vendor-specific)
-        let client_key = if vendor == "lg" {
-            // Downcast to LgConnection to get the client key
-            if let Some(lg_conn) = connection.as_any().downcast_ref::<tisvlay_lg::LgConnection>() {
-                lg_conn.client().client_key().map(String::from)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        // Build final vendor config from pairing results
+        let final_config = self
+            .registry
+            .build_config_from_pairing(vendor, &vendor_config, &credentials)
+            .map_err(|e| format!("Failed to build config from pairing: {}", e))?;
 
         // Generate ID from name if not provided
         let tv_id = id.map(String::from).unwrap_or_else(|| {
@@ -699,16 +633,17 @@ impl TvManager {
             .with_vendor(vendor)
             .with_profile("default");
 
-        // Add vendor-specific config (includes connection parameters)
-        if vendor == "lg" {
-            let lg_config = tisvlay_lg::LgVendorConfig {
-                ip: ip.to_string(),
-                mac: mac.map(String::from),
-                client_key,
-                default_input: None,
-            };
-            tv_config = tv_config.with_vendor_config(&lg_config);
-        }
+        // Store the vendor config
+        tv_config
+            .vendor_config
+            .insert(vendor.to_string(), final_config);
+
+        // Connect with the new config
+        let connection = self
+            .registry
+            .connect_tv(&tv_config)
+            .await
+            .map_err(|e| format!("Failed to connect after pairing: {}", e))?;
 
         // Add to managed TVs
         {
@@ -822,126 +757,6 @@ impl TvManager {
         info!(tv_count = tvs.len(), "Configuration reloaded");
         Ok(())
     }
-
-    // -------------------------------------------------------------------------
-    // Helper methods for trait-based control
-    // -------------------------------------------------------------------------
-
-    async fn with_power_control<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
-    where
-        F: FnOnce(&mut (dyn PowerControl + Send)) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
-    {
-        self.connect(tv_id).await?;
-
-        let mut tvs = self.tvs.write().await;
-        let tv = tvs
-            .get_mut(tv_id)
-            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
-
-        let connection = tv
-            .connection
-            .as_mut()
-            .ok_or_else(|| "Not connected".to_string())?;
-
-        // Downcast to LgConnection which implements PowerControl
-        if let Some(lg_conn) = connection.as_any_mut().downcast_mut::<tisvlay_lg::LgConnection>() {
-            f(lg_conn).await.map_err(|e| e.to_string())
-        } else {
-            Err("Power control not supported for this TV type".to_string())
-        }
-    }
-
-    async fn with_screen_control<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
-    where
-        F: FnOnce(&mut (dyn ScreenControl + Send)) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
-    {
-        self.connect(tv_id).await?;
-
-        let mut tvs = self.tvs.write().await;
-        let tv = tvs
-            .get_mut(tv_id)
-            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
-
-        let connection = tv
-            .connection
-            .as_mut()
-            .ok_or_else(|| "Not connected".to_string())?;
-
-        if let Some(lg_conn) = connection.as_any_mut().downcast_mut::<tisvlay_lg::LgConnection>() {
-            f(lg_conn).await.map_err(|e| e.to_string())
-        } else {
-            Err("Screen control not supported for this TV type".to_string())
-        }
-    }
-
-    async fn with_volume_control<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
-    where
-        F: FnOnce(&mut (dyn VolumeControl + Send)) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
-    {
-        self.connect(tv_id).await?;
-
-        let mut tvs = self.tvs.write().await;
-        let tv = tvs
-            .get_mut(tv_id)
-            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
-
-        let connection = tv
-            .connection
-            .as_mut()
-            .ok_or_else(|| "Not connected".to_string())?;
-
-        if let Some(lg_conn) = connection.as_any_mut().downcast_mut::<tisvlay_lg::LgConnection>() {
-            f(lg_conn).await.map_err(|e| e.to_string())
-        } else {
-            Err("Volume control not supported for this TV type".to_string())
-        }
-    }
-
-    async fn with_input_control<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
-    where
-        F: FnOnce(&mut (dyn InputControl + Send)) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
-    {
-        self.connect(tv_id).await?;
-
-        let mut tvs = self.tvs.write().await;
-        let tv = tvs
-            .get_mut(tv_id)
-            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
-
-        let connection = tv
-            .connection
-            .as_mut()
-            .ok_or_else(|| "Not connected".to_string())?;
-
-        if let Some(lg_conn) = connection.as_any_mut().downcast_mut::<tisvlay_lg::LgConnection>() {
-            f(lg_conn).await.map_err(|e| e.to_string())
-        } else {
-            Err("Input control not supported for this TV type".to_string())
-        }
-    }
-
-    async fn with_backlight_control<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
-    where
-        F: FnOnce(&mut (dyn BacklightControl + Send)) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
-    {
-        self.connect(tv_id).await?;
-
-        let mut tvs = self.tvs.write().await;
-        let tv = tvs
-            .get_mut(tv_id)
-            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
-
-        let connection = tv
-            .connection
-            .as_mut()
-            .ok_or_else(|| "Not connected".to_string())?;
-
-        if let Some(lg_conn) = connection.as_any_mut().downcast_mut::<tisvlay_lg::LgConnection>() {
-            f(lg_conn).await.map_err(|e| e.to_string())
-        } else {
-            Err("Backlight control not supported for this TV type".to_string())
-        }
-    }
 }
 
 /// Background worker for handling reconnection attempts with exponential backoff.
@@ -976,8 +791,8 @@ async fn reconnect_tv(
     let mut current_delay_ms = MIN_RECONNECT_DELAY_MS;
 
     loop {
-        // Get current reconnection state
-        let (should_reconnect, ip, vendor, vendor_config) = {
+        // Get current reconnection state and config
+        let (should_reconnect, display_addr, config) = {
             let tvs = tvs.read().await;
             match tvs.get(tv_id) {
                 Some(tv) => {
@@ -987,26 +802,10 @@ async fn reconnect_tv(
                         return;
                     }
 
-                    let vendor = tv.config.vendor.clone();
+                    let display_addr = registry.display_address(&tv.config);
+                    let config = tv.config.clone();
 
-                    // Get IP and vendor config from vendor-specific section
-                    let (ip, vendor_config): (String, Box<dyn std::any::Any + Send + Sync>) =
-                        if vendor == "lg" {
-                            match tv.config.get_vendor_config::<tisvlay_lg::LgVendorConfig>() {
-                                Some(lg_config) => {
-                                    (lg_config.ip.clone(), Box::new(lg_config))
-                                }
-                                None => {
-                                    warn!(tv_id = %tv_id, "No LG config found, stopping reconnection");
-                                    return;
-                                }
-                            }
-                        } else {
-                            warn!(tv_id = %tv_id, "Unknown vendor, stopping reconnection");
-                            return;
-                        };
-
-                    (true, ip, vendor, vendor_config)
+                    (true, display_addr, config)
                 }
                 None => {
                     warn!(tv_id = %tv_id, "TV not found, stopping reconnection");
@@ -1028,11 +827,8 @@ async fn reconnect_tv(
         tokio::time::sleep(Duration::from_millis(current_delay_ms)).await;
 
         // Attempt connection
-        info!(tv_id = %tv_id, ip = %ip, "Attempting reconnection");
-        match registry
-            .connect(&vendor, &ip, None, vendor_config.as_ref())
-            .await
-        {
+        info!(tv_id = %tv_id, address = %display_addr, "Attempting reconnection");
+        match registry.connect_tv(&config).await {
             Ok(connection) => {
                 info!(tv_id = %tv_id, "Reconnection successful");
                 {

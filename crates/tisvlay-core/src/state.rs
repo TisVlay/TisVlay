@@ -99,10 +99,11 @@ pub struct DiscoveredTv {
     pub id: String,
     /// TV friendly name.
     pub name: String,
-    /// IP address of the TV.
-    pub ip: String,
-    /// MAC address (may be empty if not available from discovery protocol).
-    pub mac: String,
+    /// Transport address for display (e.g., IP address, serial port, CEC address).
+    pub address: String,
+    /// Hardware identifier (e.g., MAC address, serial number).
+    /// May be empty if not available from the discovery protocol.
+    pub hardware_id: String,
     /// Vendor identifier (e.g., "lg", "samsung").
     pub vendor: String,
     /// Location URL for device description (vendor-specific).
@@ -115,22 +116,22 @@ impl DiscoveredTv {
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
-        ip: impl Into<String>,
+        address: impl Into<String>,
         vendor: impl Into<String>,
     ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
-            ip: ip.into(),
-            mac: String::new(),
+            address: address.into(),
+            hardware_id: String::new(),
             vendor: vendor.into(),
             location: String::new(),
         }
     }
 
-    /// Set the MAC address.
-    pub fn with_mac(mut self, mac: impl Into<String>) -> Self {
-        self.mac = mac.into();
+    /// Set the hardware identifier (e.g., MAC address).
+    pub fn with_hardware_id(mut self, hardware_id: impl Into<String>) -> Self {
+        self.hardware_id = hardware_id.into();
         self
     }
 

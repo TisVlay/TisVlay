@@ -452,6 +452,14 @@ impl TvConfig {
         self
     }
 
+    /// Get the raw vendor config value for passing to connectors.
+    ///
+    /// Returns the TOML value for this TV's vendor section, if present.
+    /// This is the transport-agnostic way to pass config to a `TvConnector`.
+    pub fn get_raw_vendor_value(&self) -> Option<&toml::Value> {
+        self.vendor_config.get(&self.vendor)
+    }
+
     /// Get vendor-specific configuration.
     ///
     /// Deserializes the vendor config into the specified type.

@@ -51,14 +51,14 @@ pub async fn discover_lg_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
                     if let Ok(resp) = response {
                         if is_lg_tv(&resp) {
                             if let Some(tv) = parse_response(&resp) {
-                                tracing::debug!(id = %tv.id, name = %tv.name, ip = %tv.ip, "Discovered LG TV");
-                                // Deduplicate by IP, preferring entries with real DLNA names
+                                tracing::debug!(id = %tv.id, name = %tv.name, address = %tv.address, "Discovered LG TV");
+                                // Deduplicate by address, preferring entries with real DLNA names
                                 // over fallback names like "LG TV (ip)"
-                                let dominated = tvs.get(&tv.ip).is_some_and(|existing| {
+                                let dominated = tvs.get(&tv.address).is_some_and(|existing| {
                                     has_dlna_name(existing) && !has_dlna_name(&tv)
                                 });
                                 if !dominated {
-                                    tvs.insert(tv.ip.clone(), tv);
+                                    tvs.insert(tv.address.clone(), tv);
                                 }
                             }
                         }
@@ -107,8 +107,8 @@ fn parse_response(resp: &ssdp_client::SearchResponse) -> Option<DiscoveredTv> {
     Some(DiscoveredTv {
         id,
         name,
-        ip,
-        mac: String::new(),
+        address: ip,
+        hardware_id: String::new(),
         vendor: crate::VENDOR_ID.to_string(),
         location: location.to_string(),
     })
