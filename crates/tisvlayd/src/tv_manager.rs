@@ -50,6 +50,7 @@ impl StateChangeEvent {
 pub struct TvInfo {
     pub id: String,
     pub name: String,
+    /// IP address (extracted from vendor-specific config).
     pub ip: String,
     pub vendor: String,
 }
@@ -198,10 +199,18 @@ impl TvManager {
         let tvs = self.tvs.read().await;
 
         for (id, tv) in tvs.iter() {
-            let mac = &tv.config.mac;
-            if !mac.is_empty() {
+            // Get MAC from vendor-specific config
+            let mac = if tv.config.vendor == "lg" {
+                tv.config
+                    .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
+                    .and_then(|lg| lg.mac)
+            } else {
+                None
+            };
+
+            if let Some(mac) = mac {
                 info!(tv_id = %id, mac = %mac, "Sending WoL packet");
-                match tisvlay_core::MacAddress::parse(mac) {
+                match tisvlay_core::MacAddress::parse(&mac) {
                     Ok(mac_addr) => {
                         if let Err(e) = tisvlay_core::wol::wake(&mac_addr) {
                             warn!(tv_id = %id, error = %e, "Failed to send WoL");
@@ -231,12 +240,16 @@ impl TvManager {
         let tvs = self.tvs.read().await;
         tvs.iter()
             .map(|(id, tv)| {
-                (
-                    id.clone(),
-                    tv.config.name.clone(),
-                    tv.config.ip.clone(),
-                    tv.is_connected(),
-                )
+                // Get IP from vendor-specific config
+                let ip = if tv.config.vendor == "lg" {
+                    tv.config
+                        .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
+                        .map(|lg| lg.ip)
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                (id.clone(), tv.config.name.clone(), ip, tv.is_connected())
             })
             .collect()
     }
@@ -244,11 +257,22 @@ impl TvManager {
     /// Get basic TV information.
     pub async fn get_tv_info(&self, tv_id: &str) -> Option<TvInfo> {
         let tvs = self.tvs.read().await;
-        tvs.get(tv_id).map(|tv| TvInfo {
-            id: tv.config.id.clone(),
-            name: tv.config.name.clone(),
-            ip: tv.config.ip.clone(),
-            vendor: tv.config.vendor.clone(),
+        tvs.get(tv_id).map(|tv| {
+            // Get IP from vendor-specific config
+            let ip = if tv.config.vendor == "lg" {
+                tv.config
+                    .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
+                    .map(|lg| lg.ip)
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            TvInfo {
+                id: tv.config.id.clone(),
+                name: tv.config.name.clone(),
+                ip,
+                vendor: tv.config.vendor.clone(),
+            }
         })
     }
 
@@ -283,17 +307,21 @@ impl TvManager {
                 return Ok(());
             }
 
-            let vendor_config: Box<dyn std::any::Any + Send + Sync> =
-                if let Some(lg_config) = &tv.config.lg {
-                    Box::new(tisvlay_lg::LgConfig {
-                        client_key: lg_config.client_key.clone(),
-                        default_input: lg_config.default_input.clone(),
-                    })
+            let vendor = tv.config.vendor.clone();
+
+            // Get IP and vendor config from vendor-specific section
+            let (ip, vendor_config): (String, Box<dyn std::any::Any + Send + Sync>) =
+                if vendor == "lg" {
+                    let lg_config: tisvlay_lg::LgVendorConfig = tv
+                        .config
+                        .get_vendor_config()
+                        .ok_or_else(|| format!("No LG config found for TV: {}", tv_id))?;
+                    (lg_config.ip.clone(), Box::new(lg_config))
                 } else {
-                    Box::new(tisvlay_lg::LgConfig::default())
+                    return Err(format!("Unknown vendor: {}", vendor));
                 };
 
-            (tv.config.ip.clone(), tv.config.vendor.clone(), vendor_config)
+            (ip, vendor, vendor_config)
         };
 
         info!(tv_id = %tv_id, ip = %ip, vendor = %vendor, "Connecting to TV");
@@ -426,13 +454,20 @@ impl TvManager {
             .await
             .ok_or_else(|| format!("TV not found: {}", tv_id))?;
 
-        let mac = &config.mac;
-        if mac.is_empty() {
-            return Err("MAC address not configured for Wake-on-LAN".to_string());
-        }
+        // Get MAC and default_input from vendor-specific config
+        let (mac, default_input) = if config.vendor == "lg" {
+            let lg_config = config
+                .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
+                .ok_or_else(|| "No LG config found".to_string())?;
+            (lg_config.mac, lg_config.default_input)
+        } else {
+            return Err(format!("Unknown vendor: {}", config.vendor));
+        };
+
+        let mac = mac.ok_or_else(|| "MAC address not configured for Wake-on-LAN".to_string())?;
 
         info!(tv_id = %tv_id, mac = %mac, "Sending WoL packet");
-        let mac_addr = tisvlay_core::MacAddress::parse(mac)
+        let mac_addr = tisvlay_core::MacAddress::parse(&mac)
             .map_err(|e| format!("Invalid MAC address: {}", e))?;
         tisvlay_core::wol::wake(&mac_addr).map_err(|e| format!("WoL failed: {}", e))?;
 
@@ -443,12 +478,10 @@ impl TvManager {
         // Try to connect
         self.connect(tv_id).await?;
 
-        // Switch to default input if configured (LG-specific)
-        if let Some(ref lg) = config.lg {
-            if let Some(ref default_input) = lg.default_input {
-                info!(tv_id = %tv_id, input = %default_input, "Switching to default input");
-                let _ = self.switch_input(tv_id, default_input).await;
-            }
+        // Switch to default input if configured
+        if let Some(ref input) = default_input {
+            info!(tv_id = %tv_id, input = %input, "Switching to default input");
+            let _ = self.switch_input(tv_id, input).await;
         }
 
         Ok(())
@@ -633,7 +666,7 @@ impl TvManager {
             .ok_or_else(|| format!("Unknown vendor: {}", vendor))?;
 
         // For LG, we need an empty config to trigger pairing
-        let empty_config = tisvlay_lg::LgConfig::default();
+        let empty_config = tisvlay_lg::LgVendorConfig::default();
         let connection = backend
             .connector
             .connect(ip, mac, &empty_config)
@@ -661,25 +694,21 @@ impl TvManager {
                 .collect()
         });
 
-        // Create TV config
-        let tv_config = TvConfig {
-            id: tv_id.clone(),
-            name: name.to_string(),
-            ip: ip.to_string(),
-            mac: mac.unwrap_or("").to_string(),
-            vendor: vendor.to_string(),
-            profile: "default".to_string(),
-            hdmi_input: None,
-            only_when_active: false,
-            lg: if vendor == "lg" {
-                Some(tisvlay_core::LgVendorConfig {
-                    client_key,
-                    default_input: None,
-                })
-            } else {
-                None
-            },
-        };
+        // Create TV config with vendor-specific connection parameters
+        let mut tv_config = TvConfig::new(&tv_id, name)
+            .with_vendor(vendor)
+            .with_profile("default");
+
+        // Add vendor-specific config (includes connection parameters)
+        if vendor == "lg" {
+            let lg_config = tisvlay_lg::LgVendorConfig {
+                ip: ip.to_string(),
+                mac: mac.map(String::from),
+                client_key,
+                default_input: None,
+            };
+            tv_config = tv_config.with_vendor_config(&lg_config);
+        }
 
         // Add to managed TVs
         {
@@ -772,9 +801,10 @@ impl TvManager {
         for tv_config in new_config.tv {
             if let Some(existing) = tvs.get_mut(&tv_config.id) {
                 // Update config if changed (preserve connection if possible)
-                let ip_changed = existing.config.ip != tv_config.ip;
-                let lg_changed = existing.config.lg != tv_config.lg;
-                if ip_changed || lg_changed {
+                // Compare vendor and vendor_config which affect connection
+                let connection_changed = existing.config.vendor != tv_config.vendor
+                    || existing.config.vendor_config != tv_config.vendor_config;
+                if connection_changed {
                     info!(tv_id = %tv_config.id, "Updating TV config (will reconnect)");
                     if let Some(mut conn) = existing.connection.take() {
                         let _ = conn.close().await;
@@ -957,22 +987,26 @@ async fn reconnect_tv(
                         return;
                     }
 
-                    let vendor_config: Box<dyn std::any::Any + Send + Sync> =
-                        if let Some(lg_config) = &tv.config.lg {
-                            Box::new(tisvlay_lg::LgConfig {
-                                client_key: lg_config.client_key.clone(),
-                                default_input: lg_config.default_input.clone(),
-                            })
+                    let vendor = tv.config.vendor.clone();
+
+                    // Get IP and vendor config from vendor-specific section
+                    let (ip, vendor_config): (String, Box<dyn std::any::Any + Send + Sync>) =
+                        if vendor == "lg" {
+                            match tv.config.get_vendor_config::<tisvlay_lg::LgVendorConfig>() {
+                                Some(lg_config) => {
+                                    (lg_config.ip.clone(), Box::new(lg_config))
+                                }
+                                None => {
+                                    warn!(tv_id = %tv_id, "No LG config found, stopping reconnection");
+                                    return;
+                                }
+                            }
                         } else {
-                            Box::new(tisvlay_lg::LgConfig::default())
+                            warn!(tv_id = %tv_id, "Unknown vendor, stopping reconnection");
+                            return;
                         };
 
-                    (
-                        true,
-                        tv.config.ip.clone(),
-                        tv.config.vendor.clone(),
-                        vendor_config,
-                    )
+                    (true, ip, vendor, vendor_config)
                 }
                 None => {
                     warn!(tv_id = %tv_id, "TV not found, stopping reconnection");

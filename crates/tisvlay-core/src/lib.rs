@@ -89,9 +89,7 @@ pub use pairing::{
 };
 
 // Configuration
-pub use config::{
-    Config, DaemonConfig, LgVendorConfig, ProfileConfig, SessionAction, SessionConfig, TvConfig,
-};
+pub use config::{Config, DaemonConfig, ProfileConfig, SessionAction, TvConfig};
 
 // State
 pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};

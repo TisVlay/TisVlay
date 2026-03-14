@@ -2,6 +2,8 @@
 
 This document captures the design discussion and decision-making process for the tisvlay multi-vendor refactor. It serves as context for why certain architectural decisions were made.
 
+> **Implementation Status**: Phases 1-4 complete; Phase 4.5 (abstraction cleanup) pending. See [multi-vendor-implementation-plan.md](multi-vendor-implementation-plan.md) for details.
+
 ---
 
 ## Background
@@ -286,6 +288,142 @@ All references updated:
 | Pairing | Signal-based state machine | Handles diverse auth mechanisms |
 | Refactor timing | Before GUI/tray work | Stable foundation first |
 | Terminology | "Vendor" not "brand" | Technical precision |
+| IP/MAC location | Vendor-specific config | Root config should be transport-agnostic |
+| Leaky abstractions | Phase 4.5 cleanup | CLI/daemon must not import vendor crates directly |
+| Vendor composition | `tisvlay-backends` crate | Single composition point; binaries remain vendor-agnostic |
+
+---
+
+---
+
+## Implementation Notes
+
+These notes capture decisions and adjustments made during actual implementation (Phases 1-4).
+
+### LgVendorConfig Location
+
+**Decision during implementation**: `LgVendorConfig` is defined in `tisvlay-core/src/config.rs` rather than `tisvlay-lg/src/config.rs`.
+
+**Rationale**: Keeping all config structs together simplifies serde handling and avoids circular dependencies between crates. The vendor-specific config structs are small data containers, not complex implementations.
+
+### Legacy Field Removal
+
+**Decision during implementation**: No backwards compatibility for legacy `client_key` and `default_input` fields at the TV root level.
+
+**Rationale**: Project is in prototyping stage. Clean break is better than carrying compatibility shims. All LG-specific config now lives exclusively under `[tv.lg]` section.
+
+### Trait Implementation Deferred
+
+**Decision during implementation**: Full trait-based abstraction (`TvBackend`, `TvConnection`, feature traits) defined but not fully implemented for LG backend yet.
+
+**Rationale**: The `WebOsClient` continues to work directly. Trait implementations can be added when a second vendor is actually being implemented, avoiding premature abstraction.
+
+### D-Bus TvInfo Struct
+
+**Decision during implementation**: Added `TvInfo` struct returned by `GetTvs()` method containing: `id`, `name`, `vendor`, `ip`, `mac`, `connected`, `capabilities`.
+
+**Rationale**: More type-safe than returning tuple of strings. CLI and other clients can work with structured data.
+
+---
+
+## Post-Implementation Review: Leaky Abstractions
+
+After completing Phase 4, a review identified that the abstraction was "leaking" in several places:
+
+### Issues Identified
+
+1. **CLI direct LG imports**: The `--no-daemon` mode directly imports and uses `tisvlay_lg::WebOsClient`, bypassing the trait abstraction entirely.
+
+2. **Daemon vendor string checks**: Code patterns like `if vendor == "lg"` and downcasts to `tisvlay_lg::LgConnection` were present in `tv_manager.rs`.
+
+3. **Feature traits require downcasting**: Instead of `dyn TvConnection` implementing feature traits directly, the daemon was downcasting to concrete types via `as_any_mut().downcast_mut::<LgConnection>()`.
+
+### Q9: Should IP/MAC be moved to vendor-specific config?
+
+**Options considered:**
+1. Move `ip` and `mac` from root `TvConfig` to vendor-specific sections
+2. Keep them at root level as "common network fields"
+3. Add a `connection_type` enum to distinguish network vs serial vs USB
+
+**Initial decision** (later revised): Keep IP/MAC at root level since most protocols are network-based.
+
+**Revised decision**: **Move IP/MAC to vendor-specific config** - The root `TvConfig` should be truly vendor-agnostic:
+- Not all vendors use network-based protocols (serial RS-232, USB, cloud APIs with device IDs)
+- Not all vendors support Wake-on-LAN
+- Having `ip` and `mac` at root level assumes network connectivity, which is a protocol-specific detail
+- Clean separation: root config has identity/behavior fields, vendor config has connection parameters
+
+**New structure**:
+```toml
+[[tv]]
+id = "living-room"
+name = "Living Room TV"
+vendor = "lg"
+profile = "default"
+
+[tv.lg]
+ip = "192.168.1.100"          # LG-specific: WebSocket connection
+mac = "AA:BB:CC:DD:EE:FF"     # LG-specific: Wake-on-LAN
+client_key = "abc123..."
+default_input = "HDMI_1"
+
+# Future example: serial-connected display
+# [tv.serial]
+# port = "/dev/ttyUSB0"
+# baud_rate = 9600
+```
+
+This ensures the core abstraction makes no assumptions about the underlying transport.
+
+### Q10: How should leaky abstractions be addressed?
+
+**Decision**: Add **Phase 4.5** specifically to clean up leaky abstractions before documentation/testing in Phase 5.
+
+**Key changes for Phase 4.5:**
+- CLI should never import `tisvlay_lg` directly; use registry pattern
+- Daemon should not have vendor string checks; use polymorphic dispatch
+- No downcasting to vendor-specific connection types
+- Feature traits should be accessible via `dyn TvConnection`
+
+This ensures adding a second vendor (e.g., Samsung) doesn't require touching CLI or daemon code—only adding a new crate and registering the backend.
+
+### Q11: Where should vendor crates be composed?
+
+**Problem**: If `tisvlay-core` imported vendor crates, it would create circular dependencies:
+```
+tisvlay-core → tisvlay-lg → tisvlay-core  ❌ CIRCULAR
+```
+
+**Options considered:**
+1. Daemon as composition root (each binary imports vendor crates)
+2. Create a `tisvlay-backends` crate as single composition point
+3. Remove `--no-daemon` mode (CLI only works via D-Bus)
+4. Use feature flags to optionally include vendors
+
+**Decision**: **Create `tisvlay-backends` composition crate**
+
+```
+tisvlay-core (traits, types, D-Bus client)
+      ↑
+tisvlay-lg, tisvlay-samsung, ... (vendor implementations)
+      ↑
+tisvlay-backends (registry - ONLY crate that knows vendors)
+      ↑
+tisvlayd, tisvlay-cli, tisvlay-gui, tisvlay-session
+```
+
+**Rationale**:
+- Single point of vendor registration - only `tisvlay-backends` needs updating for new vendors
+- All binaries (daemon, CLI, GUI, session) remain vendor-agnostic
+- No circular dependencies
+- Clean separation of concerns
+
+**Adding a new vendor**:
+1. Create `tisvlay-newvendor` crate implementing core traits
+2. Add to `tisvlay-backends/Cargo.toml`
+3. Register in `tisvlay-backends/src/lib.rs`
+
+**No changes** to daemon, CLI, GUI, or session service code.
 
 ---
 

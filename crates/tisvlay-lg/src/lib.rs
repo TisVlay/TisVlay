@@ -54,7 +54,7 @@ pub use backend::{LgBackend, LgConnection, LgConnector};
 #[cfg(feature = "discovery")]
 pub use backend::LgDiscovery;
 pub use client::{wake_and_connect, wake_and_wait, wake_tv, WebOsClient};
-pub use config::LgConfig;
+pub use config::{LgConfig, LgVendorConfig};
 pub use endpoints::{
     audio as audio_endpoints, buttons, input as input_endpoints, picture as picture_endpoints,
     power as power_endpoints, timeouts, WSS_PORT, WS_PORT,

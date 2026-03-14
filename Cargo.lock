@@ -1275,6 +1275,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tisvlay-backends"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "tisvlay-core",
+ "tisvlay-lg",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tisvlay-cli"
 version = "0.1.0"
 dependencies = [
@@ -1357,6 +1368,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "tisvlay-backends",
  "tisvlay-core",
  "tisvlay-lg",
  "tokio",

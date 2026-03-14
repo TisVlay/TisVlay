@@ -1,27 +1,12 @@
 //! Configuration file parsing and management.
 //!
-//! This module supports both the legacy configuration format and the new
-//! multi-vendor profile-based format.
-//!
 //! # Configuration Format
 //!
-//! ## Legacy Format (still supported)
-//!
 //! ```toml
-//! [session]
-//! on_screen_lock = "screen_off"
+//! [daemon]
+//! wake_on_boot = true
+//! wake_delay_ms = 3000
 //!
-//! [[tv]]
-//! id = "living-room"
-//! name = "Living Room TV"
-//! ip = "192.168.1.100"
-//! mac = "AA:BB:CC:DD:EE:FF"
-//! client_key = "abc123"
-//! ```
-//!
-//! ## New Profile-Based Format
-//!
-//! ```toml
 //! [profiles.default]
 //! on_screen_lock = "screen_off"
 //! on_screen_unlock = "screen_on"
@@ -33,14 +18,15 @@
 //! [[tv]]
 //! id = "living-room"
 //! name = "Living Room TV"
-//! ip = "192.168.1.100"
-//! mac = "AA:BB:CC:DD:EE:FF"
 //! vendor = "lg"
 //! profile = "gaming"
 //! hdmi_input = "HDMI_1"
 //! only_when_active = true
 //!
+//! # Vendor-specific settings (connection params + vendor features)
 //! [tv.lg]
+//! ip = "192.168.1.100"
+//! mac = "AA:BB:CC:DD:EE:FF"
 //! client_key = "abc123"
 //! default_input = "HDMI_1"
 //! ```
@@ -57,14 +43,8 @@ pub struct Config {
     #[serde(default)]
     pub daemon: DaemonConfig,
 
-    /// Session service settings (user-specific).
-    /// This is the legacy single-profile config. New configs should use `profiles`.
-    #[serde(default)]
-    pub session: SessionConfig,
-
     /// Named profiles for session behavior.
     /// Each TV can reference a profile by name. If not specified, "default" is used.
-    /// If profiles is empty, the legacy `session` config is used as the default profile.
     #[serde(default)]
     pub profiles: HashMap<String, ProfileConfig>,
 
@@ -150,6 +130,11 @@ pub struct ProfileConfig {
     pub on_screen_unlock: SessionAction,
 
     /// Action when user interacts with the lock screen (before unlocking).
+    /// This fires when the user moves the mouse or presses a key while locked,
+    /// allowing the TV to unblank so the user can see the password prompt.
+    ///
+    /// Detected via Wayland ext-idle-notify-v1 protocol on supported compositors
+    /// (KDE Plasma 6+, Sway, Hyprland, GNOME, etc.).
     #[serde(default = "default_on_greeter_wake")]
     pub on_greeter_wake: SessionAction,
 
@@ -184,74 +169,6 @@ impl Default for ProfileConfig {
     }
 }
 
-impl From<SessionConfig> for ProfileConfig {
-    fn from(session: SessionConfig) -> Self {
-        Self {
-            on_screen_lock: session.on_screen_lock,
-            on_screen_unlock: session.on_screen_unlock,
-            on_greeter_wake: session.on_greeter_wake,
-            on_sleep: session.on_sleep,
-            on_wake: session.on_wake,
-            idle_timeout_seconds: session.idle_timeout_seconds,
-            on_idle_timeout: session.on_idle_timeout,
-        }
-    }
-}
-
-impl From<ProfileConfig> for SessionConfig {
-    fn from(profile: ProfileConfig) -> Self {
-        Self {
-            on_screen_lock: profile.on_screen_lock,
-            on_screen_unlock: profile.on_screen_unlock,
-            on_greeter_wake: profile.on_greeter_wake,
-            on_sleep: profile.on_sleep,
-            on_wake: profile.on_wake,
-            idle_timeout_seconds: profile.idle_timeout_seconds,
-            on_idle_timeout: profile.on_idle_timeout,
-        }
-    }
-}
-
-/// Session service configuration (user-specific).
-///
-/// This is the legacy single-profile configuration. New configurations
-/// should use the `profiles` map with named profiles.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionConfig {
-    /// Action on screen lock event.
-    #[serde(default = "default_on_lock")]
-    pub on_screen_lock: SessionAction,
-
-    /// Action on screen unlock event.
-    #[serde(default = "default_on_unlock")]
-    pub on_screen_unlock: SessionAction,
-
-    /// Action when user interacts with the lock screen (before unlocking).
-    /// This fires when the user moves the mouse or presses a key while locked,
-    /// allowing the TV to unblank so the user can see the password prompt.
-    ///
-    /// Detected via Wayland ext-idle-notify-v1 protocol on supported compositors
-    /// (KDE Plasma 6+, Sway, Hyprland, GNOME, etc.).
-    #[serde(default = "default_on_greeter_wake")]
-    pub on_greeter_wake: SessionAction,
-
-    /// Action on system sleep/suspend.
-    #[serde(default = "default_on_sleep")]
-    pub on_sleep: SessionAction,
-
-    /// Action on system wake/resume.
-    #[serde(default = "default_on_wake")]
-    pub on_wake: SessionAction,
-
-    /// Idle timeout in seconds (0 to disable).
-    #[serde(default)]
-    pub idle_timeout_seconds: u64,
-
-    /// Action on idle timeout.
-    #[serde(default = "default_on_idle")]
-    pub on_idle_timeout: SessionAction,
-}
-
 fn default_on_lock() -> SessionAction {
     SessionAction::ScreenOff
 }
@@ -276,20 +193,6 @@ fn default_on_greeter_wake() -> SessionAction {
     SessionAction::ScreenOn
 }
 
-impl Default for SessionConfig {
-    fn default() -> Self {
-        Self {
-            on_screen_lock: default_on_lock(),
-            on_screen_unlock: default_on_unlock(),
-            on_greeter_wake: default_on_greeter_wake(),
-            on_sleep: default_on_sleep(),
-            on_wake: default_on_wake(),
-            idle_timeout_seconds: 0, // Disabled by default
-            on_idle_timeout: default_on_idle(),
-        }
-    }
-}
-
 /// Actions the session service can take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -307,7 +210,7 @@ pub enum SessionAction {
     PowerOn,
 }
 
-/// Default vendor for backwards compatibility.
+/// Default vendor.
 fn default_vendor() -> String {
     "lg".to_string()
 }
@@ -318,6 +221,10 @@ fn default_profile() -> String {
 }
 
 /// Configuration for a single TV.
+///
+/// This struct contains vendor-agnostic identity and behavior settings.
+/// Connection parameters (IP, MAC, etc.) are vendor-specific and stored in
+/// the vendor config map, parsed by each vendor crate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvConfig {
     /// Unique identifier for this TV.
@@ -326,16 +233,8 @@ pub struct TvConfig {
     /// Display name.
     pub name: String,
 
-    /// IP address.
-    pub ip: String,
-
-    /// MAC address for Wake-on-LAN.
-    /// Can be empty string if MAC is not known.
-    #[serde(default)]
-    pub mac: String,
-
     /// Vendor/backend to use for this TV (e.g., "lg", "samsung").
-    /// Defaults to "lg" for backwards compatibility.
+    /// Defaults to "lg" (currently the only supported vendor).
     #[serde(default = "default_vendor")]
     pub vendor: String,
 
@@ -354,26 +253,14 @@ pub struct TvConfig {
     #[serde(default)]
     pub only_when_active: bool,
 
-    // =========================================================================
-    // Vendor-specific configuration
-    // =========================================================================
-    /// LG WebOS specific configuration.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lg: Option<LgVendorConfig>,
-    // Future: samsung, sony, roku, etc.
+    /// Vendor-specific configuration.
+    ///
+    /// This captures vendor-specific fields (e.g., `lg = { ip = "...", client_key = "..." }`).
+    /// Use `get_vendor_config::<T>()` to deserialize into a typed struct.
+    #[serde(flatten)]
+    pub vendor_config: std::collections::HashMap<String, toml::Value>,
 }
 
-/// LG WebOS specific configuration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LgVendorConfig {
-    /// Client key obtained during pairing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_key: Option<String>,
-
-    /// Default HDMI input to switch to on wake.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_input: Option<String>,
-}
 
 impl Config {
     /// Load configuration from the default path.
@@ -400,14 +287,28 @@ impl Config {
     }
 
     /// Save configuration to a specific path.
+    ///
+    /// If the profiles map is empty, a "default" profile with built-in values
+    /// is added before saving. This makes the config file self-documenting
+    /// for users who haven't customized their profiles yet.
     pub fn save_to(&self, path: &PathBuf) -> Result<()> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
+        // If no profiles defined, add the default profile with built-in values
+        // so users can see and customize them
+        let config_to_save = if self.profiles.is_empty() {
+            let mut config = self.clone();
+            config.profiles.insert("default".to_string(), ProfileConfig::default());
+            config
+        } else {
+            self.clone()
+        };
+
         let content =
-            toml::to_string_pretty(self).map_err(|e| Error::Io(std::io::Error::other(e)))?;
+            toml::to_string_pretty(&config_to_save).map_err(|e| Error::Io(std::io::Error::other(e)))?;
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -469,7 +370,7 @@ impl Config {
     /// Resolution order:
     /// 1. Named profile from `profiles` map if TV specifies one
     /// 2. "default" profile from `profiles` map
-    /// 3. Legacy `session` config (converted to ProfileConfig)
+    /// 3. Default ProfileConfig values
     pub fn get_profile_for_tv(&self, tv: &TvConfig) -> ProfileConfig {
         // First try the TV's specified profile
         if let Some(profile) = self.profiles.get(&tv.profile) {
@@ -481,15 +382,14 @@ impl Config {
             return default_profile.clone();
         }
 
-        // Fall back to legacy session config (always, regardless of whether
-        // other profiles exist - the session config serves as the implicit default)
-        ProfileConfig::from(self.session.clone())
+        // Fall back to default values
+        ProfileConfig::default()
     }
 
     /// Get a profile by name.
     ///
     /// Returns the named profile, or falls back to "default" profile,
-    /// or creates a ProfileConfig from the legacy session config.
+    /// or returns default ProfileConfig values.
     pub fn get_profile(&self, name: &str) -> ProfileConfig {
         if let Some(profile) = self.profiles.get(name) {
             return profile.clone();
@@ -499,43 +399,21 @@ impl Config {
             return default_profile.clone();
         }
 
-        // Fall back to legacy session config
-        ProfileConfig::from(self.session.clone())
+        ProfileConfig::default()
     }
 }
 
 impl TvConfig {
     /// Create a new TV configuration.
-    pub fn new(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        ip: impl Into<String>,
-        mac: impl Into<String>,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
-            ip: ip.into(),
-            mac: mac.into(),
             vendor: default_vendor(),
             profile: default_profile(),
             hdmi_input: None,
             only_when_active: false,
-            lg: None,
-        }
-    }
-
-    /// Create a new TV configuration with a specific vendor.
-    pub fn new_with_vendor(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        ip: impl Into<String>,
-        mac: impl Into<String>,
-        vendor: impl Into<String>,
-    ) -> Self {
-        Self {
-            vendor: vendor.into(),
-            ..Self::new(id, name, ip, mac)
+            vendor_config: std::collections::HashMap::new(),
         }
     }
 
@@ -563,16 +441,60 @@ impl TvConfig {
         self
     }
 
-    /// Set LG-specific configuration.
-    pub fn with_lg_config(mut self, lg: LgVendorConfig) -> Self {
-        self.lg = Some(lg);
+    /// Set vendor-specific configuration.
+    ///
+    /// The config must be serializable to TOML. It will be stored under
+    /// the vendor name key (e.g., `lg = { ... }`).
+    pub fn with_vendor_config<T: Serialize>(mut self, config: &T) -> Self {
+        if let Ok(value) = toml::Value::try_from(config) {
+            self.vendor_config.insert(self.vendor.clone(), value);
+        }
         self
+    }
+
+    /// Get vendor-specific configuration.
+    ///
+    /// Deserializes the vendor config into the specified type.
+    /// Returns `None` if the vendor config is missing or cannot be deserialized.
+    pub fn get_vendor_config<T: serde::de::DeserializeOwned>(&self) -> Option<T> {
+        self.vendor_config
+            .get(&self.vendor)
+            .and_then(|v| v.clone().try_into().ok())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test struct for LG vendor config (simulates what tisvlay-lg would define).
+    /// Includes connection parameters (ip/mac) since they're vendor-specific.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+    struct TestLgConfig {
+        ip: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mac: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        default_input: Option<String>,
+    }
+
+    impl TestLgConfig {
+        fn new(ip: impl Into<String>) -> Self {
+            Self {
+                ip: ip.into(),
+                mac: None,
+                client_key: None,
+                default_input: None,
+            }
+        }
+
+        fn with_mac(mut self, mac: impl Into<String>) -> Self {
+            self.mac = Some(mac.into());
+            self
+        }
+    }
 
     #[test]
     fn test_default_config() {
@@ -596,14 +518,14 @@ idle_timeout_seconds = 0
 [[tv]]
 id = "living-room"
 name = "Living Room TV"
-ip = "192.168.1.100"
-mac = "AA:BB:CC:DD:EE:FF"
 vendor = "lg"
 profile = "gaming"
 hdmi_input = "HDMI_1"
 only_when_active = true
 
 [tv.lg]
+ip = "192.168.1.100"
+mac = "AA:BB:CC:DD:EE:FF"
 client_key = "abc123"
 default_input = "HDMI_1"
 "#;
@@ -615,8 +537,10 @@ default_input = "HDMI_1"
         assert_eq!(config.tv[0].hdmi_input, Some("HDMI_1".to_string()));
         assert!(config.tv[0].only_when_active);
 
-        // Check vendor-specific config
-        let lg = config.tv[0].lg.as_ref().unwrap();
+        // Check vendor-specific config (including ip/mac) via get_vendor_config
+        let lg: TestLgConfig = config.tv[0].get_vendor_config().unwrap();
+        assert_eq!(lg.ip, "192.168.1.100");
+        assert_eq!(lg.mac, Some("AA:BB:CC:DD:EE:FF".to_string()));
         assert_eq!(lg.client_key, Some("abc123".to_string()));
         assert_eq!(lg.default_input, Some("HDMI_1".to_string()));
 
@@ -628,22 +552,31 @@ default_input = "HDMI_1"
     }
 
     #[test]
-    fn test_lg_config() {
-        let tv = TvConfig::new("test", "Test", "192.168.1.1", "AA:BB:CC:DD:EE:FF")
-            .with_lg_config(LgVendorConfig {
-                client_key: Some("test_key".to_string()),
-                default_input: Some("HDMI_1".to_string()),
-            });
+    fn test_vendor_config() {
+        let lg_config = TestLgConfig {
+            ip: "192.168.1.1".to_string(),
+            mac: Some("AA:BB:CC:DD:EE:FF".to_string()),
+            client_key: Some("test_key".to_string()),
+            default_input: Some("HDMI_1".to_string()),
+        };
 
-        let lg = tv.lg.as_ref().unwrap();
-        assert_eq!(lg.client_key, Some("test_key".to_string()));
-        assert_eq!(lg.default_input, Some("HDMI_1".to_string()));
+        let tv = TvConfig::new("test", "Test")
+            .with_vendor("lg")
+            .with_vendor_config(&lg_config);
+
+        assert_eq!(tv.vendor, "lg");
+
+        // Connection params are in vendor config, not TvConfig
+        let extracted: TestLgConfig = tv.get_vendor_config().unwrap();
+        assert_eq!(extracted.ip, "192.168.1.1");
+        assert_eq!(extracted.mac, Some("AA:BB:CC:DD:EE:FF".to_string()));
+        assert_eq!(extracted, lg_config);
     }
 
     #[test]
     fn test_profile_resolution() {
         let toml = r#"
-[session]
+[profiles.default]
 on_screen_lock = "power_off"
 
 [profiles.gaming]
@@ -652,13 +585,19 @@ on_screen_lock = "none"
 [[tv]]
 id = "tv1"
 name = "TV 1"
+vendor = "lg"
+profile = "gaming"
+
+[tv.lg]
 ip = "192.168.1.1"
 mac = "AA:BB:CC:DD:EE:01"
-profile = "gaming"
 
 [[tv]]
 id = "tv2"
 name = "TV 2"
+vendor = "lg"
+
+[tv.lg]
 ip = "192.168.1.2"
 mac = "AA:BB:CC:DD:EE:02"
 "#;
@@ -669,7 +608,7 @@ mac = "AA:BB:CC:DD:EE:02"
         let profile1 = config.get_profile_for_tv(&config.tv[0]);
         assert_eq!(profile1.on_screen_lock, SessionAction::None);
 
-        // TV2 uses default (falls back to session config since no "default" profile)
+        // TV2 uses default profile
         let profile2 = config.get_profile_for_tv(&config.tv[1]);
         assert_eq!(profile2.on_screen_lock, SessionAction::PowerOff);
     }
@@ -677,39 +616,37 @@ mac = "AA:BB:CC:DD:EE:02"
     #[test]
     fn test_find_tv() {
         let mut config = Config::default();
-        config.tv.push(TvConfig::new(
-            "tv1",
-            "TV 1",
-            "192.168.1.1",
-            "AA:BB:CC:DD:EE:01",
-        ));
-        config.tv.push(TvConfig::new(
-            "tv2",
-            "TV 2",
-            "192.168.1.2",
-            "AA:BB:CC:DD:EE:02",
-        ));
+        config.tv.push(
+            TvConfig::new("tv1", "TV 1")
+                .with_vendor("lg")
+                .with_vendor_config(&TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:01")),
+        );
+        config.tv.push(
+            TvConfig::new("tv2", "TV 2")
+                .with_vendor("lg")
+                .with_vendor_config(&TestLgConfig::new("192.168.1.2").with_mac("AA:BB:CC:DD:EE:02")),
+        );
 
         assert!(config.find_tv("tv1").is_some());
         assert!(config.find_tv("tv3").is_none());
     }
 
     #[test]
-    fn test_default_session_config() {
-        let config = SessionConfig::default();
-        assert_eq!(config.on_screen_lock, SessionAction::ScreenOff);
-        assert_eq!(config.on_screen_unlock, SessionAction::ScreenOn);
-        assert_eq!(config.on_greeter_wake, SessionAction::ScreenOn);
-        assert_eq!(config.on_sleep, SessionAction::PowerOff);
-        assert_eq!(config.on_wake, SessionAction::PowerOn);
-        assert_eq!(config.idle_timeout_seconds, 0);
-        assert_eq!(config.on_idle_timeout, SessionAction::ScreenOff);
+    fn test_default_profile_config() {
+        let profile = ProfileConfig::default();
+        assert_eq!(profile.on_screen_lock, SessionAction::ScreenOff);
+        assert_eq!(profile.on_screen_unlock, SessionAction::ScreenOn);
+        assert_eq!(profile.on_greeter_wake, SessionAction::ScreenOn);
+        assert_eq!(profile.on_sleep, SessionAction::PowerOff);
+        assert_eq!(profile.on_wake, SessionAction::PowerOn);
+        assert_eq!(profile.idle_timeout_seconds, 0);
+        assert_eq!(profile.on_idle_timeout, SessionAction::ScreenOff);
     }
 
     #[test]
-    fn test_parse_session_config() {
+    fn test_parse_profile_config() {
         let toml = r#"
-[session]
+[profiles.custom]
 on_screen_lock = "power_off"
 on_screen_unlock = "power_on"
 on_greeter_wake = "none"
@@ -721,18 +658,23 @@ on_idle_timeout = "screen_off"
 [[tv]]
 id = "test"
 name = "Test"
+vendor = "lg"
+profile = "custom"
+
+[tv.lg]
 ip = "192.168.1.1"
 mac = "AA:BB:CC:DD:EE:FF"
 "#;
 
         let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.session.on_screen_lock, SessionAction::PowerOff);
-        assert_eq!(config.session.on_screen_unlock, SessionAction::PowerOn);
-        assert_eq!(config.session.on_greeter_wake, SessionAction::None);
-        assert_eq!(config.session.on_sleep, SessionAction::None);
-        assert_eq!(config.session.on_wake, SessionAction::ScreenOn);
-        assert_eq!(config.session.idle_timeout_seconds, 300);
-        assert_eq!(config.session.on_idle_timeout, SessionAction::ScreenOff);
+        let profile = config.get_profile("custom");
+        assert_eq!(profile.on_screen_lock, SessionAction::PowerOff);
+        assert_eq!(profile.on_screen_unlock, SessionAction::PowerOn);
+        assert_eq!(profile.on_greeter_wake, SessionAction::None);
+        assert_eq!(profile.on_sleep, SessionAction::None);
+        assert_eq!(profile.on_wake, SessionAction::ScreenOn);
+        assert_eq!(profile.idle_timeout_seconds, 300);
+        assert_eq!(profile.on_idle_timeout, SessionAction::ScreenOff);
     }
 
     #[test]
@@ -748,22 +690,76 @@ mac = "AA:BB:CC:DD:EE:FF"
     }
 
     #[test]
-    fn test_profile_to_session_conversion() {
-        let profile = ProfileConfig {
-            on_screen_lock: SessionAction::PowerOff,
-            on_screen_unlock: SessionAction::PowerOn,
-            on_greeter_wake: SessionAction::None,
-            on_sleep: SessionAction::None,
-            on_wake: SessionAction::ScreenOn,
-            idle_timeout_seconds: 300,
-            on_idle_timeout: SessionAction::ScreenOff,
-        };
+    fn test_save_adds_default_profile_when_empty() {
+        use std::io::Read;
 
-        let session: SessionConfig = profile.clone().into();
-        assert_eq!(session.on_screen_lock, SessionAction::PowerOff);
-        assert_eq!(session.idle_timeout_seconds, 300);
+        // Create a config with no profiles
+        let mut config = Config::default();
+        config.tv.push(
+            TvConfig::new("test", "Test TV")
+                .with_vendor("lg")
+                .with_vendor_config(&TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:FF")),
+        );
+        assert!(config.profiles.is_empty());
 
-        let back: ProfileConfig = session.into();
-        assert_eq!(back.on_screen_lock, profile.on_screen_lock);
+        // Save to a temp file
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("tisvlay_test_config.toml");
+        config.save_to(&temp_file).unwrap();
+
+        // Read back and verify default profile was added
+        let mut content = String::new();
+        std::fs::File::open(&temp_file)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+
+        // Parse the saved config
+        let saved_config: Config = toml::from_str(&content).unwrap();
+
+        // Should have the default profile
+        assert!(saved_config.profiles.contains_key("default"));
+        let default_profile = saved_config.profiles.get("default").unwrap();
+        assert_eq!(default_profile.on_screen_lock, SessionAction::ScreenOff);
+        assert_eq!(default_profile.on_screen_unlock, SessionAction::ScreenOn);
+
+        // Clean up
+        let _ = std::fs::remove_file(temp_file);
+    }
+
+    #[test]
+    fn test_save_preserves_existing_profiles() {
+        use std::io::Read;
+
+        // Create a config with a custom profile
+        let mut config = Config::default();
+        config.profiles.insert(
+            "custom".to_string(),
+            ProfileConfig {
+                on_screen_lock: SessionAction::PowerOff,
+                ..ProfileConfig::default()
+            },
+        );
+
+        // Save to a temp file
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("tisvlay_test_config2.toml");
+        config.save_to(&temp_file).unwrap();
+
+        // Read back and verify
+        let mut content = String::new();
+        std::fs::File::open(&temp_file)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+
+        let saved_config: Config = toml::from_str(&content).unwrap();
+
+        // Should have the custom profile, not a default one added
+        assert!(saved_config.profiles.contains_key("custom"));
+        assert!(!saved_config.profiles.contains_key("default"));
+
+        // Clean up
+        let _ = std::fs::remove_file(temp_file);
     }
 }

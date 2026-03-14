@@ -97,31 +97,45 @@ Before proceeding with GUI/tray work, refactor to support multiple TV vendors be
 tisvlay/
 ├── Cargo.toml                    # Workspace root
 ├── crates/
-│   ├── tisvlay-core/              # Core library
+│   ├── tisvlay-core/              # Core library (vendor-agnostic traits & types)
 │   │   └── src/
 │   │       ├── lib.rs            # Public API exports
+│   │       ├── traits.rs         # TvBackend, TvConnection, feature traits
+│   │       ├── capabilities.rs   # Capability bitflags
+│   │       ├── pairing.rs        # Unified pairing state machine
+│   │       ├── config.rs         # TOML config (XDG paths), ProfileConfig
+│   │       ├── dbus_client.rs    # D-Bus client for tisvlayd (feature-gated)
+│   │       ├── state.rs          # TvState, PowerState, InputInfo
+│   │       ├── wol.rs            # Wake-on-LAN
+│   │       └── error.rs          # Error types
+│   │
+│   ├── tisvlay-lg/                # LG WebOS vendor implementation
+│   │   └── src/
+│   │       ├── lib.rs            # Public exports
+│   │       ├── backend.rs        # LgConnector, LgConnection trait impls
 │   │       ├── client.rs         # WebOsClient - high-level API
 │   │       ├── connection.rs     # WebSocket with rustls TLS
 │   │       ├── protocol.rs       # SSAP message types
 │   │       ├── endpoints.rs      # API endpoint constants
-│   │       ├── config.rs         # TOML config (XDG paths), SessionConfig
-│   │       ├── dbus_client.rs    # D-Bus client for tisvlayd (feature-gated)
-│   │       ├── discovery.rs      # SSDP TV discovery (feature-gated)
-│   │       ├── state.rs          # TvState, PowerState
-│   │       ├── wol.rs            # Wake-on-LAN
-│   │       └── error.rs          # Error types
+│   │       ├── config.rs         # LgVendorConfig
+│   │       └── discovery.rs      # SSDP TV discovery (feature-gated)
+│   │
+│   ├── tisvlay-backends/          # Backend registry (composition point)
+│   │   └── src/
+│   │       └── lib.rs            # BackendRegistry, vendor registration
 │   │
 │   ├── tisvlay-cli/               # CLI tool
 │   │   └── src/
 │   │       └── main.rs           # clap-based CLI
 │   │
-│   ├── tisvlayd/                  # System daemon (Phase 2)
+│   ├── tisvlayd/                  # System daemon
 │   │   └── src/
 │   │       ├── main.rs           # Entry point, signal handling
 │   │       ├── dbus.rs           # D-Bus interface (org.tisvlay.Daemon1)
+│   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool
 │   │
-│   └── tisvlay-session/           # User session service (Phase 3)
+│   └── tisvlay-session/           # User session service
 │       └── src/
 │           ├── main.rs           # Entry point, event handling
 │           ├── session_monitor.rs # Screen lock/unlock, suspend/resume
@@ -130,14 +144,15 @@ tisvlay/
 │
 ├── systemd/
 │   ├── tisvlayd.service           # Systemd system service
-│   ├── tisvlay-session.service    # Systemd user service (Phase 3)
+│   ├── tisvlay-session.service    # Systemd user service
 │   ├── org.tisvlay.Daemon.service # D-Bus activation service
 │   └── org.tisvlay.Daemon.conf    # D-Bus policy configuration
 │
 ├── docs/
 │   ├── reference.md              # Protocol survey from prior art
 │   ├── design.md                 # Full architecture design
-│   └── firewall.md               # SSDP firewall configuration
+│   ├── firewall.md               # SSDP firewall configuration
+│   └── multi-vendor-*.md         # Multi-vendor architecture docs
 │
 └── CLAUDE.md                     # This file
 ```
@@ -154,9 +169,9 @@ tisvlay/
 - System config (Phase 2): `/etc/tisvlay/config.toml`
 - Client keys stored in config after TV pairing
 
-### Session Config Example
+### Profile Config Example
 ```toml
-[session]
+[profiles.default]
 on_screen_lock = "screen_off"    # screen_off | power_off | none
 on_screen_unlock = "screen_on"   # screen_on | power_on | none
 on_greeter_wake = "screen_on"    # unblank TV on lock screen interaction (Wayland only)
@@ -164,6 +179,24 @@ on_sleep = "power_off"
 on_wake = "power_on"
 idle_timeout_seconds = 300       # 0 to disable
 on_idle_timeout = "screen_off"
+
+[profiles.gaming]
+on_screen_lock = "none"          # Don't interrupt gameplay
+idle_timeout_seconds = 0         # Disable idle timeout
+
+[[tv]]
+id = "living-room"
+name = "Living Room TV"
+vendor = "lg"
+profile = "gaming"               # Reference profile by name
+
+# Vendor-specific settings including connection parameters
+# All connection params (ip, mac, etc.) are vendor-specific
+[tv.lg]
+ip = "192.168.1.100"             # Required for LG WebOS TVs
+mac = "AA:BB:CC:DD:EE:FF"        # For Wake-on-LAN
+client_key = "abc123"
+default_input = "HDMI_1"
 ```
 
 See [docs/design.md](docs/design.md#phase-3-user-session-integration---complete) for greeter wake detection details.

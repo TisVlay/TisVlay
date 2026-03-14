@@ -2,6 +2,8 @@
 
 This document describes the architecture for refactoring tisvlay from an LG WebOS-specific implementation to a vendor-agnostic architecture supporting multiple TV manufacturers.
 
+> **Implementation Status**: Phases 1-4 complete; Phase 4.5 (abstraction cleanup) pending. See [multi-vendor-implementation-plan.md](multi-vendor-implementation-plan.md) for details.
+
 ## Executive Summary
 
 Refactor tisvlay from an LG WebOS-specific implementation to a vendor-agnostic architecture supporting multiple TV manufacturers. This involves:
@@ -36,7 +38,7 @@ tisvlay/
 │   │       ├── error.rs            # Error types
 │   │       └── wol.rs              # Wake-on-LAN (unchanged, already generic)
 │   │
-│   ├── tisvlay-lg/                 # LG WebOS implementation (NEW)
+│   ├── tisvlay-lg/                 # LG WebOS implementation
 │   │   └── src/
 │   │       ├── lib.rs              # LgBackend registration
 │   │       ├── backend.rs          # impl TvBackend for LgBackend
@@ -47,21 +49,38 @@ tisvlay/
 │   │       ├── discovery.rs        # LG SSDP discovery
 │   │       └── config.rs           # LgConfig struct
 │   │
-│   ├── tisvlayd/                   # System daemon (refactored)
+│   ├── tisvlay-backends/           # Composition crate (imports all vendors)
+│   │   └── src/
+│   │       └── lib.rs              # create_registry() with all vendors
+│   │
+│   ├── tisvlayd/                   # System daemon (vendor-agnostic)
 │   │   └── src/
 │   │       ├── main.rs
 │   │       ├── dbus/
 │   │       │   ├── mod.rs
 │   │       │   ├── manager.rs      # org.tisvlay.Manager1
 │   │       │   └── tv.rs           # org.tisvlay.Tv1.* interfaces
-│   │       ├── tv_manager.rs       # Backend-agnostic TV management
-│   │       └── registry.rs         # Backend registration
+│   │       └── tv_manager.rs       # Backend-agnostic TV management
 │   │
-│   ├── tisvlay-cli/                # CLI (minor updates)
-│   ├── tisvlay-session/            # Session service (minor updates)
-│   ├── tisvlay-tray/               # Tray app (future)
-│   └── tisvlay-gui/                # GUI app (future)
+│   ├── tisvlay-cli/                # CLI (vendor-agnostic)
+│   ├── tisvlay-session/            # Session service (vendor-agnostic)
+│   ├── tisvlay-tray/               # Tray app (future, vendor-agnostic)
+│   └── tisvlay-gui/                # GUI app (future, vendor-agnostic)
 ```
+
+### Dependency Graph
+
+```
+tisvlay-core (traits, types, D-Bus client)
+      ↑
+tisvlay-lg, tisvlay-samsung, ... (vendor implementations)
+      ↑
+tisvlay-backends (composition - ONLY crate that imports vendors)
+      ↑
+tisvlayd, tisvlay-cli, tisvlay-session, tisvlay-gui, tisvlay-tray
+```
+
+**Key principle**: Only `tisvlay-backends` knows about vendor crates. All binaries are vendor-agnostic.
 
 ### Component Diagram
 
@@ -74,14 +93,18 @@ flowchart TB
         Session[Session Service]
     end
 
+    subgraph Backends["tisvlay-backends (Composition Crate)"]
+        subgraph Registry["Backend Registry"]
+            LgBackend[tisvlay-lg]
+            SamsungBackend[tisvlay-samsung]
+            FutureBackend[future vendors]
+        end
+    end
+
     subgraph SystemSpace["System Space"]
         subgraph Daemon["tisvlayd (Daemon)"]
             DBusAPI["D-Bus API<br/>Manager1 / Tv1.*"]
-            subgraph Registry["Backend Registry"]
-                LgBackend[tisvlay-lg]
-                SamsungBackend[tisvlay-samsung]
-                FutureBackend[future vendors]
-            end
+            TvManager["TV Manager"]
         end
     end
 
@@ -92,11 +115,51 @@ flowchart TB
     end
 
     CLI & Tray & GUI & Session -->|D-Bus| DBusAPI
-    DBusAPI --> Registry
+    DBusAPI --> TvManager
+    TvManager --> Registry
     LgBackend --> LgTV
     SamsungBackend --> SamsungTV
     FutureBackend --> OtherTV
 ```
+
+### Abstraction Boundaries
+
+**Critical rule**: Only `tisvlay-backends` imports vendor crates. All binaries are vendor-agnostic.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       All binaries                              │
+│  tisvlayd, tisvlay-cli, tisvlay-session, tisvlay-tray, etc.     │
+│                                                                 │
+│  May import: tisvlay-core, tisvlay-backends                     │
+│  Must NOT import: tisvlay-lg, tisvlay-samsung, etc. directly    │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ uses create_registry()
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    tisvlay-backends                             │
+│                    (Composition Crate)                          │
+│                                                                 │
+│  Imports: tisvlay-core, tisvlay-lg, tisvlay-samsung, etc.       │
+│  Exports: create_registry() → BackendRegistry with all vendors  │
+│  ONLY place that knows about vendor implementations             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ implements traits from
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       tisvlay-core                              │
+│                                                                 │
+│  Defines: TvBackend, TvConnection, feature traits               │
+│  No vendor knowledge                                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+This ensures:
+- Adding a new vendor only requires updating `tisvlay-backends`
+- All binaries (daemon, CLI, GUI, session) remain vendor-agnostic
+- No `if vendor == "lg"` checks or downcasts in any binary code
 
 ---
 
@@ -415,8 +478,6 @@ reconnect_interval_ms = 10000
 [[tv]]
 id = "living-room"
 name = "Living Room G4"
-ip = "192.168.1.100"
-mac = "AA:BB:CC:DD:EE:FF"         # Optional - for WoL
 vendor = "lg"
 profile = "gaming"                 # Optional - defaults to "default"
 
@@ -424,22 +485,24 @@ profile = "gaming"                 # Optional - defaults to "default"
 hdmi_input = "HDMI_1"              # Which input this PC uses
 only_when_active = true            # Only control when TV is on this input
 
-# Vendor-specific configuration
+# Vendor-specific configuration (includes connection parameters)
 [tv.lg]
+ip = "192.168.1.100"               # LG-specific: WebSocket connection
+mac = "AA:BB:CC:DD:EE:FF"          # LG-specific: Wake-on-LAN (optional)
 client_key = "abc123..."
 default_input = "HDMI_1"
 
 [[tv]]
 id = "office-left"
 name = "Office Left C3"
-ip = "192.168.1.101"
-mac = "AA:BB:CC:DD:EE:01"
 vendor = "lg"
 profile = "desk"
 hdmi_input = "HDMI_2"
 only_when_active = false           # Control regardless of current input
 
 [tv.lg]
+ip = "192.168.1.101"
+mac = "AA:BB:CC:DD:EE:01"
 client_key = "def456..."
 default_input = "HDMI_2"
 ```
@@ -479,38 +542,55 @@ pub struct ProfileConfig {
     pub on_idle_timeout: SessionAction,
 }
 
+/// TV configuration - vendor-agnostic identity and behavior settings.
+/// Connection parameters (ip, mac, etc.) are in vendor-specific sections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvConfig {
+    /// Unique identifier for this TV.
     pub id: String,
+    /// Human-readable display name.
     pub name: String,
-    pub ip: String,
-    #[serde(default)]
-    pub mac: Option<String>,
+    /// Vendor/backend to use (e.g., "lg", "samsung").
     pub vendor: String,
 
+    /// Profile name for session behavior.
     #[serde(default = "default_profile")]
     pub profile: String,
 
     // Display-aware settings
+    /// HDMI input this PC is connected to.
     #[serde(default)]
     pub hdmi_input: Option<String>,
+    /// Only control when TV is on the specified input.
     #[serde(default)]
     pub only_when_active: bool,
 
     // Vendor-specific config (only one will be present)
-    #[serde(default)]
-    pub lg: Option<LgConfig>,
-    // Future: samsung, sony, roku, etc.
+    // Contains connection parameters specific to each vendor
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lg: Option<LgVendorConfig>,
+    // Future: samsung, sony, roku, serial, etc.
 }
 
 fn default_profile() -> String {
     "default".to_string()
 }
 
-// tisvlay-lg/src/config.rs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LgConfig {
+/// LG WebOS specific configuration.
+/// Contains connection parameters and LG-specific settings.
+// Note: Defined in tisvlay-core/src/config.rs for simpler serde handling
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LgVendorConfig {
+    /// IP address for WebSocket connection.
+    pub ip: String,
+    /// MAC address for Wake-on-LAN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    /// Client key obtained during pairing.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_key: Option<String>,
+    /// Default HDMI input to switch to on wake.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_input: Option<String>,
 }
 ```
@@ -522,12 +602,14 @@ pub struct LgConfig {
 ### Breaking Changes
 - D-Bus interface completely redesigned (per-TV objects)
 - Config file format changed (profiles, nested vendor config)
+- `ip` and `mac` moved from root `[[tv]]` to vendor-specific `[tv.lg]` section
 - CLI output format may change
 
 ### Migration Path
 1. Old configs will not parse - users need to migrate manually
-2. Provide migration script or clear upgrade instructions
-3. Session service config moves from `[session]` to `[profiles.default]`
+2. Move `ip` and `mac` from `[[tv]]` section to `[tv.lg]` section
+3. Provide migration script or clear upgrade instructions
+4. Session service config moves from `[session]` to `[profiles.default]`
 
 ### Backwards Compatibility
 Not a concern - project is in prototyping stage.

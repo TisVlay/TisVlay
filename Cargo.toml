@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/tisvlay-core",
     "crates/tisvlay-lg",
+    "crates/tisvlay-backends",
     "crates/tisvlay-cli",
     "crates/tisvlayd",
     "crates/tisvlay-session",
@@ -72,6 +73,7 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # Internal crates
 tisvlay-core = { path = "crates/tisvlay-core" }
 tisvlay-lg = { path = "crates/tisvlay-lg" }
+tisvlay-backends = { path = "crates/tisvlay-backends" }
 
 [workspace.metadata.deb]
 section = "utils"

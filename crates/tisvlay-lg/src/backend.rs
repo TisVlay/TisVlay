@@ -3,7 +3,7 @@
 //! This module provides the trait implementations for LG WebOS TVs.
 
 use crate::client::WebOsClient;
-use crate::config::LgConfig;
+use crate::config::LgVendorConfig;
 use async_trait::async_trait;
 use std::any::Any;
 use tisvlay_core::{
@@ -211,7 +211,7 @@ impl TvConnector for LgConnector {
         vendor_config: &(dyn Any + Send + Sync),
     ) -> Result<Box<dyn TvConnection>> {
         let config = vendor_config
-            .downcast_ref::<LgConfig>()
+            .downcast_ref::<LgVendorConfig>()
             .ok_or_else(|| Error::backend("lg", "Invalid vendor config type"))?;
 
         debug!(ip = %ip, has_key = config.client_key.is_some(), "Connecting to LG TV");

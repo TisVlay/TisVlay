@@ -415,12 +415,17 @@ fn get_tv(config: &Config, tv_id: Option<&str>) -> Result<TvConfig> {
 }
 
 async fn connect_tv(tv: &TvConfig) -> Result<WebOsClient> {
-    tracing::info!(tv = %tv.name, ip = %tv.ip, "Connecting to TV");
+    // Get IP and client key from vendor-specific config
+    let lg_config = tv
+        .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
+        .ok_or_else(|| anyhow::anyhow!("No LG config found for TV '{}'", tv.name))?;
 
-    let client_key = tv.lg.as_ref().and_then(|lg| lg.client_key.clone());
-    WebOsClient::connect(&tv.ip, client_key)
+    let ip = &lg_config.ip;
+    tracing::info!(tv = %tv.name, ip = %ip, "Connecting to TV");
+
+    WebOsClient::connect(ip, lg_config.client_key.clone())
         .await
-        .with_context(|| format!("Failed to connect to TV '{}' at {}", tv.name, tv.ip))
+        .with_context(|| format!("Failed to connect to TV '{}' at {}", tv.name, ip))
 }
 
 async fn run_tv_command_direct(command: Commands, tv: &TvConfig, _config: &mut Config) -> Result<()> {
@@ -515,10 +520,13 @@ async fn run_tv_command_direct(command: Commands, tv: &TvConfig, _config: &mut C
             }
         }
         Commands::Status => {
+            let lg_config = tv
+                .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
+                .ok_or_else(|| anyhow::anyhow!("No LG config found for TV '{}'", tv.name))?;
             let mut client = connect_tv(tv).await?;
             let state = client.get_state().await?;
 
-            println!("TV: {} ({})", tv.name, tv.ip);
+            println!("TV: {} ({})", tv.name, lg_config.ip);
             println!("Power: {}", if state.is_on { "on" } else { "off" });
             println!("Screen: {}", if state.is_screen_on { "on" } else { "off" });
             if let Some(vol) = state.volume {
@@ -546,15 +554,19 @@ async fn run_tv_command_direct(command: Commands, tv: &TvConfig, _config: &mut C
 }
 
 async fn power_on_direct(tv: &TvConfig) -> Result<()> {
-    if tv.mac.is_empty() {
-        anyhow::bail!(
+    // Get MAC from vendor-specific config
+    let lg_config = tv
+        .get_vendor_config::<tisvlay_lg::LgVendorConfig>()
+        .ok_or_else(|| anyhow::anyhow!("No LG config found for TV '{}'", tv.name))?;
+
+    let mac = lg_config.mac.as_ref()
+        .ok_or_else(|| anyhow::anyhow!(
             "MAC address not configured for TV '{}'. Cannot use Wake-on-LAN.",
             tv.name
-        );
-    }
+        ))?;
 
-    tracing::info!(tv = %tv.name, mac = %tv.mac, "Sending Wake-on-LAN");
-    tisvlay_lg::wake_tv(&tv.mac)?;
+    tracing::info!(tv = %tv.name, mac = %mac, "Sending Wake-on-LAN");
+    tisvlay_lg::wake_tv(mac)?;
     println!("Wake-on-LAN packet sent to {}", tv.name);
 
     // Wait for TV to boot
@@ -563,15 +575,13 @@ async fn power_on_direct(tv: &TvConfig) -> Result<()> {
     tokio::time::sleep(delay).await;
 
     // Try to connect and switch to default input if configured
-    let client_key = tv.lg.as_ref().and_then(|lg| lg.client_key.clone());
-    match WebOsClient::connect(&tv.ip, client_key).await {
+    let client_key = lg_config.client_key.clone();
+    match WebOsClient::connect(&lg_config.ip, client_key).await {
         Ok(mut client) => {
             println!("Connected to TV");
-            if let Some(ref lg) = tv.lg {
-                if let Some(ref input) = lg.default_input {
-                    client.switch_input(input).await?;
-                    println!("Switched to input: {}", input);
-                }
+            if let Some(ref input) = lg_config.default_input {
+                client.switch_input(input).await?;
+                println!("Switched to input: {}", input);
             }
             client.close().await?;
         }
@@ -596,15 +606,20 @@ fn list_tvs(config: &Config) {
     println!("Configured TVs:");
     for (i, tv) in config.tv.iter().enumerate() {
         let default = if i == 0 { " (default)" } else { "" };
-        let paired = tv
-            .lg
-            .as_ref()
-            .and_then(|lg| lg.client_key.as_ref())
-            .is_some();
+        // Extract vendor-specific config to get ip and pairing status
+        let (ip, paired) = if tv.vendor == "lg" {
+            if let Some(lg_config) = tv.get_vendor_config::<tisvlay_lg::LgVendorConfig>() {
+                (lg_config.ip.clone(), lg_config.client_key.is_some())
+            } else {
+                ("unknown".to_string(), false)
+            }
+        } else {
+            ("unknown".to_string(), false)
+        };
         let status = if paired { "paired" } else { "not paired" };
         println!(
             "  {} - {} ({}) [{}] <{}>{}",
-            tv.id, tv.name, tv.ip, status, tv.vendor, default
+            tv.id, tv.name, ip, status, tv.vendor, default
         );
     }
 }
@@ -638,21 +653,17 @@ async fn pair_tv_direct(
     });
 
     let has_mac = mac.is_some();
-    let tv = TvConfig {
-        id: id.clone(),
-        name: name.clone(),
+    // Create vendor-specific config with connection parameters
+    let lg_config = tisvlay_lg::LgVendorConfig {
         ip: ip.to_string(),
-        mac: mac.unwrap_or_default(),
-        vendor: "lg".to_string(),
-        profile: "default".to_string(),
-        hdmi_input: None,
-        only_when_active: false,
-        // Vendor-specific config
-        lg: Some(tisvlay_core::LgVendorConfig {
-            client_key: Some(client_key),
-            default_input: None,
-        }),
+        mac,
+        client_key: Some(client_key),
+        default_input: None,
     };
+    // Create TV config with vendor-specific config
+    let tv = TvConfig::new(id.clone(), name.clone())
+        .with_vendor("lg")
+        .with_vendor_config(&lg_config);
 
     config.upsert_tv(tv);
     config.save().context("Failed to save configuration")?;
