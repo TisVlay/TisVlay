@@ -145,12 +145,19 @@ async fn main() -> Result<()> {
 /// For each event, we iterate through all configured TVs and apply the action
 /// defined in each TV's profile. This allows different TVs to respond differently
 /// to the same event (e.g., gaming TV ignores screen lock, desk TV blanks).
+///
+/// Tracks the last action sent to each TV to avoid redundant commands
+/// (e.g., sending ScreenOn when GreeterWake already unblanked the screen).
 async fn event_handler(
     mut event_rx: mpsc::UnboundedReceiver<SessionEvent>,
     config: Arc<RwLock<Config>>,
     daemon: Arc<DaemonClient>,
 ) {
     info!("Event handler started");
+
+    // Track last successful action per TV to skip redundant commands
+    let mut last_action: std::collections::HashMap<String, SessionAction> =
+        std::collections::HashMap::new();
 
     while let Some(event) = event_rx.recv().await {
         info!(event = %event, "Processing session event");
@@ -176,10 +183,20 @@ async fn event_handler(
                 continue;
             }
 
+            // Skip redundant commands (e.g., ScreenOn after GreeterWake already sent ScreenOn)
+            if let Some(&prev) = last_action.get(&tv_id) {
+                if prev == action {
+                    debug!(tv_id = %tv_id, action = ?action, "Skipping redundant action");
+                    success_count += 1;
+                    continue;
+                }
+            }
+
             debug!(tv_id = %tv_id, action = ?action, "Executing action");
             if let Err(e) = execute_action_for_tv(&daemon, &tv_id, action).await {
                 warn!(tv_id = %tv_id, error = %e, "Action failed");
             } else {
+                last_action.insert(tv_id, action);
                 success_count += 1;
             }
         }

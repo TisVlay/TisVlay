@@ -379,18 +379,25 @@ impl TvManager {
             Ok(result) => Ok(result),
             Err(e) => {
                 let msg = format!("Command failed: {}", e);
-                error!(tv_id = %tv_id, error = %e, "Command failed");
-                // Mark as disconnected on error
-                tv.connection = None;
-                tv.last_error = Some(msg.clone());
 
-                // Emit disconnection state change
-                let event = StateChangeEvent::connection_change(tv_id, false, Some(&msg));
-                let tv_id_owned = tv_id.to_string();
-                drop(tvs);
+                if e.is_connection_fatal() {
+                    // Fatal error: connection is broken, tear down and reconnect
+                    error!(tv_id = %tv_id, error = %e, "Command failed (connection error)");
+                    tv.connection = None;
+                    tv.last_error = Some(msg.clone());
 
-                self.emit_state_change(event);
-                self.trigger_reconnect(&tv_id_owned).await;
+                    let event = StateChangeEvent::connection_change(tv_id, false, Some(&msg));
+                    let tv_id_owned = tv_id.to_string();
+                    drop(tvs);
+
+                    self.emit_state_change(event);
+                    self.trigger_reconnect(&tv_id_owned).await;
+                } else {
+                    // Non-fatal error (e.g., TV returned application error for
+                    // idempotent operation like screen_on when already on).
+                    // Keep the connection alive.
+                    warn!(tv_id = %tv_id, error = %e, "Command failed (non-fatal)");
+                }
 
                 Err(msg)
             }

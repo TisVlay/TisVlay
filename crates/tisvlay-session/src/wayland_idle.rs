@@ -25,9 +25,14 @@ use wayland_protocols::ext::idle_notify::v1::client::{
 use crate::session_monitor::SessionEvent;
 
 /// Timeout duration for idle detection in milliseconds.
-/// We use a short timeout so we get `resumed` events quickly when the user
-/// interacts with the lock screen.
-const IDLE_TIMEOUT_MS: u32 = 1000;
+/// This must be short enough that the user goes "idle" in the brief pause
+/// between locking the screen (e.g., pressing Super+L) and moving the
+/// mouse to wake the greeter. The ext-idle-notify-v1 protocol requires
+/// the idle→resumed cycle: "idled" must fire before "resumed" can trigger
+/// GreeterWake. At 200ms, even rapid lock-then-move sequences will work
+/// because the natural pause between the lock keypress and mouse movement
+/// exceeds this threshold.
+const IDLE_TIMEOUT_MS: u32 = 200;
 
 /// Maximum protocol version we support for ext_idle_notifier_v1.
 /// The wayland-protocols crate supports up to version 1 for this protocol.

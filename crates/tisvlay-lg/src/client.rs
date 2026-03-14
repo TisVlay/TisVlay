@@ -138,15 +138,33 @@ impl WebOsClient {
     }
 
     /// Turn off the screen (OLED-safe blank, TV stays on).
+    ///
+    /// Idempotent: if the screen is already off, the TV returns a 500 error
+    /// which is treated as success.
     pub async fn screen_off(&mut self) -> Result<()> {
-        self.command(power::TURN_OFF_SCREEN, json!({})).await?;
-        Ok(())
+        match self.command(power::TURN_OFF_SCREEN, json!({})).await {
+            Ok(_) => Ok(()),
+            Err(Error::TvError(_)) => {
+                tracing::debug!("screen_off returned error (screen likely already off), treating as success");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Turn on the screen (resume from blank).
+    ///
+    /// Idempotent: if the screen is already on, the TV returns a 500 error
+    /// which is treated as success.
     pub async fn screen_on(&mut self) -> Result<()> {
-        self.command(power::TURN_ON_SCREEN, json!({})).await?;
-        Ok(())
+        match self.command(power::TURN_ON_SCREEN, json!({})).await {
+            Ok(_) => Ok(()),
+            Err(Error::TvError(_)) => {
+                tracing::debug!("screen_on returned error (screen likely already on), treating as success");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Get the current power state.
