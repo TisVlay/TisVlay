@@ -195,6 +195,8 @@ async fn event_handler(
             debug!(tv_id = %tv_id, action = ?action, "Executing action");
             if let Err(e) = execute_action_for_tv(&daemon, &tv_id, action).await {
                 warn!(tv_id = %tv_id, error = %e, "Action failed");
+                // Clear cached state — we don't know the TV's actual state
+                last_action.remove(&tv_id);
             } else {
                 last_action.insert(tv_id, action);
                 success_count += 1;

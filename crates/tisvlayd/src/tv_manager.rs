@@ -409,6 +409,10 @@ impl TvManager {
     // -------------------------------------------------------------------------
 
     /// Power on a TV using Wake-on-LAN.
+    ///
+    /// Sends the WoL packet, then retries connecting until the TV boots and
+    /// accepts connections (up to ~15 seconds). This blocks the caller so
+    /// the TV is actually online when the call returns.
     pub async fn power_on(&self, tv_id: &str) -> Result<(), String> {
         let config = self
             .get_tv_config(tv_id)
@@ -422,27 +426,73 @@ impl TvManager {
         let display_addr = self.registry.display_address(&config);
         info!(tv_id = %tv_id, address = %display_addr, "Waking TV");
 
+        // Drop any stale connection — the TV was powered off, so any existing
+        // connection is dead (e.g., from a ScreenOff that raced with PowerOff).
+        {
+            let mut tvs = self.tvs.write().await;
+            if let Some(tv) = tvs.get_mut(tv_id) {
+                if let Some(mut conn) = tv.connection.take() {
+                    let _ = conn.close().await;
+                }
+            }
+        }
+
         self.registry
             .wake_tv(&config)
             .await
             .map_err(|e| format!("Wake failed: {}", e))?;
 
-        // Wait for TV to wake
-        let delay = Duration::from_millis(self.config.daemon.wake_delay_ms);
-        tokio::time::sleep(delay).await;
+        // Retry connecting with short intervals — the TV needs time to boot
+        // after WoL. Resend WoL before each attempt because the first packet
+        // may have been lost (e.g., desktop network not yet up after resume).
+        let mut delay_ms = 2000u64;
+        for attempt in 1..=8 {
+            info!(tv_id = %tv_id, attempt, delay_ms, "Waiting for TV to boot");
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
-        // Try to connect
-        self.connect(tv_id).await?;
+            // Resend WoL — earlier packets may have been lost if the network
+            // was still recovering from sleep/suspend.
+            if let Err(e) = self.registry.wake_tv(&config).await {
+                warn!(tv_id = %tv_id, attempt, error = %e, "WoL resend failed");
+            }
 
-        Ok(())
+            match self.connect(tv_id).await {
+                Ok(()) => {
+                    info!(tv_id = %tv_id, "TV is online after WoL");
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(tv_id = %tv_id, attempt, error = %e, "TV not ready yet");
+                    delay_ms = (delay_ms * 2).min(5000);
+                }
+            }
+        }
+
+        Err(format!("TV {} did not come online after WoL", tv_id))
     }
 
     /// Power off a TV.
+    ///
+    /// After sending the power-off command, the connection is dropped because
+    /// the TV is shutting down and the transport (e.g., WebSocket) will close.
     pub async fn power_off(&self, tv_id: &str) -> Result<(), String> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.power_off().await })
-        })
-        .await
+        let result = self
+            .with_connection(tv_id, |conn| {
+                Box::pin(async move { conn.power_off().await })
+            })
+            .await;
+
+        // Drop the connection regardless of result — the TV is going to shut down
+        {
+            let mut tvs = self.tvs.write().await;
+            if let Some(tv) = tvs.get_mut(tv_id) {
+                if let Some(mut conn) = tv.connection.take() {
+                    let _ = conn.close().await;
+                }
+            }
+        }
+
+        result
     }
 
     /// Get power state.
