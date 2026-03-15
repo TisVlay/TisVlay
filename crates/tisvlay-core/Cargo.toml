@@ -29,6 +29,10 @@ bitflags = { workspace = true }
 zbus = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+zbus = { workspace = true }
+
 [features]
 default = []
 dbus = ["dep:zbus", "dep:anyhow"]

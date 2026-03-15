@@ -100,7 +100,9 @@ trait TisvlayTv {
     fn address(&self) -> zbus::Result<String>;
 
     /// Whether the TV is currently connected.
-    #[zbus(property)]
+    /// Uncached — always fetches from the daemon since connection status
+    /// changes without emitting PropertiesChanged signals.
+    #[zbus(property(emits_changed_signal = "false"))]
     fn connected(&self) -> zbus::Result<bool>;
 
     /// Capabilities supported by this TV.

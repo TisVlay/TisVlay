@@ -4,7 +4,7 @@
 //! into a single snapshot used by the tray module to build menus.
 
 use tisvlay_core::DaemonClient;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Snapshot of a single TV's state, cached locally for menu rendering.
 #[derive(Debug, Clone)]
@@ -28,7 +28,9 @@ pub struct CachedTvState {
 /// connected TV. Disconnected TVs get default state values.
 pub async fn fetch_all_state(daemon: &DaemonClient) -> anyhow::Result<Vec<CachedTvState>> {
     let tvs = daemon.list_tvs().await?;
-    debug!(count = tvs.len(), "Listed TVs from daemon");
+    for tv in &tvs {
+        debug!(tv_id = %tv.id, connected = tv.connected, "TV from daemon");
+    }
     let mut states = Vec::with_capacity(tvs.len());
 
     for tv in tvs {
@@ -45,20 +47,23 @@ pub async fn fetch_all_state(daemon: &DaemonClient) -> anyhow::Result<Vec<Cached
             inputs: Vec::new(),
         };
 
-        if tv.connected {
-            match daemon.get_state(&tv.id).await {
-                Ok(state) => {
-                    cached.is_on = state.is_on;
-                    cached.is_screen_on = state.is_screen_on;
-                    cached.volume = state.volume;
-                    cached.muted = state.muted;
-                    cached.current_input = state.current_input;
-                    cached.backlight = state.backlight;
-                    cached.inputs = state.inputs.into_iter().map(|i| (i.id, i.label)).collect();
-                }
-                Err(e) => {
-                    warn!(tv_id = %tv.id, error = %e, "Failed to get TV state");
-                }
+        // Always try get_state — the daemon connects on-demand, so a TV
+        // may be reachable even if `Connected` is false. If get_state
+        // succeeds, the daemon established a connection and the TV is online.
+        match daemon.get_state(&tv.id).await {
+            Ok(state) => {
+                cached.connected = true;
+                cached.is_on = state.is_on;
+                cached.is_screen_on = state.is_screen_on;
+                cached.volume = state.volume;
+                cached.muted = state.muted;
+                cached.current_input = state.current_input;
+                cached.backlight = state.backlight;
+                cached.inputs = state.inputs.into_iter().map(|i| (i.id, i.label)).collect();
+            }
+            Err(e) => {
+                debug!(tv_id = %tv.id, error = %e, "TV state unavailable");
+                cached.connected = false;
             }
         }
 

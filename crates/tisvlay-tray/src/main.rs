@@ -70,6 +70,7 @@ async fn main() -> Result<()> {
         tvs: Vec::new(),
         daemon_available: false,
         cmd_tx,
+        scroll_target: Default::default(),
     };
 
     // Spawn the tray icon
@@ -79,22 +80,6 @@ async fn main() -> Result<()> {
         .context("Failed to spawn tray icon (is a StatusNotifierHost running?)")?;
 
     info!("Tray icon spawned");
-
-    // Do initial state fetch
-    match fetch_all_state(&daemon).await {
-        Ok(tvs) => {
-            handle
-                .update(|t| {
-                    t.tvs = tvs;
-                    t.daemon_available = true;
-                })
-                .await;
-            info!("Initial state loaded");
-        }
-        Err(e) => {
-            warn!(error = %e, "Daemon not available at startup");
-        }
-    }
 
     // Spawn polling task
     let poll_daemon = daemon.clone();
@@ -148,6 +133,7 @@ async fn poll_state(daemon: Arc<DaemonClient>, handle: ksni::Handle<TisvlayTray>
 
         match fetch_all_state(&daemon).await {
             Ok(tvs) => {
+                debug!(count = tvs.len(), "Poll: state updated");
                 handle
                     .update(|t| {
                         t.tvs = tvs;
@@ -156,7 +142,7 @@ async fn poll_state(daemon: Arc<DaemonClient>, handle: ksni::Handle<TisvlayTray>
                     .await;
             }
             Err(e) => {
-                debug!(error = %e, "State poll failed");
+                debug!(error = %e, "Poll: state fetch failed");
                 handle
                     .update(|t| {
                         t.daemon_available = false;
@@ -225,18 +211,15 @@ async fn process_commands(
                     set_cached_volume(&handle, &id, new).await;
                 }
             }
-            TrayCommand::ToggleMute(id) => {
-                // Read current mute state and toggle
-                match daemon.get_state(&id).await {
-                    Ok(state) => {
-                        let new_mute = !state.muted.unwrap_or(false);
-                        if let Err(e) = daemon.set_mute(&id, new_mute).await {
-                            warn!(tv_id = %id, error = %e, "Toggle mute failed");
-                        }
+            TrayCommand::ToggleMute(id) => match daemon.get_state(&id).await {
+                Ok(state) => {
+                    let new_mute = !state.muted.unwrap_or(false);
+                    if let Err(e) = daemon.set_mute(&id, new_mute).await {
+                        warn!(tv_id = %id, error = %e, "Toggle mute failed");
                     }
-                    Err(e) => warn!(tv_id = %id, error = %e, "Get state failed"),
                 }
-            }
+                Err(e) => warn!(tv_id = %id, error = %e, "Get state failed"),
+            },
             TrayCommand::BacklightUp(id) => {
                 let current = get_cached_backlight(&handle, &id).await;
                 let new = current.saturating_add(BACKLIGHT_STEP).min(100);
@@ -257,9 +240,7 @@ async fn process_commands(
             }
         }
 
-        // Refresh state after command so menu reflects the change.
-        // Skip for volume/backlight — we already updated the cache optimistically
-        // to avoid race conditions with rapid scroll events.
+        // Refresh state after command so menu reflects the change
         if let Ok(tvs) = fetch_all_state(&daemon).await {
             handle
                 .update(|t| {
@@ -271,7 +252,7 @@ async fn process_commands(
     }
 }
 
-/// Read volume from cached tray state to avoid race conditions with rapid adjustments.
+/// Read volume from cached tray state.
 async fn get_cached_volume(handle: &ksni::Handle<TisvlayTray>, tv_id: &str) -> u8 {
     let id = tv_id.to_string();
     handle
@@ -286,7 +267,7 @@ async fn get_cached_volume(handle: &ksni::Handle<TisvlayTray>, tv_id: &str) -> u
         .unwrap_or(0)
 }
 
-/// Optimistically update cached volume so the next scroll event uses the new value.
+/// Optimistically update cached volume.
 async fn set_cached_volume(handle: &ksni::Handle<TisvlayTray>, tv_id: &str, volume: u8) {
     let id = tv_id.to_string();
     handle

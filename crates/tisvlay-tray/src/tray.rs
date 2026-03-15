@@ -33,6 +33,54 @@ fn tv_item(
     .into()
 }
 
+/// Menu item that sends a command and sets scroll target to volume.
+fn volume_item(
+    label: impl Into<String>,
+    icon: &str,
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    cmd_fn: impl Fn() -> TrayCommand + Send + 'static,
+) -> MenuItem<TisvlayTray> {
+    let tx = tx.clone();
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        activate: Box::new(move |tray: &mut TisvlayTray| {
+            tray.scroll_target = ScrollTarget::Volume;
+            let _ = tx.send(cmd_fn());
+        }),
+        ..Default::default()
+    }
+    .into()
+}
+
+/// Menu item that sends a command and sets scroll target to backlight.
+fn backlight_item(
+    label: impl Into<String>,
+    icon: &str,
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    cmd_fn: impl Fn() -> TrayCommand + Send + 'static,
+) -> MenuItem<TisvlayTray> {
+    let tx = tx.clone();
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        activate: Box::new(move |tray: &mut TisvlayTray| {
+            tray.scroll_target = ScrollTarget::Backlight;
+            let _ = tx.send(cmd_fn());
+        }),
+        ..Default::default()
+    }
+    .into()
+}
+
+/// What the scroll wheel adjusts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollTarget {
+    Volume,
+    #[default]
+    Backlight,
+}
+
 /// Commands sent from tray menu callbacks to the async command processor.
 #[derive(Debug)]
 pub enum TrayCommand {
@@ -61,6 +109,8 @@ pub struct TisvlayTray {
     pub daemon_available: bool,
     /// Channel for sending commands to the async processor.
     pub cmd_tx: mpsc::UnboundedSender<TrayCommand>,
+    /// What the scroll wheel adjusts (set by last volume/backlight interaction).
+    pub scroll_target: ScrollTarget,
 }
 
 impl Tray for TisvlayTray {
@@ -113,12 +163,25 @@ impl Tray for TisvlayTray {
             self.tvs
                 .iter()
                 .map(|tv| {
-                    let status = if !tv.connected {
-                        "off".to_string()
-                    } else if let Some(vol) = tv.volume {
-                        format!("vol {}", vol)
-                    } else {
+                    if !tv.connected {
+                        return format!("{}: off", tv.name);
+                    }
+                    let mut parts = Vec::new();
+                    if let Some(vol) = tv.volume {
+                        let muted = if tv.muted == Some(true) {
+                            " (muted)"
+                        } else {
+                            ""
+                        };
+                        parts.push(format!("vol {}{}", vol, muted));
+                    }
+                    if let Some(bl) = tv.backlight {
+                        parts.push(format!("bl {}", bl));
+                    }
+                    let status = if parts.is_empty() {
                         "on".to_string()
+                    } else {
+                        parts.join(", ")
                     };
                     format!("{}: {}", tv.name, status)
                 })
@@ -138,14 +201,17 @@ impl Tray for TisvlayTray {
         if orientation != ksni::Orientation::Vertical {
             return;
         }
-        // Adjust volume on the first connected TV
+        // Adjust volume or backlight on the first connected TV,
+        // depending on which the user last interacted with.
         if let Some(tv) = self.tvs.iter().find(|tv| tv.connected && tv.is_on) {
             let id = tv.id.clone();
-            if delta > 0 {
-                let _ = self.cmd_tx.send(TrayCommand::VolumeUp(id));
-            } else if delta < 0 {
-                let _ = self.cmd_tx.send(TrayCommand::VolumeDown(id));
-            }
+            let cmd = match (self.scroll_target, delta > 0) {
+                (ScrollTarget::Volume, true) => TrayCommand::VolumeUp(id),
+                (ScrollTarget::Volume, false) => TrayCommand::VolumeDown(id),
+                (ScrollTarget::Backlight, true) => TrayCommand::BacklightUp(id),
+                (ScrollTarget::Backlight, false) => TrayCommand::BacklightDown(id),
+            };
+            let _ = self.cmd_tx.send(cmd);
         }
     }
 
@@ -224,25 +290,11 @@ fn build_connected_tv_menu(
     let id = tv.id.clone();
 
     // Power Off
-    // Power Off
     let id = id.clone();
     items.push(tv_item("Power Off", "system-shutdown", cmd_tx, {
         let id = id.clone();
         move || TrayCommand::PowerOff(id.clone())
     }));
-
-    // Screen toggle
-    if tv.is_screen_on {
-        items.push(tv_item("Screen Off", "display-brightness-off", cmd_tx, {
-            let id = id.clone();
-            move || TrayCommand::ScreenOff(id.clone())
-        }));
-    } else {
-        items.push(tv_item("Screen On", "display-brightness", cmd_tx, {
-            let id = id.clone();
-            move || TrayCommand::ScreenOn(id.clone())
-        }));
-    }
 
     // Input submenu (if inputs available)
     if !tv.inputs.is_empty() {
@@ -269,22 +321,27 @@ fn build_connected_tv_menu(
         );
     }
 
-    items.push(tv_item("Volume Up (+5)", "", cmd_tx, {
+    items.push(volume_item("Volume Up (+5)", "audio-volume-high", cmd_tx, {
         let id = id.clone();
         move || TrayCommand::VolumeUp(id.clone())
     }));
-    items.push(tv_item("Volume Down (-5)", "", cmd_tx, {
-        let id = id.clone();
-        move || TrayCommand::VolumeDown(id.clone())
-    }));
+    items.push(volume_item(
+        "Volume Down (-5)",
+        "audio-volume-medium",
+        cmd_tx,
+        {
+            let id = id.clone();
+            move || TrayCommand::VolumeDown(id.clone())
+        },
+    ));
 
     let is_muted = tv.muted == Some(true);
-    items.push(tv_item(
+    items.push(volume_item(
         if is_muted { "Unmute" } else { "Mute" },
         if is_muted {
-            "audio-volume-muted"
-        } else {
             "audio-volume-high"
+        } else {
+            "audio-volume-muted"
         },
         cmd_tx,
         {
@@ -294,26 +351,59 @@ fn build_connected_tv_menu(
     ));
 
     // Backlight section
+    items.push(MenuItem::Separator);
     if let Some(bl) = tv.backlight {
-        items.push(MenuItem::Separator);
         items.push(
             StandardItem {
                 label: format!("Backlight: {}", bl),
-                icon_name: "weather-clear".into(),
+                icon_name: "high-brightness".into(),
                 enabled: false,
                 ..Default::default()
             }
             .into(),
         );
+    }
 
-        items.push(tv_item("Backlight Up (+10)", "", cmd_tx, {
+    items.push(backlight_item(
+        "Backlight Up (+10)",
+        "high-brightness",
+        cmd_tx,
+        {
             let id = id.clone();
             move || TrayCommand::BacklightUp(id.clone())
-        }));
-        items.push(tv_item("Backlight Down (-10)", "", cmd_tx, {
+        },
+    ));
+    items.push(backlight_item(
+        "Backlight Down (-10)",
+        "low-brightness",
+        cmd_tx,
+        {
             let id = id.clone();
             move || TrayCommand::BacklightDown(id.clone())
-        }));
+        },
+    ));
+
+    // Screen blank/unblank (visual mute — OLED-safe)
+    if tv.is_screen_on {
+        items.push(backlight_item(
+            "Screen Off",
+            "view-hidden",
+            cmd_tx,
+            {
+                let id = id.clone();
+                move || TrayCommand::ScreenOff(id.clone())
+            },
+        ));
+    } else {
+        items.push(backlight_item(
+            "Screen On",
+            "view-visible",
+            cmd_tx,
+            {
+                let id = id.clone();
+                move || TrayCommand::ScreenOn(id.clone())
+            },
+        ));
     }
 
     items
