@@ -10,13 +10,13 @@ pub struct TvState {
     /// Whether the screen is on (false = blanked for OLED protection).
     pub is_screen_on: bool,
     /// Current volume level (0-100).
-    pub volume: Option<i32>,
+    pub volume: Option<u8>,
     /// Whether audio is muted.
     pub muted: Option<bool>,
     /// Current input ID (e.g., "HDMI_1").
     pub current_input: Option<String>,
     /// Current backlight level (0-100, OLED pixel brightness).
-    pub backlight: Option<i32>,
+    pub backlight: Option<u8>,
     /// Current foreground app ID.
     pub current_app: Option<String>,
     /// Available inputs.
@@ -56,10 +56,11 @@ pub enum PowerState {
 
 impl PowerState {
     /// Parse power state from TV response string.
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "active" => Self::Active,
-            "standby" | "suspend" => Self::Standby,
+            "standby" => Self::Standby,
+            "suspend" => Self::Suspend,
             "active standby" | "activestandby" => Self::ActiveStandby,
             "screen saver" | "screensaver" => Self::ScreenSaver,
             "screen off" | "screenoff" => Self::ScreenOff,
@@ -85,7 +86,10 @@ impl TvState {
     /// Update state from power state response.
     pub fn update_power(&mut self, state: PowerState) {
         self.is_on = state.is_on();
-        self.is_screen_on = !matches!(state, PowerState::ScreenOff | PowerState::Standby);
+        self.is_screen_on = !matches!(
+            state,
+            PowerState::ScreenOff | PowerState::Standby | PowerState::Suspend
+        );
     }
 }
 
@@ -99,10 +103,11 @@ pub struct DiscoveredTv {
     pub id: String,
     /// TV friendly name.
     pub name: String,
-    /// IP address of the TV.
-    pub ip: String,
-    /// MAC address (may be empty if not available from discovery protocol).
-    pub mac: String,
+    /// Transport address for display (e.g., IP address, serial port, CEC address).
+    pub address: String,
+    /// Hardware identifier (e.g., MAC address, serial number).
+    /// May be empty if not available from the discovery protocol.
+    pub hardware_id: String,
     /// Vendor identifier (e.g., "lg", "samsung").
     pub vendor: String,
     /// Location URL for device description (vendor-specific).
@@ -115,22 +120,22 @@ impl DiscoveredTv {
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
-        ip: impl Into<String>,
+        address: impl Into<String>,
         vendor: impl Into<String>,
     ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
-            ip: ip.into(),
-            mac: String::new(),
+            address: address.into(),
+            hardware_id: String::new(),
             vendor: vendor.into(),
             location: String::new(),
         }
     }
 
-    /// Set the MAC address.
-    pub fn with_mac(mut self, mac: impl Into<String>) -> Self {
-        self.mac = mac.into();
+    /// Set the hardware identifier (e.g., MAC address).
+    pub fn with_hardware_id(mut self, hardware_id: impl Into<String>) -> Self {
+        self.hardware_id = hardware_id.into();
         self
     }
 

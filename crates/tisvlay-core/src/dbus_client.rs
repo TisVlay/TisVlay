@@ -16,7 +16,7 @@
 //!     // List all configured TVs
 //!     let tvs = client.list_tvs().await?;
 //!     for tv in &tvs {
-//!         println!("{}: {} ({}) - {}", tv.id, tv.name, tv.ip,
+//!         println!("{}: {} ({}) - {}", tv.id, tv.name, tv.address,
 //!             if tv.connected { "connected" } else { "disconnected" });
 //!     }
 //!
@@ -37,29 +37,7 @@ use tracing::debug;
 use zbus::proxy;
 use zbus::zvariant::OwnedObjectPath;
 
-/// D-Bus service name for tisvlayd.
-pub const DAEMON_SERVICE: &str = "org.tisvlay.Daemon";
-
-/// D-Bus object path for manager interface.
-pub const MANAGER_PATH: &str = "/org/tisvlay/Manager";
-
-/// Base path for TV objects.
-pub const TV_BASE_PATH: &str = "/org/tisvlay/Tv";
-
-/// Generate the D-Bus object path for a TV.
-pub fn tv_path(tv_id: &str) -> String {
-    let sanitized: String = tv_id
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("{}/{}", TV_BASE_PATH, sanitized)
-}
+use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH};
 
 // =============================================================================
 // Manager Interface Proxy
@@ -74,7 +52,10 @@ pub fn tv_path(tv_id: &str) -> String {
 trait TisvlayManager {
     /// Discover TVs on the network.
     /// Returns: [(id, name, ip, mac, vendor)]
-    fn discover_tvs(&self, timeout_ms: u32) -> zbus::Result<Vec<(String, String, String, String, String)>>;
+    fn discover_tvs(
+        &self,
+        timeout_ms: u32,
+    ) -> zbus::Result<Vec<(String, String, String, String, String)>>;
 
     /// Get list of TV object paths.
     fn get_tvs(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
@@ -84,8 +65,9 @@ trait TisvlayManager {
     fn get_supported_vendors(&self) -> zbus::Result<Vec<(String, String)>>;
 
     /// Add a TV.
+    /// config_json: vendor-specific connection parameters as JSON
     /// Returns: TV object path
-    fn add_tv(&self, ip: &str, name: &str, vendor: &str, mac: &str) -> zbus::Result<OwnedObjectPath>;
+    fn add_tv(&self, name: &str, vendor: &str, config_json: &str) -> zbus::Result<OwnedObjectPath>;
 
     /// Remove a TV.
     fn remove_tv(&self, tv_path: &OwnedObjectPath) -> zbus::Result<()>;
@@ -99,10 +81,7 @@ trait TisvlayManager {
 // =============================================================================
 
 /// D-Bus proxy for the base TV interface.
-#[proxy(
-    interface = "org.tisvlay.Tv1",
-    default_service = "org.tisvlay.Daemon"
-)]
+#[proxy(interface = "org.tisvlay.Tv1", default_service = "org.tisvlay.Daemon")]
 trait TisvlayTv {
     /// TV identifier.
     #[zbus(property)]
@@ -116,9 +95,9 @@ trait TisvlayTv {
     #[zbus(property)]
     fn vendor(&self) -> zbus::Result<String>;
 
-    /// TV IP address.
+    /// TV address (transport-agnostic display address).
     #[zbus(property)]
-    fn ip(&self) -> zbus::Result<String>;
+    fn address(&self) -> zbus::Result<String>;
 
     /// Whether the TV is currently connected.
     #[zbus(property)]
@@ -237,8 +216,8 @@ pub struct TvInfo {
     pub id: String,
     /// Display name.
     pub name: String,
-    /// IP address.
-    pub ip: String,
+    /// Transport-agnostic display address (e.g. IP, serial port, CEC address).
+    pub address: String,
     /// Vendor ID.
     pub vendor: String,
     /// Whether connected.
@@ -372,25 +351,17 @@ impl DaemonClient {
 
     /// Get or create proxies for a TV.
     async fn get_tv_proxies(&self, tv_id: &str) -> Result<()> {
-        // Check if already cached
-        {
-            let cache = self.tv_proxies.read().await;
-            if cache.contains_key(tv_id) {
-                return Ok(());
-            }
+        // Use a single write lock to avoid TOCTOU race where two concurrent
+        // callers could both miss the read check and create duplicate proxies.
+        let mut cache = self.tv_proxies.write().await;
+        if cache.contains_key(tv_id) {
+            return Ok(());
         }
 
-        // Create new proxies
         let path = tv_path(tv_id);
-        let obj_path = OwnedObjectPath::try_from(path)
-            .context("Invalid TV path")?;
+        let obj_path = OwnedObjectPath::try_from(path).context("Invalid TV path")?;
         let proxies = TvProxies::new(self.connection.clone(), obj_path).await?;
-
-        // Cache them
-        {
-            let mut cache = self.tv_proxies.write().await;
-            cache.insert(tv_id.to_string(), proxies);
-        }
+        cache.insert(tv_id.to_string(), proxies);
 
         Ok(())
     }
@@ -398,6 +369,34 @@ impl DaemonClient {
     /// Check if the daemon is available and responding.
     pub async fn is_available(&self) -> bool {
         self.manager.get_tvs().await.is_ok()
+    }
+
+    /// Execute an operation on a TV's cached proxies, handling proxy lookup boilerplate.
+    ///
+    /// This helper ensures the proxy cache is populated for the given TV, acquires a
+    /// read lock, looks up the proxies, and delegates to the provided closure. The `op`
+    /// string is used for tracing and error context (e.g., "turn screen off").
+    ///
+    /// The closure receives `&TvProxies` and must return a boxed future to erase the
+    /// borrow lifetime (proxy method futures borrow from `&self`).
+    async fn with_proxies<T, F>(&self, tv_id: &str, op: &str, f: F) -> Result<T>
+    where
+        T: 'static,
+        F: for<'a> FnOnce(
+            &'a TvProxies,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = zbus::Result<T>> + Send + 'a>,
+        >,
+    {
+        debug!(tv_id = %tv_id, op = op, "D-Bus call");
+        self.get_tv_proxies(tv_id).await?;
+        let cache = self.tv_proxies.read().await;
+        let proxies = cache
+            .get(tv_id)
+            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
+        f(proxies)
+            .await
+            .with_context(|| format!("Failed to {} for TV: {}", op, tv_id))
     }
 
     // -------------------------------------------------------------------------
@@ -416,11 +415,7 @@ impl DaemonClient {
         for path in paths {
             let path_str = path.as_str();
             // Extract TV ID from path (last component)
-            let tv_id = path_str
-                .rsplit('/')
-                .next()
-                .unwrap_or(path_str)
-                .to_string();
+            let tv_id = path_str.rsplit('/').next().unwrap_or(path_str).to_string();
 
             self.get_tv_proxies(&tv_id).await?;
 
@@ -429,7 +424,7 @@ impl DaemonClient {
                 let info = TvInfo {
                     id: proxies.base.id().await.unwrap_or_default(),
                     name: proxies.base.name().await.unwrap_or_default(),
-                    ip: proxies.base.ip().await.unwrap_or_default(),
+                    address: proxies.base.address().await.unwrap_or_default(),
                     vendor: proxies.base.vendor().await.unwrap_or_default(),
                     connected: proxies.base.connected().await.unwrap_or(false),
                     path: path_str.to_string(),
@@ -441,15 +436,9 @@ impl DaemonClient {
         Ok(tvs)
     }
 
-    /// Get list of configured TV IDs.
-    pub async fn list_tv_ids(&self) -> Result<Vec<String>> {
-        let tvs = self.list_tvs().await?;
-        Ok(tvs.into_iter().map(|tv| tv.id).collect())
-    }
-
     /// Discover TVs on the network.
     ///
-    /// Returns a vector of tuples: `(id, name, ip, mac, vendor)`.
+    /// Returns a vector of tuples: `(id, name, address, hardware_id, vendor)`.
     pub async fn discover_tvs(
         &self,
         timeout_ms: u32,
@@ -475,14 +464,17 @@ impl DaemonClient {
     /// This connects to the TV and triggers a pairing prompt on the TV screen.
     /// The user must accept the prompt for pairing to succeed.
     ///
+    /// `config_json` contains vendor-specific connection parameters as JSON
+    /// (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG).
+    ///
     /// Returns the TV ID assigned to the new TV.
-    pub async fn pair_tv(&self, ip: &str, name: &str, mac: Option<&str>) -> Result<String> {
-        debug!(ip = %ip, name = %name, "Pairing TV via daemon");
+    pub async fn pair_tv(&self, name: &str, vendor: &str, config_json: &str) -> Result<String> {
+        debug!(name = %name, vendor = %vendor, "Pairing TV via daemon");
         let path = self
             .manager
-            .add_tv(ip, name, "lg", mac.unwrap_or(""))
+            .add_tv(name, vendor, config_json)
             .await
-            .with_context(|| format!("Failed to pair TV at {}", ip))?;
+            .with_context(|| format!("Failed to pair TV '{}'", name))?;
 
         // Extract TV ID from path
         let tv_id = path
@@ -499,8 +491,7 @@ impl DaemonClient {
     pub async fn remove_tv(&self, tv_id: &str) -> Result<()> {
         debug!(tv_id = %tv_id, "Removing TV via daemon");
         let path = tv_path(tv_id);
-        let obj_path = OwnedObjectPath::try_from(path)
-            .context("Invalid TV path")?;
+        let obj_path = OwnedObjectPath::try_from(path).context("Invalid TV path")?;
         self.manager
             .remove_tv(&obj_path)
             .await
@@ -521,62 +512,28 @@ impl DaemonClient {
 
     /// Power on a TV using Wake-on-LAN.
     pub async fn power_on(&self, tv_id: &str) -> Result<()> {
-        debug!(tv_id = %tv_id, "Calling PowerOn on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .power
-            .power_on()
+        self.with_proxies(tv_id, "power on", |p| Box::pin(p.power.power_on()))
             .await
-            .with_context(|| format!("Failed to power on TV: {}", tv_id))
     }
 
     /// Power off a TV.
     pub async fn power_off(&self, tv_id: &str) -> Result<()> {
-        debug!(tv_id = %tv_id, "Calling PowerOff on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .power
-            .power_off()
+        self.with_proxies(tv_id, "power off", |p| Box::pin(p.power.power_off()))
             .await
-            .with_context(|| format!("Failed to power off TV: {}", tv_id))
     }
 
     /// Turn screen on (resume from blank).
     pub async fn screen_on(&self, tv_id: &str) -> Result<()> {
-        debug!(tv_id = %tv_id, "Calling ScreenOn on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .screen
-            .screen_on()
+        self.with_proxies(tv_id, "turn screen on", |p| Box::pin(p.screen.screen_on()))
             .await
-            .with_context(|| format!("Failed to turn screen on for TV: {}", tv_id))
     }
 
     /// Turn screen off (OLED-safe blank).
     pub async fn screen_off(&self, tv_id: &str) -> Result<()> {
-        debug!(tv_id = %tv_id, "Calling ScreenOff on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .screen
-            .screen_off()
-            .await
-            .with_context(|| format!("Failed to turn screen off for TV: {}", tv_id))
+        self.with_proxies(tv_id, "turn screen off", |p| {
+            Box::pin(p.screen.screen_off())
+        })
+        .await
     }
 
     // -------------------------------------------------------------------------
@@ -585,34 +542,21 @@ impl DaemonClient {
 
     /// Switch to a specific input.
     pub async fn switch_input(&self, tv_id: &str, input_id: &str) -> Result<()> {
-        debug!(tv_id = %tv_id, input_id = %input_id, "Calling SwitchInput on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .input
-            .switch_input(input_id)
-            .await
-            .with_context(|| format!("Failed to switch input for TV: {}", tv_id))
+        let input_id = input_id.to_owned();
+        self.with_proxies(tv_id, "switch input", move |p| {
+            Box::pin(async move { p.input.switch_input(&input_id).await })
+        })
+        .await
     }
 
     /// Get available inputs.
     ///
     /// Returns a vector of tuples: `(id, label)`.
     pub async fn get_inputs(&self, tv_id: &str) -> Result<Vec<(String, String)>> {
-        debug!(tv_id = %tv_id, "Calling GetInputs on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .input
-            .available_inputs()
-            .await
-            .with_context(|| format!("Failed to get inputs for TV: {}", tv_id))
+        self.with_proxies(tv_id, "get inputs", |p| {
+            Box::pin(p.input.available_inputs())
+        })
+        .await
     }
 
     // -------------------------------------------------------------------------
@@ -620,49 +564,23 @@ impl DaemonClient {
     // -------------------------------------------------------------------------
 
     /// Set volume (0-100).
-    pub async fn set_volume(&self, tv_id: &str, volume: u32) -> Result<()> {
-        debug!(tv_id = %tv_id, volume = volume, "Calling SetVolume on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .volume
-            .set_volume(volume as u8)
-            .await
-            .with_context(|| format!("Failed to set volume for TV: {}", tv_id))
+    pub async fn set_volume(&self, tv_id: &str, volume: u8) -> Result<()> {
+        self.with_proxies(tv_id, "set volume", |p| {
+            Box::pin(p.volume.set_volume(volume))
+        })
+        .await
     }
 
     /// Get current volume.
-    pub async fn get_volume(&self, tv_id: &str) -> Result<u32> {
-        debug!(tv_id = %tv_id, "Calling GetVolume on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        let vol = proxies
-            .volume
-            .volume()
+    pub async fn get_volume(&self, tv_id: &str) -> Result<u8> {
+        self.with_proxies(tv_id, "get volume", |p| Box::pin(p.volume.volume()))
             .await
-            .with_context(|| format!("Failed to get volume for TV: {}", tv_id))?;
-        Ok(vol as u32)
     }
 
     /// Set mute state.
     pub async fn set_mute(&self, tv_id: &str, mute: bool) -> Result<()> {
-        debug!(tv_id = %tv_id, mute = mute, "Calling SetMute on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .volume
-            .set_mute(mute)
+        self.with_proxies(tv_id, "set mute", |p| Box::pin(p.volume.set_mute(mute)))
             .await
-            .with_context(|| format!("Failed to set mute for TV: {}", tv_id))
     }
 
     // -------------------------------------------------------------------------
@@ -670,34 +588,19 @@ impl DaemonClient {
     // -------------------------------------------------------------------------
 
     /// Set backlight (OLED pixel brightness, 0-100).
-    pub async fn set_backlight(&self, tv_id: &str, backlight: u32) -> Result<()> {
-        debug!(tv_id = %tv_id, backlight = backlight, "Calling SetBacklight on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .backlight
-            .set_backlight(backlight as u8)
-            .await
-            .with_context(|| format!("Failed to set backlight for TV: {}", tv_id))
+    pub async fn set_backlight(&self, tv_id: &str, backlight: u8) -> Result<()> {
+        self.with_proxies(tv_id, "set backlight", |p| {
+            Box::pin(p.backlight.set_backlight(backlight))
+        })
+        .await
     }
 
     /// Get current backlight.
-    pub async fn get_backlight(&self, tv_id: &str) -> Result<u32> {
-        debug!(tv_id = %tv_id, "Calling GetBacklight on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        let bl = proxies
-            .backlight
-            .backlight()
-            .await
-            .with_context(|| format!("Failed to get backlight for TV: {}", tv_id))?;
-        Ok(bl as u32)
+    pub async fn get_backlight(&self, tv_id: &str) -> Result<u8> {
+        self.with_proxies(tv_id, "get backlight", |p| {
+            Box::pin(p.backlight.backlight())
+        })
+        .await
     }
 
     // -------------------------------------------------------------------------
@@ -708,17 +611,8 @@ impl DaemonClient {
     ///
     /// The returned JSON can be parsed into a `TvState` struct.
     pub async fn get_state_json(&self, tv_id: &str) -> Result<String> {
-        debug!(tv_id = %tv_id, "Calling GetState on daemon");
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .base
-            .get_state()
+        self.with_proxies(tv_id, "get state", |p| Box::pin(p.base.get_state()))
             .await
-            .with_context(|| format!("Failed to get state for TV: {}", tv_id))
     }
 
     /// Get TV state as a parsed struct.
@@ -729,16 +623,10 @@ impl DaemonClient {
 
     /// Get TV capabilities.
     pub async fn get_capabilities(&self, tv_id: &str) -> Result<Vec<String>> {
-        self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        proxies
-            .base
-            .capabilities()
-            .await
-            .with_context(|| format!("Failed to get capabilities for TV: {}", tv_id))
+        self.with_proxies(tv_id, "get capabilities", |p| {
+            Box::pin(p.base.capabilities())
+        })
+        .await
     }
 
     // -------------------------------------------------------------------------
@@ -763,46 +651,5 @@ impl DaemonClient {
         }
 
         Ok(())
-    }
-
-    // -------------------------------------------------------------------------
-    // Utility Methods
-    // -------------------------------------------------------------------------
-
-    /// Execute an action on all configured TVs.
-    ///
-    /// Returns the number of successful operations.
-    pub async fn execute_on_all_tvs<F, Fut>(&self, action_name: &str, action: F) -> usize
-    where
-        F: Fn(String) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
-    {
-        let tv_ids = match self.list_tv_ids().await {
-            Ok(ids) => ids,
-            Err(e) => {
-                tracing::warn!("Failed to list TVs: {}", e);
-                return 0;
-            }
-        };
-
-        if tv_ids.is_empty() {
-            debug!("No TVs configured, skipping {}", action_name);
-            return 0;
-        }
-
-        let mut success_count = 0;
-        for tv_id in tv_ids {
-            match action(tv_id.clone()).await {
-                Ok(()) => {
-                    debug!(tv_id = %tv_id, action = %action_name, "Action succeeded");
-                    success_count += 1;
-                }
-                Err(e) => {
-                    tracing::warn!(tv_id = %tv_id, action = %action_name, error = %e, "Action failed");
-                }
-            }
-        }
-
-        success_count
     }
 }

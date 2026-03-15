@@ -2,11 +2,11 @@
 
 use crate::endpoints::{WSS_PORT, WS_PORT};
 use crate::protocol::{Request, Response};
-use tisvlay_core::{Error, Result};
 use futures_util::{SinkExt, StreamExt};
 use rustls::pki_types::ServerName;
 use std::sync::Arc;
 use std::time::Duration;
+use tisvlay_core::{Error, Result};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
@@ -18,7 +18,6 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// WebSocket connection to an LG TV.
 pub struct Connection {
     stream: WsStream,
-    host: String,
 }
 
 /// Custom certificate verifier that accepts any certificate.
@@ -94,16 +93,16 @@ impl Connection {
     /// Connect using secure WebSocket (wss://).
     pub async fn connect_wss(host: &str, connect_timeout: Duration) -> Result<Self> {
         let url = format!("wss://{}:{}", host, WSS_PORT);
-        Self::connect_url_tls(&url, host, connect_timeout).await
+        Self::connect_url_tls(&url, connect_timeout).await
     }
 
     /// Connect using insecure WebSocket (ws://).
     pub async fn connect_ws(host: &str, connect_timeout: Duration) -> Result<Self> {
         let url = format!("ws://{}:{}", host, WS_PORT);
-        Self::connect_url_plain(&url, host, connect_timeout).await
+        Self::connect_url_plain(&url, connect_timeout).await
     }
 
-    async fn connect_url_tls(url: &str, host: &str, connect_timeout: Duration) -> Result<Self> {
+    async fn connect_url_tls(url: &str, connect_timeout: Duration) -> Result<Self> {
         // Create TLS config that accepts self-signed certificates
         let tls_config = rustls::ClientConfig::builder()
             .dangerous()
@@ -118,7 +117,7 @@ impl Connection {
         let (stream, response) = timeout(connect_timeout, connect_fut)
             .await
             .map_err(|_| Error::RequestTimeout)?
-            .map_err(Error::Connection)?;
+            .map_err(|e| Error::Connection(Box::new(e)))?;
 
         tracing::trace!(
             url,
@@ -126,19 +125,16 @@ impl Connection {
             "WebSocket connected (TLS)"
         );
 
-        Ok(Self {
-            stream,
-            host: host.to_string(),
-        })
+        Ok(Self { stream })
     }
 
-    async fn connect_url_plain(url: &str, host: &str, connect_timeout: Duration) -> Result<Self> {
+    async fn connect_url_plain(url: &str, connect_timeout: Duration) -> Result<Self> {
         let connect_fut = tokio_tungstenite::connect_async(url);
 
         let (stream, response) = timeout(connect_timeout, connect_fut)
             .await
             .map_err(|_| Error::RequestTimeout)?
-            .map_err(Error::Connection)?;
+            .map_err(|e| Error::Connection(Box::new(e)))?;
 
         tracing::trace!(
             url,
@@ -146,10 +142,7 @@ impl Connection {
             "WebSocket connected (plain)"
         );
 
-        Ok(Self {
-            stream,
-            host: host.to_string(),
-        })
+        Ok(Self { stream })
     }
 
     /// Send a request to the TV.
@@ -157,7 +150,10 @@ impl Connection {
         let json = serde_json::to_string(request)?;
         tracing::trace!(id = %request.id, msg_type = ?request.msg_type, "Sending request");
 
-        self.stream.send(Message::Text(json)).await?;
+        self.stream
+            .send(Message::Text(json))
+            .await
+            .map_err(|e| Error::Connection(Box::new(e)))?;
         Ok(())
     }
 
@@ -169,7 +165,7 @@ impl Connection {
                 .next()
                 .await
                 .ok_or(Error::ConnectionClosed)?
-                .map_err(Error::Connection)?;
+                .map_err(|e| Error::Connection(Box::new(e)))?;
 
             match msg {
                 Message::Text(text) => {
@@ -182,7 +178,10 @@ impl Connection {
                     return Ok(response);
                 }
                 Message::Ping(data) => {
-                    self.stream.send(Message::Pong(data)).await?;
+                    self.stream
+                        .send(Message::Pong(data))
+                        .await
+                        .map_err(|e| Error::Connection(Box::new(e)))?;
                 }
                 Message::Close(_) => {
                     return Err(Error::ConnectionClosed);
@@ -231,12 +230,10 @@ impl Connection {
 
     /// Close the connection.
     pub async fn close(&mut self) -> Result<()> {
-        self.stream.close(None).await?;
+        self.stream
+            .close(None)
+            .await
+            .map_err(|e| Error::Connection(Box::new(e)))?;
         Ok(())
-    }
-
-    /// Get the host this connection is for.
-    pub fn host(&self) -> &str {
-        &self.host
     }
 }

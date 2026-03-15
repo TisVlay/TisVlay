@@ -75,49 +75,8 @@ pub mod picture {
     // instead (see client.rs set_backlight and luna::SET_SYSTEM_SETTINGS).
 }
 
-/// Application control endpoints.
-pub mod app {
-    /// Launch an application.
-    /// Payload: `{"id": "netflix"}`
-    pub const LAUNCH: &str = "ssap://com.webos.applicationManager/launch";
-
-    /// Close an application.
-    /// Payload: `{"id": "netflix"}`
-    pub const CLOSE: &str = "ssap://system.launcher/close";
-
-    /// List installed applications.
-    pub const LIST_APPS: &str = "ssap://com.webos.applicationManager/listApps";
-
-    /// Get current/foreground application.
-    pub const GET_FOREGROUND_APP: &str = "ssap://com.webos.applicationManager/getForegroundAppInfo";
-
-    /// List running applications.
-    pub const LIST_LAUNCH_POINTS: &str = "ssap://com.webos.applicationManager/listLaunchPoints";
-}
-
-/// System information endpoints.
-pub mod system {
-    /// Get system information (model, serial, etc.).
-    pub const GET_SYSTEM_INFO: &str = "ssap://system/getSystemInfo";
-
-    /// Get software/firmware information.
-    pub const GET_SOFTWARE_INFO: &str = "ssap://com.webos.service.update/getCurrentSWInformation";
-}
-
-/// Remote input endpoints.
-pub mod remote {
-    /// Get pointer input socket for button/mouse control.
-    /// Returns a WebSocket URL for sending button presses.
-    pub const GET_POINTER_INPUT_SOCKET: &str =
-        "ssap://com.webos.service.networkinput/getPointerInputSocket";
-}
-
 /// Notification endpoints.
 pub mod notification {
-    /// Show a toast notification.
-    /// Payload: `{"message": "Hello!"}`
-    pub const CREATE_TOAST: &str = "ssap://system.notifications/createToast";
-
     /// Create an alert with buttons/actions.
     /// Used as a workaround to call Luna services that require elevated permissions.
     pub const CREATE_ALERT: &str = "ssap://system.notifications/createAlert";

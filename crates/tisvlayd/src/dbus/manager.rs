@@ -2,11 +2,12 @@
 //!
 //! Implements `org.tisvlay.Manager1` for TV discovery and management.
 
-use crate::dbus::{tv_path, DaemonError};
+use crate::dbus::DaemonError;
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tisvlay_core::dbus_paths::tv_path;
+
 use tracing::{debug, info};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
@@ -16,13 +17,13 @@ use zbus::zvariant::ObjectPath;
 ///
 /// Provides TV management operations at `/org/tisvlay/Manager`.
 pub struct ManagerService {
-    manager: Arc<RwLock<TvManager>>,
+    manager: Arc<TvManager>,
     registry: Arc<BackendRegistry>,
 }
 
 impl ManagerService {
     /// Create a new manager service.
-    pub fn new(manager: Arc<RwLock<TvManager>>, registry: Arc<BackendRegistry>) -> Self {
+    pub fn new(manager: Arc<TvManager>, registry: Arc<BackendRegistry>) -> Self {
         Self { manager, registry }
     }
 }
@@ -35,7 +36,7 @@ impl ManagerService {
 
     /// Discover TVs on the network.
     ///
-    /// Returns: Array of (id, name, ip, mac, vendor) tuples.
+    /// Returns: Array of (id, name, address, hardware_id, vendor) tuples.
     #[cfg(feature = "discovery")]
     async fn discover_tvs(
         &self,
@@ -51,7 +52,7 @@ impl ManagerService {
 
         Ok(tvs
             .into_iter()
-            .map(|tv| (tv.id, tv.name, tv.ip, tv.mac, tv.vendor))
+            .map(|tv| (tv.id, tv.name, tv.address, tv.hardware_id, tv.vendor))
             .collect())
     }
 
@@ -62,7 +63,7 @@ impl ManagerService {
     /// Get all TV object paths.
     async fn get_tvs(&self) -> Vec<ObjectPath<'static>> {
         debug!("D-Bus: GetTvs");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .list_tv_ids()
             .await
@@ -85,28 +86,35 @@ impl ManagerService {
 
     /// Add a new TV.
     ///
-    /// Starts pairing with the TV at the given IP address.
+    /// Starts pairing with the TV using the provided vendor config JSON.
+    /// The config_json should contain vendor-specific connection parameters
+    /// (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG).
     ///
     /// Returns: Object path for the new TV.
     async fn add_tv(
         &self,
-        ip: &str,
         name: &str,
         vendor: &str,
-        mac: &str,
+        config_json: &str,
     ) -> Result<ObjectPath<'static>, DaemonError> {
-        info!(ip = %ip, name = %name, vendor = %vendor, "D-Bus: AddTv");
+        info!(name = %name, vendor = %vendor, "D-Bus: AddTv");
 
         // Verify vendor is supported
         if self.registry.get(vendor).is_none() {
             return Err(DaemonError::UnknownVendor(vendor.to_string()));
         }
 
-        let mac_opt = if mac.is_empty() { None } else { Some(mac) };
+        // Parse JSON config to serde_json::Value, then convert to toml::Value
+        let json_value: serde_json::Value = serde_json::from_str(config_json)
+            .map_err(|e| DaemonError::OperationFailed(format!("Invalid config JSON: {}", e)))?;
 
-        let manager = self.manager.read().await;
+        let vendor_config = json_to_toml(&json_value).map_err(|e| {
+            DaemonError::OperationFailed(format!("Failed to convert config: {}", e))
+        })?;
+
+        let manager = &self.manager;
         let tv_id = manager
-            .pair_tv(ip, name, vendor, mac_opt, None)
+            .pair_tv(name, vendor, vendor_config, None)
             .await
             .map_err(DaemonError::from)?;
 
@@ -123,14 +131,14 @@ impl ManagerService {
 
         info!(tv_id = %tv_id, "D-Bus: RemoveTv");
 
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.remove_tv(tv_id).await.map_err(DaemonError::from)
     }
 
     /// Reload configuration from disk.
     async fn reload_config(&self) -> Result<(), DaemonError> {
         info!("D-Bus: ReloadConfig");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.reload_config().await.map_err(DaemonError::from)
     }
 
@@ -140,10 +148,8 @@ impl ManagerService {
 
     /// Signal emitted when a TV is added.
     #[zbus(signal)]
-    pub async fn tv_added(
-        emitter: &SignalEmitter<'_>,
-        tv_path: ObjectPath<'_>,
-    ) -> zbus::Result<()>;
+    pub async fn tv_added(emitter: &SignalEmitter<'_>, tv_path: ObjectPath<'_>)
+        -> zbus::Result<()>;
 
     /// Signal emitted when a TV is removed.
     #[zbus(signal)]
@@ -151,4 +157,35 @@ impl ManagerService {
         emitter: &SignalEmitter<'_>,
         tv_path: ObjectPath<'_>,
     ) -> zbus::Result<()>;
+}
+
+/// Convert a serde_json::Value to a toml::Value.
+fn json_to_toml(json: &serde_json::Value) -> Result<toml::Value, String> {
+    match json {
+        serde_json::Value::Null => {
+            Err("JSON null values are not supported in TOML config".to_string())
+        }
+        serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(toml::Value::Integer(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(toml::Value::Float(f))
+            } else {
+                Err("Unsupported number type".to_string())
+            }
+        }
+        serde_json::Value::String(s) => Ok(toml::Value::String(s.clone())),
+        serde_json::Value::Array(arr) => {
+            let values: Result<Vec<toml::Value>, String> = arr.iter().map(json_to_toml).collect();
+            Ok(toml::Value::Array(values?))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut table = toml::map::Map::new();
+            for (key, value) in obj {
+                table.insert(key.clone(), json_to_toml(value)?);
+            }
+            Ok(toml::Value::Table(table))
+        }
+    }
 }

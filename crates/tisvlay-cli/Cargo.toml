@@ -1,6 +1,6 @@
 [package]
 name = "tisvlay-cli"
-description = "CLI tool for LG WebOS TV control"
+description = "CLI tool for TV control"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,7 +17,6 @@ path = "src/main.rs"
 
 [dependencies]
 tisvlay-core = { workspace = true, features = ["dbus"] }
-tisvlay-lg = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

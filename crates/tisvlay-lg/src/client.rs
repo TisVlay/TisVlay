@@ -6,12 +6,9 @@ use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
     VolumeInfo, VolumeResponse,
 };
-use tisvlay_core::wol::{self, MacAddress};
-use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
 use serde_json::{json, Value};
-use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
 
 /// Client for controlling an LG WebOS TV.
 pub struct WebOsClient {
@@ -20,7 +17,7 @@ pub struct WebOsClient {
     /// Client key for authentication.
     client_key: Option<String>,
     /// Request ID counter.
-    request_id: AtomicU64,
+    request_id: u64,
     /// Request timeout.
     timeout: Duration,
 }
@@ -37,7 +34,7 @@ impl WebOsClient {
         let mut client = Self {
             conn: Some(conn),
             client_key: client_key.clone(),
-            request_id: AtomicU64::new(1),
+            request_id: 1,
             timeout: Duration::from_millis(timeouts::REQUEST_MS),
         };
 
@@ -107,8 +104,9 @@ impl WebOsClient {
     }
 
     /// Generate the next request ID.
-    fn next_id(&self) -> String {
-        let id = self.request_id.fetch_add(1, Ordering::Relaxed);
+    fn next_id(&mut self) -> String {
+        let id = self.request_id;
+        self.request_id += 1;
         format!("req_{}", id)
     }
 
@@ -138,15 +136,37 @@ impl WebOsClient {
     }
 
     /// Turn off the screen (OLED-safe blank, TV stays on).
+    ///
+    /// Idempotent: if the screen is already off, the TV returns a 500 error
+    /// which is treated as success.
     pub async fn screen_off(&mut self) -> Result<()> {
-        self.command(power::TURN_OFF_SCREEN, json!({})).await?;
-        Ok(())
+        match self.command(power::TURN_OFF_SCREEN, json!({})).await {
+            Ok(_) => Ok(()),
+            Err(Error::TvError(_)) => {
+                tracing::debug!(
+                    "screen_off returned error (screen likely already off), treating as success"
+                );
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Turn on the screen (resume from blank).
+    ///
+    /// Idempotent: if the screen is already on, the TV returns a 500 error
+    /// which is treated as success.
     pub async fn screen_on(&mut self) -> Result<()> {
-        self.command(power::TURN_ON_SCREEN, json!({})).await?;
-        Ok(())
+        match self.command(power::TURN_ON_SCREEN, json!({})).await {
+            Ok(_) => Ok(()),
+            Err(Error::TvError(_)) => {
+                tracing::debug!(
+                    "screen_on returned error (screen likely already on), treating as success"
+                );
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Get the current power state.
@@ -159,7 +179,7 @@ impl WebOsClient {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        Ok(PowerState::from_str(state_str))
+        Ok(PowerState::parse(state_str))
     }
 
     // -------------------------------------------------------------------------
@@ -197,8 +217,8 @@ impl WebOsClient {
     // -------------------------------------------------------------------------
 
     /// Set the volume (0-100).
-    pub async fn set_volume(&mut self, volume: i32) -> Result<()> {
-        let volume = volume.clamp(0, 100);
+    pub async fn set_volume(&mut self, volume: u8) -> Result<()> {
+        let volume = volume.min(100) as i32;
         self.command(audio::SET_VOLUME, json!({"volume": volume}))
             .await?;
         Ok(())
@@ -251,8 +271,8 @@ impl WebOsClient {
     /// Uses the Luna service workaround via createAlert to bypass permission
     /// restrictions on the settings API. The alert is automatically closed
     /// to avoid showing a prompt on the TV.
-    pub async fn set_backlight(&mut self, backlight: i32) -> Result<()> {
-        let backlight = backlight.clamp(0, 100);
+    pub async fn set_backlight(&mut self, backlight: u8) -> Result<()> {
+        let backlight = backlight.min(100) as i32;
 
         // Build the Luna service parameters
         let luna_params = json!({
@@ -296,8 +316,8 @@ impl WebOsClient {
         Ok(())
     }
 
-    /// Get current backlight (OLED pixel brightness).
-    pub async fn get_backlight(&mut self) -> Result<i32> {
+    /// Get current backlight (OLED pixel brightness, 0-100).
+    pub async fn get_backlight(&mut self) -> Result<u8> {
         let response = self
             .command(
                 picture::GET_SYSTEM_SETTINGS,
@@ -308,14 +328,14 @@ impl WebOsClient {
             )
             .await?;
 
-        let backlight = response
+        let raw = response
             .payload
             .get("settings")
             .and_then(|s| s.get("backlight"))
             .and_then(|v| v.as_i64())
-            .unwrap_or(50) as i32;
+            .unwrap_or(50);
 
-        Ok(backlight)
+        Ok(raw.clamp(0, 100) as u8)
     }
 
     // -------------------------------------------------------------------------
@@ -333,7 +353,7 @@ impl WebOsClient {
 
         // Get volume
         if let Ok(volume_info) = self.get_volume().await {
-            state.volume = Some(volume_info.volume);
+            state.volume = Some(volume_info.volume.clamp(0, 100) as u8);
             state.muted = Some(volume_info.muted);
         }
 
@@ -358,41 +378,4 @@ impl WebOsClient {
             Ok(())
         }
     }
-}
-
-// -----------------------------------------------------------------------------
-// Wake-on-LAN helper functions
-// -----------------------------------------------------------------------------
-
-/// Wake a TV using Wake-on-LAN.
-///
-/// This only sends the WoL packet. You'll need to wait for the TV to boot
-/// before connecting.
-pub fn wake_tv(mac: &str) -> Result<()> {
-    let mac = MacAddress::parse(mac)?;
-    wol::wake(&mac)
-}
-
-/// Wake a TV and wait for it to be ready.
-pub async fn wake_and_wait(mac: &str, ip: Option<&str>, delay: Duration) -> Result<()> {
-    let mac_addr = MacAddress::parse(mac)?;
-    let ip_addr = ip.and_then(|s| s.parse::<Ipv4Addr>().ok());
-
-    wol::wake_reliable(&mac_addr, ip_addr)?;
-
-    tracing::info!(delay_ms = delay.as_millis(), "Waiting for TV to wake up");
-    tokio::time::sleep(delay).await;
-
-    Ok(())
-}
-
-/// Wake a TV, wait, then connect.
-pub async fn wake_and_connect(
-    mac: &str,
-    ip: &str,
-    client_key: Option<String>,
-    wake_delay: Duration,
-) -> Result<WebOsClient> {
-    wake_and_wait(mac, Some(ip), wake_delay).await?;
-    WebOsClient::connect(ip, client_key).await
 }

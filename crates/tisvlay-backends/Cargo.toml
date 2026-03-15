@@ -1,0 +1,32 @@
+[package]
+name = "tisvlay-backends"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Backend registry for tisvlay - composition crate for all vendor implementations"
+keywords = ["tisvlay", "backends", "registry"]
+
+[features]
+default = []
+discovery = ["tisvlay-lg/discovery"]
+
+[dependencies]
+# Core traits and types
+tisvlay-core.workspace = true
+
+# Vendor implementations (only this crate imports these)
+tisvlay-lg.workspace = true
+
+# Serialization
+toml.workspace = true
+
+# Async
+async-trait.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

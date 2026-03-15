@@ -37,6 +37,7 @@
             pkg-config
             socat
             tcpdump
+            wakeonlan
             python313Packages.aiohttp
             python313Packages.tomlkit
             rust

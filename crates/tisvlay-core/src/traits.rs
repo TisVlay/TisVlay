@@ -1,31 +1,37 @@
-//! Core traits for multi-vendor TV backend abstraction.
+//! Core traits for multi-vendor, transport-agnostic TV backend abstraction.
 //!
 //! This module defines the trait hierarchy that all TV vendor backends must implement.
 //! The design follows a capability-based approach where backends advertise their
-//! supported features via [`Capabilities`] bitflags, and feature-specific traits
-//! provide the actual functionality.
+//! supported features via [`Capabilities`] bitflags.
 //!
 //! # Trait Hierarchy
 //!
 //! ```text
 //! TvBackend (metadata: vendor_id, vendor_name, capabilities)
 //!     │
-//!     ├── TvConnector (factory: connect, start_pairing)
+//!     ├── TvConnector (factory: connect, wake, pair, display_address)
 //!     │
 //!     └── TvDiscovery (network discovery)
 //!
-//! TvConnection (base: is_connected, get_state, close)
-//!     │
-//!     ├── PowerControl (power_on, power_off)
-//!     ├── ScreenControl (screen_on, screen_off) - OLED-safe blanking
-//!     ├── VolumeControl (volume, mute)
-//!     ├── InputControl (switch_input, list_inputs)
-//!     └── BacklightControl (OLED pixel brightness)
+//! TvConnection (base + feature methods with default not-supported impls)
+//!     ├── power_off, get_power_state
+//!     ├── screen_on, screen_off, is_screen_on
+//!     ├── set_volume, get_volume, set_mute, is_muted
+//!     ├── switch_input, get_current_input, list_inputs
+//!     └── set_backlight, get_backlight
 //! ```
+//!
+//! # Transport Agnosticism
+//!
+//! The connector interface is fully transport-agnostic. All transport details
+//! (IP addresses, serial ports, CEC addresses, etc.) are encapsulated in the
+//! vendor config (`toml::Value`), which only the vendor crate knows how to
+//! interpret. The daemon and CLI never see transport-specific types.
 
-use crate::{Capabilities, DiscoveredTv, InputInfo, PairingSession, PowerState, Result, TvState};
+use crate::{
+    Capabilities, DiscoveredTv, Error, InputInfo, PairingSession, PowerState, Result, TvState,
+};
 use async_trait::async_trait;
-use std::any::Any;
 
 /// Core trait that all TV backends must implement.
 ///
@@ -66,11 +72,24 @@ pub trait TvBackend: Send + Sync + 'static {
 
 /// Connection to a specific TV instance.
 ///
-/// This is the base trait for all TV connections. It provides connection status,
-/// state retrieval, and connection lifecycle management.
+/// This trait provides connection lifecycle management and all TV control methods.
+/// Feature methods have default implementations that return [`Error::NotSupported`],
+/// so backends only need to override the methods they support. Use
+/// [`capabilities()`](TvConnection::capabilities) to check which features are
+/// available before calling feature methods.
 ///
-/// Feature-specific traits ([`PowerControl`], [`ScreenControl`], etc.) extend this
-/// trait to provide additional functionality based on backend capabilities.
+/// # Connection Resilience
+///
+/// Implementations should handle their own connection lifecycle internally.
+/// For persistent-connection transports (e.g., WebSocket), the implementation
+/// should transparently reconnect on stale or dropped connections when a
+/// feature method is called. The daemon treats `TvConnection` as an opaque
+/// handle — it does not manage reconnection or retry logic.
+///
+/// For `power_off()`, the implementation should close its own transport
+/// connection after sending the command, since the device is shutting down.
+///
+/// `TvConnection` is the primary interface used by the daemon and CLI.
 #[async_trait]
 pub trait TvConnection: Send + Sync {
     /// Get the vendor ID for this connection's backend.
@@ -94,138 +113,231 @@ pub trait TvConnection: Send + Sync {
     /// Get capabilities supported by this connection.
     fn capabilities(&self) -> Capabilities;
 
-    /// Downcast to a concrete type for vendor-specific operations.
-    ///
-    /// This is used internally by the daemon to access vendor-specific
-    /// functionality that doesn't fit the common trait interface.
-    fn as_any(&self) -> &dyn Any;
+    // =========================================================================
+    // Power control (default: not supported)
+    // =========================================================================
 
-    /// Downcast to a mutable concrete type for vendor-specific operations.
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-}
-
-/// Power control capability.
-///
-/// Backends that support the [`Capabilities::POWER`] flag should implement this trait.
-#[async_trait]
-pub trait PowerControl: TvConnection {
-    /// Power on the TV.
-    ///
-    /// For TVs that support Wake-on-LAN, this typically sends a WoL magic packet.
-    /// The actual implementation depends on the backend.
-    async fn power_on(&mut self) -> Result<()>;
-
-    /// Power off the TV.
-    ///
-    /// This puts the TV into standby mode.
-    async fn power_off(&mut self) -> Result<()>;
+    /// Power off the TV (standby).
+    async fn power_off(&mut self) -> Result<()> {
+        Err(Error::not_supported("power_off", Capabilities::POWER))
+    }
 
     /// Get the current power state.
-    async fn get_power_state(&mut self) -> Result<PowerState>;
-}
+    async fn get_power_state(&mut self) -> Result<PowerState> {
+        Err(Error::not_supported("get_power_state", Capabilities::POWER))
+    }
 
-/// Screen blanking capability (OLED-safe).
-///
-/// Backends that support the [`Capabilities::SCREEN`] flag should implement this trait.
-/// This is distinct from power control - screen off keeps the TV "on" but with the
-/// display blanked, which is safer for OLED panels than full power off/on cycles.
-#[async_trait]
-pub trait ScreenControl: TvConnection {
+    // =========================================================================
+    // Screen control (default: not supported)
+    // =========================================================================
+
     /// Turn the screen on (unblank).
-    async fn screen_on(&mut self) -> Result<()>;
+    async fn screen_on(&mut self) -> Result<()> {
+        Err(Error::not_supported("screen_on", Capabilities::SCREEN))
+    }
 
     /// Turn the screen off (blank).
     ///
     /// The TV remains powered on but the display is blanked.
     /// This is OLED-safe and doesn't require re-pairing like power off might.
-    async fn screen_off(&mut self) -> Result<()>;
+    async fn screen_off(&mut self) -> Result<()> {
+        Err(Error::not_supported("screen_off", Capabilities::SCREEN))
+    }
 
     /// Check if the screen is currently on.
-    async fn is_screen_on(&mut self) -> Result<bool>;
-}
+    async fn is_screen_on(&mut self) -> Result<bool> {
+        Err(Error::not_supported("is_screen_on", Capabilities::SCREEN))
+    }
 
-/// Volume control capability.
-///
-/// Backends that support the [`Capabilities::VOLUME`] flag should implement this trait.
-#[async_trait]
-pub trait VolumeControl: TvConnection {
-    /// Set the volume level (0-100).
-    async fn set_volume(&mut self, level: u8) -> Result<()>;
+    // =========================================================================
+    // Volume control (default: not supported)
+    // =========================================================================
+
+    /// Set the volume level.
+    ///
+    /// `level` must be in the range 0-100. Values above 100 will be clamped
+    /// by backend implementations.
+    async fn set_volume(&mut self, _level: u8) -> Result<()> {
+        Err(Error::not_supported("set_volume", Capabilities::VOLUME))
+    }
 
     /// Get the current volume level (0-100).
-    async fn get_volume(&mut self) -> Result<u8>;
+    async fn get_volume(&mut self) -> Result<u8> {
+        Err(Error::not_supported("get_volume", Capabilities::VOLUME))
+    }
 
     /// Set the mute state.
-    async fn set_mute(&mut self, mute: bool) -> Result<()>;
+    async fn set_mute(&mut self, _mute: bool) -> Result<()> {
+        Err(Error::not_supported("set_mute", Capabilities::MUTE))
+    }
 
     /// Check if audio is currently muted.
-    async fn is_muted(&mut self) -> Result<bool>;
-}
+    async fn is_muted(&mut self) -> Result<bool> {
+        Err(Error::not_supported("is_muted", Capabilities::MUTE))
+    }
 
-/// Input switching capability.
-///
-/// Backends that support the [`Capabilities::INPUT`] flag should implement this trait.
-#[async_trait]
-pub trait InputControl: TvConnection {
+    // =========================================================================
+    // Input control (default: not supported)
+    // =========================================================================
+
     /// Switch to the specified input.
     ///
     /// The `input_id` format is backend-specific (e.g., "HDMI_1" for LG WebOS).
-    async fn switch_input(&mut self, input_id: &str) -> Result<()>;
+    async fn switch_input(&mut self, _input_id: &str) -> Result<()> {
+        Err(Error::not_supported("switch_input", Capabilities::INPUT))
+    }
 
     /// Get the current input ID, if known.
-    async fn get_current_input(&mut self) -> Result<Option<String>>;
+    async fn get_current_input(&mut self) -> Result<Option<String>> {
+        Err(Error::not_supported(
+            "get_current_input",
+            Capabilities::INPUT,
+        ))
+    }
 
     /// List available inputs.
-    async fn list_inputs(&mut self) -> Result<Vec<InputInfo>>;
-}
+    async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> {
+        Err(Error::not_supported("list_inputs", Capabilities::INPUT))
+    }
 
-/// Backlight/brightness control (OLED pixel brightness).
-///
-/// Backends that support the [`Capabilities::BACKLIGHT`] flag should implement this trait.
-/// For OLED TVs, this controls the pixel brightness level.
-#[async_trait]
-pub trait BacklightControl: TvConnection {
-    /// Set the backlight level (0-100).
-    async fn set_backlight(&mut self, level: u8) -> Result<()>;
+    // =========================================================================
+    // Backlight control (default: not supported)
+    // =========================================================================
+
+    /// Set the backlight level (OLED pixel brightness).
+    ///
+    /// `level` must be in the range 0-100. Values above 100 will be clamped
+    /// by backend implementations.
+    async fn set_backlight(&mut self, _level: u8) -> Result<()> {
+        Err(Error::not_supported(
+            "set_backlight",
+            Capabilities::BACKLIGHT,
+        ))
+    }
 
     /// Get the current backlight level (0-100).
-    async fn get_backlight(&mut self) -> Result<u8>;
+    async fn get_backlight(&mut self) -> Result<u8> {
+        Err(Error::not_supported(
+            "get_backlight",
+            Capabilities::BACKLIGHT,
+        ))
+    }
 }
 
 /// Factory for creating connections to TVs.
 ///
-/// This trait is implemented by backends to provide connection creation and
-/// pairing initiation functionality.
+/// This trait is implemented by backends to provide connection creation, wake-up,
+/// pairing, and transport metadata functionality. All transport details (IP, MAC,
+/// serial port, CEC address, etc.) are encapsulated in the vendor config
+/// (`toml::Value`), which only the vendor crate knows how to interpret.
 #[async_trait]
 pub trait TvConnector: Send + Sync {
-    /// Connect to a TV with existing credentials.
+    /// Connect to a TV using vendor-specific config.
     ///
-    /// The `vendor_config` parameter provides backend-specific configuration
-    /// (e.g., `LgConfig` for LG WebOS with client_key).
-    async fn connect(
-        &self,
-        ip: &str,
-        mac: Option<&str>,
-        vendor_config: &(dyn Any + Send + Sync),
-    ) -> Result<Box<dyn TvConnection>>;
+    /// The vendor config contains all transport and credential parameters.
+    /// The connector deserializes it into its own config type internally.
+    async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>>;
 
-    /// Start pairing with a new TV.
+    /// Human-readable address for logging and UI.
     ///
-    /// This returns a [`PairingSession`] that can be used to track the pairing
-    /// progress and submit user input if required by the backend's pairing flow.
-    fn start_pairing(&self, ip: &str) -> PairingSession;
+    /// Returns a transport-appropriate string, e.g. "192.168.1.100" for IP,
+    /// "/dev/ttyUSB0" for serial, "cec:0" for HDMI-CEC.
+    fn display_address(&self, vendor_config: &toml::Value) -> String;
+
+    /// Whether this transport supports waking the device from standby.
+    ///
+    /// For example, IP-based backends may support Wake-on-LAN if a MAC
+    /// address is configured, while CEC backends might support power-on.
+    fn supports_wake(&self, vendor_config: &toml::Value) -> bool;
+
+    /// Wake the device from standby.
+    ///
+    /// For IP-based backends, this sends Wake-on-LAN. For CEC, this might
+    /// send a power-on command. Returns `Ok(())` as a no-op if wake is
+    /// not supported.
+    ///
+    /// Implementations should handle transport-specific retry logic internally.
+    /// For example, after system resume the desktop's network interface may not
+    /// be up yet, so WoL packets should be retried until the network is available.
+    ///
+    /// The device may not be ready to accept connections immediately after
+    /// waking — callers should add a delay before attempting to connect.
+    async fn wake(&self, vendor_config: &toml::Value) -> Result<()>;
+
+    /// Wake the device and establish a connection.
+    ///
+    /// Combines [`wake()`](Self::wake) with a boot-wait and connect retry loop.
+    /// The backend owns all transport-specific retry logic (e.g., resending
+    /// wake packets between connect attempts for unreliable transports).
+    ///
+    /// The daemon provides policy via parameters; the backend provides strategy.
+    ///
+    /// Default implementation: `wake()`, sleep `boot_delay`, then retry
+    /// `connect()` up to `max_attempts` times with `retry_interval` delays.
+    /// Backends can override to add transport-specific optimizations like
+    /// wake packet resends or lightweight readiness probes.
+    async fn wake_and_connect(
+        &self,
+        vendor_config: &toml::Value,
+        boot_delay: std::time::Duration,
+        max_attempts: u32,
+        retry_interval: std::time::Duration,
+    ) -> Result<Box<dyn TvConnection>> {
+        self.wake(vendor_config).await?;
+        tokio::time::sleep(boot_delay).await;
+
+        let mut last_err = None;
+        for _attempt in 1..=max_attempts {
+            match self.connect(vendor_config).await {
+                Ok(conn) => return Ok(conn),
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(retry_interval).await;
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| Error::Backend {
+            vendor: "unknown".into(),
+            message: "Device did not come online after wake".into(),
+            source: None,
+        }))
+    }
+
+    /// Start pairing with a new device.
+    ///
+    /// The vendor config provides transport address and any initial connection
+    /// parameters needed to reach the device.
+    ///
+    /// Returns a [`PairingSession`] that can be used to track pairing progress
+    /// and submit user input if required by the backend's pairing flow.
+    fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession>;
+
+    /// Build vendor config from pairing results for persistence.
+    ///
+    /// After pairing completes with [`Credentials`](crate::Credentials), this
+    /// method constructs the full vendor config (as a TOML value) that can be
+    /// saved to the config file. `pairing_params` contains the initial
+    /// parameters used to reach the device.
+    fn build_config_from_pairing(
+        &self,
+        pairing_params: &toml::Value,
+        credentials: &crate::Credentials,
+    ) -> Result<toml::Value>;
 }
 
 /// Discovery of TVs on the network.
 ///
 /// Backends that support the [`Capabilities::DISCOVERY`] flag should implement this trait.
-#[async_trait]
 pub trait TvDiscovery: Send + Sync {
     /// Discover TVs on the local network.
     ///
     /// This scans the network for TVs supported by this backend and returns
     /// information about each discovered TV.
-    async fn discover(&self, timeout: std::time::Duration) -> Result<Vec<DiscoveredTv>>;
+    fn discover(
+        &self,
+        timeout: std::time::Duration,
+    ) -> impl std::future::Future<Output = Result<Vec<DiscoveredTv>>> + Send;
 }
 
 #[cfg(test)]
@@ -233,10 +345,10 @@ mod tests {
     use super::*;
 
     // Compile-time test that traits are object-safe
+    // (TvDiscovery uses native async fn with impl Future and is NOT object-safe)
     fn _assert_object_safe() {
         fn _backend(_: &dyn TvBackend) {}
         fn _connection(_: &dyn TvConnection) {}
         fn _connector(_: &dyn TvConnector) {}
-        fn _discovery(_: &dyn TvDiscovery) {}
     }
 }

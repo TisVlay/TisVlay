@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! tisvlay-core (this crate)
-//! ├── traits: TvBackend, TvConnection, feature traits
+//! ├── traits: TvBackend, TvConnection, TvConnector, TvDiscovery
 //! ├── capabilities: Capability flags for feature detection
 //! ├── pairing: Unified pairing state machine
 //! ├── config: Profile-based configuration
@@ -22,33 +22,27 @@
 //!
 //! # Features
 //!
-//! - `discovery` - Network discovery support (SSDP)
 //! - `dbus` - D-Bus client for communicating with tisvlayd
 //!
 //! # Example
 //!
 //! ```ignore
-//! use tisvlay_core::{Config, TvConnector, Capabilities};
-//! use tisvlay_lg::LgConnector;
+//! use tisvlay_core::{Config, Capabilities};
+//! use tisvlay_backends::create_registry;
 //!
 //! #[tokio::main]
 //! async fn main() -> tisvlay_core::Result<()> {
-//!     // Load configuration
 //!     let config = Config::load()?;
 //!     let tv = config.default_tv().expect("No TVs configured");
+//!     let registry = create_registry();
 //!
-//!     // Connect using the appropriate backend
-//!     let connector = LgConnector::new();
-//!     let mut connection = connector.connect(
-//!         &tv.ip,
-//!         tv.mac.as_deref(),
-//!         &tv.lg.unwrap_or_default(),
-//!     ).await?;
+//!     // Connect via the registry (vendor/transport-agnostic)
+//!     let mut connection = registry.connect_tv(tv)?;
 //!
-//!     // Check capabilities
+//!     // Feature methods are directly on TvConnection
 //!     if connection.capabilities().contains(Capabilities::VOLUME) {
-//!         // Cast to VolumeControl trait to use volume methods
-//!         // ...
+//!         let vol = connection.get_volume().await?;
+//!         println!("Volume: {}", vol);
 //!     }
 //!
 //!     connection.close().await?;
@@ -59,6 +53,7 @@
 // Core modules (always available)
 mod capabilities;
 mod config;
+pub mod dbus_paths;
 mod error;
 mod pairing;
 mod state;
@@ -74,10 +69,7 @@ mod dbus_client;
 // =============================================================================
 
 // Traits
-pub use traits::{
-    BacklightControl, InputControl, PowerControl, ScreenControl, TvBackend, TvConnection,
-    TvConnector, TvDiscovery, VolumeControl,
-};
+pub use traits::{TvBackend, TvConnection, TvConnector, TvDiscovery};
 
 // Capabilities
 pub use capabilities::Capabilities;
@@ -89,9 +81,7 @@ pub use pairing::{
 };
 
 // Configuration
-pub use config::{
-    Config, DaemonConfig, LgVendorConfig, ProfileConfig, SessionAction, SessionConfig, TvConfig,
-};
+pub use config::{Config, DaemonConfig, ProfileConfig, SessionAction, TvConfig};
 
 // State
 pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
@@ -100,11 +90,14 @@ pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
 pub use error::{Error, Result};
 
 // Wake-on-LAN
-pub use wol::{wake, wake_reliable, wake_to_ip, wake_with_options, MacAddress, WakeOptions};
+pub use wol::{wake, wake_with_options, MacAddress, WakeOptions};
 
 // =============================================================================
 // Public re-exports: Optional features
 // =============================================================================
 
+// D-Bus path constants (always available, no feature gate)
+pub use dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
+
 #[cfg(feature = "dbus")]
-pub use dbus_client::{DaemonClient, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH, TvInfo};
+pub use dbus_client::{DaemonClient, TvInfo};

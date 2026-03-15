@@ -15,9 +15,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// wrapped in the [`Backend`](Error::Backend) variant.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// WebSocket connection failed.
-    #[error("WebSocket connection failed: {0}")]
-    Connection(#[from] tokio_tungstenite::tungstenite::Error),
+    /// Connection failed (boxed to keep Error small).
+    #[error("Connection failed: {0}")]
+    Connection(Box<dyn std::error::Error + Send + Sync>),
 
     /// I/O error (network, file, etc.).
     #[error("I/O error: {0}")]
@@ -131,25 +131,11 @@ pub enum Error {
 impl Error {
     /// Create a "not supported" error for a missing capability.
     pub fn not_supported(message: impl Into<String>, capability: Capabilities) -> Self {
-        let cap_name = if capability.contains(Capabilities::POWER) {
-            "power"
-        } else if capability.contains(Capabilities::SCREEN) {
-            "screen"
-        } else if capability.contains(Capabilities::VOLUME) {
-            "volume"
-        } else if capability.contains(Capabilities::MUTE) {
-            "mute"
-        } else if capability.contains(Capabilities::INPUT) {
-            "input"
-        } else if capability.contains(Capabilities::BACKLIGHT) {
-            "backlight"
-        } else if capability.contains(Capabilities::WOL) {
-            "wol"
-        } else if capability.contains(Capabilities::DISCOVERY) {
-            "discovery"
-        } else {
-            "unknown"
-        };
+        let cap_name = capability
+            .to_strings()
+            .into_iter()
+            .next()
+            .unwrap_or("unknown");
 
         Self::NotSupported {
             message: message.into(),

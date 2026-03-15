@@ -2,38 +2,75 @@
 
 use serde::{Deserialize, Serialize};
 
-/// LG WebOS specific configuration.
+/// LG WebOS vendor-specific configuration.
 ///
-/// This contains settings specific to LG WebOS TVs that are stored
-/// in the `[tv.lg]` section of the config file.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LgConfig {
+/// This contains all settings specific to LG WebOS TVs, stored in the
+/// `[tv.lg]` section of the config file. Use `TvConfig::get_vendor_config()`
+/// to deserialize this from the generic vendor config map.
+///
+/// # Example
+///
+/// ```toml
+/// [[tv]]
+/// id = "living-room"
+/// name = "Living Room TV"
+/// vendor = "lg"
+///
+/// [tv.lg]
+/// ip = "192.168.1.100"
+/// mac = "AA:BB:CC:DD:EE:FF"
+/// client_key = "abc123"
+/// default_input = "HDMI_1"
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LgVendorConfig {
+    /// IP address for WebSocket connection.
+    ///
+    /// Also accepts `"address"` as a generic alias so the CLI can pass
+    /// a vendor-agnostic field name during pairing.
+    #[serde(alias = "address")]
+    pub ip: String,
+
+    /// MAC address for Wake-on-LAN (optional).
+    ///
+    /// Also accepts `"wake_id"` as a generic alias so the CLI can pass
+    /// a vendor-agnostic field name during pairing.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "wake_id")]
+    pub mac: Option<String>,
+
     /// Client key obtained during pairing.
     ///
     /// This is a unique key that the TV generates when you accept the
     /// pairing prompt. It's used for subsequent connections without
     /// requiring user interaction.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_key: Option<String>,
 
     /// Default HDMI input to switch to on wake.
     ///
     /// When specified, the TV will switch to this input after being
     /// powered on via Wake-on-LAN.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_input: Option<String>,
 }
 
-impl LgConfig {
-    /// Create a new empty config.
-    pub fn new() -> Self {
-        Self::default()
+impl LgVendorConfig {
+    /// Create a new config with the required IP address.
+    pub fn new(ip: impl Into<String>) -> Self {
+        Self {
+            ip: ip.into(),
+            mac: None,
+            client_key: None,
+            default_input: None,
+        }
     }
 
-    /// Create a config with a client key.
-    pub fn with_client_key(client_key: impl Into<String>) -> Self {
+    /// Create a config with IP and MAC for Wake-on-LAN.
+    pub fn with_mac(ip: impl Into<String>, mac: impl Into<String>) -> Self {
         Self {
-            client_key: Some(client_key.into()),
+            ip: ip.into(),
+            mac: Some(mac.into()),
+            client_key: None,
             default_input: None,
         }
     }
@@ -48,3 +85,6 @@ impl LgConfig {
         self.default_input = Some(input.into());
     }
 }
+
+/// Type alias for backwards compatibility within this crate.
+pub type LgConfig = LgVendorConfig;
