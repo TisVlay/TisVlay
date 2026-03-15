@@ -495,3 +495,144 @@ This clones the `toml::Value` for every deserialization attempt. For large confi
 | LOW | Suspend→Standby mapping | 10.2 |
 | LOW | CLI is LG-aware | 10.3 |
 | LOW | Dead `ManagedTv.state` field | 9.2 |
+
+---
+
+## Round 2: Verification & New Findings
+
+Reviewed all changes made in response to round 1. Build compiles clean, all tests pass.
+
+### Fixes Verified
+
+| Issue | Status | Notes |
+|-------|--------|-------|
+| 1.1 Core WebSocket deps | **Verified** | `tokio-tungstenite`, `rustls`, `webpki-roots`, `futures-util` removed from core. `Error::Connection` now wraps `Box<dyn Error + Send + Sync>`. LG connection.rs uses explicit `Box::new(e)` wrapping. |
+| 1.2 LG-specific DaemonConfig fields | **Verified** | `websocket_port` and `use_tls` removed. Config test updated. |
+| 1.3 Dead feature traits | **Verified** | `PowerControl`, `ScreenControl`, `VolumeControl`, `InputControl`, `BacklightControl` all removed from traits.rs and lib.rs re-exports. |
+| 1.4 Confusing re-export aliases | **Verified** | Aliases removed; `tisvlay-backends` now re-exports with original names. |
+| 1.5 Duplicated `tv_path()` | **Verified** | New `dbus_paths.rs` module in core. Both `dbus_client.rs` and `tisvlayd/dbus/mod.rs` re-export from it. Tests moved to `dbus_paths.rs`. |
+| 2.1 `async_trait` removal | **Verified** | `TvDiscovery` uses native `async fn` with `-> impl Future` return. `TvConnection`/`TvConnector` keep `async_trait` (correct — they're used as `dyn`). `DiscoverFn` type alias in backends handles the non-object-safe `TvDiscovery` via closure boxing. `rust-version` bumped to 1.94. |
+| 2.2 `&PathBuf` → `&Path` | **Verified** | Both `load_from` and `save_to` now take `&Path`. |
+| 2.3 Numeric type unification | **Verified** | `TvState.volume`/`backlight` are `Option<u8>`. `WebOsClient::set_volume`/`set_backlight` take `u8`. `get_backlight` returns `u8`. LG backend clamps at protocol boundary. `TvManager` methods use `u8`. D-Bus interfaces use `u8`. `DaemonClient` uses `u8`. No more `as u32` or `as i32` casts in the control path. |
+| 2.4 `AtomicU64` → `u64` | **Verified** | `WebOsClient::request_id` is now `u64`. `next_id` takes `&mut self`. |
+| 2.5 `Result<T, String>` → `TvManagerError` | **Verified** | New `TvManagerError` enum with structured variants. `DaemonError::from(TvManagerError)` uses match-on-variant. No string-content matching. |
+| 3.1 Per-TV locking | **Verified** | `tvs` is now `RwLock<HashMap<String, Arc<Mutex<ManagedTv>>>>`. `get_tv()` helper does brief read-lock lookup. `with_connection` holds per-TV mutex only. `connect()` holds per-TV mutex for the connect call (correct — prevents duplicate connects). `power_on` drops per-TV lock before network I/O for `wake_and_connect`, re-acquires for storing result. |
+| 4 `as_any` removed | **Verified** | Removed from trait and LgConnection impl. No `use std::any::Any` in traits.rs. |
+| 5.1 `power_off` error logging | **Verified** | Now logs warning with `tracing::warn!` instead of `let _ =`. |
+| 5.2 Pairing cancel via `select!` | **Verified** | `tokio::select!` races `WebOsClient::connect` against `command_rx.recv()`. Cancel branch emits `PairingError::cancelled()`. |
+| 5.3 `json_to_toml` null handling | **Verified** | Null now returns `Err(...)`. |
+| 6.1 `DaemonClient` boilerplate | **Verified** | `with_proxies` helper extracts the proxy-lookup + debug-log + error-context pattern. Methods like `power_on`, `screen_off`, etc. are now 1-3 lines each. |
+| 8.2 Discovery deps in core | **Verified** | `ssdp-client`, `urlencoding`, `url` removed from core's Cargo.toml. `discovery` feature removed from core. |
+| 9.2 Dead `ManagedTv.state` | **Verified** | Field removed. |
+| 10.1 `not_supported` chain | **Verified** | Uses `capability.to_strings().into_iter().next()`. |
+| 10.2 Suspend mapping | **Verified** | `"suspend"` maps to `Self::Suspend`, `"standby"` maps to `Self::Standby`. `update_power` includes `Suspend` in screen-off check. |
+| 10.3 CLI vendor-agnostic pairing | **Verified** | Both `build_pairing_config_json` and `build_pairing_toml_value` use generic `"address"`/`"wake_id"` fields. `LgVendorConfig` has `#[serde(alias = "address")]` on `ip` and `alias = "wake_id"` on `mac`. |
+| 3.3 TOCTOU fix | **Verified** | `get_tv_proxies` now uses a single write lock with `contains_key` check inside it. |
+
+### New Issues Found in Round 2
+
+#### R2.1 `with_connection` acquires per-TV mutex twice (LOW)
+
+`crates/tisvlayd/src/tv_manager.rs:255-297` — The `with_connection` method calls `self.connect(tv_id).await?` which acquires and releases the per-TV mutex, then immediately re-acquires it for the command:
+
+```rust
+async fn with_connection<F, T>(&self, tv_id: &str, f: F) -> Result<T, TvManagerError> {
+    self.connect(tv_id).await?;       // acquires + releases per-TV mutex
+    let tv_arc = self.get_tv(tv_id).await?;
+    let mut tv = tv_arc.lock().await;  // re-acquires per-TV mutex
+    // ...
+}
+```
+
+Between the two acquisitions, another task could disconnect the TV or swap the connection. This is a narrow TOCTOU window. Not dangerous in practice since `connect()` is idempotent and `with_connection` re-checks the connection state, but it means the "Not connected" error path at line 273 is actually reachable if another task powers off the TV between the two locks.
+
+**Recommendation**: Consider having `connect` return the `Arc<Mutex<ManagedTv>>` so `with_connection` can reuse it, or merge connect + command into a single lock acquisition.
+
+#### R2.2 `boot_wake` holds per-TV locks during network I/O (LOW)
+
+`crates/tisvlayd/src/tv_manager.rs:145-162`:
+```rust
+pub async fn boot_wake(&self) {
+    let tvs = self.tvs.read().await;
+    for (id, tv_arc) in tvs.iter() {
+        let tv = tv_arc.lock().await;           // per-TV lock held
+        if self.registry.supports_wake(&tv.config) {
+            if let Err(e) = self.registry.wake_tv(&tv.config).await {  // network I/O
+```
+
+The per-TV mutex is held while `wake_tv` sends WoL packets (which can retry for up to ~24 seconds in `LgConnector::wake`). The outer read lock on `tvs` is also held for the entire loop. Since boot wake only happens once at startup and sequentially, this is low priority.
+
+**Recommendation**: Clone the config before the WoL call to release the per-TV lock, or collect configs first then wake outside the loop.
+
+#### R2.3 `PairingSession::wait_for_completion` has a subtle ordering issue (LOW)
+
+`crates/tisvlay-core/src/pairing.rs:441-459`:
+```rust
+pub async fn wait_for_completion(&mut self) -> Result<Credentials, PairingError> {
+    loop {
+        let state = self.state_rx.borrow().clone();
+        match state {
+            PairingState::Complete { credentials } => return Ok(credentials),
+            PairingState::Failed { error } => return Err(error),
+            _ => {}
+        }
+        if self.state_rx.changed().await.is_err() { ... }
+    }
+}
+```
+
+If the state transitions from `AwaitingTvPrompt` → `Complete` between the `borrow()` check and the `changed().await` call, `changed()` may not fire because the `watch::Receiver` already marked the value as "seen" during `borrow()`. This could cause the method to hang. The `watch::Receiver::borrow_and_update()` method should be used instead, or the `changed()` should be called before the borrow check.
+
+Actually, looking more carefully: `borrow()` does NOT mark as seen (only `borrow_and_update()` does), so `changed()` will fire. This is correct. Ignore this finding.
+
+#### R2.4 `TvManagerError::PairingFailed` wraps `tisvlay_core::Error` but pairing errors are `PairingError` (LOW)
+
+`crates/tisvlayd/src/tv_manager.rs:548-554`:
+```rust
+let credentials = session
+    .wait_for_completion()
+    .await
+    .map_err(|e| TvManagerError::PairingFailed {
+        source: tisvlay_core::Error::backend(vendor, e.to_string()),
+    })?;
+```
+
+A `PairingError` is being converted to a `tisvlay_core::Error::Backend` string to fit into `TvManagerError::PairingFailed { source: tisvlay_core::Error }`. This loses the structured `PairingError` information. Consider either:
+- Adding a `PairingFailed { source: PairingError }` variant (wrapping the actual error type), or
+- At minimum, this is acceptable since the D-Bus client only sees the error message string anyway.
+
+#### R2.5 `TvDiscovery` doc comment still mentions `#[async_trait]` attribute (TRIVIAL)
+
+`crates/tisvlay-core/src/lib.rs:25` still says:
+```
+//! - `discovery` - Network discovery support (SSDP)
+```
+
+This is correct, but the `lib.rs` doc comment at line 11 was correctly updated to list `TvDiscovery` in the traits section. The comment in the features section still references `discovery` which is now removed from core's Cargo.toml features. The `discovery` feature only exists on `tisvlay-lg` and `tisvlay-backends`.
+
+#### R2.6 `DaemonClient` re-exports `DAEMON_SERVICE` from `dbus_paths` but also exports it via `lib.rs` (TRIVIAL)
+
+`crates/tisvlay-core/src/lib.rs:101` re-exports `DAEMON_SERVICE` from `dbus_client`:
+```rust
+pub use dbus_client::{DaemonClient, TvInfo, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
+```
+
+But `dbus_client.rs:41` just re-exports from `dbus_paths`:
+```rust
+pub use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
+```
+
+So `lib.rs` is re-exporting a re-export. This works but means these constants are available at two paths: `tisvlay_core::DAEMON_SERVICE` (feature-gated on `dbus`) and `tisvlay_core::dbus_paths::DAEMON_SERVICE` (always available). The feature-gated re-export is technically unnecessary since `dbus_paths` is `pub`. Minor inconsistency, not a bug.
+
+### Round 2 Summary
+
+The round 1 fixes were implemented thoroughly and correctly. The codebase is in significantly better shape:
+
+- **Core crate** is now genuinely vendor-agnostic (no WebSocket/TLS deps, no LG-specific config)
+- **Concurrency** model is much improved with per-TV locking
+- **Error handling** uses structured types throughout the daemon
+- **Type safety** is improved with consistent `u8` for volume/backlight
+- **Boilerplate** is reduced via `with_proxies` helper and dead code removal
+- **Build** compiles clean with no warnings, all tests pass
+
+The remaining new issues from round 2 are all LOW/TRIVIAL — no blockers for proceeding to Phase 4b (tray) and Phase 5 (GUI).
