@@ -68,7 +68,7 @@ impl LgConnection {
         }
     }
 
-    /// Ensure the WebSocket connection is alive, reconnecting if stale.
+    /// Ensure the WebSocket connection is alive, reconnecting if needed.
     async fn ensure_connected(&mut self) -> Result<&mut WebOsClient> {
         let needs_reconnect = match &self.client {
             Some(client) => !client.is_connected(),
@@ -76,13 +76,52 @@ impl LgConnection {
         };
 
         if needs_reconnect {
-            info!(ip = %self.config.ip, "Reconnecting to LG TV (stale connection)");
+            info!(ip = %self.config.ip, "Reconnecting to LG TV");
             let client =
                 WebOsClient::connect(&self.config.ip, self.config.client_key.clone()).await?;
             self.client = Some(client);
         }
 
         self.client.as_mut().ok_or(Error::ConnectionClosed)
+    }
+
+    /// Force a fresh reconnect (drop existing connection first).
+    async fn reconnect(&mut self) -> Result<&mut WebOsClient> {
+        self.client = None;
+        self.ensure_connected().await
+    }
+
+    /// Execute a command with automatic retry on stale connections.
+    ///
+    /// The TV silently closes idle WebSocket connections after ~1-2 minutes.
+    /// `is_connected()` can't detect this — the handle looks valid until we
+    /// try to send data. This method catches the resulting error, reconnects,
+    /// and retries the command once.
+    async fn with_retry<F, T>(&mut self, mut f: F) -> Result<T>
+    where
+        F: FnMut(
+            &mut WebOsClient,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + '_>>,
+    {
+        let client = self.ensure_connected().await?;
+        match f(client).await {
+            Ok(result) => Ok(result),
+            Err(e)
+                if matches!(
+                    e,
+                    Error::ConnectionClosed
+                        | Error::Connection(_)
+                        | Error::Io(_)
+                        | Error::RequestTimeout
+                ) =>
+            {
+                warn!(ip = %self.config.ip, error = %e, "Stale connection, reconnecting");
+                let client = self.reconnect().await?;
+                f(client).await
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -97,7 +136,7 @@ impl TvConnection for LgConnection {
     }
 
     async fn get_state(&mut self) -> Result<TvState> {
-        self.ensure_connected().await?.get_state().await
+        self.with_retry(|c| Box::pin(c.get_state())).await
     }
 
     async fn close(&mut self) -> Result<()> {
@@ -128,59 +167,64 @@ impl TvConnection for LgConnection {
     }
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
-        self.ensure_connected().await?.get_power_state().await
+        self.with_retry(|c| Box::pin(c.get_power_state())).await
     }
 
     async fn screen_on(&mut self) -> Result<()> {
-        self.ensure_connected().await?.screen_on().await
+        self.with_retry(|c| Box::pin(c.screen_on())).await
     }
 
     async fn screen_off(&mut self) -> Result<()> {
-        self.ensure_connected().await?.screen_off().await
+        self.with_retry(|c| Box::pin(c.screen_off())).await
     }
 
     async fn is_screen_on(&mut self) -> Result<bool> {
-        let state = self.ensure_connected().await?.get_power_state().await?;
+        let state = self.with_retry(|c| Box::pin(c.get_power_state())).await?;
         Ok(!matches!(state, PowerState::ScreenOff))
     }
 
     async fn set_volume(&mut self, level: u8) -> Result<()> {
-        self.ensure_connected().await?.set_volume(level).await
+        self.with_retry(|c| Box::pin(c.set_volume(level))).await
     }
 
     async fn get_volume(&mut self) -> Result<u8> {
-        let info = self.ensure_connected().await?.get_volume().await?;
+        let info = self.with_retry(|c| Box::pin(c.get_volume())).await?;
         Ok(info.volume.clamp(0, 100) as u8)
     }
 
     async fn set_mute(&mut self, mute: bool) -> Result<()> {
-        self.ensure_connected().await?.set_mute(mute).await
+        self.with_retry(|c| Box::pin(c.set_mute(mute))).await
     }
 
     async fn is_muted(&mut self) -> Result<bool> {
-        let info = self.ensure_connected().await?.get_volume().await?;
+        let info = self.with_retry(|c| Box::pin(c.get_volume())).await?;
         Ok(info.muted)
     }
 
     async fn switch_input(&mut self, input_id: &str) -> Result<()> {
-        self.ensure_connected().await?.switch_input(input_id).await
+        let input = input_id.to_string();
+        self.with_retry(|c| {
+            let input = input.clone();
+            Box::pin(async move { c.switch_input(&input).await })
+        })
+        .await
     }
 
     async fn get_current_input(&mut self) -> Result<Option<String>> {
-        let state = self.ensure_connected().await?.get_state().await?;
+        let state = self.with_retry(|c| Box::pin(c.get_state())).await?;
         Ok(state.current_input)
     }
 
     async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> {
-        self.ensure_connected().await?.get_inputs().await
+        self.with_retry(|c| Box::pin(c.get_inputs())).await
     }
 
     async fn set_backlight(&mut self, level: u8) -> Result<()> {
-        self.ensure_connected().await?.set_backlight(level).await
+        self.with_retry(|c| Box::pin(c.set_backlight(level))).await
     }
 
     async fn get_backlight(&mut self) -> Result<u8> {
-        self.ensure_connected().await?.get_backlight().await
+        self.with_retry(|c| Box::pin(c.get_backlight())).await
     }
 }
 
