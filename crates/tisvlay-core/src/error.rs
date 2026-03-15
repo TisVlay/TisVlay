@@ -190,21 +190,6 @@ impl Error {
         )
     }
 
-    /// Check if this is a fatal connection error that requires reconnection.
-    ///
-    /// Non-fatal errors (like a TV returning "500 Application error" for an
-    /// idempotent operation) should not trigger connection teardown.
-    pub fn is_connection_fatal(&self) -> bool {
-        matches!(
-            self,
-            Self::Connection(_)
-                | Self::ConnectionClosed
-                | Self::Io(_)
-                | Self::RequestTimeout
-                | Self::NotRegistered
-        )
-    }
-
     /// Check if this error indicates a timeout.
     pub fn is_timeout(&self) -> bool {
         matches!(self, Self::RequestTimeout | Self::PairingTimeout)

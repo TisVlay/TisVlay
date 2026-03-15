@@ -63,8 +63,8 @@ async fn main() -> Result<()> {
         "Backend registry initialized"
     );
 
-    // Create TV manager (returns manager, reconnection worker handle, and state change receiver)
-    let (tv_manager, reconnect_worker, state_change_rx) = TvManager::new(config, registry.clone());
+    // Create TV manager
+    let (tv_manager, state_change_rx) = TvManager::new(config, registry.clone());
 
     // Get list of configured TV IDs before wrapping in RwLock
     let tv_ids: Vec<String> = tv_manager.list_tv_ids().await;
@@ -128,9 +128,6 @@ async fn main() -> Result<()> {
 
     // Abort the signal worker
     signal_worker.abort();
-
-    // Abort the reconnection worker
-    reconnect_worker.abort();
 
     // Drop connection to unregister from D-Bus
     drop(connection);

@@ -8,8 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tisvlay_core::{Capabilities, Config, PowerState, TvConfig, TvConnection, TvState};
 use tokio::sync::{mpsc, RwLock};
-use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Event emitted when TV state changes.
 #[derive(Debug, Clone)]
@@ -52,19 +51,6 @@ pub struct TvInfo {
     pub vendor: String,
 }
 
-/// Minimum reconnection delay (1 second).
-const MIN_RECONNECT_DELAY_MS: u64 = 1000;
-
-/// Reconnection state for a TV.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum ReconnectState {
-    /// Not attempting reconnection.
-    #[default]
-    Idle,
-    /// Reconnection in progress with current backoff delay.
-    Reconnecting { delay_ms: u64 },
-}
-
 /// Managed TV connection state.
 struct ManagedTv {
     /// TV configuration.
@@ -76,8 +62,6 @@ struct ManagedTv {
     state: TvState,
     /// Last error message.
     last_error: Option<String>,
-    /// Reconnection state.
-    reconnect_state: ReconnectState,
 }
 
 impl ManagedTv {
@@ -87,7 +71,6 @@ impl ManagedTv {
             connection: None,
             state: TvState::default(),
             last_error: None,
-            reconnect_state: ReconnectState::Idle,
         }
     }
 
@@ -106,16 +89,10 @@ impl ManagedTv {
     }
 }
 
-/// Message types for TV manager internal communication.
-#[derive(Debug)]
-enum ManagerMsg {
-    /// Request reconnection for a TV.
-    Reconnect(String),
-}
-
 /// TV connection manager.
 ///
-/// Thread-safe manager for multiple TV connections with automatic reconnection.
+/// Thread-safe manager for multiple TV connections.
+/// Connection resilience (auto-reconnect, WoL retry) is handled by the backends.
 pub struct TvManager {
     /// Global configuration.
     config: Config,
@@ -123,8 +100,6 @@ pub struct TvManager {
     registry: Arc<BackendRegistry>,
     /// Managed TVs by ID.
     tvs: Arc<RwLock<HashMap<String, ManagedTv>>>,
-    /// Channel to send reconnection requests.
-    reconnect_tx: mpsc::Sender<ManagerMsg>,
     /// Channel to send state change events.
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
 }
@@ -132,50 +107,27 @@ pub struct TvManager {
 impl TvManager {
     /// Create a new TV manager from configuration.
     ///
-    /// Returns the manager, a task handle for the reconnection worker, and a receiver
-    /// for state change events.
+    /// Returns the manager and a receiver for state change events.
     pub fn new(
         config: Config,
         registry: Arc<BackendRegistry>,
-    ) -> (
-        Self,
-        JoinHandle<()>,
-        mpsc::UnboundedReceiver<StateChangeEvent>,
-    ) {
+    ) -> (Self, mpsc::UnboundedReceiver<StateChangeEvent>) {
         let mut tvs = HashMap::new();
         for tv_config in &config.tv {
             tvs.insert(tv_config.id.clone(), ManagedTv::new(tv_config.clone()));
         }
 
         let tvs = Arc::new(RwLock::new(tvs));
-        let (reconnect_tx, reconnect_rx) = mpsc::channel(32);
         let (state_change_tx, state_change_rx) = mpsc::unbounded_channel();
-
-        // Spawn reconnection worker
-        let worker_tvs = tvs.clone();
-        let worker_registry = registry.clone();
-        let worker_state_tx = state_change_tx.clone();
-        let max_delay = config.daemon.reconnect_interval_ms;
-        let worker_handle = tokio::spawn(async move {
-            reconnect_worker(
-                worker_tvs,
-                worker_registry,
-                reconnect_rx,
-                max_delay,
-                worker_state_tx,
-            )
-            .await;
-        });
 
         let manager = Self {
             config,
             registry,
             tvs,
-            reconnect_tx,
             state_change_tx,
         };
 
-        (manager, worker_handle, state_change_rx)
+        (manager, state_change_rx)
     }
 
     /// Emit a state change event.
@@ -294,7 +246,6 @@ impl TvManager {
                 info!(tv_id = %tv_id, "Connected to TV");
                 tv.connection = Some(connection);
                 tv.last_error = None;
-                tv.reconnect_state = ReconnectState::Idle;
             }
         }
 
@@ -321,52 +272,16 @@ impl TvManager {
         self.connect(tv_id).await
     }
 
-    /// Trigger a reconnection attempt for a TV.
-    async fn trigger_reconnect(&self, tv_id: &str) {
-        // Check if reconnection is already in progress
-        {
-            let tvs = self.tvs.read().await;
-            if let Some(tv) = tvs.get(tv_id) {
-                if tv.reconnect_state != ReconnectState::Idle {
-                    debug!(tv_id = %tv_id, "Reconnection already in progress");
-                    return;
-                }
-            }
-        }
-
-        // Mark as reconnecting
-        {
-            let mut tvs = self.tvs.write().await;
-            if let Some(tv) = tvs.get_mut(tv_id) {
-                tv.reconnect_state = ReconnectState::Reconnecting {
-                    delay_ms: MIN_RECONNECT_DELAY_MS,
-                };
-            }
-        }
-
-        // Send reconnection request to worker
-        if let Err(e) = self
-            .reconnect_tx
-            .send(ManagerMsg::Reconnect(tv_id.to_string()))
-            .await
-        {
-            error!(tv_id = %tv_id, error = %e, "Failed to send reconnect request");
-        }
-    }
-
     /// Execute a command on a TV connection.
     ///
     /// Connects if not already connected, then executes the command.
-    /// On fatal connection errors (e.g., stale WebSocket from TV idle
-    /// timeout), reconnects and retries the command once.
+    /// The backend handles its own reconnection internally via `ensure_connected()`.
     async fn with_connection<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
     where
         F: FnOnce(&mut dyn TvConnection) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
     {
-        // First try to connect if needed
         self.connect(tv_id).await?;
 
-        // Then execute the command
         let mut tvs = self.tvs.write().await;
         let tv = tvs
             .get_mut(tv_id)
@@ -381,51 +296,8 @@ impl TvManager {
             Ok(result) => Ok(result),
             Err(e) => {
                 let msg = format!("Command failed: {}", e);
-
-                if e.is_connection_fatal() {
-                    // Fatal error: connection is broken, tear down and reconnect
-                    warn!(tv_id = %tv_id, error = %e, "Command failed (connection error), will retry");
-                    tv.connection = None;
-                    tv.last_error = Some(msg.clone());
-
-                    let event = StateChangeEvent::connection_change(tv_id, false, Some(&msg));
-                    drop(tvs);
-                    self.emit_state_change(event);
-
-                    // Reconnect and return — caller should retry via with_connection_retry
-                    Err(msg)
-                } else {
-                    // Non-fatal error (e.g., TV returned application error for
-                    // idempotent operation like screen_on when already on).
-                    // Keep the connection alive.
-                    warn!(tv_id = %tv_id, error = %e, "Command failed (non-fatal)");
-                    Err(msg)
-                }
-            }
-        }
-    }
-
-    /// Execute a command with one automatic retry on connection failure.
-    ///
-    /// If the first attempt fails due to a stale connection (e.g., TV closed
-    /// the WebSocket after idle timeout), reconnects and retries the command.
-    async fn with_connection_retry<F1, F2, T>(
-        &self,
-        tv_id: &str,
-        f1: F1,
-        f2: F2,
-    ) -> Result<T, String>
-    where
-        F1: FnOnce(&mut dyn TvConnection) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
-        F2: FnOnce(&mut dyn TvConnection) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
-    {
-        match self.with_connection(tv_id, f1).await {
-            Ok(result) => Ok(result),
-            Err(_) => {
-                // First attempt failed — reconnect and retry
-                info!(tv_id = %tv_id, "Retrying after reconnection");
-                self.reconnect(tv_id).await?;
-                self.with_connection(tv_id, f2).await
+                warn!(tv_id = %tv_id, error = %e, "Command failed");
+                Err(msg)
             }
         }
     }
@@ -436,9 +308,8 @@ impl TvManager {
 
     /// Power on a TV using Wake-on-LAN.
     ///
-    /// Sends the WoL packet, then retries connecting until the TV boots and
-    /// accepts connections (up to ~15 seconds). This blocks the caller so
-    /// the TV is actually online when the call returns.
+    /// The backend's `wake()` handles WoL retry with network readiness
+    /// internally. After waking, waits for the TV to boot then connects.
     pub async fn power_on(&self, tv_id: &str) -> Result<(), String> {
         let config = self
             .get_tv_config(tv_id)
@@ -452,8 +323,7 @@ impl TvManager {
         let display_addr = self.registry.display_address(&config);
         info!(tv_id = %tv_id, address = %display_addr, "Waking TV");
 
-        // Drop any stale connection — the TV was powered off, so any existing
-        // connection is dead (e.g., from a ScreenOff that raced with PowerOff).
+        // Drop any stale connection
         {
             let mut tvs = self.tvs.write().await;
             if let Some(tv) = tvs.get_mut(tv_id) {
@@ -463,60 +333,39 @@ impl TvManager {
             }
         }
 
+        // Wake the TV — backend handles WoL retry with network readiness
         self.registry
             .wake_tv(&config)
             .await
             .map_err(|e| format!("Wake failed: {}", e))?;
 
-        // Retry connecting with short intervals — the TV needs time to boot
-        // after WoL. Resend WoL before each attempt because the first packet
-        // may have been lost (e.g., desktop network not yet up after resume).
-        let mut delay_ms = 2000u64;
-        for attempt in 1..=8 {
-            info!(tv_id = %tv_id, attempt, delay_ms, "Waiting for TV to boot");
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        // Wait for TV to boot, then connect
+        let delay = Duration::from_millis(self.config.daemon.wake_delay_ms);
+        tokio::time::sleep(delay).await;
 
-            // Resend WoL — earlier packets may have been lost if the network
-            // was still recovering from sleep/suspend.
-            if let Err(e) = self.registry.wake_tv(&config).await {
-                warn!(tv_id = %tv_id, attempt, error = %e, "WoL resend failed");
-            }
+        // Try to connect (backend handles reconnection internally)
+        self.connect(tv_id).await?;
 
-            match self.connect(tv_id).await {
-                Ok(()) => {
-                    info!(tv_id = %tv_id, "TV is online after WoL");
-                    return Ok(());
-                }
-                Err(e) => {
-                    warn!(tv_id = %tv_id, attempt, error = %e, "TV not ready yet");
-                    delay_ms = (delay_ms * 2).min(5000);
-                }
-            }
-        }
-
-        Err(format!("TV {} did not come online after WoL", tv_id))
+        info!(tv_id = %tv_id, "TV is online after WoL");
+        Ok(())
     }
 
     /// Power off a TV.
     ///
-    /// After sending the power-off command, the connection is dropped because
-    /// the TV is shutting down and the transport (e.g., WebSocket) will close.
+    /// After sending the power-off command, clears the daemon's connection
+    /// tracking. The backend already closed its own socket.
     pub async fn power_off(&self, tv_id: &str) -> Result<(), String> {
         let result = self
-            .with_connection_retry(
-                tv_id,
-                |conn| Box::pin(async move { conn.power_off().await }),
-                |conn| Box::pin(async move { conn.power_off().await }),
-            )
+            .with_connection(tv_id, |conn| {
+                Box::pin(async move { conn.power_off().await })
+            })
             .await;
 
-        // Drop the connection regardless of result — the TV is going to shut down
+        // Clear connection tracking — backend already closed its socket
         {
             let mut tvs = self.tvs.write().await;
             if let Some(tv) = tvs.get_mut(tv_id) {
-                if let Some(mut conn) = tv.connection.take() {
-                    let _ = conn.close().await;
-                }
+                tv.connection = None;
             }
         }
 
@@ -537,21 +386,17 @@ impl TvManager {
 
     /// Turn screen on.
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), String> {
-        self.with_connection_retry(
-            tv_id,
-            |conn| Box::pin(async move { conn.screen_on().await }),
-            |conn| Box::pin(async move { conn.screen_on().await }),
-        )
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.screen_on().await })
+        })
         .await
     }
 
     /// Turn screen off.
     pub async fn screen_off(&self, tv_id: &str) -> Result<(), String> {
-        self.with_connection_retry(
-            tv_id,
-            |conn| Box::pin(async move { conn.screen_off().await }),
-            |conn| Box::pin(async move { conn.screen_off().await }),
-        )
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.screen_off().await })
+        })
         .await
     }
 
@@ -833,7 +678,6 @@ impl TvManager {
                     if let Some(mut conn) = existing.connection.take() {
                         let _ = conn.close().await;
                     }
-                    existing.reconnect_state = ReconnectState::Idle;
                 }
                 existing.config = tv_config;
             } else {
@@ -848,106 +692,3 @@ impl TvManager {
     }
 }
 
-/// Background worker for handling reconnection attempts with exponential backoff.
-async fn reconnect_worker(
-    tvs: Arc<RwLock<HashMap<String, ManagedTv>>>,
-    registry: Arc<BackendRegistry>,
-    mut rx: mpsc::Receiver<ManagerMsg>,
-    max_delay_ms: u64,
-    state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
-) {
-    info!("Reconnection worker started");
-
-    while let Some(msg) = rx.recv().await {
-        match msg {
-            ManagerMsg::Reconnect(tv_id) => {
-                reconnect_tv(&tvs, &registry, &tv_id, max_delay_ms, &state_change_tx).await;
-            }
-        }
-    }
-
-    info!("Reconnection worker stopped");
-}
-
-/// Attempt to reconnect a TV with exponential backoff.
-async fn reconnect_tv(
-    tvs: &Arc<RwLock<HashMap<String, ManagedTv>>>,
-    registry: &Arc<BackendRegistry>,
-    tv_id: &str,
-    max_delay_ms: u64,
-    state_change_tx: &mpsc::UnboundedSender<StateChangeEvent>,
-) {
-    let mut current_delay_ms = MIN_RECONNECT_DELAY_MS;
-
-    loop {
-        // Get current reconnection state and config
-        let (should_reconnect, display_addr, config) = {
-            let tvs = tvs.read().await;
-            match tvs.get(tv_id) {
-                Some(tv) => {
-                    // Stop if already connected or reconnection was cancelled
-                    if tv.is_connected() || tv.reconnect_state == ReconnectState::Idle {
-                        debug!(tv_id = %tv_id, "Reconnection no longer needed");
-                        return;
-                    }
-
-                    let display_addr = registry.display_address(&tv.config);
-                    let config = tv.config.clone();
-
-                    (true, display_addr, config)
-                }
-                None => {
-                    warn!(tv_id = %tv_id, "TV not found, stopping reconnection");
-                    return;
-                }
-            }
-        };
-
-        if !should_reconnect {
-            return;
-        }
-
-        // Wait before attempting
-        info!(
-            tv_id = %tv_id,
-            delay_ms = current_delay_ms,
-            "Waiting before reconnection attempt"
-        );
-        tokio::time::sleep(Duration::from_millis(current_delay_ms)).await;
-
-        // Attempt connection
-        info!(tv_id = %tv_id, address = %display_addr, "Attempting reconnection");
-        match registry.connect_tv(&config).await {
-            Ok(connection) => {
-                info!(tv_id = %tv_id, "Reconnection successful");
-                {
-                    let mut tvs = tvs.write().await;
-                    if let Some(tv) = tvs.get_mut(tv_id) {
-                        tv.connection = Some(connection);
-                        tv.last_error = None;
-                        tv.reconnect_state = ReconnectState::Idle;
-                    }
-                }
-                // Emit connection state change
-                let event = StateChangeEvent::connection_change(tv_id, true, None);
-                let _ = state_change_tx.send(event);
-                return;
-            }
-            Err(e) => {
-                warn!(tv_id = %tv_id, error = %e, "Reconnection failed");
-
-                // Update state with new delay
-                let mut tvs = tvs.write().await;
-                if let Some(tv) = tvs.get_mut(tv_id) {
-                    tv.last_error = Some(format!("Reconnection failed: {}", e));
-
-                    // Calculate next delay with exponential backoff
-                    current_delay_ms = (current_delay_ms * 2).min(max_delay_ms);
-                    tv.reconnect_state = ReconnectState::Reconnecting {
-                        delay_ms: current_delay_ms,
-                    };
-                }
-            }
-        }
-    }
-}

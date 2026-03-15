@@ -7,9 +7,8 @@ use crate::config::LgVendorConfig;
 use async_trait::async_trait;
 use std::any::Any;
 use tisvlay_core::{
-    BacklightControl, Capabilities, Credentials, Error, InputControl, InputInfo, MacAddress,
-    PairingCommand, PairingSession, PairingState, PowerControl, PowerState, Result, ScreenControl,
-    TvBackend, TvConnection, TvConnector, TvState, VolumeControl,
+    Capabilities, Credentials, Error, InputInfo, MacAddress, PairingCommand, PairingSession,
+    PairingState, PowerState, Result, TvBackend, TvConnection, TvConnector, TvState,
 };
 #[cfg(feature = "discovery")]
 use tisvlay_core::{DiscoveredTv, TvDiscovery};
@@ -53,28 +52,38 @@ impl TvBackend for LgBackend {
 /// LG WebOS TV connection.
 ///
 /// Wraps a `WebOsClient` and implements the tisvlay-core connection traits.
+/// Handles auto-reconnection transparently when the WebSocket connection drops.
 pub struct LgConnection {
-    client: WebOsClient,
+    client: Option<WebOsClient>,
+    config: LgVendorConfig,
     capabilities: Capabilities,
 }
 
 impl LgConnection {
-    /// Create a new LG connection from a WebOsClient.
-    pub fn new(client: WebOsClient) -> Self {
+    /// Create a new LG connection from a WebOsClient and its config.
+    pub fn new(client: WebOsClient, config: LgVendorConfig) -> Self {
         Self {
-            client,
+            client: Some(client),
+            config,
             capabilities: Capabilities::ALL,
         }
     }
 
-    /// Get a reference to the underlying WebOsClient.
-    pub fn client(&self) -> &WebOsClient {
-        &self.client
-    }
+    /// Ensure the WebSocket connection is alive, reconnecting if stale.
+    async fn ensure_connected(&mut self) -> Result<&mut WebOsClient> {
+        let needs_reconnect = match &self.client {
+            Some(client) => !client.is_connected(),
+            None => true,
+        };
 
-    /// Get a mutable reference to the underlying WebOsClient.
-    pub fn client_mut(&mut self) -> &mut WebOsClient {
-        &mut self.client
+        if needs_reconnect {
+            info!(ip = %self.config.ip, "Reconnecting to LG TV (stale connection)");
+            let client =
+                WebOsClient::connect(&self.config.ip, self.config.client_key.clone()).await?;
+            self.client = Some(client);
+        }
+
+        self.client.as_mut().ok_or(Error::ConnectionClosed)
     }
 }
 
@@ -85,15 +94,19 @@ impl TvConnection for LgConnection {
     }
 
     fn is_connected(&self) -> bool {
-        self.client.is_connected()
+        self.client.as_ref().map_or(false, |c| c.is_connected())
     }
 
     async fn get_state(&mut self) -> Result<TvState> {
-        self.client.get_state().await
+        self.ensure_connected().await?.get_state().await
     }
 
     async fn close(&mut self) -> Result<()> {
-        self.client.close().await
+        if let Some(ref mut client) = self.client {
+            client.close().await?;
+        }
+        self.client = None;
+        Ok(())
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -113,148 +126,68 @@ impl TvConnection for LgConnection {
     // =========================================================================
 
     async fn power_off(&mut self) -> Result<()> {
-        self.client.power_off().await
+        if let Some(ref mut client) = self.client {
+            let _ = client.power_off().await;
+            let _ = client.close().await;
+        }
+        self.client = None;
+        Ok(())
     }
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
-        self.client.get_power_state().await
+        self.ensure_connected().await?.get_power_state().await
     }
 
     async fn screen_on(&mut self) -> Result<()> {
-        self.client.screen_on().await
+        self.ensure_connected().await?.screen_on().await
     }
 
     async fn screen_off(&mut self) -> Result<()> {
-        self.client.screen_off().await
+        self.ensure_connected().await?.screen_off().await
     }
 
     async fn is_screen_on(&mut self) -> Result<bool> {
-        let state = self.client.get_power_state().await?;
+        let state = self.ensure_connected().await?.get_power_state().await?;
         Ok(!matches!(state, PowerState::ScreenOff))
     }
 
     async fn set_volume(&mut self, level: u8) -> Result<()> {
-        self.client.set_volume(level as i32).await
+        self.ensure_connected().await?.set_volume(level as i32).await
     }
 
     async fn get_volume(&mut self) -> Result<u8> {
-        let info = self.client.get_volume().await?;
+        let info = self.ensure_connected().await?.get_volume().await?;
         Ok(info.volume as u8)
     }
 
     async fn set_mute(&mut self, mute: bool) -> Result<()> {
-        self.client.set_mute(mute).await
+        self.ensure_connected().await?.set_mute(mute).await
     }
 
     async fn is_muted(&mut self) -> Result<bool> {
-        let info = self.client.get_volume().await?;
+        let info = self.ensure_connected().await?.get_volume().await?;
         Ok(info.muted)
     }
 
     async fn switch_input(&mut self, input_id: &str) -> Result<()> {
-        self.client.switch_input(input_id).await
+        self.ensure_connected().await?.switch_input(input_id).await
     }
 
     async fn get_current_input(&mut self) -> Result<Option<String>> {
-        let state = self.client.get_state().await?;
+        let state = self.ensure_connected().await?.get_state().await?;
         Ok(state.current_input)
     }
 
     async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> {
-        self.client.get_inputs().await
+        self.ensure_connected().await?.get_inputs().await
     }
 
     async fn set_backlight(&mut self, level: u8) -> Result<()> {
-        self.client.set_backlight(level as i32).await
+        self.ensure_connected().await?.set_backlight(level as i32).await
     }
 
     async fn get_backlight(&mut self) -> Result<u8> {
-        let level = self.client.get_backlight().await?;
-        Ok(level as u8)
-    }
-}
-
-// Keep separate feature trait impls for use as trait bounds in generic code.
-
-#[async_trait]
-impl PowerControl for LgConnection {
-    async fn power_on(&mut self) -> Result<()> {
-        Err(Error::not_supported(
-            "Power on via connection not supported - use TvConnector::wake()",
-            Capabilities::POWER,
-        ))
-    }
-
-    async fn power_off(&mut self) -> Result<()> {
-        self.client.power_off().await
-    }
-
-    async fn get_power_state(&mut self) -> Result<PowerState> {
-        self.client.get_power_state().await
-    }
-}
-
-#[async_trait]
-impl ScreenControl for LgConnection {
-    async fn screen_on(&mut self) -> Result<()> {
-        self.client.screen_on().await
-    }
-
-    async fn screen_off(&mut self) -> Result<()> {
-        self.client.screen_off().await
-    }
-
-    async fn is_screen_on(&mut self) -> Result<bool> {
-        let state = self.client.get_power_state().await?;
-        Ok(!matches!(state, PowerState::ScreenOff))
-    }
-}
-
-#[async_trait]
-impl VolumeControl for LgConnection {
-    async fn set_volume(&mut self, level: u8) -> Result<()> {
-        self.client.set_volume(level as i32).await
-    }
-
-    async fn get_volume(&mut self) -> Result<u8> {
-        let info = self.client.get_volume().await?;
-        Ok(info.volume as u8)
-    }
-
-    async fn set_mute(&mut self, mute: bool) -> Result<()> {
-        self.client.set_mute(mute).await
-    }
-
-    async fn is_muted(&mut self) -> Result<bool> {
-        let info = self.client.get_volume().await?;
-        Ok(info.muted)
-    }
-}
-
-#[async_trait]
-impl InputControl for LgConnection {
-    async fn switch_input(&mut self, input_id: &str) -> Result<()> {
-        self.client.switch_input(input_id).await
-    }
-
-    async fn get_current_input(&mut self) -> Result<Option<String>> {
-        let state = self.client.get_state().await?;
-        Ok(state.current_input)
-    }
-
-    async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> {
-        self.client.get_inputs().await
-    }
-}
-
-#[async_trait]
-impl BacklightControl for LgConnection {
-    async fn set_backlight(&mut self, level: u8) -> Result<()> {
-        self.client.set_backlight(level as i32).await
-    }
-
-    async fn get_backlight(&mut self) -> Result<u8> {
-        let level = self.client.get_backlight().await?;
+        let level = self.ensure_connected().await?.get_backlight().await?;
         Ok(level as u8)
     }
 }
@@ -282,8 +215,8 @@ impl TvConnector for LgConnector {
 
         debug!(ip = %config.ip, has_key = config.client_key.is_some(), "Connecting to LG TV");
 
-        let client = WebOsClient::connect(&config.ip, config.client_key).await?;
-        Ok(Box::new(LgConnection::new(client)))
+        let client = WebOsClient::connect(&config.ip, config.client_key.clone()).await?;
+        Ok(Box::new(LgConnection::new(client, config)))
     }
 
     fn display_address(&self, vendor_config: &toml::Value) -> String {
@@ -302,9 +235,30 @@ impl TvConnector for LgConnector {
         let config = parse_config(vendor_config)?;
         if let Some(ref mac) = config.mac {
             let mac_addr = MacAddress::parse(mac)?;
-            tisvlay_core::wol::wake(&mac_addr)?;
+
+            // Try sending WoL, retrying if network is not yet up (e.g., after system resume).
+            // The first attempt may fail with "Network is unreachable" while the
+            // desktop's network interface is still recovering from sleep.
+            let mut last_err = None;
+            for attempt in 1..=8u32 {
+                match tisvlay_core::wol::wake(&mac_addr) {
+                    Ok(()) => {
+                        debug!(ip = %config.ip, mac = %mac, attempt, "WoL packet sent");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!(mac = %mac, attempt, error = %e, "WoL send failed, retrying");
+                        last_err = Some(e);
+                        let delay = if attempt <= 2 { 2000 } else { 3000 };
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    }
+                }
+            }
+
+            Err(last_err.unwrap_or_else(|| Error::WakeOnLan("WoL failed after retries".into())))
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {

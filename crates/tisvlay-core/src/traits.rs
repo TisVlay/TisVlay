@@ -77,6 +77,17 @@ pub trait TvBackend: Send + Sync + 'static {
 /// [`capabilities()`](TvConnection::capabilities) to check which features are
 /// available before calling feature methods.
 ///
+/// # Connection Resilience
+///
+/// Implementations should handle their own connection lifecycle internally.
+/// For persistent-connection transports (e.g., WebSocket), the implementation
+/// should transparently reconnect on stale or dropped connections when a
+/// feature method is called. The daemon treats `TvConnection` as an opaque
+/// handle — it does not manage reconnection or retry logic.
+///
+/// For `power_off()`, the implementation should close its own transport
+/// connection after sending the command, since the device is shutting down.
+///
 /// Separate feature traits ([`PowerControl`], [`ScreenControl`], etc.) are also
 /// available for use as trait bounds in generic code, but `TvConnection` is the
 /// primary interface used by the daemon and CLI.
@@ -290,6 +301,10 @@ pub trait TvConnector: Send + Sync {
     /// For IP-based backends, this sends Wake-on-LAN. For CEC, this might
     /// send a power-on command. Returns `Ok(())` as a no-op if wake is
     /// not supported.
+    ///
+    /// Implementations should handle transport-specific retry logic internally.
+    /// For example, after system resume the desktop's network interface may not
+    /// be up yet, so WoL packets should be retried until the network is available.
     ///
     /// The device may not be ready to accept connections immediately after
     /// waking — callers should add a delay before attempting to connect.
