@@ -22,7 +22,6 @@
 //!
 //! # Features
 //!
-//! - `discovery` - Network discovery support (SSDP)
 //! - `dbus` - D-Bus client for communicating with tisvlayd
 //!
 //! # Example
@@ -97,5 +96,8 @@ pub use wol::{wake, wake_reliable, wake_to_ip, wake_with_options, MacAddress, Wa
 // Public re-exports: Optional features
 // =============================================================================
 
+// D-Bus path constants (always available, no feature gate)
+pub use dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
+
 #[cfg(feature = "dbus")]
-pub use dbus_client::{DaemonClient, TvInfo, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
+pub use dbus_client::{DaemonClient, TvInfo};

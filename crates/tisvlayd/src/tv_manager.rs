@@ -55,8 +55,8 @@ pub enum TvManagerError {
     WakeNotSupported(String),
 
     /// Pairing failed.
-    #[error("Pairing failed for TV: {source}")]
-    PairingFailed { source: tisvlay_core::Error },
+    #[error("Pairing failed: {0}")]
+    PairingFailed(Box<dyn std::error::Error + Send + Sync>),
 
     /// Configuration I/O error (load/save).
     #[error("Config error: {0}")]
@@ -209,15 +209,24 @@ impl TvManager {
         }
 
         info!("Performing boot-time Wake-on-LAN");
-        let tvs = self.tvs.read().await;
 
-        for (id, tv_arc) in tvs.iter() {
-            let tv = tv_arc.lock().await;
-            if self.registry.supports_wake(&tv.config) {
-                info!(tv_id = %id, "Waking TV");
-                if let Err(e) = self.registry.wake_tv(&tv.config).await {
-                    warn!(tv_id = %id, error = %e, "Failed to wake TV");
+        // Collect configs under lock, then wake outside the lock to avoid
+        // holding per-TV mutexes during network I/O (WoL can retry for seconds).
+        let mut wake_configs: Vec<(String, TvConfig)> = Vec::new();
+        {
+            let tvs = self.tvs.read().await;
+            for (id, tv_arc) in tvs.iter() {
+                let tv = tv_arc.lock().await;
+                if self.registry.supports_wake(&tv.config) {
+                    wake_configs.push((id.clone(), tv.config.clone()));
                 }
+            }
+        }
+
+        for (id, config) in &wake_configs {
+            info!(tv_id = %id, "Waking TV");
+            if let Err(e) = self.registry.wake_tv(config).await {
+                warn!(tv_id = %id, error = %e, "Failed to wake TV");
             }
         }
 
@@ -323,6 +332,8 @@ impl TvManager {
     ///
     /// Connects if not already connected, then executes the command.
     /// Only holds the per-TV mutex -- other TVs are not blocked.
+    /// The connect and command execute under a single lock acquisition
+    /// to avoid TOCTOU races between connect and command.
     async fn with_connection<F, T>(&self, tv_id: &str, f: F) -> Result<T, TvManagerError>
     where
         F: FnOnce(
@@ -331,12 +342,30 @@ impl TvManager {
             Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>,
         >,
     {
-        // Ensure connected (acquires and releases per-TV lock internally)
-        self.connect(tv_id).await?;
-
-        // Now lock the per-TV mutex for the command
         let tv_arc = self.get_tv(tv_id).await?;
         let mut tv = tv_arc.lock().await;
+
+        // Connect if needed (under the same lock to prevent TOCTOU)
+        if !tv.is_connected() {
+            if tv.powered_off {
+                return Err(TvManagerError::PoweredOff(tv_id.to_string()));
+            }
+
+            let display_addr = self.registry.display_address(&tv.config);
+            info!(tv_id = %tv_id, address = %display_addr, vendor = %tv.config.vendor, "Connecting to TV");
+
+            let connection = self.registry.connect_tv(&tv.config).await.map_err(|e| {
+                TvManagerError::ConnectionFailed {
+                    tv_id: tv_id.to_string(),
+                    source: e,
+                }
+            })?;
+
+            info!(tv_id = %tv_id, "Connected to TV");
+            tv.connection = Some(connection);
+            tv.last_error = None;
+            self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+        }
 
         let connection = tv
             .connection
@@ -348,7 +377,7 @@ impl TvManager {
             Err(e) => {
                 warn!(tv_id = %tv_id, error = %e, "Command failed");
 
-                // Drop stale connection so the next call reconnects via connect()
+                // Drop stale connection so the next call reconnects
                 if matches!(
                     e,
                     tisvlay_core::Error::ConnectionClosed
@@ -613,22 +642,19 @@ impl TvManager {
         let mut session = self
             .registry
             .start_pairing(vendor, &vendor_config)
-            .map_err(|e| TvManagerError::PairingFailed { source: e })?;
+            .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
         // Wait for pairing to complete
-        let credentials =
-            session
-                .wait_for_completion()
-                .await
-                .map_err(|e| TvManagerError::PairingFailed {
-                    source: tisvlay_core::Error::backend(vendor, e.to_string()),
-                })?;
+        let credentials = session
+            .wait_for_completion()
+            .await
+            .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
         // Build final vendor config from pairing results
         let final_config = self
             .registry
             .build_config_from_pairing(vendor, &vendor_config, &credentials)
-            .map_err(|e| TvManagerError::PairingFailed { source: e })?;
+            .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
         // Generate ID from name if not provided
         let tv_id = id.map(String::from).unwrap_or_else(|| {

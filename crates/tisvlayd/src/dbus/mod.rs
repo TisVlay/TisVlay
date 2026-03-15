@@ -69,9 +69,7 @@ impl From<TvManagerError> for DaemonError {
             TvManagerError::WakeNotSupported(id) => {
                 DaemonError::NotSupported(format!("Wake not supported for TV: {}", id))
             }
-            TvManagerError::PairingFailed { source } => {
-                DaemonError::PairingFailed(source.to_string())
-            }
+            TvManagerError::PairingFailed(source) => DaemonError::PairingFailed(source.to_string()),
             TvManagerError::ConfigError(msg) => DaemonError::OperationFailed(msg),
             TvManagerError::Other(msg) => DaemonError::OperationFailed(msg),
         }

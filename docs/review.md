@@ -548,6 +548,8 @@ Between the two acquisitions, another task could disconnect the TV or swap the c
 
 **Recommendation**: Consider having `connect` return the `Arc<Mutex<ManagedTv>>` so `with_connection` can reuse it, or merge connect + command into a single lock acquisition.
 
+**Response**: Fixed. `with_connection` now inlines the connect logic under a single per-TV lock acquisition — no separate `connect()` call, no TOCTOU window.
+
 #### R2.2 `boot_wake` holds per-TV locks during network I/O (LOW)
 
 `crates/tisvlayd/src/tv_manager.rs:145-162`:
@@ -563,6 +565,8 @@ pub async fn boot_wake(&self) {
 The per-TV mutex is held while `wake_tv` sends WoL packets (which can retry for up to ~24 seconds in `LgConnector::wake`). The outer read lock on `tvs` is also held for the entire loop. Since boot wake only happens once at startup and sequentially, this is low priority.
 
 **Recommendation**: Clone the config before the WoL call to release the per-TV lock, or collect configs first then wake outside the loop.
+
+**Response**: Fixed. `boot_wake` now collects configs under lock first, then sends WoL packets outside both the per-TV and outer locks.
 
 #### R2.3 `PairingSession::wait_for_completion` has a subtle ordering issue (LOW)
 
@@ -601,6 +605,8 @@ A `PairingError` is being converted to a `tisvlay_core::Error::Backend` string t
 - Adding a `PairingFailed { source: PairingError }` variant (wrapping the actual error type), or
 - At minimum, this is acceptable since the D-Bus client only sees the error message string anyway.
 
+**Response**: Fixed. Changed `PairingFailed` from `{ source: tisvlay_core::Error }` to `PairingFailed(Box<dyn std::error::Error + Send + Sync>)`, so it can wrap `PairingError`, `tisvlay_core::Error`, or any other error directly without stringifying.
+
 #### R2.5 `TvDiscovery` doc comment still mentions `#[async_trait]` attribute (TRIVIAL)
 
 `crates/tisvlay-core/src/lib.rs:25` still says:
@@ -609,6 +615,8 @@ A `PairingError` is being converted to a `tisvlay_core::Error::Backend` string t
 ```
 
 This is correct, but the `lib.rs` doc comment at line 11 was correctly updated to list `TvDiscovery` in the traits section. The comment in the features section still references `discovery` which is now removed from core's Cargo.toml features. The `discovery` feature only exists on `tisvlay-lg` and `tisvlay-backends`.
+
+**Response**: Fixed. Removed the stale `discovery` feature line from the doc comment.
 
 #### R2.6 `DaemonClient` re-exports `DAEMON_SERVICE` from `dbus_paths` but also exports it via `lib.rs` (TRIVIAL)
 
@@ -623,6 +631,8 @@ pub use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH}
 ```
 
 So `lib.rs` is re-exporting a re-export. This works but means these constants are available at two paths: `tisvlay_core::DAEMON_SERVICE` (feature-gated on `dbus`) and `tisvlay_core::dbus_paths::DAEMON_SERVICE` (always available). The feature-gated re-export is technically unnecessary since `dbus_paths` is `pub`. Minor inconsistency, not a bug.
+
+**Response**: Fixed. `lib.rs` now exports D-Bus path constants directly from `dbus_paths` (always available, no feature gate). `dbus_client.rs` changed from `pub use` to private `use` — it consumes these constants internally but no longer re-exports them. `DaemonClient` and `TvInfo` remain feature-gated on `dbus`.
 
 ### Round 2 Summary
 

@@ -37,8 +37,7 @@ use tracing::debug;
 use zbus::proxy;
 use zbus::zvariant::OwnedObjectPath;
 
-// Re-export path constants and helpers from the non-feature-gated module.
-pub use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
+use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH};
 
 // =============================================================================
 // Manager Interface Proxy
