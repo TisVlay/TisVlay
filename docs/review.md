@@ -752,3 +752,107 @@ Three issues remain worth addressing before starting the GUI work:
 | LOW | `TvManagerError::Other` is dead code | R3.4 |
 
 R3.1 and R3.2 are closely related — fixing R3.1 (use `with_connection` in `get_state`) naturally reduces the duplication in R3.2. R3.3 is a straightforward simplification that touches `main.rs` and all D-Bus service structs (removing `.read().await` calls).
+
+---
+
+## Round 4: Verification & Simplification
+
+All round 3 fixes verified. Build compiles clean, all 45 tests pass.
+
+### Fixes Verified
+
+| Issue | Status | Notes |
+|-------|--------|-------|
+| R3.1 `get_state` TOCTOU | **Verified** | Now delegates to `with_connection`. 5 lines. |
+| R3.2 Duplicated connect logic | **Verified** | Standalone `connect()` removed. `reconnect()` inlines disconnect+connect under single lock. Connect logic exists in exactly two places, both consistent. |
+| R3.3 `Arc<RwLock<TvManager>>` overhead | **Verified** | Changed to `Arc<TvManager>`. All `.read().await` calls removed from D-Bus services and main.rs. `wait_for_signals` takes `Arc<TvManager>`. |
+| R3.4 Dead `TvManagerError::Other` | **Verified** | Variant and match arm removed. |
+
+### Post-Churn Simplification
+
+After 3 rounds of fixes, the codebase has accumulated some dead code and orphaned patterns. The following simplifications were discussed interactively with the project owner.
+
+#### R4.1 Remove dead `DaemonConfig` fields (LOW)
+
+`crates/tisvlay-core/src/config.rs:68-73` — `connect_timeout_ms` and `reconnect_interval_ms` are deserialized from config but **never read** by any code. Only `wake_on_boot` and `wake_delay_ms` are consumed.
+
+**Action**: Remove both fields, their default functions, and their `Default` impl entries.
+
+#### R4.2 Remove dead `ManagedTv.last_error` field (LOW)
+
+`crates/tisvlayd/src/tv_manager.rs:105` — `last_error` is set to `None` on successful connect in three places but never read, never exposed via D-Bus, never logged. Write-only dead state.
+
+**Action**: Remove the field and all `tv.last_error = None` assignments.
+
+#### R4.3 Remove dead WoL helper functions (LOW)
+
+The following functions are public exports but never called within the workspace:
+
+**In `tisvlay-core/src/wol.rs`:**
+- `wake_to_ip()` — only called by `wake_reliable()` below
+- `wake_reliable()` — only called by dead `tisvlay_lg::client::wake_and_wait()`
+
+**In `tisvlay-lg/src/client.rs`:**
+- `wake_tv()` — never called
+- `wake_and_wait()` — never called
+- `wake_and_connect()` — never called (the *trait* method `TvConnector::wake_and_connect` is used, not this standalone fn)
+
+**In `tisvlay-lg/src/lib.rs` re-exports:**
+- `wake_and_connect`, `wake_and_wait`, `wake_tv` — re-exports of dead functions
+
+**In `tisvlay-core/src/lib.rs` re-exports:**
+- `wake_reliable`, `wake_to_ip` — re-exports of dead functions
+
+The only live WoL functions are `wol::wake()` and `wol::wake_with_options()` (which `wake` delegates to), plus `MacAddress` and `WakeOptions`.
+
+**Action**: Remove the dead functions, their re-exports, and their unused imports (e.g., `Ipv4Addr` in wol.rs is only used by `wake_to_ip`/`wake_reliable`).
+
+#### R4.4 Trim speculative pairing types (LOW)
+
+`crates/tisvlay-core/src/pairing.rs` (555 lines) contains `InputType::Pin`, `InputType::Password`, `PairingState::AwaitingUserInput`, `PairingCommand::SubmitInput`, and associated D-Bus conversion methods. None of these are used — LG pairing only uses `AwaitingTvPrompt` → `Complete/Failed`. These are speculative for future Samsung/Sony backends.
+
+**Action**: Remove `InputType::Pin`, `InputType::Password`, `PairingState::AwaitingUserInput`, and `PairingCommand::SubmitInput`. Keep `InputType::None` (used as default), the `PairingSession` channel infrastructure, and `submit_input()`/`cancel()` methods (the session API is sound). The removed types are straightforward to re-add when a backend actually needs PIN/password pairing — they're simple enum variants with no complex logic. Estimated reduction: ~60 lines.
+
+**Note**: On reflection, the types to remove are trivial enum variants and small helper methods. The cost of keeping them is also low (no maintenance burden, no confusion). This is the lowest-priority item and can be skipped if the team prefers to keep the forward-looking API surface.
+
+#### R4.5 Remove `--no-daemon` direct mode from CLI (MEDIUM)
+
+`crates/tisvlay-cli/src/main.rs` lines 411-727 (~315 lines) implement a parallel code path that connects directly to TVs via the backend registry, bypassing the daemon. This duplicates the daemon-mode logic and adds maintenance burden. With the daemon stable and pairing available via `AddTv` D-Bus call, all CLI features can go through the daemon.
+
+**Action**: Remove `run_direct_mode()`, `run_tv_command_direct()`, `power_on_direct()`, `pair_tv_direct()`, `list_tvs()` (direct mode), `remove_tv_direct()`, `build_pairing_toml_value()`, `get_tv()`. Remove the `--no-daemon` CLI flag. Remove the `tisvlay-backends` dependency from `tisvlay-cli/Cargo.toml`. The CLI would depend only on `tisvlay-core` (with `dbus` feature) for `DaemonClient`.
+
+**Prerequisite**: Verify that `tisvlayd --session` + `tisvlay --user pair <address>` works for initial setup before systemd services are installed. The daemon must be runnable without any pre-existing config.
+
+**Estimated reduction**: ~315 lines from CLI, plus removing `tisvlay-backends` dep shrinks the CLI binary (no vendor crate linking).
+
+#### R4.6 Remove `DaemonClient::execute_on_all_tvs` (LOW)
+
+`crates/tisvlay-core/src/dbus_client.rs:669-701` — This utility method is never called anywhere. The session service iterates over TVs itself using `config.tv` and calls individual TV actions. Multi-TV blanking on screen lock already works without this method.
+
+Additionally, `DaemonClient::list_tv_ids()` (lines 440-443) is only called by `execute_on_all_tvs` and is therefore also dead.
+
+**Action**: Remove both `execute_on_all_tvs` and `list_tv_ids`.
+
+#### R4.7 Remove `tisvlay-backends` re-exports of core types (LOW)
+
+`crates/tisvlay-backends/src/lib.rs:21-24` re-exports ~15 types from `tisvlay_core`. Every consumer already depends on `tisvlay_core` directly. These re-exports create two import paths for the same types with no benefit.
+
+**Action**: Remove the `pub use tisvlay_core::{...}` block. Update any code that imports these types from `tisvlay_backends` to import from `tisvlay_core` instead.
+
+### Round 4 Summary
+
+The codebase is architecturally sound after 3 rounds of fixes. Round 4 is about reducing the surface area now that patterns have stabilized. The simplifications are:
+
+| Priority | Issue | Estimated reduction | Section |
+|----------|-------|-------------------|---------|
+| MEDIUM | Remove `--no-daemon` CLI direct mode | ~315 lines, 1 dep | R4.5 |
+| LOW | Remove dead WoL helpers | ~80 lines | R4.3 |
+| LOW | Remove dead `DaemonConfig` fields | ~15 lines | R4.1 |
+| LOW | Remove dead `ManagedTv.last_error` | ~5 lines | R4.2 |
+| LOW | Remove dead `execute_on_all_tvs` + `list_tv_ids` | ~35 lines | R4.6 |
+| LOW | Remove `tisvlay-backends` re-exports | ~5 lines | R4.7 |
+| LOW | Trim speculative pairing types | ~60 lines (optional) | R4.4 |
+
+Total estimated reduction: **~515 lines** (or ~455 without R4.4).
+
+No new correctness issues found. The codebase is ready for Phase 4b/5 after these cleanups.
