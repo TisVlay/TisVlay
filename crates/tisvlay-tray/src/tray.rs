@@ -194,7 +194,7 @@ fn build_tv_submenu(
     tv: &CachedTvState,
     cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
 ) -> MenuItem<TisvlayTray> {
-    let submenu = if tv.connected && tv.is_on {
+    let submenu = if tv.connected {
         build_connected_tv_menu(tv, cmd_tx)
     } else {
         build_disconnected_tv_menu(tv, cmd_tx)

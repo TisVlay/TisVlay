@@ -224,11 +224,11 @@ async fn process_commands(
                 }
             }
             TrayCommand::ToggleMute(id) => {
-                // Read current state and toggle
+                // Read current mute state and toggle
                 match daemon.get_state(&id).await {
                     Ok(state) => {
-                        let mute = !state.muted.unwrap_or(false);
-                        if let Err(e) = daemon.set_mute(&id, mute).await {
+                        let new_mute = !state.muted.unwrap_or(false);
+                        if let Err(e) = daemon.set_mute(&id, new_mute).await {
                             warn!(tv_id = %id, error = %e, "Toggle mute failed");
                         }
                     }

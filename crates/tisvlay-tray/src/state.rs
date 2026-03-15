@@ -28,6 +28,7 @@ pub struct CachedTvState {
 /// connected TV. Disconnected TVs get default state values.
 pub async fn fetch_all_state(daemon: &DaemonClient) -> anyhow::Result<Vec<CachedTvState>> {
     let tvs = daemon.list_tvs().await?;
+    debug!(count = tvs.len(), "Listed TVs from daemon");
     let mut states = Vec::with_capacity(tvs.len());
 
     for tv in tvs {
@@ -65,6 +66,8 @@ pub async fn fetch_all_state(daemon: &DaemonClient) -> anyhow::Result<Vec<Cached
             tv_id = %cached.id,
             connected = cached.connected,
             is_on = cached.is_on,
+            volume = ?cached.volume,
+            muted = ?cached.muted,
             "Fetched TV state"
         );
         states.push(cached);

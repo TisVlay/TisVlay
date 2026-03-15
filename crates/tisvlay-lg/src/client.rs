@@ -351,10 +351,13 @@ impl WebOsClient {
             state.update_power(power_state);
         }
 
-        // Get volume
+        // Get volume and mute state separately — the getVolume response
+        // doesn't always include the mute field on all LG TV firmware.
         if let Ok(volume_info) = self.get_volume().await {
             state.volume = Some(volume_info.volume.clamp(0, 100) as u8);
-            state.muted = Some(volume_info.muted);
+        }
+        if let Ok(muted) = self.get_mute().await {
+            state.muted = Some(muted);
         }
 
         // Get inputs
