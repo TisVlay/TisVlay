@@ -303,8 +303,8 @@ impl TvManager {
     ///
     /// Connects if not already connected, then executes the command.
     /// Only holds the per-TV mutex -- other TVs are not blocked.
-    /// The connect and command execute under a single lock acquisition
-    /// to avoid TOCTOU races between connect and command.
+    /// Connection resilience (stale connection retry) is handled by
+    /// the backend, not here.
     async fn with_connection<F, T>(&self, tv_id: &str, f: F) -> Result<T, TvManagerError>
     where
         F: FnOnce(
@@ -342,28 +342,13 @@ impl TvManager {
             .as_mut()
             .ok_or_else(|| TvManagerError::NotConnected(tv_id.to_string()))?;
 
-        match f(connection.as_mut()).await {
-            Ok(result) => Ok(result),
-            Err(e) => {
-                warn!(tv_id = %tv_id, error = %e, "Command failed");
-
-                // Drop stale connection so the next call reconnects
-                if matches!(
-                    e,
-                    tisvlay_core::Error::ConnectionClosed
-                        | tisvlay_core::Error::Connection(_)
-                        | tisvlay_core::Error::Io(_)
-                        | tisvlay_core::Error::RequestTimeout
-                ) {
-                    tv.connection = None;
-                }
-
-                Err(TvManagerError::CommandFailed {
-                    tv_id: tv_id.to_string(),
-                    source: e,
-                })
+        f(connection.as_mut()).await.map_err(|e| {
+            warn!(tv_id = %tv_id, error = %e, "Command failed");
+            TvManagerError::CommandFailed {
+                tv_id: tv_id.to_string(),
+                source: e,
             }
-        }
+        })
     }
 
     // -------------------------------------------------------------------------
