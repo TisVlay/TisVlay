@@ -1,0 +1,25 @@
+[package]
+name = "tisvlay-tray"
+description = "System tray app for TV control"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "tisvlay-tray"
+path = "src/main.rs"
+
+[dependencies]
+tisvlay-core = { workspace = true, features = ["dbus"] }
+tokio = { workspace = true }
+ksni = "0.3"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

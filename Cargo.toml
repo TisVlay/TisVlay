@@ -7,6 +7,7 @@ members = [
     "crates/tisvlay-cli",
     "crates/tisvlayd",
     "crates/tisvlay-session",
+    "crates/tisvlay-tray",
 ]
 
 [workspace.package]
