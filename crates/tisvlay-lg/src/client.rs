@@ -6,12 +6,12 @@ use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
     VolumeInfo, VolumeResponse,
 };
-use tisvlay_core::wol::{self, MacAddress};
-use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
 use serde_json::{json, Value};
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tisvlay_core::wol::{self, MacAddress};
+use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
 
 /// Client for controlling an LG WebOS TV.
 pub struct WebOsClient {
@@ -145,7 +145,9 @@ impl WebOsClient {
         match self.command(power::TURN_OFF_SCREEN, json!({})).await {
             Ok(_) => Ok(()),
             Err(Error::TvError(_)) => {
-                tracing::debug!("screen_off returned error (screen likely already off), treating as success");
+                tracing::debug!(
+                    "screen_off returned error (screen likely already off), treating as success"
+                );
                 Ok(())
             }
             Err(e) => Err(e),
@@ -160,7 +162,9 @@ impl WebOsClient {
         match self.command(power::TURN_ON_SCREEN, json!({})).await {
             Ok(_) => Ok(()),
             Err(Error::TvError(_)) => {
-                tracing::debug!("screen_on returned error (screen likely already on), treating as success");
+                tracing::debug!(
+                    "screen_on returned error (screen likely already on), treating as success"
+                );
                 Ok(())
             }
             Err(e) => Err(e),
@@ -177,7 +181,7 @@ impl WebOsClient {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        Ok(PowerState::from_str(state_str))
+        Ok(PowerState::parse(state_str))
     }
 
     // -------------------------------------------------------------------------

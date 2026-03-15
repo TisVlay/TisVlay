@@ -214,8 +214,7 @@ mod tests {
     fn test_capabilities_roundtrip() {
         let original = Capabilities::POWER | Capabilities::MUTE | Capabilities::INPUT;
         let strings = original.to_strings();
-        let str_refs: Vec<&str> = strings.iter().copied().collect();
-        let restored = Capabilities::from_strings(&str_refs);
+        let restored = Capabilities::from_strings(&strings);
 
         assert_eq!(original, restored);
     }

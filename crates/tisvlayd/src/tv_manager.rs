@@ -264,7 +264,11 @@ impl TvManager {
     /// The backend handles its own reconnection internally via `ensure_connected()`.
     async fn with_connection<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
     where
-        F: FnOnce(&mut dyn TvConnection) -> std::pin::Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>>,
+        F: FnOnce(
+            &mut dyn TvConnection,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>,
+        >,
     {
         self.connect(tv_id).await?;
 
@@ -434,10 +438,8 @@ impl TvManager {
 
     /// Check if muted.
     pub async fn is_muted(&self, tv_id: &str) -> Result<bool, String> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.is_muted().await })
-        })
-        .await
+        self.with_connection(tv_id, |conn| Box::pin(async move { conn.is_muted().await }))
+            .await
     }
 
     // -------------------------------------------------------------------------
@@ -687,4 +689,3 @@ impl TvManager {
         Ok(())
     }
 }
-

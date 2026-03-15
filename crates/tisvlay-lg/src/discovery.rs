@@ -22,7 +22,10 @@ use tisvlay_core::{DiscoveredTv, Result};
 /// A list of discovered TVs. Returns an empty list if no TVs are found
 /// (not finding TVs is not an error).
 pub async fn discover_lg_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
-    tracing::debug!(timeout_ms = timeout.as_millis(), "Starting LG SSDP discovery");
+    tracing::debug!(
+        timeout_ms = timeout.as_millis(),
+        "Starting LG SSDP discovery"
+    );
 
     // Deduplicate by IP address since each TV exposes multiple UPnP services
     // with different UUIDs. We prefer entries with DLNA device names.

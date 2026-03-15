@@ -94,7 +94,7 @@ impl TvConnection for LgConnection {
     }
 
     fn is_connected(&self) -> bool {
-        self.client.as_ref().map_or(false, |c| c.is_connected())
+        self.client.as_ref().is_some_and(|c| c.is_connected())
     }
 
     async fn get_state(&mut self) -> Result<TvState> {
@@ -152,7 +152,10 @@ impl TvConnection for LgConnection {
     }
 
     async fn set_volume(&mut self, level: u8) -> Result<()> {
-        self.ensure_connected().await?.set_volume(level as i32).await
+        self.ensure_connected()
+            .await?
+            .set_volume(level as i32)
+            .await
     }
 
     async fn get_volume(&mut self) -> Result<u8> {
@@ -183,7 +186,10 @@ impl TvConnection for LgConnection {
     }
 
     async fn set_backlight(&mut self, level: u8) -> Result<()> {
-        self.ensure_connected().await?.set_backlight(level as i32).await
+        self.ensure_connected()
+            .await?
+            .set_backlight(level as i32)
+            .await
     }
 
     async fn get_backlight(&mut self) -> Result<u8> {
@@ -300,12 +306,10 @@ impl TvConnector for LgConnector {
             }
         }
 
-        Err(last_err.unwrap_or_else(|| {
-            Error::Backend {
-                vendor: "lg".into(),
-                message: format!("LG TV at {} did not come online after wake", config.ip),
-                source: None,
-            }
+        Err(last_err.unwrap_or_else(|| Error::Backend {
+            vendor: "lg".into(),
+            message: format!("LG TV at {} did not come online after wake", config.ip),
+            source: None,
         }))
     }
 

@@ -2,11 +2,11 @@
 
 use crate::endpoints::{WSS_PORT, WS_PORT};
 use crate::protocol::{Request, Response};
-use tisvlay_core::{Error, Result};
 use futures_util::{SinkExt, StreamExt};
 use rustls::pki_types::ServerName;
 use std::sync::Arc;
 use std::time::Duration;
+use tisvlay_core::{Error, Result};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
@@ -117,7 +117,7 @@ impl Connection {
         let (stream, response) = timeout(connect_timeout, connect_fut)
             .await
             .map_err(|_| Error::RequestTimeout)?
-            .map_err(Error::Connection)?;
+            .map_err(|e| Error::Connection(Box::new(e)))?;
 
         tracing::trace!(
             url,
@@ -134,7 +134,7 @@ impl Connection {
         let (stream, response) = timeout(connect_timeout, connect_fut)
             .await
             .map_err(|_| Error::RequestTimeout)?
-            .map_err(Error::Connection)?;
+            .map_err(|e| Error::Connection(Box::new(e)))?;
 
         tracing::trace!(
             url,
@@ -162,7 +162,7 @@ impl Connection {
                 .next()
                 .await
                 .ok_or(Error::ConnectionClosed)?
-                .map_err(Error::Connection)?;
+                .map_err(|e| Error::Connection(Box::new(e)))?;
 
             match msg {
                 Message::Text(text) => {
@@ -227,5 +227,4 @@ impl Connection {
         self.stream.close(None).await?;
         Ok(())
     }
-
 }

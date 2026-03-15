@@ -35,7 +35,6 @@ impl TvService {
     pub fn state(&self) -> TvState {
         (self.tv_id.clone(), self.manager.clone())
     }
-
 }
 
 #[interface(name = "org.tisvlay.Tv1")]
@@ -351,10 +350,7 @@ impl TvInputService {
     #[zbus(property)]
     async fn available_inputs(&self) -> Vec<(String, String)> {
         let manager = self.manager.read().await;
-        manager
-            .get_inputs(&self.tv_id)
-            .await
-            .unwrap_or_default()
+        manager.get_inputs(&self.tv_id).await.unwrap_or_default()
     }
 }
 

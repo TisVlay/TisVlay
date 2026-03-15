@@ -50,9 +50,9 @@ mod protocol;
 mod discovery;
 
 // Public re-exports
-pub use backend::{LgBackend, LgConnection, LgConnector};
 #[cfg(feature = "discovery")]
 pub use backend::LgDiscovery;
+pub use backend::{LgBackend, LgConnection, LgConnector};
 pub use client::{wake_and_connect, wake_and_wait, wake_tv, WebOsClient};
 pub use config::{LgConfig, LgVendorConfig};
 pub use endpoints::{

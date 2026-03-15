@@ -74,7 +74,10 @@ pub fn tv_path(tv_id: &str) -> String {
 trait TisvlayManager {
     /// Discover TVs on the network.
     /// Returns: [(id, name, ip, mac, vendor)]
-    fn discover_tvs(&self, timeout_ms: u32) -> zbus::Result<Vec<(String, String, String, String, String)>>;
+    fn discover_tvs(
+        &self,
+        timeout_ms: u32,
+    ) -> zbus::Result<Vec<(String, String, String, String, String)>>;
 
     /// Get list of TV object paths.
     fn get_tvs(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
@@ -100,10 +103,7 @@ trait TisvlayManager {
 // =============================================================================
 
 /// D-Bus proxy for the base TV interface.
-#[proxy(
-    interface = "org.tisvlay.Tv1",
-    default_service = "org.tisvlay.Daemon"
-)]
+#[proxy(interface = "org.tisvlay.Tv1", default_service = "org.tisvlay.Daemon")]
 trait TisvlayTv {
     /// TV identifier.
     #[zbus(property)]
@@ -383,8 +383,7 @@ impl DaemonClient {
 
         // Create new proxies
         let path = tv_path(tv_id);
-        let obj_path = OwnedObjectPath::try_from(path)
-            .context("Invalid TV path")?;
+        let obj_path = OwnedObjectPath::try_from(path).context("Invalid TV path")?;
         let proxies = TvProxies::new(self.connection.clone(), obj_path).await?;
 
         // Cache them
@@ -417,11 +416,7 @@ impl DaemonClient {
         for path in paths {
             let path_str = path.as_str();
             // Extract TV ID from path (last component)
-            let tv_id = path_str
-                .rsplit('/')
-                .next()
-                .unwrap_or(path_str)
-                .to_string();
+            let tv_id = path_str.rsplit('/').next().unwrap_or(path_str).to_string();
 
             self.get_tv_proxies(&tv_id).await?;
 
@@ -503,8 +498,7 @@ impl DaemonClient {
     pub async fn remove_tv(&self, tv_id: &str) -> Result<()> {
         debug!(tv_id = %tv_id, "Removing TV via daemon");
         let path = tv_path(tv_id);
-        let obj_path = OwnedObjectPath::try_from(path)
-            .context("Invalid TV path")?;
+        let obj_path = OwnedObjectPath::try_from(path).context("Invalid TV path")?;
         self.manager
             .remove_tv(&obj_path)
             .await

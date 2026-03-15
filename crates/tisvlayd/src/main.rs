@@ -16,7 +16,9 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use zbus::object_server::SignalEmitter;
 
-use crate::dbus::{register_tv_interfaces, tv_path, ManagerService, TvService, DBUS_NAME, MANAGER_PATH};
+use crate::dbus::{
+    register_tv_interfaces, tv_path, ManagerService, TvService, DBUS_NAME, MANAGER_PATH,
+};
 use crate::registry::create_registry;
 use crate::tv_manager::{StateChangeEvent, TvManager};
 

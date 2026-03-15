@@ -107,8 +107,9 @@ impl ManagerService {
         let json_value: serde_json::Value = serde_json::from_str(config_json)
             .map_err(|e| DaemonError::OperationFailed(format!("Invalid config JSON: {}", e)))?;
 
-        let vendor_config = json_to_toml(&json_value)
-            .map_err(|e| DaemonError::OperationFailed(format!("Failed to convert config: {}", e)))?;
+        let vendor_config = json_to_toml(&json_value).map_err(|e| {
+            DaemonError::OperationFailed(format!("Failed to convert config: {}", e))
+        })?;
 
         let manager = self.manager.read().await;
         let tv_id = manager
@@ -146,10 +147,8 @@ impl ManagerService {
 
     /// Signal emitted when a TV is added.
     #[zbus(signal)]
-    pub async fn tv_added(
-        emitter: &SignalEmitter<'_>,
-        tv_path: ObjectPath<'_>,
-    ) -> zbus::Result<()>;
+    pub async fn tv_added(emitter: &SignalEmitter<'_>, tv_path: ObjectPath<'_>)
+        -> zbus::Result<()>;
 
     /// Signal emitted when a TV is removed.
     #[zbus(signal)]
@@ -175,8 +174,7 @@ fn json_to_toml(json: &serde_json::Value) -> Result<toml::Value, String> {
         }
         serde_json::Value::String(s) => Ok(toml::Value::String(s.clone())),
         serde_json::Value::Array(arr) => {
-            let values: Result<Vec<toml::Value>, String> =
-                arr.iter().map(json_to_toml).collect();
+            let values: Result<Vec<toml::Value>, String> = arr.iter().map(json_to_toml).collect();
             Ok(toml::Value::Array(values?))
         }
         serde_json::Value::Object(obj) => {

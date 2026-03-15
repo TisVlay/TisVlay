@@ -261,7 +261,6 @@ pub struct TvConfig {
     pub vendor_config: std::collections::HashMap<String, toml::Value>,
 }
 
-
 impl Config {
     /// Load configuration from the default path.
     pub fn load() -> Result<Self> {
@@ -301,14 +300,16 @@ impl Config {
         // so users can see and customize them
         let config_to_save = if self.profiles.is_empty() {
             let mut config = self.clone();
-            config.profiles.insert("default".to_string(), ProfileConfig::default());
+            config
+                .profiles
+                .insert("default".to_string(), ProfileConfig::default());
             config
         } else {
             self.clone()
         };
 
-        let content =
-            toml::to_string_pretty(&config_to_save).map_err(|e| Error::Io(std::io::Error::other(e)))?;
+        let content = toml::to_string_pretty(&config_to_save)
+            .map_err(|e| Error::Io(std::io::Error::other(e)))?;
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -627,12 +628,16 @@ mac = "AA:BB:CC:DD:EE:02"
         config.tv.push(
             TvConfig::new("tv1", "TV 1")
                 .with_vendor("lg")
-                .with_vendor_config(&TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:01")),
+                .with_vendor_config(
+                    &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:01"),
+                ),
         );
         config.tv.push(
             TvConfig::new("tv2", "TV 2")
                 .with_vendor("lg")
-                .with_vendor_config(&TestLgConfig::new("192.168.1.2").with_mac("AA:BB:CC:DD:EE:02")),
+                .with_vendor_config(
+                    &TestLgConfig::new("192.168.1.2").with_mac("AA:BB:CC:DD:EE:02"),
+                ),
         );
 
         assert!(config.find_tv("tv1").is_some());
@@ -706,7 +711,9 @@ mac = "AA:BB:CC:DD:EE:FF"
         config.tv.push(
             TvConfig::new("test", "Test TV")
                 .with_vendor("lg")
-                .with_vendor_config(&TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:FF")),
+                .with_vendor_config(
+                    &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:FF"),
+                ),
         );
         assert!(config.profiles.is_empty());
 

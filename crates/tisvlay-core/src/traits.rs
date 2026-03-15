@@ -28,7 +28,9 @@
 //! vendor config (`toml::Value`), which only the vendor crate knows how to
 //! interpret. The daemon and CLI never see transport-specific types.
 
-use crate::{Capabilities, DiscoveredTv, Error, InputInfo, PairingSession, PowerState, Result, TvState};
+use crate::{
+    Capabilities, DiscoveredTv, Error, InputInfo, PairingSession, PowerState, Result, TvState,
+};
 use async_trait::async_trait;
 use std::any::Any;
 
@@ -196,7 +198,10 @@ pub trait TvConnection: Send + Sync {
 
     /// Get the current input ID, if known.
     async fn get_current_input(&mut self) -> Result<Option<String>> {
-        Err(Error::not_supported("get_current_input", Capabilities::INPUT))
+        Err(Error::not_supported(
+            "get_current_input",
+            Capabilities::INPUT,
+        ))
     }
 
     /// List available inputs.
@@ -210,12 +215,18 @@ pub trait TvConnection: Send + Sync {
 
     /// Set the backlight level (0-100).
     async fn set_backlight(&mut self, _level: u8) -> Result<()> {
-        Err(Error::not_supported("set_backlight", Capabilities::BACKLIGHT))
+        Err(Error::not_supported(
+            "set_backlight",
+            Capabilities::BACKLIGHT,
+        ))
     }
 
     /// Get the current backlight level (0-100).
     async fn get_backlight(&mut self) -> Result<u8> {
-        Err(Error::not_supported("get_backlight", Capabilities::BACKLIGHT))
+        Err(Error::not_supported(
+            "get_backlight",
+            Capabilities::BACKLIGHT,
+        ))
     }
 }
 
@@ -343,12 +354,10 @@ pub trait TvConnector: Send + Sync {
             }
         }
 
-        Err(last_err.unwrap_or_else(|| {
-            Error::Backend {
-                vendor: "unknown".into(),
-                message: "Device did not come online after wake".into(),
-                source: None,
-            }
+        Err(last_err.unwrap_or_else(|| Error::Backend {
+            vendor: "unknown".into(),
+            message: "Device did not come online after wake".into(),
+            source: None,
         }))
     }
 

@@ -14,12 +14,15 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tisvlay_core::{Capabilities, Credentials, PairingSession, TvConfig, TvConnection, TvConnector, TvDiscovery};
+use tisvlay_core::{
+    Capabilities, Credentials, PairingSession, TvConfig, TvConnection, TvConnector, TvDiscovery,
+};
 
 // Re-export core types for convenience
 pub use tisvlay_core::{
-    Capabilities as TvCapabilities, Config, DiscoveredTv, Error, InputInfo, PairingSession as PairSession,
-    PairingState, PowerState, ProfileConfig, Result, SessionAction, TvConfig as TvCfg, TvState,
+    Capabilities as TvCapabilities, Config, DiscoveredTv, Error, InputInfo,
+    PairingSession as PairSession, PairingState, PowerState, ProfileConfig, Result, SessionAction,
+    TvConfig as TvCfg, TvState,
 };
 
 /// A registered vendor backend.
@@ -114,14 +117,12 @@ impl BackendRegistry {
         tv_config: &TvConfig,
     ) -> tisvlay_core::Result<Box<dyn TvConnection>> {
         let connector = self.get_connector(&tv_config.vendor)?;
-        let vendor_config = tv_config
-            .get_raw_vendor_value()
-            .ok_or_else(|| {
-                tisvlay_core::Error::backend(
-                    &tv_config.vendor,
-                    format!("No vendor config for TV '{}'", tv_config.id),
-                )
-            })?;
+        let vendor_config = tv_config.get_raw_vendor_value().ok_or_else(|| {
+            tisvlay_core::Error::backend(
+                &tv_config.vendor,
+                format!("No vendor config for TV '{}'", tv_config.id),
+            )
+        })?;
         connector.connect(vendor_config).await
     }
 
@@ -129,7 +130,11 @@ impl BackendRegistry {
     pub fn display_address(&self, tv_config: &TvConfig) -> String {
         self.get_connector(&tv_config.vendor)
             .ok()
-            .and_then(|c| tv_config.get_raw_vendor_value().map(|v| c.display_address(v)))
+            .and_then(|c| {
+                tv_config
+                    .get_raw_vendor_value()
+                    .map(|v| c.display_address(v))
+            })
             .unwrap_or_else(|| "unknown".to_string())
     }
 
@@ -144,14 +149,12 @@ impl BackendRegistry {
     /// Wake a TV from standby.
     pub async fn wake_tv(&self, tv_config: &TvConfig) -> tisvlay_core::Result<()> {
         let connector = self.get_connector(&tv_config.vendor)?;
-        let vendor_config = tv_config
-            .get_raw_vendor_value()
-            .ok_or_else(|| {
-                tisvlay_core::Error::backend(
-                    &tv_config.vendor,
-                    format!("No vendor config for TV '{}'", tv_config.id),
-                )
-            })?;
+        let vendor_config = tv_config.get_raw_vendor_value().ok_or_else(|| {
+            tisvlay_core::Error::backend(
+                &tv_config.vendor,
+                format!("No vendor config for TV '{}'", tv_config.id),
+            )
+        })?;
         connector.wake(vendor_config).await
     }
 
@@ -166,14 +169,12 @@ impl BackendRegistry {
         wake_delay_ms: u64,
     ) -> tisvlay_core::Result<Box<dyn TvConnection>> {
         let connector = self.get_connector(&tv_config.vendor)?;
-        let vendor_config = tv_config
-            .get_raw_vendor_value()
-            .ok_or_else(|| {
-                tisvlay_core::Error::backend(
-                    &tv_config.vendor,
-                    format!("No vendor config for TV '{}'", tv_config.id),
-                )
-            })?;
+        let vendor_config = tv_config.get_raw_vendor_value().ok_or_else(|| {
+            tisvlay_core::Error::backend(
+                &tv_config.vendor,
+                format!("No vendor config for TV '{}'", tv_config.id),
+            )
+        })?;
         let delay = std::time::Duration::from_millis(wake_delay_ms);
         connector
             .wake_and_connect(vendor_config, delay, 10, delay)
@@ -247,8 +248,7 @@ pub fn create_registry() -> BackendRegistry {
     let lg_connector = Arc::new(tisvlay_lg::LgConnector::new());
 
     #[cfg(feature = "discovery")]
-    let lg_discovery: Option<Arc<dyn TvDiscovery>> =
-        Some(Arc::new(tisvlay_lg::LgDiscovery::new()));
+    let lg_discovery: Option<Arc<dyn TvDiscovery>> = Some(Arc::new(tisvlay_lg::LgDiscovery::new()));
 
     #[cfg(not(feature = "discovery"))]
     let lg_discovery: Option<Arc<dyn TvDiscovery>> = None;

@@ -393,7 +393,11 @@ impl PairingSession {
     /// The backend should:
     /// - Listen on `command_rx` for user input
     /// - Send state updates via `state_tx`
-    pub fn create() -> (Self, mpsc::Receiver<PairingCommand>, watch::Sender<PairingState>) {
+    pub fn create() -> (
+        Self,
+        mpsc::Receiver<PairingCommand>,
+        watch::Sender<PairingState>,
+    ) {
         let (command_tx, command_rx) = mpsc::channel(8);
         let (state_tx, state_rx) = watch::channel(PairingState::default());
 
@@ -519,11 +523,17 @@ mod tests {
         let (session, mut command_rx, state_tx) = PairingSession::create();
 
         // Initial state
-        assert!(matches!(session.state(), PairingState::AwaitingTvPrompt { .. }));
+        assert!(matches!(
+            session.state(),
+            PairingState::AwaitingTvPrompt { .. }
+        ));
 
         // Update state to awaiting input
         state_tx
-            .send(PairingState::awaiting_user_input("Enter PIN", InputType::Pin))
+            .send(PairingState::awaiting_user_input(
+                "Enter PIN",
+                InputType::Pin,
+            ))
             .unwrap();
 
         // Submit input
