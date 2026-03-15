@@ -53,6 +53,8 @@ struct ManagedTv {
     state: TvState,
     /// Last error message.
     last_error: Option<String>,
+    /// TV was intentionally powered off — don't try to reconnect until power_on.
+    powered_off: bool,
 }
 
 impl ManagedTv {
@@ -62,6 +64,7 @@ impl ManagedTv {
             connection: None,
             state: TvState::default(),
             last_error: None,
+            powered_off: false,
         }
     }
 
@@ -203,6 +206,10 @@ impl TvManager {
                 return Ok(());
             }
 
+            if tv.powered_off {
+                return Err(format!("TV {} is powered off", tv_id));
+            }
+
             let display_addr = self.registry.display_address(&tv.config);
             let config = tv.config.clone();
 
@@ -302,10 +309,11 @@ impl TvManager {
         let display_addr = self.registry.display_address(&config);
         info!(tv_id = %tv_id, address = %display_addr, "Waking TV");
 
-        // Drop any stale connection
+        // Drop any stale connection and clear the powered-off flag
         {
             let mut tvs = self.tvs.write().await;
             if let Some(tv) = tvs.get_mut(tv_id) {
+                tv.powered_off = false;
                 if let Some(mut conn) = tv.connection.take() {
                     let _ = conn.close().await;
                 }
@@ -318,15 +326,32 @@ impl TvManager {
             .await
             .map_err(|e| format!("Wake failed: {}", e))?;
 
-        // Wait for TV to boot, then connect
-        let delay = Duration::from_millis(self.config.daemon.wake_delay_ms);
-        tokio::time::sleep(delay).await;
+        // Wait for TV to boot, then retry connecting.
+        // The TV needs time to boot after WoL — typically 10-30s depending on
+        // model and whether the desktop network is up (after system resume).
+        let delay_ms = self.config.daemon.wake_delay_ms;
+        for attempt in 1..=10 {
+            info!(tv_id = %tv_id, attempt, delay_ms, "Waiting for TV to boot");
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
-        // Try to connect (backend handles reconnection internally)
-        self.connect(tv_id).await?;
+            // Resend WoL — the first packet may have been lost if the desktop
+            // network wasn't up yet (common after system resume).
+            if let Err(e) = self.registry.wake_tv(&config).await {
+                warn!(tv_id = %tv_id, attempt, error = %e, "WoL resend failed");
+            }
 
-        info!(tv_id = %tv_id, "TV is online after WoL");
-        Ok(())
+            match self.connect(tv_id).await {
+                Ok(()) => {
+                    info!(tv_id = %tv_id, "TV is online after WoL");
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(tv_id = %tv_id, attempt, error = %e, "TV not ready yet");
+                }
+            }
+        }
+
+        Err(format!("TV {} did not come online after WoL", tv_id))
     }
 
     /// Power off a TV.
@@ -340,11 +365,14 @@ impl TvManager {
             })
             .await;
 
-        // Clear connection tracking — backend already closed its socket
+        // Clear connection tracking and mark as powered off so subsequent
+        // connect() calls (e.g., from ScreenLocked racing after sleep) don't
+        // try to connect to a dead TV.
         {
             let mut tvs = self.tvs.write().await;
             if let Some(tv) = tvs.get_mut(tv_id) {
                 tv.connection = None;
+                tv.powered_off = true;
             }
         }
 
