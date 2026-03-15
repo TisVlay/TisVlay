@@ -294,8 +294,9 @@ impl TvManager {
 
     /// Power on a TV using Wake-on-LAN.
     ///
-    /// The backend's `wake()` handles WoL retry with network readiness
-    /// internally. After waking, waits for the TV to boot then connects.
+    /// The backend handles all transport-specific retry logic (WoL resend,
+    /// boot wait, connect retry) via `wake_and_connect()`. The daemon
+    /// provides timing policy from config.
     pub async fn power_on(&self, tv_id: &str) -> Result<(), String> {
         let config = self
             .get_tv_config(tv_id)
@@ -320,38 +321,26 @@ impl TvManager {
             }
         }
 
-        // Wake the TV — backend handles WoL retry with network readiness
-        self.registry
-            .wake_tv(&config)
+        // Backend handles wake + boot wait + connect retry
+        let connection = self
+            .registry
+            .wake_and_connect_tv(&config, self.config.daemon.wake_delay_ms)
             .await
             .map_err(|e| format!("Wake failed: {}", e))?;
 
-        // Wait for TV to boot, then retry connecting.
-        // The TV needs time to boot after WoL — typically 10-30s depending on
-        // model and whether the desktop network is up (after system resume).
-        let delay_ms = self.config.daemon.wake_delay_ms;
-        for attempt in 1..=10 {
-            info!(tv_id = %tv_id, attempt, delay_ms, "Waiting for TV to boot");
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-
-            // Resend WoL — the first packet may have been lost if the desktop
-            // network wasn't up yet (common after system resume).
-            if let Err(e) = self.registry.wake_tv(&config).await {
-                warn!(tv_id = %tv_id, attempt, error = %e, "WoL resend failed");
-            }
-
-            match self.connect(tv_id).await {
-                Ok(()) => {
-                    info!(tv_id = %tv_id, "TV is online after WoL");
-                    return Ok(());
-                }
-                Err(e) => {
-                    warn!(tv_id = %tv_id, attempt, error = %e, "TV not ready yet");
-                }
+        // Store the connection
+        {
+            let mut tvs = self.tvs.write().await;
+            if let Some(tv) = tvs.get_mut(tv_id) {
+                tv.connection = Some(connection);
+                tv.last_error = None;
             }
         }
 
-        Err(format!("TV {} did not come online after WoL", tv_id))
+        let event = StateChangeEvent::connection_change(tv_id, true, None);
+        self.emit_state_change(event);
+        info!(tv_id = %tv_id, "TV is online after WoL");
+        Ok(())
     }
 
     /// Power off a TV.

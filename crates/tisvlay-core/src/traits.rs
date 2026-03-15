@@ -310,6 +310,48 @@ pub trait TvConnector: Send + Sync {
     /// waking — callers should add a delay before attempting to connect.
     async fn wake(&self, vendor_config: &toml::Value) -> Result<()>;
 
+    /// Wake the device and establish a connection.
+    ///
+    /// Combines [`wake()`](Self::wake) with a boot-wait and connect retry loop.
+    /// The backend owns all transport-specific retry logic (e.g., resending
+    /// wake packets between connect attempts for unreliable transports).
+    ///
+    /// The daemon provides policy via parameters; the backend provides strategy.
+    ///
+    /// Default implementation: `wake()`, sleep `boot_delay`, then retry
+    /// `connect()` up to `max_attempts` times with `retry_interval` delays.
+    /// Backends can override to add transport-specific optimizations like
+    /// wake packet resends or lightweight readiness probes.
+    async fn wake_and_connect(
+        &self,
+        vendor_config: &toml::Value,
+        boot_delay: std::time::Duration,
+        max_attempts: u32,
+        retry_interval: std::time::Duration,
+    ) -> Result<Box<dyn TvConnection>> {
+        self.wake(vendor_config).await?;
+        tokio::time::sleep(boot_delay).await;
+
+        let mut last_err = None;
+        for _attempt in 1..=max_attempts {
+            match self.connect(vendor_config).await {
+                Ok(conn) => return Ok(conn),
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(retry_interval).await;
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            Error::Backend {
+                vendor: "unknown".into(),
+                message: "Device did not come online after wake".into(),
+                source: None,
+            }
+        }))
+    }
+
     /// Start pairing with a new device.
     ///
     /// The vendor config provides transport address and any initial connection

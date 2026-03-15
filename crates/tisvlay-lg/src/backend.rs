@@ -261,6 +261,54 @@ impl TvConnector for LgConnector {
         }
     }
 
+    async fn wake_and_connect(
+        &self,
+        vendor_config: &toml::Value,
+        boot_delay: std::time::Duration,
+        max_attempts: u32,
+        retry_interval: std::time::Duration,
+    ) -> Result<Box<dyn TvConnection>> {
+        self.wake(vendor_config).await?;
+        tokio::time::sleep(boot_delay).await;
+
+        let config = parse_config(vendor_config)?;
+        let mut last_err = None;
+
+        for attempt in 1..=max_attempts {
+            // Resend WoL before retrying — earlier packets may have been
+            // lost if the desktop network wasn't up after system resume.
+            if attempt > 1 {
+                if let Some(ref mac) = config.mac {
+                    if let Ok(mac_addr) = MacAddress::parse(mac) {
+                        if let Err(e) = tisvlay_core::wol::wake(&mac_addr) {
+                            warn!(mac = %mac, attempt, error = %e, "WoL resend failed");
+                        }
+                    }
+                }
+            }
+
+            match self.connect(vendor_config).await {
+                Ok(conn) => {
+                    info!(ip = %config.ip, attempt, "LG TV online after wake");
+                    return Ok(conn);
+                }
+                Err(e) => {
+                    debug!(ip = %config.ip, attempt, error = %e, "LG TV not ready yet");
+                    last_err = Some(e);
+                    tokio::time::sleep(retry_interval).await;
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            Error::Backend {
+                vendor: "lg".into(),
+                message: format!("LG TV at {} did not come online after wake", config.ip),
+                source: None,
+            }
+        }))
+    }
+
     fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
         let config = parse_config(vendor_config)?;
         let ip = config.ip.clone();
