@@ -48,9 +48,6 @@ struct ManagedTv {
     config: TvConfig,
     /// Active connection (None if disconnected).
     connection: Option<Box<dyn TvConnection>>,
-    /// Last known TV state.
-    #[allow(dead_code)]
-    state: TvState,
     /// Last error message.
     last_error: Option<String>,
     /// TV was intentionally powered off — don't try to reconnect until power_on.
@@ -62,7 +59,6 @@ impl ManagedTv {
         Self {
             config,
             connection: None,
-            state: TvState::default(),
             last_error: None,
             powered_off: false,
         }

@@ -25,10 +25,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LgVendorConfig {
     /// IP address for WebSocket connection.
+    ///
+    /// Also accepts `"address"` as a generic alias so the CLI can pass
+    /// a vendor-agnostic field name during pairing.
+    #[serde(alias = "address")]
     pub ip: String,
 
     /// MAC address for Wake-on-LAN (optional).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Also accepts `"wake_id"` as a generic alias so the CLI can pass
+    /// a vendor-agnostic field name during pairing.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "wake_id")]
     pub mac: Option<String>,
 
     /// Client key obtained during pairing.

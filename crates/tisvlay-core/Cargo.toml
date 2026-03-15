@@ -13,10 +13,6 @@ categories.workspace = true
 
 [dependencies]
 tokio = { workspace = true }
-tokio-tungstenite = { workspace = true }
-rustls = { workspace = true }
-webpki-roots = { workspace = true }
-futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
@@ -29,16 +25,10 @@ directories = { workspace = true }
 async-trait = { workspace = true }
 bitflags = { workspace = true }
 
-# Optional: SSDP discovery
-ssdp-client = { workspace = true, optional = true }
-urlencoding = { workspace = true, optional = true }
-url = { workspace = true, optional = true }
-
 # Optional: D-Bus client for tisvlayd
 zbus = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 
 [features]
 default = []
-discovery = ["dep:ssdp-client", "dep:urlencoding", "dep:url"]
 dbus = ["dep:zbus", "dep:anyhow"]

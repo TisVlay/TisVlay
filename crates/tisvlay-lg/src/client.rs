@@ -8,7 +8,6 @@ use crate::protocol::{
 };
 use serde_json::{json, Value};
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tisvlay_core::wol::{self, MacAddress};
 use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
@@ -20,7 +19,7 @@ pub struct WebOsClient {
     /// Client key for authentication.
     client_key: Option<String>,
     /// Request ID counter.
-    request_id: AtomicU64,
+    request_id: u64,
     /// Request timeout.
     timeout: Duration,
 }
@@ -37,7 +36,7 @@ impl WebOsClient {
         let mut client = Self {
             conn: Some(conn),
             client_key: client_key.clone(),
-            request_id: AtomicU64::new(1),
+            request_id: 1,
             timeout: Duration::from_millis(timeouts::REQUEST_MS),
         };
 
@@ -107,8 +106,9 @@ impl WebOsClient {
     }
 
     /// Generate the next request ID.
-    fn next_id(&self) -> String {
-        let id = self.request_id.fetch_add(1, Ordering::Relaxed);
+    fn next_id(&mut self) -> String {
+        let id = self.request_id;
+        self.request_id += 1;
         format!("req_{}", id)
     }
 

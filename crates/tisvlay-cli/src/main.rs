@@ -347,25 +347,17 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// Build vendor-specific config JSON for pairing via daemon.
-fn build_pairing_config_json(vendor: &str, address: &str, wake_id: Option<&str>) -> String {
-    match vendor {
-        "lg" => {
-            let mut config = serde_json::json!({"ip": address});
-            if let Some(mac) = wake_id {
-                config["mac"] = serde_json::Value::String(mac.to_string());
-            }
-            config.to_string()
-        }
-        _ => {
-            // Generic: just pass address
-            let mut config = serde_json::json!({"address": address});
-            if let Some(wid) = wake_id {
-                config["wake_id"] = serde_json::Value::String(wid.to_string());
-            }
-            config.to_string()
-        }
+/// Build config JSON for pairing via daemon.
+///
+/// Uses generic field names (`address`, `wake_id`) for all vendors.
+/// Each vendor connector accepts these via serde aliases alongside
+/// its native field names (e.g., LG accepts `address` as alias for `ip`).
+fn build_pairing_config_json(_vendor: &str, address: &str, wake_id: Option<&str>) -> String {
+    let mut config = serde_json::json!({"address": address});
+    if let Some(wid) = wake_id {
+        config["wake_id"] = serde_json::Value::String(wid.to_string());
     }
+    config.to_string()
 }
 
 async fn get_tv_id_for_daemon(client: &DaemonClient, requested_id: Option<&str>) -> Result<String> {
@@ -704,24 +696,18 @@ async fn pair_tv_direct(
 }
 
 /// Build a toml::Value for pairing params from CLI args.
-fn build_pairing_toml_value(vendor: &str, address: &str, wake_id: Option<&str>) -> toml::Value {
+///
+/// Uses generic field names (`address`, `wake_id`) for all vendors.
+/// Each vendor connector accepts these via serde aliases alongside
+/// its native field names (e.g., LG accepts `address` as alias for `ip`).
+fn build_pairing_toml_value(_vendor: &str, address: &str, wake_id: Option<&str>) -> toml::Value {
     let mut table = toml::map::Map::new();
-    match vendor {
-        "lg" => {
-            table.insert("ip".to_string(), toml::Value::String(address.to_string()));
-            if let Some(mac) = wake_id {
-                table.insert("mac".to_string(), toml::Value::String(mac.to_string()));
-            }
-        }
-        _ => {
-            table.insert(
-                "address".to_string(),
-                toml::Value::String(address.to_string()),
-            );
-            if let Some(wid) = wake_id {
-                table.insert("wake_id".to_string(), toml::Value::String(wid.to_string()));
-            }
-        }
+    table.insert(
+        "address".to_string(),
+        toml::Value::String(address.to_string()),
+    );
+    if let Some(wid) = wake_id {
+        table.insert("wake_id".to_string(), toml::Value::String(wid.to_string()));
     }
     toml::Value::Table(table)
 }

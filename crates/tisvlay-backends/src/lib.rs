@@ -14,15 +14,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tisvlay_core::{
-    Capabilities, Credentials, PairingSession, TvConfig, TvConnection, TvConnector, TvDiscovery,
-};
+use tisvlay_core::{Credentials, TvConnection, TvConnector, TvDiscovery};
 
 // Re-export core types for convenience
 pub use tisvlay_core::{
-    Capabilities as TvCapabilities, Config, DiscoveredTv, Error, InputInfo,
-    PairingSession as PairSession, PairingState, PowerState, ProfileConfig, Result, SessionAction,
-    TvConfig as TvCfg, TvState,
+    Capabilities, Config, DiscoveredTv, Error, InputInfo, PairingSession, PairingState, PowerState,
+    ProfileConfig, Result, SessionAction, TvConfig, TvState,
 };
 
 /// A registered vendor backend.

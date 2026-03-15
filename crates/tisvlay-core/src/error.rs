@@ -15,9 +15,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// wrapped in the [`Backend`](Error::Backend) variant.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// WebSocket connection failed (boxed to keep Error small).
-    #[error("WebSocket connection failed: {0}")]
-    Connection(Box<tokio_tungstenite::tungstenite::Error>),
+    /// Connection failed (boxed to keep Error small).
+    #[error("Connection failed: {0}")]
+    Connection(Box<dyn std::error::Error + Send + Sync>),
 
     /// I/O error (network, file, etc.).
     #[error("I/O error: {0}")]
@@ -126,12 +126,6 @@ pub enum Error {
     /// Invalid input provided during pairing.
     #[error("Invalid pairing input: {0}")]
     InvalidPairingInput(String),
-}
-
-impl From<tokio_tungstenite::tungstenite::Error> for Error {
-    fn from(e: tokio_tungstenite::tungstenite::Error) -> Self {
-        Self::Connection(Box::new(e))
-    }
 }
 
 impl Error {

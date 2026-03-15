@@ -59,7 +59,8 @@ impl PowerState {
     pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "active" => Self::Active,
-            "standby" | "suspend" => Self::Standby,
+            "standby" => Self::Standby,
+            "suspend" => Self::Suspend,
             "active standby" | "activestandby" => Self::ActiveStandby,
             "screen saver" | "screensaver" => Self::ScreenSaver,
             "screen off" | "screenoff" => Self::ScreenOff,
@@ -85,7 +86,10 @@ impl TvState {
     /// Update state from power state response.
     pub fn update_power(&mut self, state: PowerState) {
         self.is_on = state.is_on();
-        self.is_screen_on = !matches!(state, PowerState::ScreenOff | PowerState::Standby);
+        self.is_screen_on = !matches!(
+            state,
+            PowerState::ScreenOff | PowerState::Standby | PowerState::Suspend
+        );
     }
 }
 

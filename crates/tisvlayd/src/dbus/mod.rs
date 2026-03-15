@@ -10,30 +10,8 @@ mod tv;
 pub use manager::ManagerService;
 pub use tv::{register_tv_interfaces, TvService};
 
-/// D-Bus service name.
-pub const DBUS_NAME: &str = "org.tisvlay.Daemon";
-
-/// D-Bus object path for manager.
-pub const MANAGER_PATH: &str = "/org/tisvlay/Manager";
-
-/// Base path for TV objects.
-pub const TV_BASE_PATH: &str = "/org/tisvlay/Tv";
-
-/// Generate the D-Bus object path for a TV.
-pub fn tv_path(tv_id: &str) -> String {
-    // Sanitize ID for D-Bus path (replace invalid chars with underscores)
-    let sanitized: String = tv_id
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("{}/{}", TV_BASE_PATH, sanitized)
-}
+// Re-export D-Bus path constants and helpers from tisvlay-core.
+pub use tisvlay_core::dbus_paths::{tv_path, DAEMON_SERVICE as DBUS_NAME, MANAGER_PATH};
 
 /// D-Bus error type for tisvlay.
 #[derive(Debug, Clone, zbus::DBusError)]
@@ -92,25 +70,5 @@ impl From<tisvlay_core::Error> for DaemonError {
             }
             _ => DaemonError::OperationFailed(e.to_string()),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_tv_path_simple() {
-        assert_eq!(tv_path("living_room"), "/org/tisvlay/Tv/living_room");
-    }
-
-    #[test]
-    fn test_tv_path_with_dash() {
-        assert_eq!(tv_path("living-room"), "/org/tisvlay/Tv/living_room");
-    }
-
-    #[test]
-    fn test_tv_path_with_spaces() {
-        assert_eq!(tv_path("living room"), "/org/tisvlay/Tv/living_room");
     }
 }

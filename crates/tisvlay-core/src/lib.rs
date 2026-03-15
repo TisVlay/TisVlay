@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! tisvlay-core (this crate)
-//! ├── traits: TvBackend, TvConnection, feature traits
+//! ├── traits: TvBackend, TvConnection, TvConnector, TvDiscovery
 //! ├── capabilities: Capability flags for feature detection
 //! ├── pairing: Unified pairing state machine
 //! ├── config: Profile-based configuration
@@ -54,6 +54,7 @@
 // Core modules (always available)
 mod capabilities;
 mod config;
+pub mod dbus_paths;
 mod error;
 mod pairing;
 mod state;
@@ -69,10 +70,7 @@ mod dbus_client;
 // =============================================================================
 
 // Traits
-pub use traits::{
-    BacklightControl, InputControl, PowerControl, ScreenControl, TvBackend, TvConnection,
-    TvConnector, TvDiscovery, VolumeControl,
-};
+pub use traits::{TvBackend, TvConnection, TvConnector, TvDiscovery};
 
 // Capabilities
 pub use capabilities::Capabilities;

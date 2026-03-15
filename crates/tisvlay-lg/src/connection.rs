@@ -150,7 +150,10 @@ impl Connection {
         let json = serde_json::to_string(request)?;
         tracing::trace!(id = %request.id, msg_type = ?request.msg_type, "Sending request");
 
-        self.stream.send(Message::Text(json)).await?;
+        self.stream
+            .send(Message::Text(json))
+            .await
+            .map_err(|e| Error::Connection(Box::new(e)))?;
         Ok(())
     }
 
@@ -175,7 +178,10 @@ impl Connection {
                     return Ok(response);
                 }
                 Message::Ping(data) => {
-                    self.stream.send(Message::Pong(data)).await?;
+                    self.stream
+                        .send(Message::Pong(data))
+                        .await
+                        .map_err(|e| Error::Connection(Box::new(e)))?;
                 }
                 Message::Close(_) => {
                     return Err(Error::ConnectionClosed);
@@ -224,7 +230,10 @@ impl Connection {
 
     /// Close the connection.
     pub async fn close(&mut self) -> Result<()> {
-        self.stream.close(None).await?;
+        self.stream
+            .close(None)
+            .await
+            .map_err(|e| Error::Connection(Box::new(e)))?;
         Ok(())
     }
 }

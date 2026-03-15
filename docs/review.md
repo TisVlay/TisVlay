@@ -30,6 +30,8 @@ This means any future vendor backend (Samsung, Sony CEC, etc.) that doesn't use 
 
 **Recommendation**: Remove `tokio-tungstenite`, `rustls`, `webpki-roots`, and `futures-util` from `tisvlay-core`. The `Error::Connection` variant should be changed to wrap a generic boxed error or be removed in favor of `Error::Backend`.
 
+**Response**: Fixed. Removed all four deps from `tisvlay-core/Cargo.toml`. Changed `Error::Connection` to `Connection(Box<dyn std::error::Error + Send + Sync>)`. Updated `tisvlay-lg/src/connection.rs` to use explicit `Box::new(e)` wrapping.
+
 ### 1.2 `DaemonConfig` contains LG-specific fields (HIGH)
 
 `crates/tisvlay-core/src/config.rs:57-82` — `DaemonConfig` includes `websocket_port` and `use_tls`, which are specific to the LG WebOS transport:
@@ -44,6 +46,8 @@ pub struct DaemonConfig {
 
 These should live in `LgVendorConfig` if needed, not in the vendor-agnostic daemon configuration. The daemon config should only contain transport-agnostic policy settings like `wake_on_boot`, `wake_delay_ms`, `connect_timeout_ms`, and `reconnect_interval_ms`.
 
+**Response**: Fixed. Removed `websocket_port` and `use_tls` from `DaemonConfig`. No code was reading these fields.
+
 ### 1.3 Feature traits are dead code (MEDIUM)
 
 `crates/tisvlay-core/src/traits.rs:232-282` defines `PowerControl`, `ScreenControl`, `VolumeControl`, `InputControl`, and `BacklightControl` as separate traits. These are **never implemented or used anywhere** in the codebase. All feature methods are provided directly on `TvConnection` with default not-supported impls.
@@ -51,6 +55,8 @@ These should live in `LgVendorConfig` if needed, not in the vendor-agnostic daem
 The doc comment says "Separate feature traits are also available for use as trait bounds in generic code" but no generic code uses them. They add surface area without value.
 
 **Recommendation**: Remove these traits entirely, or implement them and use them. Currently they're misleading — they suggest a design that was considered but never executed.
+
+**Response**: Fixed. Removed all five dead feature traits from `traits.rs` and their re-exports from `lib.rs`.
 
 ### 1.4 `BackendRegistry` re-exports with confusing aliases (LOW)
 
@@ -65,6 +71,8 @@ pub use tisvlay_core::{
 
 `TvCapabilities`, `TvCfg`, and `PairSession` are aliases for types already accessible from `tisvlay_core`. These aliases are confusing — consumers don't know which name to use, and the aliases aren't used within the backends crate itself. Either commit to one name or just re-export without aliasing.
 
+**Response**: Fixed. Removed all aliases; re-exports now use original names.
+
 ### 1.5 Duplicated `tv_path()` function (MEDIUM)
 
 `tv_path()` is defined identically in two places:
@@ -72,6 +80,8 @@ pub use tisvlay_core::{
 - `crates/tisvlayd/src/dbus/mod.rs:23-36`
 
 Both have the same sanitization logic. This should be defined once in core and imported by both.
+
+**Response**: Fixed. Created `tisvlay-core/src/dbus_paths.rs` with the shared `tv_path()` and D-Bus constants. Both `dbus_client.rs` and `tisvlayd/src/dbus/mod.rs` now re-export from it.
 
 ---
 
@@ -82,6 +92,8 @@ Both have the same sanitization logic. This should be defined once in core and i
 The workspace sets `rust-version = "1.75"`, which supports native async trait methods (RPITIT). Yet `async_trait` is used on every async trait (`TvConnection`, `TvConnector`, `TvDiscovery`). This adds unnecessary heap allocations (one `Box<dyn Future>` per call) and obscures the type signatures.
 
 **Recommendation**: Remove `async_trait` and use native async trait methods. This is a significant performance improvement for the hot path (every TV command goes through `TvConnection`).
+
+**Response**: Deferred. `TvConnection` is used as `dyn TvConnection` which requires object-safe async methods. Native async traits with `dyn` require nightly `async_fn_in_dyn_trait` or the `trait_variant` crate. Will revisit when Rust stabilizes this.
 
 **Note**: Object safety with native async traits requires `-> impl Future` return types or `#[trait_variant::make(SendTrait: Send)]`. Since `TvConnection` is used as `dyn TvConnection`, some care is needed — but `async_trait` can still be removed from traits not used as trait objects. At minimum, `TvDiscovery` (not used as dyn) can drop it immediately.
 
@@ -94,6 +106,8 @@ pub fn save_to(&self, path: &PathBuf) -> Result<()> { ... }
 ```
 
 Idiomatic Rust uses `&Path` (the borrowed form) rather than `&PathBuf` (a reference to an owned buffer). This is the Rust equivalent of using `&str` instead of `&String`. Clippy would flag this as `clippy::ptr_arg`.
+
+**Response**: Fixed. Changed both to `&Path`.
 
 ### 2.3 Numeric type inconsistency across layers (HIGH)
 
@@ -116,6 +130,8 @@ This creates a cascade of `as` casts throughout the code:
 
 **Recommendation**: Pick one type. `u8` makes semantic sense for 0-100 values. Use it consistently everywhere, including `TvState` and `WebOsClient`. The LG SSAP protocol may return `i32`, but clamp and convert at the protocol boundary.
 
+**Response**: Deferred. Agreed with the approach — will unify to `u8` and clamp at the LG protocol boundary in a follow-up.
+
 ### 2.4 `AtomicU64` on `WebOsClient` is unnecessary (LOW)
 
 `crates/tisvlay-lg/src/client.rs:24`:
@@ -124,6 +140,8 @@ request_id: AtomicU64,
 ```
 
 `WebOsClient` only takes `&mut self` for every method — there's no shared access. An atomic counter provides no benefit when exclusive access is already guaranteed by the type system. Use a plain `u64` or `Cell<u64>`.
+
+**Response**: Fixed. Changed to plain `u64`.
 
 ### 2.5 `TvManager` uses `Result<T, String>` (MEDIUM)
 
@@ -146,6 +164,8 @@ impl From<String> for DaemonError {
 ```
 
 **Recommendation**: Define a proper `TvManagerError` enum (or reuse `tisvlay_core::Error`) and convert to `DaemonError` structurally.
+
+**Response**: Deferred. Agreed — will introduce a proper error type in a follow-up.
 
 ---
 
@@ -174,6 +194,8 @@ This holds the `RwLock<HashMap<String, ManagedTv>>` write lock for the entire du
 
 **Recommendation**: Use per-TV locking instead of a single global lock. Consider `Arc<Mutex<ManagedTv>>` per entry, or extract the connection into its own `Arc<Mutex<Box<dyn TvConnection>>>` so that the HashMap lock is only held briefly.
 
+**Response**: Deferred. Agreed this is important for multi-TV setups. Will refactor to per-TV locking in a follow-up.
+
 ### 3.2 `TvConnection` requires `&mut self` everywhere (HIGH)
 
 All `TvConnection` trait methods take `&mut self`. This prevents:
@@ -183,6 +205,8 @@ All `TvConnection` trait methods take `&mut self`. This prevents:
 This is partly a consequence of `WebOsClient` using a single multiplexed WebSocket where request/response matching requires exclusive stream access. But the trait shouldn't impose this constraint on all backends — a CEC or HTTP backend might well support concurrent queries.
 
 **Recommendation**: Consider `&self` with interior mutability on backends that need it, or split read-only queries from mutating commands.
+
+**Response**: Deferred. Tied to the per-TV locking refactor (3.1). The current `&mut self` constraint is driven by WebSocket's single-stream model but shouldn't be imposed on all backends.
 
 ### 3.3 Proxy cache TOCTOU race in `DaemonClient` (LOW)
 
@@ -203,6 +227,8 @@ async fn get_tv_proxies(&self, tv_id: &str) -> Result<()> {
 
 Between the read lock release and write lock acquisition, another task could insert the same key, leading to redundant proxy creation. While not dangerous (just wasteful), the idiomatic fix is to use `entry()` API with a single write lock, or `tokio::sync::OnceCell` per entry.
 
+**Response**: Acknowledged. Low priority — the race is harmless (just a wasted proxy creation). Will fix opportunistically.
+
 ---
 
 ## 4. Design Smell: `as_any()` / `as_any_mut()`
@@ -221,6 +247,8 @@ These methods exist on the `TvConnection` trait for "vendor-specific operations.
 This is a design escape hatch that wasn't needed. If vendor-specific operations are needed, they should be modeled through the trait system (e.g., optional methods with default not-supported impls, which is already the pattern used for features).
 
 **Recommendation**: Remove `as_any`/`as_any_mut` from the trait. If a future need arises, it can be added back with a concrete use case.
+
+**Response**: Fixed. Removed from `TvConnection` trait and `LgConnection` impl.
 
 ---
 
@@ -241,6 +269,8 @@ async fn power_off(&mut self) -> Result<()> {
 ```
 
 If the power-off command fails (e.g., TV already off, network error), the caller gets `Ok(())`. This masks real failures. At minimum, the power_off result should be propagated; the close error can reasonably be ignored since the TV is shutting down.
+
+**Response**: Deferred. The silent drop is intentional — after sending power_off, the TV is shutting down and the WebSocket will close regardless. Propagating the error would cause spurious failures. Will revisit if real issues arise.
 
 ### 5.2 `LgConnector::start_pairing` cancel doesn't work (MEDIUM)
 
@@ -263,6 +293,8 @@ tokio::spawn(async move {
 
 To actually support cancellation, the connect operation needs to race against the command channel using `tokio::select!`.
 
+**Response**: Deferred. Pairing is an infrequent interactive operation. Will fix with `tokio::select!` in a follow-up.
+
 ### 5.3 `json_to_toml` converts null to empty string (LOW)
 
 `crates/tisvlayd/src/dbus/manager.rs:164`:
@@ -271,6 +303,8 @@ serde_json::Value::Null => Ok(toml::Value::String(String::new())),
 ```
 
 TOML doesn't have a null type, so this maps JSON null to `""`. This is a lossy conversion that could silently change semantics. Consider rejecting null values instead.
+
+**Response**: Fixed. Null now returns an error.
 
 ---
 
@@ -300,15 +334,21 @@ async fn with_proxies<F, T>(&self, tv_id: &str, op: &str, f: F) -> Result<T>
 where F: FnOnce(&TvProxies) -> Pin<Box<dyn Future<Output = zbus::Result<T>> + '_>>
 ```
 
+**Response**: Deferred. Agreed — will extract a `with_proxies` helper in a follow-up to reduce boilerplate.
+
 ### 6.2 CLI daemon/direct mode duplication (MEDIUM)
 
 `crates/tisvlay-cli/src/main.rs` has two nearly identical match trees: `run_daemon_mode` and `run_tv_command_direct`. Both handle `Screen { On, Off }`, `Volume { ... }`, `Mute { ... }`, etc. with identical logic differing only in whether they call `client.screen_off(tv_id)` vs `conn.screen_off()`.
 
 Consider a `TvController` trait abstraction or at least extract the output formatting.
 
+**Response**: Deferred. The duplication is manageable for now. Will consider a shared abstraction when adding the tray/GUI clients.
+
 ### 6.3 D-Bus TV service struct duplication (MEDIUM)
 
 `crates/tisvlayd/src/dbus/tv.rs` has five nearly identical structs (`TvPowerService`, `TvScreenService`, `TvVolumeService`, `TvInputService`, `TvBacklightService`), each storing `tv_id: String, manager: Arc<RwLock<TvManager>>` and constructing from the same `TvState` tuple. A macro could reduce this boilerplate significantly.
+
+**Response**: Deferred. Macro would help but `zbus` proc macros on D-Bus interfaces make this tricky. Will revisit.
 
 ---
 
@@ -319,6 +359,8 @@ Consider a `TvController` trait abstraction or at least extract the output forma
 `TvConnection::set_volume` and `set_backlight` accept `u8` (0-255 range), but the semantics specify 0-100. The trait documentation says "Set the volume level (0-100)" but nothing enforces this. Values like 150 would be silently accepted and passed to the backend.
 
 The LG backend does clamp internally (`volume.clamp(0, 100)`) but this should be enforced at the trait level so all backends get consistent behavior. Add a validation check in the default impl or document that backends MUST clamp.
+
+**Response**: Deferred. Will address together with the numeric type unification (2.3).
 
 ### 7.2 TV ID generation doesn't guarantee uniqueness (LOW)
 
@@ -333,6 +375,8 @@ name.to_lowercase()
 
 Two different names could produce the same ID (e.g., "TV #1" and "TV @1" both become "tv-1"). The ID should be checked for uniqueness before insertion.
 
+**Response**: Acknowledged. Low priority — users can specify explicit IDs in config. Will add a uniqueness check opportunistically.
+
 ---
 
 ## 8. Dependency Hygiene
@@ -344,11 +388,15 @@ Beyond the WebSocket dependencies mentioned in 1.1, `tisvlay-core` also pulls in
 - `socket2`: WoL is already in `tisvlay_core::wol` which is appropriate (WoL is vendor-agnostic)
 - `directories`: Only used in `Config::config_path()` — could be injected rather than hardcoded
 
+**Response**: Acknowledged. `socket2` and `directories` are vendor-agnostic and appropriate for core. The WebSocket/TLS deps (1.1) and SSDP deps (8.2) have been removed.
+
 ### 8.2 Unused `ssdp-client`, `urlencoding`, `url` in core (LOW)
 
 `tisvlay-core/Cargo.toml` has optional dependencies for SSDP discovery, but the discovery module is in `tisvlay-lg`, not in core. These deps are in core's `Cargo.toml` but the `discovery` feature doesn't gate any code in core — it appears to be a leftover from before the multi-vendor refactor.
 
 **Recommendation**: Remove the `discovery` feature and SSDP deps from `tisvlay-core`.
+
+**Response**: Fixed. Removed `ssdp-client`, `urlencoding`, `url` optional deps and the `discovery` feature from core's `Cargo.toml`.
 
 ---
 
@@ -362,6 +410,8 @@ The codebase has good unit tests for data types (config parsing, capabilities, M
 - Config round-trip (serialize → deserialize → serialize)
 - Backend registry wiring
 
+**Response**: Acknowledged. Integration tests are planned for Phase 5.
+
 ### 9.2 `ManagedTv.state` is dead code (LOW)
 
 `crates/tisvlayd/src/tv_manager.rs:52-53`:
@@ -372,6 +422,8 @@ state: TvState,
 
 This field is initialized to default and never updated. Either implement state caching (which would be valuable for D-Bus property queries without hitting the TV) or remove it.
 
+**Response**: Fixed. Removed the field and its `#[allow(dead_code)]`.
+
 ---
 
 ## 10. Minor Issues
@@ -379,6 +431,8 @@ This field is initialized to default and never updated. Either implement state c
 ### 10.1 `Error::not_supported` uses if-else chain instead of bit inspection
 
 `crates/tisvlay-core/src/error.rs:139-158` — The `not_supported` helper has an if-else chain that duplicates the same mapping as `Capabilities::to_strings()`. Use the existing method or a `const` array.
+
+**Response**: Deferred. Minor cleanup — will simplify in a follow-up.
 
 ### 10.2 `PowerState::parse` maps "suspend" to `Standby` (LOW)
 
@@ -389,9 +443,13 @@ This field is initialized to default and never updated. Either implement state c
 
 But there's a separate `Suspend` variant defined at line 48. The parse function should map "suspend" to `Suspend`, not `Standby`.
 
+**Response**: Fixed. "standby" and "suspend" now map to their respective variants.
+
 ### 10.3 `build_pairing_config_json` is LG-aware in the "vendor-agnostic" CLI (LOW)
 
 `crates/tisvlay-cli/src/main.rs:351-369` — The CLI explicitly matches on `"lg"` to know that the address field is called `"ip"`. This leaks vendor knowledge into what should be a vendor-agnostic binary. The CLI should pass a generic `"address"` field and let the connector interpret it, or query the registry for parameter names.
+
+**Response**: Fixed. CLI now always uses generic field names `"address"` and `"wake_id"`. Added `#[serde(alias = "address")]` on `LgVendorConfig::ip` and `alias = "wake_id"` on `mac` so the LG connector accepts both.
 
 ### 10.4 Unnecessary `.clone()` in config deserialization (LOW)
 
@@ -403,6 +461,8 @@ self.vendor_config
 ```
 
 This clones the `toml::Value` for every deserialization attempt. For large configs this is wasteful. Use `toml::Value::try_into::<T>` on a reference-based deserialization approach, or accept the clone but document the cost.
+
+**Response**: Acknowledged. The clone is necessary since `try_into` consumes the value. Config is small and loaded infrequently — negligible cost.
 
 ---
 

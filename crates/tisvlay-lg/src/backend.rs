@@ -5,7 +5,6 @@
 use crate::client::WebOsClient;
 use crate::config::LgVendorConfig;
 use async_trait::async_trait;
-use std::any::Any;
 use tisvlay_core::{
     Capabilities, Credentials, Error, InputInfo, MacAddress, PairingCommand, PairingSession,
     PairingState, PowerState, Result, TvBackend, TvConnection, TvConnector, TvState,
@@ -111,14 +110,6 @@ impl TvConnection for LgConnection {
 
     fn capabilities(&self) -> Capabilities {
         self.capabilities
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 
     // =========================================================================

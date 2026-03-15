@@ -34,7 +34,7 @@
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Main configuration structure.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -64,14 +64,6 @@ pub struct DaemonConfig {
     #[serde(default = "default_wake_delay")]
     pub wake_delay_ms: u64,
 
-    /// WebSocket port to use (3000 for ws://, 3001 for wss://).
-    #[serde(default = "default_ws_port")]
-    pub websocket_port: u16,
-
-    /// Whether to use TLS (wss://).
-    #[serde(default = "default_use_tls")]
-    pub use_tls: bool,
-
     /// Connection timeout in milliseconds.
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_ms: u64,
@@ -83,14 +75,6 @@ pub struct DaemonConfig {
 
 fn default_wake_delay() -> u64 {
     3000
-}
-
-fn default_ws_port() -> u16 {
-    3001
-}
-
-fn default_use_tls() -> bool {
-    true
 }
 
 fn default_connect_timeout() -> u64 {
@@ -106,8 +90,6 @@ impl Default for DaemonConfig {
         Self {
             wake_on_boot: true,
             wake_delay_ms: default_wake_delay(),
-            websocket_port: default_ws_port(),
-            use_tls: default_use_tls(),
             connect_timeout_ms: default_connect_timeout(),
             reconnect_interval_ms: default_reconnect_interval(),
         }
@@ -269,7 +251,7 @@ impl Config {
     }
 
     /// Load configuration from a specific path.
-    pub fn load_from(path: &PathBuf) -> Result<Self> {
+    pub fn load_from(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -290,7 +272,7 @@ impl Config {
     /// If the profiles map is empty, a "default" profile with built-in values
     /// is added before saving. This makes the config file self-documenting
     /// for users who haven't customized their profiles yet.
-    pub fn save_to(&self, path: &PathBuf) -> Result<()> {
+    pub fn save_to(&self, path: &Path) -> Result<()> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -510,7 +492,6 @@ mod tests {
         let config = Config::default();
         assert!(config.tv.is_empty());
         assert!(config.daemon.wake_on_boot);
-        assert_eq!(config.daemon.websocket_port, 3001);
     }
 
     #[test]

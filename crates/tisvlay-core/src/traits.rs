@@ -32,7 +32,6 @@ use crate::{
     Capabilities, DiscoveredTv, Error, InputInfo, PairingSession, PowerState, Result, TvState,
 };
 use async_trait::async_trait;
-use std::any::Any;
 
 /// Core trait that all TV backends must implement.
 ///
@@ -90,9 +89,7 @@ pub trait TvBackend: Send + Sync + 'static {
 /// For `power_off()`, the implementation should close its own transport
 /// connection after sending the command, since the device is shutting down.
 ///
-/// Separate feature traits ([`PowerControl`], [`ScreenControl`], etc.) are also
-/// available for use as trait bounds in generic code, but `TvConnection` is the
-/// primary interface used by the daemon and CLI.
+/// `TvConnection` is the primary interface used by the daemon and CLI.
 #[async_trait]
 pub trait TvConnection: Send + Sync {
     /// Get the vendor ID for this connection's backend.
@@ -115,15 +112,6 @@ pub trait TvConnection: Send + Sync {
 
     /// Get capabilities supported by this connection.
     fn capabilities(&self) -> Capabilities;
-
-    /// Downcast to a concrete type for vendor-specific operations.
-    ///
-    /// This is available for vendor-specific code within vendor crates.
-    /// The daemon and CLI should use the feature methods on this trait instead.
-    fn as_any(&self) -> &dyn Any;
-
-    /// Downcast to a mutable concrete type for vendor-specific operations.
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 
     // =========================================================================
     // Power control (default: not supported)
@@ -228,57 +216,6 @@ pub trait TvConnection: Send + Sync {
             Capabilities::BACKLIGHT,
         ))
     }
-}
-
-/// Power control capability.
-///
-/// Backends that support the [`Capabilities::POWER`] flag should implement this trait.
-/// These methods are also available as defaults on [`TvConnection`].
-#[async_trait]
-pub trait PowerControl: TvConnection {
-    async fn power_on(&mut self) -> Result<()>;
-    async fn power_off(&mut self) -> Result<()>;
-    async fn get_power_state(&mut self) -> Result<PowerState>;
-}
-
-/// Screen blanking capability (OLED-safe).
-///
-/// Backends that support the [`Capabilities::SCREEN`] flag should implement this trait.
-#[async_trait]
-pub trait ScreenControl: TvConnection {
-    async fn screen_on(&mut self) -> Result<()>;
-    async fn screen_off(&mut self) -> Result<()>;
-    async fn is_screen_on(&mut self) -> Result<bool>;
-}
-
-/// Volume control capability.
-///
-/// Backends that support the [`Capabilities::VOLUME`] flag should implement this trait.
-#[async_trait]
-pub trait VolumeControl: TvConnection {
-    async fn set_volume(&mut self, level: u8) -> Result<()>;
-    async fn get_volume(&mut self) -> Result<u8>;
-    async fn set_mute(&mut self, mute: bool) -> Result<()>;
-    async fn is_muted(&mut self) -> Result<bool>;
-}
-
-/// Input switching capability.
-///
-/// Backends that support the [`Capabilities::INPUT`] flag should implement this trait.
-#[async_trait]
-pub trait InputControl: TvConnection {
-    async fn switch_input(&mut self, input_id: &str) -> Result<()>;
-    async fn get_current_input(&mut self) -> Result<Option<String>>;
-    async fn list_inputs(&mut self) -> Result<Vec<InputInfo>>;
-}
-
-/// Backlight/brightness control (OLED pixel brightness).
-///
-/// Backends that support the [`Capabilities::BACKLIGHT`] flag should implement this trait.
-#[async_trait]
-pub trait BacklightControl: TvConnection {
-    async fn set_backlight(&mut self, level: u8) -> Result<()>;
-    async fn get_backlight(&mut self) -> Result<u8>;
 }
 
 /// Factory for creating connections to TVs.

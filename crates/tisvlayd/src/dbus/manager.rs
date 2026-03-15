@@ -2,10 +2,11 @@
 //!
 //! Implements `org.tisvlay.Manager1` for TV discovery and management.
 
-use crate::dbus::{tv_path, DaemonError};
+use crate::dbus::DaemonError;
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
+use tisvlay_core::dbus_paths::tv_path;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 use zbus::interface;
@@ -161,7 +162,9 @@ impl ManagerService {
 /// Convert a serde_json::Value to a toml::Value.
 fn json_to_toml(json: &serde_json::Value) -> Result<toml::Value, String> {
     match json {
-        serde_json::Value::Null => Ok(toml::Value::String(String::new())),
+        serde_json::Value::Null => {
+            Err("JSON null values are not supported in TOML config".to_string())
+        }
         serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {

@@ -37,29 +37,8 @@ use tracing::debug;
 use zbus::proxy;
 use zbus::zvariant::OwnedObjectPath;
 
-/// D-Bus service name for tisvlayd.
-pub const DAEMON_SERVICE: &str = "org.tisvlay.Daemon";
-
-/// D-Bus object path for manager interface.
-pub const MANAGER_PATH: &str = "/org/tisvlay/Manager";
-
-/// Base path for TV objects.
-pub const TV_BASE_PATH: &str = "/org/tisvlay/Tv";
-
-/// Generate the D-Bus object path for a TV.
-pub fn tv_path(tv_id: &str) -> String {
-    let sanitized: String = tv_id
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("{}/{}", TV_BASE_PATH, sanitized)
-}
+// Re-export path constants and helpers from the non-feature-gated module.
+pub use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
 
 // =============================================================================
 // Manager Interface Proxy
