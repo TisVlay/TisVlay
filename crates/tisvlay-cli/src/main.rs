@@ -1,13 +1,10 @@
 //! tisvlay - CLI tool for TV control.
 //!
-//! By default, communicates with the system daemon via D-Bus.
-//! Use `--no-daemon` for direct connections via the backend registry.
+//! Communicates with the system daemon (`tisvlayd`) via D-Bus.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::time::Duration;
-use tisvlay_backends::{create_registry, BackendRegistry};
-use tisvlay_core::{Config, DaemonClient, TvConfig, TvState};
+use tisvlay_core::{DaemonClient, TvState};
 
 #[derive(Parser)]
 #[command(name = "tisvlay")]
@@ -22,12 +19,8 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// Connect directly to TV instead of using the daemon
-    #[arg(long, global = true, conflicts_with = "user")]
-    no_daemon: bool,
-
     /// Use session bus instead of system D-Bus (e.g. with `tisvlayd --session`)
-    #[arg(long, global = true, conflicts_with = "no_daemon")]
+    #[arg(long, global = true)]
     user: bool,
 
     #[command(subcommand)]
@@ -145,18 +138,6 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    if cli.no_daemon {
-        run_direct_mode(cli).await
-    } else {
-        run_daemon_mode(cli).await
-    }
-}
-
-// =============================================================================
-// D-Bus Daemon Mode
-// =============================================================================
-
-async fn run_daemon_mode(cli: Cli) -> Result<()> {
     let client = if cli.user {
         DaemonClient::new_session().await
     } else {
@@ -177,13 +158,11 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
             eprintln!("For development, you can use: tisvlayd --session");
             eprintln!("Then run CLI with: tisvlay --user <command>");
         }
-        eprintln!();
-        eprintln!("Or use --no-daemon to connect directly to the TV.");
         std::process::exit(1);
     }
 
     // Get TV ID (required for most commands)
-    let tv_id = get_tv_id_for_daemon(&client, cli.tv.as_deref()).await;
+    let tv_id = get_tv_id(&client, cli.tv.as_deref()).await;
 
     match cli.command {
         Commands::List => {
@@ -218,8 +197,8 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
             println!("Connecting to TV at {}...", address);
             println!("Please accept the pairing request on your TV.");
 
-            // Build vendor-specific config JSON for the daemon
-            let config_json = build_pairing_config_json(&vendor, &address, wake_id.as_deref());
+            // Build vendor-agnostic config JSON for the daemon
+            let config_json = build_pairing_config_json(&address, wake_id.as_deref());
             let tv_id = client.pair_tv(&tv_name, &vendor, &config_json).await?;
             println!("TV '{}' paired successfully with ID: {}", tv_name, tv_id);
 
@@ -293,7 +272,6 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
                 }
                 Some(level) => {
                     if level.starts_with('+') || level.starts_with('-') {
-                        // Relative adjustment
                         let delta: i32 = level.parse()?;
                         let current = client.get_volume(&tv_id).await? as i32;
                         let new_level = (current + delta).clamp(0, 100) as u8;
@@ -347,12 +325,12 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// Build config JSON for pairing via daemon.
+/// Build vendor-agnostic config JSON for pairing via daemon.
 ///
 /// Uses generic field names (`address`, `wake_id`) for all vendors.
 /// Each vendor connector accepts these via serde aliases alongside
 /// its native field names (e.g., LG accepts `address` as alias for `ip`).
-fn build_pairing_config_json(_vendor: &str, address: &str, wake_id: Option<&str>) -> String {
+fn build_pairing_config_json(address: &str, wake_id: Option<&str>) -> String {
     let mut config = serde_json::json!({"address": address});
     if let Some(wid) = wake_id {
         config["wake_id"] = serde_json::Value::String(wid.to_string());
@@ -360,7 +338,7 @@ fn build_pairing_config_json(_vendor: &str, address: &str, wake_id: Option<&str>
     config.to_string()
 }
 
-async fn get_tv_id_for_daemon(client: &DaemonClient, requested_id: Option<&str>) -> Result<String> {
+async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<String> {
     match requested_id {
         Some(id) => Ok(id.to_string()),
         None => {
@@ -394,330 +372,4 @@ fn print_tv_status(tv_id: &str, state: &TvState) {
             println!("  {} - {}{}", input.id, input.label, connected);
         }
     }
-}
-
-// =============================================================================
-// Direct Mode (--no-daemon) — uses BackendRegistry, fully vendor-agnostic
-// =============================================================================
-
-async fn run_direct_mode(cli: Cli) -> Result<()> {
-    let mut config = Config::load().context("Failed to load configuration")?;
-    let registry = create_registry();
-
-    match cli.command {
-        Commands::List => {
-            list_tvs(&config, &registry);
-        }
-        Commands::Pair {
-            address,
-            name,
-            wake_id,
-            id,
-            vendor,
-        } => {
-            pair_tv_direct(&mut config, &registry, &address, name, wake_id, id, &vendor).await?;
-        }
-        Commands::Remove { tv_id } => {
-            remove_tv_direct(&mut config, &tv_id)?;
-        }
-        _ => {
-            let tv = get_tv(&config, cli.tv.as_deref())?;
-            run_tv_command_direct(cli.command, &tv, &registry).await?;
-        }
-    }
-
-    Ok(())
-}
-
-fn get_tv(config: &Config, tv_id: Option<&str>) -> Result<TvConfig> {
-    if config.tv.is_empty() {
-        anyhow::bail!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
-    }
-
-    match tv_id {
-        Some(id) => config
-            .find_tv(id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("TV '{}' not found", id)),
-        None => config
-            .default_tv()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("No default TV configured")),
-    }
-}
-
-async fn run_tv_command_direct(
-    command: Commands,
-    tv: &TvConfig,
-    registry: &BackendRegistry,
-) -> Result<()> {
-    match command {
-        Commands::Power { action } => match action {
-            PowerAction::On => {
-                power_on_direct(tv, registry).await?;
-            }
-            PowerAction::Off => {
-                let mut conn = registry
-                    .connect_tv(tv)
-                    .await
-                    .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
-                conn.power_off().await?;
-                println!("TV powered off");
-            }
-        },
-        Commands::Screen { action } => {
-            let mut conn = registry
-                .connect_tv(tv)
-                .await
-                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
-            match action {
-                ScreenAction::On => {
-                    conn.screen_on().await?;
-                    println!("Screen turned on");
-                }
-                ScreenAction::Off => {
-                    conn.screen_off().await?;
-                    println!("Screen turned off (OLED-safe blank)");
-                }
-            }
-        }
-        Commands::Input { input_id, list } => {
-            let mut conn = registry
-                .connect_tv(tv)
-                .await
-                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
-            if list || input_id.is_none() {
-                let inputs = conn.list_inputs().await?;
-                println!("Available inputs:");
-                for input in inputs {
-                    let connected = if input.connected { " [connected]" } else { "" };
-                    println!("  {} - {}{}", input.id, input.label, connected);
-                }
-            }
-            if let Some(id) = input_id {
-                conn.switch_input(&id).await?;
-                println!("Switched to input: {}", id);
-            }
-        }
-        Commands::Volume { level } => {
-            let mut conn = registry
-                .connect_tv(tv)
-                .await
-                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
-            match level {
-                None => {
-                    let vol = conn.get_volume().await?;
-                    let muted = conn.is_muted().await.unwrap_or(false);
-                    let muted_str = if muted { " (muted)" } else { "" };
-                    println!("Volume: {}{}", vol, muted_str);
-                }
-                Some(level) => {
-                    if level.starts_with('+') || level.starts_with('-') {
-                        let delta: i32 = level.parse()?;
-                        let current = conn.get_volume().await? as i32;
-                        let new_level = (current + delta).clamp(0, 100);
-                        conn.set_volume(new_level as u8).await?;
-                        println!("Volume: {} -> {}", current, new_level);
-                    } else {
-                        let level: u8 = level.parse()?;
-                        conn.set_volume(level).await?;
-                        println!("Volume set to: {}", level);
-                    }
-                }
-            }
-        }
-        Commands::Mute { state } => {
-            let mut conn = registry
-                .connect_tv(tv)
-                .await
-                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
-            let mute = match state.to_lowercase().as_str() {
-                "on" | "true" | "1" => true,
-                "off" | "false" | "0" => false,
-                "toggle" => {
-                    let current = conn.is_muted().await?;
-                    !current
-                }
-                _ => anyhow::bail!("Invalid mute state: {}. Use on/off/toggle", state),
-            };
-            conn.set_mute(mute).await?;
-            println!("Mute: {}", if mute { "on" } else { "off" });
-        }
-        Commands::Backlight { level } => {
-            let mut conn = registry
-                .connect_tv(tv)
-                .await
-                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
-            match level {
-                None => {
-                    let backlight = conn.get_backlight().await?;
-                    println!("Backlight: {}", backlight);
-                }
-                Some(level) => {
-                    conn.set_backlight(level).await?;
-                    println!("Backlight set to: {}", level);
-                }
-            }
-        }
-        Commands::Status => {
-            let display_addr = registry.display_address(tv);
-            let mut conn = registry
-                .connect_tv(tv)
-                .await
-                .with_context(|| format!("Failed to connect to TV '{}'", tv.name))?;
-            let state = conn.get_state().await?;
-
-            println!("TV: {} ({})", tv.name, display_addr);
-            print_tv_status(&tv.id, &state);
-        }
-        _ => unreachable!(),
-    }
-
-    Ok(())
-}
-
-async fn power_on_direct(tv: &TvConfig, registry: &BackendRegistry) -> Result<()> {
-    if !registry.supports_wake(tv) {
-        anyhow::bail!(
-            "Wake not supported for TV '{}'. No wake ID (MAC address) configured.",
-            tv.name
-        );
-    }
-
-    let display_addr = registry.display_address(tv);
-    tracing::info!(tv = %tv.name, address = %display_addr, "Waking TV");
-    registry.wake_tv(tv).await?;
-    println!("Wake signal sent to {}", tv.name);
-
-    // Wait for TV to boot
-    let delay = Duration::from_millis(3000);
-    println!("Waiting {}ms for TV to wake up...", delay.as_millis());
-    tokio::time::sleep(delay).await;
-
-    // Try to connect
-    match registry.connect_tv(tv).await {
-        Ok(mut conn) => {
-            println!("Connected to TV");
-            // Switch to configured input if available
-            if let Some(ref input) = tv.hdmi_input {
-                conn.switch_input(input).await?;
-                println!("Switched to input: {}", input);
-            }
-            conn.close().await?;
-        }
-        Err(e) => {
-            tracing::warn!(
-                "Could not connect after wake: {}. TV may still be booting.",
-                e
-            );
-            println!("TV may still be booting. Try again in a few seconds.");
-        }
-    }
-
-    Ok(())
-}
-
-fn list_tvs(config: &Config, registry: &BackendRegistry) {
-    if config.tv.is_empty() {
-        println!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
-        return;
-    }
-
-    println!("Configured TVs:");
-    for (i, tv) in config.tv.iter().enumerate() {
-        let default = if i == 0 { " (default)" } else { "" };
-        let addr = registry.display_address(tv);
-        let paired = tv
-            .get_raw_vendor_value()
-            .and_then(|v| v.get("client_key"))
-            .is_some();
-        let status = if paired { "paired" } else { "not paired" };
-        println!(
-            "  {} - {} ({}) [{}] <{}>{}",
-            tv.id, tv.name, addr, status, tv.vendor, default
-        );
-    }
-}
-
-async fn pair_tv_direct(
-    config: &mut Config,
-    registry: &BackendRegistry,
-    address: &str,
-    name: Option<String>,
-    wake_id: Option<String>,
-    id: Option<String>,
-    vendor: &str,
-) -> Result<()> {
-    println!("Connecting to TV at {}...", address);
-    println!("Please accept the pairing request on your TV.");
-
-    // Build initial vendor config for pairing
-    let pairing_config = build_pairing_toml_value(vendor, address, wake_id.as_deref());
-
-    // Start pairing via the registry
-    let mut session = registry.start_pairing(vendor, &pairing_config)?;
-    let credentials = session
-        .wait_for_completion()
-        .await
-        .map_err(|e| anyhow::anyhow!("Pairing failed: {}", e))?;
-
-    // Build final vendor config with credentials
-    let final_config = registry.build_config_from_pairing(vendor, &pairing_config, &credentials)?;
-
-    let name = name.unwrap_or_else(|| format!("TV at {}", address));
-    let id = id.unwrap_or_else(|| {
-        name.to_lowercase()
-            .replace(' ', "-")
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '-')
-            .collect()
-    });
-
-    let mut tv_config = TvConfig::new(id.clone(), name.clone()).with_vendor(vendor);
-    tv_config
-        .vendor_config
-        .insert(vendor.to_string(), final_config);
-
-    config.upsert_tv(tv_config);
-    config.save().context("Failed to save configuration")?;
-
-    println!("TV '{}' paired successfully!", name);
-    println!("Config saved to: {:?}", Config::config_path()?);
-
-    if wake_id.is_none() {
-        println!("\nNote: No wake ID (MAC address) provided. Wake-on-LAN will not work.");
-        println!(
-            "Add MAC with: tisvlay pair {} --wake-id AA:BB:CC:DD:EE:FF --vendor {}",
-            address, vendor
-        );
-    }
-
-    Ok(())
-}
-
-/// Build a toml::Value for pairing params from CLI args.
-///
-/// Uses generic field names (`address`, `wake_id`) for all vendors.
-/// Each vendor connector accepts these via serde aliases alongside
-/// its native field names (e.g., LG accepts `address` as alias for `ip`).
-fn build_pairing_toml_value(_vendor: &str, address: &str, wake_id: Option<&str>) -> toml::Value {
-    let mut table = toml::map::Map::new();
-    table.insert(
-        "address".to_string(),
-        toml::Value::String(address.to_string()),
-    );
-    if let Some(wid) = wake_id {
-        table.insert("wake_id".to_string(), toml::Value::String(wid.to_string()));
-    }
-    toml::Value::Table(table)
-}
-
-fn remove_tv_direct(config: &mut Config, tv_id: &str) -> Result<()> {
-    if config.remove_tv(tv_id) {
-        config.save().context("Failed to save configuration")?;
-        println!("TV '{}' removed", tv_id);
-    } else {
-        println!("TV '{}' not found", tv_id);
-    }
-    Ok(())
 }

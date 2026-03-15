@@ -63,26 +63,10 @@ pub struct DaemonConfig {
     /// Delay in milliseconds after WoL before sending commands.
     #[serde(default = "default_wake_delay")]
     pub wake_delay_ms: u64,
-
-    /// Connection timeout in milliseconds.
-    #[serde(default = "default_connect_timeout")]
-    pub connect_timeout_ms: u64,
-
-    /// Reconnection interval in milliseconds.
-    #[serde(default = "default_reconnect_interval")]
-    pub reconnect_interval_ms: u64,
 }
 
 fn default_wake_delay() -> u64 {
     3000
-}
-
-fn default_connect_timeout() -> u64 {
-    5000
-}
-
-fn default_reconnect_interval() -> u64 {
-    10000
 }
 
 impl Default for DaemonConfig {
@@ -90,8 +74,6 @@ impl Default for DaemonConfig {
         Self {
             wake_on_boot: true,
             wake_delay_ms: default_wake_delay(),
-            connect_timeout_ms: default_connect_timeout(),
-            reconnect_interval_ms: default_reconnect_interval(),
         }
     }
 }

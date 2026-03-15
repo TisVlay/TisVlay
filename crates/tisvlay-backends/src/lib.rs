@@ -15,12 +15,8 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tisvlay_core::{Credentials, TvConnection, TvConnector};
-
-// Re-export core types for convenience
-pub use tisvlay_core::{
-    Capabilities, Config, DiscoveredTv, Error, InputInfo, PairingSession, PairingState, PowerState,
-    ProfileConfig, Result, SessionAction, TvConfig, TvState,
+use tisvlay_core::{
+    Capabilities, Credentials, DiscoveredTv, PairingSession, TvConfig, TvConnection, TvConnector,
 };
 
 /// Type-erased discovery function.

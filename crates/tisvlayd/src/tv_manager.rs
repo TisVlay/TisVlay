@@ -101,8 +101,6 @@ struct ManagedTv {
     config: TvConfig,
     /// Active connection (None if disconnected).
     connection: Option<Box<dyn TvConnection>>,
-    /// Last error message.
-    last_error: Option<String>,
     /// TV was intentionally powered off -- don't try to reconnect until power_on.
     powered_off: bool,
 }
@@ -112,7 +110,6 @@ impl ManagedTv {
         Self {
             config,
             connection: None,
-            last_error: None,
             powered_off: false,
         }
     }
@@ -295,7 +292,6 @@ impl TvManager {
 
         info!(tv_id = %tv_id, "Connected to TV");
         tv.connection = Some(connection);
-        tv.last_error = None;
 
         drop(tv);
         self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
@@ -338,7 +334,6 @@ impl TvManager {
 
             info!(tv_id = %tv_id, "Connected to TV");
             tv.connection = Some(connection);
-            tv.last_error = None;
             self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
         }
 
@@ -417,7 +412,6 @@ impl TvManager {
         {
             let mut tv = tv_arc.lock().await;
             tv.connection = Some(connection);
-            tv.last_error = None;
         }
 
         let event = StateChangeEvent::connection_change(tv_id, true, None);

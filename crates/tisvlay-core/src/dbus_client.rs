@@ -436,12 +436,6 @@ impl DaemonClient {
         Ok(tvs)
     }
 
-    /// Get list of configured TV IDs.
-    pub async fn list_tv_ids(&self) -> Result<Vec<String>> {
-        let tvs = self.list_tvs().await?;
-        Ok(tvs.into_iter().map(|tv| tv.id).collect())
-    }
-
     /// Discover TVs on the network.
     ///
     /// Returns a vector of tuples: `(id, name, address, hardware_id, vendor)`.
@@ -657,46 +651,5 @@ impl DaemonClient {
         }
 
         Ok(())
-    }
-
-    // -------------------------------------------------------------------------
-    // Utility Methods
-    // -------------------------------------------------------------------------
-
-    /// Execute an action on all configured TVs.
-    ///
-    /// Returns the number of successful operations.
-    pub async fn execute_on_all_tvs<F, Fut>(&self, action_name: &str, action: F) -> usize
-    where
-        F: Fn(String) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
-    {
-        let tv_ids = match self.list_tv_ids().await {
-            Ok(ids) => ids,
-            Err(e) => {
-                tracing::warn!("Failed to list TVs: {}", e);
-                return 0;
-            }
-        };
-
-        if tv_ids.is_empty() {
-            debug!("No TVs configured, skipping {}", action_name);
-            return 0;
-        }
-
-        let mut success_count = 0;
-        for tv_id in tv_ids {
-            match action(tv_id.clone()).await {
-                Ok(()) => {
-                    debug!(tv_id = %tv_id, action = %action_name, "Action succeeded");
-                    success_count += 1;
-                }
-                Err(e) => {
-                    tracing::warn!(tv_id = %tv_id, action = %action_name, error = %e, "Action failed");
-                }
-            }
-        }
-
-        success_count
     }
 }

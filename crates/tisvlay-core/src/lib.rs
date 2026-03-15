@@ -90,7 +90,7 @@ pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
 pub use error::{Error, Result};
 
 // Wake-on-LAN
-pub use wol::{wake, wake_reliable, wake_to_ip, wake_with_options, MacAddress, WakeOptions};
+pub use wol::{wake, wake_with_options, MacAddress, WakeOptions};
 
 // =============================================================================
 // Public re-exports: Optional features

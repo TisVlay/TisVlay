@@ -856,3 +856,19 @@ The codebase is architecturally sound after 3 rounds of fixes. Round 4 is about 
 Total estimated reduction: **~515 lines** (or ~455 without R4.4).
 
 No new correctness issues found. The codebase is ready for Phase 4b/5 after these cleanups.
+
+### Round 4 Implementation Results
+
+All R4 items except R4.4 (speculative pairing types — deferred, low cost to keep) were implemented by the reviewer. Build compiles clean, all 45 tests pass.
+
+**Line count**: 8,986 → 8,487 = **499 lines removed** (~5.6% reduction).
+
+| Item | Status | Notes |
+|------|--------|-------|
+| R4.1 Dead `DaemonConfig` fields | **Done** | Removed `connect_timeout_ms`, `reconnect_interval_ms`, their defaults, and `Default` impl entries. |
+| R4.2 Dead `ManagedTv.last_error` | **Done** | Removed field and all 3 write-only `tv.last_error = None` assignments. |
+| R4.3 Dead WoL helpers | **Done** | Removed `wake_to_ip`, `wake_reliable` from core. Removed `wake_tv`, `wake_and_wait`, `wake_and_connect` (standalone) from LG client. Removed all associated re-exports from `lib.rs` files. `Ipv4Addr` import retained (still used by `WakeOptions`). |
+| R4.4 Speculative pairing types | **Deferred** | Kept as-is. Trivial enum variants with no maintenance burden. Straightforward to re-add if removed. |
+| R4.5 `--no-daemon` CLI removal | **Done** | Removed `--no-daemon` flag, all direct-mode functions (~325 lines), `tisvlay-backends` and `toml` deps from CLI Cargo.toml. CLI now depends only on `tisvlay-core` (with `dbus` feature). Single code path through `DaemonClient`. |
+| R4.6 Dead `DaemonClient` methods | **Done** | Removed `execute_on_all_tvs` and `list_tv_ids`. |
+| R4.7 `tisvlay-backends` re-exports | **Done** | Removed `pub use tisvlay_core::{...}` block. Changed to private `use` for types used internally (`Capabilities`, `DiscoveredTv`, `PairingSession`, `TvConfig`). No consumers were importing these from `tisvlay_backends`. |

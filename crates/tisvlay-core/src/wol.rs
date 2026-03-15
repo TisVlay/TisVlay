@@ -140,45 +140,6 @@ pub fn wake_with_options(mac: &MacAddress, options: WakeOptions) -> Result<()> {
     Ok(())
 }
 
-/// Send Wake-on-LAN to a specific IP address (in addition to broadcast).
-///
-/// Some network configurations work better with directed WoL.
-pub fn wake_to_ip(mac: &MacAddress, ip: Ipv4Addr) -> Result<()> {
-    let packet = build_magic_packet(mac);
-
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
-        .map_err(|e| Error::WakeOnLan(format!("Failed to create socket: {}", e)))?;
-
-    let dest = SocketAddr::V4(SocketAddrV4::new(ip, 9));
-
-    socket
-        .send_to(&packet, &dest.into())
-        .map_err(|e| Error::WakeOnLan(format!("Failed to send packet: {}", e)))?;
-
-    tracing::debug!(mac = %mac, ip = %ip, "Sent directed Wake-on-LAN packet");
-
-    Ok(())
-}
-
-/// Send Wake-on-LAN using multiple methods for reliability.
-///
-/// Sends to:
-/// 1. Global broadcast (255.255.255.255)
-/// 2. Directed to the TV's IP address
-pub fn wake_reliable(mac: &MacAddress, ip: Option<Ipv4Addr>) -> Result<()> {
-    // Send to global broadcast
-    wake(mac)?;
-
-    // Also send directly to IP if known
-    if let Some(ip) = ip {
-        if let Err(e) = wake_to_ip(mac, ip) {
-            tracing::warn!("Directed WoL failed (broadcast may still work): {}", e);
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

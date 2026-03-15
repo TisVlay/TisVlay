@@ -7,9 +7,7 @@ use crate::protocol::{
     VolumeInfo, VolumeResponse,
 };
 use serde_json::{json, Value};
-use std::net::Ipv4Addr;
 use std::time::Duration;
-use tisvlay_core::wol::{self, MacAddress};
 use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
 
 /// Client for controlling an LG WebOS TV.
@@ -380,41 +378,4 @@ impl WebOsClient {
             Ok(())
         }
     }
-}
-
-// -----------------------------------------------------------------------------
-// Wake-on-LAN helper functions
-// -----------------------------------------------------------------------------
-
-/// Wake a TV using Wake-on-LAN.
-///
-/// This only sends the WoL packet. You'll need to wait for the TV to boot
-/// before connecting.
-pub fn wake_tv(mac: &str) -> Result<()> {
-    let mac = MacAddress::parse(mac)?;
-    wol::wake(&mac)
-}
-
-/// Wake a TV and wait for it to be ready.
-pub async fn wake_and_wait(mac: &str, ip: Option<&str>, delay: Duration) -> Result<()> {
-    let mac_addr = MacAddress::parse(mac)?;
-    let ip_addr = ip.and_then(|s| s.parse::<Ipv4Addr>().ok());
-
-    wol::wake_reliable(&mac_addr, ip_addr)?;
-
-    tracing::info!(delay_ms = delay.as_millis(), "Waiting for TV to wake up");
-    tokio::time::sleep(delay).await;
-
-    Ok(())
-}
-
-/// Wake a TV, wait, then connect.
-pub async fn wake_and_connect(
-    mac: &str,
-    ip: &str,
-    client_key: Option<String>,
-    wake_delay: Duration,
-) -> Result<WebOsClient> {
-    wake_and_wait(mac, Some(ip), wake_delay).await?;
-    WebOsClient::connect(ip, client_key).await
 }
