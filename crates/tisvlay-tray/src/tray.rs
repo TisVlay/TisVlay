@@ -127,7 +127,7 @@ impl Tray for TisvlayTray {
         };
 
         ToolTip {
-            title: "tisvlay - TV Control".into(),
+            title: "TisVlay".into(),
             description,
             icon_name: "video-display".into(),
             ..Default::default()
@@ -194,22 +194,21 @@ fn build_tv_submenu(
     tv: &CachedTvState,
     cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
 ) -> MenuItem<TisvlayTray> {
-    let status = if tv.connected { "connected" } else { "off" };
-    let label = format!("{} [{}]", tv.name, status);
-
     let submenu = if tv.connected && tv.is_on {
         build_connected_tv_menu(tv, cmd_tx)
     } else {
         build_disconnected_tv_menu(tv, cmd_tx)
     };
 
+    let icon = if tv.connected {
+        "network-connect"
+    } else {
+        "network-disconnect"
+    };
+
     SubMenu {
-        label,
-        icon_name: if tv.connected {
-            "network-connect".into()
-        } else {
-            "network-disconnect".into()
-        },
+        label: tv.name.clone(),
+        icon_name: icon.into(),
         submenu,
         ..Default::default()
     }
