@@ -646,3 +646,101 @@ The round 1 fixes were implemented thoroughly and correctly. The codebase is in 
 - **Build** compiles clean with no warnings, all tests pass
 
 The remaining new issues from round 2 are all LOW/TRIVIAL — no blockers for proceeding to Phase 4b (tray) and Phase 5 (GUI).
+
+---
+
+## Round 3: Verification & New Findings
+
+All round 2 fixes verified. Build compiles clean, all tests pass.
+
+### Fixes Verified
+
+| Issue | Status | Notes |
+|-------|--------|-------|
+| R2.1 `with_connection` TOCTOU | **Verified** | Connect logic inlined under single per-TV lock. No separate `connect()` call. |
+| R2.2 `boot_wake` lock during I/O | **Verified** | Collects configs under lock, wakes outside. Both outer and per-TV locks released before WoL. |
+| R2.4 `PairingFailed` type erasure | **Verified** | Changed to `PairingFailed(Box<dyn Error + Send + Sync>)`. Wraps `PairingError`, `tisvlay_core::Error` directly. `DaemonError::from` handles it. |
+| R2.5 Stale discovery doc | **Verified** | `lib.rs` features section now only lists `dbus`. |
+| R2.6 Re-export chain | **Verified** | `lib.rs:99-100` exports D-Bus constants from `dbus_paths` directly (always available). `dbus_client.rs:40` uses private `use`. Clean. |
+
+### New Issues Found in Round 3
+
+#### R3.1 `get_state` still has the TOCTOU that R2.1 fixed (MEDIUM)
+
+`crates/tisvlayd/src/tv_manager.rs:604-625`:
+
+```rust
+pub async fn get_state(&self, tv_id: &str) -> Result<TvState, TvManagerError> {
+    self.connect(tv_id).await?;              // acquires + releases per-TV lock
+    let tv_arc = self.get_tv(tv_id).await?;
+    let mut tv = tv_arc.lock().await;         // re-acquires per-TV lock
+    // ...
+}
+```
+
+This is the **exact same double-lock pattern** that R2.1 identified and fixed for `with_connection`. Between the two acquisitions another task could power off or disconnect the TV. `get_state` should use `with_connection`:
+
+```rust
+pub async fn get_state(&self, tv_id: &str) -> Result<TvState, TvManagerError> {
+    self.with_connection(tv_id, |conn| {
+        Box::pin(async move { conn.get_state().await })
+    })
+    .await
+}
+```
+
+This would also eliminate the only remaining caller of `connect()` besides `reconnect()`, reducing the connect-logic duplication surface.
+
+#### R3.2 Connect logic is duplicated between `connect()` and `with_connection` (MEDIUM)
+
+After the R2.1 fix, `with_connection` (lines 348-368) inlines its own connect logic. But the standalone `connect()` method (lines 280-313) still exists with nearly-identical code. Now there are two places that implement "check connected → check powered_off → call registry.connect_tv → store connection":
+
+- `connect()` at lines 280-313
+- `with_connection` inline at lines 348-368
+
+They're subtly inconsistent: `connect()` drops the lock before `emit_state_change` (line 308), while `with_connection` emits while holding the lock (line 367). The channel send is non-blocking so this doesn't deadlock, but it's a maintenance hazard — future changes to connect logic need to be applied in two places.
+
+If `get_state` moves to `with_connection` (R3.1), then `connect()` is only called by `reconnect()`. Consider having `reconnect()` inline its own logic too, or factor out the common connect body into a private helper that takes the already-locked `MutexGuard`.
+
+#### R3.3 `Arc<RwLock<TvManager>>` outer lock is unnecessary overhead (MEDIUM)
+
+`crates/tisvlayd/src/main.rs:75`:
+```rust
+let shared_manager = Arc::new(RwLock::new(tv_manager));
+```
+
+`TvManager` already has proper internal locking (`Arc<RwLock<HashMap<String, Arc<Mutex<ManagedTv>>>>>`). Every access to `shared_manager` across the entire codebase acquires only a **read** lock — there are zero write-lock acquisitions:
+
+- D-Bus service methods: `self.manager.read().await` (never `write()`)
+- Signal handler: `manager.read().await`
+- SIGHUP reload: `manager.read().await` (reload uses internal locks)
+
+Since `TvManager` methods all take `&self` and handle their own synchronization, the outer `RwLock` adds pure overhead: every D-Bus call pays for a read-lock atomic operation that never contends. With D-Bus property polling (which can be frequent), this adds up.
+
+**Recommendation**: Change to `Arc<TvManager>`. This eliminates the `.read().await` at every D-Bus call site. `TvManager` already handles all internal synchronization correctly.
+
+#### R3.4 `TvManagerError::Other` is dead code with `#[allow(dead_code)]` (LOW)
+
+`crates/tisvlayd/src/tv_manager.rs:65-68`:
+```rust
+#[allow(dead_code)]
+#[error("{0}")]
+Other(String),
+```
+
+This variant was introduced in the R1 fix but is never constructed anywhere. Suppressing the warning with `#[allow(dead_code)]` rather than removing it is the wrong approach — if it's not needed, remove it. If it's kept for future use, it should at least not suppress the warning so it's visible when someone audits the code.
+
+### Round 3 Summary
+
+The round 2 fixes were all implemented correctly. The codebase quality is high and ready for Phase 4b/5.
+
+Three issues remain worth addressing before starting the GUI work:
+
+| Priority | Issue | Section |
+|----------|-------|---------|
+| MEDIUM | `get_state` has same TOCTOU as pre-R2.1 `with_connection` | R3.1 |
+| MEDIUM | Connect logic duplicated in `connect()` and `with_connection` | R3.2 |
+| MEDIUM | Outer `Arc<RwLock<TvManager>>` should be `Arc<TvManager>` | R3.3 |
+| LOW | `TvManagerError::Other` is dead code | R3.4 |
+
+R3.1 and R3.2 are closely related — fixing R3.1 (use `with_connection` in `get_state`) naturally reduces the duplication in R3.2. R3.3 is a straightforward simplification that touches `main.rs` and all D-Bus service structs (removing `.read().await` calls).
