@@ -93,7 +93,7 @@ The workspace sets `rust-version = "1.75"`, which supports native async trait me
 
 **Recommendation**: Remove `async_trait` and use native async trait methods. This is a significant performance improvement for the hot path (every TV command goes through `TvConnection`).
 
-**Response**: Deferred. `TvConnection` is used as `dyn TvConnection` which requires object-safe async methods. Native async traits with `dyn` require nightly `async_fn_in_dyn_trait` or the `trait_variant` crate. Will revisit when Rust stabilizes this.
+**Response**: Partially fixed. Removed `async_trait` from `TvDiscovery` (not used as `dyn`). Bumped `rust-version` to `1.94`. `TvConnection` and `TvConnector` keep `async_trait` since they're used as `dyn` trait objects. Tested on rustc 1.94.0 — removing `async_trait` from these traits produces E0038 ("the trait cannot be made into an object because method `power_off` is `async`"). Native `async fn` in `dyn` traits is still unstable as of 1.94. Options: wait for stabilization, adopt `trait_variant` crate, or manually desugar to `-> Pin<Box<dyn Future>>` (which is what `async_trait` already does).
 
 **Note**: Object safety with native async traits requires `-> impl Future` return types or `#[trait_variant::make(SendTrait: Send)]`. Since `TvConnection` is used as `dyn TvConnection`, some care is needed — but `async_trait` can still be removed from traits not used as trait objects. At minimum, `TvDiscovery` (not used as dyn) can drop it immediately.
 
@@ -130,7 +130,7 @@ This creates a cascade of `as` casts throughout the code:
 
 **Recommendation**: Pick one type. `u8` makes semantic sense for 0-100 values. Use it consistently everywhere, including `TvState` and `WebOsClient`. The LG SSAP protocol may return `i32`, but clamp and convert at the protocol boundary.
 
-**Response**: Deferred. Agreed with the approach — will unify to `u8` and clamp at the LG protocol boundary in a follow-up.
+**Response**: Fixed. Unified to `u8` everywhere. LG backend clamps at the protocol boundary (i32 from TV → clamp 0-100 → u8). Added doc comments on trait methods noting the 0-100 range.
 
 ### 2.4 `AtomicU64` on `WebOsClient` is unnecessary (LOW)
 
@@ -165,7 +165,7 @@ impl From<String> for DaemonError {
 
 **Recommendation**: Define a proper `TvManagerError` enum (or reuse `tisvlay_core::Error`) and convert to `DaemonError` structurally.
 
-**Response**: Deferred. Agreed — will introduce a proper error type in a follow-up.
+**Response**: Fixed. Introduced `TvManagerError` enum with structured variants (`TvNotFound`, `NotConnected`, `PoweredOff`, `WakeFailed`, `ConnectionFailed`, `CommandFailed`, etc.). `DaemonError::from(TvManagerError)` now matches on variants instead of string content.
 
 ---
 
@@ -194,7 +194,7 @@ This holds the `RwLock<HashMap<String, ManagedTv>>` write lock for the entire du
 
 **Recommendation**: Use per-TV locking instead of a single global lock. Consider `Arc<Mutex<ManagedTv>>` per entry, or extract the connection into its own `Arc<Mutex<Box<dyn TvConnection>>>` so that the HashMap lock is only held briefly.
 
-**Response**: Deferred. Agreed this is important for multi-TV setups. Will refactor to per-TV locking in a follow-up.
+**Response**: Fixed. Changed from `RwLock<HashMap<String, ManagedTv>>` to `RwLock<HashMap<String, Arc<Mutex<ManagedTv>>>>`. The outer lock is only held briefly for HashMap lookup; network I/O happens under per-TV mutexes. Different TVs can now be controlled concurrently.
 
 ### 3.2 `TvConnection` requires `&mut self` everywhere (HIGH)
 
@@ -206,7 +206,7 @@ This is partly a consequence of `WebOsClient` using a single multiplexed WebSock
 
 **Recommendation**: Consider `&self` with interior mutability on backends that need it, or split read-only queries from mutating commands.
 
-**Response**: Deferred. Tied to the per-TV locking refactor (3.1). The current `&mut self` constraint is driven by WebSocket's single-stream model but shouldn't be imposed on all backends.
+**Response**: Partially addressed. Per-TV locking (3.1) means `&mut self` no longer blocks other TVs. Keeping `&mut self` on the trait for now since it correctly reflects the LG WebSocket constraint. Future backends that support concurrent queries can use interior mutability.
 
 ### 3.3 Proxy cache TOCTOU race in `DaemonClient` (LOW)
 
@@ -270,7 +270,7 @@ async fn power_off(&mut self) -> Result<()> {
 
 If the power-off command fails (e.g., TV already off, network error), the caller gets `Ok(())`. This masks real failures. At minimum, the power_off result should be propagated; the close error can reasonably be ignored since the TV is shutting down.
 
-**Response**: Deferred. The silent drop is intentional — after sending power_off, the TV is shutting down and the WebSocket will close regardless. Propagating the error would cause spurious failures. Will revisit if real issues arise.
+**Response**: Fixed. Now logs a warning if the power_off command fails, but still returns `Ok(())` and cleans up the connection. The TV is shutting down regardless.
 
 ### 5.2 `LgConnector::start_pairing` cancel doesn't work (MEDIUM)
 
@@ -293,7 +293,7 @@ tokio::spawn(async move {
 
 To actually support cancellation, the connect operation needs to race against the command channel using `tokio::select!`.
 
-**Response**: Deferred. Pairing is an infrequent interactive operation. Will fix with `tokio::select!` in a follow-up.
+**Response**: Fixed. Restructured the spawned pairing task to use `tokio::select!` to race the WebSocket connect against the cancel command channel.
 
 ### 5.3 `json_to_toml` converts null to empty string (LOW)
 
@@ -334,7 +334,7 @@ async fn with_proxies<F, T>(&self, tv_id: &str, op: &str, f: F) -> Result<T>
 where F: FnOnce(&TvProxies) -> Pin<Box<dyn Future<Output = zbus::Result<T>> + '_>>
 ```
 
-**Response**: Deferred. Agreed — will extract a `with_proxies` helper in a follow-up to reduce boilerplate.
+**Response**: Fixed. Extracted `with_proxies` helper — 13 methods reduced from ~8 lines each to 2-3 lines. Net reduction of 74 lines.
 
 ### 6.2 CLI daemon/direct mode duplication (MEDIUM)
 
@@ -342,13 +342,13 @@ where F: FnOnce(&TvProxies) -> Pin<Box<dyn Future<Output = zbus::Result<T>> + '_
 
 Consider a `TvController` trait abstraction or at least extract the output formatting.
 
-**Response**: Deferred. The duplication is manageable for now. Will consider a shared abstraction when adding the tray/GUI clients.
+**Response**: Accepted. The two match trees serve different purposes (D-Bus client vs direct backend connection). Abstracting would require a `TvController` trait that both implement, adding complexity for moderate reduction. Will revisit when adding tray/GUI clients.
 
 ### 6.3 D-Bus TV service struct duplication (MEDIUM)
 
 `crates/tisvlayd/src/dbus/tv.rs` has five nearly identical structs (`TvPowerService`, `TvScreenService`, `TvVolumeService`, `TvInputService`, `TvBacklightService`), each storing `tv_id: String, manager: Arc<RwLock<TvManager>>` and constructing from the same `TvState` tuple. A macro could reduce this boilerplate significantly.
 
-**Response**: Deferred. Macro would help but `zbus` proc macros on D-Bus interfaces make this tricky. Will revisit.
+**Response**: Accepted. The `zbus` `#[interface]` proc macro constrains the struct layout. A declarative macro could generate the struct + constructor boilerplate, but the D-Bus method impls still need to be written per-interface. Low ROI for the added macro complexity.
 
 ---
 
@@ -360,7 +360,7 @@ Consider a `TvController` trait abstraction or at least extract the output forma
 
 The LG backend does clamp internally (`volume.clamp(0, 100)`) but this should be enforced at the trait level so all backends get consistent behavior. Add a validation check in the default impl or document that backends MUST clamp.
 
-**Response**: Deferred. Will address together with the numeric type unification (2.3).
+**Response**: Fixed alongside 2.3. LG backend clamps values to 0-100 at the protocol boundary. Trait doc comments note the expected range.
 
 ### 7.2 TV ID generation doesn't guarantee uniqueness (LOW)
 
@@ -432,7 +432,7 @@ This field is initialized to default and never updated. Either implement state c
 
 `crates/tisvlay-core/src/error.rs:139-158` — The `not_supported` helper has an if-else chain that duplicates the same mapping as `Capabilities::to_strings()`. Use the existing method or a `const` array.
 
-**Response**: Deferred. Minor cleanup — will simplify in a follow-up.
+**Response**: Fixed. Replaced the if-else chain with `capability.to_strings().into_iter().next().unwrap_or("unknown")`.
 
 ### 10.2 `PowerState::parse` maps "suspend" to `Standby` (LOW)
 

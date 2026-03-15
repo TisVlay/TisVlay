@@ -131,25 +131,11 @@ pub enum Error {
 impl Error {
     /// Create a "not supported" error for a missing capability.
     pub fn not_supported(message: impl Into<String>, capability: Capabilities) -> Self {
-        let cap_name = if capability.contains(Capabilities::POWER) {
-            "power"
-        } else if capability.contains(Capabilities::SCREEN) {
-            "screen"
-        } else if capability.contains(Capabilities::VOLUME) {
-            "volume"
-        } else if capability.contains(Capabilities::MUTE) {
-            "mute"
-        } else if capability.contains(Capabilities::INPUT) {
-            "input"
-        } else if capability.contains(Capabilities::BACKLIGHT) {
-            "backlight"
-        } else if capability.contains(Capabilities::WOL) {
-            "wol"
-        } else if capability.contains(Capabilities::DISCOVERY) {
-            "discovery"
-        } else {
-            "unknown"
-        };
+        let cap_name = capability
+            .to_strings()
+            .into_iter()
+            .next()
+            .unwrap_or("unknown");
 
         Self::NotSupported {
             message: message.into(),

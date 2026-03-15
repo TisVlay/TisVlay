@@ -118,7 +118,9 @@ impl TvConnection for LgConnection {
 
     async fn power_off(&mut self) -> Result<()> {
         if let Some(ref mut client) = self.client {
-            let _ = client.power_off().await;
+            if let Err(e) = client.power_off().await {
+                tracing::warn!(error = %e, "power_off command failed (TV may already be off)");
+            }
             let _ = client.close().await;
         }
         self.client = None;
@@ -143,15 +145,12 @@ impl TvConnection for LgConnection {
     }
 
     async fn set_volume(&mut self, level: u8) -> Result<()> {
-        self.ensure_connected()
-            .await?
-            .set_volume(level as i32)
-            .await
+        self.ensure_connected().await?.set_volume(level).await
     }
 
     async fn get_volume(&mut self) -> Result<u8> {
         let info = self.ensure_connected().await?.get_volume().await?;
-        Ok(info.volume as u8)
+        Ok(info.volume.clamp(0, 100) as u8)
     }
 
     async fn set_mute(&mut self, mute: bool) -> Result<()> {
@@ -177,15 +176,11 @@ impl TvConnection for LgConnection {
     }
 
     async fn set_backlight(&mut self, level: u8) -> Result<()> {
-        self.ensure_connected()
-            .await?
-            .set_backlight(level as i32)
-            .await
+        self.ensure_connected().await?.set_backlight(level).await
     }
 
     async fn get_backlight(&mut self) -> Result<u8> {
-        let level = self.ensure_connected().await?.get_backlight().await?;
-        Ok(level as u8)
+        self.ensure_connected().await?.get_backlight().await
     }
 }
 
@@ -317,51 +312,55 @@ impl TvConnector for LgConnector {
                 "Please accept the pairing prompt on your LG TV",
             ));
 
-            // Connect and wait for pairing
-            match WebOsClient::connect(&ip, None).await {
-                Ok(client) => {
-                    if let Some(key) = client.client_key() {
-                        info!(ip = %ip, "LG TV pairing successful");
-                        let _ = state_tx.send(PairingState::complete(Credentials::with_type(
-                            key,
-                            "client_key",
-                        )));
-                    } else {
-                        warn!(ip = %ip, "LG TV connected but no client key received");
-                        let _ = state_tx.send(PairingState::failed(
-                            tisvlay_core::PairingError::connection_failed(
-                                "Connected but no client key received",
-                            ),
-                        ));
+            // Race the pairing operation against cancel commands so that
+            // PairingCommand::Cancel actually interrupts the WebSocket
+            // connect/handshake phase.
+            tokio::select! {
+                result = WebOsClient::connect(&ip, None) => {
+                    match result {
+                        Ok(client) => {
+                            if let Some(key) = client.client_key() {
+                                info!(ip = %ip, "LG TV pairing successful");
+                                let _ = state_tx.send(PairingState::complete(
+                                    Credentials::with_type(key, "client_key"),
+                                ));
+                            } else {
+                                warn!(ip = %ip, "LG TV connected but no client key received");
+                                let _ = state_tx.send(PairingState::failed(
+                                    tisvlay_core::PairingError::connection_failed(
+                                        "Connected but no client key received",
+                                    ),
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            warn!(ip = %ip, error = %e, "LG TV pairing failed");
+                            let state = match &e {
+                                Error::PairingRejected => {
+                                    PairingState::failed(tisvlay_core::PairingError::rejected())
+                                }
+                                Error::PairingTimeout => {
+                                    PairingState::failed(tisvlay_core::PairingError::timeout())
+                                }
+                                _ => PairingState::failed(
+                                    tisvlay_core::PairingError::connection_failed(e.to_string()),
+                                ),
+                            };
+                            let _ = state_tx.send(state);
+                        }
                     }
                 }
-                Err(e) => {
-                    warn!(ip = %ip, error = %e, "LG TV pairing failed");
-                    let state = match &e {
-                        Error::PairingRejected => {
-                            PairingState::failed(tisvlay_core::PairingError::rejected())
+                cmd = command_rx.recv() => {
+                    match cmd {
+                        Some(PairingCommand::Cancel) | None => {
+                            info!(ip = %ip, "LG TV pairing cancelled");
+                            let _ = state_tx.send(PairingState::failed(
+                                tisvlay_core::PairingError::cancelled(),
+                            ));
                         }
-                        Error::PairingTimeout => {
-                            PairingState::failed(tisvlay_core::PairingError::timeout())
+                        Some(PairingCommand::SubmitInput(_)) => {
+                            // LG doesn't use PIN/password input; continue waiting
                         }
-                        _ => PairingState::failed(tisvlay_core::PairingError::connection_failed(
-                            e.to_string(),
-                        )),
-                    };
-                    let _ = state_tx.send(state);
-                }
-            }
-
-            // Handle cancel command if received
-            while let Some(cmd) = command_rx.recv().await {
-                match cmd {
-                    PairingCommand::Cancel => {
-                        let _ = state_tx
-                            .send(PairingState::failed(tisvlay_core::PairingError::cancelled()));
-                        break;
-                    }
-                    PairingCommand::SubmitInput(_) => {
-                        // LG doesn't use PIN/password input
                     }
                 }
             }
@@ -402,7 +401,6 @@ impl Default for LgDiscovery {
 }
 
 #[cfg(feature = "discovery")]
-#[async_trait]
 impl TvDiscovery for LgDiscovery {
     async fn discover(&self, timeout: std::time::Duration) -> Result<Vec<DiscoveredTv>> {
         crate::discovery::discover_lg_tvs(timeout).await

@@ -273,7 +273,7 @@ impl TvVolumeService {
         info!(tv_id = %self.tv_id, volume = level, "D-Bus: SetVolume");
         let manager = self.manager.read().await;
         manager
-            .set_volume(&self.tv_id, level as u32)
+            .set_volume(&self.tv_id, level)
             .await
             .map_err(DaemonError::from)
     }
@@ -282,7 +282,7 @@ impl TvVolumeService {
     #[zbus(property)]
     async fn volume(&self) -> u8 {
         let manager = self.manager.read().await;
-        manager.get_volume(&self.tv_id).await.unwrap_or(0) as u8
+        manager.get_volume(&self.tv_id).await.unwrap_or(0)
     }
 
     /// Set mute state.
@@ -381,7 +381,7 @@ impl TvBacklightService {
         info!(tv_id = %self.tv_id, backlight = level, "D-Bus: SetBacklight");
         let manager = self.manager.read().await;
         manager
-            .set_backlight(&self.tv_id, level as u32)
+            .set_backlight(&self.tv_id, level)
             .await
             .map_err(DaemonError::from)
     }
@@ -390,7 +390,7 @@ impl TvBacklightService {
     #[zbus(property)]
     async fn backlight(&self) -> u8 {
         let manager = self.manager.read().await;
-        manager.get_backlight(&self.tv_id).await.unwrap_or(0) as u8
+        manager.get_backlight(&self.tv_id).await.unwrap_or(0)
     }
 }
 

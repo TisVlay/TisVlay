@@ -1,14 +1,72 @@
 //! TV connection manager.
 //!
 //! Manages connections to multiple TVs using vendor-agnostic trait objects.
+//!
+//! Uses per-TV locking so that operations on different TVs can proceed
+//! concurrently. The outer `RwLock<HashMap>` is held only briefly for
+//! lookup; network I/O runs under a per-TV `tokio::sync::Mutex`.
 
 use crate::registry::BackendRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tisvlay_core::{Capabilities, Config, PowerState, TvConfig, TvConnection, TvState};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
+
+/// Error type for TV manager operations.
+#[derive(Debug, thiserror::Error)]
+pub enum TvManagerError {
+    /// TV not found in the managed set.
+    #[error("TV not found: {0}")]
+    TvNotFound(String),
+
+    /// TV exists but is not currently connected.
+    #[error("Not connected to TV: {0}")]
+    NotConnected(String),
+
+    /// TV is intentionally powered off (no reconnection attempts).
+    #[error("TV {0} is powered off")]
+    PoweredOff(String),
+
+    /// Wake-on-LAN failed for a TV.
+    #[error("Wake failed for TV {tv_id}: {source}")]
+    WakeFailed {
+        tv_id: String,
+        source: tisvlay_core::Error,
+    },
+
+    /// Connection to a TV failed.
+    #[error("Connection failed for TV {tv_id}: {source}")]
+    ConnectionFailed {
+        tv_id: String,
+        source: tisvlay_core::Error,
+    },
+
+    /// A command executed on a TV connection failed.
+    #[error("Command failed on TV {tv_id}: {source}")]
+    CommandFailed {
+        tv_id: String,
+        source: tisvlay_core::Error,
+    },
+
+    /// Wake not supported for this TV.
+    #[error("Wake not supported for TV: {0}")]
+    WakeNotSupported(String),
+
+    /// Pairing failed.
+    #[error("Pairing failed for TV: {source}")]
+    PairingFailed { source: tisvlay_core::Error },
+
+    /// Configuration I/O error (load/save).
+    #[error("Config error: {0}")]
+    ConfigError(String),
+
+    /// Catch-all for other errors.
+    #[allow(dead_code)]
+    #[error("{0}")]
+    Other(String),
+}
 
 /// Event emitted when TV state changes.
 #[derive(Debug, Clone)]
@@ -50,7 +108,7 @@ struct ManagedTv {
     connection: Option<Box<dyn TvConnection>>,
     /// Last error message.
     last_error: Option<String>,
-    /// TV was intentionally powered off — don't try to reconnect until power_on.
+    /// TV was intentionally powered off -- don't try to reconnect until power_on.
     powered_off: bool,
 }
 
@@ -82,14 +140,17 @@ impl ManagedTv {
 /// TV connection manager.
 ///
 /// Thread-safe manager for multiple TV connections.
+/// Uses per-TV locking so operations on different TVs proceed concurrently.
 /// Connection resilience (auto-reconnect, WoL retry) is handled by the backends.
 pub struct TvManager {
     /// Global configuration.
     config: Config,
     /// Backend registry for vendor support.
     registry: Arc<BackendRegistry>,
-    /// Managed TVs by ID.
-    tvs: Arc<RwLock<HashMap<String, ManagedTv>>>,
+    /// Managed TVs by ID -- each TV has its own mutex for independent locking.
+    /// The outer RwLock protects the HashMap itself (add/remove); individual TV
+    /// operations hold only the per-TV Mutex.
+    tvs: Arc<RwLock<HashMap<String, Arc<Mutex<ManagedTv>>>>>,
     /// Channel to send state change events.
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
 }
@@ -104,7 +165,10 @@ impl TvManager {
     ) -> (Self, mpsc::UnboundedReceiver<StateChangeEvent>) {
         let mut tvs = HashMap::new();
         for tv_config in &config.tv {
-            tvs.insert(tv_config.id.clone(), ManagedTv::new(tv_config.clone()));
+            tvs.insert(
+                tv_config.id.clone(),
+                Arc::new(Mutex::new(ManagedTv::new(tv_config.clone()))),
+            );
         }
 
         let tvs = Arc::new(RwLock::new(tvs));
@@ -127,6 +191,16 @@ impl TvManager {
         }
     }
 
+    /// Get a per-TV Arc, briefly holding the outer read lock for lookup only.
+    async fn get_tv(&self, tv_id: &str) -> Result<Arc<Mutex<ManagedTv>>, TvManagerError> {
+        self.tvs
+            .read()
+            .await
+            .get(tv_id)
+            .cloned()
+            .ok_or_else(|| TvManagerError::TvNotFound(tv_id.to_string()))
+    }
+
     /// Wake TVs that have wake_on_boot enabled.
     pub async fn boot_wake(&self) {
         if !self.config.daemon.wake_on_boot {
@@ -137,7 +211,8 @@ impl TvManager {
         info!("Performing boot-time Wake-on-LAN");
         let tvs = self.tvs.read().await;
 
-        for (id, tv) in tvs.iter() {
+        for (id, tv_arc) in tvs.iter() {
+            let tv = tv_arc.lock().await;
             if self.registry.supports_wake(&tv.config) {
                 info!(tv_id = %id, "Waking TV");
                 if let Err(e) = self.registry.wake_tv(&tv.config).await {
@@ -160,78 +235,69 @@ impl TvManager {
 
     /// Get basic TV information.
     pub async fn get_tv_info(&self, tv_id: &str) -> Option<TvInfo> {
-        let tvs = self.tvs.read().await;
-        tvs.get(tv_id).map(|tv| {
-            let address = self.registry.display_address(&tv.config);
-            TvInfo {
-                name: tv.config.name.clone(),
-                address,
-                vendor: tv.config.vendor.clone(),
-            }
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        let address = self.registry.display_address(&tv.config);
+        Some(TvInfo {
+            name: tv.config.name.clone(),
+            address,
+            vendor: tv.config.vendor.clone(),
         })
     }
 
     /// Check if a TV is connected.
     pub async fn is_connected(&self, tv_id: &str) -> bool {
-        let tvs = self.tvs.read().await;
-        tvs.get(tv_id).map(|tv| tv.is_connected()).unwrap_or(false)
+        match self.get_tv(tv_id).await {
+            Ok(tv_arc) => {
+                let tv = tv_arc.lock().await;
+                tv.is_connected()
+            }
+            Err(_) => false,
+        }
     }
 
     /// Get TV capabilities.
     pub async fn get_capabilities(&self, tv_id: &str) -> Option<Capabilities> {
-        let tvs = self.tvs.read().await;
-        tvs.get(tv_id).map(|tv| tv.capabilities())
-    }
-
-    /// Get TV configuration by ID.
-    pub async fn get_tv_config(&self, tv_id: &str) -> Option<TvConfig> {
-        let tvs = self.tvs.read().await;
-        tvs.get(tv_id).map(|tv| tv.config.clone())
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        Some(tv.capabilities())
     }
 
     /// Connect to a TV, returning success/failure.
-    async fn connect(&self, tv_id: &str) -> Result<(), String> {
-        // Get config first (read lock)
-        let (display_addr, config) = {
-            let tvs = self.tvs.read().await;
-            let tv = tvs
-                .get(tv_id)
-                .ok_or_else(|| format!("TV not found: {}", tv_id))?;
+    ///
+    /// Acquires only the per-TV mutex. Network I/O (the actual connect call)
+    /// runs with the per-TV mutex held to prevent duplicate connections, but
+    /// the outer HashMap lock is released immediately after lookup.
+    async fn connect(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        let tv_arc = self.get_tv(tv_id).await?;
+        let mut tv = tv_arc.lock().await;
 
-            if tv.is_connected() {
-                return Ok(());
-            }
-
-            if tv.powered_off {
-                return Err(format!("TV {} is powered off", tv_id));
-            }
-
-            let display_addr = self.registry.display_address(&tv.config);
-            let config = tv.config.clone();
-
-            (display_addr, config)
-        };
-
-        info!(tv_id = %tv_id, address = %display_addr, vendor = %config.vendor, "Connecting to TV");
-
-        // Connect using registry (no lock held)
-        let connection = self
-            .registry
-            .connect_tv(&config)
-            .await
-            .map_err(|e| format!("Connection failed: {}", e))?;
-
-        // Store connection (write lock)
-        {
-            let mut tvs = self.tvs.write().await;
-            if let Some(tv) = tvs.get_mut(tv_id) {
-                info!(tv_id = %tv_id, "Connected to TV");
-                tv.connection = Some(connection);
-                tv.last_error = None;
-            }
+        if tv.is_connected() {
+            return Ok(());
         }
 
-        // Emit connection state change
+        if tv.powered_off {
+            return Err(TvManagerError::PoweredOff(tv_id.to_string()));
+        }
+
+        let display_addr = self.registry.display_address(&tv.config);
+        info!(tv_id = %tv_id, address = %display_addr, vendor = %tv.config.vendor, "Connecting to TV");
+
+        // Connect using registry (per-TV mutex held to prevent duplicate connects)
+        let connection = self.registry.connect_tv(&tv.config).await.map_err(|e| {
+            TvManagerError::ConnectionFailed {
+                tv_id: tv_id.to_string(),
+                source: e,
+            }
+        })?;
+
+        info!(tv_id = %tv_id, "Connected to TV");
+        tv.connection = Some(connection);
+        tv.last_error = None;
+
+        // Drop the per-TV lock before emitting state change
+        drop(tv);
+
         let event = StateChangeEvent::connection_change(tv_id, true, None);
         self.emit_state_change(event);
 
@@ -239,14 +305,13 @@ impl TvManager {
     }
 
     /// Force reconnection to a TV.
-    pub async fn reconnect(&self, tv_id: &str) -> Result<(), String> {
-        // Disconnect first
+    pub async fn reconnect(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        // Disconnect first under per-TV lock
         {
-            let mut tvs = self.tvs.write().await;
-            if let Some(tv) = tvs.get_mut(tv_id) {
-                if let Some(mut conn) = tv.connection.take() {
-                    let _ = conn.close().await;
-                }
+            let tv_arc = self.get_tv(tv_id).await?;
+            let mut tv = tv_arc.lock().await;
+            if let Some(mut conn) = tv.connection.take() {
+                let _ = conn.close().await;
             }
         }
 
@@ -257,8 +322,8 @@ impl TvManager {
     /// Execute a command on a TV connection.
     ///
     /// Connects if not already connected, then executes the command.
-    /// The backend handles its own reconnection internally via `ensure_connected()`.
-    async fn with_connection<F, T>(&self, tv_id: &str, f: F) -> Result<T, String>
+    /// Only holds the per-TV mutex -- other TVs are not blocked.
+    async fn with_connection<F, T>(&self, tv_id: &str, f: F) -> Result<T, TvManagerError>
     where
         F: FnOnce(
             &mut dyn TvConnection,
@@ -266,24 +331,38 @@ impl TvManager {
             Box<dyn std::future::Future<Output = tisvlay_core::Result<T>> + Send + '_>,
         >,
     {
+        // Ensure connected (acquires and releases per-TV lock internally)
         self.connect(tv_id).await?;
 
-        let mut tvs = self.tvs.write().await;
-        let tv = tvs
-            .get_mut(tv_id)
-            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
+        // Now lock the per-TV mutex for the command
+        let tv_arc = self.get_tv(tv_id).await?;
+        let mut tv = tv_arc.lock().await;
 
         let connection = tv
             .connection
             .as_mut()
-            .ok_or_else(|| "Not connected".to_string())?;
+            .ok_or_else(|| TvManagerError::NotConnected(tv_id.to_string()))?;
 
         match f(connection.as_mut()).await {
             Ok(result) => Ok(result),
             Err(e) => {
-                let msg = format!("Command failed: {}", e);
                 warn!(tv_id = %tv_id, error = %e, "Command failed");
-                Err(msg)
+
+                // Drop stale connection so the next call reconnects via connect()
+                if matches!(
+                    e,
+                    tisvlay_core::Error::ConnectionClosed
+                        | tisvlay_core::Error::Connection(_)
+                        | tisvlay_core::Error::Io(_)
+                        | tisvlay_core::Error::RequestTimeout
+                ) {
+                    tv.connection = None;
+                }
+
+                Err(TvManagerError::CommandFailed {
+                    tv_id: tv_id.to_string(),
+                    source: e,
+                })
             }
         }
     }
@@ -297,44 +376,44 @@ impl TvManager {
     /// The backend handles all transport-specific retry logic (WoL resend,
     /// boot wait, connect retry) via `wake_and_connect()`. The daemon
     /// provides timing policy from config.
-    pub async fn power_on(&self, tv_id: &str) -> Result<(), String> {
-        let config = self
-            .get_tv_config(tv_id)
-            .await
-            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
+    pub async fn power_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        let tv_arc = self.get_tv(tv_id).await?;
 
-        if !self.registry.supports_wake(&config) {
-            return Err("Wake not supported for this TV".to_string());
-        }
+        // Read config and clear state under per-TV lock
+        let config = {
+            let mut tv = tv_arc.lock().await;
 
-        let display_addr = self.registry.display_address(&config);
-        info!(tv_id = %tv_id, address = %display_addr, "Waking TV");
-
-        // Drop any stale connection and clear the powered-off flag
-        {
-            let mut tvs = self.tvs.write().await;
-            if let Some(tv) = tvs.get_mut(tv_id) {
-                tv.powered_off = false;
-                if let Some(mut conn) = tv.connection.take() {
-                    let _ = conn.close().await;
-                }
+            if !self.registry.supports_wake(&tv.config) {
+                return Err(TvManagerError::WakeNotSupported(tv_id.to_string()));
             }
-        }
 
-        // Backend handles wake + boot wait + connect retry
+            let display_addr = self.registry.display_address(&tv.config);
+            info!(tv_id = %tv_id, address = %display_addr, "Waking TV");
+
+            // Drop any stale connection and clear the powered-off flag
+            tv.powered_off = false;
+            if let Some(mut conn) = tv.connection.take() {
+                let _ = conn.close().await;
+            }
+
+            tv.config.clone()
+        };
+
+        // Backend handles wake + boot wait + connect retry (no lock held)
         let connection = self
             .registry
             .wake_and_connect_tv(&config, self.config.daemon.wake_delay_ms)
             .await
-            .map_err(|e| format!("Wake failed: {}", e))?;
+            .map_err(|e| TvManagerError::WakeFailed {
+                tv_id: tv_id.to_string(),
+                source: e,
+            })?;
 
-        // Store the connection
+        // Store the connection under per-TV lock
         {
-            let mut tvs = self.tvs.write().await;
-            if let Some(tv) = tvs.get_mut(tv_id) {
-                tv.connection = Some(connection);
-                tv.last_error = None;
-            }
+            let mut tv = tv_arc.lock().await;
+            tv.connection = Some(connection);
+            tv.last_error = None;
         }
 
         let event = StateChangeEvent::connection_change(tv_id, true, None);
@@ -347,7 +426,7 @@ impl TvManager {
     ///
     /// After sending the power-off command, clears the daemon's connection
     /// tracking. The backend already closed its own socket.
-    pub async fn power_off(&self, tv_id: &str) -> Result<(), String> {
+    pub async fn power_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let result = self
             .with_connection(tv_id, |conn| {
                 Box::pin(async move { conn.power_off().await })
@@ -358,18 +437,17 @@ impl TvManager {
         // connect() calls (e.g., from ScreenLocked racing after sleep) don't
         // try to connect to a dead TV.
         {
-            let mut tvs = self.tvs.write().await;
-            if let Some(tv) = tvs.get_mut(tv_id) {
-                tv.connection = None;
-                tv.powered_off = true;
-            }
+            let tv_arc = self.get_tv(tv_id).await?;
+            let mut tv = tv_arc.lock().await;
+            tv.connection = None;
+            tv.powered_off = true;
         }
 
         result
     }
 
     /// Get power state.
-    pub async fn get_power_state(&self, tv_id: &str) -> Result<PowerState, String> {
+    pub async fn get_power_state(&self, tv_id: &str) -> Result<PowerState, TvManagerError> {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.get_power_state().await })
         })
@@ -381,7 +459,7 @@ impl TvManager {
     // -------------------------------------------------------------------------
 
     /// Turn screen on.
-    pub async fn screen_on(&self, tv_id: &str) -> Result<(), String> {
+    pub async fn screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.screen_on().await })
         })
@@ -389,7 +467,7 @@ impl TvManager {
     }
 
     /// Turn screen off.
-    pub async fn screen_off(&self, tv_id: &str) -> Result<(), String> {
+    pub async fn screen_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.screen_off().await })
         })
@@ -397,7 +475,7 @@ impl TvManager {
     }
 
     /// Check if screen is on.
-    pub async fn is_screen_on(&self, tv_id: &str) -> Result<bool, String> {
+    pub async fn is_screen_on(&self, tv_id: &str) -> Result<bool, TvManagerError> {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.is_screen_on().await })
         })
@@ -409,23 +487,23 @@ impl TvManager {
     // -------------------------------------------------------------------------
 
     /// Set volume.
-    pub async fn set_volume(&self, tv_id: &str, volume: u32) -> Result<(), String> {
+    pub async fn set_volume(&self, tv_id: &str, volume: u8) -> Result<(), TvManagerError> {
         self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.set_volume(volume as u8).await })
+            Box::pin(async move { conn.set_volume(volume).await })
         })
         .await
     }
 
     /// Get volume.
-    pub async fn get_volume(&self, tv_id: &str) -> Result<u32, String> {
+    pub async fn get_volume(&self, tv_id: &str) -> Result<u8, TvManagerError> {
         self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_volume().await.map(|v| v as u32) })
+            Box::pin(async move { conn.get_volume().await })
         })
         .await
     }
 
     /// Set mute.
-    pub async fn set_mute(&self, tv_id: &str, mute: bool) -> Result<(), String> {
+    pub async fn set_mute(&self, tv_id: &str, mute: bool) -> Result<(), TvManagerError> {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.set_mute(mute).await })
         })
@@ -433,7 +511,7 @@ impl TvManager {
     }
 
     /// Check if muted.
-    pub async fn is_muted(&self, tv_id: &str) -> Result<bool, String> {
+    pub async fn is_muted(&self, tv_id: &str) -> Result<bool, TvManagerError> {
         self.with_connection(tv_id, |conn| Box::pin(async move { conn.is_muted().await }))
             .await
     }
@@ -443,7 +521,7 @@ impl TvManager {
     // -------------------------------------------------------------------------
 
     /// Switch input.
-    pub async fn switch_input(&self, tv_id: &str, input_id: &str) -> Result<(), String> {
+    pub async fn switch_input(&self, tv_id: &str, input_id: &str) -> Result<(), TvManagerError> {
         let input = input_id.to_string();
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.switch_input(&input).await })
@@ -452,7 +530,7 @@ impl TvManager {
     }
 
     /// Get current input.
-    pub async fn get_current_input(&self, tv_id: &str) -> Result<Option<String>, String> {
+    pub async fn get_current_input(&self, tv_id: &str) -> Result<Option<String>, TvManagerError> {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.get_current_input().await })
         })
@@ -460,7 +538,7 @@ impl TvManager {
     }
 
     /// Get available inputs.
-    pub async fn get_inputs(&self, tv_id: &str) -> Result<Vec<(String, String)>, String> {
+    pub async fn get_inputs(&self, tv_id: &str) -> Result<Vec<(String, String)>, TvManagerError> {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move {
                 let inputs = conn.list_inputs().await?;
@@ -475,17 +553,17 @@ impl TvManager {
     // -------------------------------------------------------------------------
 
     /// Set backlight.
-    pub async fn set_backlight(&self, tv_id: &str, backlight: u32) -> Result<(), String> {
+    pub async fn set_backlight(&self, tv_id: &str, backlight: u8) -> Result<(), TvManagerError> {
         self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.set_backlight(backlight as u8).await })
+            Box::pin(async move { conn.set_backlight(backlight).await })
         })
         .await
     }
 
     /// Get backlight.
-    pub async fn get_backlight(&self, tv_id: &str) -> Result<u32, String> {
+    pub async fn get_backlight(&self, tv_id: &str) -> Result<u8, TvManagerError> {
         self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_backlight().await.map(|v| v as u32) })
+            Box::pin(async move { conn.get_backlight().await })
         })
         .await
     }
@@ -495,24 +573,26 @@ impl TvManager {
     // -------------------------------------------------------------------------
 
     /// Get TV state.
-    pub async fn get_state(&self, tv_id: &str) -> Result<TvState, String> {
-        // First try to connect if needed
+    pub async fn get_state(&self, tv_id: &str) -> Result<TvState, TvManagerError> {
+        // Ensure connected (acquires and releases per-TV lock internally)
         self.connect(tv_id).await?;
 
-        let mut tvs = self.tvs.write().await;
-        let tv = tvs
-            .get_mut(tv_id)
-            .ok_or_else(|| format!("TV not found: {}", tv_id))?;
+        // Lock the per-TV mutex for the query
+        let tv_arc = self.get_tv(tv_id).await?;
+        let mut tv = tv_arc.lock().await;
 
         let connection = tv
             .connection
             .as_mut()
-            .ok_or_else(|| "Not connected".to_string())?;
+            .ok_or_else(|| TvManagerError::NotConnected(tv_id.to_string()))?;
 
         connection
             .get_state()
             .await
-            .map_err(|e| format!("Failed to get state: {}", e))
+            .map_err(|e| TvManagerError::CommandFailed {
+                tv_id: tv_id.to_string(),
+                source: e,
+            })
     }
 
     // -------------------------------------------------------------------------
@@ -526,26 +606,29 @@ impl TvManager {
         vendor: &str,
         vendor_config: toml::Value,
         id: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<String, TvManagerError> {
         info!(name = %name, vendor = %vendor, "Pairing TV");
 
         // Start pairing via registry
         let mut session = self
             .registry
             .start_pairing(vendor, &vendor_config)
-            .map_err(|e| format!("Failed to start pairing: {}", e))?;
+            .map_err(|e| TvManagerError::PairingFailed { source: e })?;
 
         // Wait for pairing to complete
-        let credentials = session
-            .wait_for_completion()
-            .await
-            .map_err(|e| format!("Pairing failed: {}", e))?;
+        let credentials =
+            session
+                .wait_for_completion()
+                .await
+                .map_err(|e| TvManagerError::PairingFailed {
+                    source: tisvlay_core::Error::backend(vendor, e.to_string()),
+                })?;
 
         // Build final vendor config from pairing results
         let final_config = self
             .registry
             .build_config_from_pairing(vendor, &vendor_config, &credentials)
-            .map_err(|e| format!("Failed to build config from pairing: {}", e))?;
+            .map_err(|e| TvManagerError::PairingFailed { source: e })?;
 
         // Generate ID from name if not provided
         let tv_id = id.map(String::from).unwrap_or_else(|| {
@@ -567,18 +650,19 @@ impl TvManager {
             .insert(vendor.to_string(), final_config);
 
         // Connect with the new config
-        let connection = self
-            .registry
-            .connect_tv(&tv_config)
-            .await
-            .map_err(|e| format!("Failed to connect after pairing: {}", e))?;
+        let connection = self.registry.connect_tv(&tv_config).await.map_err(|e| {
+            TvManagerError::ConnectionFailed {
+                tv_id: tv_id.clone(),
+                source: e,
+            }
+        })?;
 
-        // Add to managed TVs
+        // Add to managed TVs (outer write lock -- modifying the HashMap)
         {
             let mut tvs = self.tvs.write().await;
             let mut managed = ManagedTv::new(tv_config.clone());
             managed.connection = Some(connection);
-            tvs.insert(tv_id.clone(), managed);
+            tvs.insert(tv_id.clone(), Arc::new(Mutex::new(managed)));
         }
 
         // Save config
@@ -589,25 +673,26 @@ impl TvManager {
     }
 
     /// Remove a TV.
-    pub async fn remove_tv(&self, tv_id: &str) -> Result<(), String> {
+    pub async fn remove_tv(&self, tv_id: &str) -> Result<(), TvManagerError> {
         info!(tv_id = %tv_id, "Removing TV");
 
-        // Remove from managed TVs
-        let removed = {
+        // Remove from managed TVs (outer write lock -- modifying the HashMap)
+        let removed_arc = {
             let mut tvs = self.tvs.write().await;
-            if let Some(mut tv) = tvs.remove(tv_id) {
-                // Close connection if any
+            tvs.remove(tv_id)
+        };
+
+        match removed_arc {
+            Some(tv_arc) => {
+                // Close connection if any (per-TV lock)
+                let mut tv = tv_arc.lock().await;
                 if let Some(mut conn) = tv.connection.take() {
                     let _ = conn.close().await;
                 }
-                true
-            } else {
-                false
             }
-        };
-
-        if !removed {
-            return Err(format!("TV not found: {}", tv_id));
+            None => {
+                return Err(TvManagerError::TvNotFound(tv_id.to_string()));
+            }
         }
 
         // Remove from config file
@@ -618,29 +703,33 @@ impl TvManager {
     }
 
     /// Save a TV config to the configuration file.
-    fn save_tv_config(&self, tv_config: &TvConfig) -> Result<(), String> {
-        let mut config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
+    fn save_tv_config(&self, tv_config: &TvConfig) -> Result<(), TvManagerError> {
+        let mut config = Config::load()
+            .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
         config.upsert_tv(tv_config.clone());
         config
             .save()
-            .map_err(|e| format!("Failed to save config: {}", e))
+            .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
     }
 
     /// Delete a TV from the configuration file.
-    fn delete_tv_config(&self, tv_id: &str) -> Result<(), String> {
-        let mut config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
+    fn delete_tv_config(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        let mut config = Config::load()
+            .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
         config.remove_tv(tv_id);
         config
             .save()
-            .map_err(|e| format!("Failed to save config: {}", e))
+            .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
     }
 
     /// Reload configuration from disk.
-    pub async fn reload_config(&self) -> Result<(), String> {
+    pub async fn reload_config(&self) -> Result<(), TvManagerError> {
         info!("Reloading configuration");
 
-        let new_config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
+        let new_config = Config::load()
+            .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
 
+        // Outer write lock -- we may add/remove entries from the HashMap
         let mut tvs = self.tvs.write().await;
 
         // Track IDs from new config
@@ -652,7 +741,8 @@ impl TvManager {
         for old_id in old_ids {
             if !new_ids.contains(&old_id) {
                 info!(tv_id = %old_id, "Removing TV (no longer in config)");
-                if let Some(mut tv) = tvs.remove(&old_id) {
+                if let Some(tv_arc) = tvs.remove(&old_id) {
+                    let mut tv = tv_arc.lock().await;
                     if let Some(mut conn) = tv.connection.take() {
                         let _ = conn.close().await;
                     }
@@ -662,7 +752,8 @@ impl TvManager {
 
         // Add or update TVs from new config
         for tv_config in new_config.tv {
-            if let Some(existing) = tvs.get_mut(&tv_config.id) {
+            if let Some(tv_arc) = tvs.get(&tv_config.id) {
+                let mut existing = tv_arc.lock().await;
                 // Update config if changed (preserve connection if possible)
                 // Compare vendor and vendor_config which affect connection
                 let connection_changed = existing.config.vendor != tv_config.vendor
@@ -677,7 +768,10 @@ impl TvManager {
             } else {
                 // Add new TV
                 info!(tv_id = %tv_config.id, "Adding new TV from config");
-                tvs.insert(tv_config.id.clone(), ManagedTv::new(tv_config));
+                tvs.insert(
+                    tv_config.id.clone(),
+                    Arc::new(Mutex::new(ManagedTv::new(tv_config))),
+                );
             }
         }
 

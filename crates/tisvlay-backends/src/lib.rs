@@ -13,14 +13,27 @@
 //! No changes needed to daemon, CLI, or other binaries.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
-use tisvlay_core::{Credentials, TvConnection, TvConnector, TvDiscovery};
+use tisvlay_core::{Credentials, TvConnection, TvConnector};
 
 // Re-export core types for convenience
 pub use tisvlay_core::{
     Capabilities, Config, DiscoveredTv, Error, InputInfo, PairingSession, PairingState, PowerState,
     ProfileConfig, Result, SessionAction, TvConfig, TvState,
 };
+
+/// Type-erased discovery function.
+///
+/// Since `TvDiscovery` uses native `async fn` (not `#[async_trait]`) and is
+/// therefore not object-safe, we store discovery implementations as boxed
+/// closures that return boxed futures.
+type DiscoverFn = dyn Fn(
+        std::time::Duration,
+    )
+        -> Pin<Box<dyn std::future::Future<Output = tisvlay_core::Result<Vec<DiscoveredTv>>> + Send>>
+    + Send
+    + Sync;
 
 /// A registered vendor backend.
 pub struct RegisteredBackend {
@@ -32,8 +45,11 @@ pub struct RegisteredBackend {
     pub capabilities: Capabilities,
     /// Factory for creating connections.
     pub connector: Arc<dyn TvConnector>,
-    /// Discovery implementation (if supported).
-    pub discovery: Option<Arc<dyn TvDiscovery>>,
+    /// Discovery function (if supported).
+    ///
+    /// Stored as a type-erased closure since `TvDiscovery` uses native `async fn`
+    /// and is not object-safe.
+    pub(crate) discover_fn: Option<Arc<DiscoverFn>>,
 }
 
 /// Registry of vendor backends.
@@ -60,7 +76,7 @@ impl BackendRegistry {
         vendor_name: &'static str,
         capabilities: Capabilities,
         connector: Arc<dyn TvConnector>,
-        discovery: Option<Arc<dyn TvDiscovery>>,
+        discover_fn: Option<Arc<DiscoverFn>>,
     ) {
         self.backends.insert(
             vendor_id,
@@ -69,7 +85,7 @@ impl BackendRegistry {
                 vendor_name,
                 capabilities,
                 connector,
-                discovery,
+                discover_fn,
             },
         );
     }
@@ -208,8 +224,8 @@ impl BackendRegistry {
         let mut all_tvs = Vec::new();
 
         for backend in self.backends.values() {
-            if let Some(discovery) = &backend.discovery {
-                match discovery.discover(timeout).await {
+            if let Some(discover_fn) = &backend.discover_fn {
+                match discover_fn(timeout).await {
                     Ok(tvs) => all_tvs.extend(tvs),
                     Err(e) => {
                         tracing::warn!(
@@ -245,17 +261,24 @@ pub fn create_registry() -> BackendRegistry {
     let lg_connector = Arc::new(tisvlay_lg::LgConnector::new());
 
     #[cfg(feature = "discovery")]
-    let lg_discovery: Option<Arc<dyn TvDiscovery>> = Some(Arc::new(tisvlay_lg::LgDiscovery::new()));
+    let lg_discover_fn: Option<Arc<DiscoverFn>> = {
+        use tisvlay_core::TvDiscovery;
+        let discovery = Arc::new(tisvlay_lg::LgDiscovery::new());
+        Some(Arc::new(move |timeout| {
+            let discovery = Arc::clone(&discovery);
+            Box::pin(async move { discovery.discover(timeout).await })
+        }))
+    };
 
     #[cfg(not(feature = "discovery"))]
-    let lg_discovery: Option<Arc<dyn TvDiscovery>> = None;
+    let lg_discover_fn: Option<Arc<DiscoverFn>> = None;
 
     registry.register(
         tisvlay_lg::VENDOR_ID,
         tisvlay_lg::VENDOR_NAME,
         Capabilities::ALL,
         lg_connector,
-        lg_discovery,
+        lg_discover_fn,
     );
 
     // =========================================================================

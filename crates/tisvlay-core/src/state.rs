@@ -10,13 +10,13 @@ pub struct TvState {
     /// Whether the screen is on (false = blanked for OLED protection).
     pub is_screen_on: bool,
     /// Current volume level (0-100).
-    pub volume: Option<i32>,
+    pub volume: Option<u8>,
     /// Whether audio is muted.
     pub muted: Option<bool>,
     /// Current input ID (e.g., "HDMI_1").
     pub current_input: Option<String>,
     /// Current backlight level (0-100, OLED pixel brightness).
-    pub backlight: Option<i32>,
+    pub backlight: Option<u8>,
     /// Current foreground app ID.
     pub current_app: Option<String>,
     /// Available inputs.

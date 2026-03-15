@@ -1364,6 +1364,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "thiserror",
  "tisvlay-backends",
  "tisvlay-core",
  "tokio",

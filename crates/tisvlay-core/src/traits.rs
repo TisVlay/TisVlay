@@ -153,7 +153,10 @@ pub trait TvConnection: Send + Sync {
     // Volume control (default: not supported)
     // =========================================================================
 
-    /// Set the volume level (0-100).
+    /// Set the volume level.
+    ///
+    /// `level` must be in the range 0-100. Values above 100 will be clamped
+    /// by backend implementations.
     async fn set_volume(&mut self, _level: u8) -> Result<()> {
         Err(Error::not_supported("set_volume", Capabilities::VOLUME))
     }
@@ -201,7 +204,10 @@ pub trait TvConnection: Send + Sync {
     // Backlight control (default: not supported)
     // =========================================================================
 
-    /// Set the backlight level (0-100).
+    /// Set the backlight level (OLED pixel brightness).
+    ///
+    /// `level` must be in the range 0-100. Values above 100 will be clamped
+    /// by backend implementations.
     async fn set_backlight(&mut self, _level: u8) -> Result<()> {
         Err(Error::not_supported(
             "set_backlight",
@@ -323,13 +329,15 @@ pub trait TvConnector: Send + Sync {
 /// Discovery of TVs on the network.
 ///
 /// Backends that support the [`Capabilities::DISCOVERY`] flag should implement this trait.
-#[async_trait]
 pub trait TvDiscovery: Send + Sync {
     /// Discover TVs on the local network.
     ///
     /// This scans the network for TVs supported by this backend and returns
     /// information about each discovered TV.
-    async fn discover(&self, timeout: std::time::Duration) -> Result<Vec<DiscoveredTv>>;
+    fn discover(
+        &self,
+        timeout: std::time::Duration,
+    ) -> impl std::future::Future<Output = Result<Vec<DiscoveredTv>>> + Send;
 }
 
 #[cfg(test)]
@@ -337,10 +345,10 @@ mod tests {
     use super::*;
 
     // Compile-time test that traits are object-safe
+    // (TvDiscovery uses native async fn with impl Future and is NOT object-safe)
     fn _assert_object_safe() {
         fn _backend(_: &dyn TvBackend) {}
         fn _connection(_: &dyn TvConnection) {}
         fn _connector(_: &dyn TvConnector) {}
-        fn _discovery(_: &dyn TvDiscovery) {}
     }
 }

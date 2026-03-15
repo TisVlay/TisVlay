@@ -219,8 +219,8 @@ impl WebOsClient {
     // -------------------------------------------------------------------------
 
     /// Set the volume (0-100).
-    pub async fn set_volume(&mut self, volume: i32) -> Result<()> {
-        let volume = volume.clamp(0, 100);
+    pub async fn set_volume(&mut self, volume: u8) -> Result<()> {
+        let volume = volume.min(100) as i32;
         self.command(audio::SET_VOLUME, json!({"volume": volume}))
             .await?;
         Ok(())
@@ -273,8 +273,8 @@ impl WebOsClient {
     /// Uses the Luna service workaround via createAlert to bypass permission
     /// restrictions on the settings API. The alert is automatically closed
     /// to avoid showing a prompt on the TV.
-    pub async fn set_backlight(&mut self, backlight: i32) -> Result<()> {
-        let backlight = backlight.clamp(0, 100);
+    pub async fn set_backlight(&mut self, backlight: u8) -> Result<()> {
+        let backlight = backlight.min(100) as i32;
 
         // Build the Luna service parameters
         let luna_params = json!({
@@ -318,8 +318,8 @@ impl WebOsClient {
         Ok(())
     }
 
-    /// Get current backlight (OLED pixel brightness).
-    pub async fn get_backlight(&mut self) -> Result<i32> {
+    /// Get current backlight (OLED pixel brightness, 0-100).
+    pub async fn get_backlight(&mut self) -> Result<u8> {
         let response = self
             .command(
                 picture::GET_SYSTEM_SETTINGS,
@@ -330,14 +330,14 @@ impl WebOsClient {
             )
             .await?;
 
-        let backlight = response
+        let raw = response
             .payload
             .get("settings")
             .and_then(|s| s.get("backlight"))
             .and_then(|v| v.as_i64())
-            .unwrap_or(50) as i32;
+            .unwrap_or(50);
 
-        Ok(backlight)
+        Ok(raw.clamp(0, 100) as u8)
     }
 
     // -------------------------------------------------------------------------
@@ -355,7 +355,7 @@ impl WebOsClient {
 
         // Get volume
         if let Ok(volume_info) = self.get_volume().await {
-            state.volume = Some(volume_info.volume);
+            state.volume = Some(volume_info.volume.clamp(0, 100) as u8);
             state.muted = Some(volume_info.muted);
         }
 

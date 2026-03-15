@@ -77,7 +77,7 @@ enum Commands {
     Backlight {
         /// Backlight level (0-100)
         #[arg(required = false)]
-        level: Option<i32>,
+        level: Option<u8>,
     },
 
     /// Show TV status
@@ -296,11 +296,11 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
                         // Relative adjustment
                         let delta: i32 = level.parse()?;
                         let current = client.get_volume(&tv_id).await? as i32;
-                        let new_level = (current + delta).clamp(0, 100) as u32;
+                        let new_level = (current + delta).clamp(0, 100) as u8;
                         client.set_volume(&tv_id, new_level).await?;
                         println!("Volume: {} -> {}", current, new_level);
                     } else {
-                        let level: u32 = level.parse()?;
+                        let level: u8 = level.parse()?;
                         client.set_volume(&tv_id, level).await?;
                         println!("Volume set to: {}", level);
                     }
@@ -331,7 +331,7 @@ async fn run_daemon_mode(cli: Cli) -> Result<()> {
                     println!("Backlight: {}", backlight);
                 }
                 Some(level) => {
-                    client.set_backlight(&tv_id, level as u32).await?;
+                    client.set_backlight(&tv_id, level).await?;
                     println!("Backlight set to: {}", level);
                 }
             }
@@ -554,7 +554,7 @@ async fn run_tv_command_direct(
                     println!("Backlight: {}", backlight);
                 }
                 Some(level) => {
-                    conn.set_backlight(level as u8).await?;
+                    conn.set_backlight(level).await?;
                     println!("Backlight set to: {}", level);
                 }
             }
