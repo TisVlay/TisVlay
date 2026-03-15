@@ -208,19 +208,21 @@ async fn process_commands(
                 }
             }
             TrayCommand::VolumeUp(id) => {
-                if let Ok(current) = daemon.get_volume(&id).await {
-                    let new = current.saturating_add(VOLUME_STEP).min(100);
-                    if let Err(e) = daemon.set_volume(&id, new).await {
-                        warn!(tv_id = %id, error = %e, "Set volume failed");
-                    }
+                let current = get_cached_volume(&handle, &id).await;
+                let new = current.saturating_add(VOLUME_STEP).min(100);
+                if let Err(e) = daemon.set_volume(&id, new).await {
+                    warn!(tv_id = %id, error = %e, "Set volume failed");
+                } else {
+                    set_cached_volume(&handle, &id, new).await;
                 }
             }
             TrayCommand::VolumeDown(id) => {
-                if let Ok(current) = daemon.get_volume(&id).await {
-                    let new = current.saturating_sub(VOLUME_STEP);
-                    if let Err(e) = daemon.set_volume(&id, new).await {
-                        warn!(tv_id = %id, error = %e, "Set volume failed");
-                    }
+                let current = get_cached_volume(&handle, &id).await;
+                let new = current.saturating_sub(VOLUME_STEP);
+                if let Err(e) = daemon.set_volume(&id, new).await {
+                    warn!(tv_id = %id, error = %e, "Set volume failed");
+                } else {
+                    set_cached_volume(&handle, &id, new).await;
                 }
             }
             TrayCommand::ToggleMute(id) => {
@@ -236,24 +238,28 @@ async fn process_commands(
                 }
             }
             TrayCommand::BacklightUp(id) => {
-                if let Ok(current) = daemon.get_backlight(&id).await {
-                    let new = current.saturating_add(BACKLIGHT_STEP).min(100);
-                    if let Err(e) = daemon.set_backlight(&id, new).await {
-                        warn!(tv_id = %id, error = %e, "Set backlight failed");
-                    }
+                let current = get_cached_backlight(&handle, &id).await;
+                let new = current.saturating_add(BACKLIGHT_STEP).min(100);
+                if let Err(e) = daemon.set_backlight(&id, new).await {
+                    warn!(tv_id = %id, error = %e, "Set backlight failed");
+                } else {
+                    set_cached_backlight(&handle, &id, new).await;
                 }
             }
             TrayCommand::BacklightDown(id) => {
-                if let Ok(current) = daemon.get_backlight(&id).await {
-                    let new = current.saturating_sub(BACKLIGHT_STEP);
-                    if let Err(e) = daemon.set_backlight(&id, new).await {
-                        warn!(tv_id = %id, error = %e, "Set backlight failed");
-                    }
+                let current = get_cached_backlight(&handle, &id).await;
+                let new = current.saturating_sub(BACKLIGHT_STEP);
+                if let Err(e) = daemon.set_backlight(&id, new).await {
+                    warn!(tv_id = %id, error = %e, "Set backlight failed");
+                } else {
+                    set_cached_backlight(&handle, &id, new).await;
                 }
             }
         }
 
-        // Refresh state after every command so menu reflects the change
+        // Refresh state after command so menu reflects the change.
+        // Skip for volume/backlight — we already updated the cache optimistically
+        // to avoid race conditions with rapid scroll events.
         if let Ok(tvs) = fetch_all_state(&daemon).await {
             handle
                 .update(|t| {
@@ -263,4 +269,58 @@ async fn process_commands(
                 .await;
         }
     }
+}
+
+/// Read volume from cached tray state to avoid race conditions with rapid adjustments.
+async fn get_cached_volume(handle: &ksni::Handle<TisvlayTray>, tv_id: &str) -> u8 {
+    let id = tv_id.to_string();
+    handle
+        .update(|t| {
+            t.tvs
+                .iter()
+                .find(|tv| tv.id == id)
+                .and_then(|tv| tv.volume)
+                .unwrap_or(0)
+        })
+        .await
+        .unwrap_or(0)
+}
+
+/// Optimistically update cached volume so the next scroll event uses the new value.
+async fn set_cached_volume(handle: &ksni::Handle<TisvlayTray>, tv_id: &str, volume: u8) {
+    let id = tv_id.to_string();
+    handle
+        .update(|t| {
+            if let Some(tv) = t.tvs.iter_mut().find(|tv| tv.id == id) {
+                tv.volume = Some(volume);
+            }
+        })
+        .await;
+}
+
+/// Read backlight from cached tray state.
+async fn get_cached_backlight(handle: &ksni::Handle<TisvlayTray>, tv_id: &str) -> u8 {
+    let id = tv_id.to_string();
+    handle
+        .update(|t| {
+            t.tvs
+                .iter()
+                .find(|tv| tv.id == id)
+                .and_then(|tv| tv.backlight)
+                .unwrap_or(0)
+        })
+        .await
+        .unwrap_or(0)
+}
+
+/// Optimistically update cached backlight.
+async fn set_cached_backlight(handle: &ksni::Handle<TisvlayTray>, tv_id: &str, level: u8) {
+    let id = tv_id.to_string();
+    handle
+        .update(|t| {
+            if let Some(tv) = t.tvs.iter_mut().find(|tv| tv.id == id) {
+                tv.backlight = Some(level);
+            }
+        })
+        .await;
 }
