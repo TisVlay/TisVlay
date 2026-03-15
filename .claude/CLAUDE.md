@@ -61,15 +61,24 @@ A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Cur
 
 ### Phase 4a: CLI D-Bus Migration (COMPLETE)
 
-- [x] CLI uses D-Bus by default to communicate with daemon
-- [x] `--no-daemon` flag for direct connections via backend registry (vendor-agnostic)
+- [x] CLI communicates with daemon via D-Bus (daemon-only, no direct mode)
 - [x] `--user` flag for user/session bus (development mode)
 - [x] Shared `DaemonClient` in `tisvlay-core` (feature-gated: `dbus`)
-- [x] CLI depends only on `tisvlay-backends`, not vendor crates directly
+- [x] CLI depends only on `tisvlay-core`, not vendor crates
 
-### Phase 4b-5: Future
+### Phase 4b: System Tray App (COMPLETE)
 
-- Phase 4b: `tisvlay-tray` (ksni StatusNotifierItem)
+- [x] `tisvlay-tray`: StatusNotifierItem tray icon using `ksni` - see [crates/tisvlay-tray/src/](crates/tisvlay-tray/src/)
+- [x] Per-TV submenus with power, screen blank, input switching, volume, backlight, mute controls
+- [x] Scroll wheel adjusts volume or backlight (context-dependent)
+- [x] Optimistic state caching to prevent race conditions on rapid adjustments
+- [x] Polling-based state refresh (5s interval) with short timeouts for disconnected TVs
+- [x] Graceful degradation when daemon is unavailable
+- [x] Signal handling (SIGINT/SIGTERM) for clean shutdown
+- [x] Systemd user service file - see [systemd/tisvlay-tray.service](systemd/tisvlay-tray.service)
+
+### Phase 5: Future
+
 - Phase 5: `tisvlay-gui` (Slint configuration UI)
 
 ### Multi-Vendor Refactor (COMPLETE)
@@ -78,7 +87,6 @@ Architecture refactored to support multiple TV vendors. Daemon and CLI are fully
 
 **Design Documents**:
 - [docs/design.md](docs/design.md) - Full architecture specification
-- [docs/multi-vendor-discussion.md](docs/multi-vendor-discussion.md) - Design rationale and Q&A
 
 **Key Architectural Decisions**:
 - Separate crates per vendor: `tisvlay-lg` (only `tisvlay-backends` imports vendor crates)
@@ -101,10 +109,11 @@ tisvlay/
 │   ├── tisvlay-core/              # Core library (vendor-agnostic traits & types)
 │   │   └── src/
 │   │       ├── lib.rs            # Public API exports
-│   │       ├── traits.rs         # TvBackend, TvConnection, feature traits
+│   │       ├── traits.rs         # TvBackend, TvConnection, TvConnector, TvDiscovery
 │   │       ├── capabilities.rs   # Capability bitflags
 │   │       ├── pairing.rs        # Unified pairing state machine
 │   │       ├── config.rs         # TOML config (XDG paths), ProfileConfig
+│   │       ├── dbus_paths.rs     # D-Bus path constants and helpers
 │   │       ├── dbus_client.rs    # D-Bus client for tisvlayd (feature-gated)
 │   │       ├── state.rs          # TvState, PowerState, InputInfo
 │   │       ├── wol.rs            # Wake-on-LAN
@@ -136,26 +145,32 @@ tisvlay/
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool
 │   │
-│   └── tisvlay-session/           # User session service
+│   ├── tisvlay-session/           # User session service
+│   │   └── src/
+│   │       ├── main.rs           # Entry point, event handling
+│   │       ├── session_monitor.rs # Screen lock/unlock, suspend/resume
+│   │       ├── wayland_idle.rs   # Wayland greeter wake detection
+│   │       └── idle.rs           # Idle timeout detection
+│   │
+│   └── tisvlay-tray/              # System tray app
 │       └── src/
-│           ├── main.rs           # Entry point, event handling
-│           ├── session_monitor.rs # Screen lock/unlock, suspend/resume
-│           ├── wayland_idle.rs   # Wayland greeter wake detection
-│           └── idle.rs           # Idle timeout detection
+│           ├── main.rs           # Entry point, polling, command processor
+│           ├── tray.rs           # ksni Tray impl, menu building, TrayCommand
+│           └── state.rs          # CachedTvState, fetch_all_state()
 │
 ├── systemd/
 │   ├── tisvlayd.service           # Systemd system service
 │   ├── tisvlay-session.service    # Systemd user service
+│   ├── tisvlay-tray.service       # Systemd user service (tray)
 │   ├── org.tisvlay.Daemon.service # D-Bus activation service
 │   └── org.tisvlay.Daemon.conf    # D-Bus policy configuration
 │
 ├── docs/
-│   ├── reference.md              # Protocol survey from prior art
 │   ├── design.md                 # Full architecture design
 │   ├── firewall.md               # SSDP firewall configuration
-│   └── multi-vendor-discussion.md # Design rationale and Q&A
+│   └── review.md                 # Code review findings and responses
 │
-└── CLAUDE.md                     # This file
+└── .claude/CLAUDE.md             # This file
 ```
 
 ## Key Implementation Details
@@ -164,7 +179,7 @@ tisvlay/
 - `TvConnector::connect(&self, vendor_config: &toml::Value)` -- connectors own all transport details
 - `TvConnection` has all feature methods directly with default not-supported impls
 - `BackendRegistry` provides `connect_tv()`, `display_address()`, `supports_wake()`, `wake_tv()`, `start_pairing()`, `build_config_from_pairing()`
-- Daemon and CLI depend only on `tisvlay-backends`, never on vendor crates directly
+- Daemon depends on `tisvlay-backends`; CLI depends only on `tisvlay-core` (daemon-only)
 - Adding a new vendor: create crate, add to `tisvlay-backends/Cargo.toml`, register in `create_registry()`
 
 ### TLS/WebSocket (LG backend)
@@ -212,7 +227,7 @@ See [docs/design.md](docs/design.md#phase-3-user-session-integration---complete)
 
 ### CLI Commands
 ```
-# By default, CLI uses D-Bus to communicate with tisvlayd
+# CLI communicates with tisvlayd via D-Bus
 tisvlay power on|off       # WoL for power on
 tisvlay screen on|off      # OLED-safe blank
 tisvlay input [ID] [--list]
@@ -225,7 +240,6 @@ tisvlay list
 tisvlay remove <ID>
 
 # Global flags
-tisvlay --no-daemon <cmd>        # Direct connection via backend registry (no daemon)
 tisvlay --user <cmd>             # Use user/session bus (development)
 tisvlay --tv <ID> <cmd>          # Target specific TV
 ```
@@ -240,6 +254,7 @@ tisvlay --tv <ID> <cmd>          # Target specific TV
 | Config | `toml`, `directories` |
 | CLI | `clap` |
 | D-Bus | `zbus` |
+| System tray | `ksni` |
 | Wayland | `wayland-client`, `wayland-protocols` |
 | Errors | `thiserror`, `anyhow` |
 | Logging | `tracing`, `tracing-subscriber` |
@@ -273,6 +288,16 @@ tisvlay-session --user
 
 # Production (as systemd user service):
 systemctl --user enable --now tisvlay-session
+```
+
+### Running the Tray App
+
+```bash
+# Development (with tisvlayd --session):
+tisvlay-tray --user
+
+# Production (as systemd user service):
+systemctl --user enable --now tisvlay-tray
 ```
 
 ### Testing with busctl
@@ -311,5 +336,6 @@ sudo systemctl enable --now tisvlayd
 
 ## Reference Documentation
 
-- [docs/reference.md](docs/reference.md) - Protocol deep-dive, API endpoints, prior art analysis
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
+- [docs/firewall.md](docs/firewall.md) - SSDP discovery firewall configuration
+- [docs/review.md](docs/review.md) - Code review findings and responses

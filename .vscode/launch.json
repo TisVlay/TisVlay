@@ -1,24 +1,69 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug with cargo run",
+            "name": "Debug: daemon (session bus)",
             "cargo": {
-                "args": [
-                    "run",
-                    "--",
-                    "mute",
-                    "toggle"
-                ]
+                "args": ["build", "--bin", "tisvlayd"]
             },
+            "args": ["--session"],
             "cwd": "${workspaceFolder}",
             "env": {
-                "RUST_LOG": "tisvlay=debug"
+                "RUST_LOG": "debug,zbus=warn,rustls=warn,tungstenite=warn"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug: session service",
+            "cargo": {
+                "args": ["build", "--bin", "tisvlay-session"]
+            },
+            "args": ["--user"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug,zbus=warn"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug: tray",
+            "cargo": {
+                "args": ["build", "--bin", "tisvlay-tray"]
+            },
+            "args": ["--user"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug,zbus=warn,ksni=warn"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug: CLI status",
+            "cargo": {
+                "args": ["build", "--bin", "tisvlay"]
+            },
+            "args": ["--user", "status"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug,zbus=warn"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug: CLI mute toggle",
+            "cargo": {
+                "args": ["build", "--bin", "tisvlay"]
+            },
+            "args": ["--user", "mute", "toggle"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug,zbus=warn"
             }
         }
     ]

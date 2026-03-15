@@ -1,0 +1,82 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "daemon: start",
+            "type": "shell",
+            "command": "cargo run --bin tisvlayd -- --session",
+            "isBackground": true,
+            "options": {
+                "env": {
+                    "RUST_LOG": "debug,zbus=warn,rustls=warn,tungstenite=warn"
+                }
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "tisvlay"
+            }
+        },
+        {
+            "label": "session: start",
+            "type": "shell",
+            "command": "cargo run --bin tisvlay-session -- --user",
+            "isBackground": true,
+            "options": {
+                "env": {
+                    "RUST_LOG": "debug,zbus=warn"
+                }
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "tisvlay"
+            }
+        },
+        {
+            "label": "tray: start",
+            "type": "shell",
+            "command": "cargo run --bin tisvlay-tray -- --user",
+            "isBackground": true,
+            "options": {
+                "env": {
+                    "RUST_LOG": "debug,zbus=warn,ksni=warn"
+                }
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "tisvlay"
+            }
+        },
+        {
+            "label": "all: start",
+            "dependsOn": ["daemon: start", "session: start", "tray: start"],
+            "dependsOrder": "parallel",
+            "problemMatcher": []
+        },
+        {
+            "label": "all: stop",
+            "type": "shell",
+            "command": "pkill -f 'target/debug/tisvlayd' ; pkill -f 'target/debug/tisvlay-session' ; pkill -f 'target/debug/tisvlay-tray' ; echo 'All stopped'",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cli: status",
+            "type": "shell",
+            "command": "cargo run --bin tisvlay -- --user status",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        }
+    ]
+}

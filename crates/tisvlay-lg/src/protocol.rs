@@ -108,18 +108,25 @@ pub struct Signature {
     pub signature_version: i32,
 }
 
-/// Signed manifest info.
+/// Signed manifest info for elevated permissions.
+///
+/// This section contains permissions that require a signed manifest to be
+/// granted by the TV. The signature, serial, and app identity must match
+/// the standard LG WebOS client credentials (shared by bscpylgtv, aiowebostv,
+/// LGTVCompanion, etc.).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedInfo {
-    /// App ID.
+    /// App ID (must be "com.lge.test" to match the standard signed manifest).
     pub app_id: String,
     /// Vendor ID.
     pub vendor_id: String,
     /// Creation timestamp.
     pub created: String,
-    /// Permissions hash.
-    pub local_ip_address: String,
+    /// Elevated permissions granted via the signed manifest.
+    pub permissions: Vec<String>,
+    /// Serial number matching the standard signed manifest.
+    pub serial: String,
 }
 
 impl RegisterPayload {
@@ -169,7 +176,8 @@ impl Default for Manifest {
                 "CONTROL_MOUSE_AND_KEYBOARD".to_string(),
                 // Notifications
                 "READ_NOTIFICATIONS".to_string(),
-                // Settings
+                // Settings (needed for backlight/picture settings read)
+                "READ_SETTINGS".to_string(),
                 "CONTROL_TV_SCREEN".to_string(),
                 "WRITE_NOTIFICATION_TOAST".to_string(),
             ],
@@ -187,7 +195,33 @@ impl Default for Manifest {
             }],
             manifest_version: Some(1),
             app_version: Some("1.1".to_string()),
-            signed: None,
+            // Signed manifest section — provides elevated permissions for
+            // settings access (WRITE_SETTINGS, WRITE_NOTIFICATION_ALERT).
+            // Matches the manifest used by bscpylgtv and other LG WebOS clients.
+            signed: Some(SignedInfo {
+                app_id: "com.lge.test".to_string(),
+                created: "20140509".to_string(),
+                vendor_id: "com.lge".to_string(),
+                permissions: vec![
+                    "TEST_SECURE".to_string(),
+                    "CONTROL_INPUT_TEXT".to_string(),
+                    "CONTROL_MOUSE_AND_KEYBOARD".to_string(),
+                    "READ_INSTALLED_APPS".to_string(),
+                    "READ_LGE_SDX".to_string(),
+                    "READ_NOTIFICATIONS".to_string(),
+                    "SEARCH".to_string(),
+                    "WRITE_SETTINGS".to_string(),
+                    "WRITE_NOTIFICATION_ALERT".to_string(),
+                    "CONTROL_POWER".to_string(),
+                    "READ_CURRENT_CHANNEL".to_string(),
+                    "READ_RUNNING_APPS".to_string(),
+                    "READ_UPDATE_INFO".to_string(),
+                    "UPDATE_FROM_REMOTE_APP".to_string(),
+                    "READ_LGE_TV_INPUT_EVENTS".to_string(),
+                    "READ_TV_CURRENT_TIME".to_string(),
+                ],
+                serial: "2f930e2d2cfe083771f68e4fe7bb07".to_string(),
+            }),
         }
     }
 }

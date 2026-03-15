@@ -151,7 +151,7 @@ impl Connection {
         tracing::trace!(id = %request.id, msg_type = ?request.msg_type, "Sending request");
 
         self.stream
-            .send(Message::Text(json))
+            .send(Message::Text(json.into()))
             .await
             .map_err(|e| Error::Connection(Box::new(e)))?;
         Ok(())

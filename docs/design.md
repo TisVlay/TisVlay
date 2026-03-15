@@ -8,41 +8,29 @@
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         User Space                                   │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐                         │
-│  │   CLI    │   │  Tray    │   │   GUI    │                         │
-│  │ tisvlay   │   │  (ksni)  │   │ (Slint)  │                         │
-│  └────┬─────┘   └────┬─────┘   └────┬─────┘                         │
-│       │              │              │                                │
-│       └──────────────┼──────────────┘                                │
-│                      │                                               │
-│                      ▼                                               │
-│  ┌───────────────────────────────────────┐                          │
-│  │         User Session Service          │                          │
-│  │   (D-Bus session events: lock/unlock) │                          │
-│  └───────────────────┬───────────────────┘                          │
-│                      │ D-Bus System Bus                              │
-└──────────────────────┼───────────────────────────────────────────────┘
-                       │
-┌──────────────────────┼───────────────────────────────────────────────┐
-│                      ▼                     System Space              │
-│  ┌───────────────────────────────────────┐                          │
-│  │         tisvlayd (System Daemon)       │                          │
-│  │  - Vendor-agnostic TV management      │                          │
-│  │  - Wake-on-LAN at boot                │                          │
-│  │  - Per-TV D-Bus objects               │                          │
-│  └───────────────────┬───────────────────┘                          │
-│                      │                                               │
-│           ┌──────────┼──────────┐                                    │
-│           ▼          ▼          ▼                                    │
-│     ┌──────────┐ ┌────────┐ ┌───────┐                               │
-│     │  LG TV   │ │Samsung │ │ ...   │                               │
-│     │ WebSocket│ │  (TBD) │ │       │                               │
-│     │ 3000/3001│ │        │ │       │                               │
-│     └──────────┘ └────────┘ └───────┘                               │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph User Space
+        CLI["CLI<br/><i>tisvlay</i>"]
+        Tray["Tray<br/><i>tisvlay-tray (ksni)</i>"]
+        GUI["GUI<br/><i>tisvlay-gui (Slint)</i>"]
+        Session["User Session Service<br/><i>D-Bus session events: lock/unlock</i>"]
+    end
+
+    subgraph System Space
+        Daemon["tisvlayd (System Daemon)<br/><i>Vendor-agnostic TV management<br/>Wake-on-LAN at boot<br/>Per-TV D-Bus objects</i>"]
+        LG["LG TV<br/><i>WebSocket 3000/3001</i>"]
+        Samsung["Samsung<br/><i>(TBD)</i>"]
+        Other["..."]
+    end
+
+    CLI -->|D-Bus| Daemon
+    Tray -->|D-Bus| Daemon
+    GUI -->|D-Bus| Daemon
+    Session -->|D-Bus| Daemon
+    Daemon --> LG
+    Daemon --> Samsung
+    Daemon --> Other
 ```
 
 ### Components
@@ -51,8 +39,8 @@
 |-----------|--------|-------------|
 | **System Daemon** | `tisvlayd` | Systemd system service. Vendor-agnostic TV management, D-Bus API, WoL at boot. |
 | **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (screen lock/unlock, idle, sleep). |
-| **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus, or directly via `--no-daemon`. |
-| **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Quick access menu. (Not yet implemented) |
+| **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
+| **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
 | **GUI** | `tisvlay-gui` | Slint-based configuration window. (Not yet implemented) |
 
 ### Crate Structure
@@ -70,14 +58,25 @@ See `CLAUDE.md` for the full file tree. Key crates:
 
 ### Dependency Graph
 
-```
-tisvlay-core (traits, types, D-Bus client)
-      ↑
-tisvlay-lg, tisvlay-samsung, ... (vendor implementations)
-      ↑
-tisvlay-backends (composition - ONLY crate that imports vendors)
-      ↑
-tisvlayd, tisvlay-cli, tisvlay-session
+```mermaid
+graph BT
+    core["tisvlay-core<br/><i>traits, types, D-Bus client</i>"]
+    lg["tisvlay-lg"]
+    samsung["tisvlay-samsung, ..."]
+    backends["tisvlay-backends<br/><i>composition — ONLY crate that imports vendors</i>"]
+    daemon["tisvlayd<br/><i>system daemon</i>"]
+    cli["tisvlay-cli"]
+    session["tisvlay-session"]
+    tray["tisvlay-tray"]
+
+    lg --> core
+    samsung -.-> core
+    backends --> lg
+    backends -.-> samsung
+    daemon --> backends
+    cli -->|"dbus feature"| core
+    session -->|"dbus feature"| core
+    tray -->|"dbus feature"| core
 ```
 
 **Key principle**: Only `tisvlay-backends` knows about vendor crates. All binaries are vendor-agnostic. No `if vendor == "lg"` checks or downcasts in any binary code.
@@ -95,19 +94,53 @@ No changes needed to daemon, CLI, or session service.
 
 ### Trait Hierarchy
 
-```text
-TvBackend (metadata: vendor_id, vendor_name, capabilities)
-    |
-    +-- TvConnector (factory: connect, wake, pair, display_address)
-    |
-    +-- TvDiscovery (network discovery)
+```mermaid
+classDiagram
+    class TvBackend {
+        +vendor_id() &str
+        +vendor_name() &str
+        +capabilities() Capabilities
+    }
 
-TvConnection (base + feature methods with default not-supported impls)
-    +-- power_off, get_power_state
-    +-- screen_on, screen_off, is_screen_on
-    +-- set_volume, get_volume, set_mute, is_muted
-    +-- switch_input, get_current_input, list_inputs
-    +-- set_backlight, get_backlight
+    class TvConnector {
+        +connect(vendor_config) TvConnection
+        +display_address(vendor_config) String
+        +supports_wake(vendor_config) bool
+        +wake(vendor_config)
+        +wake_and_connect(vendor_config, ...)
+        +start_pairing(vendor_config) PairingSession
+        +build_config_from_pairing(...)
+    }
+
+    class TvDiscovery {
+        +discover(timeout) Vec~DiscoveredTv~
+    }
+
+    class TvConnection {
+        +vendor_id() &str
+        +is_connected() bool
+        +get_state() TvState
+        +close()
+        +capabilities() Capabilities
+        +power_off()
+        +get_power_state() PowerState
+        +screen_on()
+        +screen_off()
+        +is_screen_on() bool
+        +set_volume(level: u8)
+        +get_volume() u8
+        +set_mute(mute: bool)
+        +is_muted() bool
+        +switch_input(input_id: &str)
+        +get_current_input() Option~String~
+        +list_inputs() Vec~InputInfo~
+        +set_backlight(level: u8)
+        +get_backlight() u8
+    }
+
+    TvBackend <|-- TvConnector : implements alongside
+    TvBackend <|-- TvDiscovery : implements alongside
+    TvConnector ..> TvConnection : creates
 ```
 
 See `crates/tisvlay-core/src/traits.rs` for the full trait definitions.
@@ -188,9 +221,6 @@ See `crates/tisvlay-core/src/config.rs` for the full schema.
 [daemon]
 wake_on_boot = true
 wake_delay_ms = 3000
-connect_timeout_ms = 5000
-reconnect_interval_ms = 10000
-
 [profiles.default]
 on_screen_lock = "screen_off"    # screen_off | power_off | none
 on_screen_unlock = "screen_on"   # screen_on | power_on | none
@@ -228,28 +258,17 @@ Key design: `TvConfig` uses `#[serde(flatten)]` to capture vendor-specific field
 
 ## Power & Screen State Machine
 
-```
-                    ┌─────────────────────────────────────┐
-                    │                                     │
-                    ▼                                     │
-              ┌──────────┐                                │
-    WoL ───▶  │    ON    │ ◀─── PowerOn                   │
-              └────┬─────┘                                │
-                   │                                      │
-         ScreenOff │ ScreenOn                             │
-                   ▼                                      │
-              ┌──────────┐                                │
-              │ BLANKED  │  (OLED-safe, instant resume)   │
-              └────┬─────┘                                │
-                   │                                      │
-           PowerOff│                                      │
-                   ▼                                      │
-              ┌──────────┐                                │
-              │ STANDBY  │ ───────────────────────────────┘
-              └──────────┘
-                   │
-           (Network may be inactive,
-            requires WoL to wake)
+```mermaid
+stateDiagram-v2
+    [*] --> STANDBY
+    STANDBY --> ON : WoL / PowerOn
+    ON --> BLANKED : ScreenOff
+    BLANKED --> ON : ScreenOn
+    ON --> STANDBY : PowerOff
+    BLANKED --> STANDBY : PowerOff
+
+    note right of BLANKED : OLED-safe\nInstant resume
+    note right of STANDBY : Network may be inactive\nRequires WoL to wake
 ```
 
 ### Event → Action Mapping
@@ -290,7 +309,6 @@ COMMANDS:
 
 OPTIONS:
     --tv <ID>       Target TV (default: first configured)
-    --no-daemon     Direct connection via backend registry (no daemon)
     --user          Use session bus (development mode)
 
 EXAMPLES:
@@ -304,30 +322,39 @@ EXAMPLES:
 
 ---
 
-## System Tray Menu Structure (Future)
+## System Tray Menu Structure
 
+Connected TV submenu:
 ```
-┌─────────────────────────────┐
-│ 📺 tisvlay                    │
-├─────────────────────────────┤
-│ ▶ Living Room G4      [🟢] │
-│   ├─ Power On/Off           │
-│   ├─ Screen On/Off          │
-│   ├─ Input ▶                │
-│   │    ├─ HDMI 1            │
-│   │    ├─ HDMI 2 ✓          │
-│   │    └─ HDMI 3            │
-│   ├─ Volume [====----] 60   │
-│   └─ Backlight [======--] 80│
-├─────────────────────────────┤
-│ ▶ Office C3 Left      [🔴] │
-│   └─ Wake Up                │
-├─────────────────────────────┤
-│ ⚙ Settings...               │
-│ ❓ About                     │
-│ ⏻ Quit                      │
-└─────────────────────────────┘
+▶ Living Room G4  [network-connect]
+  ├─ Power Off
+  ├─ Input ▶  (RadioGroup: HDMI 1, HDMI 2 ✓, HDMI 3)
+  ├─ Volume: 60
+  │  ├─ Volume Up (+5)
+  │  ├─ Volume Down (-5)
+  │  └─ Mute / Unmute
+  ├─ Backlight: 80
+  │  ├─ Backlight Up (+10)
+  │  └─ Backlight Down (-10)
+  └─ Screen Off / Screen On
 ```
+
+Disconnected TV submenu:
+```
+▶ Office C3  [network-disconnect]
+  └─ Power On (Wake)
+```
+
+Bottom:
+```
+──────────
+Refresh
+──────────
+Quit
+```
+
+Scroll on tray icon adjusts volume or backlight on first connected TV (context-dependent on last interaction).
+Tooltip shows per-TV state summary (volume, muted, backlight).
 
 ---
 
@@ -346,14 +373,14 @@ EXAMPLES:
 ### Phase 3: User Session Integration - COMPLETE
 
 **Goal**: React to desktop events.
-### Phase 4: Tray App
+### Phase 4: Tray App - COMPLETE
 
 **Goal**: Quick access from system tray.
 
-1. `tisvlay-tray`: ksni-based StatusNotifierItem
-2. Power/screen/input controls
-3. Volume slider
-4. TV status indicators
+1. `tisvlay-tray`: ksni-based StatusNotifierItem with per-TV submenus
+2. Power/screen/input/volume/backlight/mute controls
+3. Scroll wheel adjusts volume or backlight (context-dependent)
+4. Optimistic state caching, 5s polling, graceful daemon-offline handling
 
 ### Phase 5: GUI Configuration
 
@@ -383,9 +410,8 @@ EXAMPLES:
 
 ## References
 
-- [Protocol Details](reference.md) - SSAP protocol documentation
 - [Firewall Configuration](firewall.md) - SSDP discovery firewall setup
-- [Multi-Vendor Discussion](multi-vendor-discussion.md) - Design rationale and Q&A
+- [Code Review](review.md) - Architecture review findings and responses
 - [LG WebOS API](https://github.com/chros73/bscpylgtv/tree/master/docs)
 - [zbus Documentation](https://docs.rs/zbus)
 - [ksni Documentation](https://docs.rs/ksni)
