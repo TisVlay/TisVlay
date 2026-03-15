@@ -268,13 +268,13 @@ impl WebOsClient {
 
     /// Set backlight (OLED pixel brightness, 0-100).
     ///
-    /// Uses the Luna service workaround via createAlert to bypass permission
-    /// restrictions on the settings API. The alert is automatically closed
-    /// to avoid showing a prompt on the TV.
+    /// The SSAP `setSystemSettings` endpoint returns 401 even with
+    /// `WRITE_SETTINGS` in the signed manifest. Uses the Luna service
+    /// workaround via createAlert instead (shared by bscpylgtv,
+    /// LGTVCompanion, etc.).
     pub async fn set_backlight(&mut self, backlight: u8) -> Result<()> {
         let backlight = backlight.min(100) as i32;
 
-        // Build the Luna service parameters
         let luna_params = json!({
             "category": "picture",
             "settings": {
@@ -282,8 +282,6 @@ impl WebOsClient {
             }
         });
 
-        // Wrap the Luna call inside an alert payload
-        // This workaround is used by LGTVCompanion to bypass permission restrictions
         let alert_payload = json!({
             "message": " ",
             "buttons": [{
@@ -305,7 +303,7 @@ impl WebOsClient {
             .command(notification::CREATE_ALERT, alert_payload)
             .await?;
 
-        // Extract alertId and close the alert to avoid showing a prompt on the TV
+        // Close the alert to avoid showing a prompt on the TV
         if let Some(alert_id) = response.payload.get("alertId").and_then(|v| v.as_str()) {
             tracing::debug!(alert_id, "Closing Luna alert");
             let _ = self
@@ -347,27 +345,32 @@ impl WebOsClient {
         let mut state = TvState::new();
 
         // Get power state
-        if let Ok(power_state) = self.get_power_state().await {
-            state.update_power(power_state);
+        match self.get_power_state().await {
+            Ok(power_state) => state.update_power(power_state),
+            Err(e) => tracing::debug!(error = %e, "get_state: power state failed"),
         }
 
         // Get volume and mute state separately — the getVolume response
         // doesn't always include the mute field on all LG TV firmware.
-        if let Ok(volume_info) = self.get_volume().await {
-            state.volume = Some(volume_info.volume.clamp(0, 100) as u8);
+        match self.get_volume().await {
+            Ok(volume_info) => state.volume = Some(volume_info.volume.clamp(0, 100) as u8),
+            Err(e) => tracing::debug!(error = %e, "get_state: volume failed"),
         }
-        if let Ok(muted) = self.get_mute().await {
-            state.muted = Some(muted);
+        match self.get_mute().await {
+            Ok(muted) => state.muted = Some(muted),
+            Err(e) => tracing::debug!(error = %e, "get_state: mute failed"),
         }
 
         // Get inputs
-        if let Ok(inputs) = self.get_inputs().await {
-            state.inputs = inputs;
+        match self.get_inputs().await {
+            Ok(inputs) => state.inputs = inputs,
+            Err(e) => tracing::debug!(error = %e, "get_state: inputs failed"),
         }
 
         // Get backlight
-        if let Ok(backlight) = self.get_backlight().await {
-            state.backlight = Some(backlight);
+        match self.get_backlight().await {
+            Ok(backlight) => state.backlight = Some(backlight),
+            Err(e) => tracing::debug!(error = %e, "get_state: backlight failed"),
         }
 
         Ok(state)

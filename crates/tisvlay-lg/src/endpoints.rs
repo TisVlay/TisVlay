@@ -70,9 +70,10 @@ pub mod picture {
     pub const GET_SYSTEM_SETTINGS: &str = "ssap://settings/getSystemSettings";
 
     // NOTE: SET_SYSTEM_SETTINGS (ssap://settings/setSystemSettings) returns
-    // "401 insufficient permissions" even with READ_SETTINGS/WRITE_SETTINGS
-    // permissions in the manifest. We use the Luna workaround via createAlert
-    // instead (see client.rs set_backlight and luna::SET_SYSTEM_SETTINGS).
+    // "401 insufficient permissions" on some firmware. We use the Luna
+    // createAlert workaround for writes (see client.rs set_backlight).
+    // GET_SYSTEM_SETTINGS works with READ_SETTINGS in the manifest (added
+    // to the signed manifest section — requires re-pairing after update).
 }
 
 /// Notification endpoints.
