@@ -5,11 +5,33 @@
 //! async processing by the command handler in main.rs.
 
 use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
-use ksni::{MenuItem, Tray};
+use ksni::{MenuItem, ToolTip, Tray};
 use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::state::CachedTvState;
+
+/// Helper to build a menu item that sends a TV command.
+///
+/// The command factory `cmd_fn` is called each time the item is activated,
+/// since `Fn` closures must be callable multiple times.
+fn tv_item(
+    label: impl Into<String>,
+    icon: &str,
+    tx: &mpsc::UnboundedSender<TrayCommand>,
+    cmd_fn: impl Fn() -> TrayCommand + Send + 'static,
+) -> MenuItem<TisvlayTray> {
+    let tx = tx.clone();
+    StandardItem {
+        label: label.into(),
+        icon_name: icon.into(),
+        activate: Box::new(move |_: &mut TisvlayTray| {
+            let _ = tx.send(cmd_fn());
+        }),
+        ..Default::default()
+    }
+    .into()
+}
 
 /// Commands sent from tray menu callbacks to the async command processor.
 #[derive(Debug)]
@@ -42,16 +64,35 @@ pub struct TisvlayTray {
 }
 
 impl Tray for TisvlayTray {
+    // Left-click opens menu, not just right-click.
+    const MENU_ON_ACTIVATE: bool = true;
+
     fn id(&self) -> String {
-        "tisvlay-tray".into()
+        "tisvlay".into()
+    }
+
+    fn category(&self) -> ksni::Category {
+        ksni::Category::Hardware
     }
 
     fn title(&self) -> String {
-        "tisvlay - TV Control".into()
+        let connected = self.tvs.iter().filter(|tv| tv.connected).count();
+        let total = self.tvs.len();
+        if !self.daemon_available {
+            "tisvlay [daemon offline]".into()
+        } else if total == 0 {
+            "tisvlay".into()
+        } else {
+            format!("tisvlay [{}/{}]", connected, total)
+        }
     }
 
     fn icon_name(&self) -> String {
-        "video-display".into()
+        if self.daemon_available && self.tvs.iter().any(|tv| tv.connected) {
+            "video-display".into()
+        } else {
+            "video-display-symbolic".into()
+        }
     }
 
     fn status(&self) -> ksni::Status {
@@ -62,6 +103,34 @@ impl Tray for TisvlayTray {
             ksni::Status::Active
         } else {
             ksni::Status::Passive
+        }
+    }
+
+    fn tool_tip(&self) -> ToolTip {
+        let description = if !self.daemon_available {
+            "Daemon not available".into()
+        } else {
+            self.tvs
+                .iter()
+                .map(|tv| {
+                    let status = if !tv.connected {
+                        "off".to_string()
+                    } else if let Some(vol) = tv.volume {
+                        format!("vol {}", vol)
+                    } else {
+                        "on".to_string()
+                    };
+                    format!("{}: {}", tv.name, status)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        ToolTip {
+            title: "tisvlay - TV Control".into(),
+            description,
+            icon_name: "video-display".into(),
+            ..Default::default()
         }
     }
 
@@ -108,32 +177,13 @@ impl Tray for TisvlayTray {
         }
 
         items.push(MenuItem::Separator);
-
-        let tx = self.cmd_tx.clone();
-        items.push(
-            StandardItem {
-                label: "Refresh".into(),
-                activate: Box::new(move |_: &mut Self| {
-                    let _ = tx.send(TrayCommand::Refresh);
-                }),
-                ..Default::default()
-            }
-            .into(),
-        );
-
+        items.push(tv_item("Refresh", "view-refresh", &self.cmd_tx, || {
+            TrayCommand::Refresh
+        }));
         items.push(MenuItem::Separator);
-
-        let tx = self.cmd_tx.clone();
-        items.push(
-            StandardItem {
-                label: "Quit".into(),
-                activate: Box::new(move |_: &mut Self| {
-                    let _ = tx.send(TrayCommand::Quit);
-                }),
-                ..Default::default()
-            }
-            .into(),
-        );
+        items.push(tv_item("Quit", "application-exit", &self.cmd_tx, || {
+            TrayCommand::Quit
+        }));
 
         items
     }
@@ -155,6 +205,11 @@ fn build_tv_submenu(
 
     SubMenu {
         label,
+        icon_name: if tv.connected {
+            "network-connect".into()
+        } else {
+            "network-disconnect".into()
+        },
         submenu,
         ..Default::default()
     }
@@ -170,37 +225,25 @@ fn build_connected_tv_menu(
     let id = tv.id.clone();
 
     // Power Off
-    let tx = cmd_tx.clone();
-    let id_c = id.clone();
-    items.push(
-        StandardItem {
-            label: "Power Off".into(),
-            activate: Box::new(move |_: &mut TisvlayTray| {
-                let _ = tx.send(TrayCommand::PowerOff(id_c.clone()));
-            }),
-            ..Default::default()
-        }
-        .into(),
-    );
+    // Power Off
+    let id = id.clone();
+    items.push(tv_item("Power Off", "system-shutdown", cmd_tx, {
+        let id = id.clone();
+        move || TrayCommand::PowerOff(id.clone())
+    }));
 
     // Screen toggle
-    let tx = cmd_tx.clone();
-    let id_c = id.clone();
-    let screen_on = tv.is_screen_on;
-    items.push(
-        StandardItem {
-            label: if screen_on { "Screen Off" } else { "Screen On" }.into(),
-            activate: Box::new(move |_: &mut TisvlayTray| {
-                if screen_on {
-                    let _ = tx.send(TrayCommand::ScreenOff(id_c.clone()));
-                } else {
-                    let _ = tx.send(TrayCommand::ScreenOn(id_c.clone()));
-                }
-            }),
-            ..Default::default()
-        }
-        .into(),
-    );
+    if tv.is_screen_on {
+        items.push(tv_item("Screen Off", "display-brightness-off", cmd_tx, {
+            let id = id.clone();
+            move || TrayCommand::ScreenOff(id.clone())
+        }));
+    } else {
+        items.push(tv_item("Screen On", "display-brightness", cmd_tx, {
+            let id = id.clone();
+            move || TrayCommand::ScreenOn(id.clone())
+        }));
+    }
 
     // Input submenu (if inputs available)
     if !tv.inputs.is_empty() {
@@ -219,6 +262,7 @@ fn build_connected_tv_menu(
         items.push(
             StandardItem {
                 label: format!("Volume: {}{}", vol, muted_str),
+                icon_name: "audio-volume-medium".into(),
                 enabled: false,
                 ..Default::default()
             }
@@ -226,45 +270,29 @@ fn build_connected_tv_menu(
         );
     }
 
-    let tx = cmd_tx.clone();
-    let id_c = id.clone();
-    items.push(
-        StandardItem {
-            label: "Volume Up (+5)".into(),
-            activate: Box::new(move |_: &mut TisvlayTray| {
-                let _ = tx.send(TrayCommand::VolumeUp(id_c.clone()));
-            }),
-            ..Default::default()
-        }
-        .into(),
-    );
+    items.push(tv_item("Volume Up (+5)", "", cmd_tx, {
+        let id = id.clone();
+        move || TrayCommand::VolumeUp(id.clone())
+    }));
+    items.push(tv_item("Volume Down (-5)", "", cmd_tx, {
+        let id = id.clone();
+        move || TrayCommand::VolumeDown(id.clone())
+    }));
 
-    let tx = cmd_tx.clone();
-    let id_c = id.clone();
-    items.push(
-        StandardItem {
-            label: "Volume Down (-5)".into(),
-            activate: Box::new(move |_: &mut TisvlayTray| {
-                let _ = tx.send(TrayCommand::VolumeDown(id_c.clone()));
-            }),
-            ..Default::default()
-        }
-        .into(),
-    );
-
-    let tx = cmd_tx.clone();
-    let id_c = id.clone();
     let is_muted = tv.muted == Some(true);
-    items.push(
-        StandardItem {
-            label: if is_muted { "Unmute" } else { "Mute" }.into(),
-            activate: Box::new(move |_: &mut TisvlayTray| {
-                let _ = tx.send(TrayCommand::ToggleMute(id_c.clone()));
-            }),
-            ..Default::default()
-        }
-        .into(),
-    );
+    items.push(tv_item(
+        if is_muted { "Unmute" } else { "Mute" },
+        if is_muted {
+            "audio-volume-muted"
+        } else {
+            "audio-volume-high"
+        },
+        cmd_tx,
+        {
+            let id = id.clone();
+            move || TrayCommand::ToggleMute(id.clone())
+        },
+    ));
 
     // Backlight section
     if let Some(bl) = tv.backlight {
@@ -272,37 +300,21 @@ fn build_connected_tv_menu(
         items.push(
             StandardItem {
                 label: format!("Backlight: {}", bl),
+                icon_name: "weather-clear".into(),
                 enabled: false,
                 ..Default::default()
             }
             .into(),
         );
 
-        let tx = cmd_tx.clone();
-        let id_c = id.clone();
-        items.push(
-            StandardItem {
-                label: "Backlight Up (+10)".into(),
-                activate: Box::new(move |_: &mut TisvlayTray| {
-                    let _ = tx.send(TrayCommand::BacklightUp(id_c.clone()));
-                }),
-                ..Default::default()
-            }
-            .into(),
-        );
-
-        let tx = cmd_tx.clone();
-        let id_c = id.clone();
-        items.push(
-            StandardItem {
-                label: "Backlight Down (-10)".into(),
-                activate: Box::new(move |_: &mut TisvlayTray| {
-                    let _ = tx.send(TrayCommand::BacklightDown(id_c.clone()));
-                }),
-                ..Default::default()
-            }
-            .into(),
-        );
+        items.push(tv_item("Backlight Up (+10)", "", cmd_tx, {
+            let id = id.clone();
+            move || TrayCommand::BacklightUp(id.clone())
+        }));
+        items.push(tv_item("Backlight Down (-10)", "", cmd_tx, {
+            let id = id.clone();
+            move || TrayCommand::BacklightDown(id.clone())
+        }));
     }
 
     items
@@ -313,16 +325,13 @@ fn build_disconnected_tv_menu(
     tv: &CachedTvState,
     cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
 ) -> Vec<MenuItem<TisvlayTray>> {
-    let tx = cmd_tx.clone();
     let id = tv.id.clone();
-    vec![StandardItem {
-        label: "Power On (Wake)".into(),
-        activate: Box::new(move |_: &mut TisvlayTray| {
-            let _ = tx.send(TrayCommand::PowerOn(id.clone()));
-        }),
-        ..Default::default()
-    }
-    .into()]
+    vec![tv_item(
+        "Power On (Wake)",
+        "system-run",
+        cmd_tx,
+        move || TrayCommand::PowerOn(id.clone()),
+    )]
 }
 
 /// Build the input switching submenu with radio buttons.
@@ -352,6 +361,7 @@ fn build_input_submenu(
 
     SubMenu {
         label: "Input".into(),
+        icon_name: "video-television".into(),
         submenu: vec![RadioGroup {
             selected,
             options,

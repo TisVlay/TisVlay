@@ -103,13 +103,38 @@ async fn main() -> Result<()> {
         poll_state(poll_daemon, poll_handle).await;
     });
 
-    // Run command processor (blocks until Quit)
-    process_commands(cmd_rx, daemon, handle.clone()).await;
+    // Spawn command processor
+    let cmd_daemon = daemon.clone();
+    let cmd_handle = handle.clone();
+    let cmd_task = tokio::spawn(async move {
+        process_commands(cmd_rx, cmd_daemon, cmd_handle).await;
+    });
+
+    // Wait for shutdown: command processor exit (Quit menu item) or signal
+    tokio::select! {
+        _ = cmd_task => {}
+        _ = wait_for_signal() => {
+            info!("Received shutdown signal");
+        }
+    }
 
     info!("Shutting down...");
     handle.shutdown();
 
     Ok(())
+}
+
+/// Wait for SIGTERM or SIGINT.
+async fn wait_for_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM");
+    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT");
+
+    tokio::select! {
+        _ = sigterm.recv() => {}
+        _ = sigint.recv() => {}
+    }
 }
 
 /// Periodically fetch TV state and update the tray menu.
