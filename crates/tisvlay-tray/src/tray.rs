@@ -321,10 +321,15 @@ fn build_connected_tv_menu(
         );
     }
 
-    items.push(volume_item("Volume Up (+5)", "audio-volume-high", cmd_tx, {
-        let id = id.clone();
-        move || TrayCommand::VolumeUp(id.clone())
-    }));
+    items.push(volume_item(
+        "Volume Up (+5)",
+        "audio-volume-high",
+        cmd_tx,
+        {
+            let id = id.clone();
+            move || TrayCommand::VolumeUp(id.clone())
+        },
+    ));
     items.push(volume_item(
         "Volume Down (-5)",
         "audio-volume-medium",
@@ -385,25 +390,15 @@ fn build_connected_tv_menu(
 
     // Screen blank/unblank (visual mute — OLED-safe)
     if tv.is_screen_on {
-        items.push(backlight_item(
-            "Screen Off",
-            "view-hidden",
-            cmd_tx,
-            {
-                let id = id.clone();
-                move || TrayCommand::ScreenOff(id.clone())
-            },
-        ));
+        items.push(backlight_item("Screen Off", "view-hidden", cmd_tx, {
+            let id = id.clone();
+            move || TrayCommand::ScreenOff(id.clone())
+        }));
     } else {
-        items.push(backlight_item(
-            "Screen On",
-            "view-visible",
-            cmd_tx,
-            {
-                let id = id.clone();
-                move || TrayCommand::ScreenOn(id.clone())
-            },
-        ));
+        items.push(backlight_item("Screen On", "view-visible", cmd_tx, {
+            let id = id.clone();
+            move || TrayCommand::ScreenOn(id.clone())
+        }));
     }
 
     items

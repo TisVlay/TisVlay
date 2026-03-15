@@ -211,15 +211,16 @@ async fn process_commands(
                     set_cached_volume(&handle, &id, new).await;
                 }
             }
-            TrayCommand::ToggleMute(id) => match daemon.get_state(&id).await {
-                Ok(state) => {
-                    let new_mute = !state.muted.unwrap_or(false);
-                    if let Err(e) = daemon.set_mute(&id, new_mute).await {
-                        warn!(tv_id = %id, error = %e, "Toggle mute failed");
-                    }
+            TrayCommand::ToggleMute(id) => {
+                // Read from cache to avoid race with rapid toggles
+                let currently_muted = get_cached_muted(&handle, &id).await;
+                let new_mute = !currently_muted;
+                if let Err(e) = daemon.set_mute(&id, new_mute).await {
+                    warn!(tv_id = %id, error = %e, "Toggle mute failed");
+                } else {
+                    set_cached_muted(&handle, &id, new_mute).await;
                 }
-                Err(e) => warn!(tv_id = %id, error = %e, "Get state failed"),
-            },
+            }
             TrayCommand::BacklightUp(id) => {
                 let current = get_cached_backlight(&handle, &id).await;
                 let new = current.saturating_add(BACKLIGHT_STEP).min(100);
@@ -301,6 +302,33 @@ async fn set_cached_backlight(handle: &ksni::Handle<TisvlayTray>, tv_id: &str, l
         .update(|t| {
             if let Some(tv) = t.tvs.iter_mut().find(|tv| tv.id == id) {
                 tv.backlight = Some(level);
+            }
+        })
+        .await;
+}
+
+/// Read muted state from cached tray state.
+async fn get_cached_muted(handle: &ksni::Handle<TisvlayTray>, tv_id: &str) -> bool {
+    let id = tv_id.to_string();
+    handle
+        .update(|t| {
+            t.tvs
+                .iter()
+                .find(|tv| tv.id == id)
+                .and_then(|tv| tv.muted)
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
+}
+
+/// Optimistically update cached muted state.
+async fn set_cached_muted(handle: &ksni::Handle<TisvlayTray>, tv_id: &str, muted: bool) {
+    let id = tv_id.to_string();
+    handle
+        .update(|t| {
+            if let Some(tv) = t.tvs.iter_mut().find(|tv| tv.id == id) {
+                tv.muted = Some(muted);
             }
         })
         .await;

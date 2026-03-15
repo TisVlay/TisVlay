@@ -54,6 +54,7 @@ mod tests {
 
     /// list_tvs must not hang when daemon is unavailable.
     #[tokio::test]
+    #[ignore = "requires session bus — run with: cargo test -p tisvlay-core --features dbus --test dbus_client -- --ignored"]
     async fn list_tvs_does_not_hang_when_daemon_unavailable() {
         let client = DaemonClient::new_session()
             .await
@@ -70,6 +71,7 @@ mod tests {
 
     /// Repeated list_tvs calls must never hang, even after failures.
     #[tokio::test]
+    #[ignore = "requires session bus — run with: cargo test -p tisvlay-core --features dbus --test dbus_client -- --ignored"]
     async fn repeated_list_tvs_never_hangs() {
         let client = DaemonClient::new_session()
             .await
@@ -89,6 +91,7 @@ mod tests {
 
     /// A fresh DaemonClient created after the daemon starts should work.
     #[tokio::test]
+    #[ignore = "requires session bus — run with: cargo test -p tisvlay-core --features dbus --test dbus_client -- --ignored"]
     async fn fresh_client_works_with_mock_daemon() {
         let _daemon = start_mock_daemon().await;
 
@@ -112,6 +115,7 @@ mod tests {
     /// yet, first call fails, then daemon starts, subsequent calls should
     /// succeed on the SAME client.
     #[tokio::test]
+    #[ignore = "requires session bus — run with: cargo test -p tisvlay-core --features dbus --test dbus_client -- --ignored"]
     async fn same_client_recovers_after_daemon_starts() {
         // 1. Create client before daemon
         let client = DaemonClient::new_session()
@@ -149,6 +153,7 @@ mod tests {
     /// If the same-client recovery fails (known zbus behavior), verify
     /// that creating a fresh client works as a workaround.
     #[tokio::test]
+    #[ignore = "requires session bus — run with: cargo test -p tisvlay-core --features dbus --test dbus_client -- --ignored"]
     async fn fresh_client_workaround_for_stale_proxy() {
         // 1. Create client before daemon — will be "stale"
         let stale = DaemonClient::new_session()

@@ -47,11 +47,17 @@ pub async fn fetch_all_state(daemon: &DaemonClient) -> anyhow::Result<Vec<Cached
             inputs: Vec::new(),
         };
 
-        // Always try get_state — the daemon connects on-demand, so a TV
-        // may be reachable even if `Connected` is false. If get_state
-        // succeeds, the daemon established a connection and the TV is online.
-        match daemon.get_state(&tv.id).await {
-            Ok(state) => {
+        // Try get_state for all TVs — the daemon connects on-demand, so a
+        // TV may be reachable even if `Connected` is false. Use a short
+        // timeout for disconnected TVs to avoid blocking the poll on
+        // WebSocket connect timeouts to powered-off TVs.
+        let timeout = if tv.connected {
+            std::time::Duration::from_secs(10)
+        } else {
+            std::time::Duration::from_secs(2)
+        };
+        match tokio::time::timeout(timeout, daemon.get_state(&tv.id)).await {
+            Ok(Ok(state)) => {
                 cached.connected = true;
                 cached.is_on = state.is_on;
                 cached.is_screen_on = state.is_screen_on;
@@ -61,8 +67,12 @@ pub async fn fetch_all_state(daemon: &DaemonClient) -> anyhow::Result<Vec<Cached
                 cached.backlight = state.backlight;
                 cached.inputs = state.inputs.into_iter().map(|i| (i.id, i.label)).collect();
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 debug!(tv_id = %tv.id, error = %e, "TV state unavailable");
+                cached.connected = false;
+            }
+            Err(_) => {
+                debug!(tv_id = %tv.id, "TV state timed out");
                 cached.connected = false;
             }
         }
