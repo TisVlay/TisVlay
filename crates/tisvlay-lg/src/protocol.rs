@@ -26,13 +26,12 @@ pub struct Request {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RequestType {
-    /// Initial hello message to get TV info.
-    Hello,
     /// Registration/pairing request.
     Register,
     /// Command request.
     Request,
     /// Subscribe to state changes.
+    #[allow(dead_code)] // Valid SSAP protocol type, not yet used
     Subscribe,
 }
 
@@ -277,47 +276,7 @@ pub struct ExternalInputList {
     pub devices: Vec<ExternalInput>,
 }
 
-/// System info response.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemInfo {
-    /// TV model name.
-    #[serde(default)]
-    pub model_name: Option<String>,
-    /// Serial number.
-    #[serde(default)]
-    pub serial_number: Option<String>,
-    /// Firmware version.
-    #[serde(default)]
-    pub firmware_version: Option<String>,
-}
-
-/// Software info response.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SoftwareInfo {
-    /// WebOS version.
-    #[serde(default)]
-    pub major_ver: Option<String>,
-    /// Minor version.
-    #[serde(default)]
-    pub minor_ver: Option<String>,
-    /// Product name.
-    #[serde(default)]
-    pub product_name: Option<String>,
-}
-
 impl Request {
-    /// Create a hello request.
-    pub fn hello(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            msg_type: RequestType::Hello,
-            uri: None,
-            payload: Some(serde_json::json!({})),
-        }
-    }
-
     /// Create a register request.
     pub fn register(id: impl Into<String>, payload: RegisterPayload) -> Self {
         Self {
@@ -339,6 +298,7 @@ impl Request {
     }
 
     /// Create a subscribe request.
+    #[allow(dead_code)] // Valid SSAP protocol operation, not yet used
     pub fn subscribe(id: impl Into<String>, uri: impl Into<String>) -> Self {
         Self {
             id: id.into(),

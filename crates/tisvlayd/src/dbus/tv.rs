@@ -36,10 +36,6 @@ impl TvService {
         (self.tv_id.clone(), self.manager.clone())
     }
 
-    /// Get the TV ID.
-    pub fn tv_id(&self) -> &str {
-        &self.tv_id
-    }
 }
 
 #[interface(name = "org.tisvlay.Tv1")]

@@ -20,14 +20,6 @@ pub struct StateChangeEvent {
 }
 
 impl StateChangeEvent {
-    /// Create a new state change event from a TvState.
-    pub fn from_state(tv_id: &str, state: &TvState) -> Self {
-        Self {
-            tv_id: tv_id.to_string(),
-            state_json: serde_json::to_string(state).unwrap_or_default(),
-        }
-    }
-
     /// Create a state change event for a connection status change.
     pub fn connection_change(tv_id: &str, connected: bool, error: Option<&str>) -> Self {
         let state = serde_json::json!({
@@ -44,7 +36,6 @@ impl StateChangeEvent {
 /// Basic TV information for D-Bus properties.
 #[derive(Debug, Clone)]
 pub struct TvInfo {
-    pub id: String,
     pub name: String,
     /// Display address (extracted from vendor-specific config via connector).
     pub address: String,
@@ -168,24 +159,12 @@ impl TvManager {
         tvs.keys().cloned().collect()
     }
 
-    /// List all configured TVs with connection status.
-    pub async fn list_tvs(&self) -> Vec<(String, String, String, bool)> {
-        let tvs = self.tvs.read().await;
-        tvs.iter()
-            .map(|(id, tv)| {
-                let address = self.registry.display_address(&tv.config);
-                (id.clone(), tv.config.name.clone(), address, tv.is_connected())
-            })
-            .collect()
-    }
-
     /// Get basic TV information.
     pub async fn get_tv_info(&self, tv_id: &str) -> Option<TvInfo> {
         let tvs = self.tvs.read().await;
         tvs.get(tv_id).map(|tv| {
             let address = self.registry.display_address(&tv.config);
             TvInfo {
-                id: tv.config.id.clone(),
                 name: tv.config.name.clone(),
                 address,
                 vendor: tv.config.vendor.clone(),

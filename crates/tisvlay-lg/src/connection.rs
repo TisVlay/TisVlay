@@ -18,7 +18,6 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// WebSocket connection to an LG TV.
 pub struct Connection {
     stream: WsStream,
-    host: String,
 }
 
 /// Custom certificate verifier that accepts any certificate.
@@ -94,16 +93,16 @@ impl Connection {
     /// Connect using secure WebSocket (wss://).
     pub async fn connect_wss(host: &str, connect_timeout: Duration) -> Result<Self> {
         let url = format!("wss://{}:{}", host, WSS_PORT);
-        Self::connect_url_tls(&url, host, connect_timeout).await
+        Self::connect_url_tls(&url, connect_timeout).await
     }
 
     /// Connect using insecure WebSocket (ws://).
     pub async fn connect_ws(host: &str, connect_timeout: Duration) -> Result<Self> {
         let url = format!("ws://{}:{}", host, WS_PORT);
-        Self::connect_url_plain(&url, host, connect_timeout).await
+        Self::connect_url_plain(&url, connect_timeout).await
     }
 
-    async fn connect_url_tls(url: &str, host: &str, connect_timeout: Duration) -> Result<Self> {
+    async fn connect_url_tls(url: &str, connect_timeout: Duration) -> Result<Self> {
         // Create TLS config that accepts self-signed certificates
         let tls_config = rustls::ClientConfig::builder()
             .dangerous()
@@ -126,13 +125,10 @@ impl Connection {
             "WebSocket connected (TLS)"
         );
 
-        Ok(Self {
-            stream,
-            host: host.to_string(),
-        })
+        Ok(Self { stream })
     }
 
-    async fn connect_url_plain(url: &str, host: &str, connect_timeout: Duration) -> Result<Self> {
+    async fn connect_url_plain(url: &str, connect_timeout: Duration) -> Result<Self> {
         let connect_fut = tokio_tungstenite::connect_async(url);
 
         let (stream, response) = timeout(connect_timeout, connect_fut)
@@ -146,10 +142,7 @@ impl Connection {
             "WebSocket connected (plain)"
         );
 
-        Ok(Self {
-            stream,
-            host: host.to_string(),
-        })
+        Ok(Self { stream })
     }
 
     /// Send a request to the TV.
@@ -235,8 +228,4 @@ impl Connection {
         Ok(())
     }
 
-    /// Get the host this connection is for.
-    pub fn host(&self) -> &str {
-        &self.host
-    }
 }
