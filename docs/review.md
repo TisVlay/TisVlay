@@ -691,6 +691,8 @@ pub async fn get_state(&self, tv_id: &str) -> Result<TvState, TvManagerError> {
 
 This would also eliminate the only remaining caller of `connect()` besides `reconnect()`, reducing the connect-logic duplication surface.
 
+**Response**: Fixed. `get_state` now uses `with_connection`, a 5-line method.
+
 #### R3.2 Connect logic is duplicated between `connect()` and `with_connection` (MEDIUM)
 
 After the R2.1 fix, `with_connection` (lines 348-368) inlines its own connect logic. But the standalone `connect()` method (lines 280-313) still exists with nearly-identical code. Now there are two places that implement "check connected → check powered_off → call registry.connect_tv → store connection":
@@ -701,6 +703,8 @@ After the R2.1 fix, `with_connection` (lines 348-368) inlines its own connect lo
 They're subtly inconsistent: `connect()` drops the lock before `emit_state_change` (line 308), while `with_connection` emits while holding the lock (line 367). The channel send is non-blocking so this doesn't deadlock, but it's a maintenance hazard — future changes to connect logic need to be applied in two places.
 
 If `get_state` moves to `with_connection` (R3.1), then `connect()` is only called by `reconnect()`. Consider having `reconnect()` inline its own logic too, or factor out the common connect body into a private helper that takes the already-locked `MutexGuard`.
+
+**Response**: Fixed. Removed standalone `connect()`. `reconnect()` now inlines its own disconnect + connect logic under a single per-TV lock. Connect logic now exists in exactly two places: `with_connection` (connect-if-needed + command) and `reconnect` (disconnect + connect). Both consistent in lock/emit ordering.
 
 #### R3.3 `Arc<RwLock<TvManager>>` outer lock is unnecessary overhead (MEDIUM)
 
@@ -719,6 +723,8 @@ Since `TvManager` methods all take `&self` and handle their own synchronization,
 
 **Recommendation**: Change to `Arc<TvManager>`. This eliminates the `.read().await` at every D-Bus call site. `TvManager` already handles all internal synchronization correctly.
 
+**Response**: Fixed. Changed to `Arc<TvManager>`. Removed `RwLock` import from `main.rs`, `tv.rs`, and `manager.rs`. All 28 `.read().await` calls in D-Bus service methods replaced with direct `&self.manager` references.
+
 #### R3.4 `TvManagerError::Other` is dead code with `#[allow(dead_code)]` (LOW)
 
 `crates/tisvlayd/src/tv_manager.rs:65-68`:
@@ -729,6 +735,8 @@ Other(String),
 ```
 
 This variant was introduced in the R1 fix but is never constructed anywhere. Suppressing the warning with `#[allow(dead_code)]` rather than removing it is the wrong approach — if it's not needed, remove it. If it's kept for future use, it should at least not suppress the warning so it's visible when someone audits the code.
+
+**Response**: Fixed. Removed the `Other` variant and its `DaemonError::from` match arm.
 
 ### Round 3 Summary
 

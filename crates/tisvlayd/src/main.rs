@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::sync::Arc;
 use tisvlay_core::Config;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use zbus::object_server::SignalEmitter;
@@ -68,17 +68,15 @@ async fn main() -> Result<()> {
     // Create TV manager
     let (tv_manager, state_change_rx) = TvManager::new(config, registry.clone());
 
-    // Get list of configured TV IDs before wrapping in RwLock
+    // Get list of configured TV IDs
     let tv_ids: Vec<String> = tv_manager.list_tv_ids().await;
 
-    // Wrap manager in Arc<RwLock> for sharing between D-Bus service and signal handler
-    let shared_manager = Arc::new(RwLock::new(tv_manager));
+    // Wrap manager in Arc for sharing between D-Bus services.
+    // TvManager handles all internal synchronization via per-TV mutexes.
+    let shared_manager = Arc::new(tv_manager);
 
     // Boot-time WoL for TVs with wake_on_boot enabled
-    {
-        let manager = shared_manager.read().await;
-        manager.boot_wake().await;
-    }
+    shared_manager.boot_wake().await;
 
     // Connect to D-Bus (session or system bus)
     let builder = if args.session {
@@ -166,7 +164,7 @@ async fn state_change_signal_emitter(
 }
 
 /// Wait for SIGTERM, SIGINT (shutdown) or SIGHUP (reload).
-async fn wait_for_signals(manager: Arc<RwLock<TvManager>>) {
+async fn wait_for_signals(manager: Arc<TvManager>) {
     use tokio::signal::unix::{signal, SignalKind};
 
     let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
@@ -185,8 +183,7 @@ async fn wait_for_signals(manager: Arc<RwLock<TvManager>>) {
             }
             _ = sighup.recv() => {
                 info!("Received SIGHUP, reloading configuration...");
-                let mgr = manager.read().await;
-                if let Err(e) = mgr.reload_config().await {
+                if let Err(e) = manager.reload_config().await {
                     warn!("Failed to reload config: {}", e);
                 }
             }

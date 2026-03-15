@@ -71,7 +71,6 @@ impl From<TvManagerError> for DaemonError {
             }
             TvManagerError::PairingFailed(source) => DaemonError::PairingFailed(source.to_string()),
             TvManagerError::ConfigError(msg) => DaemonError::OperationFailed(msg),
-            TvManagerError::Other(msg) => DaemonError::OperationFailed(msg),
         }
     }
 }

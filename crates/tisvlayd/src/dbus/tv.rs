@@ -11,23 +11,22 @@
 use crate::dbus::DaemonError;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, info};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
 
 /// Shared state for all TV interfaces.
-type TvState = (String, Arc<RwLock<TvManager>>);
+type TvState = (String, Arc<TvManager>);
 
 /// Base TV interface with properties and connection management.
 pub struct TvService {
     tv_id: String,
-    manager: Arc<RwLock<TvManager>>,
+    manager: Arc<TvManager>,
 }
 
 impl TvService {
     /// Create a new TV service.
-    pub fn new(tv_id: String, manager: Arc<RwLock<TvManager>>) -> Self {
+    pub fn new(tv_id: String, manager: Arc<TvManager>) -> Self {
         Self { tv_id, manager }
     }
 
@@ -52,7 +51,7 @@ impl TvService {
     /// TV display name.
     #[zbus(property)]
     async fn name(&self) -> String {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .get_tv_info(&self.tv_id)
             .await
@@ -63,7 +62,7 @@ impl TvService {
     /// TV vendor ID.
     #[zbus(property)]
     async fn vendor(&self) -> String {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .get_tv_info(&self.tv_id)
             .await
@@ -74,7 +73,7 @@ impl TvService {
     /// TV display address (vendor-specific, e.g. IP address).
     #[zbus(property)]
     async fn address(&self) -> String {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .get_tv_info(&self.tv_id)
             .await
@@ -85,14 +84,14 @@ impl TvService {
     /// Whether the TV is currently connected.
     #[zbus(property)]
     async fn connected(&self) -> bool {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.is_connected(&self.tv_id).await
     }
 
     /// Capabilities supported by this TV.
     #[zbus(property)]
     async fn capabilities(&self) -> Vec<String> {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .get_capabilities(&self.tv_id)
             .await
@@ -107,7 +106,7 @@ impl TvService {
     /// Force reconnection to the TV.
     async fn reconnect(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: Reconnect");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .reconnect(&self.tv_id)
             .await
@@ -117,7 +116,7 @@ impl TvService {
     /// Get TV state as JSON.
     async fn get_state(&self) -> Result<String, DaemonError> {
         debug!(tv_id = %self.tv_id, "D-Bus: GetState");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         let state = manager
             .get_state(&self.tv_id)
             .await
@@ -149,7 +148,7 @@ impl TvService {
 /// Power control interface.
 pub struct TvPowerService {
     tv_id: String,
-    manager: Arc<RwLock<TvManager>>,
+    manager: Arc<TvManager>,
 }
 
 impl TvPowerService {
@@ -167,7 +166,7 @@ impl TvPowerService {
     /// Power on the TV (Wake-on-LAN).
     async fn power_on(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: PowerOn");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .power_on(&self.tv_id)
             .await
@@ -177,7 +176,7 @@ impl TvPowerService {
     /// Power off the TV.
     async fn power_off(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: PowerOff");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .power_off(&self.tv_id)
             .await
@@ -187,7 +186,7 @@ impl TvPowerService {
     /// Get current power state.
     #[zbus(property)]
     async fn power_state(&self) -> String {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .get_power_state(&self.tv_id)
             .await
@@ -203,7 +202,7 @@ impl TvPowerService {
 /// Screen control interface (OLED-safe blanking).
 pub struct TvScreenService {
     tv_id: String,
-    manager: Arc<RwLock<TvManager>>,
+    manager: Arc<TvManager>,
 }
 
 impl TvScreenService {
@@ -221,7 +220,7 @@ impl TvScreenService {
     /// Turn the screen on (unblank).
     async fn screen_on(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: ScreenOn");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .screen_on(&self.tv_id)
             .await
@@ -231,7 +230,7 @@ impl TvScreenService {
     /// Turn the screen off (blank).
     async fn screen_off(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: ScreenOff");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .screen_off(&self.tv_id)
             .await
@@ -241,7 +240,7 @@ impl TvScreenService {
     /// Whether the screen is currently on.
     #[zbus(property)]
     async fn screen_on_prop(&self) -> bool {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.is_screen_on(&self.tv_id).await.unwrap_or(true)
     }
 }
@@ -253,7 +252,7 @@ impl TvScreenService {
 /// Volume control interface.
 pub struct TvVolumeService {
     tv_id: String,
-    manager: Arc<RwLock<TvManager>>,
+    manager: Arc<TvManager>,
 }
 
 impl TvVolumeService {
@@ -271,7 +270,7 @@ impl TvVolumeService {
     /// Set volume level (0-100).
     async fn set_volume(&self, level: u8) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, volume = level, "D-Bus: SetVolume");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .set_volume(&self.tv_id, level)
             .await
@@ -281,14 +280,14 @@ impl TvVolumeService {
     /// Current volume level (0-100).
     #[zbus(property)]
     async fn volume(&self) -> u8 {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.get_volume(&self.tv_id).await.unwrap_or(0)
     }
 
     /// Set mute state.
     async fn set_mute(&self, mute: bool) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, mute = mute, "D-Bus: SetMute");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .set_mute(&self.tv_id, mute)
             .await
@@ -298,7 +297,7 @@ impl TvVolumeService {
     /// Whether audio is currently muted.
     #[zbus(property)]
     async fn muted(&self) -> bool {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.is_muted(&self.tv_id).await.unwrap_or(false)
     }
 }
@@ -310,7 +309,7 @@ impl TvVolumeService {
 /// Input switching interface.
 pub struct TvInputService {
     tv_id: String,
-    manager: Arc<RwLock<TvManager>>,
+    manager: Arc<TvManager>,
 }
 
 impl TvInputService {
@@ -328,7 +327,7 @@ impl TvInputService {
     /// Switch to the specified input.
     async fn switch_input(&self, input_id: &str) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, input_id = %input_id, "D-Bus: SwitchInput");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .switch_input(&self.tv_id, input_id)
             .await
@@ -338,7 +337,7 @@ impl TvInputService {
     /// Currently active input ID.
     #[zbus(property)]
     async fn current_input(&self) -> String {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .get_current_input(&self.tv_id)
             .await
@@ -349,7 +348,7 @@ impl TvInputService {
     /// Available inputs as (id, label) tuples.
     #[zbus(property)]
     async fn available_inputs(&self) -> Vec<(String, String)> {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.get_inputs(&self.tv_id).await.unwrap_or_default()
     }
 }
@@ -361,7 +360,7 @@ impl TvInputService {
 /// Backlight control interface (OLED pixel brightness).
 pub struct TvBacklightService {
     tv_id: String,
-    manager: Arc<RwLock<TvManager>>,
+    manager: Arc<TvManager>,
 }
 
 impl TvBacklightService {
@@ -379,7 +378,7 @@ impl TvBacklightService {
     /// Set backlight level (0-100).
     async fn set_backlight(&self, level: u8) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, backlight = level, "D-Bus: SetBacklight");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .set_backlight(&self.tv_id, level)
             .await
@@ -389,7 +388,7 @@ impl TvBacklightService {
     /// Current backlight level (0-100).
     #[zbus(property)]
     async fn backlight(&self) -> u8 {
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.get_backlight(&self.tv_id).await.unwrap_or(0)
     }
 }
@@ -403,7 +402,7 @@ pub async fn register_tv_interfaces(
     connection: &zbus::Connection,
     path: &str,
     tv_id: String,
-    manager: Arc<RwLock<TvManager>>,
+    manager: Arc<TvManager>,
 ) -> zbus::Result<()> {
     let base = TvService::new(tv_id, manager);
     let state = base.state();

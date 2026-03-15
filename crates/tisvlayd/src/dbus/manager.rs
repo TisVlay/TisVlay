@@ -7,7 +7,7 @@ use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
 use tisvlay_core::dbus_paths::tv_path;
-use tokio::sync::RwLock;
+
 use tracing::{debug, info};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
@@ -17,13 +17,13 @@ use zbus::zvariant::ObjectPath;
 ///
 /// Provides TV management operations at `/org/tisvlay/Manager`.
 pub struct ManagerService {
-    manager: Arc<RwLock<TvManager>>,
+    manager: Arc<TvManager>,
     registry: Arc<BackendRegistry>,
 }
 
 impl ManagerService {
     /// Create a new manager service.
-    pub fn new(manager: Arc<RwLock<TvManager>>, registry: Arc<BackendRegistry>) -> Self {
+    pub fn new(manager: Arc<TvManager>, registry: Arc<BackendRegistry>) -> Self {
         Self { manager, registry }
     }
 }
@@ -63,7 +63,7 @@ impl ManagerService {
     /// Get all TV object paths.
     async fn get_tvs(&self) -> Vec<ObjectPath<'static>> {
         debug!("D-Bus: GetTvs");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager
             .list_tv_ids()
             .await
@@ -112,7 +112,7 @@ impl ManagerService {
             DaemonError::OperationFailed(format!("Failed to convert config: {}", e))
         })?;
 
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         let tv_id = manager
             .pair_tv(name, vendor, vendor_config, None)
             .await
@@ -131,14 +131,14 @@ impl ManagerService {
 
         info!(tv_id = %tv_id, "D-Bus: RemoveTv");
 
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.remove_tv(tv_id).await.map_err(DaemonError::from)
     }
 
     /// Reload configuration from disk.
     async fn reload_config(&self) -> Result<(), DaemonError> {
         info!("D-Bus: ReloadConfig");
-        let manager = self.manager.read().await;
+        let manager = &self.manager;
         manager.reload_config().await.map_err(DaemonError::from)
     }
 

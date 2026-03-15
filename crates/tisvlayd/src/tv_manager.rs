@@ -61,11 +61,6 @@ pub enum TvManagerError {
     /// Configuration I/O error (load/save).
     #[error("Config error: {0}")]
     ConfigError(String),
-
-    /// Catch-all for other errors.
-    #[allow(dead_code)]
-    #[error("{0}")]
-    Other(String),
 }
 
 /// Event emitted when TV state changes.
@@ -272,17 +267,16 @@ impl TvManager {
         Some(tv.capabilities())
     }
 
-    /// Connect to a TV, returning success/failure.
+    /// Force reconnection to a TV.
     ///
-    /// Acquires only the per-TV mutex. Network I/O (the actual connect call)
-    /// runs with the per-TV mutex held to prevent duplicate connections, but
-    /// the outer HashMap lock is released immediately after lookup.
-    async fn connect(&self, tv_id: &str) -> Result<(), TvManagerError> {
+    /// Disconnects (if connected), then reconnects under a single per-TV lock.
+    pub async fn reconnect(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let tv_arc = self.get_tv(tv_id).await?;
         let mut tv = tv_arc.lock().await;
 
-        if tv.is_connected() {
-            return Ok(());
+        // Disconnect if connected
+        if let Some(mut conn) = tv.connection.take() {
+            let _ = conn.close().await;
         }
 
         if tv.powered_off {
@@ -290,9 +284,8 @@ impl TvManager {
         }
 
         let display_addr = self.registry.display_address(&tv.config);
-        info!(tv_id = %tv_id, address = %display_addr, vendor = %tv.config.vendor, "Connecting to TV");
+        info!(tv_id = %tv_id, address = %display_addr, vendor = %tv.config.vendor, "Reconnecting to TV");
 
-        // Connect using registry (per-TV mutex held to prevent duplicate connects)
         let connection = self.registry.connect_tv(&tv.config).await.map_err(|e| {
             TvManagerError::ConnectionFailed {
                 tv_id: tv_id.to_string(),
@@ -304,28 +297,10 @@ impl TvManager {
         tv.connection = Some(connection);
         tv.last_error = None;
 
-        // Drop the per-TV lock before emitting state change
         drop(tv);
-
-        let event = StateChangeEvent::connection_change(tv_id, true, None);
-        self.emit_state_change(event);
+        self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
 
         Ok(())
-    }
-
-    /// Force reconnection to a TV.
-    pub async fn reconnect(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        // Disconnect first under per-TV lock
-        {
-            let tv_arc = self.get_tv(tv_id).await?;
-            let mut tv = tv_arc.lock().await;
-            if let Some(mut conn) = tv.connection.take() {
-                let _ = conn.close().await;
-            }
-        }
-
-        // Then connect
-        self.connect(tv_id).await
     }
 
     /// Execute a command on a TV connection.
@@ -603,25 +578,10 @@ impl TvManager {
 
     /// Get TV state.
     pub async fn get_state(&self, tv_id: &str) -> Result<TvState, TvManagerError> {
-        // Ensure connected (acquires and releases per-TV lock internally)
-        self.connect(tv_id).await?;
-
-        // Lock the per-TV mutex for the query
-        let tv_arc = self.get_tv(tv_id).await?;
-        let mut tv = tv_arc.lock().await;
-
-        let connection = tv
-            .connection
-            .as_mut()
-            .ok_or_else(|| TvManagerError::NotConnected(tv_id.to_string()))?;
-
-        connection
-            .get_state()
-            .await
-            .map_err(|e| TvManagerError::CommandFailed {
-                tv_id: tv_id.to_string(),
-                source: e,
-            })
+        self.with_connection(tv_id, |conn| {
+            Box::pin(async move { conn.get_state().await })
+        })
+        .await
     }
 
     // -------------------------------------------------------------------------
