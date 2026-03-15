@@ -77,8 +77,7 @@ A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Cur
 Architecture refactored to support multiple TV vendors. Daemon and CLI are fully vendor-agnostic and transport-agnostic.
 
 **Design Documents**:
-- [docs/multi-vendor-design.md](docs/multi-vendor-design.md) - Full architecture specification
-- [docs/multi-vendor-implementation-plan.md](docs/multi-vendor-implementation-plan.md) - Phased implementation
+- [docs/design.md](docs/design.md) - Full architecture specification
 - [docs/multi-vendor-discussion.md](docs/multi-vendor-discussion.md) - Design rationale and Q&A
 
 **Key Architectural Decisions**:
@@ -154,7 +153,7 @@ tisvlay/
 │   ├── reference.md              # Protocol survey from prior art
 │   ├── design.md                 # Full architecture design
 │   ├── firewall.md               # SSDP firewall configuration
-│   └── multi-vendor-*.md         # Multi-vendor architecture docs
+│   └── multi-vendor-discussion.md # Design rationale and Q&A
 │
 └── CLAUDE.md                     # This file
 ```

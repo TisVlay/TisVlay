@@ -429,7 +429,5 @@ tisvlayd, tisvlay-cli, tisvlay-gui, tisvlay-session
 
 ## References
 
-- [multi-vendor-design.md](multi-vendor-design.md) - Full architecture specification
-- [multi-vendor-implementation-plan.md](multi-vendor-implementation-plan.md) - Phased implementation plan
-- [design.md](design.md) - Original LG-specific design document
+- [design.md](design.md) - Full architecture specification
 - [reference.md](reference.md) - LG WebOS protocol documentation
