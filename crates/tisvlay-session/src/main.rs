@@ -13,6 +13,7 @@ mod wayland_idle;
 use anyhow::{Context, Result};
 use clap::Parser;
 use idle::IdleMonitor;
+use std::path::PathBuf;
 use session_monitor::{SessionEvent, SessionMonitor};
 use std::sync::Arc;
 use tisvlay_core::{Config, DaemonClient, ProfileConfig, SessionAction};
@@ -30,6 +31,12 @@ struct Args {
     /// with tisvlayd. Use this flag when running tisvlayd with --session.
     #[arg(long)]
     user: bool,
+
+    /// Path to the configuration file.
+    ///
+    /// Defaults to ~/.config/tisvlay/config.toml (XDG) when not specified.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -49,7 +56,11 @@ async fn main() -> Result<()> {
     info!("tisvlay-session starting...");
 
     // Load configuration
-    let config = match Config::load() {
+    let config = match args.config {
+        Some(ref path) => Config::load_from(path),
+        None => Config::load(),
+    };
+    let config = match config {
         Ok(config) => {
             // Calculate effective idle timeout (minimum non-zero across all TV profiles)
             let idle_timeout = effective_idle_timeout(&config);
@@ -130,7 +141,7 @@ async fn main() -> Result<()> {
     });
 
     // Wait for shutdown signals
-    wait_for_signals(config).await;
+    wait_for_signals(config, args.config).await;
 
     info!("Shutting down...");
 
@@ -254,7 +265,7 @@ fn effective_idle_timeout(config: &Config) -> u64 {
 }
 
 /// Wait for SIGTERM, SIGINT (shutdown) or SIGHUP (reload).
-async fn wait_for_signals(config: Arc<RwLock<Config>>) {
+async fn wait_for_signals(config: Arc<RwLock<Config>>, config_path: Option<PathBuf>) {
     use tokio::signal::unix::{signal, SignalKind};
 
     let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
@@ -273,7 +284,11 @@ async fn wait_for_signals(config: Arc<RwLock<Config>>) {
             }
             _ = sighup.recv() => {
                 info!("Received SIGHUP, reloading configuration...");
-                match Config::load() {
+                let result = match config_path {
+                    Some(ref path) => Config::load_from(path),
+                    None => Config::load(),
+                };
+                match result {
                     Ok(new_config) => {
                         let idle_timeout = effective_idle_timeout(&new_config);
                         let mut cfg = config.write().await;

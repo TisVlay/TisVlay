@@ -8,6 +8,7 @@
 
 use crate::registry::BackendRegistry;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tisvlay_core::{Capabilities, Config, PowerState, TvConfig, TvConnection, TvState};
@@ -137,6 +138,8 @@ impl ManagedTv {
 pub struct TvManager {
     /// Global configuration.
     config: Config,
+    /// Path to the configuration file for load/save operations.
+    config_path: PathBuf,
     /// Backend registry for vendor support.
     registry: Arc<BackendRegistry>,
     /// Managed TVs by ID -- each TV has its own mutex for independent locking.
@@ -153,6 +156,7 @@ impl TvManager {
     /// Returns the manager and a receiver for state change events.
     pub fn new(
         config: Config,
+        config_path: PathBuf,
         registry: Arc<BackendRegistry>,
     ) -> (Self, mpsc::UnboundedReceiver<StateChangeEvent>) {
         let mut tvs = HashMap::new();
@@ -168,6 +172,7 @@ impl TvManager {
 
         let manager = Self {
             config,
+            config_path,
             registry,
             tvs,
             state_change_tx,
@@ -669,21 +674,21 @@ impl TvManager {
 
     /// Save a TV config to the configuration file.
     fn save_tv_config(&self, tv_config: &TvConfig) -> Result<(), TvManagerError> {
-        let mut config = Config::load()
+        let mut config = Config::load_from(&self.config_path)
             .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
         config.upsert_tv(tv_config.clone());
         config
-            .save()
+            .save_to(&self.config_path)
             .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
     }
 
     /// Delete a TV from the configuration file.
     fn delete_tv_config(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        let mut config = Config::load()
+        let mut config = Config::load_from(&self.config_path)
             .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
         config.remove_tv(tv_id);
         config
-            .save()
+            .save_to(&self.config_path)
             .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
     }
 
@@ -691,7 +696,7 @@ impl TvManager {
     pub async fn reload_config(&self) -> Result<(), TvManagerError> {
         info!("Reloading configuration");
 
-        let new_config = Config::load()
+        let new_config = Config::load_from(&self.config_path)
             .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
 
         // Outer write lock -- we may add/remove entries from the HashMap

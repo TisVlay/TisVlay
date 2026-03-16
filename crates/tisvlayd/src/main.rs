@@ -9,6 +9,7 @@ mod tv_manager;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::Config;
 use tokio::sync::mpsc;
@@ -32,6 +33,13 @@ struct Args {
     /// Use this flag when running tisvlayd via user session.
     #[arg(long)]
     session: bool,
+
+    /// Path to the configuration file.
+    ///
+    /// Defaults to /var/lib/tisvlay/config.toml (system install) or
+    /// ~/.config/tisvlay/config.toml when --session is used without --config.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -46,8 +54,18 @@ async fn main() -> Result<()> {
 
     info!("tisvlayd starting...");
 
+    // Determine config file path
+    let config_path = args.config.unwrap_or_else(|| {
+        if args.session {
+            Config::config_path().unwrap_or_else(|_| PathBuf::from("/var/lib/tisvlay/config.toml"))
+        } else {
+            PathBuf::from("/var/lib/tisvlay/config.toml")
+        }
+    });
+    info!(path = %config_path.display(), "Using config file");
+
     // Load configuration
-    let config = match Config::load() {
+    let config = match Config::load_from(&config_path) {
         Ok(config) => {
             info!(tvs = config.tv.len(), "Loaded configuration");
             config
@@ -66,7 +84,7 @@ async fn main() -> Result<()> {
     );
 
     // Create TV manager
-    let (tv_manager, state_change_rx) = TvManager::new(config, registry.clone());
+    let (tv_manager, state_change_rx) = TvManager::new(config, config_path, registry.clone());
 
     // Get list of configured TV IDs
     let tv_ids: Vec<String> = tv_manager.list_tv_ids().await;
