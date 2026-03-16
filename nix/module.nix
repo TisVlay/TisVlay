@@ -50,7 +50,11 @@ in
     };
 
     # D-Bus policy: allow the tisvlay user to own the service name.
-    environment.etc."dbus-1/system.d/org.tisvlay.Daemon.conf".text = dbusPolicy;
+    # Uses services.dbus.packages (the idiomatic NixOS approach) rather than
+    # environment.etc, since NixOS manages /etc/dbus-1/system.d/ via the dbus module.
+    services.dbus.packages = [
+      (pkgs.writeTextDir "share/dbus-1/system.d/org.tisvlay.Daemon.conf" dbusPolicy)
+    ];
 
     # Make the CLI available system-wide.
     environment.systemPackages = [ cfg.package ];
