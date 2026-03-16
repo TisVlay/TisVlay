@@ -2,13 +2,13 @@
 //!
 //! Implements `org.tisvlay.Manager1` for TV discovery and management.
 
-use crate::dbus::DaemonError;
+use crate::dbus::{register_tv_interfaces, unregister_tv_interfaces, DaemonError};
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
 use tisvlay_core::dbus_paths::tv_path;
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::ObjectPath;
@@ -19,12 +19,21 @@ use zbus::zvariant::ObjectPath;
 pub struct ManagerService {
     manager: Arc<TvManager>,
     registry: Arc<BackendRegistry>,
+    connection: zbus::Connection,
 }
 
 impl ManagerService {
     /// Create a new manager service.
-    pub fn new(manager: Arc<TvManager>, registry: Arc<BackendRegistry>) -> Self {
-        Self { manager, registry }
+    pub fn new(
+        manager: Arc<TvManager>,
+        registry: Arc<BackendRegistry>,
+        connection: zbus::Connection,
+    ) -> Self {
+        Self {
+            manager,
+            registry,
+            connection,
+        }
     }
 }
 
@@ -118,7 +127,15 @@ impl ManagerService {
             .await
             .map_err(DaemonError::from)?;
 
-        Ok(ObjectPath::try_from(tv_path(&tv_id)).unwrap())
+        // Register D-Bus interfaces for the newly added TV.
+        let path = tv_path(&tv_id);
+        if let Err(e) =
+            register_tv_interfaces(&self.connection, &path, tv_id.clone(), manager.clone()).await
+        {
+            warn!(tv_id = %tv_id, error = %e, "Failed to register D-Bus interfaces for new TV");
+        }
+
+        Ok(ObjectPath::try_from(path).unwrap())
     }
 
     /// Remove a TV.
@@ -132,7 +149,14 @@ impl ManagerService {
         info!(tv_id = %tv_id, "D-Bus: RemoveTv");
 
         let manager = &self.manager;
-        manager.remove_tv(tv_id).await.map_err(DaemonError::from)
+        manager.remove_tv(tv_id).await.map_err(DaemonError::from)?;
+
+        // Unregister D-Bus interfaces for the removed TV.
+        if let Err(e) = unregister_tv_interfaces(&self.connection, path_str).await {
+            warn!(tv_id = %tv_id, error = %e, "Failed to unregister D-Bus interfaces for TV");
+        }
+
+        Ok(())
     }
 
     /// Reload configuration from disk.

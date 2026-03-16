@@ -114,7 +114,8 @@ async fn main() -> Result<()> {
         .context("Failed to build D-Bus connection")?;
 
     // Create and register manager service at /org/tisvlay/Manager
-    let manager_service = ManagerService::new(shared_manager.clone(), registry.clone());
+    let manager_service =
+        ManagerService::new(shared_manager.clone(), registry.clone(), connection.clone());
     connection
         .object_server()
         .at(MANAGER_PATH, manager_service)
