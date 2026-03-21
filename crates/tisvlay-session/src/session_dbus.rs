@@ -55,27 +55,39 @@ impl SessionService {
     /// List all available profiles.
     ///
     /// Returns: Array of (profile_name, profile_json) tuples.
-    /// Includes both user-defined profiles and "default" (which may be
-    /// inherited from the system default).
+    /// Includes user-defined profiles merged with system profiles.
+    /// User profiles take precedence over system profiles with the same name.
     async fn list_profiles(&self) -> Result<Vec<(String, String)>, SessionError> {
         debug!("D-Bus: ListProfiles");
         let s = self.state.read().await;
-        let mut profiles = Vec::new();
 
+        // Start with system profiles as the base
+        let mut merged: std::collections::HashMap<String, &tisvlay_core::ProfileConfig> =
+            std::collections::HashMap::new();
+        for (name, profile) in &s.system_profiles {
+            merged.insert(name.clone(), profile);
+        }
+
+        // User profiles override system profiles with the same name
         for (name, profile) in &s.user_config.profiles {
+            merged.insert(name.clone(), profile);
+        }
+
+        // Ensure "default" is always present
+        if !merged.contains_key("default") {
+            merged.insert("default".to_string(), &s.system_default);
+        }
+
+        let mut profiles = Vec::new();
+        for (name, profile) in merged {
             let json = serde_json::to_string(profile).map_err(|e| {
                 SessionError::OperationFailed(format!("Failed to serialize profile: {}", e))
             })?;
-            profiles.push((name.clone(), json));
+            profiles.push((name, json));
         }
 
-        // If user hasn't defined a "default" profile, include the system default
-        if !s.user_config.profiles.contains_key("default") {
-            let json = serde_json::to_string(&s.system_default).map_err(|e| {
-                SessionError::OperationFailed(format!("Failed to serialize profile: {}", e))
-            })?;
-            profiles.push(("default".to_string(), json));
-        }
+        // Sort for stable ordering
+        profiles.sort_by(|a, b| a.0.cmp(&b.0));
 
         Ok(profiles)
     }
@@ -101,10 +113,13 @@ impl SessionService {
 
         let mut s = self.state.write().await;
 
-        // Verify the profile exists (in user config or as "default")
-        if profile_name != "default" && !s.user_config.profiles.contains_key(profile_name) {
+        // Verify the profile exists (in user config, system config, or as "default")
+        if profile_name != "default"
+            && !s.user_config.profiles.contains_key(profile_name)
+            && !s.system_profiles.contains_key(profile_name)
+        {
             return Err(SessionError::ProfileNotFound(format!(
-                "Profile '{}' not found in user config",
+                "Profile '{}' not found in user or system config",
                 profile_name
             )));
         }

@@ -62,22 +62,11 @@ async fn main() -> Result<()> {
 
     let daemon = Arc::new(daemon);
 
-    // Create session client for profile management (optional — degrades gracefully)
-    let session: Option<Arc<SessionClient>> = match SessionClient::new().await {
-        Ok(client) => {
-            if client.is_available().await {
-                info!("Session service available for profile management");
-                Some(Arc::new(client))
-            } else {
-                info!("Session service not available (profile switching disabled)");
-                None
-            }
-        }
-        Err(e) => {
-            info!(error = %e, "Could not connect to session service (profile switching disabled)");
-            None
-        }
-    };
+    // Session client for profile management — lazily connected on each poll.
+    // Wrapped in RwLock so poll_state can establish the connection when the
+    // session service becomes available.
+    let session: Arc<tokio::sync::RwLock<Option<SessionClient>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
 
     // Create command channel
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -144,7 +133,7 @@ async fn wait_for_signal() {
 /// Periodically fetch TV state and update the tray menu.
 async fn poll_state(
     daemon: Arc<DaemonClient>,
-    session: Option<Arc<SessionClient>>,
+    session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
 ) {
     loop {
@@ -154,7 +143,22 @@ async fn poll_state(
             break;
         }
 
-        match fetch_all_state(&daemon, session.as_deref()).await {
+        // Lazily connect to session service (retries each poll cycle)
+        {
+            let needs_connect = session.read().await.is_none();
+            if needs_connect {
+                if let Ok(client) = SessionClient::new().await {
+                    if client.is_available().await {
+                        info!("Session service now available for profile management");
+                        *session.write().await = Some(client);
+                    }
+                }
+            }
+        }
+        let session_ref = session.read().await;
+        let session_client = session_ref.as_ref();
+
+        match fetch_all_state(&daemon, session_client).await {
             Ok(tvs) => {
                 debug!(count = tvs.len(), "Poll: state updated");
                 handle
@@ -183,7 +187,7 @@ async fn poll_state(
 async fn process_commands(
     mut cmd_rx: mpsc::UnboundedReceiver<TrayCommand>,
     daemon: Arc<DaemonClient>,
-    session: Option<Arc<SessionClient>>,
+    session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
@@ -213,7 +217,8 @@ async fn process_commands(
                 }
             }
             TrayCommand::SetProfile(id, profile) => {
-                if let Some(ref session_client) = session {
+                let session_ref = session.read().await;
+                if let Some(ref session_client) = *session_ref {
                     if let Err(e) = session_client.set_tv_profile(&id, &profile).await {
                         warn!(tv_id = %id, profile = %profile, error = %e, "Set profile failed");
                     }
@@ -275,7 +280,8 @@ async fn process_commands(
         }
 
         // Refresh state after command so menu reflects the change
-        if let Ok(tvs) = fetch_all_state(&daemon, session.as_deref()).await {
+        let session_ref = session.read().await;
+        if let Ok(tvs) = fetch_all_state(&daemon, session_ref.as_ref()).await {
             handle
                 .update(|t| {
                     t.tvs = tvs;

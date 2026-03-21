@@ -1335,4 +1335,220 @@ mac = "AA:BB:CC:DD:EE:FF"
         assert_eq!(resolved.on_screen_lock, SessionAction::PowerOff);
         assert_eq!(resolved.idle_timeout_seconds, 300);
     }
+
+    // =========================================================================
+    // System + User profile merging (simulates session service behavior)
+    // =========================================================================
+
+    #[test]
+    fn test_system_profiles_parsed_from_system_config() {
+        // System config has multiple profiles — session service should see all of them
+        let toml_str = r#"
+[daemon]
+wake_on_boot = true
+
+[profiles.default]
+on_screen_lock = "screen_off"
+idle_timeout_seconds = 300
+
+[profiles.foo]
+on_screen_lock = "none"
+idle_timeout_seconds = 0
+
+[[tv]]
+id = "office"
+name = "Office"
+vendor = "lg"
+
+[tv.lg]
+ip = "192.168.1.1"
+"#;
+
+        let config: SystemConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.profiles.len(), 2);
+        assert!(config.profiles.contains_key("default"));
+        assert!(config.profiles.contains_key("foo"));
+
+        let foo = config.profiles.get("foo").unwrap();
+        assert_eq!(foo.on_screen_lock, Some(SessionAction::None));
+        assert_eq!(foo.idle_timeout_seconds, Some(0));
+    }
+
+    #[test]
+    fn test_merged_profile_list_system_only() {
+        // When user has no config, all profiles come from system config
+        let system_profiles: HashMap<String, ProfileConfig> = [
+            ("default".to_string(), ProfileConfig {
+                on_screen_lock: Some(SessionAction::ScreenOff),
+                ..ProfileConfig::default()
+            }),
+            ("foo".to_string(), ProfileConfig {
+                on_screen_lock: Some(SessionAction::None),
+                ..ProfileConfig::default()
+            }),
+        ]
+        .into_iter()
+        .collect();
+
+        let user_config = UserConfig::default(); // empty
+
+        // Merge: system profiles as base, user profiles override
+        let mut merged: HashMap<String, &ProfileConfig> = HashMap::new();
+        for (name, profile) in &system_profiles {
+            merged.insert(name.clone(), profile);
+        }
+        for (name, profile) in &user_config.profiles {
+            merged.insert(name.clone(), profile);
+        }
+
+        assert_eq!(merged.len(), 2);
+        assert!(merged.contains_key("default"));
+        assert!(merged.contains_key("foo"));
+    }
+
+    #[test]
+    fn test_merged_profile_list_user_overrides_system() {
+        // User defines "default" and "gaming", system has "default" and "foo"
+        let system_profiles: HashMap<String, ProfileConfig> = [
+            ("default".to_string(), ProfileConfig {
+                on_screen_lock: Some(SessionAction::ScreenOff),
+                idle_timeout_seconds: Some(300),
+                ..ProfileConfig::default()
+            }),
+            ("foo".to_string(), ProfileConfig {
+                on_screen_lock: Some(SessionAction::None),
+                ..ProfileConfig::default()
+            }),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut user_config = UserConfig::default();
+        user_config.profiles.insert(
+            "default".to_string(),
+            ProfileConfig {
+                idle_timeout_seconds: Some(600), // user overrides
+                ..ProfileConfig::default()
+            },
+        );
+        user_config.profiles.insert(
+            "gaming".to_string(),
+            ProfileConfig {
+                on_screen_lock: Some(SessionAction::None),
+                ..ProfileConfig::default()
+            },
+        );
+
+        // Merge: system first, then user overrides
+        let mut merged: HashMap<String, &ProfileConfig> = HashMap::new();
+        for (name, profile) in &system_profiles {
+            merged.insert(name.clone(), profile);
+        }
+        for (name, profile) in &user_config.profiles {
+            merged.insert(name.clone(), profile);
+        }
+
+        // Should have 3 profiles: default (user), foo (system), gaming (user)
+        assert_eq!(merged.len(), 3);
+        assert!(merged.contains_key("default"));
+        assert!(merged.contains_key("foo"));
+        assert!(merged.contains_key("gaming"));
+
+        // "default" should be the user's version (idle_timeout_seconds = 600)
+        let default = merged.get("default").unwrap();
+        assert_eq!(default.idle_timeout_seconds, Some(600));
+
+        // "foo" comes from system
+        let foo = merged.get("foo").unwrap();
+        assert_eq!(foo.on_screen_lock, Some(SessionAction::None));
+    }
+
+    #[test]
+    fn test_user_config_ignores_unknown_toml_fields() {
+        // UserConfig should parse even if the TOML has extra fields
+        // (e.g., from a system config file that also has [daemon] and [[tv]])
+        // Note: serde ignores unknown fields by default for structs,
+        // but [[tv]] (array) vs [tv.*] (table) is a type mismatch.
+        let user_only_toml = r#"
+[profiles.default]
+idle_timeout_seconds = 600
+
+[profiles.gaming]
+on_screen_lock = "none"
+
+[tv.living-room]
+profile = "gaming"
+"#;
+
+        let config: UserConfig = toml::from_str(user_only_toml).unwrap();
+        assert_eq!(config.profiles.len(), 2);
+        assert!(config.profiles.contains_key("default"));
+        assert!(config.profiles.contains_key("gaming"));
+        assert_eq!(config.tv.get("living-room").unwrap().profile, "gaming");
+    }
+
+    #[test]
+    fn test_system_config_with_multiple_profiles_as_user_config_fails() {
+        // A system config with [[tv]] (array of tables) cannot be parsed as UserConfig
+        // because UserConfig.tv is HashMap (expects [tv.id] table syntax).
+        // This verifies the formats are incompatible — you need separate files.
+        let system_toml = r#"
+[daemon]
+wake_on_boot = true
+
+[profiles.default]
+on_screen_lock = "screen_off"
+
+[profiles.foo]
+on_screen_lock = "none"
+
+[[tv]]
+id = "office"
+name = "Office"
+vendor = "lg"
+
+[tv.lg]
+ip = "192.168.1.1"
+"#;
+
+        let result = toml::from_str::<UserConfig>(system_toml);
+        // This should fail because [[tv]] is an array, but UserConfig.tv expects a table
+        assert!(result.is_err(), "System config should not parse as UserConfig");
+    }
+
+    #[test]
+    fn test_resolve_profile_with_system_profiles_as_base() {
+        // Simulates the full resolution chain used by the session service:
+        // user profile -> user default -> system default -> hard-coded
+        let system_default = ProfileConfig {
+            on_screen_lock: Some(SessionAction::ScreenOff),
+            on_screen_unlock: Some(SessionAction::ScreenOn),
+            idle_timeout_seconds: Some(300),
+            ..ProfileConfig::default()
+        };
+
+        let mut user = UserConfig::default();
+        // User defines "gaming" but not "default"
+        user.profiles.insert(
+            "gaming".to_string(),
+            ProfileConfig {
+                on_screen_lock: Some(SessionAction::None),
+                // idle_timeout_seconds not set — should inherit from system default
+                ..ProfileConfig::default()
+            },
+        );
+        user.set_tv_profile("office", "gaming");
+
+        // Resolve for "office" TV
+        let resolved = user.resolve_profile("office", &system_default);
+        assert_eq!(resolved.on_screen_lock, SessionAction::None); // user gaming
+        assert_eq!(resolved.idle_timeout_seconds, 300); // system default
+        assert_eq!(resolved.on_screen_unlock, SessionAction::ScreenOn); // system default
+        assert_eq!(resolved.on_sleep, SessionAction::PowerOff); // hard-coded default
+
+        // Resolve for unknown TV (no assignment) — uses system default
+        let resolved_unknown = user.resolve_profile("other-tv", &system_default);
+        assert_eq!(resolved_unknown.on_screen_lock, SessionAction::ScreenOff); // system
+        assert_eq!(resolved_unknown.idle_timeout_seconds, 300); // system
+    }
 }

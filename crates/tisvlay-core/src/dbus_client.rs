@@ -78,6 +78,9 @@ trait TisvlayManager {
     /// Get the system default profile as JSON.
     fn get_system_profile(&self) -> zbus::Result<String>;
 
+    /// Get all system profiles as (name, json) pairs.
+    fn get_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+
     /// Set a daemon configuration option.
     fn set_daemon_option(&self, key: &str, value: &str) -> zbus::Result<()>;
 
@@ -676,6 +679,18 @@ impl DaemonClient {
             .await
             .context("Failed to get system profile from daemon")?;
         serde_json::from_str(&json).context("Failed to parse system profile JSON")
+    }
+
+    /// Get all system profiles.
+    ///
+    /// Returns all profiles defined in the daemon's system config as
+    /// `(name, json)` pairs.
+    pub async fn get_system_profiles(&self) -> Result<Vec<(String, String)>> {
+        debug!("Calling GetSystemProfiles on daemon");
+        self.manager
+            .get_system_profiles()
+            .await
+            .context("Failed to get system profiles from daemon")
     }
 
     /// Set a daemon configuration option.

@@ -1,0 +1,23 @@
+[daemon]
+wake_on_boot = true
+wake_delay_ms = 1000
+
+[profiles.default]
+on_screen_lock = "screen_off"
+on_screen_unlock = "screen_on"
+on_greeter_wake = "screen_on"
+on_sleep = "power_off"
+on_wake = "power_on"
+idle_timeout_seconds = 0
+on_idle_timeout = "screen_off"
+
+[[tv]]
+id = "office"
+name = "office"
+vendor = "lg"
+only_when_active = false
+
+[tv.lg]
+client_key = "UPDATE_ME"
+ip = "UPDATE_ME"
+mac = "UPDATE_ME"

@@ -605,7 +605,7 @@ If a TV in the user config is not found in the daemon's TV list:
 
 ## Implementation Status
 
-All steps are complete. The workspace builds and all 58 tests pass.
+All steps are complete. The workspace builds and all 64 tests pass.
 The nix build also succeeds with the updated `cargoHash`.
 
 ### Step 1: Config Struct Refactor — COMPLETE
@@ -621,7 +621,8 @@ The nix build also succeeds with the updated `cargoHash`.
   - `TvConfig.profile` changed from `String` to `Option<String>` with `#[serde(skip_serializing)]` for backward compat
   - Added `UserConfig`, `UserTvConfig` structs with load/save/resolve methods
   - Added `SystemConfig::get_default_profile()` and `get_default_profile_resolved()`
-  - 20 new tests covering merge, resolve, backward compat, user config, round-trip serialization
+  - 26 tests covering merge, resolve, backward compat, user config, round-trip serialization,
+    system/user profile merging, format incompatibility, and full resolution chain
 - `crates/tisvlay-core/src/lib.rs` — Exports `SystemConfig`, `UserConfig`, `UserTvConfig`, `ResolvedProfile`
 - `crates/tisvlay-session/src/main.rs` — Changed `get_action_for_event` to accept `&ResolvedProfile`, `effective_idle_timeout` calls `.resolve()`
 - `crates/tisvlayd/src/tv_manager.rs` — Removed `with_profile("default")` from pairing flow
@@ -629,13 +630,13 @@ The nix build also succeeds with the updated `cargoHash`.
 **Backward compatibility:** Old config files with `profile = "gaming"` on `[[tv]]` entries
 still parse correctly. The deprecated field is deserialized but never serialized back.
 
-### Step 1c: GetSystemProfile D-Bus Method — COMPLETE
+### Step 1c: GetSystemProfile D-Bus Methods — COMPLETE
 
 **Files changed:**
 
-- `crates/tisvlayd/src/tv_manager.rs` — Added `profiles: RwLock<HashMap<String, ProfileConfig>>` field, `get_system_default_profile()` method, `reload_config()` now updates profiles
-- `crates/tisvlayd/src/dbus/manager.rs` — Added `GetSystemProfile()` D-Bus method
-- `crates/tisvlay-core/src/dbus_client.rs` — Added `get_system_profile()` proxy method and client method on `DaemonClient`
+- `crates/tisvlayd/src/tv_manager.rs` — Added `profiles: RwLock<HashMap<String, ProfileConfig>>` field, `get_system_default_profile()` and `get_system_profiles()` methods, `reload_config()` now updates profiles
+- `crates/tisvlayd/src/dbus/manager.rs` — Added `GetSystemProfile()` (default only) and `GetSystemProfiles()` (all profiles) D-Bus methods
+- `crates/tisvlay-core/src/dbus_client.rs` — Added `get_system_profile()` and `get_system_profiles()` proxy methods and client methods on `DaemonClient`
 
 ### Step 2: Daemon System Policy — COMPLETE
 
@@ -662,11 +663,12 @@ See Open Questions.
 **Files changed:**
 
 - `crates/tisvlay-session/src/main.rs` — Full rewrite:
-  - New `SessionState` struct holds resolved profiles, user config, system default, TV IDs
-  - `SessionState::load()` queries daemon (`GetTvs`, `GetSystemProfile`), loads optional user config, validates TV references, resolves profiles via `UserConfig::resolve_profile()`
+  - New `SessionState` struct holds resolved profiles, user config, system default, all system profiles, and TV IDs
+  - `SessionState::load()` queries daemon (`GetTvs`, `GetSystemProfile`, `GetSystemProfiles`), loads optional user config, validates TV references, resolves profiles via `UserConfig::resolve_profile()`
   - `event_handler` reads from `SessionState.profiles` instead of `Config`
   - `wait_for_signals` SIGHUP handler calls `SessionState::load()` to re-query daemon + reload user config
   - `effective_idle_timeout()` moved into `SessionState`
+  - Background retry task spawned when daemon unavailable at startup — retries every 5 seconds until daemon responds, then loads state
 
 ### Step 3b: Session D-Bus Interface — COMPLETE
 
@@ -674,7 +676,7 @@ See Open Questions.
 
 - `crates/tisvlay-session/src/session_dbus.rs` — New module:
   - `org.tisvlay.Session1` interface at `/org/tisvlay/Session` on the session bus
-  - `ListProfiles()` — returns user profiles plus system default if user hasn't overridden it
+  - `ListProfiles()` — merges system profiles with user profiles (user takes precedence by name); ensures "default" is always present
   - `GetTvProfile(tv_id)` — returns assigned profile name
   - `SetTvProfile(tv_id, profile)` — validates profile exists, updates assignment, re-resolves, persists to disk
   - `GetEffectiveProfile(tv_id)` — returns fully resolved profile as JSON
@@ -684,7 +686,7 @@ See Open Questions.
 **Files changed:**
 
 - `crates/tisvlay-session/Cargo.toml` — Added `serde_json` dependency
-- `crates/tisvlay-session/src/main.rs` — Calls `register_session_dbus()` after state init
+- `crates/tisvlay-session/src/main.rs` — Calls `register_session_dbus()` after state init; session D-Bus connection stored in `_session_dbus_connection` to prevent premature drop
 - `crates/tisvlay-core/src/dbus_client.rs` — Added `SessionClient` with `TisvlaySessionProxy`, `list_profiles()`, `get_tv_profile()`, `set_tv_profile()`, `is_available()`
 - `crates/tisvlay-core/src/lib.rs` — Exports `SessionClient`
 
@@ -693,8 +695,8 @@ See Open Questions.
 **Files changed:**
 
 - `crates/tisvlay-tray/src/state.rs` — `CachedTvState` gained `profile: Option<String>` and `available_profiles: Vec<String>`; `fetch_all_state()` takes optional `&SessionClient`, queries `ListProfiles` and `GetTvProfile` per TV
-- `crates/tisvlay-tray/src/tray.rs` — Added `SetProfile(String, String)` to `TrayCommand`; added `build_profile_submenu()` with radio group showing available profiles and current selection; profile submenu appears in connected TV menus after Power Off
-- `crates/tisvlay-tray/src/main.rs` — Creates `SessionClient` on startup (graceful degradation if unavailable); passes to `poll_state` and `process_commands`; handles `SetProfile` command
+- `crates/tisvlay-tray/src/tray.rs` — Added `SetProfile(String, String)` to `TrayCommand`; added `build_profile_submenu()` with radio group showing available profiles and current selection; profile submenu appears in both connected and disconnected TV menus
+- `crates/tisvlay-tray/src/main.rs` — Session client uses `Arc<RwLock<Option<SessionClient>>>` with lazy connection on each poll cycle (retries if session service starts after tray); passes to `poll_state` and `process_commands`; handles `SetProfile` command
 
 **Not yet implemented:** Dangling TV reference warnings in the tray UI.
 The session service logs warnings, but the tray does not yet surface them.
@@ -723,6 +725,17 @@ See Open Questions.
 
 **Not yet implemented:** Polkit policies for access control. The methods are exposed but
 not yet protected by polkit. See Open Questions.
+
+### Development Config Setup
+
+**Files created/changed:**
+
+- `docs/configs/daemon.toml` — System config for dev mode: daemon settings, default profile, TV definitions with credentials
+- `docs/configs/session.toml` — User config for dev mode: "foo" profile definition, per-TV profile assignment using `[tv.office]` table syntax
+- `.vscode/tasks.json` — Updated daemon task to use `--config docs/configs/daemon.toml`, session task to use `--config docs/configs/session.toml`
+
+This enables testing the split config model in dev mode with separate files,
+rather than having the daemon and session service fight over the same XDG config.
 
 ---
 

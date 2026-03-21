@@ -210,6 +210,24 @@ impl ManagerService {
         })
     }
 
+    /// Get all system profiles as (name, json) pairs.
+    ///
+    /// Returns all profiles defined in the system config.
+    /// Used by session services to merge with user-defined profiles.
+    async fn get_system_profiles(&self) -> Result<Vec<(String, String)>, DaemonError> {
+        debug!("D-Bus: GetSystemProfiles");
+        let profiles = self.manager.get_system_profiles().await;
+        profiles
+            .into_iter()
+            .map(|(name, profile)| {
+                let json = serde_json::to_string(&profile).map_err(|e| {
+                    DaemonError::OperationFailed(format!("Failed to serialize profile: {}", e))
+                })?;
+                Ok((name, json))
+            })
+            .collect()
+    }
+
     // -------------------------------------------------------------------------
     // Signals
     // -------------------------------------------------------------------------

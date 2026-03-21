@@ -416,12 +416,19 @@ fn build_disconnected_tv_menu(
     cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
 ) -> Vec<MenuItem<TisvlayTray>> {
     let id = tv.id.clone();
-    vec![tv_item(
+    let mut items = vec![tv_item(
         "Power On (Wake)",
         "system-run",
         cmd_tx,
         move || TrayCommand::PowerOn(id.clone()),
-    )]
+    )];
+
+    // Profile submenu (available even when disconnected)
+    if !tv.available_profiles.is_empty() {
+        items.push(build_profile_submenu(tv, cmd_tx));
+    }
+
+    items
 }
 
 /// Build the profile switching submenu with radio buttons.

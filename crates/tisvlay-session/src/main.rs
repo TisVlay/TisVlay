@@ -49,17 +49,17 @@ struct Args {
 }
 
 /// Session state: resolved profiles per TV, kept in sync with config reloads.
-struct SessionState {
+pub(crate) struct SessionState {
     /// Resolved profiles per TV ID.
-    profiles: HashMap<String, ResolvedProfile>,
-    /// User config (needed for Session D-Bus interface in Step 4).
-    #[allow(dead_code)]
-    user_config: UserConfig,
-    /// System default profile from the daemon (needed for profile resolution on reload).
-    #[allow(dead_code)]
-    system_default: ProfileConfig,
+    pub profiles: HashMap<String, ResolvedProfile>,
+    /// User config (used by Session D-Bus interface for profile management).
+    pub user_config: UserConfig,
+    /// System default profile from the daemon.
+    pub system_default: ProfileConfig,
+    /// All system profiles from the daemon (for listing available profiles).
+    pub system_profiles: HashMap<String, ProfileConfig>,
     /// TV IDs from the daemon (ordered).
-    tv_ids: Vec<String>,
+    pub tv_ids: Vec<String>,
 }
 
 impl SessionState {
@@ -86,6 +86,26 @@ impl SessionState {
                 ProfileConfig::full_default()
             }
         };
+
+        // Query daemon for all system profiles
+        let system_profiles: HashMap<String, ProfileConfig> =
+            match daemon.get_system_profiles().await {
+                Ok(profiles) => {
+                    debug!(count = profiles.len(), "Loaded system profiles from daemon");
+                    profiles
+                        .into_iter()
+                        .filter_map(|(name, json)| {
+                            serde_json::from_str(&json)
+                                .ok()
+                                .map(|p| (name, p))
+                        })
+                        .collect()
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to get system profiles");
+                    HashMap::new()
+                }
+            };
 
         // Load user config (optional)
         let user_config = match user_config_path {
@@ -160,6 +180,7 @@ impl SessionState {
             profiles,
             user_config,
             system_default,
+            system_profiles,
             tv_ids,
         })
     }
@@ -225,6 +246,7 @@ async fn main() -> Result<()> {
                 profiles: HashMap::new(),
                 user_config: UserConfig::default(),
                 system_default: ProfileConfig::full_default(),
+                system_profiles: HashMap::new(),
                 tv_ids: Vec::new(),
             }
         }
@@ -232,22 +254,55 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(RwLock::new(state));
 
-    // Register Session D-Bus interface for tray/GUI to query profiles
-    match session_dbus::register_session_dbus(
+    // If the daemon wasn't available at startup, spawn a background task to
+    // retry loading state. This handles the common case where the session
+    // service starts before the daemon (e.g., in dev mode).
+    if !daemon.is_available().await {
+        let retry_state = state.clone();
+        let retry_daemon = daemon.clone();
+        let retry_config = args.config.clone();
+        tokio::spawn(async move {
+            let retry_interval = std::time::Duration::from_secs(5);
+            loop {
+                tokio::time::sleep(retry_interval).await;
+                if !retry_daemon.is_available().await {
+                    debug!("Daemon still not available, retrying...");
+                    continue;
+                }
+                info!("Daemon is now available, loading session state...");
+                match SessionState::load(&retry_daemon, retry_config.as_ref()).await {
+                    Ok(new_state) => {
+                        let mut s = retry_state.write().await;
+                        *s = new_state;
+                        info!(tvs = s.tv_ids.len(), "Session state loaded after daemon became available");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to load session state, will retry");
+                    }
+                }
+            }
+        });
+    }
+
+    // Register Session D-Bus interface for tray/GUI to query profiles.
+    // The connection must be held alive for the lifetime of the process.
+    let _session_dbus_connection = match session_dbus::register_session_dbus(
         state.clone(),
         daemon.clone(),
         args.config.clone(),
     )
     .await
     {
-        Ok(_connection) => {
-            // Connection kept alive by the tokio runtime
+        Ok(connection) => {
             info!("Session D-Bus interface available");
+            Some(connection)
         }
         Err(e) => {
             warn!(error = %e, "Failed to register session D-Bus interface (profile switching unavailable)");
+            None
         }
-    }
+    };
 
     // Create event channel
     let (event_tx, event_rx) = mpsc::unbounded_channel();

@@ -259,6 +259,15 @@ impl TvManager {
         profiles.get("default").cloned().unwrap_or_default()
     }
 
+    /// Get all system profiles as (name, ProfileConfig) pairs.
+    pub async fn get_system_profiles(&self) -> Vec<(String, ProfileConfig)> {
+        let profiles = self.profiles.read().await;
+        profiles
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
     /// List all configured TV IDs.
     pub async fn list_tv_ids(&self) -> Vec<String> {
         let tvs = self.tvs.read().await;
