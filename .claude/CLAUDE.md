@@ -184,7 +184,7 @@ tisvlay/
 ├── docs/
 │   ├── design.md                 # Full architecture design
 │   ├── firewall.md               # SSDP firewall configuration
-│   └── review.md                 # Code review findings and responses
+│   └── phase4c.md                # Phase 4C design and implementation notes
 │
 └── .claude/CLAUDE.md             # This file
 ```
@@ -375,4 +375,4 @@ sudo systemctl enable --now tisvlayd
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
 - [docs/firewall.md](docs/firewall.md) - SSDP discovery firewall configuration
-- [docs/review.md](docs/review.md) - Code review findings and responses
+- [docs/phase4c.md](docs/phase4c.md) - Phase 4C design decisions, config split rationale, implementation notes

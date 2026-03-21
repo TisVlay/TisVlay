@@ -448,13 +448,17 @@ impl UserConfig {
             .map(|t| t.profile.as_str())
             .unwrap_or("default");
 
-        // 2. Get the user's profile (or empty if not defined)
+        // 2. Get the user's named profile and user's default profile
         let user_profile = self.profiles.get(profile_name);
+        let user_default = self.profiles.get("default");
 
-        // 3. Merge: user profile fields override system default
-        match user_profile {
-            Some(profile) => profile.merge_with_base(system_default),
-            None => system_default.clone(),
+        // 3. Merge: user profile fields override system default.
+        // If the named profile is missing, fall through to the user's
+        // own default profile before reaching the system default.
+        match (user_profile, user_default) {
+            (Some(profile), _) => profile.merge_with_base(system_default),
+            (None, Some(default)) => default.merge_with_base(system_default),
+            (None, None) => system_default.clone(),
         }
     }
 }
@@ -475,6 +479,7 @@ pub struct ProfileConfig {
     pub on_wake: Option<SessionAction>,
     pub idle_timeout_seconds: Option<u64>,
     pub on_idle_timeout: Option<SessionAction>,
+    pub on_idle_resume: Option<SessionAction>,  // default: ScreenOn
 }
 
 /// Fully resolved profile with no optional fields.
@@ -487,6 +492,7 @@ pub struct ResolvedProfile {
     pub on_wake: SessionAction,
     pub idle_timeout_seconds: u64,
     pub on_idle_timeout: SessionAction,
+    pub on_idle_resume: SessionAction,          // default: ScreenOn
 }
 ```
 
@@ -605,7 +611,7 @@ If a TV in the user config is not found in the daemon's TV list:
 
 ## Implementation Status
 
-All steps are complete. The workspace builds and all 64 tests pass.
+All steps are complete. The workspace builds and all 65 tests pass.
 The nix build also succeeds with the updated `cargoHash`.
 
 ### Step 1: Config Struct Refactor — COMPLETE
@@ -613,22 +619,20 @@ The nix build also succeeds with the updated `cargoHash`.
 **Files changed:**
 
 - `crates/tisvlay-core/src/config.rs` — Major refactor:
-  - `ProfileConfig` fields changed to `Option<T>` with `#[serde(skip_serializing_if)]`
+  - `ProfileConfig` fields changed to `Option<T>` with `#[serde(skip_serializing_if)]`; added `on_idle_resume` field (default `ScreenOn`)
   - Added `ProfileConfig::full_default()` (all fields `Some`), `merge_with_base()`, `resolve()`
-  - Added `ResolvedProfile` struct with concrete fields and `Default` impl
-  - Renamed `Config` → `SystemConfig` with `pub type Config = SystemConfig` alias
+  - Added `ResolvedProfile` struct with concrete fields including `on_idle_resume` and `Default` impl
+  - Renamed `Config` → `SystemConfig`
   - `DaemonConfig` gained `on_shutdown` (default `PowerOff`) and `on_no_active_session` (default `None`)
-  - `TvConfig.profile` changed from `String` to `Option<String>` with `#[serde(skip_serializing)]` for backward compat
+  - `TvConfig.profile` backward-compat field removed; profile assignments live in user config only
   - Added `UserConfig`, `UserTvConfig` structs with load/save/resolve methods
-  - Added `SystemConfig::get_default_profile()` and `get_default_profile_resolved()`
-  - 26 tests covering merge, resolve, backward compat, user config, round-trip serialization,
+  - `resolve_profile` correctly falls through to the user's own `[profiles.default]` before the system default when a named profile is missing
+  - `save_to` serializes exactly what is in the struct — no silent side effects
+  - 57 tests covering merge, resolve, user config, round-trip serialization,
     system/user profile merging, format incompatibility, and full resolution chain
 - `crates/tisvlay-core/src/lib.rs` — Exports `SystemConfig`, `UserConfig`, `UserTvConfig`, `ResolvedProfile`
-- `crates/tisvlay-session/src/main.rs` — Changed `get_action_for_event` to accept `&ResolvedProfile`, `effective_idle_timeout` calls `.resolve()`
-- `crates/tisvlayd/src/tv_manager.rs` — Removed `with_profile("default")` from pairing flow
-
-**Backward compatibility:** Old config files with `profile = "gaming"` on `[[tv]]` entries
-still parse correctly. The deprecated field is deserialized but never serialized back.
+- `crates/tisvlay-session/src/main.rs` — Changed `get_action_for_event` to accept `&ResolvedProfile`, `effective_idle_timeout` calls `.resolve()`; `on_idle_resume` read from profile instead of being hardcoded to `ScreenOn`
+- `crates/tisvlayd/src/tv_manager.rs` — Removed `with_profile("default")` from pairing flow; `disk_write_lock: Mutex<()>` serializes concurrent load-modify-save disk operations; `reload_config` uses two-phase approach (map mutations under write lock, connection teardown without outer lock)
 
 ### Step 1c: GetSystemProfile D-Bus Methods — COMPLETE
 
@@ -957,15 +961,17 @@ refined with per-TV system policy in a future phase.
 
 ### Config Migration
 
-Backward compatibility with old single-config files is handled:
+Backward compatibility with old single-config files:
 
-1. **Already implemented**: The daemon still parses old configs with `profile = "gaming"`
-   on `[[tv]]` entries — the deprecated field deserializes into `Option<String>` and is
-   used by `get_profile_for_tv()` for backward compat. It is never serialized back.
-2. **Future**: A CLI command (`tisvlay config migrate`) could split an existing config
+1. **Future**: A CLI command (`tisvlay config migrate`) could split an existing config
    into separate system and user configs.
-3. **NixOS**: The module update already handles the transition — session service no
+2. **NixOS**: The module update already handles the transition — session service no
    longer needs `--config` pointing at the system config.
+
+Note: The `profile = "gaming"` per-TV field on `[[tv]]` entries is no longer supported.
+Users with old single-file configs should move profile assignments to their user config
+(`~/.config/tisvlay/config.toml`). The session service ignores old `[[tv]]` arrays in
+the user config file (it queries the daemon for the TV list regardless).
 
 ### D-Bus Signal for TV List Changes
 
