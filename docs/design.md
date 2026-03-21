@@ -211,7 +211,9 @@ Each feature interface is implemented on per-TV objects based on the TV's capabi
 
 ## Configuration
 
-Config file: `~/.config/tisvlay/config.toml` (user) or `/etc/tisvlay/config.toml` (system).
+Config file: `~/.config/tisvlay/config.toml` (user/XDG default) or `/var/lib/tisvlay/config.toml` (NixOS system install).
+
+Both `tisvlayd` and `tisvlay-session` accept `--config <PATH>` to override the config location. The system daemon defaults to `/var/lib/tisvlay/config.toml` (a writable `StateDirectory` managed by systemd); when `--session` is used, it defaults to the XDG path.
 
 See `crates/tisvlay-core/src/config.rs` for the full schema.
 
@@ -381,6 +383,18 @@ Tooltip shows per-TV state summary (volume, muted, backlight).
 2. Power/screen/input/volume/backlight/mute controls
 3. Scroll wheel adjusts volume or backlight (context-dependent)
 4. Optimistic state caching, 5s polling, graceful daemon-offline handling
+
+### NixOS Packaging - COMPLETE
+
+**Goal**: `services.tisvlay.enable = true` deploys the full stack.
+
+1. `nix/package.nix`: `rustPlatform.buildRustPackage` for all four binaries
+2. `nix/module.nix`: NixOS module — system daemon, user services, D-Bus policy, dedicated user/group
+3. `flake.nix`: `nixosModules.default`, `overlays.default`, `packages.default`
+4. `tisvlayd`/`tisvlay-session` `--config` flag for explicit config path
+5. System daemon uses `StateDirectory` (`/var/lib/tisvlay/`) for writable config (supports `ProtectHome=true`)
+6. D-Bus policy installed via `services.dbus.packages` (idiomatic NixOS)
+7. User services auto-start on `graphical-session.target`
 
 ### Phase 5: GUI Configuration
 
