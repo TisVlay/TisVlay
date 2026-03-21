@@ -930,3 +930,104 @@ belongs, or in the NixOS module's initial config generation.
 | F9 | **Medium** | Concurrent `set_daemon_option` / `save_tv_config` load-modify-save race |
 | F10 | **Medium** | `reload_config` holds outer write lock while closing WebSocket connections |
 | F11 | **Low** | `save_to` auto-inserts "default" profile — wrong semantic for system config |
+
+---
+
+## Follow-on Review (post-172f483)
+
+This section reviews the fixes from commits `172f483` and `af4afb4` (F1–F11 responses)
+and identifies three remaining minor issues.
+
+All 11 findings were correctly addressed. Build is clean, all tests pass.
+
+---
+
+### G1. Stale doc comment on `TvConfig` — `profile` field was removed
+
+**File:** [crates/tisvlay-core/src/config.rs:283-285](crates/tisvlay-core/src/config.rs#L283-L285)
+
+The F3 fix removed the `profile` field from `TvConfig`, but two lines in the struct-level
+doc comment still describe it:
+
+```
+/// Profile assignment has moved to [`UserTvConfig`] in the user config.
+/// The `profile` field is retained for backward compatibility with existing
+/// config files but is deprecated and not serialized.
+```
+
+The first sentence is correct; the second and third are now false. Remove the two stale lines.
+
+> **Fixed.**
+
+---
+
+### G2. `serde_json::from_str(&format!("\"{}\"", value))` — fragile string injection
+
+**File:** [crates/tisvlayd/src/tv_manager.rs:881](crates/tisvlayd/src/tv_manager.rs#L881),
+[886](crates/tisvlayd/src/tv_manager.rs#L886)
+
+```rust
+daemon.on_shutdown =
+    serde_json::from_str(&format!("\"{}\"", value)).map_err(|e| {
+        TvManagerError::ConfigError(format!("Invalid action: {}", e))
+    })?;
+```
+
+If `value` contains `"` or `\`, `format!()` produces invalid JSON and the resulting error
+message ("Invalid action: ...") gives no hint that the issue is malformed JSON rather than
+an unknown action name. The clean, injection-free alternative is:
+
+```rust
+serde_json::from_value(serde_json::Value::String(value.to_string()))
+```
+
+`Value::String` constructs a valid JSON string from any Rust `String` — no format macro,
+no escaping concern.
+
+> **Fixed.**
+
+---
+
+### G3. `SystemConfig::get_profile` — no production callers, test-only
+
+**File:** [crates/tisvlay-core/src/config.rs:477-483](crates/tisvlay-core/src/config.rs#L477-L483)
+
+`get_profile` is called only in a test at line 1177. Production code uses
+`TvManager::get_system_default_profile()` and `TvManager::get_system_profiles()`.
+The same cleanup logic that removed `get_profile_for_tv` (F4) applies here: either
+annotate `#[cfg(test)]` and move to the test module, or remove it entirely and replace
+the test call with `config.profiles.get(name)` directly.
+
+If Phase 5 ever needs a single profile by name over D-Bus, that call should go through
+`TvManager` (which has the live `profiles` `RwLock`), not `SystemConfig::get_profile`.
+
+> **Fixed.**
+
+---
+
+### Note on F9 response wording (not a code defect)
+
+The F9 response states:
+
+> Concurrent calls now queue behind the lock, so the second caller always loads a
+> snapshot that includes the first caller's write.
+
+This is accurate for `save_tv_config` and `delete_tv_config` (which take no snapshot
+before acquiring `disk_write_lock`). For `set_daemon_option`, the `daemon_snapshot` is
+cloned *before* `disk_write_lock` is acquired. Two concurrent calls for different fields
+could each snapshot before the other's in-memory write is visible, but this is still safe
+in practice: whichever blocking task runs second replaces the entire `config.daemon`
+section with its own snapshot, and that snapshot necessarily includes its own in-memory
+change. The only data-loss path requires a crash between acquiring `disk_write_lock` and
+completing `spawn_blocking` — equivalent to a crash mid-write, which the current design
+does not guard against. The code is correct; the comment slightly overstates the guarantee.
+
+---
+
+### Summary of New Findings
+
+| # | Severity | Item |
+|---|----------|------|
+| G1 | **Low** | Stale `TvConfig` doc comment (two lines about removed `profile` field) |
+| G2 | **Low** | `set_daemon_option` uses `serde_json::from_str(&format!(...))` — inject-safe alternative available |
+| G3 | **Low** | `SystemConfig::get_profile` has no production callers — `#[cfg(test)]` or remove |
