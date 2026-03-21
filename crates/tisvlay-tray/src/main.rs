@@ -77,6 +77,7 @@ async fn main() -> Result<()> {
         daemon_available: false,
         cmd_tx,
         scroll_target: Default::default(),
+        scroll_tv_id: None,
     };
 
     // Spawn the tray icon
