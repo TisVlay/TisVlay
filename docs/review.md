@@ -644,3 +644,242 @@ event replay ensures the TV matches the current desktop state after reconnect.
 
 The `session_dbus.rs` `SessionService` is well-structured and handles the profile
 validation (checking existence before assignment) correctly.
+
+---
+
+## Follow-on Review (post-85e496dc)
+
+This section reviews the fixes from commit `85e496dc` and identifies new issues
+uncovered by reading the implementation, with a focus on dead code and backward
+compatibility that can be removed given there are no stability guarantees.
+
+---
+
+### F1. `set_tv_option` still has unguarded blocking disk I/O (missed fix from #2)
+
+**File:** [crates/tisvlayd/src/tv_manager.rs:913-926](crates/tisvlayd/src/tv_manager.rs#L913-L926)
+
+The fix for issue #2 converted `set_daemon_option`, `save_tv_config`, and
+`delete_tv_config` to use `spawn_blocking`. But `set_tv_option` was missed: it still
+calls `Config::load_from` and `config.save_to` directly — synchronous blocking disk I/O
+inside an `async fn` on the tokio executor thread.
+
+```rust
+// set_tv_option — still blocking the executor:
+let mut config = Config::load_from(&self.config_path)  // blocks
+    .map_err(...)?;
+// ...
+config.save_to(&self.config_path)                       // blocks
+    .map_err(...)?;
+```
+
+**Fix direction:** Apply the same `spawn_blocking` pattern as `set_daemon_option`.
+
+---
+
+### F2. `pub type Config = SystemConfig` — remove the alias
+
+**File:** [crates/tisvlay-core/src/config.rs:412](crates/tisvlay-core/src/config.rs#L412)
+
+```rust
+/// Backward-compatible alias for [`SystemConfig`].
+pub type Config = SystemConfig;
+```
+
+This alias exists to avoid renaming call sites when `SystemConfig` was introduced.
+`tv_manager.rs` uses `Config::load_from(...)` in five places. `lib.rs` uses `Config`
+in a doc example. Since there are no stability guarantees, the alias should be removed:
+all call sites should use `SystemConfig` directly. The type alias obscures that the
+system daemon is working with the system (not user) config — a name that now matters.
+
+---
+
+### F3. `TvConfig.profile` backward-compat field — remove it
+
+**File:** [crates/tisvlay-core/src/config.rs:298-301](crates/tisvlay-core/src/config.rs#L298-L301)
+
+```rust
+/// Deprecated: profile assignment has moved to user config.
+/// Retained for backward compatibility with existing config files.
+#[serde(default, skip_serializing)]
+pub profile: Option<String>,
+```
+
+This field is retained so old single-file configs with `profile = "gaming"` on a `[[tv]]`
+entry still parse. With no stability guarantees and no published users, there is no one
+to break. The field drags along `get_profile_for_tv` and complicates `TvConfig::new`
+(which must initialize it to `None`). It also creates a deserialization trap where new
+users copying an old example config silently get behavior they didn't expect (the profile
+assignment is read from the system config but never acted on in the new architecture).
+
+Removing it forces a clean break: profile assignments live in the user config only.
+
+**Impact:** Remove `TvConfig.profile`, `get_profile_for_tv`, the backward-compat test
+`test_parse_config_backward_compat`, and the backward-compat assertion on `tv[0].profile`
+in that test.
+
+---
+
+### F4. `SystemConfig::get_profile_for_tv` — dead production code
+
+**File:** [crates/tisvlay-core/src/config.rs:533-551](crates/tisvlay-core/src/config.rs#L533-L551)
+
+`get_profile_for_tv` is only called in tests (`config.rs:820`, `config.rs:1276`,
+`config.rs:1280`). No production code path calls it. It exists to support the deprecated
+`TvConfig.profile` field (issue F3 above). If that field is removed, this method goes
+with it. Even if the field is retained, the method should be `#[cfg(test)]` if it has
+no production callers.
+
+---
+
+### F5. `SystemConfig::get_default_profile_resolved` — unused method
+
+**File:** [crates/tisvlay-core/src/config.rs:516-519](crates/tisvlay-core/src/config.rs#L516-L519)
+
+```rust
+pub fn get_default_profile_resolved(&self) -> ResolvedProfile {
+    self.get_default_profile().resolve()
+}
+```
+
+`grep` finds no callers of `get_default_profile_resolved` in production code or tests.
+It should be removed.
+
+---
+
+### F6. `SystemConfig::default_tv` — dead code referenced only in an outdated doc example
+
+**File:** [crates/tisvlay-core/src/config.rs:484-487](crates/tisvlay-core/src/config.rs#L484-L487)
+**File:** [crates/tisvlay-core/src/lib.rs:36](crates/tisvlay-core/src/lib.rs#L36)
+
+`default_tv()` returns `self.tv.first()`. The only reference to it is in the crate-level
+doc example in `lib.rs`, which is also outdated: it uses `Config::load()` (which now
+loads from the system path, not the XDG user path) and `registry.connect_tv(tv)` with
+the wrong signature. The entire `lib.rs` example block is stale and misleading. Remove
+`default_tv()` and rewrite the doc example to reflect the current daemon-based
+architecture where the CLI/tray/session communicate through `DaemonClient`.
+
+---
+
+### F7. `SystemConfig::get_default_profile` — only used in tests
+
+**File:** [crates/tisvlay-core/src/config.rs:505-513](crates/tisvlay-core/src/config.rs#L505-L513)
+
+`get_default_profile()` returns a `&ProfileConfig` via a `OnceLock<ProfileConfig>` static
+for the fallback case. It is only called in tests (line 853) and transitively by
+`get_default_profile_resolved` (which is itself unused — see F5). In production, callers
+use `TvManager::get_system_default_profile()` which reads the `profiles` RwLock directly.
+
+If the public API needs a way to read the default profile from a `SystemConfig`, keep it.
+If not, remove it and the `OnceLock` static along with it.
+
+---
+
+### F8. `DaemonAction` should be `pub(crate)`, not `pub`
+
+**File:** [crates/tisvlayd/src/tv_manager.rs:161-164](crates/tisvlayd/src/tv_manager.rs#L161-L164)
+
+```rust
+pub enum DaemonAction {
+    Shutdown,
+    NoActiveSession,
+}
+```
+
+`DaemonAction` is an internal coordination enum used only within the `tisvlayd` crate
+between `tv_manager.rs` and `logind.rs`. It is not part of any public API. It should be
+`pub(crate)` to prevent accidental exposure and to document its intended scope.
+
+---
+
+### F9. `set_daemon_option` — TOCTOU between write lock release and disk snapshot
+
+**File:** [crates/tisvlayd/src/tv_manager.rs:854-905](crates/tisvlayd/src/tv_manager.rs#L854-L905)
+
+```rust
+// 1. Write lock: validate + update daemon_config
+{
+    let mut daemon = self.daemon_config.write().await;
+    // ... apply key/value ...
+} // write lock released
+
+// 2. Read lock: snapshot for disk write
+let daemon_snapshot = self.daemon_config.read().await.clone();
+
+// 3. spawn_blocking: write snapshot to disk
+tokio::task::spawn_blocking(move || { ... config.daemon = daemon_snapshot; ... })
+```
+
+Between step 1 and step 2, another concurrent `set_daemon_option` call can write a
+different field. The snapshot in step 2 will correctly include both changes (since it
+reads after all writes), and the disk will reflect the fully-merged state. This is safe.
+
+However, there's a different issue: the `spawn_blocking` at step 3 does a
+load-modify-save on the on-disk config. If two `set_daemon_option` calls produce two
+concurrent `spawn_blocking` tasks, the second task could load the config file before
+the first task has written it, then overwrite the first task's write with a stale
+snapshot. The result is that one of the two changes is silently lost on disk (though
+both are correct in memory).
+
+This is a load-modify-save race that affects `set_daemon_option`, `save_tv_config`, and
+`delete_tv_config`. For a single admin GUI making sequential calls, this is unlikely.
+But a proper fix would be a write serialization primitive (e.g., a `Mutex<()>` held
+during load-modify-save, or a dedicated config writer task receiving changes via a
+channel).
+
+---
+
+### F10. `reload_config` holds the outer `tvs` write lock while closing connections
+
+**File:** [crates/tisvlayd/src/tv_manager.rs:944-988](crates/tisvlayd/src/tv_manager.rs#L944-L988)
+
+During `reload_config`, the `tvs` outer write lock is held while calling
+`conn.close().await` (line 959) for each removed TV. `close()` is a network operation
+that may block for hundreds of milliseconds on a slow or broken WebSocket. The entire
+TV map is write-locked for this duration, blocking all TV commands.
+
+For a normal config reload (0–1 TVs removed), this is acceptable. But for a reload that
+removes several TVs with slow connections, the daemon becomes unresponsive to all TV
+commands during cleanup.
+
+**Fix direction:** Collect the `Arc<Mutex<ManagedTv>>` entries to remove, release the
+outer write lock, then close connections under only the per-TV locks.
+
+---
+
+### F11. `save_to` auto-inserts "default" profile — wrong for system configs
+
+**File:** [crates/tisvlay-core/src/config.rs:447-459](crates/tisvlay-core/src/config.rs#L447-L459)
+
+`SystemConfig::save_to` silently inserts a `[profiles.default]` section when the config
+has no profiles. For a system config, this happens on first save after TV pairing. An
+admin who deliberately omitted `[profiles.default]` from their system config (preferring
+hard-coded defaults) will find it was silently added after pairing. On subsequent reloads,
+the hard-coded default profile is now present in the config file and takes effect as the
+system default, potentially changing behavior.
+
+Now that `SystemConfig` is clearly the daemon's config (not a shared config), this
+auto-insertion is more surprising than helpful. Admins managing system configs directly
+prefer explicit control.
+
+**Fix direction:** Remove the auto-insert behavior from `save_to`. If a self-documenting
+default profile is desired for new installations, add it in the pairing flow where it
+belongs, or in the NixOS module's initial config generation.
+
+---
+
+### Summary of New Findings
+
+| # | Severity | Item |
+|---|----------|------|
+| F1 | **High** | `set_tv_option` still has blocking disk I/O (missed from fix #2) |
+| F2 | **Low** | `pub type Config = SystemConfig` alias — remove |
+| F3 | **Low** | `TvConfig.profile` backward-compat field — remove (no stability guarantees) |
+| F4 | **Low** | `get_profile_for_tv` — dead production code, only in tests |
+| F5 | **Low** | `get_default_profile_resolved` — completely unused |
+| F6 | **Low** | `default_tv()` — dead code, stale doc example in `lib.rs` |
+| F7 | **Low** | `get_default_profile` — only in tests, consider `#[cfg(test)]` or remove |
+| F8 | **Low** | `DaemonAction` should be `pub(crate)` |
+| F9 | **Medium** | Concurrent `set_daemon_option` / `save_tv_config` load-modify-save race |
+| F10 | **Medium** | `reload_config` holds outer write lock while closing WebSocket connections |
+| F11 | **Low** | `save_to` auto-inserts "default" profile — wrong semantic for system config |
