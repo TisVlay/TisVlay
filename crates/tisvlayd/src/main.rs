@@ -94,9 +94,6 @@ async fn main() -> Result<()> {
     // TvManager handles all internal synchronization via per-TV mutexes.
     let shared_manager = Arc::new(tv_manager);
 
-    // Boot-time WoL for TVs with wake_on_boot enabled
-    shared_manager.boot_wake().await;
-
     // Connect to D-Bus (session or system bus)
     let builder = if args.session {
         info!("Using session bus (development mode)");
@@ -134,6 +131,10 @@ async fn main() -> Result<()> {
     }
 
     info!("D-Bus service registered as {}", DBUS_NAME);
+
+    // Boot-time wake: WoL + retry connect + screen_on + input switch.
+    // Runs in the background so D-Bus is immediately reachable.
+    shared_manager.boot_wake();
 
     // Start logind monitoring (shutdown inhibitor, session tracking)
     let logind_monitor = logind::LogindMonitor::new(shared_manager.clone(), args.session);

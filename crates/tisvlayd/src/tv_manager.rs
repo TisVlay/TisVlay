@@ -10,7 +10,6 @@ use crate::registry::BackendRegistry;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tisvlay_core::{Capabilities, Config, PowerState, ProfileConfig, TvConfig, TvConnection, TvState};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
@@ -215,75 +214,85 @@ impl TvManager {
         }
     }
 
-    /// Wake TVs that have wake_on_boot enabled, then ensure screen is on
-    /// and optionally switch to the configured HDMI input.
+    /// Spawn a background task that wakes TVs via WoL, waits for them to
+    /// become reachable (retrying with WoL resends), then sends screen_on
+    /// and optionally switches to the configured HDMI input.
     ///
-    /// This runs before any user session starts, so the login screen is
-    /// visible on the TV immediately after boot.
-    pub async fn boot_wake(&self) {
+    /// Uses `wake_and_connect` from the backend, which treats the successful
+    /// WebSocket connection as the readiness signal — no blind delay needed.
+    /// `wake_delay_ms` controls the interval between connection retries and
+    /// WoL resends, not a one-shot sleep.
+    ///
+    /// Runs in the background so D-Bus registration is not blocked. The
+    /// daemon is reachable immediately; the TV comes online when it's ready.
+    pub fn boot_wake(self: &Arc<Self>) {
         if !self.config.daemon.wake_on_boot {
             debug!("Boot-time WoL disabled");
             return;
         }
 
-        info!("Performing boot-time Wake-on-LAN");
+        let manager = self.clone();
+        tokio::spawn(async move {
+            info!("Performing boot-time wake");
 
-        // Collect configs under lock, then wake outside the lock to avoid
-        // holding per-TV mutexes during network I/O (WoL can retry for seconds).
-        let mut wake_configs: Vec<(String, TvConfig)> = Vec::new();
-        {
-            let tvs = self.tvs.read().await;
-            for (id, tv_arc) in tvs.iter() {
-                let tv = tv_arc.lock().await;
-                if self.registry.supports_wake(&tv.config) {
-                    wake_configs.push((id.clone(), tv.config.clone()));
-                }
-            }
-        }
-
-        for (id, config) in &wake_configs {
-            info!(tv_id = %id, "Waking TV");
-            if let Err(e) = self.registry.wake_tv(config).await {
-                warn!(tv_id = %id, error = %e, "Failed to wake TV");
-            }
-        }
-
-        // Wait for TVs to wake up
-        let delay = Duration::from_millis(self.config.daemon.wake_delay_ms);
-        info!("Waiting {:?} for TVs to wake", delay);
-        tokio::time::sleep(delay).await;
-
-        // After wake delay, ensure TVs are screen-on and on the right input.
-        // This makes the login screen visible before any user session starts.
-        let tv_ids: Vec<String> = {
-            let tvs = self.tvs.read().await;
-            tvs.keys().cloned().collect()
-        };
-
-        for tv_id in &tv_ids {
-            // Screen on: unblank the TV so the login screen is visible
-            match self.screen_on(tv_id).await {
-                Ok(()) => info!(tv_id = %tv_id, "Boot: screen on"),
-                Err(e) => warn!(tv_id = %tv_id, error = %e, "Boot: failed to turn screen on"),
-            }
-
-            // Switch to configured HDMI input if set
-            let hdmi_input = {
-                let tvs = self.tvs.read().await;
-                if let Some(tv_arc) = tvs.get(tv_id.as_str()) {
+            // Collect wakeable TV configs
+            let mut wake_configs: Vec<(String, TvConfig)> = Vec::new();
+            {
+                let tvs = manager.tvs.read().await;
+                for (id, tv_arc) in tvs.iter() {
                     let tv = tv_arc.lock().await;
-                    tv.config.hdmi_input.clone()
-                } else {
-                    None
-                }
-            };
-            if let Some(input) = hdmi_input {
-                match self.switch_input(tv_id, &input).await {
-                    Ok(()) => info!(tv_id = %tv_id, input = %input, "Boot: switched input"),
-                    Err(e) => warn!(tv_id = %tv_id, error = %e, "Boot: failed to switch input"),
+                    if manager.registry.supports_wake(&tv.config) {
+                        wake_configs.push((id.clone(), tv.config.clone()));
+                    }
                 }
             }
-        }
+
+            for (tv_id, tv_config) in &wake_configs {
+                info!(tv_id = %tv_id, "Waking TV and waiting for connection...");
+
+                // wake_and_connect sends WoL, retries connection with WoL resends
+                // between attempts. Connection success = TV is ready for commands.
+                let connection = match manager
+                    .registry
+                    .wake_and_connect_tv(tv_config, manager.config.daemon.wake_delay_ms)
+                    .await
+                {
+                    Ok(conn) => {
+                        info!(tv_id = %tv_id, "Boot: TV is online");
+                        conn
+                    }
+                    Err(e) => {
+                        warn!(tv_id = %tv_id, error = %e, "Boot: TV did not come online after wake");
+                        continue;
+                    }
+                };
+
+                // Store the connection so subsequent commands don't reconnect
+                {
+                    let tvs = manager.tvs.read().await;
+                    if let Some(tv_arc) = tvs.get(tv_id.as_str()) {
+                        let mut tv = tv_arc.lock().await;
+                        tv.connection = Some(connection);
+                        tv.powered_off = false;
+                    }
+                }
+                manager.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+
+                // Screen on: unblank the TV so the login screen is visible
+                match manager.screen_on(tv_id).await {
+                    Ok(()) => info!(tv_id = %tv_id, "Boot: screen on"),
+                    Err(e) => warn!(tv_id = %tv_id, error = %e, "Boot: failed to turn screen on"),
+                }
+
+                // Switch to configured HDMI input if set
+                if let Some(ref input) = tv_config.hdmi_input {
+                    match manager.switch_input(tv_id, input).await {
+                        Ok(()) => info!(tv_id = %tv_id, input = %input, "Boot: switched input"),
+                        Err(e) => warn!(tv_id = %tv_id, error = %e, "Boot: failed to switch input"),
+                    }
+                }
+            }
+        });
     }
 
     /// Get the system default profile.

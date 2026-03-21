@@ -737,6 +737,47 @@ not yet protected by polkit. See Open Questions.
 This enables testing the split config model in dev mode with separate files,
 rather than having the daemon and session service fight over the same XDG config.
 
+### Boot Wake Refactor
+
+The initial boot_wake implementation used a blind `wake_delay_ms` sleep after WoL,
+then a single `screen_on` attempt. NixOS production testing revealed two problems:
+
+1. **WoL is unreliable**: The TV may not wake on the first (or tenth) WoL packet,
+   especially if it's in pixel refresh or the desktop's network isn't up yet.
+2. **The TV takes ~60 seconds to boot**: A 3-second delay is nowhere near enough.
+   The TV's WebSocket server isn't ready until the TV is fully booted.
+
+**Root cause insight**: `wake_delay_ms` as a one-shot sleep is the wrong abstraction.
+The successful WebSocket connection *is* the readiness signal — there's no need to
+guess how long to wait.
+
+**Refactored design**: `boot_wake` now:
+
+1. Spawns a background task (D-Bus registration is not blocked)
+2. Calls `wake_and_connect_tv()` from the backend registry, which:
+   - Sends WoL, waits `wake_delay_ms`, tries to connect
+   - On failure: resends WoL (in case earlier packets were lost), waits, retries
+   - Repeats up to 10 times — total timeout is ~30 seconds with 3s delay
+3. Once connected, stores the connection and sends `screen_on` + optional `switch_input`
+4. `wake_delay_ms` now controls the interval between retry attempts, not a one-shot sleep
+
+**Session service event replay**: The session service was also fixed to replay the
+current screen state (locked/unlocked) after the daemon retry task loads TVs. This
+handles the race where `ScreenUnlocked` fires while the session has 0 TVs loaded,
+so the event is silently dropped. After loading, the retry task checks the
+`is_locked` AtomicBool and sends a synthetic event to catch up.
+
+**Files changed:**
+
+- `crates/tisvlayd/src/tv_manager.rs` — `boot_wake` refactored: takes `&Arc<Self>`,
+  spawns background task, uses `wake_and_connect_tv()` with retry+resend, stores
+  connection, sends `screen_on`+`switch_input` after successful connect
+- `crates/tisvlayd/src/main.rs` — `boot_wake()` called after D-Bus registration
+  (no longer blocks startup); removed `await` (now fire-and-forget background task)
+- `crates/tisvlay-session/src/main.rs` — Event channel and session monitor created
+  before daemon retry task; retry task receives `is_locked` + `event_tx`, replays
+  `ScreenUnlocked`/`ScreenLocked` after loading state
+
 ---
 
 ## Open Questions and Future Work
