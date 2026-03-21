@@ -295,11 +295,6 @@ pub struct TvConfig {
     #[serde(default = "default_vendor")]
     pub vendor: String,
 
-    /// Deprecated: profile assignment has moved to user config.
-    /// Retained for backward compatibility with existing config files.
-    #[serde(default, skip_serializing)]
-    pub profile: Option<String>,
-
     /// HDMI input this PC is connected to.
     /// Used for display-aware control when `only_when_active` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -325,7 +320,6 @@ impl TvConfig {
             id: id.into(),
             name: name.into(),
             vendor: default_vendor(),
-            profile: None,
             hdmi_input: None,
             only_when_active: false,
             vendor_config: HashMap::new(),
@@ -408,9 +402,6 @@ pub struct SystemConfig {
     pub tv: Vec<TvConfig>,
 }
 
-/// Backward-compatible alias for [`SystemConfig`].
-pub type Config = SystemConfig;
-
 impl SystemConfig {
     /// Load configuration from the default system path (`/var/lib/tisvlay/config.toml`).
     pub fn load() -> Result<Self> {
@@ -434,31 +425,13 @@ impl SystemConfig {
     }
 
     /// Save configuration to a specific path.
-    ///
-    /// If the profiles map is empty, a "default" profile with built-in values
-    /// is added before saving. This makes the config file self-documenting
-    /// for users who haven't customized their profiles yet.
     pub fn save_to(&self, path: &Path) -> Result<()> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        // If no profiles defined, add the default profile with built-in values
-        // so users can see and customize them.
-        // Use Cow to avoid cloning the entire config in the common case where
-        // profiles are already populated.
-        let config_to_save: std::borrow::Cow<'_, SystemConfig> = if self.profiles.is_empty() {
-            let mut config = self.clone();
-            config
-                .profiles
-                .insert("default".to_string(), ProfileConfig::full_default());
-            std::borrow::Cow::Owned(config)
-        } else {
-            std::borrow::Cow::Borrowed(self)
-        };
-
-        let content = toml::to_string_pretty(&*config_to_save)
+        let content = toml::to_string_pretty(self)
             .map_err(|e| Error::Io(std::io::Error::other(e)))?;
         std::fs::write(path, content)?;
         Ok(())
@@ -481,11 +454,6 @@ impl SystemConfig {
         self.tv.iter_mut().find(|tv| tv.id == id)
     }
 
-    /// Get the first configured TV (default).
-    pub fn default_tv(&self) -> Option<&TvConfig> {
-        self.tv.first()
-    }
-
     /// Add or update a TV configuration.
     pub fn upsert_tv(&mut self, tv: TvConfig) {
         if let Some(existing) = self.find_tv_mut(&tv.id) {
@@ -502,22 +470,6 @@ impl SystemConfig {
         self.tv.len() < len
     }
 
-    /// Get the system default profile.
-    ///
-    /// Returns the `[profiles.default]` section if present, otherwise an empty
-    /// [`ProfileConfig`] (all `None` fields, meaning hard-coded defaults apply).
-    pub fn get_default_profile(&self) -> &ProfileConfig {
-        static EMPTY: std::sync::OnceLock<ProfileConfig> = std::sync::OnceLock::new();
-        self.profiles
-            .get("default")
-            .unwrap_or_else(|| EMPTY.get_or_init(ProfileConfig::default))
-    }
-
-    /// Get the system default profile, resolved to concrete values.
-    pub fn get_default_profile_resolved(&self) -> ResolvedProfile {
-        self.get_default_profile().resolve()
-    }
-
     /// Get a profile by name.
     ///
     /// Returns the named profile, or falls back to "default" profile,
@@ -528,26 +480,6 @@ impl SystemConfig {
             .or_else(|| self.profiles.get("default"))
             .cloned()
             .unwrap_or_else(ProfileConfig::full_default)
-    }
-
-    /// Get the profile configuration for a TV.
-    ///
-    /// This uses the deprecated `TvConfig.profile` field for backward
-    /// compatibility with single-config-file setups. New code should use
-    /// [`UserConfig::resolve_profile()`] instead.
-    ///
-    /// Resolution order:
-    /// 1. Named profile from `profiles` map if TV specifies one (deprecated)
-    /// 2. "default" profile from `profiles` map
-    /// 3. Hard-coded defaults via `ProfileConfig::full_default()`
-    pub fn get_profile_for_tv(&self, tv: &TvConfig) -> ProfileConfig {
-        // Check the TV's specified profile first (backward compat), then delegate
-        if let Some(ref profile_name) = tv.profile {
-            if self.profiles.contains_key(profile_name.as_str()) {
-                return self.get_profile(profile_name);
-            }
-        }
-        self.get_profile("default")
     }
 }
 
@@ -756,12 +688,12 @@ mod tests {
     }
 
     // =========================================================================
-    // SystemConfig (backward compat) tests
+    // SystemConfig tests
     // =========================================================================
 
     #[test]
     fn test_default_config() {
-        let config = Config::default();
+        let config = SystemConfig::default();
         assert!(config.tv.is_empty());
         assert!(config.daemon.wake_on_boot);
         assert_eq!(config.daemon.on_shutdown, SessionAction::PowerOff);
@@ -770,7 +702,7 @@ mod tests {
 
     #[test]
     fn test_parse_config_backward_compat() {
-        // Old-style config with profile on [[tv]] — should still parse
+        // Config with profiles and TVs — should parse cleanly
         let toml_str = r#"
 [profiles.default]
 on_screen_lock = "screen_off"
@@ -784,7 +716,6 @@ idle_timeout_seconds = 0
 id = "living-room"
 name = "Living Room TV"
 vendor = "lg"
-profile = "gaming"
 hdmi_input = "HDMI_1"
 only_when_active = true
 
@@ -795,11 +726,9 @@ client_key = "abc123"
 default_input = "HDMI_1"
 "#;
 
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: SystemConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.tv.len(), 1);
         assert_eq!(config.tv[0].vendor, "lg");
-        // Deprecated profile field still readable for backward compat
-        assert_eq!(config.tv[0].profile, Some("gaming".to_string()));
         assert_eq!(config.tv[0].hdmi_input, Some("HDMI_1".to_string()));
         assert!(config.tv[0].only_when_active);
 
@@ -810,15 +739,11 @@ default_input = "HDMI_1"
         assert_eq!(lg.client_key, Some("abc123".to_string()));
         assert_eq!(lg.default_input, Some("HDMI_1".to_string()));
 
-        // Check profiles (now Option fields)
+        // Check profiles
         assert_eq!(config.profiles.len(), 2);
         let gaming = config.profiles.get("gaming").unwrap();
         assert_eq!(gaming.on_screen_lock, Some(SessionAction::None));
         assert_eq!(gaming.idle_timeout_seconds, Some(0));
-
-        // Backward compat: get_profile_for_tv still works with deprecated profile field
-        let profile = config.get_profile_for_tv(&config.tv[0]);
-        assert_eq!(profile.on_screen_lock, Some(SessionAction::None));
     }
 
     #[test]
@@ -848,9 +773,8 @@ mac = "AA:BB:CC:DD:EE:FF"
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.daemon.on_shutdown, SessionAction::PowerOff);
         assert_eq!(config.daemon.on_no_active_session, SessionAction::ScreenOn);
-        assert_eq!(config.tv[0].profile, None);
 
-        let default_profile = config.get_default_profile();
+        let default_profile = config.profiles.get("default").unwrap();
         assert_eq!(default_profile.on_screen_lock, Some(SessionAction::ScreenOff));
         assert_eq!(default_profile.idle_timeout_seconds, Some(300));
         // Unspecified field
@@ -880,7 +804,7 @@ mac = "AA:BB:CC:DD:EE:FF"
 
     #[test]
     fn test_find_tv() {
-        let mut config = Config::default();
+        let mut config = SystemConfig::default();
         config.tv.push(
             TvConfig::new("tv1", "TV 1")
                 .with_vendor("lg")
@@ -913,10 +837,13 @@ mac = "AA:BB:CC:DD:EE:FF"
     }
 
     #[test]
-    fn test_save_adds_default_profile_when_empty() {
+    fn test_save_does_not_auto_insert_default_profile() {
+        // save_to must not silently add [profiles.default] when no profiles exist.
+        // Admins who deliberately omit profiles prefer hard-coded defaults and should
+        // not see a surprise [profiles.default] appear after pairing a TV.
         use std::io::Read;
 
-        let mut config = Config::default();
+        let mut config = SystemConfig::default();
         config.tv.push(
             TvConfig::new("test", "Test TV")
                 .with_vendor("lg")
@@ -936,19 +863,8 @@ mac = "AA:BB:CC:DD:EE:FF"
             .read_to_string(&mut content)
             .unwrap();
 
-        let saved_config: Config = toml::from_str(&content).unwrap();
-
-        assert!(saved_config.profiles.contains_key("default"));
-        let default_profile = saved_config.profiles.get("default").unwrap();
-        // full_default() sets all fields to Some(...)
-        assert_eq!(
-            default_profile.on_screen_lock,
-            Some(SessionAction::ScreenOff)
-        );
-        assert_eq!(
-            default_profile.on_screen_unlock,
-            Some(SessionAction::ScreenOn)
-        );
+        let saved_config: SystemConfig = toml::from_str(&content).unwrap();
+        assert!(saved_config.profiles.is_empty(), "save_to must not auto-insert profiles");
 
         let _ = std::fs::remove_file(temp_file);
     }
@@ -957,7 +873,7 @@ mac = "AA:BB:CC:DD:EE:FF"
     fn test_save_preserves_existing_profiles() {
         use std::io::Read;
 
-        let mut config = Config::default();
+        let mut config = SystemConfig::default();
         config.profiles.insert(
             "custom".to_string(),
             ProfileConfig {
@@ -976,7 +892,7 @@ mac = "AA:BB:CC:DD:EE:FF"
             .read_to_string(&mut content)
             .unwrap();
 
-        let saved_config: Config = toml::from_str(&content).unwrap();
+        let saved_config: SystemConfig = toml::from_str(&content).unwrap();
 
         assert!(saved_config.profiles.contains_key("custom"));
         assert!(!saved_config.profiles.contains_key("default"));
@@ -1236,51 +1152,6 @@ profile = "gaming"
         );
     }
 
-    // =========================================================================
-    // Backward compatibility with old single-config profile resolution
-    // =========================================================================
-
-    #[test]
-    fn test_backward_compat_profile_resolution() {
-        // Old-style config with profile = "gaming" on [[tv]]
-        let toml_str = r#"
-[profiles.default]
-on_screen_lock = "power_off"
-
-[profiles.gaming]
-on_screen_lock = "none"
-
-[[tv]]
-id = "tv1"
-name = "TV 1"
-vendor = "lg"
-profile = "gaming"
-
-[tv.lg]
-ip = "192.168.1.1"
-mac = "AA:BB:CC:DD:EE:01"
-
-[[tv]]
-id = "tv2"
-name = "TV 2"
-vendor = "lg"
-
-[tv.lg]
-ip = "192.168.1.2"
-mac = "AA:BB:CC:DD:EE:02"
-"#;
-
-        let config: Config = toml::from_str(toml_str).unwrap();
-
-        // TV1 uses gaming profile (via deprecated profile field)
-        let profile1 = config.get_profile_for_tv(&config.tv[0]);
-        assert_eq!(profile1.on_screen_lock, Some(SessionAction::None));
-
-        // TV2 uses default profile
-        let profile2 = config.get_profile_for_tv(&config.tv[1]);
-        assert_eq!(profile2.on_screen_lock, Some(SessionAction::PowerOff));
-    }
-
     #[test]
     fn test_parse_profile_config_all_fields() {
         let toml_str = r#"
@@ -1303,7 +1174,7 @@ ip = "192.168.1.1"
 mac = "AA:BB:CC:DD:EE:FF"
 "#;
 
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: SystemConfig = toml::from_str(toml_str).unwrap();
         let profile = config.get_profile("custom");
         assert_eq!(profile.on_screen_lock, Some(SessionAction::PowerOff));
         assert_eq!(profile.on_screen_unlock, Some(SessionAction::PowerOn));

@@ -675,6 +675,10 @@ config.save_to(&self.config_path)                       // blocks
 
 **Fix direction:** Apply the same `spawn_blocking` pattern as `set_daemon_option`.
 
+> **Fixed.** `set_tv_option` now validates and updates the in-memory TV config first
+> (which validates both the TV ID and the key), then persists via `spawn_blocking`
+> for the load-modify-save. Per-TV lock is released before the blocking I/O.
+
 ---
 
 ### F2. `pub type Config = SystemConfig` — remove the alias
@@ -691,6 +695,10 @@ This alias exists to avoid renaming call sites when `SystemConfig` was introduce
 in a doc example. Since there are no stability guarantees, the alias should be removed:
 all call sites should use `SystemConfig` directly. The type alias obscures that the
 system daemon is working with the system (not user) config — a name that now matters.
+
+> **Fixed.** `pub type Config = SystemConfig` removed. All call sites in `tv_manager.rs`
+> and `tisvlayd/main.rs` updated to use `SystemConfig` directly. The stale `lib.rs` doc
+> example rewritten to show the current daemon-based architecture (`DaemonClient`).
 
 ---
 
@@ -718,6 +726,11 @@ Removing it forces a clean break: profile assignments live in the user config on
 `test_parse_config_backward_compat`, and the backward-compat assertion on `tv[0].profile`
 in that test.
 
+> **Fixed.** `TvConfig.profile` field removed along with its `#[serde(default, skip_serializing)]`
+> annotation and builder entry. `TvConfig::new()` no longer sets `profile: None`.
+> `test_parse_config_backward_compat` updated to drop the `profile = "gaming"` TOML line
+> and the `tv[0].profile` assertion; `test_backward_compat_profile_resolution` removed entirely.
+
 ---
 
 ### F4. `SystemConfig::get_profile_for_tv` — dead production code
@@ -729,6 +742,9 @@ in that test.
 `TvConfig.profile` field (issue F3 above). If that field is removed, this method goes
 with it. Even if the field is retained, the method should be `#[cfg(test)]` if it has
 no production callers.
+
+> **Fixed.** `get_profile_for_tv` removed along with F3. All test call sites updated to
+> use `config.get_profile("name")` directly, which is the correct production API.
 
 ---
 
@@ -745,6 +761,8 @@ pub fn get_default_profile_resolved(&self) -> ResolvedProfile {
 `grep` finds no callers of `get_default_profile_resolved` in production code or tests.
 It should be removed.
 
+> **Fixed.** `get_default_profile_resolved` removed.
+
 ---
 
 ### F6. `SystemConfig::default_tv` — dead code referenced only in an outdated doc example
@@ -759,6 +777,10 @@ the wrong signature. The entire `lib.rs` example block is stale and misleading. 
 `default_tv()` and rewrite the doc example to reflect the current daemon-based
 architecture where the CLI/tray/session communicate through `DaemonClient`.
 
+> **Fixed.** `default_tv()` removed. The `lib.rs` crate-level doc example rewritten to
+> use the modern `DaemonClient::new_system()` pattern, which accurately reflects how all
+> current consumers (CLI, tray, session service) interact with the daemon.
+
 ---
 
 ### F7. `SystemConfig::get_default_profile` — only used in tests
@@ -772,6 +794,10 @@ use `TvManager::get_system_default_profile()` which reads the `profiles` RwLock 
 
 If the public API needs a way to read the default profile from a `SystemConfig`, keep it.
 If not, remove it and the `OnceLock` static along with it.
+
+> **Fixed.** `get_default_profile()` and its `OnceLock<ProfileConfig>` static removed.
+> Tests that previously called `get_default_profile()` updated to use
+> `config.profiles.get("default")` directly, which exercises the real lookup path.
 
 ---
 
@@ -789,6 +815,8 @@ pub enum DaemonAction {
 `DaemonAction` is an internal coordination enum used only within the `tisvlayd` crate
 between `tv_manager.rs` and `logind.rs`. It is not part of any public API. It should be
 `pub(crate)` to prevent accidental exposure and to document its intended scope.
+
+> **Fixed.** `DaemonAction` changed to `pub(crate)`.
 
 ---
 
@@ -827,6 +855,12 @@ But a proper fix would be a write serialization primitive (e.g., a `Mutex<()>` h
 during load-modify-save, or a dedicated config writer task receiving changes via a
 channel).
 
+> **Fixed.** Added `disk_write_lock: Mutex<()>` to `TvManager`. All four disk-write
+> paths (`save_tv_config`, `delete_tv_config`, `set_daemon_option`, `set_tv_option`)
+> acquire this lock before their `spawn_blocking` call and hold it until the blocking
+> task completes. Concurrent calls now queue behind the lock, so the second caller
+> always loads a snapshot that includes the first caller's write.
+
 ---
 
 ### F10. `reload_config` holds the outer `tvs` write lock while closing connections
@@ -844,6 +878,12 @@ commands during cleanup.
 
 **Fix direction:** Collect the `Arc<Mutex<ManagedTv>>` entries to remove, release the
 outer write lock, then close connections under only the per-TV locks.
+
+> **Fixed.** `reload_config` now uses a two-phase approach. Phase 1 holds the outer
+> write lock only for map mutations (shift_remove and insert — fast pointer operations).
+> The write lock is released at the end of Phase 1. Phase 2 iterates the collected Arcs,
+> acquires each per-TV lock independently, updates the config, and closes any connections.
+> No outer lock is held during network I/O.
 
 ---
 
@@ -865,6 +905,13 @@ prefer explicit control.
 **Fix direction:** Remove the auto-insert behavior from `save_to`. If a self-documenting
 default profile is desired for new installations, add it in the pairing flow where it
 belongs, or in the NixOS module's initial config generation.
+
+> **Fixed.** The auto-insert logic removed from `save_to`. The method now serializes
+> exactly what is in the `SystemConfig` with no side effects. The `Cow<'_, SystemConfig>`
+> anti-clone was also removed as it is no longer needed. The test
+> `test_save_adds_default_profile_when_empty` was renamed
+> `test_save_does_not_auto_insert_default_profile` and flipped to assert that
+> `profiles.is_empty()` after a round-trip through `save_to`/`from_str`.
 
 ---
 

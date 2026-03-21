@@ -11,7 +11,7 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{Capabilities, Config, DaemonConfig, PowerState, ProfileConfig, TvConfig, TvConnection, TvState};
+use tisvlay_core::{Capabilities, DaemonConfig, PowerState, ProfileConfig, SystemConfig, TvConfig, TvConnection, TvState};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
 
@@ -150,6 +150,10 @@ pub struct TvManager {
     /// Daemon settings — kept separately so reload_config() and set_daemon_option()
     /// can update them at runtime without touching the TV connection pool.
     daemon_config: RwLock<DaemonConfig>,
+    /// Serializes all load-modify-save disk operations (save_tv_config, delete_tv_config,
+    /// set_daemon_option, set_tv_option). Without this, two concurrent callers can each
+    /// load a stale snapshot and one overwrites the other's change on disk.
+    disk_write_lock: Mutex<()>,
     /// Channel to send state change events.
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
 }
@@ -158,7 +162,7 @@ pub struct TvManager {
 ///
 /// Used by `logind` to ask the `TvManager` for the configured action without
 /// directly reading the `DaemonConfig` fields by name.
-pub enum DaemonAction {
+pub(crate) enum DaemonAction {
     Shutdown,
     NoActiveSession,
 }
@@ -199,7 +203,7 @@ impl TvManager {
     ///
     /// Returns the manager and a receiver for state change events.
     pub fn new(
-        config: Config,
+        config: SystemConfig,
         config_path: PathBuf,
         registry: Arc<BackendRegistry>,
     ) -> (Self, mpsc::UnboundedReceiver<StateChangeEvent>) {
@@ -224,6 +228,7 @@ impl TvManager {
             tvs,
             profiles,
             daemon_config,
+            disk_write_lock: Mutex::new(()),
             state_change_tx,
         };
 
@@ -807,12 +812,14 @@ impl TvManager {
 
     /// Save a TV config to the configuration file.
     ///
-    /// Uses `spawn_blocking` to avoid blocking the async executor on disk I/O.
+    /// Serializes disk I/O via `disk_write_lock` to prevent concurrent load-modify-save
+    /// races. Uses `spawn_blocking` to avoid blocking the async executor.
     async fn save_tv_config(&self, tv_config: &TvConfig) -> Result<(), TvManagerError> {
         let config_path = self.config_path.clone();
         let tv_config = tv_config.clone();
+        let _disk_lock = self.disk_write_lock.lock().await;
         tokio::task::spawn_blocking(move || {
-            let mut config = Config::load_from(&config_path).map_err(|e| {
+            let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
                 TvManagerError::ConfigError(format!("Failed to load config: {}", e))
             })?;
             config.upsert_tv(tv_config);
@@ -826,12 +833,14 @@ impl TvManager {
 
     /// Delete a TV from the configuration file.
     ///
-    /// Uses `spawn_blocking` to avoid blocking the async executor on disk I/O.
+    /// Serializes disk I/O via `disk_write_lock` to prevent concurrent load-modify-save
+    /// races. Uses `spawn_blocking` to avoid blocking the async executor.
     async fn delete_tv_config(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let config_path = self.config_path.clone();
         let tv_id = tv_id.to_string();
+        let _disk_lock = self.disk_write_lock.lock().await;
         tokio::task::spawn_blocking(move || {
-            let mut config = Config::load_from(&config_path).map_err(|e| {
+            let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
                 TvManagerError::ConfigError(format!("Failed to load config: {}", e))
             })?;
             config.remove_tv(&tv_id);
@@ -885,11 +894,12 @@ impl TvManager {
         } // write lock released before I/O
 
         // Persist to disk: load the full on-disk config, patch daemon section, save.
-        // This preserves TV definitions and profiles that may have been updated separately.
+        // Serialize via disk_write_lock to prevent concurrent load-modify-save races.
         let config_path = self.config_path.clone();
         let daemon_snapshot = self.daemon_config.read().await.clone();
+        let _disk_lock = self.disk_write_lock.lock().await;
         tokio::task::spawn_blocking(move || {
-            let mut config = Config::load_from(&config_path).map_err(|e| {
+            let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
                 TvManagerError::ConfigError(format!("Failed to load config: {}", e))
             })?;
             config.daemon = daemon_snapshot;
@@ -905,30 +915,44 @@ impl TvManager {
     }
 
     /// Set a system-level TV option and persist to disk.
+    ///
+    /// Applies the change to the in-memory TV config first (which also validates
+    /// the TV ID and key), then persists via `spawn_blocking` to avoid blocking
+    /// the async executor on disk I/O.
     pub async fn set_tv_option(
         &self,
         tv_id: &str,
         key: &str,
         value: &str,
     ) -> Result<(), TvManagerError> {
-        let mut config = Config::load_from(&self.config_path)
-            .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
-
-        let tv = config
-            .find_tv_mut(tv_id)
-            .ok_or_else(|| TvManagerError::TvNotFound(tv_id.to_string()))?;
-
-        // Validate key and apply to disk config; reuse the same logic for in-memory below.
-        apply_tv_option(tv, key, value)?;
-
-        config
-            .save_to(&self.config_path)
-            .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))?;
-
-        // Mirror the same change in the in-memory TV config.
+        // Validate and apply to in-memory TV config first.
         let tv_arc = self.get_tv(tv_id).await?;
-        let mut managed = tv_arc.lock().await;
-        apply_tv_option(&mut managed.config, key, value)?;
+        {
+            let mut managed = tv_arc.lock().await;
+            apply_tv_option(&mut managed.config, key, value)?;
+        } // per-TV lock released before I/O
+
+        // Persist to disk: load the full on-disk config, patch the TV entry, save.
+        // Serialize via disk_write_lock to prevent concurrent load-modify-save races.
+        let config_path = self.config_path.clone();
+        let tv_id_owned = tv_id.to_string();
+        let key_owned = key.to_string();
+        let value_owned = value.to_string();
+        let _disk_lock = self.disk_write_lock.lock().await;
+        tokio::task::spawn_blocking(move || {
+            let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
+                TvManagerError::ConfigError(format!("Failed to load config: {}", e))
+            })?;
+            let tv = config
+                .find_tv_mut(&tv_id_owned)
+                .ok_or_else(|| TvManagerError::TvNotFound(tv_id_owned.clone()))?;
+            apply_tv_option(tv, &key_owned, &value_owned)?;
+            config
+                .save_to(&config_path)
+                .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
+        })
+        .await
+        .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
 
         info!(tv_id = %tv_id, key = %key, value = %value, "TV option updated");
         Ok(())
@@ -938,56 +962,77 @@ impl TvManager {
     pub async fn reload_config(&self) -> Result<(), TvManagerError> {
         info!("Reloading configuration");
 
-        let new_config = Config::load_from(&self.config_path)
+        let new_config = SystemConfig::load_from(&self.config_path)
             .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
 
-        // Outer write lock -- we may add/remove entries from the IndexMap
-        let mut tvs = self.tvs.write().await;
-
-        // Track IDs from new config
         let new_ids: std::collections::HashSet<_> =
             new_config.tv.iter().map(|t| t.id.clone()).collect();
 
-        // Remove TVs that are no longer in config
-        let old_ids: Vec<_> = tvs.keys().cloned().collect();
-        for old_id in old_ids {
-            if !new_ids.contains(&old_id) {
-                info!(tv_id = %old_id, "Removing TV (no longer in config)");
-                if let Some(tv_arc) = tvs.shift_remove(&old_id) {
-                    let mut tv = tv_arc.lock().await;
+        // Phase 1: update the IndexMap under write lock (map mutations only — no I/O).
+        // Collect Arcs for removed TVs and existing TVs that need config updates.
+        // We do NOT close connections here; the write lock must not be held across
+        // async WebSocket close operations that can block for hundreds of milliseconds.
+        let mut to_update: Vec<(Arc<Mutex<ManagedTv>>, Option<TvConfig>)> = Vec::new();
+        let tv_count;
+        {
+            let mut tvs = self.tvs.write().await;
+
+            // Remove TVs that are no longer in config
+            let old_ids: Vec<_> = tvs.keys().cloned().collect();
+            for old_id in old_ids {
+                if !new_ids.contains(&old_id) {
+                    info!(tv_id = %old_id, "Removing TV (no longer in config)");
+                    if let Some(arc) = tvs.shift_remove(&old_id) {
+                        to_update.push((arc, None)); // None = removed, close connection
+                    }
+                }
+            }
+
+            // Add or update TVs from new config
+            for tv_config in new_config.tv {
+                if let Some(tv_arc) = tvs.get(&tv_config.id) {
+                    // Existing TV: defer config update + reconnect decision to Phase 2.
+                    to_update.push((tv_arc.clone(), Some(tv_config)));
+                } else {
+                    // New TV: add to map immediately (no connection to close).
+                    info!(tv_id = %tv_config.id, "Adding new TV from config");
+                    tvs.insert(
+                        tv_config.id.clone(),
+                        Arc::new(Mutex::new(ManagedTv::new(tv_config))),
+                    );
+                }
+            }
+
+            tv_count = tvs.len();
+        } // write lock released
+
+        // Phase 2: update configs and close connections without holding the outer lock.
+        // Each per-TV lock is held only for the duration of its own operation.
+        for (tv_arc, new_tv_config) in to_update {
+            let mut tv = tv_arc.lock().await;
+            match new_tv_config {
+                None => {
+                    // TV removed from config — close its connection.
                     if let Some(mut conn) = tv.connection.take() {
                         let _ = conn.close().await;
                     }
                 }
-            }
-        }
-
-        // Add or update TVs from new config
-        for tv_config in new_config.tv {
-            if let Some(tv_arc) = tvs.get(&tv_config.id) {
-                let mut existing = tv_arc.lock().await;
-                // Update config if changed (preserve connection if possible)
-                // Compare vendor and vendor_config which affect connection
-                let connection_changed = existing.config.vendor != tv_config.vendor
-                    || existing.config.vendor_config != tv_config.vendor_config;
-                if connection_changed {
-                    info!(tv_id = %tv_config.id, "Updating TV config (will reconnect)");
-                    if let Some(mut conn) = existing.connection.take() {
-                        let _ = conn.close().await;
+                Some(tv_config) => {
+                    // Existing TV — reconnect if connection params changed.
+                    let connection_changed = tv.config.vendor != tv_config.vendor
+                        || tv.config.vendor_config != tv_config.vendor_config;
+                    if connection_changed {
+                        info!(tv_id = %tv_config.id, "Updating TV config (will reconnect)");
+                        if let Some(mut conn) = tv.connection.take() {
+                            let _ = conn.close().await;
+                        }
                     }
+                    tv.config = tv_config;
                 }
-                existing.config = tv_config;
-            } else {
-                // Add new TV
-                info!(tv_id = %tv_config.id, "Adding new TV from config");
-                tvs.insert(
-                    tv_config.id.clone(),
-                    Arc::new(Mutex::new(ManagedTv::new(tv_config))),
-                );
             }
         }
 
-        info!(tv_count = tvs.len(), "Configuration reloaded");
+        info!(tv_count = tv_count, "Configuration reloaded");
 
         // Update profiles
         {

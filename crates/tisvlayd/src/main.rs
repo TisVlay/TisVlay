@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{Config, UserConfig};
+use tisvlay_core::{SystemConfig, UserConfig};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -66,14 +66,14 @@ async fn main() -> Result<()> {
     info!(path = %config_path.display(), "Using config file");
 
     // Load configuration
-    let config = match Config::load_from(&config_path) {
+    let config = match SystemConfig::load_from(&config_path) {
         Ok(config) => {
             info!(tvs = config.tv.len(), "Loaded configuration");
             config
         }
         Err(e) => {
             warn!("Failed to load config, using defaults: {}", e);
-            Config::default()
+            SystemConfig::default()
         }
     };
 
