@@ -89,6 +89,7 @@ pub enum TrayCommand {
     ScreenOn(String),
     ScreenOff(String),
     SwitchInput(String, String),
+    SetProfile(String, String),
     VolumeUp(String),
     VolumeDown(String),
     ToggleMute(String),
@@ -296,6 +297,11 @@ fn build_connected_tv_menu(
         move || TrayCommand::PowerOff(id.clone())
     }));
 
+    // Profile submenu (if profiles available)
+    if !tv.available_profiles.is_empty() {
+        items.push(build_profile_submenu(tv, cmd_tx));
+    }
+
     // Input submenu (if inputs available)
     if !tv.inputs.is_empty() {
         items.push(MenuItem::Separator);
@@ -416,6 +422,53 @@ fn build_disconnected_tv_menu(
         cmd_tx,
         move || TrayCommand::PowerOn(id.clone()),
     )]
+}
+
+/// Build the profile switching submenu with radio buttons.
+fn build_profile_submenu(
+    tv: &CachedTvState,
+    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
+) -> MenuItem<TisvlayTray> {
+    let current = tv.profile.as_deref().unwrap_or("default");
+    let selected = tv
+        .available_profiles
+        .iter()
+        .position(|name| name == current)
+        .unwrap_or(0);
+
+    let options: Vec<RadioItem> = tv
+        .available_profiles
+        .iter()
+        .map(|name| RadioItem {
+            label: name.clone(),
+            ..Default::default()
+        })
+        .collect();
+
+    let tx = cmd_tx.clone();
+    let profiles: Vec<String> = tv.available_profiles.clone();
+    let tv_id = tv.id.clone();
+
+    SubMenu {
+        label: format!("Profile: {}", current),
+        icon_name: "preferences-system".into(),
+        submenu: vec![RadioGroup {
+            selected,
+            options,
+            select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
+                if let Some(profile_name) = profiles.get(idx) {
+                    debug!(tv_id = %tv_id, profile = %profile_name, "Switching profile");
+                    let _ = tx.send(TrayCommand::SetProfile(
+                        tv_id.clone(),
+                        profile_name.clone(),
+                    ));
+                }
+            }),
+        }
+        .into()],
+        ..Default::default()
+    }
+    .into()
 }
 
 /// Build the input switching submenu with radio buttons.

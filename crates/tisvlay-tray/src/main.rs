@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use state::fetch_all_state;
-use tisvlay_core::DaemonClient;
+use tisvlay_core::{DaemonClient, SessionClient};
 use tray::{TisvlayTray, TrayCommand};
 
 /// tisvlay system tray - TV control from your taskbar.
@@ -62,6 +62,23 @@ async fn main() -> Result<()> {
 
     let daemon = Arc::new(daemon);
 
+    // Create session client for profile management (optional — degrades gracefully)
+    let session: Option<Arc<SessionClient>> = match SessionClient::new().await {
+        Ok(client) => {
+            if client.is_available().await {
+                info!("Session service available for profile management");
+                Some(Arc::new(client))
+            } else {
+                info!("Session service not available (profile switching disabled)");
+                None
+            }
+        }
+        Err(e) => {
+            info!(error = %e, "Could not connect to session service (profile switching disabled)");
+            None
+        }
+    };
+
     // Create command channel
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
@@ -83,16 +100,18 @@ async fn main() -> Result<()> {
 
     // Spawn polling task
     let poll_daemon = daemon.clone();
+    let poll_session = session.clone();
     let poll_handle = handle.clone();
     tokio::spawn(async move {
-        poll_state(poll_daemon, poll_handle).await;
+        poll_state(poll_daemon, poll_session, poll_handle).await;
     });
 
     // Spawn command processor
     let cmd_daemon = daemon.clone();
+    let cmd_session = session.clone();
     let cmd_handle = handle.clone();
     let cmd_task = tokio::spawn(async move {
-        process_commands(cmd_rx, cmd_daemon, cmd_handle).await;
+        process_commands(cmd_rx, cmd_daemon, cmd_session, cmd_handle).await;
     });
 
     // Wait for shutdown: command processor exit (Quit menu item) or signal
@@ -123,7 +142,11 @@ async fn wait_for_signal() {
 }
 
 /// Periodically fetch TV state and update the tray menu.
-async fn poll_state(daemon: Arc<DaemonClient>, handle: ksni::Handle<TisvlayTray>) {
+async fn poll_state(
+    daemon: Arc<DaemonClient>,
+    session: Option<Arc<SessionClient>>,
+    handle: ksni::Handle<TisvlayTray>,
+) {
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
 
@@ -131,7 +154,7 @@ async fn poll_state(daemon: Arc<DaemonClient>, handle: ksni::Handle<TisvlayTray>
             break;
         }
 
-        match fetch_all_state(&daemon).await {
+        match fetch_all_state(&daemon, session.as_deref()).await {
             Ok(tvs) => {
                 debug!(count = tvs.len(), "Poll: state updated");
                 handle
@@ -160,6 +183,7 @@ async fn poll_state(daemon: Arc<DaemonClient>, handle: ksni::Handle<TisvlayTray>
 async fn process_commands(
     mut cmd_rx: mpsc::UnboundedReceiver<TrayCommand>,
     daemon: Arc<DaemonClient>,
+    session: Option<Arc<SessionClient>>,
     handle: ksni::Handle<TisvlayTray>,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
@@ -186,6 +210,15 @@ async fn process_commands(
             TrayCommand::ScreenOff(id) => {
                 if let Err(e) = daemon.screen_off(&id).await {
                     warn!(tv_id = %id, error = %e, "Screen off failed");
+                }
+            }
+            TrayCommand::SetProfile(id, profile) => {
+                if let Some(ref session_client) = session {
+                    if let Err(e) = session_client.set_tv_profile(&id, &profile).await {
+                        warn!(tv_id = %id, profile = %profile, error = %e, "Set profile failed");
+                    }
+                } else {
+                    warn!(tv_id = %id, "Cannot set profile: session service not available");
                 }
             }
             TrayCommand::SwitchInput(id, input) => {
@@ -242,7 +275,7 @@ async fn process_commands(
         }
 
         // Refresh state after command so menu reflects the change
-        if let Ok(tvs) = fetch_all_state(&daemon).await {
+        if let Ok(tvs) = fetch_all_state(&daemon, session.as_deref()).await {
             handle
                 .update(|t| {
                     t.tvs = tvs;

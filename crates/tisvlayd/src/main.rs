@@ -4,6 +4,7 @@
 //! Supports multiple TV vendors through a backend registry system.
 
 mod dbus;
+mod logind;
 mod registry;
 mod tv_manager;
 
@@ -133,6 +134,12 @@ async fn main() -> Result<()> {
     }
 
     info!("D-Bus service registered as {}", DBUS_NAME);
+
+    // Start logind monitoring (shutdown inhibitor, session tracking)
+    let logind_monitor = logind::LogindMonitor::new(shared_manager.clone(), args.session);
+    if let Err(e) = logind_monitor.start().await {
+        warn!(error = %e, "Failed to start logind monitor (system lifecycle events unavailable)");
+    }
 
     // Spawn task to emit state change signals
     let signal_worker = tokio::spawn(state_change_signal_emitter(

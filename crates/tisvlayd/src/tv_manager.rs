@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tisvlay_core::{Capabilities, Config, PowerState, TvConfig, TvConnection, TvState};
+use tisvlay_core::{Capabilities, Config, PowerState, ProfileConfig, TvConfig, TvConnection, TvState};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
 
@@ -136,7 +136,7 @@ impl ManagedTv {
 /// Uses per-TV locking so operations on different TVs proceed concurrently.
 /// Connection resilience (auto-reconnect, WoL retry) is handled by the backends.
 pub struct TvManager {
-    /// Global configuration.
+    /// Global configuration (daemon settings, used for wake_delay_ms etc.).
     config: Config,
     /// Path to the configuration file for load/save operations.
     config_path: PathBuf,
@@ -146,6 +146,8 @@ pub struct TvManager {
     /// The outer RwLock protects the HashMap itself (add/remove); individual TV
     /// operations hold only the per-TV Mutex.
     tvs: Arc<RwLock<HashMap<String, Arc<Mutex<ManagedTv>>>>>,
+    /// System profiles from config (updated on reload).
+    profiles: RwLock<HashMap<String, ProfileConfig>>,
     /// Channel to send state change events.
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
 }
@@ -169,12 +171,14 @@ impl TvManager {
 
         let tvs = Arc::new(RwLock::new(tvs));
         let (state_change_tx, state_change_rx) = mpsc::unbounded_channel();
+        let profiles = RwLock::new(config.profiles.clone());
 
         let manager = Self {
             config,
             config_path,
             registry,
             tvs,
+            profiles,
             state_change_tx,
         };
 
@@ -196,6 +200,19 @@ impl TvManager {
             .get(tv_id)
             .cloned()
             .ok_or_else(|| TvManagerError::TvNotFound(tv_id.to_string()))
+    }
+
+    /// Get a daemon config action.
+    pub async fn get_daemon_config_action(
+        &self,
+        action: crate::logind::DaemonAction,
+    ) -> tisvlay_core::SessionAction {
+        match action {
+            crate::logind::DaemonAction::Shutdown => self.config.daemon.on_shutdown,
+            crate::logind::DaemonAction::NoActiveSession => {
+                self.config.daemon.on_no_active_session
+            }
+        }
     }
 
     /// Wake TVs that have wake_on_boot enabled.
@@ -231,6 +248,15 @@ impl TvManager {
         let delay = Duration::from_millis(self.config.daemon.wake_delay_ms);
         info!("Waiting {:?} for TVs to wake", delay);
         tokio::time::sleep(delay).await;
+    }
+
+    /// Get the system default profile.
+    ///
+    /// Returns the `[profiles.default]` from the system config,
+    /// or an empty ProfileConfig if not defined.
+    pub async fn get_system_default_profile(&self) -> ProfileConfig {
+        let profiles = self.profiles.read().await;
+        profiles.get("default").cloned().unwrap_or_default()
     }
 
     /// List all configured TV IDs.
@@ -611,8 +637,7 @@ impl TvManager {
 
         // Create TV config with vendor-specific connection parameters
         let mut tv_config = TvConfig::new(&tv_id, name)
-            .with_vendor(vendor)
-            .with_profile("default");
+            .with_vendor(vendor);
 
         // Store the vendor config
         tv_config
@@ -692,6 +717,114 @@ impl TvManager {
             .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
     }
 
+    /// Set a daemon configuration option and persist to disk.
+    pub fn set_daemon_option(&self, key: &str, value: &str) -> Result<(), TvManagerError> {
+        let mut config = Config::load_from(&self.config_path)
+            .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
+
+        match key {
+            "wake_on_boot" => {
+                config.daemon.wake_on_boot = value
+                    .parse()
+                    .map_err(|_| TvManagerError::ConfigError("Invalid bool".into()))?;
+            }
+            "wake_delay_ms" => {
+                config.daemon.wake_delay_ms = value
+                    .parse()
+                    .map_err(|_| TvManagerError::ConfigError("Invalid u64".into()))?;
+            }
+            "on_shutdown" => {
+                config.daemon.on_shutdown = serde_json::from_str(&format!("\"{}\"", value))
+                    .map_err(|e| TvManagerError::ConfigError(format!("Invalid action: {}", e)))?;
+            }
+            "on_no_active_session" => {
+                config.daemon.on_no_active_session =
+                    serde_json::from_str(&format!("\"{}\"", value)).map_err(|e| {
+                        TvManagerError::ConfigError(format!("Invalid action: {}", e))
+                    })?;
+            }
+            _ => {
+                return Err(TvManagerError::ConfigError(format!(
+                    "Unknown daemon option: {}",
+                    key
+                )));
+            }
+        }
+
+        config
+            .save_to(&self.config_path)
+            .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))?;
+
+        info!(key = %key, value = %value, "Daemon option updated");
+        Ok(())
+    }
+
+    /// Set a system-level TV option and persist to disk.
+    pub async fn set_tv_option(
+        &self,
+        tv_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), TvManagerError> {
+        let mut config = Config::load_from(&self.config_path)
+            .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
+
+        let tv = config
+            .find_tv_mut(tv_id)
+            .ok_or_else(|| TvManagerError::TvNotFound(tv_id.to_string()))?;
+
+        match key {
+            "hdmi_input" => {
+                tv.hdmi_input = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+            }
+            "only_when_active" => {
+                tv.only_when_active = value
+                    .parse()
+                    .map_err(|_| TvManagerError::ConfigError("Invalid bool".into()))?;
+            }
+            "name" => {
+                tv.name = value.to_string();
+            }
+            _ => {
+                return Err(TvManagerError::ConfigError(format!(
+                    "Unknown TV option: {}",
+                    key
+                )));
+            }
+        }
+
+        config
+            .save_to(&self.config_path)
+            .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))?;
+
+        // Update the in-memory TV config too
+        let tv_arc = self.get_tv(tv_id).await?;
+        let mut managed = tv_arc.lock().await;
+        match key {
+            "hdmi_input" => {
+                managed.config.hdmi_input = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+            }
+            "only_when_active" => {
+                managed.config.only_when_active = value.parse().unwrap_or(false);
+            }
+            "name" => {
+                managed.config.name = value.to_string();
+            }
+            _ => {}
+        }
+
+        info!(tv_id = %tv_id, key = %key, value = %value, "TV option updated");
+        Ok(())
+    }
+
     /// Reload configuration from disk.
     pub async fn reload_config(&self) -> Result<(), TvManagerError> {
         info!("Reloading configuration");
@@ -746,6 +879,13 @@ impl TvManager {
         }
 
         info!(tv_count = tvs.len(), "Configuration reloaded");
+
+        // Update profiles
+        {
+            let mut profiles = self.profiles.write().await;
+            *profiles = new_config.profiles;
+        }
+
         Ok(())
     }
 }

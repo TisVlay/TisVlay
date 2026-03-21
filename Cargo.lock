@@ -1402,6 +1402,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "serde_json",
  "tisvlay-core",
  "tokio",
  "tracing",

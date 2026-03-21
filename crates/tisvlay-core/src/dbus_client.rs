@@ -74,6 +74,15 @@ trait TisvlayManager {
 
     /// Reload configuration.
     fn reload_config(&self) -> zbus::Result<()>;
+
+    /// Get the system default profile as JSON.
+    fn get_system_profile(&self) -> zbus::Result<String>;
+
+    /// Set a daemon configuration option.
+    fn set_daemon_option(&self, key: &str, value: &str) -> zbus::Result<()>;
+
+    /// Set a system-level TV option.
+    fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -653,5 +662,124 @@ impl DaemonClient {
         }
 
         Ok(())
+    }
+
+    /// Get the system default profile.
+    ///
+    /// Returns the `[profiles.default]` from the daemon's system config.
+    /// Used by session services to inherit defaults when users have no config file.
+    pub async fn get_system_profile(&self) -> Result<crate::ProfileConfig> {
+        debug!("Calling GetSystemProfile on daemon");
+        let json = self
+            .manager
+            .get_system_profile()
+            .await
+            .context("Failed to get system profile from daemon")?;
+        serde_json::from_str(&json).context("Failed to parse system profile JSON")
+    }
+
+    /// Set a daemon configuration option.
+    ///
+    /// Supported keys: `wake_on_boot`, `wake_delay_ms`, `on_shutdown`,
+    /// `on_no_active_session`.
+    pub async fn set_daemon_option(&self, key: &str, value: &str) -> Result<()> {
+        debug!(key = %key, value = %value, "Calling SetDaemonOption on daemon");
+        self.manager
+            .set_daemon_option(key, value)
+            .await
+            .with_context(|| format!("Failed to set daemon option: {}={}", key, value))
+    }
+
+    /// Set a system-level TV option.
+    ///
+    /// Supported keys: `hdmi_input`, `only_when_active`, `name`.
+    pub async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<()> {
+        debug!(tv_id = %tv_id, key = %key, value = %value, "Calling SetTvOption on daemon");
+        self.manager
+            .set_tv_option(tv_id, key, value)
+            .await
+            .with_context(|| format!("Failed to set TV option: {} {}={}", tv_id, key, value))
+    }
+}
+
+// =============================================================================
+// Session Service Client (for tray/GUI to query user profiles)
+// =============================================================================
+
+/// D-Bus proxy for the tisvlay Session interface.
+#[proxy(
+    interface = "org.tisvlay.Session1",
+    default_service = "org.tisvlay.Session",
+    default_path = "/org/tisvlay/Session"
+)]
+trait TisvlaySession {
+    /// List all available profiles.
+    fn list_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+
+    /// Get the profile name assigned to a TV.
+    fn get_tv_profile(&self, tv_id: &str) -> zbus::Result<String>;
+
+    /// Assign a profile to a TV.
+    fn set_tv_profile(&self, tv_id: &str, profile_name: &str) -> zbus::Result<()>;
+
+    /// Get the fully resolved profile for a TV as JSON.
+    fn get_effective_profile(&self, tv_id: &str) -> zbus::Result<String>;
+
+    /// Reload user configuration from disk.
+    fn reload_config(&self) -> zbus::Result<()>;
+}
+
+/// Client for communicating with the tisvlay session service via D-Bus.
+///
+/// This client provides a high-level interface for profile management
+/// from the tray app or GUI.
+#[derive(Clone)]
+pub struct SessionClient {
+    proxy: TisvlaySessionProxy<'static>,
+}
+
+impl SessionClient {
+    /// Create a new session client connected to the session bus.
+    pub async fn new() -> Result<Self> {
+        let connection = zbus::Connection::session()
+            .await
+            .context("Failed to connect to session D-Bus")?;
+
+        let proxy = TisvlaySessionProxy::new(&connection)
+            .await
+            .context("Failed to create session proxy")?;
+
+        Ok(Self { proxy })
+    }
+
+    /// Check if the session service is available.
+    pub async fn is_available(&self) -> bool {
+        self.proxy.list_profiles().await.is_ok()
+    }
+
+    /// List all available profiles.
+    ///
+    /// Returns: Vec of (profile_name, profile_json) tuples.
+    pub async fn list_profiles(&self) -> Result<Vec<(String, String)>> {
+        self.proxy
+            .list_profiles()
+            .await
+            .context("Failed to list profiles from session service")
+    }
+
+    /// Get the profile name assigned to a TV.
+    pub async fn get_tv_profile(&self, tv_id: &str) -> Result<String> {
+        self.proxy
+            .get_tv_profile(tv_id)
+            .await
+            .context("Failed to get TV profile from session service")
+    }
+
+    /// Assign a profile to a TV.
+    pub async fn set_tv_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
+        self.proxy
+            .set_tv_profile(tv_id, profile_name)
+            .await
+            .with_context(|| format!("Failed to set profile '{}' for TV '{}'", profile_name, tv_id))
     }
 }

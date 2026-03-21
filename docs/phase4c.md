@@ -603,57 +603,168 @@ If a TV in the user config is not found in the daemon's TV list:
 
 ---
 
-## Implementation Plan
+## Implementation Status
 
-### Step 1: Config Struct Refactor
+All steps are complete. The workspace builds and all 58 tests pass.
+The nix build also succeeds with the updated `cargoHash`.
 
-1. Create `SystemConfig` and `UserConfig` structs in `tisvlay-core`
-2. Add `ProfileConfig` with `Option<T>` fields and `ResolvedProfile`
-3. Add `merge_with_base()` method for profile inheritance
-4. Keep backward-compatible `Config` as a type alias or migration helper
-5. Add `GetSystemProfile()` to daemon D-Bus interface
+### Step 1: Config Struct Refactor — COMPLETE
 
-### Step 2: Daemon System Policy
+**Files changed:**
 
-1. Add `on_shutdown` and `on_no_active_session` to `DaemonConfig`
-2. Add logind session tracking (monitor `SessionNew`/`SessionRemoved`,
-   `Seat.ActiveSession` on system bus)
-3. Add `PrepareForShutdown` handler with inhibitor lock
-4. Add active session enforcement (reject D-Bus commands from inactive sessions)
+- `crates/tisvlay-core/src/config.rs` — Major refactor:
+  - `ProfileConfig` fields changed to `Option<T>` with `#[serde(skip_serializing_if)]`
+  - Added `ProfileConfig::full_default()` (all fields `Some`), `merge_with_base()`, `resolve()`
+  - Added `ResolvedProfile` struct with concrete fields and `Default` impl
+  - Renamed `Config` → `SystemConfig` with `pub type Config = SystemConfig` alias
+  - `DaemonConfig` gained `on_shutdown` (default `PowerOff`) and `on_no_active_session` (default `None`)
+  - `TvConfig.profile` changed from `String` to `Option<String>` with `#[serde(skip_serializing)]` for backward compat
+  - Added `UserConfig`, `UserTvConfig` structs with load/save/resolve methods
+  - Added `SystemConfig::get_default_profile()` and `get_default_profile_resolved()`
+  - 20 new tests covering merge, resolve, backward compat, user config, round-trip serialization
+- `crates/tisvlay-core/src/lib.rs` — Exports `SystemConfig`, `UserConfig`, `UserTvConfig`, `ResolvedProfile`
+- `crates/tisvlay-session/src/main.rs` — Changed `get_action_for_event` to accept `&ResolvedProfile`, `effective_idle_timeout` calls `.resolve()`
+- `crates/tisvlayd/src/tv_manager.rs` — Removed `with_profile("default")` from pairing flow
 
-### Step 3: Session Service Config Split
+**Backward compatibility:** Old config files with `profile = "gaming"` on `[[tv]]` entries
+still parse correctly. The deprecated field is deserialized but never serialized back.
 
-1. Change session service to load `UserConfig` from XDG path
-2. Query daemon for TV list and system default profile on startup
-3. Implement profile resolution with inheritance
-4. Add `org.tisvlay.Session1` D-Bus interface (ListProfiles, GetTvProfile,
-   SetTvProfile, GetEffectiveProfile, ReloadConfig)
-5. Update SIGHUP handler to re-query daemon + reload user config
+### Step 1c: GetSystemProfile D-Bus Method — COMPLETE
 
-### Step 4: Tray Profile Switching
+**Files changed:**
 
-1. Add profile submenu to per-TV menus
-2. Query session service for profiles and assignments
-3. Implement profile switching via `SetTvProfile()`
-4. Add dangling TV reference warnings
+- `crates/tisvlayd/src/tv_manager.rs` — Added `profiles: RwLock<HashMap<String, ProfileConfig>>` field, `get_system_default_profile()` method, `reload_config()` now updates profiles
+- `crates/tisvlayd/src/dbus/manager.rs` — Added `GetSystemProfile()` D-Bus method
+- `crates/tisvlay-core/src/dbus_client.rs` — Added `get_system_profile()` proxy method and client method on `DaemonClient`
 
-### Step 5: NixOS Module Update
+### Step 2: Daemon System Policy — COMPLETE
 
-1. Remove `--config` from session service ExecStart
-2. Tighten `StateDirectoryMode` to `0750`
-3. Add systemd dependency ordering
+**Files created:**
 
-### Step 6: Granular System Config D-Bus API
+- `crates/tisvlayd/src/logind.rs` — New module:
+  - `Login1ManagerProxy` and `Login1SessionProxy` for `org.freedesktop.login1`
+  - `LogindMonitor::start()` spawns background tasks (skipped in `--session` dev mode)
+  - `handle_prepare_for_shutdown()`: takes `delay` inhibitor lock on startup, executes `on_shutdown` action for all TVs on `PrepareForShutdown(true)`, then releases lock
+  - `handle_session_changes()`: listens to `SessionNew`/`SessionRemoved` signals, calls `check_active_sessions()` to detect when no graphical user sessions remain
+  - `check_active_sessions()`: queries logind `ListSessions`, checks each session's `class` and `active` properties, executes `on_no_active_session` when no active graphical user session found
+- `crates/tisvlayd/src/tv_manager.rs` — Added `get_daemon_config_action()` method
 
-1. Add `SetDaemonOption()` and `SetTvOption()` methods
-2. Add polkit policy for system config changes
-3. Update NixOS module with polkit rules if needed
+**Files changed:**
+
+- `crates/tisvlayd/src/main.rs` — Wires up `LogindMonitor` after D-Bus registration
+
+**Not yet implemented:** Active session enforcement (rejecting D-Bus commands from inactive
+sessions). The daemon tracks sessions but does not yet filter commands by caller session.
+See Open Questions.
+
+### Step 3: Session Service Config Split — COMPLETE
+
+**Files changed:**
+
+- `crates/tisvlay-session/src/main.rs` — Full rewrite:
+  - New `SessionState` struct holds resolved profiles, user config, system default, TV IDs
+  - `SessionState::load()` queries daemon (`GetTvs`, `GetSystemProfile`), loads optional user config, validates TV references, resolves profiles via `UserConfig::resolve_profile()`
+  - `event_handler` reads from `SessionState.profiles` instead of `Config`
+  - `wait_for_signals` SIGHUP handler calls `SessionState::load()` to re-query daemon + reload user config
+  - `effective_idle_timeout()` moved into `SessionState`
+
+### Step 3b: Session D-Bus Interface — COMPLETE
+
+**Files created:**
+
+- `crates/tisvlay-session/src/session_dbus.rs` — New module:
+  - `org.tisvlay.Session1` interface at `/org/tisvlay/Session` on the session bus
+  - `ListProfiles()` — returns user profiles plus system default if user hasn't overridden it
+  - `GetTvProfile(tv_id)` — returns assigned profile name
+  - `SetTvProfile(tv_id, profile)` — validates profile exists, updates assignment, re-resolves, persists to disk
+  - `GetEffectiveProfile(tv_id)` — returns fully resolved profile as JSON
+  - `ReloadConfig()` — re-queries daemon + reloads user config
+  - `register_session_dbus()` helper registers the service on the session bus
+
+**Files changed:**
+
+- `crates/tisvlay-session/Cargo.toml` — Added `serde_json` dependency
+- `crates/tisvlay-session/src/main.rs` — Calls `register_session_dbus()` after state init
+- `crates/tisvlay-core/src/dbus_client.rs` — Added `SessionClient` with `TisvlaySessionProxy`, `list_profiles()`, `get_tv_profile()`, `set_tv_profile()`, `is_available()`
+- `crates/tisvlay-core/src/lib.rs` — Exports `SessionClient`
+
+### Step 4: Tray Profile Switching — COMPLETE
+
+**Files changed:**
+
+- `crates/tisvlay-tray/src/state.rs` — `CachedTvState` gained `profile: Option<String>` and `available_profiles: Vec<String>`; `fetch_all_state()` takes optional `&SessionClient`, queries `ListProfiles` and `GetTvProfile` per TV
+- `crates/tisvlay-tray/src/tray.rs` — Added `SetProfile(String, String)` to `TrayCommand`; added `build_profile_submenu()` with radio group showing available profiles and current selection; profile submenu appears in connected TV menus after Power Off
+- `crates/tisvlay-tray/src/main.rs` — Creates `SessionClient` on startup (graceful degradation if unavailable); passes to `poll_state` and `process_commands`; handles `SetProfile` command
+
+**Not yet implemented:** Dangling TV reference warnings in the tray UI.
+The session service logs warnings, but the tray does not yet surface them.
+See Open Questions.
+
+### Step 5: NixOS Module Update — COMPLETE
+
+**Files changed:**
+
+- `nix/module.nix`:
+  - `StateDirectoryMode` `"0755"` → `"0750"` (session service no longer reads system config file)
+  - Session service `ExecStart` no longer passes `--config /var/lib/tisvlay/config.toml`
+  - Tray service `after` now includes `tisvlay-session.service` for ordering
+  - Updated comments to reflect new architecture
+- `nix/package.nix` — Updated `cargoHash` (session service gained `serde_json` dependency)
+
+### Step 6: Granular System Config D-Bus API — COMPLETE
+
+**Files changed:**
+
+- `crates/tisvlayd/src/tv_manager.rs` — Added:
+  - `set_daemon_option(key, value)`: validates key against known options (`wake_on_boot`, `wake_delay_ms`, `on_shutdown`, `on_no_active_session`), parses value, persists to disk
+  - `set_tv_option(tv_id, key, value)`: validates key (`hdmi_input`, `only_when_active`, `name`), persists to disk, updates in-memory TV config
+- `crates/tisvlayd/src/dbus/manager.rs` — Added `SetDaemonOption(key, value)` and `SetTvOption(tv_id, key, value)` D-Bus methods
+- `crates/tisvlay-core/src/dbus_client.rs` — Added proxy methods and `DaemonClient::set_daemon_option()`, `set_tv_option()` client methods
+
+**Not yet implemented:** Polkit policies for access control. The methods are exposed but
+not yet protected by polkit. See Open Questions.
 
 ---
 
-## Open Questions and Future Considerations
+## Open Questions and Future Work
 
-### User Session-Aware HDMI Input
+### Active Session Enforcement (Deferred)
+
+The daemon tracks sessions via logind (`SessionNew`/`SessionRemoved`,
+`check_active_sessions`), but does not yet reject D-Bus commands from inactive
+sessions. The infrastructure is in place — `LogindMonitor` already queries
+`Login1Session.Active` and `Login1Session.class` — but the enforcement logic
+(checking the caller's session against the active session on each D-Bus method
+call) requires correlating the D-Bus sender with a logind session, which adds
+complexity. This can be implemented when multi-user scenarios are actually tested.
+
+### ActiveSessionOwner Property (Deferred)
+
+The design specified an `ActiveSessionOwner` property on `org.tisvlay.Tv1`, but
+this was not implemented. It depends on active session enforcement being in place
+first. When implemented, it would expose which session ID has exclusive control
+of each TV.
+
+### Polkit Policy Design (Deferred)
+
+The `SetDaemonOption`, `SetTvOption`, and `AddTv`/`RemoveTv` D-Bus methods are
+functional but not yet protected by polkit policies. A reasonable default policy:
+
+- `AddTv` / `RemoveTv`: require admin authentication
+- `SetDaemonOption`: require admin authentication
+- `SetTvOption`: require admin authentication
+- All `Tv1.*` control methods (PowerOn, ScreenOff, etc.): allow active session user
+
+This should be implemented before production multi-user deployment.
+
+### Dangling TV Reference Warnings in Tray (Deferred)
+
+The session service logs warnings for user config entries referencing unknown TV
+IDs, but the tray does not yet surface these to the user. The design specified a
+warning icon and "Remove from user config" menu item. This can be added when the
+tray is next updated.
+
+### User Session-Aware HDMI Input (Deferred)
 
 Currently `hdmi_input` is system-level only. A future phase could allow users to
 specify their own HDMI input per TV, enabling scenarios like:
@@ -667,26 +778,14 @@ This would require a session registration mechanism (e.g.,
 the handoff when sessions switch. Deferred until a concrete multi-user HDMI input
 use case is identified.
 
-### Granular Profile Option API
+### Granular Profile Option API (Deferred)
 
-The current design includes `ListProfiles`, `GetTvProfile`, and `SetTvProfile` on
-the session service D-Bus interface, but defers per-field profile editing (e.g.,
-`SetProfileOption(profile, key, value)`). This will be needed for the Phase 5 GUI
-but the scope depends on what profile features and TV backend options emerge. The
-GUI could initially use `GetConfig()`/`SetConfig()` bulk operations, with granular
-methods added as specific needs arise.
-
-### Polkit Policy Design
-
-The `SetDaemonOption`, `SetTvOption`, and `AddTv`/`RemoveTv` D-Bus methods should
-be protected by polkit policies. The exact policy structure (which actions require
-admin auth, which can be delegated to specific groups) is left to the implementation
-phase. A reasonable default:
-
-- `AddTv` / `RemoveTv`: require admin authentication
-- `SetDaemonOption`: require admin authentication
-- `SetTvOption`: require admin authentication
-- All `Tv1.*` control methods (PowerOn, ScreenOff, etc.): allow active session user
+The session service exposes `ListProfiles`, `GetTvProfile`, and `SetTvProfile`,
+but defers per-field profile editing (e.g., `SetProfileOption(profile, key, value)`).
+This will be needed for the Phase 5 GUI but the scope depends on what profile
+features and TV backend options emerge. The GUI could initially use
+`GetConfig()`/`SetConfig()` bulk operations, with granular methods added as
+specific needs arise.
 
 ### Login Screen TV Behavior
 
@@ -703,13 +802,15 @@ refined with per-TV system policy in a future phase.
 
 ### Config Migration
 
-Existing users have a single config file. A migration path is needed:
+Backward compatibility with old single-config files is handled:
 
-1. If the daemon finds a config with `[profiles]` and `[[tv]]` entries with
-   `profile = "..."`, it should still work (backward compat)
-2. A CLI command (`tisvlay config migrate`) could split an existing config into
-   system and user configs
-3. The NixOS module update should handle the transition cleanly
+1. **Already implemented**: The daemon still parses old configs with `profile = "gaming"`
+   on `[[tv]]` entries — the deprecated field deserializes into `Option<String>` and is
+   used by `get_profile_for_tv()` for backward compat. It is never serialized back.
+2. **Future**: A CLI command (`tisvlay config migrate`) could split an existing config
+   into separate system and user configs.
+3. **NixOS**: The module update already handles the transition — session service no
+   longer needs `--config` pointing at the system config.
 
 ### D-Bus Signal for TV List Changes
 
@@ -717,11 +818,13 @@ When the daemon adds or removes a TV (via `AddTv`/`RemoveTv` or config reload),
 session services need to know so they can re-validate their TV references. The
 existing `TvAdded`/`TvRemoved` signals on `org.tisvlay.Manager1` serve this
 purpose. Session services should subscribe to these signals and re-resolve
-profiles when the TV list changes.
+profiles when the TV list changes. Currently the session service only re-validates
+on SIGHUP or `ReloadConfig()` D-Bus call.
 
 ### Idle Timeout Changes Without Restart
 
-Currently, idle timeout changes require restarting the session service because the
-idle monitor is started once at launch. With the new D-Bus `ReloadConfig()` method
-on the session service, it would be nice to also restart the idle monitor with the
-new timeout. This is an implementation detail to address in Step 3.
+Idle timeout changes still require restarting the session service because the
+idle monitor is started once at launch. The `ReloadConfig()` D-Bus method and
+SIGHUP handler re-resolve profiles (which may change the effective timeout),
+but the running idle monitor is not restarted. This is logged as a limitation
+in the reload handler.
