@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use state::fetch_all_state;
-use tisvlay_core::DaemonClient;
+use tisvlay_core::{DaemonClient, SessionClient};
 use tray::{TisvlayTray, TrayCommand};
 
 /// tisvlay system tray - TV control from your taskbar.
@@ -62,6 +62,12 @@ async fn main() -> Result<()> {
 
     let daemon = Arc::new(daemon);
 
+    // Session client for profile management — lazily connected on each poll.
+    // Wrapped in RwLock so poll_state can establish the connection when the
+    // session service becomes available.
+    let session: Arc<tokio::sync::RwLock<Option<SessionClient>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+
     // Create command channel
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
@@ -83,16 +89,18 @@ async fn main() -> Result<()> {
 
     // Spawn polling task
     let poll_daemon = daemon.clone();
+    let poll_session = session.clone();
     let poll_handle = handle.clone();
     tokio::spawn(async move {
-        poll_state(poll_daemon, poll_handle).await;
+        poll_state(poll_daemon, poll_session, poll_handle).await;
     });
 
     // Spawn command processor
     let cmd_daemon = daemon.clone();
+    let cmd_session = session.clone();
     let cmd_handle = handle.clone();
     let cmd_task = tokio::spawn(async move {
-        process_commands(cmd_rx, cmd_daemon, cmd_handle).await;
+        process_commands(cmd_rx, cmd_daemon, cmd_session, cmd_handle).await;
     });
 
     // Wait for shutdown: command processor exit (Quit menu item) or signal
@@ -122,8 +130,45 @@ async fn wait_for_signal() {
     }
 }
 
+/// Fetch TV state and update the tray menu immediately.
+async fn refresh_state(
+    daemon: &DaemonClient,
+    session: &tokio::sync::RwLock<Option<SessionClient>>,
+    handle: &ksni::Handle<TisvlayTray>,
+) {
+    let session_ref = session.read().await;
+    let session_client = session_ref.as_ref();
+
+    match fetch_all_state(daemon, session_client).await {
+        Ok(tvs) => {
+            debug!(count = tvs.len(), "Refresh: state updated");
+            handle
+                .update(|t| {
+                    t.tvs = tvs;
+                    t.daemon_available = true;
+                })
+                .await;
+        }
+        Err(e) => {
+            debug!(error = %e, "Refresh: state fetch failed");
+            handle
+                .update(|t| {
+                    t.daemon_available = false;
+                    for tv in &mut t.tvs {
+                        tv.connected = false;
+                    }
+                })
+                .await;
+        }
+    }
+}
+
 /// Periodically fetch TV state and update the tray menu.
-async fn poll_state(daemon: Arc<DaemonClient>, handle: ksni::Handle<TisvlayTray>) {
+async fn poll_state(
+    daemon: Arc<DaemonClient>,
+    session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
+    handle: ksni::Handle<TisvlayTray>,
+) {
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
 
@@ -131,28 +176,19 @@ async fn poll_state(daemon: Arc<DaemonClient>, handle: ksni::Handle<TisvlayTray>
             break;
         }
 
-        match fetch_all_state(&daemon).await {
-            Ok(tvs) => {
-                debug!(count = tvs.len(), "Poll: state updated");
-                handle
-                    .update(|t| {
-                        t.tvs = tvs;
-                        t.daemon_available = true;
-                    })
-                    .await;
-            }
-            Err(e) => {
-                debug!(error = %e, "Poll: state fetch failed");
-                handle
-                    .update(|t| {
-                        t.daemon_available = false;
-                        for tv in &mut t.tvs {
-                            tv.connected = false;
-                        }
-                    })
-                    .await;
+        // Lazily connect to session service (retries each poll cycle)
+        {
+            let needs_connect = session.read().await.is_none();
+            if needs_connect {
+                if let Ok(client) = SessionClient::new().await {
+                    if client.is_available().await {
+                        info!("Session service now available for profile management");
+                        *session.write().await = Some(client);
+                    }
+                }
             }
         }
+        refresh_state(&daemon, &session, &handle).await;
     }
 }
 
@@ -160,6 +196,7 @@ async fn poll_state(daemon: Arc<DaemonClient>, handle: ksni::Handle<TisvlayTray>
 async fn process_commands(
     mut cmd_rx: mpsc::UnboundedReceiver<TrayCommand>,
     daemon: Arc<DaemonClient>,
+    session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
@@ -167,7 +204,20 @@ async fn process_commands(
 
         match cmd {
             TrayCommand::Quit => break,
-            TrayCommand::Refresh => {}
+            TrayCommand::Refresh => {
+                // Reload config on both services, then immediately refresh state
+                if let Err(e) = daemon.reload_config().await {
+                    warn!(error = %e, "Refresh: daemon reload failed");
+                }
+                let session_ref = session.read().await;
+                if let Some(ref session_client) = *session_ref {
+                    if let Err(e) = session_client.reload_config().await {
+                        warn!(error = %e, "Refresh: session reload failed");
+                    }
+                }
+                drop(session_ref);
+                refresh_state(&daemon, &session, &handle).await;
+            }
             TrayCommand::PowerOn(id) => {
                 if let Err(e) = daemon.power_on(&id).await {
                     warn!(tv_id = %id, error = %e, "Power on failed");
@@ -186,6 +236,16 @@ async fn process_commands(
             TrayCommand::ScreenOff(id) => {
                 if let Err(e) = daemon.screen_off(&id).await {
                     warn!(tv_id = %id, error = %e, "Screen off failed");
+                }
+            }
+            TrayCommand::SetProfile(id, profile) => {
+                let session_ref = session.read().await;
+                if let Some(ref session_client) = *session_ref {
+                    if let Err(e) = session_client.set_tv_profile(&id, &profile).await {
+                        warn!(tv_id = %id, profile = %profile, error = %e, "Set profile failed");
+                    }
+                } else {
+                    warn!(tv_id = %id, "Cannot set profile: session service not available");
                 }
             }
             TrayCommand::SwitchInput(id, input) => {
@@ -242,7 +302,8 @@ async fn process_commands(
         }
 
         // Refresh state after command so menu reflects the change
-        if let Ok(tvs) = fetch_all_state(&daemon).await {
+        let session_ref = session.read().await;
+        if let Ok(tvs) = fetch_all_state(&daemon, session_ref.as_ref()).await {
             handle
                 .update(|t| {
                     t.tvs = tvs;

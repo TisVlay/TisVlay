@@ -167,6 +167,64 @@ impl ManagerService {
     }
 
     // -------------------------------------------------------------------------
+    // System Config Management
+    // -------------------------------------------------------------------------
+
+    /// Set a daemon configuration option.
+    ///
+    /// Supported keys: `wake_on_boot`, `wake_delay_ms`, `on_shutdown`,
+    /// `on_no_active_session`.
+    async fn set_daemon_option(&self, key: &str, value: &str) -> Result<(), DaemonError> {
+        info!(key = %key, value = %value, "D-Bus: SetDaemonOption");
+        self.manager
+            .set_daemon_option(key, value)
+            .await
+            .map_err(DaemonError::from)
+    }
+
+    /// Set a system-level TV option.
+    ///
+    /// Supported keys: `hdmi_input`, `only_when_active`, `name`.
+    async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, key = %key, value = %value, "D-Bus: SetTvOption");
+        self.manager
+            .set_tv_option(tv_id, key, value)
+            .await
+            .map_err(DaemonError::from)
+    }
+
+    /// Get the system default profile as JSON.
+    ///
+    /// Returns the `[profiles.default]` from the system config.
+    /// Used by session services to inherit defaults when users
+    /// have no config file.
+    async fn get_system_profile(&self) -> Result<String, DaemonError> {
+        debug!("D-Bus: GetSystemProfile");
+        let profile = self.manager.get_system_default_profile().await;
+        serde_json::to_string(&profile).map_err(|e| {
+            DaemonError::OperationFailed(format!("Failed to serialize profile: {}", e))
+        })
+    }
+
+    /// Get all system profiles as (name, json) pairs.
+    ///
+    /// Returns all profiles defined in the system config.
+    /// Used by session services to merge with user-defined profiles.
+    async fn get_system_profiles(&self) -> Result<Vec<(String, String)>, DaemonError> {
+        debug!("D-Bus: GetSystemProfiles");
+        let profiles = self.manager.get_system_profiles().await;
+        profiles
+            .into_iter()
+            .map(|(name, profile)| {
+                let json = serde_json::to_string(&profile).map_err(|e| {
+                    DaemonError::OperationFailed(format!("Failed to serialize profile: {}", e))
+                })?;
+                Ok((name, json))
+            })
+            .collect()
+    }
+
+    // -------------------------------------------------------------------------
     // Signals
     // -------------------------------------------------------------------------
 

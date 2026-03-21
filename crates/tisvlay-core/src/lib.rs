@@ -27,25 +27,16 @@
 //! # Example
 //!
 //! ```ignore
-//! use tisvlay_core::{Config, Capabilities};
-//! use tisvlay_backends::create_registry;
+//! use tisvlay_core::DaemonClient;
 //!
 //! #[tokio::main]
-//! async fn main() -> tisvlay_core::Result<()> {
-//!     let config = Config::load()?;
-//!     let tv = config.default_tv().expect("No TVs configured");
-//!     let registry = create_registry();
-//!
-//!     // Connect via the registry (vendor/transport-agnostic)
-//!     let mut connection = registry.connect_tv(tv)?;
-//!
-//!     // Feature methods are directly on TvConnection
-//!     if connection.capabilities().contains(Capabilities::VOLUME) {
-//!         let vol = connection.get_volume().await?;
-//!         println!("Volume: {}", vol);
+//! async fn main() -> anyhow::Result<()> {
+//!     // Connect to the running tisvlayd daemon via D-Bus
+//!     let daemon = DaemonClient::new_system().await?;
+//!     let tvs = daemon.list_tvs().await?;
+//!     for tv in &tvs {
+//!         println!("{}: {} ({})", tv.id, tv.name, if tv.connected { "connected" } else { "offline" });
 //!     }
-//!
-//!     connection.close().await?;
 //!     Ok(())
 //! }
 //! ```
@@ -81,7 +72,10 @@ pub use pairing::{
 };
 
 // Configuration
-pub use config::{Config, DaemonConfig, ProfileConfig, SessionAction, TvConfig};
+pub use config::{
+    DaemonConfig, ProfileConfig, ResolvedProfile, SessionAction, SystemConfig, TvConfig,
+    UserConfig, UserTvConfig,
+};
 
 // State
 pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
@@ -100,4 +94,4 @@ pub use wol::{wake, wake_with_options, MacAddress, WakeOptions};
 pub use dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
 
 #[cfg(feature = "dbus")]
-pub use dbus_client::{DaemonClient, TvInfo};
+pub use dbus_client::{DaemonClient, SessionClient, TvInfo};

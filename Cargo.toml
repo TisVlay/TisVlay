@@ -62,6 +62,9 @@ socket2 = "0.6"
 # XDG directories
 directories = "6"
 
+# Ordered map (preserves insertion order for TV list stability)
+indexmap = "2"
+
 # SSDP discovery
 ssdp-client = "2"
 urlencoding = "2"

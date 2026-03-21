@@ -4,7 +4,7 @@
         {
             "label": "daemon: start",
             "type": "shell",
-            "command": "cargo run --bin tisvlayd -- --session",
+            "command": "cargo run --bin tisvlayd -- --session --config docs/configs/daemon.toml",
             "isBackground": true,
             "options": {
                 "env": {
@@ -21,7 +21,7 @@
         {
             "label": "session: start",
             "type": "shell",
-            "command": "cargo run --bin tisvlay-session -- --user",
+            "command": "cargo run --bin tisvlay-session -- --user --config docs/configs/session.toml",
             "isBackground": true,
             "options": {
                 "env": {

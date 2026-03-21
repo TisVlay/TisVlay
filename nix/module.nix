@@ -62,6 +62,8 @@ in
     # System daemon: manages TV connections, exposes D-Bus API.
     # Config lives in /var/lib/tisvlay/config.toml (StateDirectory), writable
     # by the daemon so the pairing wizard can persist credentials.
+    # Mode 0750 — only tisvlay user/group can read (contains TV credentials).
+    # Session services query the daemon via D-Bus instead of reading the file.
     systemd.services.tisvlayd = {
       description = "tisvlay TV control daemon";
       wantedBy = [ "multi-user.target" ];
@@ -72,9 +74,8 @@ in
         ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
         User = "tisvlay";
         Group = "tisvlay";
-        # /var/lib/tisvlay/ — writable, mode 0755 so user services can read the config.
         StateDirectory = "tisvlay";
-        StateDirectoryMode = "0755";
+        StateDirectoryMode = "0750";
         Restart = "on-failure";
         RestartSec = 5;
         # Security hardening
@@ -86,14 +87,15 @@ in
     };
 
     # User session monitor: reacts to screen lock/unlock and suspend/resume.
-    # Reads shared config from /var/lib/tisvlay/config.toml for TV profiles.
+    # Loads user config from ~/.config/tisvlay/config.toml (optional).
+    # Queries the daemon via D-Bus for TV list and system default profile.
     systemd.user.services.tisvlay-session = {
       description = "tisvlay session event monitor";
       wantedBy = [ "graphical-session.target" ];
       after = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
       serviceConfig = {
-        ExecStart = "${lib.getExe' cfg.package "tisvlay-session"} --config /var/lib/tisvlay/config.toml";
+        ExecStart = lib.getExe' cfg.package "tisvlay-session";
         ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
         RestartSec = 5;
@@ -101,10 +103,11 @@ in
     };
 
     # System tray icon: per-user TV control menu via D-Bus.
+    # Communicates with daemon for TV control and session service for profiles.
     systemd.user.services.tisvlay-tray = {
       description = "tisvlay system tray";
       wantedBy = [ "graphical-session.target" ];
-      after = [ "graphical-session.target" ];
+      after = [ "graphical-session.target" "tisvlay-session.service" ];
       partOf = [ "graphical-session.target" ];
       serviceConfig = {
         ExecStart = lib.getExe' cfg.package "tisvlay-tray";

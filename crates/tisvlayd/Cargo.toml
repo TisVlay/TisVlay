@@ -33,3 +33,4 @@ anyhow = { workspace = true }
 futures-util = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }
+indexmap = { workspace = true }

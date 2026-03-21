@@ -4,6 +4,7 @@
 //! Supports multiple TV vendors through a backend registry system.
 
 mod dbus;
+mod logind;
 mod registry;
 mod tv_manager;
 
@@ -11,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::Config;
+use tisvlay_core::{SystemConfig, UserConfig};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -57,7 +58,8 @@ async fn main() -> Result<()> {
     // Determine config file path
     let config_path = args.config.unwrap_or_else(|| {
         if args.session {
-            Config::config_path().unwrap_or_else(|_| PathBuf::from("/var/lib/tisvlay/config.toml"))
+            UserConfig::config_path()
+                .unwrap_or_else(|_| PathBuf::from("/var/lib/tisvlay/config.toml"))
         } else {
             PathBuf::from("/var/lib/tisvlay/config.toml")
         }
@@ -65,14 +67,14 @@ async fn main() -> Result<()> {
     info!(path = %config_path.display(), "Using config file");
 
     // Load configuration
-    let config = match Config::load_from(&config_path) {
+    let config = match SystemConfig::load_from(&config_path) {
         Ok(config) => {
             info!(tvs = config.tv.len(), "Loaded configuration");
             config
         }
         Err(e) => {
             warn!("Failed to load config, using defaults: {}", e);
-            Config::default()
+            SystemConfig::default()
         }
     };
 
@@ -92,9 +94,6 @@ async fn main() -> Result<()> {
     // Wrap manager in Arc for sharing between D-Bus services.
     // TvManager handles all internal synchronization via per-TV mutexes.
     let shared_manager = Arc::new(tv_manager);
-
-    // Boot-time WoL for TVs with wake_on_boot enabled
-    shared_manager.boot_wake().await;
 
     // Connect to D-Bus (session or system bus)
     let builder = if args.session {
@@ -133,6 +132,16 @@ async fn main() -> Result<()> {
     }
 
     info!("D-Bus service registered as {}", DBUS_NAME);
+
+    // Boot-time wake: WoL + retry connect + screen_on + input switch.
+    // Runs in the background so D-Bus is immediately reachable.
+    shared_manager.boot_wake();
+
+    // Start logind monitoring (shutdown inhibitor, session tracking)
+    let logind_monitor = logind::LogindMonitor::new(shared_manager.clone(), args.session);
+    if let Err(e) = logind_monitor.start().await {
+        warn!(error = %e, "Failed to start logind monitor (system lifecycle events unavailable)");
+    }
 
     // Spawn task to emit state change signals
     let signal_worker = tokio::spawn(state_change_signal_emitter(

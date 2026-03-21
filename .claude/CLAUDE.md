@@ -77,13 +77,26 @@ A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Cur
 - [x] Signal handling (SIGINT/SIGTERM) for clean shutdown
 - [x] Systemd user service file - see [systemd/tisvlay-tray.service](systemd/tisvlay-tray.service)
 
+### Phase 4C: System vs User Config Split (COMPLETE)
+
+- [x] `SystemConfig` (daemon-owned: `/var/lib/tisvlay/config.toml`) split from `UserConfig` (session-owned: `~/.config/tisvlay/config.toml`)
+- [x] `ProfileConfig` field-level inheritance: user profile fields override system defaults; unset fields fall through to system default, then hard-coded defaults
+- [x] `on_idle_resume: Option<SessionAction>` added to `ProfileConfig` (default `ScreenOn`)
+- [x] `org.tisvlay.Session1` D-Bus interface: `ListProfiles`, `GetTvProfile`, `SetTvProfile`, `GetEffectiveProfile`, `ReloadConfig`
+- [x] Daemon logind monitoring: `PrepareForShutdown` (inhibitor lock), `SessionNew`/`SessionRemoved` (`on_no_active_session`)
+- [x] Boot-wake refactored to retry-connect loop (WoL resend on failure, ~10 retries)
+- [x] Session service event replay after late daemon connect
+- [x] Tray Profile submenu per TV; Refresh button reloads daemon + session configs
+- [x] Daemon Manager1 additions: `SetDaemonOption`, `SetTvOption`, `GetSystemProfile`, `GetSystemProfiles`
+- [x] `SessionClient` in `tisvlay-core` for session service D-Bus communication
+
 ### NixOS Packaging (COMPLETE)
 
 - [x] `nix/package.nix`: `rustPlatform.buildRustPackage` for all binaries
 - [x] `nix/module.nix`: `services.tisvlay.enable` NixOS module
 - [x] `flake.nix`: `nixosModules.default`, `overlays.default`, `packages.default`
 - [x] `tisvlayd --config <PATH>` flag; default `/var/lib/tisvlay/config.toml` for system daemon
-- [x] `tisvlay-session --config <PATH>` flag for shared config access
+- [x] `tisvlay-session --config <PATH>` flag; default `~/.config/tisvlay/config.toml` (user config)
 - [x] Dedicated `tisvlay` system user/group with `StateDirectory`
 - [x] D-Bus policy via `services.dbus.packages` (idiomatic NixOS)
 - [x] User services (`tisvlay-session`, `tisvlay-tray`) auto-start on `graphical-session.target`
@@ -153,13 +166,15 @@ tisvlay/
 │   ├── tisvlayd/                  # System daemon
 │   │   └── src/
 │   │       ├── main.rs           # Entry point, signal handling
-│   │       ├── dbus.rs           # D-Bus interface (org.tisvlay.Daemon1)
+│   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.*)
+│   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
-│   │       └── tv_manager.rs     # TV connection pool
+│   │       └── tv_manager.rs     # TV connection pool, disk serialization
 │   │
 │   ├── tisvlay-session/           # User session service
 │   │   └── src/
 │   │       ├── main.rs           # Entry point, event handling
+│   │       ├── session_dbus.rs   # org.tisvlay.Session1 D-Bus interface
 │   │       ├── session_monitor.rs # Screen lock/unlock, suspend/resume
 │   │       ├── wayland_idle.rs   # Wayland greeter wake detection
 │   │       └── idle.rs           # Idle timeout detection
@@ -183,8 +198,7 @@ tisvlay/
 │
 ├── docs/
 │   ├── design.md                 # Full architecture design
-│   ├── firewall.md               # SSDP firewall configuration
-│   └── review.md                 # Code review findings and responses
+│   └── firewall.md               # SSDP firewall configuration
 │
 └── .claude/CLAUDE.md             # This file
 ```
@@ -204,44 +218,13 @@ tisvlay/
 - Tries wss://port 3001 first, falls back to ws://port 3000
 
 ### Configuration
-- User config: `~/.config/tisvlay/config.toml` (XDG default)
-- NixOS system config: `/var/lib/tisvlay/config.toml` (writable `StateDirectory`)
-- `tisvlayd --config <PATH>` and `tisvlay-session --config <PATH>` override config location
-- System daemon defaults to `/var/lib/tisvlay/config.toml`; `--session` mode defaults to XDG
-- Client keys stored in vendor-specific config section after TV pairing
+- **System config**: `/var/lib/tisvlay/config.toml` — TV definitions, credentials, daemon settings, system default profile. Owned by `tisvlayd`.
+- **User config**: `~/.config/tisvlay/config.toml` — profile definitions, per-TV profile assignments. Owned by `tisvlay-session`. Optional; system default profile inherited via D-Bus if absent.
+- `tisvlayd --config <PATH>` and `tisvlay-session --config <PATH>` override respective config paths
+- Client keys stored in vendor-specific config section after TV pairing (system config only)
 - `TvConfig.vendor_config` uses `#[serde(flatten)]` with `HashMap<String, toml::Value>` -- core has zero vendor knowledge
 
-### Profile Config Example
-```toml
-[profiles.default]
-on_screen_lock = "screen_off"    # screen_off | power_off | none
-on_screen_unlock = "screen_on"   # screen_on | power_on | none
-on_greeter_wake = "screen_on"    # unblank TV on lock screen interaction (Wayland only)
-on_sleep = "power_off"
-on_wake = "power_on"
-idle_timeout_seconds = 300       # 0 to disable
-on_idle_timeout = "screen_off"
-
-[profiles.gaming]
-on_screen_lock = "none"          # Don't interrupt gameplay
-idle_timeout_seconds = 0         # Disable idle timeout
-
-[[tv]]
-id = "living-room"
-name = "Living Room TV"
-vendor = "lg"
-profile = "gaming"               # Reference profile by name
-
-# Vendor-specific settings including connection parameters
-# All connection params (ip, mac, etc.) are vendor-specific
-[tv.lg]
-ip = "192.168.1.100"             # Required for LG WebOS TVs
-mac = "AA:BB:CC:DD:EE:FF"        # For Wake-on-LAN
-client_key = "abc123"
-default_input = "HDMI_1"
-```
-
-See [docs/design.md](docs/design.md#phase-3-user-session-integration---complete) for greeter wake detection details.
+See [docs/design.md](docs/design.md) for full schema and config examples.
 
 ### CLI Commands
 ```
@@ -375,4 +358,3 @@ sudo systemctl enable --now tisvlayd
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
 - [docs/firewall.md](docs/firewall.md) - SSDP discovery firewall configuration
-- [docs/review.md](docs/review.md) - Code review findings and responses
