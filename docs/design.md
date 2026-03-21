@@ -184,10 +184,26 @@ Methods:
 - `GetTvs() → ao` — list per-TV object paths
 - `GetSupportedVendors() → a(ss)` — list `(vendor_id, vendor_name)` pairs
 - `AddTv(name: s, vendor: s, config_json: s) → o` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG)
+- `RemoveTv(tv_id: s)` — remove TV from config
 - `ReloadConfig()` — reload config from disk
+- `SetDaemonOption(key: s, value: s)` — update a daemon config field; saves to disk and applies immediately
+- `SetTvOption(tv_id: s, key: s, value: s)` — update a system-level TV field (`hdmi_input`, `only_when_active`, `name`); saves to disk and applies immediately
+- `GetSystemProfile() → s` — system default profile as JSON; used by session services to inherit defaults
+- `GetSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
 - `DiscoverTvs(timeout_ms: u) → a(sssss)` — SSDP discovery, returns `(id, name, address, hardware_id, vendor)` tuples. Only available when compiled with the `discovery` feature.
 
 Signals: `TvAdded(tv_path: o)`, `TvRemoved(tv_path: o)`
+
+### org.tisvlay.Session1 (Session Service)
+
+Registered on the **session bus** by `tisvlay-session` under `org.tisvlay.Session`.
+
+Methods:
+- `ListProfiles() → a(ss)` — merged profile list as `(name, json)` pairs; user profiles take precedence over same-named system profiles
+- `GetTvProfile(tv_id: s) → s` — profile name assigned to a TV (or `"default"` if unassigned)
+- `SetTvProfile(tv_id: s, profile: s)` — assign a profile; validates existence, saves to user config, live-reloads
+- `GetEffectiveProfile(tv_id: s) → s` — fully resolved profile as JSON (user + system default inheritance applied)
+- `ReloadConfig()` — re-query daemon for TV list and system default, reload user config from disk
 
 ### org.tisvlay.Tv1 (Base Interface)
 
@@ -211,18 +227,26 @@ Each feature interface is implemented on per-TV objects based on the TV's capabi
 
 ## Configuration
 
-Config file: `~/.config/tisvlay/config.toml` (user/XDG default) or `/var/lib/tisvlay/config.toml` (NixOS system install).
+Config is split between **system config** (daemon-owned) and **user config** (session-owned):
 
-Both `tisvlayd` and `tisvlay-session` accept `--config <PATH>` to override the config location. The system daemon defaults to `/var/lib/tisvlay/config.toml` (a writable `StateDirectory` managed by systemd); when `--session` is used, it defaults to the XDG path.
+- **System config**: `/var/lib/tisvlay/config.toml` — TV definitions, credentials, daemon settings, system default profile. Root-owned; only `tisvlayd` reads and writes this file.
+- **User config**: `~/.config/tisvlay/config.toml` — profile definitions and per-TV profile assignments. User-owned; `tisvlay-session` reads this. Optional: if absent, the system default profile is inherited via D-Bus.
+
+Both accept `--config <PATH>` to override their respective path. `tisvlayd` defaults to `/var/lib/tisvlay/config.toml`; `--session` dev mode defaults to the XDG user path.
 
 See `crates/tisvlay-core/src/config.rs` for the full schema.
 
-### Example
+### System Config Example
 
 ```toml
+# /var/lib/tisvlay/config.toml  (daemon-owned)
 [daemon]
 wake_on_boot = true
 wake_delay_ms = 3000
+on_shutdown = "power_off"        # action when system shuts down / reboots
+on_no_active_session = "none"    # action when all user sessions end (login screen)
+
+# System default profile — inherited by users without their own config file
 [profiles.default]
 on_screen_lock = "screen_off"    # screen_off | power_off | none
 on_screen_unlock = "screen_on"   # screen_on | power_on | none
@@ -231,16 +255,12 @@ on_sleep = "power_off"
 on_wake = "power_on"
 idle_timeout_seconds = 0         # 0 to disable
 on_idle_timeout = "none"
-
-[profiles.gaming]
-on_screen_lock = "none"          # don't interrupt gameplay
-idle_timeout_seconds = 0
+on_idle_resume = "screen_on"     # action when activity resumes after idle
 
 [[tv]]
 id = "living-room"
 name = "Living Room G4"
 vendor = "lg"
-profile = "gaming"               # references profiles map; defaults to "default"
 hdmi_input = "HDMI_1"            # which HDMI port this PC uses (vendor-agnostic)
 only_when_active = true          # only control when TV is on this input
 
@@ -251,8 +271,23 @@ only_when_active = true          # only control when TV is on this input
 ip = "192.168.1.100"
 mac = "AA:BB:CC:DD:EE:FF"
 client_key = "abc123..."
-default_input = "HDMI_1"         # LG-specific: input to switch to on wake
 ```
+
+### User Config Example
+
+```toml
+# ~/.config/tisvlay/config.toml  (session-owned, optional)
+[profiles.gaming]
+on_screen_lock = "none"          # don't interrupt gameplay
+idle_timeout_seconds = 0
+on_idle_resume = "none"
+
+# Per-TV profile assignments (TV IDs from system config)
+[tv.living-room]
+profile = "gaming"
+```
+
+Fields unspecified in a user profile inherit from the system default profile, not hard-coded defaults. A user who only sets `idle_timeout_seconds = 600` in `[profiles.default]` gets all other settings from the system admin's defaults.
 
 Key design: `TvConfig` uses `#[serde(flatten)]` to capture vendor-specific fields as raw `toml::Value`. Core has zero vendor knowledge — vendor crates define their own config structs and deserialize from the `toml::Value` internally.
 
@@ -281,9 +316,12 @@ stateDiagram-v2
 | Screen lock | Screen off (blank) | Instant resume on unlock |
 | Greeter wake | Screen on | User interacted with lock screen (Wayland only) |
 | Screen unlock | Screen on | Skipped if GreeterWake already unblanked (redundant-action tracking) |
-| User idle timeout | Screen off | Configurable per-profile |
+| User idle timeout | Screen off | `on_idle_timeout` in profile; fires at minimum across all TVs |
+| Activity resumes after idle | Screen on | `on_idle_resume` in profile (default: screen_on) |
 | System suspend | Power off | Network unavailable during sleep |
 | System resume | WoL → wait → power on | Backend handles WoL retry for lost packets |
+| All user sessions end | Configurable | `on_no_active_session` in daemon config (e.g. login screen) |
+| System shutdown / reboot | Power off | `on_shutdown` in daemon config |
 
 All actions are configurable per-TV via profiles. Different TVs can respond differently to the same event (e.g., gaming TV ignores screen lock).
 
@@ -330,6 +368,7 @@ Connected TV submenu:
 ```
 ▶ Living Room G4  [network-connect]
   ├─ Power Off
+  ├─ Profile ▶  (RadioGroup: gaming ✓, default)
   ├─ Input ▶  (RadioGroup: HDMI 1, HDMI 2 ✓, HDMI 3)
   ├─ Volume: 60
   │  ├─ Volume Up (+5)
@@ -375,7 +414,11 @@ Tooltip shows per-TV state summary (volume, muted, backlight).
 ### Phase 3: User Session Integration - COMPLETE
 
 **Goal**: React to desktop events.
-### Phase 4: Tray App - COMPLETE
+### Phase 4a: CLI D-Bus Migration - COMPLETE
+
+**Goal**: CLI communicates with daemon via D-Bus.
+
+### Phase 4b: Tray App - COMPLETE
 
 **Goal**: Quick access from system tray.
 
@@ -383,6 +426,20 @@ Tooltip shows per-TV state summary (volume, muted, backlight).
 2. Power/screen/input/volume/backlight/mute controls
 3. Scroll wheel adjusts volume or backlight (context-dependent)
 4. Optimistic state caching, 5s polling, graceful daemon-offline handling
+
+### Phase 4C: System vs User Config Split - COMPLETE
+
+**Goal**: Separate daemon-owned and user-owned configuration.
+
+1. `SystemConfig` (daemon) and `UserConfig` (session service) with separate ownership and paths
+2. Profile field-level inheritance: user profile fields override system defaults, unset fields fall through
+3. `on_idle_resume` added to `ProfileConfig` (action when activity resumes after idle)
+4. `org.tisvlay.Session1` D-Bus interface on session bus: `ListProfiles`, `GetTvProfile`, `SetTvProfile`, `GetEffectiveProfile`, `ReloadConfig`
+5. Daemon gains `org.freedesktop.login1` monitoring: `PrepareForShutdown` (inhibitor lock), `SessionNew`/`SessionRemoved` for `on_no_active_session`
+6. Boot-wake refactored: retry-connect loop with WoL resend replaces blind sleep delay
+7. Session service event replay after late daemon connect
+8. Tray gains Profile submenu per TV (queries session service)
+9. Manager1 additions: `SetDaemonOption`, `SetTvOption`, `GetSystemProfile`, `GetSystemProfiles`
 
 ### NixOS Packaging - COMPLETE
 
@@ -425,7 +482,6 @@ Tooltip shows per-TV state summary (volume, muted, backlight).
 ## References
 
 - [Firewall Configuration](firewall.md) - SSDP discovery firewall setup
-- [Code Review](review.md) - Architecture review findings and responses
 - [LG WebOS API](https://github.com/chros73/bscpylgtv/tree/master/docs)
 - [zbus Documentation](https://docs.rs/zbus)
 - [ksni Documentation](https://docs.rs/ksni)
