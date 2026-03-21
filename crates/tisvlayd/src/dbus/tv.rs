@@ -397,6 +397,22 @@ impl TvBacklightService {
 // Helper to register all interfaces
 // =============================================================================
 
+/// Unregister all TV interfaces at the given object path.
+pub async fn unregister_tv_interfaces(
+    connection: &zbus::Connection,
+    path: &str,
+) -> zbus::Result<()> {
+    let object_server = connection.object_server();
+    // Ignore errors — the interface may not be registered (e.g., added but never connected).
+    let _ = object_server.remove::<TvBacklightService, _>(path).await;
+    let _ = object_server.remove::<TvInputService, _>(path).await;
+    let _ = object_server.remove::<TvVolumeService, _>(path).await;
+    let _ = object_server.remove::<TvScreenService, _>(path).await;
+    let _ = object_server.remove::<TvPowerService, _>(path).await;
+    let _ = object_server.remove::<TvService, _>(path).await;
+    Ok(())
+}
+
 /// Register all TV interfaces at the given object path.
 pub async fn register_tv_interfaces(
     connection: &zbus::Connection,

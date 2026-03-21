@@ -77,6 +77,18 @@ A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Cur
 - [x] Signal handling (SIGINT/SIGTERM) for clean shutdown
 - [x] Systemd user service file - see [systemd/tisvlay-tray.service](systemd/tisvlay-tray.service)
 
+### NixOS Packaging (COMPLETE)
+
+- [x] `nix/package.nix`: `rustPlatform.buildRustPackage` for all binaries
+- [x] `nix/module.nix`: `services.tisvlay.enable` NixOS module
+- [x] `flake.nix`: `nixosModules.default`, `overlays.default`, `packages.default`
+- [x] `tisvlayd --config <PATH>` flag; default `/var/lib/tisvlay/config.toml` for system daemon
+- [x] `tisvlay-session --config <PATH>` flag for shared config access
+- [x] Dedicated `tisvlay` system user/group with `StateDirectory`
+- [x] D-Bus policy via `services.dbus.packages` (idiomatic NixOS)
+- [x] User services (`tisvlay-session`, `tisvlay-tray`) auto-start on `graphical-session.target`
+- [x] MSRV lowered to 1.93 to match nixpkgs bundled Rust
+
 ### Phase 5: Future
 
 - Phase 5: `tisvlay-gui` (Slint configuration UI)
@@ -165,6 +177,10 @@ tisvlay/
 │   ├── org.tisvlay.Daemon.service # D-Bus activation service
 │   └── org.tisvlay.Daemon.conf    # D-Bus policy configuration
 │
+├── nix/
+│   ├── package.nix               # Nix package derivation (rustPlatform.buildRustPackage)
+│   └── module.nix                # NixOS module (services.tisvlay.enable)
+│
 ├── docs/
 │   ├── design.md                 # Full architecture design
 │   ├── firewall.md               # SSDP firewall configuration
@@ -188,8 +204,10 @@ tisvlay/
 - Tries wss://port 3001 first, falls back to ws://port 3000
 
 ### Configuration
-- User config: `~/.config/tisvlay/config.toml`
-- System config: `/etc/tisvlay/config.toml`
+- User config: `~/.config/tisvlay/config.toml` (XDG default)
+- NixOS system config: `/var/lib/tisvlay/config.toml` (writable `StateDirectory`)
+- `tisvlayd --config <PATH>` and `tisvlay-session --config <PATH>` override config location
+- System daemon defaults to `/var/lib/tisvlay/config.toml`; `--session` mode defaults to XDG
 - Client keys stored in vendor-specific config section after TV pairing
 - `TvConfig.vendor_config` uses `#[serde(flatten)]` with `HashMap<String, toml::Value>` -- core has zero vendor knowledge
 
@@ -324,7 +342,26 @@ busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv
 busctl --user monitor org.tisvlay.Daemon
 ```
 
-### Systemd Installation
+### NixOS Installation
+
+```nix
+# flake.nix input
+inputs.tisvlay.url = "github:ruffsl/tisvlay";
+
+# configuration.nix
+{ inputs, ... }: {
+  imports = [ inputs.tisvlay.nixosModules.default ];
+  services.tisvlay.enable = true;
+}
+```
+
+This sets up:
+- `tisvlayd` system service (runs as `tisvlay` user, config in `/var/lib/tisvlay/`)
+- `tisvlay-session` user service (auto-starts on graphical session)
+- `tisvlay-tray` user service (auto-starts on graphical session)
+- D-Bus policy and CLI in `$PATH`
+
+### Manual Systemd Installation
 
 ```bash
 sudo cp systemd/tisvlayd.service /etc/systemd/system/

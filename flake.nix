@@ -1,5 +1,5 @@
 {
-  description = "tisvlay Rust development environment";
+  description = "tisvlay - TV Display control for Linux";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -17,7 +17,16 @@
       flake-utils,
       rust-overlay,
     }:
-    flake-utils.lib.eachDefaultSystem (
+    # System-agnostic outputs
+    {
+      nixosModules.default = import ./nix/module.nix;
+
+      overlays.default = final: prev: {
+        tisvlay = final.callPackage ./nix/package.nix { };
+      };
+    }
+    # Per-system outputs (packages, devShell)
+    // flake-utils.lib.eachDefaultSystem (
       system:
       let
         overlays = [ rust-overlay.overlays.default ];
@@ -25,12 +34,12 @@
         rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in
       {
-        devShell = pkgs.mkShell {
+        packages.default = pkgs.callPackage ./nix/package.nix { };
+
+        devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             appstream
-            # clang
             flatpak-builder
-            # gcc
             librsvg
             linuxConsoleTools
             lldb
