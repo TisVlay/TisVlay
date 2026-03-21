@@ -780,6 +780,84 @@ so the event is silently dropped. After loading, the retry task checks the
 
 ---
 
+## NixOS Integration Testing
+
+Testing was performed on a NixOS desktop (KDE Plasma 6, Wayland, Nvidia GPU)
+with an LG OLED C3 42" connected via HDMI. The daemon runs as a system service;
+the session service and tray run as user services.
+
+### Boot Cycle (Shutdown → Power On)
+
+The desktop was shut down, then the physical power button was pressed.
+
+```
+02:33:49  Daemon starts, registers D-Bus immediately
+02:33:49  Daemon spawns boot_wake background task, sends WoL
+02:33:54  Session service starts, daemon already on D-Bus → loads 1 TV (no retry needed)
+02:33:54  Tray starts, session service available on first check
+02:33:59  Boot_wake: first connect attempt (~10s after WoL) — TV not ready yet
+02:34:04  Boot_wake: second connect attempt — TV still booting
+02:34:06  Boot_wake: connected (~17s after WoL). TV is online.
+02:34:10  Boot_wake: screen_on sent → TV unblanks, login screen visible
+02:34:10  Session: ScreenUnlocked processed → redundant ScreenOn (harmless)
+```
+
+**Key observations:**
+
+- D-Bus registered immediately. Session service loaded state on first try because
+  boot_wake runs in the background and doesn't block D-Bus setup.
+- `wake_and_connect` retried until the TV responded (~17s). No blind delay needed.
+  The WebSocket handshake success was the readiness signal.
+- The TV turned on and showed the login screen automatically — no manual
+  intervention required.
+
+**Previous behavior (before boot_wake refactor):** The daemon sent WoL, slept 3s
+(`wake_delay_ms`), tried to connect once, failed ("connection reset by peer"),
+and gave up. The TV never woke up. The session service started before the daemon
+registered D-Bus, loaded empty state, and dropped all events. The user had to
+physically press the TV remote power button after ~60s.
+
+### Sleep/Wake Cycle (Suspend → Resume)
+
+The desktop was put to sleep, waited a few seconds, then the desktop power
+button was pressed to resume.
+
+```
+02:39:30  Session: ScreenLocked → ScreenOff (user locked screen)
+02:39:37  Session: GreeterWake → ScreenOn (user interacted with lock screen)
+02:39:39  Session: ScreenUnlocked (user unlocked via Moonlight/Sunshine)
+02:39:44  Session: PrepareForSleep → PowerOff (system suspending, TV powered off)
+02:39:45  Session: ScreenLocked → ScreenOff fails (TV already off — expected)
+02:40:11  Session: ResumeFromSleep → PowerOn (WoL sent)
+02:40:16  Daemon: first connect attempt after WoL
+02:40:20  Daemon: connected (~9s after WoL). TV is online.
+02:40:25  Session: GreeterWake → ScreenOn (user moved mouse on lock screen)
+02:40:27  Session: ScreenUnlocked (user unlocked desktop)
+```
+
+**Key observations:**
+
+- **Suspend**: `PrepareForSleep` triggered `PowerOff` cleanly. The subsequent
+  `ScreenLocked` (KDE locks screen as part of suspend) failed because the TV was
+  already off — this is expected and harmless.
+- **Resume**: `ResumeFromSleep` triggered `PowerOn` which sent WoL. The daemon's
+  `with_connection` retry connected after ~9s. `GreeterWake` then sent `ScreenOn`
+  when the user interacted with the lock screen, and `ScreenUnlocked` confirmed
+  the desktop was fully unlocked.
+- The TV wakes faster from suspend (~9s) than from cold boot (~17s), likely
+  because the TV enters a lighter standby mode during system sleep vs full
+  power-off.
+
+### Known Minor Issues
+
+- **Redundant ScreenOff after PrepareForSleep**: KDE locks the screen as part of
+  the suspend sequence, so `ScreenLocked` fires after `PrepareForSleep` has
+  already powered off the TV. The `ScreenOff` fails with a warning. This is
+  cosmetic — the TV is already off. Could be fixed by skipping `on_screen_lock`
+  actions if `PrepareForSleep` was just processed (debounce).
+
+---
+
 ## Open Questions and Future Work
 
 ### Active Session Enforcement (Deferred)
