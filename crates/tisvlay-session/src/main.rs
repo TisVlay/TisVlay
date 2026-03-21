@@ -254,13 +254,28 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(RwLock::new(state));
 
+    // Create event channel early so the retry task can replay events
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+
+    // Start session monitor early (it works independently of daemon state).
+    // Returns is_locked state for Wayland idle monitor and replay logic.
+    let monitor = SessionMonitor::new(event_tx.clone());
+    let is_locked = monitor
+        .start()
+        .await
+        .context("Failed to start session monitor")?;
+
     // If the daemon wasn't available at startup, spawn a background task to
     // retry loading state. This handles the common case where the session
-    // service starts before the daemon (e.g., in dev mode).
-    if !daemon.is_available().await {
+    // service starts before the daemon (e.g., in dev mode or parallel systemd startup).
+    // After loading, it replays the current screen state so missed events are recovered.
+    let daemon_was_unavailable = !daemon.is_available().await;
+    if daemon_was_unavailable {
         let retry_state = state.clone();
         let retry_daemon = daemon.clone();
         let retry_config = args.config.clone();
+        let retry_event_tx = event_tx.clone();
+        let retry_is_locked = is_locked.clone();
         tokio::spawn(async move {
             let retry_interval = std::time::Duration::from_secs(5);
             loop {
@@ -275,6 +290,18 @@ async fn main() -> Result<()> {
                         let mut s = retry_state.write().await;
                         *s = new_state;
                         info!(tvs = s.tv_ids.len(), "Session state loaded after daemon became available");
+
+                        // Replay the current screen state. Events that fired while we had
+                        // no TVs were silently dropped. Now that we have TVs, send the
+                        // appropriate event so the TV matches the current desktop state.
+                        let locked = retry_is_locked.load(std::sync::atomic::Ordering::SeqCst);
+                        let replay_event = if locked {
+                            SessionEvent::ScreenLocked
+                        } else {
+                            SessionEvent::ScreenUnlocked
+                        };
+                        info!(event = %replay_event, "Replaying current screen state after late daemon connect");
+                        let _ = retry_event_tx.send(replay_event);
                         break;
                     }
                     Err(e) => {
@@ -303,16 +330,6 @@ async fn main() -> Result<()> {
             None
         }
     };
-
-    // Create event channel
-    let (event_tx, event_rx) = mpsc::unbounded_channel();
-
-    // Start session monitor (returns is_locked state for Wayland idle monitor)
-    let monitor = SessionMonitor::new(event_tx.clone());
-    let is_locked = monitor
-        .start()
-        .await
-        .context("Failed to start session monitor")?;
 
     // Start Wayland idle monitor for greeter wake detection
     match wayland_idle::start_wayland_idle_monitor(event_tx.clone(), is_locked) {

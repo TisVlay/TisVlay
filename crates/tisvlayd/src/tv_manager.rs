@@ -215,7 +215,11 @@ impl TvManager {
         }
     }
 
-    /// Wake TVs that have wake_on_boot enabled.
+    /// Wake TVs that have wake_on_boot enabled, then ensure screen is on
+    /// and optionally switch to the configured HDMI input.
+    ///
+    /// This runs before any user session starts, so the login screen is
+    /// visible on the TV immediately after boot.
     pub async fn boot_wake(&self) {
         if !self.config.daemon.wake_on_boot {
             debug!("Boot-time WoL disabled");
@@ -248,6 +252,38 @@ impl TvManager {
         let delay = Duration::from_millis(self.config.daemon.wake_delay_ms);
         info!("Waiting {:?} for TVs to wake", delay);
         tokio::time::sleep(delay).await;
+
+        // After wake delay, ensure TVs are screen-on and on the right input.
+        // This makes the login screen visible before any user session starts.
+        let tv_ids: Vec<String> = {
+            let tvs = self.tvs.read().await;
+            tvs.keys().cloned().collect()
+        };
+
+        for tv_id in &tv_ids {
+            // Screen on: unblank the TV so the login screen is visible
+            match self.screen_on(tv_id).await {
+                Ok(()) => info!(tv_id = %tv_id, "Boot: screen on"),
+                Err(e) => warn!(tv_id = %tv_id, error = %e, "Boot: failed to turn screen on"),
+            }
+
+            // Switch to configured HDMI input if set
+            let hdmi_input = {
+                let tvs = self.tvs.read().await;
+                if let Some(tv_arc) = tvs.get(tv_id.as_str()) {
+                    let tv = tv_arc.lock().await;
+                    tv.config.hdmi_input.clone()
+                } else {
+                    None
+                }
+            };
+            if let Some(input) = hdmi_input {
+                match self.switch_input(tv_id, &input).await {
+                    Ok(()) => info!(tv_id = %tv_id, input = %input, "Boot: switched input"),
+                    Err(e) => warn!(tv_id = %tv_id, error = %e, "Boot: failed to switch input"),
+                }
+            }
+        }
     }
 
     /// Get the system default profile.
