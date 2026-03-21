@@ -22,9 +22,7 @@ use session_monitor::{SessionEvent, SessionMonitor};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{
-    DaemonClient, ProfileConfig, ResolvedProfile, SessionAction, UserConfig,
-};
+use tisvlay_core::{DaemonClient, ProfileConfig, ResolvedProfile, SessionAction, UserConfig};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -64,10 +62,7 @@ pub(crate) struct SessionState {
 
 impl SessionState {
     /// Build session state by querying daemon and loading user config.
-    async fn load(
-        daemon: &DaemonClient,
-        user_config_path: Option<&PathBuf>,
-    ) -> Result<Self> {
+    async fn load(daemon: &DaemonClient, user_config_path: Option<&PathBuf>) -> Result<Self> {
         // Query daemon for TV list
         let tv_infos = daemon
             .list_tvs()
@@ -88,24 +83,22 @@ impl SessionState {
         };
 
         // Query daemon for all system profiles
-        let system_profiles: HashMap<String, ProfileConfig> =
-            match daemon.get_system_profiles().await {
-                Ok(profiles) => {
-                    debug!(count = profiles.len(), "Loaded system profiles from daemon");
-                    profiles
-                        .into_iter()
-                        .filter_map(|(name, json)| {
-                            serde_json::from_str(&json)
-                                .ok()
-                                .map(|p| (name, p))
-                        })
-                        .collect()
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to get system profiles");
-                    HashMap::new()
-                }
-            };
+        let system_profiles: HashMap<String, ProfileConfig> = match daemon
+            .get_system_profiles()
+            .await
+        {
+            Ok(profiles) => {
+                debug!(count = profiles.len(), "Loaded system profiles from daemon");
+                profiles
+                    .into_iter()
+                    .filter_map(|(name, json)| serde_json::from_str(&json).ok().map(|p| (name, p)))
+                    .collect()
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to get system profiles");
+                HashMap::new()
+            }
+        };
 
         // Load user config (optional)
         let user_config = match user_config_path {
@@ -171,10 +164,7 @@ impl SessionState {
             profiles.insert(tv_id.clone(), resolved);
         }
 
-        info!(
-            tvs = tv_ids.len(),
-            "Session state loaded"
-        );
+        info!(tvs = tv_ids.len(), "Session state loaded");
 
         Ok(Self {
             profiles,
@@ -298,7 +288,10 @@ async fn main() -> Result<()> {
                     Ok(new_state) => {
                         let mut s = retry_state.write().await;
                         *s = new_state;
-                        info!(tvs = s.tv_ids.len(), "Session state loaded after daemon became available");
+                        info!(
+                            tvs = s.tv_ids.len(),
+                            "Session state loaded after daemon became available"
+                        );
 
                         // Replay the current screen state. Events that fired while we had
                         // no TVs were silently dropped. Now that we have TVs, send the

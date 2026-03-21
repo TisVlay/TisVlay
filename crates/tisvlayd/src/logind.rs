@@ -182,7 +182,9 @@ async fn handle_prepare_for_shutdown(
         if *args.start() {
             info!("System is preparing for shutdown");
 
-            let action = manager.get_daemon_config_action(DaemonAction::Shutdown).await;
+            let action = manager
+                .get_daemon_config_action(DaemonAction::Shutdown)
+                .await;
             if action != SessionAction::None {
                 execute_action_all_tvs(&manager, action, "shutdown").await;
             }
@@ -280,8 +282,7 @@ async fn check_active_sessions(
 
     for (_session_id, _uid, _user_name, _seat_id, session_path) in &sessions {
         // Check if this is an active graphical user session
-        let session_proxy = match Login1SessionProxy::builder(connection)
-            .path(session_path.clone())
+        let session_proxy = match Login1SessionProxy::builder(connection).path(session_path.clone())
         {
             Ok(builder) => match builder.build().await {
                 Ok(proxy) => proxy,

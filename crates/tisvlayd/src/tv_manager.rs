@@ -11,7 +11,10 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{Capabilities, DaemonConfig, PowerState, ProfileConfig, SystemConfig, TvConfig, TvConnection, TvState};
+use tisvlay_core::{
+    Capabilities, DaemonConfig, PowerState, ProfileConfig, SystemConfig, TvConfig, TvConnection,
+    TvState,
+};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
 
@@ -749,8 +752,7 @@ impl TvManager {
         });
 
         // Create TV config with vendor-specific connection parameters
-        let mut tv_config = TvConfig::new(&tv_id, name)
-            .with_vendor(vendor);
+        let mut tv_config = TvConfig::new(&tv_id, name).with_vendor(vendor);
 
         // Store the vendor config
         tv_config
@@ -875,14 +877,16 @@ impl TvManager {
                         .map_err(|_| TvManagerError::ConfigError("Invalid u64".into()))?;
                 }
                 "on_shutdown" => {
-                    daemon.on_shutdown = serde_json::from_str(&format!("\"{}\"", value))
-                        .map_err(|e| TvManagerError::ConfigError(format!("Invalid action: {}", e)))?;
-                }
-                "on_no_active_session" => {
-                    daemon.on_no_active_session =
+                    daemon.on_shutdown =
                         serde_json::from_str(&format!("\"{}\"", value)).map_err(|e| {
                             TvManagerError::ConfigError(format!("Invalid action: {}", e))
                         })?;
+                }
+                "on_no_active_session" => {
+                    daemon.on_no_active_session = serde_json::from_str(&format!("\"{}\"", value))
+                        .map_err(|e| {
+                        TvManagerError::ConfigError(format!("Invalid action: {}", e))
+                    })?;
                 }
                 _ => {
                     return Err(TvManagerError::ConfigError(format!(

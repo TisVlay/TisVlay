@@ -431,8 +431,8 @@ impl SystemConfig {
             std::fs::create_dir_all(parent)?;
         }
 
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| Error::Io(std::io::Error::other(e)))?;
+        let content =
+            toml::to_string_pretty(self).map_err(|e| Error::Io(std::io::Error::other(e)))?;
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -553,8 +553,8 @@ impl UserConfig {
             std::fs::create_dir_all(parent)?;
         }
 
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| Error::Io(std::io::Error::other(e)))?;
+        let content =
+            toml::to_string_pretty(self).map_err(|e| Error::Io(std::io::Error::other(e)))?;
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -581,11 +581,7 @@ impl UserConfig {
     /// 4. Hard-coded defaults
     ///
     /// At each level, individual fields merge (user overrides system).
-    pub fn resolve_profile(
-        &self,
-        tv_id: &str,
-        system_default: &ProfileConfig,
-    ) -> ResolvedProfile {
+    pub fn resolve_profile(&self, tv_id: &str, system_default: &ProfileConfig) -> ResolvedProfile {
         // 1. Find which profile name applies to this TV
         let profile_name = self
             .tv
@@ -643,10 +639,7 @@ impl UserConfig {
     /// Assign a profile to a TV.
     pub fn set_tv_profile(&mut self, tv_id: impl Into<String>, profile: impl Into<String>) {
         let profile = profile.into();
-        self.tv.insert(
-            tv_id.into(),
-            UserTvConfig { profile },
-        );
+        self.tv.insert(tv_id.into(), UserTvConfig { profile });
     }
 }
 
@@ -775,7 +768,10 @@ mac = "AA:BB:CC:DD:EE:FF"
         assert_eq!(config.daemon.on_no_active_session, SessionAction::ScreenOn);
 
         let default_profile = config.profiles.get("default").unwrap();
-        assert_eq!(default_profile.on_screen_lock, Some(SessionAction::ScreenOff));
+        assert_eq!(
+            default_profile.on_screen_lock,
+            Some(SessionAction::ScreenOff)
+        );
         assert_eq!(default_profile.idle_timeout_seconds, Some(300));
         // Unspecified field
         assert_eq!(default_profile.on_greeter_wake, None);
@@ -864,7 +860,10 @@ mac = "AA:BB:CC:DD:EE:FF"
             .unwrap();
 
         let saved_config: SystemConfig = toml::from_str(&content).unwrap();
-        assert!(saved_config.profiles.is_empty(), "save_to must not auto-insert profiles");
+        assert!(
+            saved_config.profiles.is_empty(),
+            "save_to must not auto-insert profiles"
+        );
 
         let _ = std::fs::remove_file(temp_file);
     }
@@ -1232,14 +1231,20 @@ ip = "192.168.1.1"
     fn test_merged_profile_list_system_only() {
         // When user has no config, all profiles come from system config
         let system_profiles: HashMap<String, ProfileConfig> = [
-            ("default".to_string(), ProfileConfig {
-                on_screen_lock: Some(SessionAction::ScreenOff),
-                ..ProfileConfig::default()
-            }),
-            ("foo".to_string(), ProfileConfig {
-                on_screen_lock: Some(SessionAction::None),
-                ..ProfileConfig::default()
-            }),
+            (
+                "default".to_string(),
+                ProfileConfig {
+                    on_screen_lock: Some(SessionAction::ScreenOff),
+                    ..ProfileConfig::default()
+                },
+            ),
+            (
+                "foo".to_string(),
+                ProfileConfig {
+                    on_screen_lock: Some(SessionAction::None),
+                    ..ProfileConfig::default()
+                },
+            ),
         ]
         .into_iter()
         .collect();
@@ -1264,15 +1269,21 @@ ip = "192.168.1.1"
     fn test_merged_profile_list_user_overrides_system() {
         // User defines "default" and "gaming", system has "default" and "foo"
         let system_profiles: HashMap<String, ProfileConfig> = [
-            ("default".to_string(), ProfileConfig {
-                on_screen_lock: Some(SessionAction::ScreenOff),
-                idle_timeout_seconds: Some(300),
-                ..ProfileConfig::default()
-            }),
-            ("foo".to_string(), ProfileConfig {
-                on_screen_lock: Some(SessionAction::None),
-                ..ProfileConfig::default()
-            }),
+            (
+                "default".to_string(),
+                ProfileConfig {
+                    on_screen_lock: Some(SessionAction::ScreenOff),
+                    idle_timeout_seconds: Some(300),
+                    ..ProfileConfig::default()
+                },
+            ),
+            (
+                "foo".to_string(),
+                ProfileConfig {
+                    on_screen_lock: Some(SessionAction::None),
+                    ..ProfileConfig::default()
+                },
+            ),
         ]
         .into_iter()
         .collect();
@@ -1367,7 +1378,10 @@ ip = "192.168.1.1"
 
         let result = toml::from_str::<UserConfig>(system_toml);
         // This should fail because [[tv]] is an array, but UserConfig.tv expects a table
-        assert!(result.is_err(), "System config should not parse as UserConfig");
+        assert!(
+            result.is_err(),
+            "System config should not parse as UserConfig"
+        );
     }
 
     /// Test that on_idle_resume is configurable and defaults to ScreenOn.

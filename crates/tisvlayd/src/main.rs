@@ -58,7 +58,8 @@ async fn main() -> Result<()> {
     // Determine config file path
     let config_path = args.config.unwrap_or_else(|| {
         if args.session {
-            UserConfig::config_path().unwrap_or_else(|_| PathBuf::from("/var/lib/tisvlay/config.toml"))
+            UserConfig::config_path()
+                .unwrap_or_else(|_| PathBuf::from("/var/lib/tisvlay/config.toml"))
         } else {
             PathBuf::from("/var/lib/tisvlay/config.toml")
         }

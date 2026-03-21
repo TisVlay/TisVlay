@@ -56,10 +56,7 @@ pub async fn fetch_all_state(
     for tv in tvs {
         // Fetch per-TV profile assignment from session service
         let profile = match session {
-            Some(session_client) => match session_client.get_tv_profile(&tv.id).await {
-                Ok(name) => Some(name),
-                Err(_) => None,
-            },
+            Some(session_client) => session_client.get_tv_profile(&tv.id).await.ok(),
             None => None,
         };
 

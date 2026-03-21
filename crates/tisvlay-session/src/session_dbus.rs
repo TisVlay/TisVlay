@@ -3,8 +3,8 @@
 //! Exposes `org.tisvlay.Session1` on the session bus for profile management.
 //! Used by the tray app and future GUI to query and change profile assignments.
 
-use anyhow::Context;
 use crate::SessionState;
+use anyhow::Context;
 use std::sync::Arc;
 use tisvlay_core::DaemonClient;
 use tokio::sync::RwLock;
@@ -105,11 +105,7 @@ impl SessionService {
     /// Assign a profile to a TV.
     ///
     /// Saves to user config and re-resolves profiles immediately.
-    async fn set_tv_profile(
-        &self,
-        tv_id: &str,
-        profile_name: &str,
-    ) -> Result<(), SessionError> {
+    async fn set_tv_profile(&self, tv_id: &str, profile_name: &str) -> Result<(), SessionError> {
         info!(tv_id = %tv_id, profile = %profile_name, "D-Bus: SetTvProfile");
 
         let mut s = self.state.write().await;
@@ -129,9 +125,7 @@ impl SessionService {
         s.user_config.set_tv_profile(tv_id, profile_name);
 
         // Re-resolve the profile for this TV
-        let resolved = s
-            .user_config
-            .resolve_profile(tv_id, &s.system_default);
+        let resolved = s.user_config.resolve_profile(tv_id, &s.system_default);
         s.profiles.insert(tv_id.to_string(), resolved);
 
         // Save user config to disk
@@ -179,12 +173,11 @@ impl SessionService {
     async fn reload_config(&self) -> Result<(), SessionError> {
         info!("D-Bus: ReloadConfig");
 
-        let new_state =
-            SessionState::load(&self.daemon, self.config_path.as_ref())
-                .await
-                .map_err(|e| {
-                    SessionError::OperationFailed(format!("Failed to reload config: {}", e))
-                })?;
+        let new_state = SessionState::load(&self.daemon, self.config_path.as_ref())
+            .await
+            .map_err(|e| {
+                SessionError::OperationFailed(format!("Failed to reload config: {}", e))
+            })?;
 
         let mut s = self.state.write().await;
         *s = new_state;

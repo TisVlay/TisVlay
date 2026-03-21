@@ -809,7 +809,12 @@ impl SessionClient {
         self.proxy
             .set_tv_profile(tv_id, profile_name)
             .await
-            .with_context(|| format!("Failed to set profile '{}' for TV '{}'", profile_name, tv_id))
+            .with_context(|| {
+                format!(
+                    "Failed to set profile '{}' for TV '{}'",
+                    profile_name, tv_id
+                )
+            })
     }
 
     /// Reload user configuration from disk.

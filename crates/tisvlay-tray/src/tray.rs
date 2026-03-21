@@ -465,10 +465,7 @@ fn build_profile_submenu(
             select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
                 if let Some(profile_name) = profiles.get(idx) {
                     debug!(tv_id = %tv_id, profile = %profile_name, "Switching profile");
-                    let _ = tx.send(TrayCommand::SetProfile(
-                        tv_id.clone(),
-                        profile_name.clone(),
-                    ));
+                    let _ = tx.send(TrayCommand::SetProfile(tv_id.clone(), profile_name.clone()));
                 }
             }),
         }
