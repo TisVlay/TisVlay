@@ -130,6 +130,39 @@ async fn wait_for_signal() {
     }
 }
 
+/// Fetch TV state and update the tray menu immediately.
+async fn refresh_state(
+    daemon: &DaemonClient,
+    session: &tokio::sync::RwLock<Option<SessionClient>>,
+    handle: &ksni::Handle<TisvlayTray>,
+) {
+    let session_ref = session.read().await;
+    let session_client = session_ref.as_ref();
+
+    match fetch_all_state(daemon, session_client).await {
+        Ok(tvs) => {
+            debug!(count = tvs.len(), "Refresh: state updated");
+            handle
+                .update(|t| {
+                    t.tvs = tvs;
+                    t.daemon_available = true;
+                })
+                .await;
+        }
+        Err(e) => {
+            debug!(error = %e, "Refresh: state fetch failed");
+            handle
+                .update(|t| {
+                    t.daemon_available = false;
+                    for tv in &mut t.tvs {
+                        tv.connected = false;
+                    }
+                })
+                .await;
+        }
+    }
+}
+
 /// Periodically fetch TV state and update the tray menu.
 async fn poll_state(
     daemon: Arc<DaemonClient>,
@@ -155,31 +188,7 @@ async fn poll_state(
                 }
             }
         }
-        let session_ref = session.read().await;
-        let session_client = session_ref.as_ref();
-
-        match fetch_all_state(&daemon, session_client).await {
-            Ok(tvs) => {
-                debug!(count = tvs.len(), "Poll: state updated");
-                handle
-                    .update(|t| {
-                        t.tvs = tvs;
-                        t.daemon_available = true;
-                    })
-                    .await;
-            }
-            Err(e) => {
-                debug!(error = %e, "Poll: state fetch failed");
-                handle
-                    .update(|t| {
-                        t.daemon_available = false;
-                        for tv in &mut t.tvs {
-                            tv.connected = false;
-                        }
-                    })
-                    .await;
-            }
-        }
+        refresh_state(&daemon, &session, &handle).await;
     }
 }
 
@@ -195,7 +204,20 @@ async fn process_commands(
 
         match cmd {
             TrayCommand::Quit => break,
-            TrayCommand::Refresh => {}
+            TrayCommand::Refresh => {
+                // Reload config on both services, then immediately refresh state
+                if let Err(e) = daemon.reload_config().await {
+                    warn!(error = %e, "Refresh: daemon reload failed");
+                }
+                let session_ref = session.read().await;
+                if let Some(ref session_client) = *session_ref {
+                    if let Err(e) = session_client.reload_config().await {
+                        warn!(error = %e, "Refresh: session reload failed");
+                    }
+                }
+                drop(session_ref);
+                refresh_state(&daemon, &session, &handle).await;
+            }
             TrayCommand::PowerOn(id) => {
                 if let Err(e) = daemon.power_on(&id).await {
                     warn!(tv_id = %id, error = %e, "Power on failed");

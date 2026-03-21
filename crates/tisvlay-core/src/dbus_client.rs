@@ -797,4 +797,12 @@ impl SessionClient {
             .await
             .with_context(|| format!("Failed to set profile '{}' for TV '{}'", profile_name, tv_id))
     }
+
+    /// Reload user configuration from disk.
+    pub async fn reload_config(&self) -> Result<()> {
+        self.proxy
+            .reload_config()
+            .await
+            .context("Failed to reload session configuration")
+    }
 }

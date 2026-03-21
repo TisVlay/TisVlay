@@ -702,6 +702,29 @@ See Open Questions.
 The session service logs warnings, but the tray does not yet surface them.
 See Open Questions.
 
+### Step 4b: Tray Refresh Button — COMPLETE
+
+The Refresh button previously did nothing (`TrayCommand::Refresh => {}`).
+It now triggers a full config reload and immediate state update across all
+three services with a single click:
+
+1. Calls `daemon.reload_config()` — daemon re-reads system config, updates TV connections
+2. Calls `session_client.reload_config()` — session re-queries daemon + re-reads user
+   config, re-resolves profiles
+3. Calls `refresh_state()` immediately — fetches updated TV state and profiles, redraws
+   the tray menu without waiting for the next 5s poll
+
+Fetch-and-update logic was extracted from `poll_state` into a shared `refresh_state()`
+helper called by both the poll loop and the Refresh handler.
+
+**Files changed:**
+
+- `crates/tisvlay-tray/src/main.rs` — `TrayCommand::Refresh` handler calls daemon +
+  session `reload_config()` then `refresh_state()`; extracted `refresh_state()` helper
+  from `poll_state` loop
+- `crates/tisvlay-core/src/dbus_client.rs` — Added `SessionClient::reload_config()`
+  wrapping the `org.tisvlay.Session1.ReloadConfig` D-Bus method
+
 ### Step 5: NixOS Module Update — COMPLETE
 
 **Files changed:**
