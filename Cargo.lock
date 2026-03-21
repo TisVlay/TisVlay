@@ -1432,6 +1432,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "indexmap",
  "serde",
  "serde_json",
  "thiserror",

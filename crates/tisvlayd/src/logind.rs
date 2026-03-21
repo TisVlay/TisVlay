@@ -7,7 +7,7 @@
 //! Takes a shutdown inhibitor lock so the daemon can gracefully
 //! shut down TVs before the system powers off.
 
-use crate::tv_manager::TvManager;
+use crate::tv_manager::{DaemonAction, TvManager};
 use std::sync::Arc;
 use tisvlay_core::SessionAction;
 use tracing::{debug, error, info, warn};
@@ -205,6 +205,13 @@ async fn handle_session_changes(
 ) {
     use futures_util::StreamExt;
 
+    // Check initial session state before subscribing to signals.
+    // If the daemon starts when no user sessions exist (e.g. after a graphical
+    // session has ended or before the DM has started), on_no_active_session
+    // would never fire without this initial check because no SessionRemoved
+    // signal will arrive to trigger it.
+    check_active_sessions(&proxy, &connection, &manager).await;
+
     // Subscribe to both SessionNew and SessionRemoved
     let mut new_stream = match proxy.receive_session_new().await {
         Ok(s) => s,
@@ -230,8 +237,12 @@ async fn handle_session_changes(
                         session_id = %args.session_id(),
                         "Session created"
                     );
-                    // Check if there's now an active graphical user session
-                    check_active_sessions(&proxy, &connection, &manager).await;
+                    // Do NOT call check_active_sessions here: the new session
+                    // object may not yet have Active=true when the D-Bus
+                    // round-trips complete (the seat hasn't switched yet).
+                    // Checking here causes a race where on_no_active_session
+                    // can fire in the middle of a login transition.
+                    // We only run the check when sessions disappear.
                 }
             }
             Some(signal) = removed_stream.next() => {
@@ -298,12 +309,6 @@ async fn check_active_sessions(
             execute_action_all_tvs(manager, action, "no_active_session").await;
         }
     }
-}
-
-/// Which daemon config action to look up.
-pub enum DaemonAction {
-    Shutdown,
-    NoActiveSession,
 }
 
 /// Execute an action on all managed TVs.

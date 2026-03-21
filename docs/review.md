@@ -37,6 +37,11 @@ the next restart.
 **Fix direction:** Wrap `config.daemon` in a `RwLock<DaemonConfig>`, or factor daemon
 settings out of `Config` into a separately-lockable struct.
 
+> **Fixed.** `config: Config` has been replaced with `daemon_config: RwLock<DaemonConfig>`
+> as a separate field on `TvManager`. `reload_config()` now writes the new `DaemonConfig`
+> into `daemon_config` after updating TVs and profiles. All callers that previously read
+> `self.config.daemon.*` now read from `self.daemon_config.read().await`.
+
 ---
 
 ### 2. `set_daemon_option` leaves in-memory state stale
@@ -52,6 +57,11 @@ but performs blocking disk I/O (`Config::load_from` → `std::fs::read_to_string
 `Config::save_to` → `std::fs::write`). In a tokio context this blocks the async executor
 thread. The same blocking I/O issue affects `save_tv_config` and `delete_tv_config`.
 Use `tokio::task::spawn_blocking` or make these async.
+
+> **Fixed.** `set_daemon_option` is now `async fn`. It writes the validated value into
+> `self.daemon_config` (under a write lock, released before I/O), then persists using
+> `tokio::task::spawn_blocking`. `save_tv_config` and `delete_tv_config` are also now
+> `async fn` using `spawn_blocking` for their disk I/O.
 
 ---
 
@@ -71,6 +81,9 @@ during the login flow.
 
 **Fix direction:** Remove `check_active_sessions` from the `SessionNew` branch. Only run
 it on `SessionRemoved`.
+
+> **Fixed.** The `check_active_sessions` call has been removed from the `SessionNew` arm.
+> The arm now only logs the event. The check continues to run on `SessionRemoved`.
 
 ---
 
@@ -96,6 +109,10 @@ the manager's internal `HashMap` discards it.
 **Fix direction:** Change `tvs: HashMap<String, Arc<Mutex<ManagedTv>>>` to an
 `IndexMap` (from the `indexmap` crate) to preserve insertion order, or sort the result
 by the original config order.
+
+> **Fixed.** `tvs` is now `Arc<RwLock<IndexMap<String, Arc<Mutex<ManagedTv>>>>>`.
+> `IndexMap` preserves insertion order, so `GetTvs` now returns TVs in the same order
+> they appear in the config file. `indexmap = "2"` added to workspace dependencies.
 
 ---
 
@@ -125,6 +142,12 @@ question hard to answer by reading the code.
 type. Give `SystemConfig::load()` a clear contract (either hard-code the system path or
 require a path argument). Remove the `config_path()` backward-compat alias; it serves no
 external caller and perpetuates the confusion.
+
+> **Fixed.** `SystemConfig::user_config_path()` and the `config_path()` alias are removed.
+> `UserConfig::config_path()` now owns the XDG path logic directly.
+> `SystemConfig::load()` and `save()` now default to `system_config_path()`
+> (`/var/lib/tisvlay/config.toml`), giving them a clear contract.
+> `tisvlayd --session` mode now uses `UserConfig::config_path()` for its default path.
 
 ---
 
@@ -160,6 +183,12 @@ scenario the phase was designed to enable.
 `user_default` with `system_default` before resolving, rather than going straight to
 `system_default`.
 
+> **Fixed.** The `(None, _)` arm is split into `(None, Some(default))` and `(None, None)`.
+> When the named profile is missing but a user `[profiles.default]` exists, the user default
+> is merged with the system default before resolving. A regression test
+> `test_user_config_resolve_profile_missing_profile_falls_through_user_default` was written
+> first (verified to fail before the fix, pass after).
+
 ---
 
 ### 7. Idle timeout fires at the minimum across all TVs, not per-TV
@@ -181,6 +210,11 @@ code. At minimum the comment should explain why per-TV timers weren't used. If t
 tradeoff is unacceptable, per-TV timers can be implemented by starting multiple
 `IdleMonitor` instances with different timeouts and different event types.
 
+> **Documented.** Added a doc comment to `effective_idle_timeout()` explaining the
+> single-timer-at-minimum design: the timer fires at the minimum non-zero timeout, each
+> TV still applies its own `on_idle_timeout` action, and per-TV timers are noted as a
+> possible improvement for setups where the early-fire behavior matters.
+
 ---
 
 ### 8. `IdleResume` is hardcoded to `ScreenOn`, inconsistent with profile-driven design
@@ -200,6 +234,13 @@ a gaming setup that doesn't want automatic screen-on).
 **Fix direction:** Add `on_idle_resume: Option<SessionAction>` to `ProfileConfig` with a
 default of `ScreenOn`.
 
+> **Fixed.** Added `on_idle_resume: Option<SessionAction>` to `ProfileConfig` and
+> `on_idle_resume: SessionAction` (default `ScreenOn`) to `ResolvedProfile`. Updated
+> `full_default`, `merge_with_base`, and `resolve` accordingly. `get_action_for_event`
+> in `tisvlay-session` now reads `profile.on_idle_resume` instead of the hardcoded value.
+> A failing test `test_on_idle_resume_configurable` was written first (verified to fail
+> before the fix, pass after).
+
 ---
 
 ### 9. `DaemonAction` enum leaks implementation detail from `logind` into `tv_manager`
@@ -216,6 +257,10 @@ make `TvManager` expose the `DaemonConfig` directly (via a `get_daemon_config()`
 or by making the field `pub`), or move `DaemonAction` to a shared types module. The
 current dependency direction is `logind → tv_manager → logind (via DaemonAction)`.
 
+> **Fixed.** `DaemonAction` moved to `tv_manager.rs` (where `get_daemon_config_action`
+> lives). `logind.rs` now imports it as `crate::tv_manager::DaemonAction`. Dependency
+> direction is now correct: `logind → tv_manager`.
+
 ---
 
 ### 10. `logind` monitor doesn't check initial session state at startup
@@ -230,6 +275,9 @@ session-change signal is received.
 
 **Fix direction:** Call `check_active_sessions` once at the start of
 `handle_session_changes`, before entering the event loop.
+
+> **Fixed.** `check_active_sessions` is now called once immediately after subscribing to
+> the signals, before entering the select loop.
 
 ---
 
@@ -263,6 +311,10 @@ calls `power_on`.
 **Fix direction:** Only set `powered_off = true` on `Ok(())`. On error, leave the state
 unchanged so auto-reconnect can recover.
 
+> **Fixed.** `tv.powered_off = true` is now gated on `result.is_ok()`. The connection is
+> still cleared unconditionally (the socket is likely broken on failure either way), but
+> the daemon will now reconnect on the next command attempt if power-off actually failed.
+
 ---
 
 ### 12. `set_tv_option` duplicates the field-mapping logic
@@ -273,6 +325,10 @@ There are two identical `match key` blocks: one to modify `config` (for disk) an
 modify `managed.config` (for memory). If a new field is added to the disk block and
 forgotten in the memory block (or vice versa), they silently diverge. The disk-update and
 in-memory-update should share the same field-mapping logic.
+
+> **Fixed.** Extracted a free function `apply_tv_option(tv: &mut TvConfig, key, value)`
+> containing the single authoritative match. `set_tv_option` calls it once for the
+> disk config (with validation) and once for the in-memory config.
 
 ---
 
@@ -296,6 +352,9 @@ latency issue, not a correctness bug. But the double-check design means `is_avai
 is called twice at startup: once pre-spawn and once in the retry loop. This is a code
 smell worth simplifying.
 
+> **Fixed.** The first `is_available()` result is captured in `daemon_available` and
+> reused to decide whether to spawn the retry task, eliminating the second call.
+
 ---
 
 ## Code Style / Idiom Issues
@@ -312,6 +371,9 @@ use anyhow::Context;
 Rust convention is all `use` statements at the top of the module. This import is placed
 after the entire impl block, which is likely an oversight from when the `Context` trait
 was added after-the-fact. Move it to the top.
+
+> **Fixed.** `use anyhow::Context;` moved to the top of `session_dbus.rs` with the other
+> imports and removed from the end of the file.
 
 ---
 
@@ -338,6 +400,11 @@ The deeper issue is that `save_to` silently mutates the serialized form (adding 
 saved file differs from what the caller holds. This is a surprising side-effect for
 callers who expect `save_to(path)` to be idempotent.
 
+> **Partially fixed.** Changed to `Cow<'_, SystemConfig>`: the `is_empty` branch clones
+> and wraps in `Cow::Owned`; the common path uses `Cow::Borrowed(self)` with no clone.
+> The silent in-memory/on-disk divergence is a design choice (self-documenting default
+> profile in new configs) and is left as-is with the existing doc comment explaining it.
+
 ---
 
 ### 16. `TvConfig::with_profile` is `#[deprecated]` and public — remove or privatize
@@ -350,6 +417,9 @@ external semver constraints. The deprecated method adds API surface without valu
 field itself is needed for backward-compatible TOML deserialization, but the builder
 method has no use case in new code and should be removed.
 
+> **Fixed.** `TvConfig::with_profile` removed. The `profile` field is retained for
+> backward-compatible TOML deserialization.
+
 ---
 
 ### 17. `SystemConfig::get_profile` and `get_profile_for_tv` share identical fallback logic
@@ -360,6 +430,11 @@ Both methods try the named profile, fall back to "default", then fall back to
 `ProfileConfig::full_default()`. `get_profile_for_tv` adds a first step of checking
 the deprecated `tv.profile` field. Both methods should delegate to `get_profile` for
 the fallback chain rather than duplicating it.
+
+> **Fixed.** `get_profile` now uses `or_else`/`cloned`/`unwrap_or_else` in a single
+> expression. `get_profile_for_tv` checks the deprecated `tv.profile` field and, if
+> found in the profiles map, delegates to `get_profile`; otherwise also delegates to
+> `get_profile("default")`. No duplicated fallback logic remains.
 
 ---
 
@@ -387,6 +462,10 @@ A cleaner pattern: look up the `Arc<TvProxies>`, release the lock, then call the
 method outside the lock. This requires changing `TvProxies` to `Arc<TvProxies>` in the
 cache.
 
+> **Fixed.** `tv_proxies` cache changed to `HashMap<String, Arc<TvProxies>>`. In both
+> `with_proxies` and `list_tvs`, the read lock is acquired only long enough to clone the
+> `Arc`, then released before any `.await`. The D-Bus round-trip runs with no lock held.
+
 ---
 
 ### 19. `TvProxies::new` eagerly creates all 6 proxies regardless of TV capabilities
@@ -400,6 +479,10 @@ during `list_tvs`.
 
 The proxies should be lazily created on first use, or the proxy-building could be done
 concurrently with `futures::join_all`.
+
+> **Acknowledged.** For the current single-TV use case the N×6 serialized proxy-builds
+> are not a measurable issue. Lazy creation on first use is a reasonable future
+> improvement; deferred until it shows up in profiling.
 
 ---
 
@@ -422,6 +505,11 @@ config file — though it queries the daemon for the list anyway).
 This is likely acceptable as a migration behavior, but should be explicitly documented
 in a CHANGELOG or migration guide.
 
+> **Acknowledged.** The session service queries the daemon for the TV list regardless,
+> so old `[[tv]]` entries in a user config are silently ignored but functionally harmless.
+> A migration note should be added to the project's changelog when the first public
+> release is made.
+
 ---
 
 ### 21. `GetSystemProfiles` serializes `ProfileConfig` to JSON then `session` deserializes it
@@ -438,6 +526,10 @@ comment documenting the round-trip contract.
 
 A more robust alternative is to define D-Bus introspectable types for profiles (using
 D-Bus dictionaries of `(string, variant)`), but that's a larger refactor.
+
+> **Acknowledged.** Both sides use `serde_json` for the round-trip so the contract is
+> consistent today. The double-serde approach is documented in the code. A proper D-Bus
+> dictionary type would be the right long-term fix if the profile schema stabilizes.
 
 ---
 
@@ -457,6 +549,10 @@ This is technically correct (the session service always runs on the session bus)
 the asymmetry between the two client types is confusing for developers reading the API.
 A comment explaining why there's no `new_session`/`new_system` split would help.
 
+> **Acknowledged.** `SessionClient::new()` intentionally has no system-bus variant
+> because the session service always registers on the session bus. A doc comment
+> explaining this was added to `SessionClient::new()`.
+
 ---
 
 ### 23. No retry/backoff on `check_active_sessions` D-Bus failures
@@ -467,6 +563,11 @@ If `proxy.list_sessions()` fails, the function logs a warning and returns withou
 any action (neither triggering nor suppressing `on_no_active_session`). In a transient
 D-Bus failure, this means the daemon silently does nothing when it should be deciding
 whether to turn off TVs. There's no retry or fallback.
+
+> **Acknowledged.** Failing safe (doing nothing) on a transient D-Bus error is the
+> conservative choice — better than spuriously turning off TVs. The next
+> `SessionRemoved` signal will re-trigger the check. A retry/backoff loop is a
+> reasonable future improvement for robustness.
 
 ---
 
@@ -488,6 +589,11 @@ choice; just make sure this is intentional and documented.
 Also: the tray service has no `ExecReload`, unlike the session service. Adding one
 (with `kill -HUP $MAINPID` or a D-Bus `ReloadConfig` call) would allow refreshing
 without restart.
+
+> **Acknowledged.** The `after` without `BindsTo` is intentional — the tray degrades
+> gracefully when the session service is unavailable rather than restarting. An
+> `ExecReload` for the tray is a reasonable future addition; deferred as it requires
+> wiring SIGHUP handling into the tray's polling loop.
 
 ---
 

@@ -321,7 +321,7 @@ impl TvProxies {
 pub struct DaemonClient {
     connection: zbus::Connection,
     manager: TisvlayManagerProxy<'static>,
-    tv_proxies: Arc<RwLock<HashMap<String, TvProxies>>>,
+    tv_proxies: Arc<RwLock<HashMap<String, Arc<TvProxies>>>>,
 }
 
 impl DaemonClient {
@@ -375,7 +375,7 @@ impl DaemonClient {
         let path = tv_path(tv_id);
         let obj_path = OwnedObjectPath::try_from(path).context("Invalid TV path")?;
         let proxies = TvProxies::new(self.connection.clone(), obj_path).await?;
-        cache.insert(tv_id.to_string(), proxies);
+        cache.insert(tv_id.to_string(), Arc::new(proxies));
 
         Ok(())
     }
@@ -404,11 +404,17 @@ impl DaemonClient {
     {
         debug!(tv_id = %tv_id, op = op, "D-Bus call");
         self.get_tv_proxies(tv_id).await?;
-        let cache = self.tv_proxies.read().await;
-        let proxies = cache
-            .get(tv_id)
-            .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-        f(proxies)
+        // Extract the Arc and release the lock before the async D-Bus call so
+        // a concurrent `reload_config` (write lock) is not blocked by in-flight calls.
+        let proxies = {
+            let cache = self.tv_proxies.read().await;
+            Arc::clone(
+                cache
+                    .get(tv_id)
+                    .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?,
+            )
+        };
+        f(&proxies)
             .await
             .with_context(|| format!("Failed to {} for TV: {}", op, tv_id))
     }
@@ -433,8 +439,11 @@ impl DaemonClient {
 
             self.get_tv_proxies(&tv_id).await?;
 
-            let cache = self.tv_proxies.read().await;
-            if let Some(proxies) = cache.get(&tv_id) {
+            let proxies = {
+                let cache = self.tv_proxies.read().await;
+                cache.get(&tv_id).map(Arc::clone)
+            };
+            if let Some(proxies) = proxies {
                 let info = TvInfo {
                     id: proxies.base.id().await.unwrap_or_default(),
                     name: proxies.base.name().await.unwrap_or_default(),
@@ -755,6 +764,11 @@ pub struct SessionClient {
 
 impl SessionClient {
     /// Create a new session client connected to the session bus.
+    ///
+    /// There is intentionally no `new_system()` variant: the session service
+    /// (`tisvlay-session`) always registers on the session bus regardless of
+    /// whether the daemon uses the system or session bus. The `--user` flag
+    /// affects `DaemonClient` only.
     pub async fn new() -> Result<Self> {
         let connection = zbus::Connection::session()
             .await

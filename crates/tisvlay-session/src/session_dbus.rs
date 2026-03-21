@@ -3,6 +3,7 @@
 //! Exposes `org.tisvlay.Session1` on the session bus for profile management.
 //! Used by the tray app and future GUI to query and change profile assignments.
 
+use anyhow::Context;
 use crate::SessionState;
 use std::sync::Arc;
 use tisvlay_core::DaemonClient;
@@ -217,5 +218,3 @@ pub async fn register_session_dbus(
     info!("Session D-Bus interface registered at {}", SESSION_PATH);
     Ok(connection)
 }
-
-use anyhow::Context;

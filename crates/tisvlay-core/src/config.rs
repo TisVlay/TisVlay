@@ -117,6 +117,10 @@ pub struct ProfileConfig {
     /// Action on idle timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_idle_timeout: Option<SessionAction>,
+
+    /// Action when activity resumes after idle timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_idle_resume: Option<SessionAction>,
 }
 
 impl ProfileConfig {
@@ -134,6 +138,7 @@ impl ProfileConfig {
             on_wake: Some(d.on_wake),
             idle_timeout_seconds: Some(d.idle_timeout_seconds),
             on_idle_timeout: Some(d.on_idle_timeout),
+            on_idle_resume: Some(d.on_idle_resume),
         }
     }
 
@@ -150,6 +155,7 @@ impl ProfileConfig {
             on_wake: self.on_wake.or(base.on_wake),
             idle_timeout_seconds: self.idle_timeout_seconds.or(base.idle_timeout_seconds),
             on_idle_timeout: self.on_idle_timeout.or(base.on_idle_timeout),
+            on_idle_resume: self.on_idle_resume.or(base.on_idle_resume),
         }
     }
 
@@ -167,6 +173,7 @@ impl ProfileConfig {
             on_wake: self.on_wake.unwrap_or(d.on_wake),
             idle_timeout_seconds: self.idle_timeout_seconds.unwrap_or(d.idle_timeout_seconds),
             on_idle_timeout: self.on_idle_timeout.unwrap_or(d.on_idle_timeout),
+            on_idle_resume: self.on_idle_resume.unwrap_or(d.on_idle_resume),
         }
     }
 }
@@ -196,6 +203,8 @@ pub struct ResolvedProfile {
     pub idle_timeout_seconds: u64,
     /// Action on idle timeout.
     pub on_idle_timeout: SessionAction,
+    /// Action when activity resumes after idle timeout.
+    pub on_idle_resume: SessionAction,
 }
 
 impl Default for ResolvedProfile {
@@ -208,6 +217,7 @@ impl Default for ResolvedProfile {
             on_wake: SessionAction::PowerOn,
             idle_timeout_seconds: 0,
             on_idle_timeout: SessionAction::ScreenOff,
+            on_idle_resume: SessionAction::ScreenOn,
         }
     }
 }
@@ -328,13 +338,6 @@ impl TvConfig {
         self
     }
 
-    /// Set the profile (deprecated — use UserConfig for profile assignment).
-    #[deprecated(note = "Profile assignment has moved to UserConfig. This is for backward compat.")]
-    pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
-        self.profile = Some(profile.into());
-        self
-    }
-
     /// Set the HDMI input for display-aware control.
     pub fn with_hdmi_input(mut self, input: impl Into<String>) -> Self {
         self.hdmi_input = Some(input.into());
@@ -409,12 +412,9 @@ pub struct SystemConfig {
 pub type Config = SystemConfig;
 
 impl SystemConfig {
-    /// Load configuration from the default user path.
-    ///
-    /// Uses XDG directories: `~/.config/tisvlay/config.toml`
+    /// Load configuration from the default system path (`/var/lib/tisvlay/config.toml`).
     pub fn load() -> Result<Self> {
-        let path = Self::user_config_path()?;
-        Self::load_from(&path)
+        Self::load_from(&Self::system_config_path())
     }
 
     /// Load configuration from a specific path.
@@ -428,10 +428,9 @@ impl SystemConfig {
         Ok(config)
     }
 
-    /// Save configuration to the default user path.
+    /// Save configuration to the default system path (`/var/lib/tisvlay/config.toml`).
     pub fn save(&self) -> Result<()> {
-        let path = Self::user_config_path()?;
-        self.save_to(&path)
+        self.save_to(&Self::system_config_path())
     }
 
     /// Save configuration to a specific path.
@@ -446,40 +445,23 @@ impl SystemConfig {
         }
 
         // If no profiles defined, add the default profile with built-in values
-        // so users can see and customize them
-        let config_to_save = if self.profiles.is_empty() {
+        // so users can see and customize them.
+        // Use Cow to avoid cloning the entire config in the common case where
+        // profiles are already populated.
+        let config_to_save: std::borrow::Cow<'_, SystemConfig> = if self.profiles.is_empty() {
             let mut config = self.clone();
             config
                 .profiles
                 .insert("default".to_string(), ProfileConfig::full_default());
-            config
+            std::borrow::Cow::Owned(config)
         } else {
-            self.clone()
+            std::borrow::Cow::Borrowed(self)
         };
 
-        let content = toml::to_string_pretty(&config_to_save)
+        let content = toml::to_string_pretty(&*config_to_save)
             .map_err(|e| Error::Io(std::io::Error::other(e)))?;
         std::fs::write(path, content)?;
         Ok(())
-    }
-
-    /// Get the default user configuration file path.
-    ///
-    /// Uses XDG directories: `~/.config/tisvlay/config.toml`
-    pub fn user_config_path() -> Result<PathBuf> {
-        let dirs = directories::ProjectDirs::from("", "", "tisvlay").ok_or_else(|| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Could not determine config directory",
-            ))
-        })?;
-
-        Ok(dirs.config_dir().join("config.toml"))
-    }
-
-    /// Backward-compatible alias for [`user_config_path`](Self::user_config_path).
-    pub fn config_path() -> Result<PathBuf> {
-        Self::user_config_path()
     }
 
     /// Get the system-wide configuration file path.
@@ -536,6 +518,18 @@ impl SystemConfig {
         self.get_default_profile().resolve()
     }
 
+    /// Get a profile by name.
+    ///
+    /// Returns the named profile, or falls back to "default" profile,
+    /// or returns `ProfileConfig::full_default()`.
+    pub fn get_profile(&self, name: &str) -> ProfileConfig {
+        self.profiles
+            .get(name)
+            .or_else(|| self.profiles.get("default"))
+            .cloned()
+            .unwrap_or_else(ProfileConfig::full_default)
+    }
+
     /// Get the profile configuration for a TV.
     ///
     /// This uses the deprecated `TvConfig.profile` field for backward
@@ -547,36 +541,13 @@ impl SystemConfig {
     /// 2. "default" profile from `profiles` map
     /// 3. Hard-coded defaults via `ProfileConfig::full_default()`
     pub fn get_profile_for_tv(&self, tv: &TvConfig) -> ProfileConfig {
-        // First try the TV's specified profile (backward compat)
+        // Check the TV's specified profile first (backward compat), then delegate
         if let Some(ref profile_name) = tv.profile {
-            if let Some(profile) = self.profiles.get(profile_name) {
-                return profile.clone();
+            if self.profiles.contains_key(profile_name.as_str()) {
+                return self.get_profile(profile_name);
             }
         }
-
-        // Then try the "default" profile
-        if let Some(default_profile) = self.profiles.get("default") {
-            return default_profile.clone();
-        }
-
-        // Fall back to full default values
-        ProfileConfig::full_default()
-    }
-
-    /// Get a profile by name.
-    ///
-    /// Returns the named profile, or falls back to "default" profile,
-    /// or returns `ProfileConfig::full_default()`.
-    pub fn get_profile(&self, name: &str) -> ProfileConfig {
-        if let Some(profile) = self.profiles.get(name) {
-            return profile.clone();
-        }
-
-        if let Some(default_profile) = self.profiles.get("default") {
-            return default_profile.clone();
-        }
-
-        ProfileConfig::full_default()
+        self.get_profile("default")
     }
 }
 
@@ -660,7 +631,13 @@ impl UserConfig {
     ///
     /// Uses XDG directories: `~/.config/tisvlay/config.toml`
     pub fn config_path() -> Result<PathBuf> {
-        SystemConfig::user_config_path()
+        let dirs = directories::ProjectDirs::from("", "", "tisvlay").ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not determine config directory",
+            ))
+        })?;
+        Ok(dirs.config_dir().join("config.toml"))
     }
 
     /// Resolve the effective profile for a TV.
@@ -706,8 +683,13 @@ impl UserConfig {
                 // User profile -> system default
                 profile.merge_with_base(system_default)
             }
-            (None, _) => {
-                // No user profile found — use system default directly
+            (None, Some(default)) => {
+                // Profile name not found in user config — fall through to user's default
+                // before reaching the system default, so user-level overrides are honoured.
+                default.merge_with_base(system_default)
+            }
+            (None, None) => {
+                // No user profile or user default — use system default directly
                 system_default.clone()
             }
         };
@@ -1071,6 +1053,7 @@ mac = "AA:BB:CC:DD:EE:FF"
             on_wake: Some(SessionAction::None),
             idle_timeout_seconds: Some(999),
             on_idle_timeout: Some(SessionAction::PowerOff),
+            on_idle_resume: Some(SessionAction::None),
         };
 
         let merged = full_override.merge_with_base(&base);
@@ -1514,6 +1497,64 @@ ip = "192.168.1.1"
         let result = toml::from_str::<UserConfig>(system_toml);
         // This should fail because [[tv]] is an array, but UserConfig.tv expects a table
         assert!(result.is_err(), "System config should not parse as UserConfig");
+    }
+
+    /// Test that on_idle_resume is configurable and defaults to ScreenOn.
+    /// Previously IdleResume was hardcoded to ScreenOn in the session service;
+    /// this test verifies the field exists in the config type so it can be overridden.
+    #[test]
+    fn test_on_idle_resume_configurable() {
+        // Default resolves to ScreenOn
+        let default_profile = ResolvedProfile::default();
+        assert_eq!(default_profile.on_idle_resume, SessionAction::ScreenOn);
+
+        // Can be overridden to None (e.g., gaming setup that doesn't want auto screen-on)
+        let profile = ProfileConfig {
+            on_idle_resume: Some(SessionAction::None),
+            ..ProfileConfig::default()
+        };
+        let resolved = profile.resolve();
+        assert_eq!(resolved.on_idle_resume, SessionAction::None);
+
+        // Inherits from system default if not set in user profile
+        let system = ProfileConfig {
+            on_idle_resume: Some(SessionAction::PowerOn),
+            ..ProfileConfig::default()
+        };
+        let user_profile = ProfileConfig::default(); // on_idle_resume = None
+        let merged = user_profile.merge_with_base(&system).resolve();
+        assert_eq!(merged.on_idle_resume, SessionAction::PowerOn);
+    }
+
+    /// Regression test for bug #6: when a TV's assigned profile name does not exist
+    /// in the user config, resolution must fall through to the user's `[profiles.default]`
+    /// before reaching the system default. Previously the `(None, _)` arm jumped straight
+    /// to `system_default.clone()`, silently bypassing any user default the user had set.
+    #[test]
+    fn test_user_config_resolve_profile_missing_profile_falls_through_user_default() {
+        let system_default = ProfileConfig {
+            on_screen_lock: Some(SessionAction::ScreenOff),
+            idle_timeout_seconds: Some(300), // system wants 5 min
+            ..ProfileConfig::default()
+        };
+
+        let mut user = UserConfig::default();
+        // User has a [profiles.default] that overrides the idle timeout
+        user.profiles.insert(
+            "default".to_string(),
+            ProfileConfig {
+                idle_timeout_seconds: Some(600), // user wants 10 min
+                ..ProfileConfig::default()
+            },
+        );
+        // Assign TV to a non-existent profile name (typo, or system-only profile)
+        user.set_tv_profile("living-room", "nonexistent");
+
+        let resolved = user.resolve_profile("living-room", &system_default);
+        // Must use user default (600), not skip straight to system default (300)
+        assert_eq!(resolved.idle_timeout_seconds, 600);
+        // Unspecified field still comes from system default
+        assert_eq!(resolved.on_screen_lock, SessionAction::ScreenOff);
     }
 
     #[test]

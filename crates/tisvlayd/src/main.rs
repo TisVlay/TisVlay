@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::Config;
+use tisvlay_core::{Config, UserConfig};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
     // Determine config file path
     let config_path = args.config.unwrap_or_else(|| {
         if args.session {
-            Config::config_path().unwrap_or_else(|_| PathBuf::from("/var/lib/tisvlay/config.toml"))
+            UserConfig::config_path().unwrap_or_else(|_| PathBuf::from("/var/lib/tisvlay/config.toml"))
         } else {
             PathBuf::from("/var/lib/tisvlay/config.toml")
         }

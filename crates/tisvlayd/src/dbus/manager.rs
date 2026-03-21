@@ -178,6 +178,7 @@ impl ManagerService {
         info!(key = %key, value = %value, "D-Bus: SetDaemonOption");
         self.manager
             .set_daemon_option(key, value)
+            .await
             .map_err(DaemonError::from)
     }
 

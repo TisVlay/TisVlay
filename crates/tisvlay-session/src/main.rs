@@ -186,6 +186,15 @@ impl SessionState {
     }
 
     /// Get the effective idle timeout (minimum non-zero across all TV profiles).
+    ///
+    /// # Design tradeoff: single shared timer
+    ///
+    /// A single `IdleMonitor` fires at the minimum non-zero timeout across all TVs.
+    /// When `IdleTimeout` fires, `get_action_for_event` applies *each TV's own*
+    /// `on_idle_timeout` action — so a TV with a 30-minute timeout won't do anything
+    /// extra, but it *will* receive the event at 5 minutes if another TV has a shorter
+    /// timeout. Per-TV timers (multiple `IdleMonitor` instances) would be more precise
+    /// but add significant complexity for a marginal gain in the common single-TV case.
     fn effective_idle_timeout(&self) -> u64 {
         self.profiles
             .values()
@@ -224,8 +233,9 @@ async fn main() -> Result<()> {
 
     let daemon = Arc::new(daemon);
 
-    // Check if daemon is available
-    if !daemon.is_available().await {
+    // Check if daemon is available (result reused below to decide retry spawn)
+    let daemon_available = daemon.is_available().await;
+    if !daemon_available {
         warn!("Daemon is not currently available - will retry on events");
     }
 
@@ -269,8 +279,7 @@ async fn main() -> Result<()> {
     // retry loading state. This handles the common case where the session
     // service starts before the daemon (e.g., in dev mode or parallel systemd startup).
     // After loading, it replays the current screen state so missed events are recovered.
-    let daemon_was_unavailable = !daemon.is_available().await;
-    if daemon_was_unavailable {
+    if !daemon_available {
         let retry_state = state.clone();
         let retry_daemon = daemon.clone();
         let retry_config = args.config.clone();
@@ -453,7 +462,7 @@ fn get_action_for_event(event: &SessionEvent, profile: &ResolvedProfile) -> Sess
         SessionEvent::PrepareForSleep => profile.on_sleep,
         SessionEvent::ResumeFromSleep => profile.on_wake,
         SessionEvent::IdleTimeout => profile.on_idle_timeout,
-        SessionEvent::IdleResume => SessionAction::ScreenOn, // Always resume from idle
+        SessionEvent::IdleResume => profile.on_idle_resume,
     }
 }
 
