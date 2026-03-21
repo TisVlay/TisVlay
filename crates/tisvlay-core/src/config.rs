@@ -280,9 +280,6 @@ fn default_vendor() -> String {
 /// Connection parameters (IP, MAC, etc.) are vendor-specific and stored in
 /// the vendor config map, parsed by each vendor crate.
 ///
-/// Profile assignment has moved to [`UserTvConfig`] in the user config.
-/// The `profile` field is retained for backward compatibility with existing
-/// config files but is deprecated and not serialized.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvConfig {
     /// Unique identifier for this TV.
@@ -468,18 +465,6 @@ impl SystemConfig {
         let len = self.tv.len();
         self.tv.retain(|tv| tv.id != id);
         self.tv.len() < len
-    }
-
-    /// Get a profile by name.
-    ///
-    /// Returns the named profile, or falls back to "default" profile,
-    /// or returns `ProfileConfig::full_default()`.
-    pub fn get_profile(&self, name: &str) -> ProfileConfig {
-        self.profiles
-            .get(name)
-            .or_else(|| self.profiles.get("default"))
-            .cloned()
-            .unwrap_or_else(ProfileConfig::full_default)
     }
 }
 
@@ -1174,7 +1159,11 @@ mac = "AA:BB:CC:DD:EE:FF"
 "#;
 
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
-        let profile = config.get_profile("custom");
+        let profile = config
+            .profiles
+            .get("custom")
+            .cloned()
+            .unwrap_or_else(ProfileConfig::full_default);
         assert_eq!(profile.on_screen_lock, Some(SessionAction::PowerOff));
         assert_eq!(profile.on_screen_unlock, Some(SessionAction::PowerOn));
         assert_eq!(profile.on_greeter_wake, Some(SessionAction::None));

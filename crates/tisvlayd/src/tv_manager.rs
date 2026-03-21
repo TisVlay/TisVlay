@@ -878,15 +878,17 @@ impl TvManager {
                 }
                 "on_shutdown" => {
                     daemon.on_shutdown =
-                        serde_json::from_str(&format!("\"{}\"", value)).map_err(|e| {
-                            TvManagerError::ConfigError(format!("Invalid action: {}", e))
-                        })?;
+                        serde_json::from_value(serde_json::Value::String(value.to_string()))
+                            .map_err(|e| {
+                                TvManagerError::ConfigError(format!("Invalid action: {}", e))
+                            })?;
                 }
                 "on_no_active_session" => {
-                    daemon.on_no_active_session = serde_json::from_str(&format!("\"{}\"", value))
-                        .map_err(|e| {
-                        TvManagerError::ConfigError(format!("Invalid action: {}", e))
-                    })?;
+                    daemon.on_no_active_session =
+                        serde_json::from_value(serde_json::Value::String(value.to_string()))
+                            .map_err(|e| {
+                                TvManagerError::ConfigError(format!("Invalid action: {}", e))
+                            })?;
                 }
                 _ => {
                     return Err(TvManagerError::ConfigError(format!(
