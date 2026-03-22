@@ -41,35 +41,28 @@ enum Commands {
         action: ScreenAction,
     },
 
-    /// Switch HDMI input
+    /// Switch HDMI input (lists available inputs when no ID given)
     Input {
         /// Input ID (e.g., HDMI_1, HDMI_2)
-        #[arg(required = false)]
         input_id: Option<String>,
-
-        /// List available inputs
-        #[arg(short, long)]
-        list: bool,
     },
 
     /// Volume control
     Volume {
         /// Volume level (0-100), or +/- for relative adjustment
-        #[arg(required = false, allow_hyphen_values = true)]
+        #[arg(allow_hyphen_values = true)]
         level: Option<String>,
     },
 
     /// Mute/unmute audio
     Mute {
-        /// on/off/toggle
         #[arg(default_value = "toggle")]
-        state: String,
+        state: MuteState,
     },
 
     /// Backlight control (OLED pixel brightness)
     Backlight {
         /// Backlight level (0-100)
-        #[arg(required = false)]
         level: Option<u8>,
     },
 
@@ -145,6 +138,13 @@ enum ScreenAction {
     On,
     /// Turn off the screen (OLED-safe blank)
     Off,
+}
+
+#[derive(clap::ValueEnum, Clone)]
+enum MuteState {
+    On,
+    Off,
+    Toggle,
 }
 
 #[tokio::main]
@@ -313,9 +313,9 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Input { input_id, list } => {
+        Commands::Input { input_id } => {
             let tv_id = tv_id?;
-            if list || input_id.is_none() {
+            if input_id.is_none() {
                 let inputs = client.get_inputs(&tv_id).await?;
                 println!("Available inputs:");
                 for (id, label) in inputs {
@@ -353,14 +353,13 @@ async fn main() -> Result<()> {
 
         Commands::Mute { state } => {
             let tv_id = tv_id?;
-            let mute = match state.to_lowercase().as_str() {
-                "on" | "true" | "1" => true,
-                "off" | "false" | "0" => false,
-                "toggle" => {
+            let mute = match state {
+                MuteState::On => true,
+                MuteState::Off => false,
+                MuteState::Toggle => {
                     let state = client.get_state(&tv_id).await?;
                     !state.muted.unwrap_or(false)
                 }
-                _ => anyhow::bail!("Invalid mute state: {}. Use on/off/toggle", state),
             };
             client.set_mute(&tv_id, mute).await?;
             println!("Mute: {}", if mute { "on" } else { "off" });
