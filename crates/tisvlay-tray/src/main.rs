@@ -300,6 +300,14 @@ async fn process_commands(
                     set_cached_backlight(&handle, &id, new).await;
                 }
             }
+            TrayCommand::SetManaged(id, managed) => {
+                if let Err(e) = daemon
+                    .set_tv_option(&id, "managed", if managed { "true" } else { "false" })
+                    .await
+                {
+                    warn!(tv_id = %id, managed = %managed, error = %e, "Set managed failed");
+                }
+            }
         }
 
         // Refresh state after command so menu reflects the change

@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tisvlay_core::{DaemonClient, TvState};
+use tisvlay_core::{DaemonClient, SessionClient, TvState};
 
 #[derive(Parser)]
 #[command(name = "tisvlay")]
@@ -106,6 +106,33 @@ enum Commands {
         /// TV ID to remove
         tv_id: String,
     },
+
+    /// Enable automated management for a TV
+    Manage,
+
+    /// Disable automated management for a TV (manual control still works)
+    Unmanage,
+
+    /// Profile management (requires tisvlay-session to be running)
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileAction {
+    /// List all available profiles
+    List,
+
+    /// Show the profile assigned to a TV
+    Get,
+
+    /// Assign a profile to a TV
+    Set {
+        /// Profile name to assign
+        profile: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -178,9 +205,10 @@ async fn main() -> Result<()> {
                     } else {
                         "disconnected"
                     };
+                    let managed = if tv.managed { "" } else { " [unmanaged]" };
                     println!(
-                        "  {} - {} ({}) [{}] <{}>{}",
-                        tv.id, tv.name, tv.address, status, tv.vendor, default
+                        "  {} - {} ({}) [{}] <{}>{}{}",
+                        tv.id, tv.name, tv.address, status, tv.vendor, managed, default
                     );
                 }
             }
@@ -218,6 +246,55 @@ async fn main() -> Result<()> {
         Commands::Remove { tv_id } => {
             client.remove_tv(&tv_id).await?;
             println!("TV '{}' removed", tv_id);
+        }
+
+        Commands::Manage => {
+            let tv_id = tv_id?;
+            client.set_tv_option(&tv_id, "managed", "true").await?;
+            println!("TV '{}' automation enabled", tv_id);
+        }
+
+        Commands::Unmanage => {
+            let tv_id = tv_id?;
+            client.set_tv_option(&tv_id, "managed", "false").await?;
+            println!(
+                "TV '{}' automation disabled (manual control still works)",
+                tv_id
+            );
+        }
+
+        Commands::Profile { action } => {
+            let session = SessionClient::new()
+                .await
+                .context("Failed to connect to session service")?;
+            if !session.is_available().await {
+                eprintln!("Error: tisvlay-session is not running.");
+                eprintln!("Start it with: systemctl --user start tisvlay-session");
+                std::process::exit(1);
+            }
+            match action {
+                ProfileAction::List => {
+                    let profiles = session.list_profiles().await?;
+                    if profiles.is_empty() {
+                        println!("No profiles defined.");
+                    } else {
+                        println!("Available profiles:");
+                        for (name, _) in &profiles {
+                            println!("  {}", name);
+                        }
+                    }
+                }
+                ProfileAction::Get => {
+                    let tv_id = tv_id?;
+                    let profile = session.get_tv_profile(&tv_id).await?;
+                    println!("TV '{}' profile: {}", tv_id, profile);
+                }
+                ProfileAction::Set { profile } => {
+                    let tv_id = tv_id?;
+                    session.set_tv_profile(&tv_id, &profile).await?;
+                    println!("TV '{}' profile set to '{}'", tv_id, profile);
+                }
+            }
         }
 
         Commands::Power { action } => {
@@ -317,8 +394,14 @@ async fn main() -> Result<()> {
 
         Commands::Status => {
             let tv_id = tv_id?;
-            let state = client.get_state(&tv_id).await?;
-            print_tv_status(&tv_id, &state);
+            let (state, managed) = tokio::try_join!(
+                client.get_state(&tv_id),
+                async {
+                    let tvs = client.list_tvs().await?;
+                    Ok(tvs.iter().find(|t| t.id == tv_id).map(|t| t.managed).unwrap_or(true))
+                },
+            )?;
+            print_tv_status(&tv_id, &state, managed);
         }
     }
 
@@ -351,8 +434,9 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
     }
 }
 
-fn print_tv_status(tv_id: &str, state: &TvState) {
+fn print_tv_status(tv_id: &str, state: &TvState, managed: bool) {
     println!("TV: {}", tv_id);
+    println!("Managed: {}", if managed { "yes" } else { "no (automation disabled)" });
     println!("Power: {}", if state.is_on { "on" } else { "off" });
     println!("Screen: {}", if state.is_screen_on { "on" } else { "off" });
     if let Some(vol) = state.volume {

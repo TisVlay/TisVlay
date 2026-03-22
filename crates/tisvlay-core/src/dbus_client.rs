@@ -117,6 +117,10 @@ trait TisvlayTv {
     #[zbus(property(emits_changed_signal = "false"))]
     fn connected(&self) -> zbus::Result<bool>;
 
+    /// Whether this TV participates in automated management.
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn managed(&self) -> zbus::Result<bool>;
+
     /// Capabilities supported by this TV.
     #[zbus(property)]
     fn capabilities(&self) -> zbus::Result<Vec<String>>;
@@ -236,6 +240,8 @@ pub struct TvInfo {
     pub vendor: String,
     /// Whether connected.
     pub connected: bool,
+    /// Whether this TV participates in automated management.
+    pub managed: bool,
     /// D-Bus object path.
     pub path: String,
 }
@@ -450,6 +456,7 @@ impl DaemonClient {
                     address: proxies.base.address().await.unwrap_or_default(),
                     vendor: proxies.base.vendor().await.unwrap_or_default(),
                     connected: proxies.base.connected().await.unwrap_or(false),
+                    managed: proxies.base.managed().await.unwrap_or(true),
                     path: path_str.to_string(),
                 };
                 tvs.push(info);
@@ -716,7 +723,7 @@ impl DaemonClient {
 
     /// Set a system-level TV option.
     ///
-    /// Supported keys: `hdmi_input`, `only_when_active`, `name`.
+    /// Supported keys: `hdmi_input`, `only_when_active`, `managed`, `name`.
     pub async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<()> {
         debug!(tv_id = %tv_id, key = %key, value = %value, "Calling SetTvOption on daemon");
         self.manager

@@ -101,6 +101,7 @@ pub enum TrayCommand {
     ToggleMute(String),
     BacklightUp(String),
     BacklightDown(String),
+    SetManaged(String, bool),
     Refresh,
     Quit,
 }
@@ -289,8 +290,14 @@ fn build_tv_submenu(
         "network-disconnect"
     };
 
+    let label = if tv.managed {
+        tv.name.clone()
+    } else {
+        format!("{} [unmanaged]", tv.name)
+    };
+
     SubMenu {
-        label: tv.name.clone(),
+        label,
         icon_name: icon.into(),
         submenu,
         ..Default::default()
@@ -428,7 +435,38 @@ fn build_connected_tv_menu(
         }));
     }
 
+    items.push(MenuItem::Separator);
+    items.push(build_managed_toggle(tv, cmd_tx));
+
     items
+}
+
+/// Build a "Managed / Unmanaged" toggle item for the TV submenu.
+fn build_managed_toggle(
+    tv: &CachedTvState,
+    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
+) -> MenuItem<TisvlayTray> {
+    let tx = cmd_tx.clone();
+    let tv_id = tv.id.clone();
+    let currently_managed = tv.managed;
+    StandardItem {
+        label: if currently_managed {
+            "Disable Automation".into()
+        } else {
+            "Enable Automation".into()
+        },
+        icon_name: if currently_managed {
+            "media-playback-pause"
+        } else {
+            "media-playback-start"
+        }
+        .into(),
+        activate: Box::new(move |_: &mut TisvlayTray| {
+            let _ = tx.send(TrayCommand::SetManaged(tv_id.clone(), !currently_managed));
+        }),
+        ..Default::default()
+    }
+    .into()
 }
 
 /// Menu items for a disconnected or powered-off TV.
@@ -448,6 +486,9 @@ fn build_disconnected_tv_menu(
     if !tv.available_profiles.is_empty() {
         items.push(build_profile_submenu(tv, cmd_tx));
     }
+
+    items.push(MenuItem::Separator);
+    items.push(build_managed_toggle(tv, cmd_tx));
 
     items
 }

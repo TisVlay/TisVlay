@@ -68,7 +68,11 @@ impl SessionState {
             .list_tvs()
             .await
             .context("Failed to get TV list from daemon")?;
-        let tv_ids: Vec<String> = tv_infos.iter().map(|t| t.id.clone()).collect();
+        let tv_ids: Vec<String> = tv_infos
+            .iter()
+            .filter(|t| t.managed)
+            .map(|t| t.id.clone())
+            .collect();
 
         // Query daemon for system default profile
         let system_default = match daemon.get_system_profile().await {

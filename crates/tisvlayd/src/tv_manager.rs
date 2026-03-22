@@ -97,6 +97,7 @@ pub struct TvInfo {
     /// Display address (extracted from vendor-specific config via connector).
     pub address: String,
     pub vendor: String,
+    pub managed: bool,
 }
 
 /// Managed TV connection state.
@@ -185,6 +186,11 @@ fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvMa
         }
         "only_when_active" => {
             tv.only_when_active = value
+                .parse()
+                .map_err(|_| TvManagerError::ConfigError("Invalid bool".into()))?;
+        }
+        "managed" => {
+            tv.managed = value
                 .parse()
                 .map_err(|_| TvManagerError::ConfigError("Invalid bool".into()))?;
         }
@@ -293,13 +299,13 @@ impl TvManager {
 
             info!("Performing boot-time wake");
 
-            // Collect wakeable TV configs
+            // Collect wakeable, managed TV configs
             let mut wake_configs: Vec<(String, TvConfig)> = Vec::new();
             {
                 let tvs = manager.tvs.read().await;
                 for (id, tv_arc) in tvs.iter() {
                     let tv = tv_arc.lock().await;
-                    if manager.registry.supports_wake(&tv.config) {
+                    if tv.config.managed && manager.registry.supports_wake(&tv.config) {
                         wake_configs.push((id.clone(), tv.config.clone()));
                     }
                 }
@@ -386,7 +392,21 @@ impl TvManager {
             name: tv.config.name.clone(),
             address,
             vendor: tv.config.vendor.clone(),
+            managed: tv.config.managed,
         })
+    }
+
+    /// List IDs of TVs that participate in automated management.
+    pub async fn list_managed_tv_ids(&self) -> Vec<String> {
+        let tvs = self.tvs.read().await;
+        let mut ids = Vec::new();
+        for (id, tv_arc) in tvs.iter() {
+            let tv = tv_arc.lock().await;
+            if tv.config.managed {
+                ids.push(id.clone());
+            }
+        }
+        ids
     }
 
     /// Check if a TV is connected.

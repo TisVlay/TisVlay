@@ -274,6 +274,10 @@ fn default_vendor() -> String {
     "lg".to_string()
 }
 
+fn default_managed() -> bool {
+    true
+}
+
 /// Configuration for a single TV.
 ///
 /// This struct contains vendor-agnostic identity and hardware settings.
@@ -302,6 +306,14 @@ pub struct TvConfig {
     #[serde(default)]
     pub only_when_active: bool,
 
+    /// Whether this TV participates in automated management.
+    ///
+    /// When `false`, the TV is known to the daemon but skipped for all
+    /// automation (boot WoL, session events, shutdown). Manual control via
+    /// the tray and CLI still works. Defaults to `true`.
+    #[serde(default = "default_managed")]
+    pub managed: bool,
+
     /// Vendor-specific configuration.
     ///
     /// This captures vendor-specific fields (e.g., `lg = { ip = "...", client_key = "..." }`).
@@ -319,6 +331,7 @@ impl TvConfig {
             vendor: default_vendor(),
             hdmi_input: None,
             only_when_active: false,
+            managed: true,
             vendor_config: HashMap::new(),
         }
     }

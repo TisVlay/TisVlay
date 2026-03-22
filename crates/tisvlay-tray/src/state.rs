@@ -24,6 +24,8 @@ pub struct CachedTvState {
     pub profile: Option<String>,
     /// Available profile names.
     pub available_profiles: Vec<String>,
+    /// Whether this TV participates in automated management.
+    pub managed: bool,
 }
 
 /// Fetch current state for all configured TVs.
@@ -73,6 +75,7 @@ pub async fn fetch_all_state(
             inputs: Vec::new(),
             profile,
             available_profiles: available_profiles.clone(),
+            managed: tv.managed,
         };
 
         // Try get_state for all TVs — the daemon connects on-demand, so a

@@ -89,16 +89,16 @@ Error gracefully if the session service is unavailable (it's a user service, not
 
 #### Part 1: `managed` flag
 
-- [ ] 1.1 `TvConfig.managed` + `TvInfo.managed` in core
-- [ ] 1.2 Daemon: WoL, shutdown, `SetTvOption`, `GetTvs` all respect `managed`
-- [ ] 1.3 Session service: filter `tv_ids` to managed-only
-- [ ] 1.4 Tray: `CachedTvState.managed`, visual indicator, toggle command
-- [ ] 1.5 CLI: `manage`/`unmanage` commands, `list` managed status
+- [x] 1.1 `TvConfig.managed` + `TvInfo.managed` in core
+- [x] 1.2 Daemon: WoL, shutdown, `SetTvOption`, `GetTvs` all respect `managed`
+- [x] 1.3 Session service: filter `tv_ids` to managed-only
+- [x] 1.4 Tray: `CachedTvState.managed`, visual indicator, toggle command
+- [x] 1.5 CLI: `manage`/`unmanage` commands, `list` managed status
 
 #### Part 2: CLI profile parity
 
-- [ ] 2.1 `SessionClient` in CLI
-- [ ] 2.2 `tisvlay profile list / get / set`
+- [x] 2.1 `SessionClient` in CLI
+- [x] 2.2 `tisvlay profile list / get / set`
 
 #### Verification
 
