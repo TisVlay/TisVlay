@@ -284,17 +284,13 @@ fn build_tv_submenu(
         build_disconnected_tv_menu(tv, cmd_tx)
     };
 
-    let icon = if tv.connected {
-        "network-connect"
-    } else {
-        "network-disconnect"
+    let icon = match (tv.connected, tv.managed) {
+        (true, true) => "tvconnected",
+        (true, false) => "tvtrusted",
+        (false, _) => "tvdisconnected",
     };
 
-    let label = if tv.managed {
-        tv.name.clone()
-    } else {
-        format!("{} [unmanaged]", tv.name)
-    };
+    let label = tv.name.clone();
 
     SubMenu {
         label,
@@ -324,6 +320,7 @@ fn build_connected_tv_menu(
     if !tv.available_profiles.is_empty() {
         items.push(build_profile_submenu(tv, cmd_tx));
     }
+    items.push(build_managed_toggle(tv, cmd_tx));
 
     // Input submenu (if inputs available)
     if !tv.inputs.is_empty() {
@@ -435,9 +432,6 @@ fn build_connected_tv_menu(
         }));
     }
 
-    items.push(MenuItem::Separator);
-    items.push(build_managed_toggle(tv, cmd_tx));
-
     items
 }
 
@@ -451,9 +445,9 @@ fn build_managed_toggle(
     let currently_managed = tv.managed;
     StandardItem {
         label: if currently_managed {
-            "Disable Automation".into()
+            "Unmanage".into()
         } else {
-            "Enable Automation".into()
+            "Manage".into()
         },
         icon_name: if currently_managed {
             "media-playback-pause"
@@ -486,8 +480,6 @@ fn build_disconnected_tv_menu(
     if !tv.available_profiles.is_empty() {
         items.push(build_profile_submenu(tv, cmd_tx));
     }
-
-    items.push(MenuItem::Separator);
     items.push(build_managed_toggle(tv, cmd_tx));
 
     items
@@ -520,7 +512,7 @@ fn build_profile_submenu(
 
     SubMenu {
         label: format!("Profile: {}", current),
-        icon_name: "preferences-system".into(),
+        icon_name: "settings-configure".into(),
         submenu: vec![RadioGroup {
             selected,
             options,
@@ -564,7 +556,7 @@ fn build_input_submenu(
 
     SubMenu {
         label: "Input".into(),
-        icon_name: "video-television".into(),
+        icon_name: "input-tvremote-symbolic".into(),
         submenu: vec![RadioGroup {
             selected,
             options,
