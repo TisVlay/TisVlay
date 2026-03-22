@@ -89,12 +89,8 @@ enum Commands {
         #[arg(short = 'w', long)]
         wake_id: Option<String>,
 
-        /// TV ID (default: derived from name)
+        /// Vendor backend to use (e.g., lg)
         #[arg(long)]
-        id: Option<String>,
-
-        /// Vendor backend to use
-        #[arg(long, default_value = "lg")]
         vendor: String,
     },
 
@@ -218,7 +214,6 @@ async fn main() -> Result<()> {
             address,
             name,
             wake_id,
-            id,
             vendor,
         } => {
             let tv_name = name.unwrap_or_else(|| format!("TV at {}", address));
@@ -229,13 +224,6 @@ async fn main() -> Result<()> {
             let config_json = build_pairing_config_json(&address, wake_id.as_deref());
             let tv_id = client.pair_tv(&tv_name, &vendor, &config_json).await?;
             println!("TV '{}' paired successfully with ID: {}", tv_name, tv_id);
-
-            if let Some(id) = id {
-                println!(
-                    "Note: Custom ID '{}' was requested but daemon assigns IDs automatically.",
-                    id
-                );
-            }
 
             if wake_id.is_none() {
                 println!("\nNote: No wake ID (MAC address) provided. Wake-on-LAN will not work.");

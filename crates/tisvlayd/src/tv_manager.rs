@@ -772,7 +772,7 @@ impl TvManager {
         });
 
         // Create TV config with vendor-specific connection parameters
-        let mut tv_config = TvConfig::new(&tv_id, name).with_vendor(vendor);
+        let mut tv_config = TvConfig::new(&tv_id, name, vendor);
 
         // Store the vendor config
         tv_config
