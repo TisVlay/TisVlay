@@ -350,6 +350,13 @@ in the `IndexMap` value alongside the `Arc<Mutex<ManagedTv>>`, or as a separate
 **Severity:** Low (unlikely to be a hot path, but architecturally inconsistent
 with the F10 fix philosophy)
 
+**Resolution:** Fixed — the `managed` flag is now stored as a `bool` alongside the
+`Arc<Mutex<ManagedTv>>` in the `IndexMap` value, readable with only the outer read lock.
+`list_managed_tv_ids` scans the map directly via `filter_map` with no per-TV lock
+acquisition. `set_tv_option` and `reload_config` keep the outer flag in sync whenever
+`managed` changes. `boot_wake` uses the outer flag to skip the per-TV lock for unmanaged
+TVs entirely.
+
 ---
 
 ## H12. `TvConfig` doc comment still references removed fields
@@ -371,6 +378,9 @@ the new `managed` field or explain its semantics. The `managed` field's own doc 
 automation participation.
 
 **Severity:** Info (docs quality)
+
+**Resolution:** Fixed — struct-level doc updated to describe `managed` and its
+automation semantics.
 
 ---
 

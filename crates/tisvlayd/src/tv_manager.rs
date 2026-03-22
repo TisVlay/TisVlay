@@ -134,6 +134,12 @@ impl ManagedTv {
     }
 }
 
+/// Map value for a single TV in `TvManager::tvs`.
+///
+/// The `bool` is the `managed` flag stored outside the per-TV mutex so that
+/// `list_managed_tv_ids` can scan it with only the outer read lock.
+type TvEntry = (bool, Arc<Mutex<ManagedTv>>);
+
 /// TV connection manager.
 ///
 /// Thread-safe manager for multiple TV connections.
@@ -147,8 +153,12 @@ pub struct TvManager {
     /// Managed TVs by ID -- each TV has its own mutex for independent locking.
     /// The outer RwLock protects the IndexMap itself (add/remove); individual TV
     /// operations hold only the per-TV Mutex. IndexMap preserves insertion order
-    /// so GetTvs returns a stable, deterministic list matching the config file order.
-    tvs: Arc<RwLock<IndexMap<String, Arc<Mutex<ManagedTv>>>>>,
+    /// so list_tvs returns a stable, deterministic list matching the config file order.
+    ///
+    /// The `bool` is the `managed` flag, stored outside the per-TV mutex so that
+    /// `list_managed_tv_ids` can scan it with only the outer read lock — no per-TV
+    /// lock acquisition, no risk of blocking behind a slow `power_on`.
+    tvs: Arc<RwLock<IndexMap<String, TvEntry>>>,
     /// System profiles from config (updated on reload and set_daemon_option).
     profiles: RwLock<HashMap<String, ProfileConfig>>,
     /// Daemon settings — kept separately so reload_config() and set_daemon_option()
@@ -222,7 +232,10 @@ impl TvManager {
         for tv_config in &config.tv {
             tvs.insert(
                 tv_config.id.clone(),
-                Arc::new(Mutex::new(ManagedTv::new(tv_config.clone()))),
+                (
+                    tv_config.managed,
+                    Arc::new(Mutex::new(ManagedTv::new(tv_config.clone()))),
+                ),
             );
         }
 
@@ -257,7 +270,7 @@ impl TvManager {
             .read()
             .await
             .get(tv_id)
-            .cloned()
+            .map(|(_, arc)| arc.clone())
             .ok_or_else(|| TvManagerError::TvNotFound(tv_id.to_string()))
     }
 
@@ -303,10 +316,12 @@ impl TvManager {
             let mut wake_configs: Vec<(String, TvConfig)> = Vec::new();
             {
                 let tvs = manager.tvs.read().await;
-                for (id, tv_arc) in tvs.iter() {
-                    let tv = tv_arc.lock().await;
-                    if tv.config.managed && manager.registry.supports_wake(&tv.config) {
-                        wake_configs.push((id.clone(), tv.config.clone()));
+                for (id, (managed, tv_arc)) in tvs.iter() {
+                    if *managed {
+                        let tv = tv_arc.lock().await;
+                        if manager.registry.supports_wake(&tv.config) {
+                            wake_configs.push((id.clone(), tv.config.clone()));
+                        }
                     }
                 }
             }
@@ -334,7 +349,7 @@ impl TvManager {
                 // Store the connection so subsequent commands don't reconnect
                 {
                     let tvs = manager.tvs.read().await;
-                    if let Some(tv_arc) = tvs.get(tv_id.as_str()) {
+                    if let Some((_, tv_arc)) = tvs.get(tv_id.as_str()) {
                         let mut tv = tv_arc.lock().await;
                         tv.connection = Some(connection);
                         tv.powered_off = false;
@@ -399,14 +414,9 @@ impl TvManager {
     /// List IDs of TVs that participate in automated management.
     pub async fn list_managed_tv_ids(&self) -> Vec<String> {
         let tvs = self.tvs.read().await;
-        let mut ids = Vec::new();
-        for (id, tv_arc) in tvs.iter() {
-            let tv = tv_arc.lock().await;
-            if tv.config.managed {
-                ids.push(id.clone());
-            }
-        }
-        ids
+        tvs.iter()
+            .filter_map(|(id, (managed, _))| if *managed { Some(id.clone()) } else { None })
+            .collect()
     }
 
     /// Check if a TV is connected.
@@ -793,7 +803,10 @@ impl TvManager {
             let mut tvs = self.tvs.write().await;
             let mut managed = ManagedTv::new(tv_config.clone());
             managed.connection = Some(connection);
-            tvs.insert(tv_id.clone(), Arc::new(Mutex::new(managed)));
+            tvs.insert(
+                tv_id.clone(),
+                (tv_config.managed, Arc::new(Mutex::new(managed))),
+            );
         }
 
         // Save config
@@ -810,7 +823,7 @@ impl TvManager {
         // Remove from managed TVs (outer write lock -- modifying the HashMap)
         let removed_arc = {
             let mut tvs = self.tvs.write().await;
-            tvs.shift_remove(tv_id)
+            tvs.shift_remove(tv_id).map(|(_, arc)| arc)
         };
 
         match removed_arc {
@@ -959,6 +972,16 @@ impl TvManager {
             apply_tv_option(&mut managed.config, key, value)?;
         } // per-TV lock released before I/O
 
+        // Keep the outer managed flag in sync when toggled via SetTvOption.
+        if key == "managed" {
+            if let Ok(managed_val) = value.parse::<bool>() {
+                let mut tvs = self.tvs.write().await;
+                if let Some((flag, _)) = tvs.get_mut(tv_id) {
+                    *flag = managed_val;
+                }
+            }
+        }
+
         // Persist to disk: load the full on-disk config, patch the TV entry, save.
         // Serialize via disk_write_lock to prevent concurrent load-modify-save races.
         let config_path = self.config_path.clone();
@@ -1018,7 +1041,7 @@ impl TvManager {
             for old_id in old_ids {
                 if !new_ids.contains(&old_id) {
                     info!(tv_id = %old_id, "Removing TV (no longer in config)");
-                    if let Some(arc) = tvs.shift_remove(&old_id) {
+                    if let Some((_, arc)) = tvs.shift_remove(&old_id) {
                         to_update.push((arc, None)); // None = removed, close connection
                     }
                 }
@@ -1026,15 +1049,20 @@ impl TvManager {
 
             // Add or update TVs from new config
             for tv_config in new_config.tv {
-                if let Some(tv_arc) = tvs.get(&tv_config.id) {
-                    // Existing TV: defer config update + reconnect decision to Phase 2.
+                if let Some((managed_flag, tv_arc)) = tvs.get_mut(&tv_config.id) {
+                    // Existing TV: update outer managed flag immediately under the write
+                    // lock, then defer the rest of the config update to Phase 2.
+                    *managed_flag = tv_config.managed;
                     to_update.push((tv_arc.clone(), Some(tv_config)));
                 } else {
                     // New TV: add to map immediately (no connection to close).
                     info!(tv_id = %tv_config.id, "Adding new TV from config");
                     tvs.insert(
                         tv_config.id.clone(),
-                        Arc::new(Mutex::new(ManagedTv::new(tv_config))),
+                        (
+                            tv_config.managed,
+                            Arc::new(Mutex::new(ManagedTv::new(tv_config))),
+                        ),
                     );
                 }
             }

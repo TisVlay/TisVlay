@@ -275,6 +275,10 @@ impl Default for DaemonConfig {
 /// Connection parameters (IP, MAC, etc.) are vendor-specific and stored in
 /// the vendor config map, parsed by each vendor crate.
 ///
+/// The `managed` field controls whether this TV participates in automation
+/// (boot WoL, session events, shutdown). Unmanaged TVs remain available for
+/// manual control via the tray and CLI but are skipped by all event-driven paths.
+///
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvConfig {
     /// Unique identifier for this TV.
