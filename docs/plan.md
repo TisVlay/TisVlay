@@ -31,11 +31,17 @@ assign profiles — functionality already available in the tray.
 
 #### 1.1 — Core: `TvConfig` + `TvInfo`
 
-- `crates/tisvlay-core/src/config.rs`: add `managed: bool` to `TvConfig` (required field, no serde default)
-  - Removed `default_vendor()`, `default_managed()` serde helpers; all fields are now required in TOML
-  - `TvConfig::new(id, name, vendor)` — vendor is now a required constructor parameter; `with_vendor()` removed
+- `crates/tisvlay-core/src/config.rs`:
+  - Added `managed: bool` to `TvConfig` (required TOML field, no serde default)
+  - Removed `default_vendor()` serde helper and `with_vendor()` builder method
+  - `TvConfig::new(id, name, vendor, managed)` — all four fields required;
+    no default exists anywhere in the library
+  - Struct-level doc updated to describe `managed` and automation semantics
+  - Removed stale doc comment on `SystemConfig` referencing the removed `Config` alias
+  - `only_when_active` no longer has `#[serde(default)]`; now required in TOML
+  - Example TOML fixtures updated to include `only_when_active` and `managed`
 - `crates/tisvlay-core/src/dbus_client.rs`: add `managed: bool` to `TvInfo`
-  - Populated via `org.tisvlay.Tv1` `managed` D-Bus property
+  - Populated from the `Managed` D-Bus property in `list_tvs()`
 
 #### 1.1b — Example config updated
 
@@ -45,19 +51,40 @@ assign profiles — functionality already available in the tray.
 #### 1.2 — Daemon: enforce `managed` in all automation paths
 
 - `crates/tisvlayd/src/tv_manager.rs`:
-  - Boot WoL loop: skip TVs where `managed = false`
-  - `on_shutdown` action: skip unmanaged TVs via `list_managed_tv_ids()`
-  - Added `list_managed_tv_ids()` — returns IDs where `config.managed == true`
-- `crates/tisvlayd/src/dbus/tv.rs`: expose `managed` as a D-Bus property on `org.tisvlay.Tv1`
+  - `type TvEntry = (bool, Arc<Mutex<ManagedTv>>)` — managed flag stored alongside the
+    per-TV mutex so `list_managed_tv_ids` can scan it with only the outer read lock
+  - `tvs` field type changed to `Arc<RwLock<IndexMap<String, TvEntry>>>`
+  - Boot WoL loop: checks outer managed flag before acquiring per-TV lock, skipping
+    unmanaged TVs entirely
+  - `list_managed_tv_ids()` — simple `filter_map` over the outer map, no per-TV lock
+  - `pair_tv(name, vendor, vendor_config, id, managed)` — threads `managed` through;
+    inserts `(tv_config.managed, Arc::new(...))` into map
+  - `remove_tv` — `shift_remove` now destructures `(_, arc)` from the tuple
+  - `set_tv_option` — handles `"managed"` key via `apply_tv_option`; after the per-TV
+    lock is released, acquires the outer write lock to sync the tuple's bool flag
+  - `get_tv_info` — populates `TvInfo.managed` from `tv.config.managed`
+  - `reload_config` — now uses `spawn_blocking` + `disk_write_lock` for disk I/O,
+    consistent with all other config-load paths; updates the outer managed flag under
+    the write lock for existing TVs; correctly destructures `(_, arc)` on removal
+  - `apply_tv_option` — handles `"managed"` key → parses `"true"`/`"false"`
+- `crates/tisvlayd/src/dbus/tv.rs`: expose `managed` as a D-Bus property on
+  `org.tisvlay.Tv1`; defaults to `true` on lookup failure (assume managed)
 - `crates/tisvlayd/src/dbus/manager.rs`:
-  - `SetTvOption`: handles `managed` key → parses `"true"`/`"false"` → updates config + reloads
+  - `GetTvs` method removed — superseded by `GetManagedObjects` (Phase 5C)
+  - `AddTv(name, vendor, config_json, managed)` — added `managed: bool` parameter;
+    passes through to `pair_tv`
 - `crates/tisvlayd/src/logind.rs`:
   - `execute_action_all_tvs` uses `list_managed_tv_ids()` instead of `list_tv_ids()`
 
-#### 1.3 — Session service: filter to managed TVs
+#### 1.3 — Session service: live `managed` filtering
 
-- `crates/tisvlay-session/src/main.rs` (`SessionState::load`):
-  - Filter `tv_ids` to only those where `tv_info.managed == true` before building profiles
+- `crates/tisvlay-session/src/main.rs`:
+  - `SessionState::load`: builds profiles for **all** paired TVs (no managed filter at
+    load time) so any TV has a ready profile if it becomes managed without a reload
+  - `event_handler`: before each dispatch, calls `daemon.list_tvs()` to get the current
+    managed TV IDs; fans out only to TVs in that set
+  - Fallback on daemon unreachable: returns empty `HashSet`, skipping dispatch entirely
+    (TV commands would fail anyway; dispatching to unmanaged TVs produces spurious logs)
 
 #### 1.4 — Tray: visual indicator + toggle
 
@@ -66,22 +93,33 @@ assign profiles — functionality already available in the tray.
 - `crates/tisvlay-tray/src/tray.rs`:
   - `build_tv_submenu`: icon conveys managed state — `tvconnected` (managed+connected),
     `tvtrusted` (unmanaged+connected), `tvdisconnected` (disconnected)
-  - `build_connected_tv_menu` / `build_disconnected_tv_menu`: "Manage" / "Unmanage" toggle
-    placed directly below the profile submenu (no separator); sends `TrayCommand::SetManaged(String, bool)`
+  - `build_managed_toggle()` — new helper building "Manage"/"Unmanage" toggle item;
+    placed directly below profile submenu in both connected and disconnected menus;
+    sends `TrayCommand::SetManaged(String, bool)`
+  - Profile submenu icon changed from `preferences-system` to `settings-configure`
+  - Input submenu icon changed from `video-television` to `input-tvremote-symbolic`
+  - `TrayCommand::SetManaged(String, bool)` added to enum
 - `crates/tisvlay-tray/src/main.rs` (`process_commands`):
-  - Handle `TrayCommand::SetManaged(id, managed)` → `daemon.set_tv_option(&id, "managed", &managed.to_string())`
+  - Handle `TrayCommand::SetManaged(id, managed)` → `daemon.set_tv_option(&id, "managed", ...)`
+  - Explanatory comment: no session-service notification needed because `set_tv_option`
+    updates in-memory state synchronously and the session service queries managed status
+    live on each event
 
 #### 1.5 — CLI: `manage` / `unmanage` + `list` managed status
 
 - `crates/tisvlay-cli/src/main.rs`:
-  - `Commands::Manage` / `Commands::Unmanage` — use first TV by default, like other commands
-    → calls `client.set_tv_option(&id, "managed", "true"/"false")`
+  - `Commands::Manage` / `Commands::Unmanage` — use first TV by default, like other
+    commands → calls `client.set_tv_option(&id, "managed", "true"/"false")`
   - `Commands::List` output shows `[unmanaged]` suffix for unmanaged TVs
   - `Commands::Status` fetches managed status concurrently via `tokio::try_join!`
-  - `Mute` argument changed from free-form string to typed `MuteState` ValueEnum (`on`/`off`/`toggle`, default `toggle`)
+  - `Mute` argument changed from free-form `String` to typed `MuteState` ValueEnum
+    (`on`/`off`/`toggle`, default `toggle`); free-form parsing and unreachable fallback removed
+  - `Input` command refactored from two independent `if` blocks to `match input_id`
   - `Input --list` flag removed — omitting the input ID already implies listing
-  - `pair --vendor` default `"lg"` removed; vendor is now required
+  - `pair --vendor` default `"lg"` removed; vendor is now a required positional argument
   - `pair --id` dead option removed (daemon assigns IDs automatically)
+  - `pair --unmanaged` flag added; `managed = !unmanaged`; UX default (`managed = true`)
+    lives exclusively in the CLI, not the library
 
 ---
 
@@ -95,16 +133,16 @@ assign profiles — functionality already available in the tray.
 
 #### 2.2 — CLI: `profile` subcommand
 
-Add `Commands::Profile { action: ProfileAction }` with subcommands:
+Added `Commands::Profile { action: ProfileAction }` with subcommands:
 
 - `tisvlay profile list`
-  → `session.list_profiles()` → print `(name, json)` pairs (name only, or with summary)
+  → `session.list_profiles()` → prints available profile names
 - `tisvlay profile get [--tv <id>]`
-  → `session.get_tv_profile(&tv_id)` → print assigned profile name
+  → `session.get_tv_profile(&tv_id)` → prints assigned profile name
 - `tisvlay profile set <profile> [--tv <id>]`
-  → `session.set_tv_profile(&tv_id, &profile)` → confirm assignment
+  → `session.set_tv_profile(&tv_id, &profile)` → confirms assignment
 
-Error gracefully if the session service is unavailable (it's a user service, not system).
+Exits with error message if the session service is unavailable.
 
 ---
 
@@ -125,19 +163,20 @@ it live at event dispatch time rather than caching a stale snapshot.
 
 #### `crates/tisvlay-session/src/main.rs`
 
-- **`SessionState::load`**: remove the `.filter(|t| t.managed)` from
-  `tv_ids` population. Resolve profiles for **all** paired TVs so that
-  any TV has a ready profile if it becomes managed later without a reload.
-- **`event_handler`**: before each dispatch, call `daemon.list_tvs().await`
-  and collect the current managed TV IDs into a `HashSet`. Fan out only to
-  TVs in that set, using profiles already resolved in `state`. On D-Bus
-  failure, fall back to the full `state.tv_ids` list (same behavior as
-  before this change).
+- **`SessionState::load`**: no `.filter(|t| t.managed)` — resolves profiles for
+  **all** paired TVs so any TV has a ready profile if it becomes managed later
+  without a reload.
+- **`event_handler`**: before each dispatch, calls `daemon.list_tvs().await` and
+  collects the current managed TV IDs into a `HashSet`. Fans out only to TVs in
+  that set, using profiles already resolved in `state`. On D-Bus failure, falls
+  back to an **empty set** — TV commands would fail anyway, and dispatching to
+  unmanaged TVs produces spurious error logs.
 
 ### Checklist
 
 - [x] `SessionState::load` builds profiles for all paired TVs
 - [x] `event_handler` queries managed set per-event from daemon
+- [x] Fallback on daemon failure returns empty set (not full TV list)
 - [x] `cargo check --workspace`
 - [x] `cargo test --workspace`
 
@@ -148,10 +187,10 @@ it live at event dispatch time rather than caching a stale snapshot.
 #### Part 1: `managed` flag
 
 - [x] 1.1 `TvConfig.managed` + `TvInfo.managed` in core
-- [x] 1.2 Daemon: WoL, shutdown, `SetTvOption`, `GetTvs` all respect `managed`
-- [x] 1.3 Session service: filter `tv_ids` to managed-only
+- [x] 1.2 Daemon: WoL, shutdown, `SetTvOption`, `AddTv`, automation all respect `managed`
+- [x] 1.3 Session service: live managed filtering per-event; fallback → empty set
 - [x] 1.4 Tray: `CachedTvState.managed`, visual indicator, toggle command
-- [x] 1.5 CLI: `manage`/`unmanage` commands, `list` managed status
+- [x] 1.5 CLI: `manage`/`unmanage` commands, `list` managed status, `pair --unmanaged`
 
 #### Part 2: CLI profile parity
 
@@ -164,7 +203,7 @@ it live at event dispatch time rather than caching a stale snapshot.
 
 ### Motivation
 
-`list_tvs()` currently takes 1 + 6N D-Bus round-trips: one `GetTvs` call to get object
+`list_tvs()` previously took 1 + 6N D-Bus round-trips: one `GetTvs` call to get object
 paths, then six individual property fetches per TV (`Id`, `Name`, `Address`, `Vendor`,
 `Connected`, `Managed`). `org.freedesktop.DBus.ObjectManager` is the standardized
 mechanism for bulk object discovery — used by BlueZ, ModemManager, systemd-logind, and
@@ -176,13 +215,13 @@ makes the daemon introspectable by standard tools (`busctl`, `d-feet`).
 
 #### `crates/tisvlay-core/src/dbus_paths.rs`
 
-- Add `OBJECT_MANAGER_PATH: &str = "/org/tisvlay"` — the common ancestor of
+- Added `OBJECT_MANAGER_PATH: &str = "/org/tisvlay"` — the common ancestor of
   `/org/tisvlay/Manager` and `/org/tisvlay/Tv/{id}`
 
 #### `crates/tisvlayd/src/main.rs`
 
-- Register `zbus::fdo::ObjectManager` at `/org/tisvlay` before TV objects, so zbus
-  automatically emits `InterfacesAdded`/`InterfacesRemoved` for all subsequent
+- Register `zbus::fdo::ObjectManager` at `/org/tisvlay` before Manager and TV objects,
+  so zbus automatically emits `InterfacesAdded`/`InterfacesRemoved` for all subsequent
   `object_server.at()`/`object_server.remove()` calls
 
 #### `crates/tisvlayd/src/dbus/manager.rs`
@@ -194,12 +233,20 @@ makes the daemon introspectable by standard tools (`busctl`, `d-feet`).
 - Remove `get_tvs()` from `TisvlayManager` proxy trait
 - Add `object_manager: ObjectManagerProxy<'static>` field to `DaemonClient`
 - Update `from_connection()` to build the proxy at `OBJECT_MANAGER_PATH`
-- Rewrite `list_tvs()`: call `get_managed_objects()`, filter entries that have the
-  `org.tisvlay.Tv1` interface, extract properties from the returned `OwnedValue` map
+- Update `is_available()` to use `object_manager.get_managed_objects()`
+- Rewrite `list_tvs()`: single `GetManagedObjects` call; filters entries with the
+  `org.tisvlay.Tv1` interface; extracts properties via `get_str` / `get_bool` closures
+- `get_bool(key, default)` takes an explicit default: `Connected` defaults to `false`
+  (assume disconnected); `Managed` defaults to `true` (assume managed — a missing
+  property is more likely a transient issue than intentional opt-out)
+- Diagnostic observability: property fallbacks are tracked in a shared
+  `RefCell<Vec<String>>`; a single `debug!` per TV entry lists all properties that fell
+  back to defaults, avoiding per-property log spam; the `id.is_empty()` skip emits
+  `warn!` since a daemon-returned object being silently rejected is always actionable
 
 #### `crates/tisvlay-core/tests/dbus_client.rs`
 
-- Update `MockManager`: remove `get_tvs()`, add `zbus::fdo::ObjectManager` registered
+- Updated `MockManager`: removed `get_tvs()`, added `zbus::fdo::ObjectManager` registered
   at `/org/tisvlay` so the mock responds to `GetManagedObjects` with an empty object
   tree (no TV objects → `list_tvs()` returns `vec![]`)
 
@@ -209,6 +256,8 @@ makes the daemon introspectable by standard tools (`busctl`, `d-feet`).
 - [x] `ObjectManager` registered at `/org/tisvlay` in daemon `main.rs`
 - [x] `GetTvs` removed from `Manager1` + proxy
 - [x] `DaemonClient` updated: `ObjectManagerProxy` field + rewritten `list_tvs()`
+- [x] `get_bool` takes explicit default; `Connected` → `false`, `Managed` → `true`
+- [x] Diagnostic logging: `debug!` on property fallbacks, `warn!` on empty `Id`
 - [x] Test mock updated to use `ObjectManager`
 - [x] `cargo check --workspace`
 - [x] `cargo test --workspace`
