@@ -29,82 +29,15 @@ A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Cur
 
 ## Implementation Status
 
-### Phase 1: Core Library + CLI (COMPLETE)
+Phases 1–5C are complete. See [docs/design.md](docs/design.md) for full phase history and details.
 
-- [x] `tisvlay-core`: Vendor-agnostic traits, capabilities, WoL, config parsing
-- [x] `tisvlay-lg`: LG WebOS backend (WebSocket client, SSAP protocol)
-- [x] `tisvlay-backends`: Backend registry (composition point for all vendors)
-- [x] `tisvlay-cli`: Power, screen, input, volume, backlight, status commands
-- [x] TV pairing flow with credential persistence
-- [x] Multi-TV configuration support with profile-based session behavior
+**Complete:** Phase 1 (Core + CLI) · Phase 2 (Daemon) · Phase 3 (Session Service) · Phase 4a (CLI D-Bus) · Phase 4b (Tray) · Phase 4C (Config Split) · NixOS Packaging · Phase 5A (`managed` flag + CLI profile parity) · Phase 5B (live managed filtering) · Phase 5C (`ObjectManager` bulk discovery)
 
-### Phase 2: System Daemon (COMPLETE)
+### Phase 5: Next — GUI Configuration
 
-- [x] `tisvlayd`: D-Bus service (`org.tisvlay.Manager1` + per-TV `org.tisvlay.Tv1.*`) - see [crates/tisvlayd/src/](crates/tisvlayd/src/)
-- [x] Vendor-agnostic TV connection manager with pooling, auto-reconnect, boot-time WoL
-- [x] D-Bus Manager API: GetTvs, GetSupportedVendors, AddTv, RemoveTv, ReloadConfig, DiscoverTvs
-- [x] Per-TV D-Bus objects at `/org/tisvlay/Tv/{id}` with Power/Screen/Volume/Input/Backlight interfaces
-- [x] TvStateChanged signal emission on connect/disconnect
-- [x] Config reload via SIGHUP or D-Bus ReloadConfig
-- [x] Systemd service files - see [systemd/](systemd/)
-- [x] SSDP discovery (`discovery` feature) - see [docs/firewall.md](docs/firewall.md) for firewall requirements
-
-### Phase 3: User Session Service (COMPLETE)
-
-- [x] `tisvlay-session`: User service monitoring D-Bus session events - see [crates/tisvlay-session/src/](crates/tisvlay-session/src/)
-- [x] Screen lock/unlock detection via `org.freedesktop.ScreenSaver.ActiveChanged`
-- [x] Suspend/resume detection via `org.freedesktop.login1.Manager.PrepareForSleep`
-- [x] Configurable actions per event (screen_on/off, power_on/off, none)
-- [x] Optional idle timeout with polling-based detection
-- [x] SIGHUP for config reload
-- [x] Systemd user service file - see [systemd/tisvlay-session.service](systemd/tisvlay-session.service)
-
-### Phase 4a: CLI D-Bus Migration (COMPLETE)
-
-- [x] CLI communicates with daemon via D-Bus (daemon-only, no direct mode)
-- [x] `--user` flag for user/session bus (development mode)
-- [x] Shared `DaemonClient` in `tisvlay-core` (feature-gated: `dbus`)
-- [x] CLI depends only on `tisvlay-core`, not vendor crates
-
-### Phase 4b: System Tray App (COMPLETE)
-
-- [x] `tisvlay-tray`: StatusNotifierItem tray icon using `ksni` - see [crates/tisvlay-tray/src/](crates/tisvlay-tray/src/)
-- [x] Per-TV submenus with power, screen blank, input switching, volume, backlight, mute controls
-- [x] Scroll wheel adjusts volume or backlight (context-dependent)
-- [x] Optimistic state caching to prevent race conditions on rapid adjustments
-- [x] Polling-based state refresh (5s interval) with short timeouts for disconnected TVs
-- [x] Graceful degradation when daemon is unavailable
-- [x] Signal handling (SIGINT/SIGTERM) for clean shutdown
-- [x] Systemd user service file - see [systemd/tisvlay-tray.service](systemd/tisvlay-tray.service)
-
-### Phase 4C: System vs User Config Split (COMPLETE)
-
-- [x] `SystemConfig` (daemon-owned: `/var/lib/tisvlay/config.toml`) split from `UserConfig` (session-owned: `~/.config/tisvlay/config.toml`)
-- [x] `ProfileConfig` field-level inheritance: user profile fields override system defaults; unset fields fall through to system default, then hard-coded defaults
-- [x] `on_idle_resume: Option<SessionAction>` added to `ProfileConfig` (default `ScreenOn`)
-- [x] `org.tisvlay.Session1` D-Bus interface: `ListProfiles`, `GetTvProfile`, `SetTvProfile`, `GetEffectiveProfile`, `ReloadConfig`
-- [x] Daemon logind monitoring: `PrepareForShutdown` (inhibitor lock), `SessionNew`/`SessionRemoved` (`on_no_active_session`)
-- [x] Boot-wake refactored to retry-connect loop (WoL resend on failure, ~10 retries)
-- [x] Session service event replay after late daemon connect
-- [x] Tray Profile submenu per TV; Refresh button reloads daemon + session configs
-- [x] Daemon Manager1 additions: `SetDaemonOption`, `SetTvOption`, `GetSystemProfile`, `GetSystemProfiles`
-- [x] `SessionClient` in `tisvlay-core` for session service D-Bus communication
-
-### NixOS Packaging (COMPLETE)
-
-- [x] `nix/package.nix`: `rustPlatform.buildRustPackage` for all binaries
-- [x] `nix/module.nix`: `services.tisvlay.enable` NixOS module
-- [x] `flake.nix`: `nixosModules.default`, `overlays.default`, `packages.default`
-- [x] `tisvlayd --config <PATH>` flag; default `/var/lib/tisvlay/config.toml` for system daemon
-- [x] `tisvlay-session --config <PATH>` flag; default `~/.config/tisvlay/config.toml` (user config)
-- [x] Dedicated `tisvlay` system user/group with `StateDirectory`
-- [x] D-Bus policy via `services.dbus.packages` (idiomatic NixOS)
-- [x] User services (`tisvlay-session`, `tisvlay-tray`) auto-start on `graphical-session.target`
-- [x] MSRV lowered to 1.93 to match nixpkgs bundled Rust
-
-### Phase 5: Future
-
-- Phase 5: `tisvlay-gui` (Slint configuration UI)
+- `tisvlay-gui`: Slint-based settings window
+- TV discovery and pairing wizard (with managed checkbox)
+- Per-TV configuration and session behavior settings
 
 ### Multi-Vendor Refactor (COMPLETE)
 
@@ -121,7 +54,8 @@ Architecture refactored to support multiple TV vendors. Daemon and CLI are fully
 - `BackendRegistry` in `tisvlay-backends` provides `connect_tv()`, `wake_tv()`, `start_pairing()`, etc.
 - Capability bitflags (`Capabilities::ALL`) for runtime feature detection
 - D-Bus: per-TV objects at `/org/tisvlay/Tv/{id}` with `Address` property (not `Ip`)
-- D-Bus: `AddTv(name, vendor, config_json)` -- vendor-specific params as JSON
+- D-Bus: `AddTv(name, vendor, config_json, managed)` -- vendor-specific params as JSON; `managed` required, no default in library
+- D-Bus: `ObjectManager` at `/org/tisvlay` -- `GetManagedObjects` replaces `GetTvs`
 - `DiscoveredTv` uses `address`/`hardware_id` (not `ip`/`mac`)
 - Profile-based config for multi-TV setups with display-aware control
 
@@ -226,24 +160,7 @@ tisvlay/
 
 See [docs/design.md](docs/design.md) for full schema and config examples.
 
-### CLI Commands
-```
-# CLI communicates with tisvlayd via D-Bus
-tisvlay power on|off       # WoL for power on
-tisvlay screen on|off      # OLED-safe blank
-tisvlay input [ID] [--list]
-tisvlay volume [LEVEL|+N|-N]
-tisvlay mute [on|off|toggle]
-tisvlay backlight [LEVEL]
-tisvlay status
-tisvlay pair <ADDRESS> --name NAME --vendor lg --wake-id MAC
-tisvlay list
-tisvlay remove <ID>
-
-# Global flags
-tisvlay --user <cmd>             # Use user/session bus (development)
-tisvlay --tv <ID> <cmd>          # Target specific TV
-```
+See [docs/design.md](docs/design.md) for the full CLI command reference.
 
 ## Key Crates
 
@@ -305,13 +222,15 @@ systemctl --user enable --now tisvlay-tray
 
 ```bash
 # Manager interface
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 GetTvs
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 GetSupportedVendors
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ReloadConfig
 
-# Add TV (name, vendor, config_json)
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 AddTv sss \
-  "Living Room" "lg" '{"ip":"192.168.1.100","mac":"AA:BB:CC:DD:EE:FF"}'
+# List all objects + properties (replaces GetTvs)
+busctl --user call org.tisvlay.Daemon /org/tisvlay org.freedesktop.DBus.ObjectManager GetManagedObjects
+
+# Add TV (name, vendor, config_json, managed)
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 AddTv sssb \
+  "Living Room" "lg" '{"ip":"192.168.1.100","mac":"AA:BB:CC:DD:EE:FF"}' true
 
 # Per-TV interfaces (replace living_room with TV ID)
 busctl --user introspect org.tisvlay.Daemon /org/tisvlay/Tv/living_room
