@@ -315,16 +315,18 @@ async fn main() -> Result<()> {
 
         Commands::Input { input_id } => {
             let tv_id = tv_id?;
-            if input_id.is_none() {
-                let inputs = client.get_inputs(&tv_id).await?;
-                println!("Available inputs:");
-                for (id, label) in inputs {
-                    println!("  {} - {}", id, label);
+            match input_id {
+                None => {
+                    let inputs = client.get_inputs(&tv_id).await?;
+                    println!("Available inputs:");
+                    for (id, label) in inputs {
+                        println!("  {} - {}", id, label);
+                    }
                 }
-            }
-            if let Some(id) = input_id {
-                client.switch_input(&tv_id, &id).await?;
-                println!("Switched to input: {}", id);
+                Some(id) => {
+                    client.switch_input(&tv_id, &id).await?;
+                    println!("Switched to input: {}", id);
+                }
             }
         }
 

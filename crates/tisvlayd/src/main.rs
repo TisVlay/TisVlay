@@ -120,7 +120,10 @@ async fn main() -> Result<()> {
         .at(OBJECT_MANAGER_PATH, zbus::fdo::ObjectManager)
         .await
         .context("Failed to serve ObjectManager interface")?;
-    info!("ObjectManager interface registered at {}", OBJECT_MANAGER_PATH);
+    info!(
+        "ObjectManager interface registered at {}",
+        OBJECT_MANAGER_PATH
+    );
 
     // Create and register manager service at /org/tisvlay/Manager
     let manager_service =

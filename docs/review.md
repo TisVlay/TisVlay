@@ -166,6 +166,8 @@ match input_id {
 
 **Severity:** Low (readability, not a bug)
 
+**Resolution:** Fixed — converted to `match input_id { None => { … }, Some(id) => { … } }`.
+
 ---
 
 ## H6. `TvConfig::new` defaults `managed: true` — not symmetric with serde requiring it
