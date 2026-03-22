@@ -476,6 +476,11 @@ intentional unmanage.
 
 **Severity:** Low (the property should always be present; defensive default question)
 
+**Resolution:** Fixed — `get_bool` now takes an explicit `default: bool` parameter.
+`Connected` passes `false` (assume disconnected) and `Managed` passes `true` (assume
+managed — a missing property is more likely a transient issue than intentional opt-out).
+The different defaults are documented inline at each call site.
+
 **Daemon-side registration:** `zbus::fdo::ObjectManager` is registered at
 `/org/tisvlay` *before* TV interfaces are registered at `/org/tisvlay/Tv/{id}`,
 which is the correct order for `InterfacesAdded` signals to fire. The test mock
@@ -512,6 +517,8 @@ outer flag under the outer write lock. No sync gap.
 alias, but a named struct would be slightly more self-documenting (e.g., accessing
 `.managed` vs `.0`). Not worth changing unless the tuple grows more fields.
 
+**Status:** No action needed — verified correct.
+
 ---
 
 ### I3. `set_tv_option` managed sync acquires write lock after disk persist
@@ -543,6 +550,11 @@ with an error before reaching this block. So the double-parse is redundant but s
 
 **Severity:** Info (no action needed)
 
+**Status:** No action needed. The double-parse is a minor redundancy but introduces no
+risk — `apply_tv_option` gates the early return, so the second parse is unreachable on
+failure. The brief flag-lag window is acceptable given the alternative (holding the outer
+write lock across disk I/O) would be strictly worse.
+
 ---
 
 ### I4. `AddTv` D-Bus signature change is breaking for existing clients
@@ -558,6 +570,9 @@ Since there are no stability guarantees and all consumers (CLI, tray) are in-tre
 were updated, this is fine. Just noting it for the record.
 
 **Severity:** Info (intentional API change, no external consumers)
+
+**Status:** Acknowledged. All in-tree consumers (CLI, tray) were updated atomically
+with the daemon change. No action needed.
 
 ---
 

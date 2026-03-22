@@ -473,11 +473,11 @@ impl DaemonClient {
                     .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
                     .unwrap_or_default()
             };
-            let get_bool = |key: &str| -> bool {
+            let get_bool = |key: &str, default: bool| -> bool {
                 props
                     .get(key)
                     .and_then(|v: &OwnedValue| bool::try_from(v.clone()).ok())
-                    .unwrap_or(false)
+                    .unwrap_or(default)
             };
 
             let id = get_str("Id");
@@ -490,8 +490,8 @@ impl DaemonClient {
                 name: get_str("Name"),
                 address: get_str("Address"),
                 vendor: get_str("Vendor"),
-                connected: get_bool("Connected"),
-                managed: get_bool("Managed"),
+                connected: get_bool("Connected", false), // safe: assume disconnected
+                managed: get_bool("Managed", true), // safe: assume managed (automation opt-out)
                 path: path.as_str().to_string(),
             });
         }
