@@ -251,6 +251,10 @@ managed set rather than the full set.
 
 **Severity:** Low (narrow window, commands will fail anyway)
 
+**Resolution:** Fixed — fallback now returns an empty `HashSet`, skipping dispatch entirely.
+If the daemon is unreachable, TV commands would fail regardless; dispatching to unmanaged
+TVs only produces spurious error logs.
+
 ---
 
 ## H9. Tray `SetManaged` command doesn't trigger session service reload
@@ -281,6 +285,9 @@ No action needed; documenting for completeness.
 
 **Severity:** Info (no actual race — daemon's in-memory update is sequenced)
 
+**Resolution:** Added an explanatory comment at the `SetManaged` call site in
+`tisvlay-tray/src/main.rs` so future readers don't mistake the omission for a bug.
+
 ---
 
 ## H10. Scroll handler `volume_item`/`backlight_item` use `backlight_item` for screen on/off
@@ -304,6 +311,10 @@ helper here, since screen on/off is not a backlight adjustment.
 **Fix direction:** Change `backlight_item` to `tv_item` for the Screen Off/On entries.
 
 **Severity:** Low (UX glitch, not a data bug)
+
+**Resolution:** By design — screen on/off is the discrete pole of the backlight axis,
+the same relationship mute has to volume. Clicking "Screen Off" contextualizing the scroll
+wheel to backlight is the expected interaction pattern, not a side effect.
 
 ---
 

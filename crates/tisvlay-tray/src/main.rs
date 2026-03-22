@@ -307,6 +307,9 @@ async fn process_commands(
                 {
                     warn!(tv_id = %id, managed = %managed, error = %e, "Set managed failed");
                 }
+                // No need to notify the session service: it queries the daemon's managed
+                // set live on each event, and set_tv_option updates in-memory state
+                // synchronously before returning, so the next event dispatch picks it up.
             }
         }
 

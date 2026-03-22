@@ -399,7 +399,8 @@ async fn event_handler(
         info!(event = %event, "Processing session event");
 
         // Query current managed set from daemon (live, not cached).
-        // Falls back to all known TV IDs if the daemon is unreachable.
+        // Falls back to an empty set if the daemon is unreachable — TV commands
+        // would fail anyway, and dispatching to unmanaged TVs produces spurious errors.
         let managed_ids: HashSet<String> = match daemon.list_tvs().await {
             Ok(tvs) => tvs
                 .into_iter()
@@ -407,8 +408,8 @@ async fn event_handler(
                 .map(|t| t.id)
                 .collect(),
             Err(e) => {
-                warn!(error = %e, "Failed to query managed TVs; falling back to full TV list");
-                state.read().await.tv_ids.iter().cloned().collect()
+                warn!(error = %e, "Failed to query managed TVs; skipping event dispatch");
+                HashSet::new()
             }
         };
 
