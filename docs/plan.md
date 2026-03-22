@@ -15,25 +15,44 @@ assign profiles — functionality already available in the tray.
 
 ---
 
+### Part 0: Tray Scroll Target Tracks Last-Interacted TV
+
+- `crates/tisvlay-tray/src/tray.rs`:
+  - Added `scroll_tv_id: Option<String>` to `TisvlayTray`
+  - `volume_item` / `backlight_item` accept a `tv_id` parameter; on activation they set
+    both `scroll_target` and `scroll_tv_id`
+  - `scroll()` resolves target by checking `scroll_tv_id` first (if that TV is still
+    connected and on), falling back to the first connected TV
+- `crates/tisvlay-tray/src/main.rs`: initialize `scroll_tv_id: None`
+
+---
+
 ### Part 1: `managed` Flag
 
 #### 1.1 — Core: `TvConfig` + `TvInfo`
 
-- `crates/tisvlay-core/src/config.rs`: add `managed: bool` to `TvConfig`
-  - `#[serde(default = "default_true")]` so existing configs without the field stay managed
+- `crates/tisvlay-core/src/config.rs`: add `managed: bool` to `TvConfig` (required field, no serde default)
+  - Removed `default_vendor()`, `default_managed()` serde helpers; all fields are now required in TOML
+  - `TvConfig::new(id, name, vendor)` — vendor is now a required constructor parameter; `with_vendor()` removed
 - `crates/tisvlay-core/src/dbus_client.rs`: add `managed: bool` to `TvInfo`
-  - Populated from the daemon's D-Bus `GetTvs` response
+  - Populated via `org.tisvlay.Tv1` `managed` D-Bus property
+
+#### 1.1b — Example config updated
+
+- `docs/configs/daemon.toml`: added `on_shutdown`, `on_no_active_session` to `[daemon]`;
+  added `managed = true` to the example `[[tv]]` entry
 
 #### 1.2 — Daemon: enforce `managed` in all automation paths
 
 - `crates/tisvlayd/src/tv_manager.rs`:
   - Boot WoL loop: skip TVs where `managed = false`
-  - `on_shutdown` action: skip unmanaged TVs
-  - D-Bus `GetTvs` response: include `managed` field in returned structs
+  - `on_shutdown` action: skip unmanaged TVs via `list_managed_tv_ids()`
+  - Added `list_managed_tv_ids()` — returns IDs where `config.managed == true`
+- `crates/tisvlayd/src/dbus/tv.rs`: expose `managed` as a D-Bus property on `org.tisvlay.Tv1`
 - `crates/tisvlayd/src/dbus/manager.rs`:
-  - `SetTvOption`: wire up `managed` key → parse `"true"`/`"false"` → update config + reload
-- `crates/tisvlayd/src/dbus/` (session event dispatch):
-  - Any path that fans out events to all TVs must filter to managed-only
+  - `SetTvOption`: handles `managed` key → parses `"true"`/`"false"` → updates config + reloads
+- `crates/tisvlayd/src/logind.rs`:
+  - `execute_action_all_tvs` uses `list_managed_tv_ids()` instead of `list_tv_ids()`
 
 #### 1.3 — Session service: filter to managed TVs
 
@@ -45,20 +64,24 @@ assign profiles — functionality already available in the tray.
 - `crates/tisvlay-tray/src/state.rs` (`CachedTvState`): add `managed: bool`
   - Populated from `TvInfo.managed` in `fetch_all_state()`
 - `crates/tisvlay-tray/src/tray.rs`:
-  - `build_tv_submenu`: use a distinct icon or `[unmanaged]` label suffix for unmanaged TVs
-  - `build_connected_tv_menu` / `build_disconnected_tv_menu`: add a "Managed" toggle
-    checkbox item that sends a new `TrayCommand::SetManaged(String, bool)`
+  - `build_tv_submenu`: icon conveys managed state — `tvconnected` (managed+connected),
+    `tvtrusted` (unmanaged+connected), `tvdisconnected` (disconnected)
+  - `build_connected_tv_menu` / `build_disconnected_tv_menu`: "Manage" / "Unmanage" toggle
+    placed directly below the profile submenu (no separator); sends `TrayCommand::SetManaged(String, bool)`
 - `crates/tisvlay-tray/src/main.rs` (`process_commands`):
   - Handle `TrayCommand::SetManaged(id, managed)` → `daemon.set_tv_option(&id, "managed", &managed.to_string())`
 
 #### 1.5 — CLI: `manage` / `unmanage` + `list` managed status
 
 - `crates/tisvlay-cli/src/main.rs`:
-  - Add `Commands::Manage { tv_id: Option<String> }` and `Commands::Unmanage { tv_id: Option<String> }`
-    (tv_id optional: defaults to first TV like other commands)
+  - `Commands::Manage` / `Commands::Unmanage` — use first TV by default, like other commands
     → calls `client.set_tv_option(&id, "managed", "true"/"false")`
-  - Update `Commands::List` output to show `[managed]` / `[unmanaged]`
-- `crates/tisvlay-core/src/dbus_client.rs`: add `set_tv_option(tv_id, key, value)` method if not already exposed
+  - `Commands::List` output shows `[unmanaged]` suffix for unmanaged TVs
+  - `Commands::Status` fetches managed status concurrently via `tokio::try_join!`
+  - `Mute` argument changed from free-form string to typed `MuteState` ValueEnum (`on`/`off`/`toggle`, default `toggle`)
+  - `Input --list` flag removed — omitting the input ID already implies listing
+  - `pair --vendor` default `"lg"` removed; vendor is now required
+  - `pair --id` dead option removed (daemon assigns IDs automatically)
 
 ---
 
@@ -102,8 +125,8 @@ Error gracefully if the session service is unavailable (it's a user service, not
 
 #### Verification
 
-- [ ] `cargo check --workspace`
-- [ ] `cargo test --workspace`
+- [x] `cargo check --workspace`
+- [x] `cargo test --workspace`
 - [ ] Manual: pair two TVs, unmanage one, reboot — confirm WoL only fires for managed TV
-- [ ] Manual: tray toggle flips managed state, menu updates on next refresh
+- [ ] Manual: tray toggle flips managed state, icon updates on next refresh
 - [ ] Manual: `tisvlay profile list/get/set` round-trips correctly
