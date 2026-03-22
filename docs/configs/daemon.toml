@@ -1,6 +1,8 @@
 [daemon]
 wake_on_boot = true
 wake_delay_ms = 1000
+on_shutdown = "power_off"
+on_no_active_session = "none"
 
 [profiles.default]
 on_screen_lock = "screen_off"
@@ -16,6 +18,7 @@ id = "office"
 name = "office"
 vendor = "lg"
 only_when_active = false
+managed = true
 
 [tv.lg]
 client_key = "bec7b2f5afe657547d367e84cbf59095"
