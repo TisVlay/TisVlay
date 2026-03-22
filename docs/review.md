@@ -417,3 +417,167 @@ The two medium-severity items are:
   Exposing `list_managed_tv_ids()` as a dedicated D-Bus method would be a clean fix.
 
 No critical bugs found. The dead code cleanup from the F-series review is holding.
+
+---
+
+## Follow-on Review (post-72351264)
+
+This section reviews the fixes from commits `9c86010..3ab23ac` (6 commits responding
+to findings H1–H12) and the new Phase 5C `ObjectManager` work.
+
+Build: clean. Tests: all pass.
+
+---
+
+### Verification of H-series Resolutions
+
+All 12 findings were addressed. Assessment of each response:
+
+| # | Resolution | Verdict |
+|---|-----------|---------|
+| H1 | Stale doc line deleted | **Correct** — verified line 378 no longer references `Config` alias. |
+| H2 | `reload_config` now uses `spawn_blocking` + `disk_write_lock` | **Correct** — consistent with all other disk I/O paths. |
+| H3 | Replaced with Phase 5C `ObjectManager` | **Correct** — see I1 below for detailed review. |
+| H4 | Intentionally kept (eager `get_tv_id`) | **Agreed** — the lazy `Result` pattern means the extra call is harmless. |
+| H5 | Converted to `match` | **Correct** — cleaner control flow. |
+| H6 | `managed` now required 4th parameter of `TvConfig::new` | **Correct** — no default in library; UX default lives in CLI only. |
+| H7 | `managed` threaded through all layers to `pair_tv` | **Correct** — `--unmanaged` CLI flag, D-Bus `AddTv` takes `managed: bool`. |
+| H8 | Fallback returns empty `HashSet` | **Correct** — prevents spurious dispatch to unmanaged TVs. |
+| H9 | Explanatory comment added | **Correct** — documents the intentional omission. |
+| H10 | Intentionally kept (screen off is backlight axis) | **Agreed** — the rationale is sound: screen off/on is the extreme of the backlight axis, so contextualizing scroll to backlight is deliberate UX, not a side effect. |
+| H11 | `managed` stored outside per-TV mutex as `TvEntry = (bool, Arc<Mutex<ManagedTv>>)` | **Correct** — see I2 below for detailed review. |
+| H12 | `TvConfig` struct-level doc updated | **Correct** — now mentions `managed` and its automation semantics. |
+
+---
+
+### I1. Phase 5C `ObjectManager` — review of new `list_tvs()` implementation
+
+**File:** [crates/tisvlay-core/src/dbus_client.rs:451-500](crates/tisvlay-core/src/dbs_client.rs#L451-L500)
+
+The new `list_tvs()` uses `GetManagedObjects` — a single D-Bus round-trip returning
+all object paths with their interface properties. This eliminates the previous 1 + 6N
+pattern. The implementation is clean:
+
+- Filters for objects exposing `org.tisvlay.Tv1` (correct interface name).
+- `get_str` / `get_bool` closures extract typed values with safe fallbacks.
+- `id.is_empty()` check skips objects without a valid ID.
+- Property names (`Id`, `Name`, `Address`, `Vendor`, `Connected`, `Managed`) match
+  the D-Bus property names from the `#[zbus(property)]` annotations in `tv.rs`.
+
+**One concern:** `get_bool` defaults to `false` for both `Connected` and `Managed`.
+For `Connected`, `false` is the safe default (assume disconnected). For `Managed`,
+`false` means "skip all automation" — so if the `Managed` property is somehow missing
+from the `GetManagedObjects` response (shouldn't happen, but defensive), the TV silently
+becomes unmanaged. The previous `list_tvs()` used `unwrap_or(true)` for `managed`.
+This is a behavioral change: old code defaulted to managed, new code defaults to
+unmanaged. Consider whether `unwrap_or(true)` is the safer default for `Managed`
+specifically, since a missing property is more likely a transient issue than an
+intentional unmanage.
+
+**Severity:** Low (the property should always be present; defensive default question)
+
+**Daemon-side registration:** `zbus::fdo::ObjectManager` is registered at
+`/org/tisvlay` *before* TV interfaces are registered at `/org/tisvlay/Tv/{id}`,
+which is the correct order for `InterfacesAdded` signals to fire. The test mock
+also registers `ObjectManager` at `/org/tisvlay`.
+
+**`GetTvs` removal:** The `GetTvs` method was removed from `org.tisvlay.Manager1`
+and the `TisvlayManager` proxy. This is a clean break — no callers remain. The
+`is_available()` check was updated to use `get_managed_objects()` instead.
+
+---
+
+### I2. `TvEntry` pattern — `managed` flag outside per-TV mutex
+
+**File:** [crates/tisvlayd/src/tv_manager.rs:134-139](crates/tisvlayd/src/tv_manager.rs#L134-L139)
+
+The `type TvEntry = (bool, Arc<Mutex<ManagedTv>>)` approach is clean and solves the
+lock contention issue. Key sync points verified:
+
+1. **`TvManager::new`** — outer flag initialized from `tv_config.managed`. Correct.
+2. **`set_tv_option`** — after applying to in-memory config, acquires outer write lock
+   and updates the flag. Correct.
+3. **`reload_config`** — Phase 1 (under write lock) updates `*managed_flag =
+   tv_config.managed` for existing TVs. Correct.
+4. **`pair_tv`** — inserts `(tv_config.managed, ...)`. Correct.
+5. **`boot_wake`** — checks `*managed` before acquiring per-TV lock, skipping
+   unmanaged TVs entirely. Correct optimization.
+6. **`list_managed_tv_ids`** — now a simple `filter_map` with no per-TV locks. Correct.
+7. **`remove_tv`** — destructures `(_, arc)` correctly. Correct.
+
+All paths where `managed` can change (`set_tv_option`, `reload_config`) update the
+outer flag under the outer write lock. No sync gap.
+
+**Minor style note:** The tuple `(bool, Arc<Mutex<ManagedTv>>)` is fine with the type
+alias, but a named struct would be slightly more self-documenting (e.g., accessing
+`.managed` vs `.0`). Not worth changing unless the tuple grows more fields.
+
+---
+
+### I3. `set_tv_option` managed sync acquires write lock after disk persist
+
+**File:** [crates/tisvlayd/src/tv_manager.rs:972-981](crates/tisvlayd/src/tv_manager.rs#L972-L981)
+
+```rust
+// Keep the outer managed flag in sync when toggled via SetTvOption.
+if key == "managed" {
+    if let Ok(managed_val) = value.parse::<bool>() {
+        let mut tvs = self.tvs.write().await;
+        if let Some((flag, _)) = tvs.get_mut(tv_id) {
+            *flag = managed_val;
+        }
+    }
+}
+```
+
+This runs *after* the `spawn_blocking` disk persist. The in-memory per-TV config was
+already updated at line 958. There's a brief window between the per-TV lock release
+(line 959) and the outer flag update (line 976) where `list_managed_tv_ids` could read
+the stale outer flag. In practice this is harmless — a single event might use the
+old managed status — and the alternative (holding the outer write lock across the
+entire persist) would block all TV lookups during disk I/O.
+
+The `if let Ok(...)` silently ignores parse failures. But `apply_tv_option` at line
+958 already validates the value — if the parse fails there, the function returns early
+with an error before reaching this block. So the double-parse is redundant but safe.
+
+**Severity:** Info (no action needed)
+
+---
+
+### I4. `AddTv` D-Bus signature change is breaking for existing clients
+
+**File:** [crates/tisvlayd/src/dbus/manager.rs:93-96](crates/tisvlayd/src/dbus/manager.rs#L93-L96)
+
+The `AddTv` method signature changed from `(name, vendor, config_json)` → `(name,
+vendor, config_json, managed)`. This changes the D-Bus type signature from `sss` to
+`sssb`. Any existing client calling `AddTv` with the old signature will get a D-Bus
+error.
+
+Since there are no stability guarantees and all consumers (CLI, tray) are in-tree and
+were updated, this is fine. Just noting it for the record.
+
+**Severity:** Info (intentional API change, no external consumers)
+
+---
+
+### Summary of New Findings
+
+| # | Severity | Item |
+|---|----------|------|
+| I1 | **Low** | `get_bool` defaults `Managed` to `false` — old code defaulted to `true` |
+| I2 | **N/A** | `TvEntry` pattern verified correct; all sync points covered |
+| I3 | **Info** | Brief window where outer managed flag lags behind per-TV config (harmless) |
+| I4 | **Info** | `AddTv` D-Bus signature change is breaking (no external consumers) |
+
+### Overall Assessment
+
+The H-series fixes are all correctly implemented. The Phase 5C `ObjectManager` adoption
+is a significant improvement — `list_tvs()` goes from 1 + 6N round-trips to exactly 1.
+The `TvEntry` pattern for `managed` outside the per-TV mutex is clean and eliminates the
+lock contention issue.
+
+The only actionable item is I1: consider whether `Managed` should default to `true`
+(old behavior, safe-by-default for automation) rather than `false` (new behavior,
+safe-by-default for *not* automating) when the property is missing from
+`GetManagedObjects`. This is a judgment call on which failure mode is less surprising.
