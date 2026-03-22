@@ -20,6 +20,7 @@ use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
     register_tv_interfaces, tv_path, ManagerService, TvService, DBUS_NAME, MANAGER_PATH,
+    OBJECT_MANAGER_PATH,
 };
 use crate::registry::create_registry;
 use crate::tv_manager::{StateChangeEvent, TvManager};
@@ -111,6 +112,18 @@ async fn main() -> Result<()> {
         .build()
         .await
         .context("Failed to build D-Bus connection")?;
+
+    // Register ObjectManager at /org/tisvlay (ancestor of all tisvlay objects).
+    // Must be registered first so that subsequent at() calls trigger InterfacesAdded.
+    connection
+        .object_server()
+        .at(OBJECT_MANAGER_PATH, zbus::fdo::ObjectManager)
+        .await
+        .context("Failed to serve ObjectManager interface")?;
+    info!(
+        "ObjectManager interface registered at {}",
+        OBJECT_MANAGER_PATH
+    );
 
     // Create and register manager service at /org/tisvlay/Manager
     let manager_service =

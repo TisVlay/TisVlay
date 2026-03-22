@@ -6,6 +6,9 @@
 /// D-Bus service name for tisvlayd.
 pub const DAEMON_SERVICE: &str = "org.tisvlay.Daemon";
 
+/// D-Bus object path for the ObjectManager root (ancestor of all tisvlay objects).
+pub const OBJECT_MANAGER_PATH: &str = "/org/tisvlay";
+
 /// D-Bus object path for manager interface.
 pub const MANAGER_PATH: &str = "/org/tisvlay/Manager";
 

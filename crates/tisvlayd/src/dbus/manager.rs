@@ -69,18 +69,6 @@ impl ManagerService {
     // TV Management
     // -------------------------------------------------------------------------
 
-    /// Get all TV object paths.
-    async fn get_tvs(&self) -> Vec<ObjectPath<'static>> {
-        debug!("D-Bus: GetTvs");
-        let manager = &self.manager;
-        manager
-            .list_tv_ids()
-            .await
-            .into_iter()
-            .map(|id| ObjectPath::try_from(tv_path(&id)).unwrap())
-            .collect()
-    }
-
     /// Get supported vendor backends.
     ///
     /// Returns: Array of (vendor_id, vendor_name) tuples.
@@ -105,8 +93,9 @@ impl ManagerService {
         name: &str,
         vendor: &str,
         config_json: &str,
+        managed: bool,
     ) -> Result<ObjectPath<'static>, DaemonError> {
-        info!(name = %name, vendor = %vendor, "D-Bus: AddTv");
+        info!(name = %name, vendor = %vendor, managed = %managed, "D-Bus: AddTv");
 
         // Verify vendor is supported
         if self.registry.get(vendor).is_none() {
@@ -123,7 +112,7 @@ impl ManagerService {
 
         let manager = &self.manager;
         let tv_id = manager
-            .pair_tv(name, vendor, vendor_config, None)
+            .pair_tv(name, vendor, vendor_config, None, managed)
             .await
             .map_err(DaemonError::from)?;
 
@@ -184,7 +173,7 @@ impl ManagerService {
 
     /// Set a system-level TV option.
     ///
-    /// Supported keys: `hdmi_input`, `only_when_active`, `name`.
+    /// Supported keys: `hdmi_input`, `only_when_active`, `managed`, `name`.
     async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, key = %key, value = %value, "D-Bus: SetTvOption");
         self.manager

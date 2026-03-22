@@ -174,20 +174,24 @@ See `crates/tisvlayd/src/dbus/` for the implementation.
 ### Object Paths
 
 ```
+/org/tisvlay                      # ObjectManager root (org.freedesktop.DBus.ObjectManager)
 /org/tisvlay/Manager              # Manager interface
 /org/tisvlay/Tv/{tv_id}           # Per-TV objects (e.g., /org/tisvlay/Tv/living_room)
 ```
 
+`org.freedesktop.DBus.ObjectManager` is registered at `/org/tisvlay`. Clients use
+`GetManagedObjects()` to retrieve all object paths and their interface properties in a
+single round-trip — replacing the old `GetTvs` + per-property pattern.
+
 ### org.tisvlay.Manager1
 
 Methods:
-- `GetTvs() → ao` — list per-TV object paths
 - `GetSupportedVendors() → a(ss)` — list `(vendor_id, vendor_name)` pairs
-- `AddTv(name: s, vendor: s, config_json: s) → o` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG)
+- `AddTv(name: s, vendor: s, config_json: s, managed: b) → o` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation
 - `RemoveTv(tv_id: s)` — remove TV from config
 - `ReloadConfig()` — reload config from disk
 - `SetDaemonOption(key: s, value: s)` — update a daemon config field; saves to disk and applies immediately
-- `SetTvOption(tv_id: s, key: s, value: s)` — update a system-level TV field (`hdmi_input`, `only_when_active`, `name`); saves to disk and applies immediately
+- `SetTvOption(tv_id: s, key: s, value: s)` — update a system-level TV field (`hdmi_input`, `only_when_active`, `managed`, `name`); saves to disk and applies immediately
 - `GetSystemProfile() → s` — system default profile as JSON; used by session services to inherit defaults
 - `GetSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
 - `DiscoverTvs(timeout_ms: u) → a(sssss)` — SSDP discovery, returns `(id, name, address, hardware_id, vendor)` tuples. Only available when compiled with the `discovery` feature.
@@ -207,7 +211,7 @@ Methods:
 
 ### org.tisvlay.Tv1 (Base Interface)
 
-Properties: `Id`, `Name`, `Vendor`, `Address` (transport-agnostic display address), `Connected`, `Capabilities`
+Properties: `Id`, `Name`, `Vendor`, `Address` (transport-agnostic display address), `Connected`, `Managed`, `Capabilities`
 
 Methods: `Reconnect()`, `GetState()`
 
@@ -263,6 +267,7 @@ name = "Living Room G4"
 vendor = "lg"
 hdmi_input = "HDMI_1"            # which HDMI port this PC uses (vendor-agnostic)
 only_when_active = true          # only control when TV is on this input
+managed = true                   # participates in automation (boot WoL, session events, shutdown)
 
 # Vendor-specific config — connection params + vendor features.
 # Core has zero knowledge of these fields; each vendor crate
@@ -338,14 +343,19 @@ USAGE:
 COMMANDS:
     power           Power control (on/off)
     screen          Screen control (blank/unblank)
-    input           Switch HDMI input
+    input           Switch HDMI input (lists inputs when no ID given)
     volume          Volume control
-    mute            Mute/unmute
+    mute            Mute/unmute (on/off/toggle, default: toggle)
     backlight       Backlight control
-    status          Show TV status
+    status          Show TV status (includes managed flag)
     pair            Pair a new TV
-    list            List configured TVs
+    list            List configured TVs (shows [unmanaged] suffix)
     remove          Remove a TV
+    manage          Show or set automated management for a TV (true/false)
+    profile         Profile management (requires tisvlay-session)
+      list          List available profiles
+      get           Show profile assigned to a TV
+      set <NAME>    Assign a profile to a TV
 
 OPTIONS:
     --tv <ID>       Target TV (default: first configured)
@@ -355,21 +365,31 @@ EXAMPLES:
     tisvlay power on
     tisvlay screen off
     tisvlay --tv office input HDMI_2
+    tisvlay input                                                   # list available inputs
     tisvlay pair 192.168.1.100 --name "Living Room" --vendor lg --wake-id AA:BB:CC:DD:EE:FF
+    tisvlay pair 192.168.1.101 --name "Office" --vendor lg --unmanaged
     tisvlay volume 30
     tisvlay backlight 80
+    tisvlay manage                                                      # show current
+    tisvlay manage true
+    tisvlay manage false --tv office
+    tisvlay profile list
+    tisvlay profile set gaming --tv living-room
 ```
 
 ---
 
 ## System Tray Menu Structure
 
+Icons convey managed state: `tvconnected` (managed + connected), `tvtrusted` (unmanaged + connected), `tvdisconnected` (disconnected regardless of managed state).
+
 Connected TV submenu:
 ```
-▶ Living Room G4  [network-connect]
+▶ Living Room G4  [tvconnected]
   ├─ Power Off
-  ├─ Profile ▶  (RadioGroup: gaming ✓, default)
-  ├─ Input ▶  (RadioGroup: HDMI 1, HDMI 2 ✓, HDMI 3)
+  ├─ Profile ▶  (RadioGroup: gaming ✓, default)   [settings-configure]
+  ├─ Unmanage
+  ├─ Input ▶  (RadioGroup: HDMI 1, HDMI 2 ✓, HDMI 3)   [input-tvremote-symbolic]
   ├─ Volume: 60
   │  ├─ Volume Up (+5)
   │  ├─ Volume Down (-5)
@@ -382,8 +402,20 @@ Connected TV submenu:
 
 Disconnected TV submenu:
 ```
-▶ Office C3  [network-disconnect]
-  └─ Power On (Wake)
+▶ Office C3  [tvdisconnected]
+  ├─ Power On (Wake)
+  ├─ Profile ▶  (RadioGroup: default ✓)
+  └─ Unmanage
+```
+
+Unmanaged connected TV submenu:
+```
+▶ Guest TV  [tvtrusted]
+  ├─ Power Off
+  ├─ Profile ▶
+  ├─ Manage
+  ├─ Input ▶
+  └─ ...
 ```
 
 Bottom:
@@ -394,8 +426,8 @@ Refresh
 Quit
 ```
 
-Scroll on tray icon adjusts volume or backlight on first connected TV (context-dependent on last interaction).
-Tooltip shows per-TV state summary (volume, muted, backlight).
+Scroll wheel adjusts volume or backlight for the TV last interacted with via a volume/backlight control; falls back to the first connected TV.
+Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it contextualizes the scroll wheel to backlight, since screen off is the discrete pole of the backlight axis.
 
 ---
 
@@ -453,12 +485,43 @@ Tooltip shows per-TV state summary (volume, muted, backlight).
 6. D-Bus policy installed via `services.dbus.packages` (idiomatic NixOS)
 7. User services auto-start on `graphical-session.target`
 
+### Phase 5A: `managed` Flag + CLI Profile Parity - COMPLETE
+
+**Goal**: Let users designate which TVs participate in automation without unpairing.
+
+1. `managed: bool` added to `TvConfig` (required TOML field, no serde default) and `TvInfo`
+2. `TvConfig::new(id, name, vendor, managed)` — all four required; UX default lives in CLI only
+3. Daemon enforces `managed` in all automation paths: boot WoL, session events, shutdown
+4. `TvEntry = (bool, Arc<Mutex<ManagedTv>>)` — managed flag stored outside per-TV mutex; `list_managed_tv_ids()` scans with only the outer read lock
+5. `Managed` D-Bus property exposed on `org.tisvlay.Tv1`; `SetTvOption` handles `managed` key
+6. `AddTv` D-Bus signature extended with `managed: b` parameter
+7. Tray: icon reflects managed state (`tvconnected`/`tvtrusted`/`tvdisconnected`); Manage/Unmanage toggle in every TV submenu
+8. CLI: `manage [true|false]` command (no arg shows current status); `list` shows `[unmanaged]` suffix; `pair --unmanaged` flag; `profile list/get/set` subcommands via `SessionClient`
+9. Session service: profiles built for all paired TVs at load; event dispatch filtered live per-event
+
+### Phase 5B: Session Service — Live `managed` Filtering - COMPLETE
+
+**Goal**: Toggle managed at runtime without requiring a service reload.
+
+1. `event_handler` queries `daemon.list_tvs()` before each dispatch to get the current managed set
+2. Fallback on daemon unreachable: skip dispatch entirely (empty set) rather than leaking unmanaged TVs
+
+### Phase 5C: `ObjectManager` for Bulk TV Discovery - COMPLETE
+
+**Goal**: Replace 1 + 6N D-Bus round-trips with a single `GetManagedObjects` call.
+
+1. `org.freedesktop.DBus.ObjectManager` registered at `/org/tisvlay` (ancestor of all tisvlay objects)
+2. `GetTvs()` removed from `org.tisvlay.Manager1` — superseded by `GetManagedObjects`
+3. `DaemonClient.list_tvs()` rewritten: single round-trip, no proxy objects created, O(1) D-Bus cost regardless of TV count
+4. `get_bool(key, default)` uses explicit defaults: `Connected → false`, `Managed → true`
+5. Diagnostic logging: `debug!` per entry on property fallbacks; `warn!` when `Id` is empty
+
 ### Phase 5: GUI Configuration
 
 **Goal**: User-friendly setup and configuration.
 
 1. `tisvlay-gui`: Slint-based settings window
-2. TV discovery and pairing wizard
+2. TV discovery and pairing wizard with managed checkbox
 3. Per-TV configuration
 4. Session behavior settings
 

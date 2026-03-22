@@ -38,14 +38,17 @@ fn volume_item(
     label: impl Into<String>,
     icon: &str,
     tx: &mpsc::UnboundedSender<TrayCommand>,
+    tv_id: impl Into<String>,
     cmd_fn: impl Fn() -> TrayCommand + Send + 'static,
 ) -> MenuItem<TisvlayTray> {
     let tx = tx.clone();
+    let tv_id = tv_id.into();
     StandardItem {
         label: label.into(),
         icon_name: icon.into(),
         activate: Box::new(move |tray: &mut TisvlayTray| {
             tray.scroll_target = ScrollTarget::Volume;
+            tray.scroll_tv_id = Some(tv_id.clone());
             let _ = tx.send(cmd_fn());
         }),
         ..Default::default()
@@ -58,14 +61,17 @@ fn backlight_item(
     label: impl Into<String>,
     icon: &str,
     tx: &mpsc::UnboundedSender<TrayCommand>,
+    tv_id: impl Into<String>,
     cmd_fn: impl Fn() -> TrayCommand + Send + 'static,
 ) -> MenuItem<TisvlayTray> {
     let tx = tx.clone();
+    let tv_id = tv_id.into();
     StandardItem {
         label: label.into(),
         icon_name: icon.into(),
         activate: Box::new(move |tray: &mut TisvlayTray| {
             tray.scroll_target = ScrollTarget::Backlight;
+            tray.scroll_tv_id = Some(tv_id.clone());
             let _ = tx.send(cmd_fn());
         }),
         ..Default::default()
@@ -95,6 +101,7 @@ pub enum TrayCommand {
     ToggleMute(String),
     BacklightUp(String),
     BacklightDown(String),
+    SetManaged(String, bool),
     Refresh,
     Quit,
 }
@@ -112,6 +119,8 @@ pub struct TisvlayTray {
     pub cmd_tx: mpsc::UnboundedSender<TrayCommand>,
     /// What the scroll wheel adjusts (set by last volume/backlight interaction).
     pub scroll_target: ScrollTarget,
+    /// TV ID last interacted with via volume/backlight; scroll targets this TV.
+    pub scroll_tv_id: Option<String>,
 }
 
 impl Tray for TisvlayTray {
@@ -202,9 +211,17 @@ impl Tray for TisvlayTray {
         if orientation != ksni::Orientation::Vertical {
             return;
         }
-        // Adjust volume or backlight on the first connected TV,
-        // depending on which the user last interacted with.
-        if let Some(tv) = self.tvs.iter().find(|tv| tv.connected && tv.is_on) {
+        // Prefer the TV last interacted with; fall back to first connected TV.
+        let target = self
+            .scroll_tv_id
+            .as_deref()
+            .and_then(|id| {
+                self.tvs
+                    .iter()
+                    .find(|tv| tv.id == id && tv.connected && tv.is_on)
+            })
+            .or_else(|| self.tvs.iter().find(|tv| tv.connected && tv.is_on));
+        if let Some(tv) = target {
             let id = tv.id.clone();
             let cmd = match (self.scroll_target, delta > 0) {
                 (ScrollTarget::Volume, true) => TrayCommand::VolumeUp(id),
@@ -267,14 +284,16 @@ fn build_tv_submenu(
         build_disconnected_tv_menu(tv, cmd_tx)
     };
 
-    let icon = if tv.connected {
-        "network-connect"
-    } else {
-        "network-disconnect"
+    let icon = match (tv.connected, tv.managed) {
+        (true, true) => "tvconnected",
+        (true, false) => "tvtrusted",
+        (false, _) => "tvdisconnected",
     };
 
+    let label = tv.name.clone();
+
     SubMenu {
-        label: tv.name.clone(),
+        label,
         icon_name: icon.into(),
         submenu,
         ..Default::default()
@@ -301,6 +320,7 @@ fn build_connected_tv_menu(
     if !tv.available_profiles.is_empty() {
         items.push(build_profile_submenu(tv, cmd_tx));
     }
+    items.push(build_managed_toggle(tv, cmd_tx));
 
     // Input submenu (if inputs available)
     if !tv.inputs.is_empty() {
@@ -331,6 +351,7 @@ fn build_connected_tv_menu(
         "Volume Up (+5)",
         "audio-volume-high",
         cmd_tx,
+        &id,
         {
             let id = id.clone();
             move || TrayCommand::VolumeUp(id.clone())
@@ -340,6 +361,7 @@ fn build_connected_tv_menu(
         "Volume Down (-5)",
         "audio-volume-medium",
         cmd_tx,
+        &id,
         {
             let id = id.clone();
             move || TrayCommand::VolumeDown(id.clone())
@@ -355,6 +377,7 @@ fn build_connected_tv_menu(
             "audio-volume-muted"
         },
         cmd_tx,
+        &id,
         {
             let id = id.clone();
             move || TrayCommand::ToggleMute(id.clone())
@@ -379,6 +402,7 @@ fn build_connected_tv_menu(
         "Backlight Up (+10)",
         "high-brightness",
         cmd_tx,
+        &id,
         {
             let id = id.clone();
             move || TrayCommand::BacklightUp(id.clone())
@@ -388,6 +412,7 @@ fn build_connected_tv_menu(
         "Backlight Down (-10)",
         "low-brightness",
         cmd_tx,
+        &id,
         {
             let id = id.clone();
             move || TrayCommand::BacklightDown(id.clone())
@@ -396,18 +421,46 @@ fn build_connected_tv_menu(
 
     // Screen blank/unblank (visual mute — OLED-safe)
     if tv.is_screen_on {
-        items.push(backlight_item("Screen Off", "view-hidden", cmd_tx, {
+        items.push(backlight_item("Screen Off", "view-hidden", cmd_tx, &id, {
             let id = id.clone();
             move || TrayCommand::ScreenOff(id.clone())
         }));
     } else {
-        items.push(backlight_item("Screen On", "view-visible", cmd_tx, {
+        items.push(backlight_item("Screen On", "view-visible", cmd_tx, &id, {
             let id = id.clone();
             move || TrayCommand::ScreenOn(id.clone())
         }));
     }
 
     items
+}
+
+/// Build a "Managed / Unmanaged" toggle item for the TV submenu.
+fn build_managed_toggle(
+    tv: &CachedTvState,
+    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
+) -> MenuItem<TisvlayTray> {
+    let tx = cmd_tx.clone();
+    let tv_id = tv.id.clone();
+    let currently_managed = tv.managed;
+    StandardItem {
+        label: if currently_managed {
+            "Unmanage".into()
+        } else {
+            "Manage".into()
+        },
+        icon_name: if currently_managed {
+            "media-playback-pause"
+        } else {
+            "media-playback-start"
+        }
+        .into(),
+        activate: Box::new(move |_: &mut TisvlayTray| {
+            let _ = tx.send(TrayCommand::SetManaged(tv_id.clone(), !currently_managed));
+        }),
+        ..Default::default()
+    }
+    .into()
 }
 
 /// Menu items for a disconnected or powered-off TV.
@@ -427,6 +480,7 @@ fn build_disconnected_tv_menu(
     if !tv.available_profiles.is_empty() {
         items.push(build_profile_submenu(tv, cmd_tx));
     }
+    items.push(build_managed_toggle(tv, cmd_tx));
 
     items
 }
@@ -458,7 +512,7 @@ fn build_profile_submenu(
 
     SubMenu {
         label: format!("Profile: {}", current),
-        icon_name: "preferences-system".into(),
+        icon_name: "settings-configure".into(),
         submenu: vec![RadioGroup {
             selected,
             options,
@@ -502,7 +556,7 @@ fn build_input_submenu(
 
     SubMenu {
         label: "Input".into(),
-        icon_name: "video-television".into(),
+        icon_name: "input-tvremote-symbolic".into(),
         submenu: vec![RadioGroup {
             selected,
             options,

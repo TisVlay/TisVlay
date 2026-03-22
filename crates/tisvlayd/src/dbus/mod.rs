@@ -11,7 +11,9 @@ pub use manager::ManagerService;
 pub use tv::{register_tv_interfaces, unregister_tv_interfaces, TvService};
 
 // Re-export D-Bus path constants and helpers from tisvlay-core.
-pub use tisvlay_core::dbus_paths::{tv_path, DAEMON_SERVICE as DBUS_NAME, MANAGER_PATH};
+pub use tisvlay_core::dbus_paths::{
+    tv_path, DAEMON_SERVICE as DBUS_NAME, MANAGER_PATH, OBJECT_MANAGER_PATH,
+};
 
 use crate::tv_manager::TvManagerError;
 

@@ -15,15 +15,10 @@ mod tests {
     use tisvlay_core::DaemonClient;
 
     /// Minimal mock of the tisvlay Manager D-Bus interface.
-    /// Just implements GetTvs() returning an empty list.
     struct MockManager;
 
     #[zbus::interface(name = "org.tisvlay.Manager1")]
     impl MockManager {
-        async fn get_tvs(&self) -> zbus::fdo::Result<Vec<zbus::zvariant::OwnedObjectPath>> {
-            Ok(vec![])
-        }
-
         async fn get_supported_vendors(&self) -> zbus::fdo::Result<Vec<(String, String)>> {
             Ok(vec![])
         }
@@ -34,14 +29,17 @@ mod tests {
     }
 
     /// Start a mock daemon on the session bus.
+    /// Registers ObjectManager at /org/tisvlay (no TV objects → list_tvs returns vec![]).
     /// Returns a Connection that keeps the service alive.
     async fn start_mock_daemon() -> zbus::Connection {
         let connection = zbus::connection::Builder::session()
             .expect("session bus")
             .name("org.tisvlay.Daemon")
             .expect("request name")
+            .serve_at("/org/tisvlay", zbus::fdo::ObjectManager)
+            .expect("serve ObjectManager")
             .serve_at("/org/tisvlay/Manager", MockManager)
-            .expect("serve")
+            .expect("serve Manager")
             .build()
             .await
             .expect("build connection");

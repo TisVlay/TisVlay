@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use idle::IdleMonitor;
 use session_monitor::{SessionEvent, SessionMonitor};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{DaemonClient, ProfileConfig, ResolvedProfile, SessionAction, UserConfig};
@@ -398,11 +398,27 @@ async fn event_handler(
     while let Some(event) = event_rx.recv().await {
         info!(event = %event, "Processing session event");
 
-        // Get TV actions from resolved profiles
+        // Query current managed set from daemon (live, not cached).
+        // Falls back to an empty set if the daemon is unreachable — TV commands
+        // would fail anyway, and dispatching to unmanaged TVs produces spurious errors.
+        let managed_ids: HashSet<String> = match daemon.list_tvs().await {
+            Ok(tvs) => tvs
+                .into_iter()
+                .filter(|t| t.managed)
+                .map(|t| t.id)
+                .collect(),
+            Err(e) => {
+                warn!(error = %e, "Failed to query managed TVs; skipping event dispatch");
+                HashSet::new()
+            }
+        };
+
+        // Get TV actions from resolved profiles, filtered to currently managed TVs
         let tv_actions: Vec<(String, SessionAction)> = {
             let s = state.read().await;
             s.tv_ids
                 .iter()
+                .filter(|tv_id| managed_ids.contains(*tv_id))
                 .filter_map(|tv_id| {
                     let profile = s.profiles.get(tv_id)?;
                     let action = get_action_for_event(&event, profile);

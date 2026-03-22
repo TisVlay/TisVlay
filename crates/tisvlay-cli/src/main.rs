@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tisvlay_core::{DaemonClient, TvState};
+use tisvlay_core::{DaemonClient, SessionClient, TvState};
 
 #[derive(Parser)]
 #[command(name = "tisvlay")]
@@ -41,35 +41,28 @@ enum Commands {
         action: ScreenAction,
     },
 
-    /// Switch HDMI input
+    /// Switch HDMI input (lists available inputs when no ID given)
     Input {
         /// Input ID (e.g., HDMI_1, HDMI_2)
-        #[arg(required = false)]
         input_id: Option<String>,
-
-        /// List available inputs
-        #[arg(short, long)]
-        list: bool,
     },
 
     /// Volume control
     Volume {
         /// Volume level (0-100), or +/- for relative adjustment
-        #[arg(required = false, allow_hyphen_values = true)]
+        #[arg(allow_hyphen_values = true)]
         level: Option<String>,
     },
 
     /// Mute/unmute audio
     Mute {
-        /// on/off/toggle
         #[arg(default_value = "toggle")]
-        state: String,
+        state: MuteState,
     },
 
     /// Backlight control (OLED pixel brightness)
     Backlight {
         /// Backlight level (0-100)
-        #[arg(required = false)]
         level: Option<u8>,
     },
 
@@ -89,13 +82,14 @@ enum Commands {
         #[arg(short = 'w', long)]
         wake_id: Option<String>,
 
-        /// TV ID (default: derived from name)
+        /// Vendor backend to use (e.g., lg)
         #[arg(long)]
-        id: Option<String>,
-
-        /// Vendor backend to use
-        #[arg(long, default_value = "lg")]
         vendor: String,
+
+        /// Pair as unmanaged — skips automation (boot WoL, session events, shutdown).
+        /// Manual control via tray and CLI still works.
+        #[arg(long, default_value_t = false)]
+        unmanaged: bool,
     },
 
     /// List configured TVs
@@ -105,6 +99,30 @@ enum Commands {
     Remove {
         /// TV ID to remove
         tv_id: String,
+    },
+
+    /// Enable or disable automated management for a TV (shows current status if no argument given)
+    Manage { state: Option<ManageState> },
+
+    /// Profile management (requires tisvlay-session to be running)
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileAction {
+    /// List all available profiles
+    List,
+
+    /// Show the profile assigned to a TV
+    Get,
+
+    /// Assign a profile to a TV
+    Set {
+        /// Profile name to assign
+        profile: String,
     },
 }
 
@@ -122,6 +140,19 @@ enum ScreenAction {
     On,
     /// Turn off the screen (OLED-safe blank)
     Off,
+}
+
+#[derive(clap::ValueEnum, Clone)]
+enum ManageState {
+    True,
+    False,
+}
+
+#[derive(clap::ValueEnum, Clone)]
+enum MuteState {
+    On,
+    Off,
+    Toggle,
 }
 
 #[tokio::main]
@@ -178,9 +209,10 @@ async fn main() -> Result<()> {
                     } else {
                         "disconnected"
                     };
+                    let managed = if tv.managed { "" } else { " [unmanaged]" };
                     println!(
-                        "  {} - {} ({}) [{}] <{}>{}",
-                        tv.id, tv.name, tv.address, status, tv.vendor, default
+                        "  {} - {} ({}) [{}] <{}>{}{}",
+                        tv.id, tv.name, tv.address, status, tv.vendor, managed, default
                     );
                 }
             }
@@ -190,8 +222,8 @@ async fn main() -> Result<()> {
             address,
             name,
             wake_id,
-            id,
             vendor,
+            unmanaged,
         } => {
             let tv_name = name.unwrap_or_else(|| format!("TV at {}", address));
             println!("Connecting to TV at {}...", address);
@@ -199,15 +231,10 @@ async fn main() -> Result<()> {
 
             // Build vendor-agnostic config JSON for the daemon
             let config_json = build_pairing_config_json(&address, wake_id.as_deref());
-            let tv_id = client.pair_tv(&tv_name, &vendor, &config_json).await?;
+            let tv_id = client
+                .pair_tv(&tv_name, &vendor, &config_json, !unmanaged)
+                .await?;
             println!("TV '{}' paired successfully with ID: {}", tv_name, tv_id);
-
-            if let Some(id) = id {
-                println!(
-                    "Note: Custom ID '{}' was requested but daemon assigns IDs automatically.",
-                    id
-                );
-            }
 
             if wake_id.is_none() {
                 println!("\nNote: No wake ID (MAC address) provided. Wake-on-LAN will not work.");
@@ -218,6 +245,62 @@ async fn main() -> Result<()> {
         Commands::Remove { tv_id } => {
             client.remove_tv(&tv_id).await?;
             println!("TV '{}' removed", tv_id);
+        }
+
+        Commands::Manage { state } => {
+            let tv_id = tv_id?;
+            match state {
+                None => {
+                    let tvs = client.list_tvs().await?;
+                    let managed = tvs
+                        .iter()
+                        .find(|t| t.id == tv_id)
+                        .map(|t| t.managed)
+                        .unwrap_or(true);
+                    println!("Managed: {}", managed);
+                }
+                Some(state) => {
+                    let managed = matches!(state, ManageState::True);
+                    client
+                        .set_tv_option(&tv_id, "managed", if managed { "true" } else { "false" })
+                        .await?;
+                    println!("Managed: {}", managed);
+                }
+            }
+        }
+
+        Commands::Profile { action } => {
+            let session = SessionClient::new()
+                .await
+                .context("Failed to connect to session service")?;
+            if !session.is_available().await {
+                eprintln!("Error: tisvlay-session is not running.");
+                eprintln!("Start it with: systemctl --user start tisvlay-session");
+                std::process::exit(1);
+            }
+            match action {
+                ProfileAction::List => {
+                    let profiles = session.list_profiles().await?;
+                    if profiles.is_empty() {
+                        println!("No profiles defined.");
+                    } else {
+                        println!("Available profiles:");
+                        for (name, _) in &profiles {
+                            println!("  {}", name);
+                        }
+                    }
+                }
+                ProfileAction::Get => {
+                    let tv_id = tv_id?;
+                    let profile = session.get_tv_profile(&tv_id).await?;
+                    println!("TV '{}' profile: {}", tv_id, profile);
+                }
+                ProfileAction::Set { profile } => {
+                    let tv_id = tv_id?;
+                    session.set_tv_profile(&tv_id, &profile).await?;
+                    println!("TV '{}' profile set to '{}'", tv_id, profile);
+                }
+            }
         }
 
         Commands::Power { action } => {
@@ -248,18 +331,20 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Input { input_id, list } => {
+        Commands::Input { input_id } => {
             let tv_id = tv_id?;
-            if list || input_id.is_none() {
-                let inputs = client.get_inputs(&tv_id).await?;
-                println!("Available inputs:");
-                for (id, label) in inputs {
-                    println!("  {} - {}", id, label);
+            match input_id {
+                None => {
+                    let inputs = client.get_inputs(&tv_id).await?;
+                    println!("Available inputs:");
+                    for (id, label) in inputs {
+                        println!("  {} - {}", id, label);
+                    }
                 }
-            }
-            if let Some(id) = input_id {
-                client.switch_input(&tv_id, &id).await?;
-                println!("Switched to input: {}", id);
+                Some(id) => {
+                    client.switch_input(&tv_id, &id).await?;
+                    println!("Switched to input: {}", id);
+                }
             }
         }
 
@@ -288,14 +373,13 @@ async fn main() -> Result<()> {
 
         Commands::Mute { state } => {
             let tv_id = tv_id?;
-            let mute = match state.to_lowercase().as_str() {
-                "on" | "true" | "1" => true,
-                "off" | "false" | "0" => false,
-                "toggle" => {
+            let mute = match state {
+                MuteState::On => true,
+                MuteState::Off => false,
+                MuteState::Toggle => {
                     let state = client.get_state(&tv_id).await?;
                     !state.muted.unwrap_or(false)
                 }
-                _ => anyhow::bail!("Invalid mute state: {}. Use on/off/toggle", state),
             };
             client.set_mute(&tv_id, mute).await?;
             println!("Mute: {}", if mute { "on" } else { "off" });
@@ -317,8 +401,15 @@ async fn main() -> Result<()> {
 
         Commands::Status => {
             let tv_id = tv_id?;
-            let state = client.get_state(&tv_id).await?;
-            print_tv_status(&tv_id, &state);
+            let (state, managed) = tokio::try_join!(client.get_state(&tv_id), async {
+                let tvs = client.list_tvs().await?;
+                Ok(tvs
+                    .iter()
+                    .find(|t| t.id == tv_id)
+                    .map(|t| t.managed)
+                    .unwrap_or(true))
+            },)?;
+            print_tv_status(&tv_id, &state, managed);
         }
     }
 
@@ -351,8 +442,9 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
     }
 }
 
-fn print_tv_status(tv_id: &str, state: &TvState) {
+fn print_tv_status(tv_id: &str, state: &TvState, managed: bool) {
     println!("TV: {}", tv_id);
+    println!("Managed: {}", managed);
     println!("Power: {}", if state.is_on { "on" } else { "off" });
     println!("Screen: {}", if state.is_screen_on { "on" } else { "off" });
     if let Some(vol) = state.volume {

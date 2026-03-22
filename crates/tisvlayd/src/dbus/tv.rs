@@ -88,6 +88,17 @@ impl TvService {
         manager.is_connected(&self.tv_id).await
     }
 
+    /// Whether this TV participates in automated management.
+    #[zbus(property)]
+    async fn managed(&self) -> bool {
+        let manager = &self.manager;
+        manager
+            .get_tv_info(&self.tv_id)
+            .await
+            .map(|info| info.managed)
+            .unwrap_or(true)
+    }
+
     /// Capabilities supported by this TV.
     #[zbus(property)]
     async fn capabilities(&self) -> Vec<String> {

@@ -269,16 +269,15 @@ impl Default for DaemonConfig {
 // TvConfig
 // =============================================================================
 
-/// Default vendor.
-fn default_vendor() -> String {
-    "lg".to_string()
-}
-
 /// Configuration for a single TV.
 ///
 /// This struct contains vendor-agnostic identity and hardware settings.
 /// Connection parameters (IP, MAC, etc.) are vendor-specific and stored in
 /// the vendor config map, parsed by each vendor crate.
+///
+/// The `managed` field controls whether this TV participates in automation
+/// (boot WoL, session events, shutdown). Unmanaged TVs remain available for
+/// manual control via the tray and CLI but are skipped by all event-driven paths.
 ///
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvConfig {
@@ -289,7 +288,6 @@ pub struct TvConfig {
     pub name: String,
 
     /// Vendor/backend to use for this TV (e.g., "lg", "samsung").
-    #[serde(default = "default_vendor")]
     pub vendor: String,
 
     /// HDMI input this PC is connected to.
@@ -299,8 +297,14 @@ pub struct TvConfig {
 
     /// Only control this TV when it's on the specified HDMI input.
     /// Requires `hdmi_input` to be set.
-    #[serde(default)]
     pub only_when_active: bool,
+
+    /// Whether this TV participates in automated management.
+    ///
+    /// When `false`, the TV is known to the daemon but skipped for all
+    /// automation (boot WoL, session events, shutdown). Manual control via
+    /// the tray and CLI still works.
+    pub managed: bool,
 
     /// Vendor-specific configuration.
     ///
@@ -312,21 +316,25 @@ pub struct TvConfig {
 
 impl TvConfig {
     /// Create a new TV configuration.
-    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+    ///
+    /// `managed` controls whether this TV participates in automation (boot WoL,
+    /// session events, shutdown). Pass `true` for normal TVs; `false` to register
+    /// the TV for manual control only. There is no default — callers must be explicit.
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        vendor: impl Into<String>,
+        managed: bool,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
-            vendor: default_vendor(),
+            vendor: vendor.into(),
             hdmi_input: None,
             only_when_active: false,
+            managed,
             vendor_config: HashMap::new(),
         }
-    }
-
-    /// Set the vendor.
-    pub fn with_vendor(mut self, vendor: impl Into<String>) -> Self {
-        self.vendor = vendor.into();
-        self
     }
 
     /// Set the HDMI input for display-aware control.
@@ -379,8 +387,6 @@ impl TvConfig {
 ///
 /// Contains TV definitions, vendor credentials, daemon settings, system power
 /// policy, and a default profile inherited by users who have no user config.
-///
-/// This is also aliased as [`Config`] for backward compatibility.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SystemConfig {
     /// Daemon settings.
@@ -696,6 +702,7 @@ name = "Living Room TV"
 vendor = "lg"
 hdmi_input = "HDMI_1"
 only_when_active = true
+managed = true
 
 [tv.lg]
 ip = "192.168.1.100"
@@ -742,6 +749,8 @@ id = "living-room"
 name = "Living Room G4"
 vendor = "lg"
 hdmi_input = "HDMI_1"
+only_when_active = false
+managed = true
 
 [tv.lg]
 ip = "192.168.1.100"
@@ -771,9 +780,7 @@ mac = "AA:BB:CC:DD:EE:FF"
             default_input: Some("HDMI_1".to_string()),
         };
 
-        let tv = TvConfig::new("test", "Test")
-            .with_vendor("lg")
-            .with_vendor_config(&lg_config);
+        let tv = TvConfig::new("test", "Test", "lg", true).with_vendor_config(&lg_config);
 
         assert_eq!(tv.vendor, "lg");
 
@@ -787,18 +794,14 @@ mac = "AA:BB:CC:DD:EE:FF"
     fn test_find_tv() {
         let mut config = SystemConfig::default();
         config.tv.push(
-            TvConfig::new("tv1", "TV 1")
-                .with_vendor("lg")
-                .with_vendor_config(
-                    &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:01"),
-                ),
+            TvConfig::new("tv1", "TV 1", "lg", true).with_vendor_config(
+                &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:01"),
+            ),
         );
         config.tv.push(
-            TvConfig::new("tv2", "TV 2")
-                .with_vendor("lg")
-                .with_vendor_config(
-                    &TestLgConfig::new("192.168.1.2").with_mac("AA:BB:CC:DD:EE:02"),
-                ),
+            TvConfig::new("tv2", "TV 2", "lg", true).with_vendor_config(
+                &TestLgConfig::new("192.168.1.2").with_mac("AA:BB:CC:DD:EE:02"),
+            ),
         );
 
         assert!(config.find_tv("tv1").is_some());
@@ -826,11 +829,9 @@ mac = "AA:BB:CC:DD:EE:FF"
 
         let mut config = SystemConfig::default();
         config.tv.push(
-            TvConfig::new("test", "Test TV")
-                .with_vendor("lg")
-                .with_vendor_config(
-                    &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:FF"),
-                ),
+            TvConfig::new("test", "Test TV", "lg", true).with_vendor_config(
+                &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:FF"),
+            ),
         );
         assert!(config.profiles.is_empty());
 
@@ -1152,6 +1153,8 @@ on_idle_timeout = "screen_off"
 id = "test"
 name = "Test"
 vendor = "lg"
+only_when_active = false
+managed = true
 
 [tv.lg]
 ip = "192.168.1.1"
@@ -1201,6 +1204,8 @@ idle_timeout_seconds = 0
 id = "office"
 name = "Office"
 vendor = "lg"
+only_when_active = false
+managed = true
 
 [tv.lg]
 ip = "192.168.1.1"

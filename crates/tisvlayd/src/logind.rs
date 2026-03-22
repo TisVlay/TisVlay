@@ -314,7 +314,7 @@ async fn check_active_sessions(
 
 /// Execute an action on all managed TVs.
 async fn execute_action_all_tvs(manager: &TvManager, action: SessionAction, context: &str) {
-    let tv_ids = manager.list_tv_ids().await;
+    let tv_ids = manager.list_managed_tv_ids().await;
     for tv_id in &tv_ids {
         let result: Result<(), crate::tv_manager::TvManagerError> = match action {
             SessionAction::ScreenOff => manager.screen_off(tv_id).await,

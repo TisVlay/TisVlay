@@ -77,6 +77,7 @@ async fn main() -> Result<()> {
         daemon_available: false,
         cmd_tx,
         scroll_target: Default::default(),
+        scroll_tv_id: None,
     };
 
     // Spawn the tray icon
@@ -298,6 +299,17 @@ async fn process_commands(
                 } else {
                     set_cached_backlight(&handle, &id, new).await;
                 }
+            }
+            TrayCommand::SetManaged(id, managed) => {
+                if let Err(e) = daemon
+                    .set_tv_option(&id, "managed", if managed { "true" } else { "false" })
+                    .await
+                {
+                    warn!(tv_id = %id, managed = %managed, error = %e, "Set managed failed");
+                }
+                // No need to notify the session service: it queries the daemon's managed
+                // set live on each event, and set_tv_option updates in-memory state
+                // synchronously before returning, so the next event dispatch picks it up.
             }
         }
 

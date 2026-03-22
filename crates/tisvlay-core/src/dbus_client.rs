@@ -33,11 +33,12 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, warn};
+use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH};
+use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH};
 
 // =============================================================================
 // Manager Interface Proxy
@@ -57,17 +58,21 @@ trait TisvlayManager {
         timeout_ms: u32,
     ) -> zbus::Result<Vec<(String, String, String, String, String)>>;
 
-    /// Get list of TV object paths.
-    fn get_tvs(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
-
     /// Get supported vendors.
     /// Returns: [(vendor_id, vendor_name)]
     fn get_supported_vendors(&self) -> zbus::Result<Vec<(String, String)>>;
 
     /// Add a TV.
     /// config_json: vendor-specific connection parameters as JSON
+    /// managed: whether the TV participates in automation
     /// Returns: TV object path
-    fn add_tv(&self, name: &str, vendor: &str, config_json: &str) -> zbus::Result<OwnedObjectPath>;
+    fn add_tv(
+        &self,
+        name: &str,
+        vendor: &str,
+        config_json: &str,
+        managed: bool,
+    ) -> zbus::Result<OwnedObjectPath>;
 
     /// Remove a TV.
     fn remove_tv(&self, tv_path: &OwnedObjectPath) -> zbus::Result<()>;
@@ -116,6 +121,10 @@ trait TisvlayTv {
     /// changes without emitting PropertiesChanged signals.
     #[zbus(property(emits_changed_signal = "false"))]
     fn connected(&self) -> zbus::Result<bool>;
+
+    /// Whether this TV participates in automated management.
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn managed(&self) -> zbus::Result<bool>;
 
     /// Capabilities supported by this TV.
     #[zbus(property)]
@@ -236,6 +245,8 @@ pub struct TvInfo {
     pub vendor: String,
     /// Whether connected.
     pub connected: bool,
+    /// Whether this TV participates in automated management.
+    pub managed: bool,
     /// D-Bus object path.
     pub path: String,
 }
@@ -321,6 +332,7 @@ impl TvProxies {
 pub struct DaemonClient {
     connection: zbus::Connection,
     manager: TisvlayManagerProxy<'static>,
+    object_manager: ObjectManagerProxy<'static>,
     tv_proxies: Arc<RwLock<HashMap<String, Arc<TvProxies>>>>,
 }
 
@@ -356,9 +368,17 @@ impl DaemonClient {
             .await
             .context("Failed to create D-Bus proxy for tisvlay manager")?;
 
+        let object_manager = ObjectManagerProxy::builder(&connection)
+            .destination(DAEMON_SERVICE)?
+            .path(OBJECT_MANAGER_PATH)?
+            .build()
+            .await
+            .context("Failed to create D-Bus ObjectManager proxy")?;
+
         Ok(Self {
             connection,
             manager,
+            object_manager,
             tv_proxies: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -382,7 +402,7 @@ impl DaemonClient {
 
     /// Check if the daemon is available and responding.
     pub async fn is_available(&self) -> bool {
-        self.manager.get_tvs().await.is_ok()
+        self.object_manager.get_managed_objects().await.is_ok()
     }
 
     /// Execute an operation on a TV's cached proxies, handling proxy lookup boilerplate.
@@ -424,36 +444,82 @@ impl DaemonClient {
     // -------------------------------------------------------------------------
 
     /// List all configured TVs.
+    ///
+    /// Uses `org.freedesktop.DBus.ObjectManager.GetManagedObjects` — a single
+    /// round-trip that returns all object paths and their interface properties at once,
+    /// replacing the previous 1 + 6N round-trips (one `GetTvs` + six property fetches per TV).
     pub async fn list_tvs(&self) -> Result<Vec<TvInfo>> {
-        let paths = self
-            .manager
-            .get_tvs()
+        let managed_objects = self
+            .object_manager
+            .get_managed_objects()
             .await
-            .context("Failed to list TVs from daemon")?;
+            .context("Failed to get managed objects from daemon")?;
 
         let mut tvs = Vec::new();
-        for path in paths {
-            let path_str = path.as_str();
-            // Extract TV ID from path (last component)
-            let tv_id = path_str.rsplit('/').next().unwrap_or(path_str).to_string();
 
-            self.get_tv_proxies(&tv_id).await?;
-
-            let proxies = {
-                let cache = self.tv_proxies.read().await;
-                cache.get(&tv_id).map(Arc::clone)
+        for (path, ifaces) in managed_objects {
+            // Only consider objects that expose the base TV interface.
+            let Some(props) = ifaces
+                .iter()
+                .find(|(k, _)| k.as_str() == "org.tisvlay.Tv1")
+                .map(|(_, v)| v)
+            else {
+                continue;
             };
-            if let Some(proxies) = proxies {
-                let info = TvInfo {
-                    id: proxies.base.id().await.unwrap_or_default(),
-                    name: proxies.base.name().await.unwrap_or_default(),
-                    address: proxies.base.address().await.unwrap_or_default(),
-                    vendor: proxies.base.vendor().await.unwrap_or_default(),
-                    connected: proxies.base.connected().await.unwrap_or(false),
-                    path: path_str.to_string(),
-                };
-                tvs.push(info);
+
+            // Track which properties fell back to defaults so we can emit a single
+            // diagnostic per entry rather than one log line per property.
+            let fallbacks = std::cell::RefCell::new(Vec::<String>::new());
+
+            let get_str = |key: &str| -> String {
+                props
+                    .get(key)
+                    .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
+                    .unwrap_or_else(|| {
+                        fallbacks.borrow_mut().push(key.to_owned());
+                        String::new()
+                    })
+            };
+            let get_bool = |key: &str, default: bool| -> bool {
+                props
+                    .get(key)
+                    .and_then(|v: &OwnedValue| bool::try_from(v.clone()).ok())
+                    .unwrap_or_else(|| {
+                        fallbacks.borrow_mut().push(key.to_owned());
+                        default
+                    })
+            };
+
+            let id = get_str("Id");
+            let name = get_str("Name");
+            let address = get_str("Address");
+            let vendor = get_str("Vendor");
+            let connected = get_bool("Connected", false);
+            let managed = get_bool("Managed", true);
+
+            let fallbacks = fallbacks.into_inner();
+            if !fallbacks.is_empty() {
+                debug!(
+                    path = %path,
+                    ?fallbacks,
+                    "TV object has missing or invalid properties; using defaults"
+                );
             }
+
+            if id.is_empty() {
+                warn!(path = %path, "TV object returned by daemon has empty Id, skipping");
+                continue;
+            }
+
+            tvs.push(TvInfo {
+                id,
+                name,
+                address,
+                vendor,
+                connected,
+                managed,
+                path: path.as_str().to_string(),
+            });
         }
 
         Ok(tvs)
@@ -491,11 +557,17 @@ impl DaemonClient {
     /// (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG).
     ///
     /// Returns the TV ID assigned to the new TV.
-    pub async fn pair_tv(&self, name: &str, vendor: &str, config_json: &str) -> Result<String> {
-        debug!(name = %name, vendor = %vendor, "Pairing TV via daemon");
+    pub async fn pair_tv(
+        &self,
+        name: &str,
+        vendor: &str,
+        config_json: &str,
+        managed: bool,
+    ) -> Result<String> {
+        debug!(name = %name, vendor = %vendor, managed = %managed, "Pairing TV via daemon");
         let path = self
             .manager
-            .add_tv(name, vendor, config_json)
+            .add_tv(name, vendor, config_json, managed)
             .await
             .with_context(|| format!("Failed to pair TV '{}'", name))?;
 
@@ -716,7 +788,7 @@ impl DaemonClient {
 
     /// Set a system-level TV option.
     ///
-    /// Supported keys: `hdmi_input`, `only_when_active`, `name`.
+    /// Supported keys: `hdmi_input`, `only_when_active`, `managed`, `name`.
     pub async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<()> {
         debug!(tv_id = %tv_id, key = %key, value = %value, "Calling SetTvOption on daemon");
         self.manager
