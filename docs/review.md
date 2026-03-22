@@ -576,6 +576,75 @@ with the daemon change. No action needed.
 
 ---
 
+### I5. `list_tvs()` property extraction silently swallows errors
+
+**File:** [crates/tisvlay-core/src/dbus_client.rs:470-496](crates/tisvlay-core/src/dbus_client.rs#L470-L496)
+
+The `get_str` / `get_bool` closures are DRY helpers, but they silently discard all
+extraction failures. An invalid `GetManagedObjects` response — wrong property type,
+missing property, version skew between daemon and client — produces no log entry and
+no error. The caller receives a TV entry with silently degraded data and has no way to
+know something went wrong.
+
+Specific silent failure modes:
+
+- `get_bool` falls back to the default with no trace: `Connected = false` or
+  `Managed = true` could be wrong and invisible.
+- `get_str` falls back to `""` with no trace: `Name`, `Address`, and `Vendor` all
+  become empty strings silently.
+- The `id.is_empty()` guard skips the entry entirely with no log explaining why a
+  daemon-returned object was rejected.
+
+This makes diagnosing version-skew bugs or daemon regressions very difficult in
+practice — there is no signal that property extraction failed.
+
+**Candidate approaches (seeking reviewer input):**
+
+1. **Warn on fallback:** Keep the current default strategy but emit a `warn!` when
+   the fallback is used. Zero behavioral change; adds observability.
+
+2. **Skip malformed entries:** If any required property (`Id`, `Managed`, `Connected`)
+   fails to extract, skip the whole TV entry with a `warn!`. Optional display fields
+   (`Name`, `Address`, `Vendor`) can still fall back to `""`.
+
+3. **Propagate as structured error:** Replace the closures with typed extraction that
+   returns `Result`, surface a descriptive error per entry, and let the caller decide
+   whether to skip or fail. Most explicit but most invasive.
+
+Option 1 is the minimal fix. Option 2 is the correct semantic boundary — a TV with
+unknown `Managed` state should not be silently included. Option 3 may be premature
+given this is an in-tree daemon with no version skew in practice.
+
+**Severity:** Medium (silent data corruption on malformed response; hard to diagnose)
+
+**Resolution:** Implemented per reviewer guidance — Option 1 with `debug!` level.
+Both closures record fallback property names into a shared `RefCell<Vec<String>>`.
+After all properties are extracted, a single `debug!` is emitted per TV entry listing
+all properties that fell back to defaults. The `id.is_empty()` skip emits `warn!`
+separately, as it represents a daemon-returned object being silently rejected.
+
+**Reviewer recommendation:** Option 1 (warn on fallback) is the right call.
+
+Option 2 (skip malformed entries) sounds semantically correct, but in practice
+`GetManagedObjects` is a single atomic response from zbus — if the daemon is running
+and the object exists, all properties will be present with correct types. A partial
+response would indicate a zbus bug or a fundamentally broken daemon, not a recoverable
+state. Silently *dropping* TVs from the list is arguably worse than showing them with
+degraded data, because the user loses the ability to interact with them entirely.
+
+Option 3 is over-engineering for an in-tree daemon with no version skew in practice.
+
+For Option 1, use `debug!` rather than `warn!` — these fallbacks firing in production
+would mean something deeply wrong, and the user already has bigger problems. During
+development, `RUST_LOG=debug` surfaces the issue immediately. One exception: the
+`id.is_empty()` skip should be `warn!` — a daemon-returned object being silently
+rejected is a real diagnostic blind spot.
+
+Style suggestion: rather than one log per property, emit a single `debug!` per TV entry
+listing which properties fell back to defaults. Avoids log spam in multi-TV setups.
+
+---
+
 ### Summary of New Findings
 
 | # | Severity | Item |
@@ -584,6 +653,7 @@ with the daemon change. No action needed.
 | I2 | **N/A** | `TvEntry` pattern verified correct; all sync points covered |
 | I3 | **Info** | Brief window where outer managed flag lags behind per-TV config (harmless) |
 | I4 | **Info** | `AddTv` D-Bus signature change is breaking (no external consumers) |
+| I5 | **Medium** | `list_tvs()` property extraction silently swallows errors — no logging on fallback |
 
 ### Overall Assessment
 
@@ -592,7 +662,6 @@ is a significant improvement — `list_tvs()` goes from 1 + 6N round-trips to ex
 The `TvEntry` pattern for `managed` outside the per-TV mutex is clean and eliminates the
 lock contention issue.
 
-The only actionable item is I1: consider whether `Managed` should default to `true`
-(old behavior, safe-by-default for automation) rather than `false` (new behavior,
-safe-by-default for *not* automating) when the property is missing from
-`GetManagedObjects`. This is a judgment call on which failure mode is less surprising.
+I1 has been resolved (explicit default parameter). I5 is the remaining actionable item —
+add `debug!` logging when property extraction falls back to defaults, and `warn!` when
+`id.is_empty()` causes an entry to be skipped.

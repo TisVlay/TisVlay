@@ -33,7 +33,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, warn};
 use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -467,31 +467,57 @@ impl DaemonClient {
                 continue;
             };
 
+            // Track which properties fell back to defaults so we can emit a single
+            // diagnostic per entry rather than one log line per property.
+            let fallbacks = std::cell::RefCell::new(Vec::<String>::new());
+
             let get_str = |key: &str| -> String {
                 props
                     .get(key)
                     .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
-                    .unwrap_or_default()
+                    .unwrap_or_else(|| {
+                        fallbacks.borrow_mut().push(key.to_owned());
+                        String::new()
+                    })
             };
             let get_bool = |key: &str, default: bool| -> bool {
                 props
                     .get(key)
                     .and_then(|v: &OwnedValue| bool::try_from(v.clone()).ok())
-                    .unwrap_or(default)
+                    .unwrap_or_else(|| {
+                        fallbacks.borrow_mut().push(key.to_owned());
+                        default
+                    })
             };
 
             let id = get_str("Id");
+            let name = get_str("Name");
+            let address = get_str("Address");
+            let vendor = get_str("Vendor");
+            let connected = get_bool("Connected", false);
+            let managed = get_bool("Managed", true);
+
+            let fallbacks = fallbacks.into_inner();
+            if !fallbacks.is_empty() {
+                debug!(
+                    path = %path,
+                    ?fallbacks,
+                    "TV object has missing or invalid properties; using defaults"
+                );
+            }
+
             if id.is_empty() {
+                warn!(path = %path, "TV object returned by daemon has empty Id, skipping");
                 continue;
             }
 
             tvs.push(TvInfo {
                 id,
-                name: get_str("Name"),
-                address: get_str("Address"),
-                vendor: get_str("Vendor"),
-                connected: get_bool("Connected", false), // safe: assume disconnected
-                managed: get_bool("Managed", true), // safe: assume managed (automation opt-out)
+                name,
+                address,
+                vendor,
+                connected,
+                managed,
                 path: path.as_str().to_string(),
             });
         }
