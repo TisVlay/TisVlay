@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use idle::IdleMonitor;
 use session_monitor::{SessionEvent, SessionMonitor};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{DaemonClient, ProfileConfig, ResolvedProfile, SessionAction, UserConfig};
@@ -68,11 +68,7 @@ impl SessionState {
             .list_tvs()
             .await
             .context("Failed to get TV list from daemon")?;
-        let tv_ids: Vec<String> = tv_infos
-            .iter()
-            .filter(|t| t.managed)
-            .map(|t| t.id.clone())
-            .collect();
+        let tv_ids: Vec<String> = tv_infos.iter().map(|t| t.id.clone()).collect();
 
         // Query daemon for system default profile
         let system_default = match daemon.get_system_profile().await {
@@ -402,11 +398,22 @@ async fn event_handler(
     while let Some(event) = event_rx.recv().await {
         info!(event = %event, "Processing session event");
 
-        // Get TV actions from resolved profiles
+        // Query current managed set from daemon (live, not cached).
+        // Falls back to all known TV IDs if the daemon is unreachable.
+        let managed_ids: HashSet<String> = match daemon.list_tvs().await {
+            Ok(tvs) => tvs.into_iter().filter(|t| t.managed).map(|t| t.id).collect(),
+            Err(e) => {
+                warn!(error = %e, "Failed to query managed TVs; falling back to full TV list");
+                state.read().await.tv_ids.iter().cloned().collect()
+            }
+        };
+
+        // Get TV actions from resolved profiles, filtered to currently managed TVs
         let tv_actions: Vec<(String, SessionAction)> = {
             let s = state.read().await;
             s.tv_ids
                 .iter()
+                .filter(|tv_id| managed_ids.contains(*tv_id))
                 .filter_map(|tv_id| {
                     let profile = s.profiles.get(tv_id)?;
                     let action = get_action_for_event(&event, profile);

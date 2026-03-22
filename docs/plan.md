@@ -108,6 +108,41 @@ Error gracefully if the session service is unavailable (it's a user service, not
 
 ---
 
+## Phase 5B: Session Service — Live `managed` Filtering
+
+### Motivation
+
+Phase 5A filtered managed TVs at session-service startup only. Toggling
+`managed` at runtime (via tray or CLI) has no effect on the session service
+until it reloads (SIGHUP / tray Refresh). Worse, profiles are only resolved
+for TVs that were managed at load time — re-managing a TV without a reload
+leaves it without a resolved profile.
+
+The daemon is the authority on `managed`. The session service should query
+it live at event dispatch time rather than caching a stale snapshot.
+
+### Changes
+
+#### `crates/tisvlay-session/src/main.rs`
+
+- **`SessionState::load`**: remove the `.filter(|t| t.managed)` from
+  `tv_ids` population. Resolve profiles for **all** paired TVs so that
+  any TV has a ready profile if it becomes managed later without a reload.
+- **`event_handler`**: before each dispatch, call `daemon.list_tvs().await`
+  and collect the current managed TV IDs into a `HashSet`. Fan out only to
+  TVs in that set, using profiles already resolved in `state`. On D-Bus
+  failure, fall back to the full `state.tv_ids` list (same behavior as
+  before this change).
+
+### Checklist
+
+- [x] `SessionState::load` builds profiles for all paired TVs
+- [x] `event_handler` queries managed set per-event from daemon
+- [x] `cargo check --workspace`
+- [x] `cargo test --workspace`
+
+---
+
 ### Checklist
 
 #### Part 1: `managed` flag
