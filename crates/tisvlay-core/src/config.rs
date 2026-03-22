@@ -691,6 +691,7 @@ name = "Living Room TV"
 vendor = "lg"
 hdmi_input = "HDMI_1"
 only_when_active = true
+managed = true
 
 [tv.lg]
 ip = "192.168.1.100"
@@ -737,6 +738,8 @@ id = "living-room"
 name = "Living Room G4"
 vendor = "lg"
 hdmi_input = "HDMI_1"
+only_when_active = false
+managed = true
 
 [tv.lg]
 ip = "192.168.1.100"
@@ -1139,6 +1142,8 @@ on_idle_timeout = "screen_off"
 id = "test"
 name = "Test"
 vendor = "lg"
+only_when_active = false
+managed = true
 
 [tv.lg]
 ip = "192.168.1.1"
@@ -1188,6 +1193,8 @@ idle_timeout_seconds = 0
 id = "office"
 name = "Office"
 vendor = "lg"
+only_when_active = false
+managed = true
 
 [tv.lg]
 ip = "192.168.1.1"
