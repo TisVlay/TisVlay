@@ -102,9 +102,7 @@ enum Commands {
     },
 
     /// Enable or disable automated management for a TV (shows current status if no argument given)
-    Manage {
-        state: Option<ManageState>,
-    },
+    Manage { state: Option<ManageState> },
 
     /// Profile management (requires tisvlay-session to be running)
     Profile {
