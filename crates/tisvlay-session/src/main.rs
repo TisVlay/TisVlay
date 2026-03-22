@@ -401,7 +401,11 @@ async fn event_handler(
         // Query current managed set from daemon (live, not cached).
         // Falls back to all known TV IDs if the daemon is unreachable.
         let managed_ids: HashSet<String> = match daemon.list_tvs().await {
-            Ok(tvs) => tvs.into_iter().filter(|t| t.managed).map(|t| t.id).collect(),
+            Ok(tvs) => tvs
+                .into_iter()
+                .filter(|t| t.managed)
+                .map(|t| t.id)
+                .collect(),
             Err(e) => {
                 warn!(error = %e, "Failed to query managed TVs; falling back to full TV list");
                 state.read().await.tv_ids.iter().cloned().collect()

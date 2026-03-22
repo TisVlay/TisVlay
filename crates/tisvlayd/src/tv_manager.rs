@@ -985,11 +985,20 @@ impl TvManager {
     }
 
     /// Reload configuration from disk.
+    ///
+    /// Uses `spawn_blocking` to avoid blocking the async executor on disk I/O,
+    /// consistent with all other config-load sites in this file.
     pub async fn reload_config(&self) -> Result<(), TvManagerError> {
         info!("Reloading configuration");
 
-        let new_config = SystemConfig::load_from(&self.config_path)
-            .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))?;
+        let config_path = self.config_path.clone();
+        let _disk_lock = self.disk_write_lock.lock().await;
+        let new_config = tokio::task::spawn_blocking(move || {
+            SystemConfig::load_from(&config_path)
+                .map_err(|e| TvManagerError::ConfigError(format!("Failed to load config: {}", e)))
+        })
+        .await
+        .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
 
         let new_ids: std::collections::HashSet<_> =
             new_config.tv.iter().map(|t| t.id.clone()).collect();

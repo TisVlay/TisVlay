@@ -21,6 +21,8 @@ produce a broken link warning. The line should be deleted.
 
 **Severity:** Low
 
+**Resolution:** Fixed — stale doc comment line deleted.
+
 ---
 
 ## H2. `reload_config` does blocking disk I/O on the async executor
@@ -49,6 +51,9 @@ wrap the load in `spawn_blocking`.
 into a `spawn_blocking` call, pass the loaded config back out.
 
 **Severity:** Medium
+
+**Resolution:** Fixed — `reload_config` now acquires `disk_write_lock` and wraps
+`SystemConfig::load_from` in `spawn_blocking`, consistent with all other disk I/O paths.
 
 ---
 

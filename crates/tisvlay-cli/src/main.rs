@@ -381,13 +381,14 @@ async fn main() -> Result<()> {
 
         Commands::Status => {
             let tv_id = tv_id?;
-            let (state, managed) = tokio::try_join!(
-                client.get_state(&tv_id),
-                async {
-                    let tvs = client.list_tvs().await?;
-                    Ok(tvs.iter().find(|t| t.id == tv_id).map(|t| t.managed).unwrap_or(true))
-                },
-            )?;
+            let (state, managed) = tokio::try_join!(client.get_state(&tv_id), async {
+                let tvs = client.list_tvs().await?;
+                Ok(tvs
+                    .iter()
+                    .find(|t| t.id == tv_id)
+                    .map(|t| t.managed)
+                    .unwrap_or(true))
+            },)?;
             print_tv_status(&tv_id, &state, managed);
         }
     }
@@ -423,7 +424,14 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
 
 fn print_tv_status(tv_id: &str, state: &TvState, managed: bool) {
     println!("TV: {}", tv_id);
-    println!("Managed: {}", if managed { "yes" } else { "no (automation disabled)" });
+    println!(
+        "Managed: {}",
+        if managed {
+            "yes"
+        } else {
+            "no (automation disabled)"
+        }
+    );
     println!("Power: {}", if state.is_on { "on" } else { "off" });
     println!("Screen: {}", if state.is_screen_on { "on" } else { "off" });
     if let Some(vol) = state.volume {

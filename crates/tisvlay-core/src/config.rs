@@ -374,8 +374,6 @@ impl TvConfig {
 ///
 /// Contains TV definitions, vendor credentials, daemon settings, system power
 /// policy, and a default profile inherited by users who have no user config.
-///
-/// This is also aliased as [`Config`] for backward compatibility.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SystemConfig {
     /// Daemon settings.
