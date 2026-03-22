@@ -69,18 +69,6 @@ impl ManagerService {
     // TV Management
     // -------------------------------------------------------------------------
 
-    /// Get all TV object paths.
-    async fn get_tvs(&self) -> Vec<ObjectPath<'static>> {
-        debug!("D-Bus: GetTvs");
-        let manager = &self.manager;
-        manager
-            .list_tv_ids()
-            .await
-            .into_iter()
-            .map(|id| ObjectPath::try_from(tv_path(&id)).unwrap())
-            .collect()
-    }
-
     /// Get supported vendor backends.
     ///
     /// Returns: Array of (vendor_id, vendor_name) tuples.

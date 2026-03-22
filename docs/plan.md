@@ -158,6 +158,63 @@ it live at event dispatch time rather than caching a stale snapshot.
 - [x] 2.1 `SessionClient` in CLI
 - [x] 2.2 `tisvlay profile list / get / set`
 
+---
+
+## Phase 5C: Replace Per-Property Fetches with `ObjectManager`
+
+### Motivation
+
+`list_tvs()` currently takes 1 + 6N D-Bus round-trips: one `GetTvs` call to get object
+paths, then six individual property fetches per TV (`Id`, `Name`, `Address`, `Vendor`,
+`Connected`, `Managed`). `org.freedesktop.DBus.ObjectManager` is the standardized
+mechanism for bulk object discovery — used by BlueZ, ModemManager, systemd-logind, and
+Rust projects like InputPlumber and stratisd. zbus has zero-code built-in support via
+`zbus::fdo::ObjectManager`. Adopting it reduces `list_tvs()` to a single round-trip and
+makes the daemon introspectable by standard tools (`busctl`, `d-feet`).
+
+### Changes
+
+#### `crates/tisvlay-core/src/dbus_paths.rs`
+
+- Add `OBJECT_MANAGER_PATH: &str = "/org/tisvlay"` — the common ancestor of
+  `/org/tisvlay/Manager` and `/org/tisvlay/Tv/{id}`
+
+#### `crates/tisvlayd/src/main.rs`
+
+- Register `zbus::fdo::ObjectManager` at `/org/tisvlay` before TV objects, so zbus
+  automatically emits `InterfacesAdded`/`InterfacesRemoved` for all subsequent
+  `object_server.at()`/`object_server.remove()` calls
+
+#### `crates/tisvlayd/src/dbus/manager.rs`
+
+- Remove `get_tvs()` from `Manager1` — superseded by `GetManagedObjects`
+
+#### `crates/tisvlay-core/src/dbus_client.rs`
+
+- Remove `get_tvs()` from `TisvlayManager` proxy trait
+- Add `object_manager: ObjectManagerProxy<'static>` field to `DaemonClient`
+- Update `from_connection()` to build the proxy at `OBJECT_MANAGER_PATH`
+- Rewrite `list_tvs()`: call `get_managed_objects()`, filter entries that have the
+  `org.tisvlay.Tv1` interface, extract properties from the returned `OwnedValue` map
+
+#### `crates/tisvlay-core/tests/dbus_client.rs`
+
+- Update `MockManager`: remove `get_tvs()`, add `zbus::fdo::ObjectManager` registered
+  at `/org/tisvlay` so the mock responds to `GetManagedObjects` with an empty object
+  tree (no TV objects → `list_tvs()` returns `vec![]`)
+
+### Checklist
+
+- [x] `OBJECT_MANAGER_PATH` added to `dbus_paths.rs`
+- [x] `ObjectManager` registered at `/org/tisvlay` in daemon `main.rs`
+- [x] `GetTvs` removed from `Manager1` + proxy
+- [x] `DaemonClient` updated: `ObjectManagerProxy` field + rewritten `list_tvs()`
+- [x] Test mock updated to use `ObjectManager`
+- [x] `cargo check --workspace`
+- [x] `cargo test --workspace`
+
+---
+
 #### Verification
 
 - [x] `cargo check --workspace`

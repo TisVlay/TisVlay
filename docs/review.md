@@ -95,6 +95,11 @@ Option 1 is recommended — it's one new D-Bus method, minimal surface, and stil
 
 **Severity:** Medium (correctness is fine; performance and D-Bus load are the concern)
 
+**Resolution:** Resolved by Phase 5C — `list_tvs()` now calls `GetManagedObjects`, a
+single D-Bus round-trip that returns all object paths and their properties at once. No
+proxy objects are created and no per-TV property fetches occur. The O(N) scaling concern
+is gone; the per-event cost is now one cheap call regardless of TV count.
+
 ---
 
 ## H4. `get_tv_id` eagerly queries daemon for commands that don't need a TV ID
@@ -120,6 +125,10 @@ a round-trip.
 it, or gate it with a helper that returns `Option` only when the command requires a TV.
 
 **Severity:** Low (waste, not bug)
+
+**Status:** Intentionally kept — the eager call was reviewed and the simpler unconditional
+pattern was preferred. The `tv_id` result is a `Result` and is `?`-ed lazily in each arm,
+so `List`/`Pair`/`Remove` arms do not fail on the superfluous call.
 
 ---
 
