@@ -101,11 +101,10 @@ enum Commands {
         tv_id: String,
     },
 
-    /// Enable automated management for a TV
-    Manage,
-
-    /// Disable automated management for a TV (manual control still works)
-    Unmanage,
+    /// Enable or disable automated management for a TV (shows current status if no argument given)
+    Manage {
+        state: Option<ManageState>,
+    },
 
     /// Profile management (requires tisvlay-session to be running)
     Profile {
@@ -143,6 +142,12 @@ enum ScreenAction {
     On,
     /// Turn off the screen (OLED-safe blank)
     Off,
+}
+
+#[derive(clap::ValueEnum, Clone)]
+enum ManageState {
+    True,
+    False,
 }
 
 #[derive(clap::ValueEnum, Clone)]
@@ -244,19 +249,26 @@ async fn main() -> Result<()> {
             println!("TV '{}' removed", tv_id);
         }
 
-        Commands::Manage => {
+        Commands::Manage { state } => {
             let tv_id = tv_id?;
-            client.set_tv_option(&tv_id, "managed", "true").await?;
-            println!("TV '{}' automation enabled", tv_id);
-        }
-
-        Commands::Unmanage => {
-            let tv_id = tv_id?;
-            client.set_tv_option(&tv_id, "managed", "false").await?;
-            println!(
-                "TV '{}' automation disabled (manual control still works)",
-                tv_id
-            );
+            match state {
+                None => {
+                    let tvs = client.list_tvs().await?;
+                    let managed = tvs
+                        .iter()
+                        .find(|t| t.id == tv_id)
+                        .map(|t| t.managed)
+                        .unwrap_or(true);
+                    println!("Managed: {}", managed);
+                }
+                Some(state) => {
+                    let managed = matches!(state, ManageState::True);
+                    client
+                        .set_tv_option(&tv_id, "managed", if managed { "true" } else { "false" })
+                        .await?;
+                    println!("Managed: {}", managed);
+                }
+            }
         }
 
         Commands::Profile { action } => {
@@ -434,14 +446,7 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
 
 fn print_tv_status(tv_id: &str, state: &TvState, managed: bool) {
     println!("TV: {}", tv_id);
-    println!(
-        "Managed: {}",
-        if managed {
-            "yes"
-        } else {
-            "no (automation disabled)"
-        }
-    );
+    println!("Managed: {}", managed);
     println!("Power: {}", if state.is_on { "on" } else { "off" });
     println!("Screen: {}", if state.is_screen_on { "on" } else { "off" });
     if let Some(vol) = state.volume {

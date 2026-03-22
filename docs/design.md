@@ -351,8 +351,7 @@ COMMANDS:
     pair            Pair a new TV
     list            List configured TVs (shows [unmanaged] suffix)
     remove          Remove a TV
-    manage          Enable automated management for a TV
-    unmanage        Disable automated management (manual control still works)
+    manage          Show or set automated management for a TV (true/false)
     profile         Profile management (requires tisvlay-session)
       list          List available profiles
       get           Show profile assigned to a TV
@@ -371,8 +370,9 @@ EXAMPLES:
     tisvlay pair 192.168.1.101 --name "Office" --vendor lg --unmanaged
     tisvlay volume 30
     tisvlay backlight 80
-    tisvlay manage
-    tisvlay unmanage --tv office
+    tisvlay manage                                                      # show current
+    tisvlay manage true
+    tisvlay manage false --tv office
     tisvlay profile list
     tisvlay profile set gaming --tv living-room
 ```
@@ -496,7 +496,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 5. `Managed` D-Bus property exposed on `org.tisvlay.Tv1`; `SetTvOption` handles `managed` key
 6. `AddTv` D-Bus signature extended with `managed: b` parameter
 7. Tray: icon reflects managed state (`tvconnected`/`tvtrusted`/`tvdisconnected`); Manage/Unmanage toggle in every TV submenu
-8. CLI: `manage`/`unmanage` commands; `list` shows `[unmanaged]` suffix; `pair --unmanaged` flag; `profile list/get/set` subcommands via `SessionClient`
+8. CLI: `manage [true|false]` command (no arg shows current status); `list` shows `[unmanaged]` suffix; `pair --unmanaged` flag; `profile list/get/set` subcommands via `SessionClient`
 9. Session service: profiles built for all paired TVs at load; event dispatch filtered live per-event
 
 ### Phase 5B: Session Service — Live `managed` Filtering - COMPLETE
