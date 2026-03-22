@@ -312,14 +312,23 @@ pub struct TvConfig {
 
 impl TvConfig {
     /// Create a new TV configuration.
-    pub fn new(id: impl Into<String>, name: impl Into<String>, vendor: impl Into<String>) -> Self {
+    ///
+    /// `managed` controls whether this TV participates in automation (boot WoL,
+    /// session events, shutdown). Pass `true` for normal TVs; `false` to register
+    /// the TV for manual control only. There is no default — callers must be explicit.
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        vendor: impl Into<String>,
+        managed: bool,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
             vendor: vendor.into(),
             hdmi_input: None,
             only_when_active: false,
-            managed: true,
+            managed,
             vendor_config: HashMap::new(),
         }
     }
@@ -767,7 +776,7 @@ mac = "AA:BB:CC:DD:EE:FF"
             default_input: Some("HDMI_1".to_string()),
         };
 
-        let tv = TvConfig::new("test", "Test", "lg").with_vendor_config(&lg_config);
+        let tv = TvConfig::new("test", "Test", "lg", true).with_vendor_config(&lg_config);
 
         assert_eq!(tv.vendor, "lg");
 
@@ -781,12 +790,12 @@ mac = "AA:BB:CC:DD:EE:FF"
     fn test_find_tv() {
         let mut config = SystemConfig::default();
         config.tv.push(
-            TvConfig::new("tv1", "TV 1", "lg").with_vendor_config(
+            TvConfig::new("tv1", "TV 1", "lg", true).with_vendor_config(
                 &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:01"),
             ),
         );
         config.tv.push(
-            TvConfig::new("tv2", "TV 2", "lg").with_vendor_config(
+            TvConfig::new("tv2", "TV 2", "lg", true).with_vendor_config(
                 &TestLgConfig::new("192.168.1.2").with_mac("AA:BB:CC:DD:EE:02"),
             ),
         );
@@ -816,7 +825,7 @@ mac = "AA:BB:CC:DD:EE:FF"
 
         let mut config = SystemConfig::default();
         config.tv.push(
-            TvConfig::new("test", "Test TV", "lg").with_vendor_config(
+            TvConfig::new("test", "Test TV", "lg", true).with_vendor_config(
                 &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:FF"),
             ),
         );

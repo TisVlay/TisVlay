@@ -741,6 +741,7 @@ impl TvManager {
         vendor: &str,
         vendor_config: toml::Value,
         id: Option<&str>,
+        managed: bool,
     ) -> Result<String, TvManagerError> {
         info!(name = %name, vendor = %vendor, "Pairing TV");
 
@@ -772,7 +773,7 @@ impl TvManager {
         });
 
         // Create TV config with vendor-specific connection parameters
-        let mut tv_config = TvConfig::new(&tv_id, name, vendor);
+        let mut tv_config = TvConfig::new(&tv_id, name, vendor, managed);
 
         // Store the vendor config
         tv_config

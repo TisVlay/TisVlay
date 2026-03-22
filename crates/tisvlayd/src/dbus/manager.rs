@@ -93,8 +93,9 @@ impl ManagerService {
         name: &str,
         vendor: &str,
         config_json: &str,
+        managed: bool,
     ) -> Result<ObjectPath<'static>, DaemonError> {
-        info!(name = %name, vendor = %vendor, "D-Bus: AddTv");
+        info!(name = %name, vendor = %vendor, managed = %managed, "D-Bus: AddTv");
 
         // Verify vendor is supported
         if self.registry.get(vendor).is_none() {
@@ -111,7 +112,7 @@ impl ManagerService {
 
         let manager = &self.manager;
         let tv_id = manager
-            .pair_tv(name, vendor, vendor_config, None)
+            .pair_tv(name, vendor, vendor_config, None, managed)
             .await
             .map_err(DaemonError::from)?;
 

@@ -194,6 +194,11 @@ API for programmatic construction, add `with_managed()` for completeness.
 
 **Severity:** Low (API consistency, not a bug)
 
+**Resolution:** Fixed — `TvConfig::new` now takes `managed: bool` as a required fourth
+parameter. No default exists in the library; the doc comment explains the semantics.
+`with_managed()` is unnecessary since the value is required in the constructor. All test
+call sites updated to pass `true` explicitly.
+
 ---
 
 ## H7. `pair_tv` creates TVs with `managed: true` — no way to pair as unmanaged
@@ -214,6 +219,12 @@ This is acceptable for now, but worth noting for Phase 5 GUI: the pairing dialog
 should include a "managed" checkbox.
 
 **Severity:** Info (design note for Phase 5)
+
+**Resolution:** Fixed — `managed` is now threaded explicitly through all layers:
+`TvConfig::new(id, name, vendor, managed)` → `pair_tv(..., managed)` → D-Bus
+`AddTv(name, vendor, config_json, managed)` → `DaemonClient::pair_tv(..., managed)` →
+CLI `tisvlay pair ... [--unmanaged]`. The UX default (`managed = !unmanaged = true`) lives
+exclusively in the CLI. No library layer assumes a default.
 
 ---
 

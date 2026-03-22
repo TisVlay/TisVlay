@@ -64,8 +64,15 @@ trait TisvlayManager {
 
     /// Add a TV.
     /// config_json: vendor-specific connection parameters as JSON
+    /// managed: whether the TV participates in automation
     /// Returns: TV object path
-    fn add_tv(&self, name: &str, vendor: &str, config_json: &str) -> zbus::Result<OwnedObjectPath>;
+    fn add_tv(
+        &self,
+        name: &str,
+        vendor: &str,
+        config_json: &str,
+        managed: bool,
+    ) -> zbus::Result<OwnedObjectPath>;
 
     /// Remove a TV.
     fn remove_tv(&self, tv_path: &OwnedObjectPath) -> zbus::Result<()>;
@@ -524,11 +531,17 @@ impl DaemonClient {
     /// (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG).
     ///
     /// Returns the TV ID assigned to the new TV.
-    pub async fn pair_tv(&self, name: &str, vendor: &str, config_json: &str) -> Result<String> {
-        debug!(name = %name, vendor = %vendor, "Pairing TV via daemon");
+    pub async fn pair_tv(
+        &self,
+        name: &str,
+        vendor: &str,
+        config_json: &str,
+        managed: bool,
+    ) -> Result<String> {
+        debug!(name = %name, vendor = %vendor, managed = %managed, "Pairing TV via daemon");
         let path = self
             .manager
-            .add_tv(name, vendor, config_json)
+            .add_tv(name, vendor, config_json, managed)
             .await
             .with_context(|| format!("Failed to pair TV '{}'", name))?;
 
