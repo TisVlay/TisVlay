@@ -31,8 +31,8 @@ struct Args {
 }
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
-const VOLUME_STEP: u8 = 5;
-const BACKLIGHT_STEP: u8 = 10;
+const VOLUME_STEP: u8 = 1;
+const BACKLIGHT_STEP: u8 = 1;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -276,6 +276,9 @@ async fn process_commands(
                         }
                         Err(_) => break,
                     }
+                }
+                if steps == 0 {
+                    continue;
                 }
                 match target {
                     ScrollTarget::Volume => {

@@ -79,6 +79,15 @@ fn backlight_item(
     .into()
 }
 
+/// Scroll delta units per notch (X11/Wayland smooth-scroll convention).
+///
+/// Standard click-wheels emit 120 units per detent. Dividing the raw delta
+/// by this gives notch-equivalent steps; sub-notch events (e.g. trackpads
+/// sending 5–15 units at a time) are floored to 1 step so they always
+/// register. Fast-spinning wheels that emit 240–480+ per event produce
+/// proportionally more steps, making the scroll feel snappier.
+const SCROLL_NOTCH: i32 = 120;
+
 /// What the scroll wheel adjusts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScrollTarget {
@@ -223,13 +232,18 @@ impl Tray for TisvlayTray {
             .or_else(|| self.tvs.iter().find(|tv| tv.connected && tv.is_on));
         if let Some(tv) = target {
             let id = tv.id.clone();
-            // Use signum so each tick is ±1 step regardless of device delta magnitude.
+            if delta == 0 {
+                return;
+            }
+            // Normalize raw delta to notch-equivalent steps:
+            //   - standard click-wheel (120/notch): 1 step per notch
+            //   - fast-spinning wheel (240–480+/event): 2–4 steps per event
+            //   - trackpad / sub-notch (< 120): floor to 1 step so every event registers
             // The command processor coalesces multiple ScrollBy events into one D-Bus call.
-            let _ = self.cmd_tx.send(TrayCommand::ScrollBy(
-                id,
-                self.scroll_target,
-                delta.signum(),
-            ));
+            let steps = (delta.abs() / SCROLL_NOTCH).max(1) * delta.signum();
+            let _ = self
+                .cmd_tx
+                .send(TrayCommand::ScrollBy(id, self.scroll_target, steps));
         }
     }
 
