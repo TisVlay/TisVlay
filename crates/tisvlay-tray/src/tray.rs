@@ -96,11 +96,11 @@ pub enum TrayCommand {
     ScreenOff(String),
     SwitchInput(String, String),
     SetProfile(String, String),
-    VolumeUp(String),
-    VolumeDown(String),
+    /// Scroll-wheel or menu step: positive steps = up, negative = down.
+    /// Multiple events for the same TV and target are coalesced by the
+    /// command processor into a single D-Bus call to prevent queue buildup.
+    ScrollBy(String, ScrollTarget, i32),
     ToggleMute(String),
-    BacklightUp(String),
-    BacklightDown(String),
     SetManaged(String, bool),
     Refresh,
     Quit,
@@ -223,13 +223,13 @@ impl Tray for TisvlayTray {
             .or_else(|| self.tvs.iter().find(|tv| tv.connected && tv.is_on));
         if let Some(tv) = target {
             let id = tv.id.clone();
-            let cmd = match (self.scroll_target, delta > 0) {
-                (ScrollTarget::Volume, true) => TrayCommand::VolumeUp(id),
-                (ScrollTarget::Volume, false) => TrayCommand::VolumeDown(id),
-                (ScrollTarget::Backlight, true) => TrayCommand::BacklightUp(id),
-                (ScrollTarget::Backlight, false) => TrayCommand::BacklightDown(id),
-            };
-            let _ = self.cmd_tx.send(cmd);
+            // Use signum so each tick is ±1 step regardless of device delta magnitude.
+            // The command processor coalesces multiple ScrollBy events into one D-Bus call.
+            let _ = self.cmd_tx.send(TrayCommand::ScrollBy(
+                id,
+                self.scroll_target,
+                delta.signum(),
+            ));
         }
     }
 
@@ -354,7 +354,7 @@ fn build_connected_tv_menu(
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::VolumeUp(id.clone())
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, 1)
         },
     ));
     items.push(volume_item(
@@ -364,7 +364,7 @@ fn build_connected_tv_menu(
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::VolumeDown(id.clone())
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, -1)
         },
     ));
 
@@ -405,7 +405,7 @@ fn build_connected_tv_menu(
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::BacklightUp(id.clone())
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, 1)
         },
     ));
     items.push(backlight_item(
@@ -415,7 +415,7 @@ fn build_connected_tv_menu(
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::BacklightDown(id.clone())
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, -1)
         },
     ));
 

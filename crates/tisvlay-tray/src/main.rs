@@ -19,7 +19,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use state::fetch_all_state;
 use tisvlay_core::{DaemonClient, SessionClient};
-use tray::{TisvlayTray, TrayCommand};
+use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
 /// tisvlay system tray - TV control from your taskbar.
 #[derive(Parser, Debug)]
@@ -70,6 +70,9 @@ async fn main() -> Result<()> {
 
     // Create command channel
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    // Clone before moving into tray; used to re-queue non-scroll commands
+    // that are encountered while draining scroll events in the processor.
+    let requeue_tx = cmd_tx.clone();
 
     // Create tray with initial empty state
     let tray = TisvlayTray {
@@ -101,7 +104,7 @@ async fn main() -> Result<()> {
     let cmd_session = session.clone();
     let cmd_handle = handle.clone();
     let cmd_task = tokio::spawn(async move {
-        process_commands(cmd_rx, cmd_daemon, cmd_session, cmd_handle).await;
+        process_commands(cmd_rx, requeue_tx, cmd_daemon, cmd_session, cmd_handle).await;
     });
 
     // Wait for shutdown: command processor exit (Quit menu item) or signal
@@ -196,6 +199,7 @@ async fn poll_state(
 /// Process commands from tray menu callbacks.
 async fn process_commands(
     mut cmd_rx: mpsc::UnboundedReceiver<TrayCommand>,
+    requeue_tx: mpsc::UnboundedSender<TrayCommand>,
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
@@ -254,22 +258,45 @@ async fn process_commands(
                     warn!(tv_id = %id, input = %input, error = %e, "Switch input failed");
                 }
             }
-            TrayCommand::VolumeUp(id) => {
-                let current = get_cached_volume(&handle, &id).await;
-                let new = current.saturating_add(VOLUME_STEP).min(100);
-                if let Err(e) = daemon.set_volume(&id, new).await {
-                    warn!(tv_id = %id, error = %e, "Set volume failed");
-                } else {
-                    set_cached_volume(&handle, &id, new).await;
+            TrayCommand::ScrollBy(id, target, mut steps) => {
+                // Coalesce all pending scroll events for the same TV and target
+                // into one D-Bus call, preventing queue buildup from fast scroll wheels.
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(TrayCommand::ScrollBy(nid, ntarget, nsteps))
+                            if nid == id && ntarget == target =>
+                        {
+                            steps += nsteps;
+                        }
+                        Ok(other) => {
+                            // Non-scroll command arrived mid-burst: re-queue it so it
+                            // isn't lost; it will be processed in the next iteration.
+                            let _ = requeue_tx.send(other);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
                 }
-            }
-            TrayCommand::VolumeDown(id) => {
-                let current = get_cached_volume(&handle, &id).await;
-                let new = current.saturating_sub(VOLUME_STEP);
-                if let Err(e) = daemon.set_volume(&id, new).await {
-                    warn!(tv_id = %id, error = %e, "Set volume failed");
-                } else {
-                    set_cached_volume(&handle, &id, new).await;
+                match target {
+                    ScrollTarget::Volume => {
+                        let current = get_cached_volume(&handle, &id).await;
+                        let new = (current as i32 + steps * VOLUME_STEP as i32).clamp(0, 100) as u8;
+                        if let Err(e) = daemon.set_volume(&id, new).await {
+                            warn!(tv_id = %id, error = %e, "Set volume failed");
+                        } else {
+                            set_cached_volume(&handle, &id, new).await;
+                        }
+                    }
+                    ScrollTarget::Backlight => {
+                        let current = get_cached_backlight(&handle, &id).await;
+                        let new =
+                            (current as i32 + steps * BACKLIGHT_STEP as i32).clamp(0, 100) as u8;
+                        if let Err(e) = daemon.set_backlight(&id, new).await {
+                            warn!(tv_id = %id, error = %e, "Set backlight failed");
+                        } else {
+                            set_cached_backlight(&handle, &id, new).await;
+                        }
+                    }
                 }
             }
             TrayCommand::ToggleMute(id) => {
@@ -280,24 +307,6 @@ async fn process_commands(
                     warn!(tv_id = %id, error = %e, "Toggle mute failed");
                 } else {
                     set_cached_muted(&handle, &id, new_mute).await;
-                }
-            }
-            TrayCommand::BacklightUp(id) => {
-                let current = get_cached_backlight(&handle, &id).await;
-                let new = current.saturating_add(BACKLIGHT_STEP).min(100);
-                if let Err(e) = daemon.set_backlight(&id, new).await {
-                    warn!(tv_id = %id, error = %e, "Set backlight failed");
-                } else {
-                    set_cached_backlight(&handle, &id, new).await;
-                }
-            }
-            TrayCommand::BacklightDown(id) => {
-                let current = get_cached_backlight(&handle, &id).await;
-                let new = current.saturating_sub(BACKLIGHT_STEP);
-                if let Err(e) = daemon.set_backlight(&id, new).await {
-                    warn!(tv_id = %id, error = %e, "Set backlight failed");
-                } else {
-                    set_cached_backlight(&handle, &id, new).await;
                 }
             }
             TrayCommand::SetManaged(id, managed) => {
