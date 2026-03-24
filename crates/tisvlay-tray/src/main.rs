@@ -301,6 +301,11 @@ async fn process_commands(
                         }
                     }
                 }
+                // Skip the full fetch_all_state refresh — the cache was already
+                // updated optimistically above, and the next poll cycle will
+                // reconcile with the real state. This avoids an extra D-Bus +
+                // WebSocket round-trip per scroll step (~5x faster cycle time).
+                continue;
             }
             TrayCommand::ToggleMute(id) => {
                 // Read from cache to avoid race with rapid toggles
