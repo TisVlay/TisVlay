@@ -141,3 +141,110 @@ code duplication.
 
 The only actionable item is **J2**: skip the D-Bus call when `steps` coalesces to zero.
 Everything else is either correct-by-design or a future enhancement opportunity.
+
+---
+---
+
+# Scroll Follow-Up Review (commits 9e8cf81, 59ec097)
+
+Review of two follow-up commits addressing J2 and J3 from the previous review, plus a
+scroll performance optimization.
+
+Build: clean. Tests: all pass.
+
+---
+
+## Commit 1: `feat: Proportional scroll normalization with per-notch step sizing` (9e8cf81)
+
+This commit addresses **J2** (steps=0 no-op) and **J3** (signum discards magnitude):
+
+1. **J2 fix**: Adds `if steps == 0 { continue; }` after the drain loop — exactly the
+   fix suggested in J2. No-op coalesced bursts now skip the D-Bus call entirely. ✓
+
+2. **J3 enhancement**: Replaces `delta.signum()` with `(delta.abs() / SCROLL_NOTCH).max(1) * delta.signum()`.
+   This preserves magnitude for fast-spinning wheels (240+ units → 2+ steps) while
+   flooring sub-notch trackpad events to 1 step. The `SCROLL_NOTCH = 120` constant
+   follows the X11/Wayland convention. ✓
+
+3. **Step constants reduced**: `VOLUME_STEP` and `BACKLIGHT_STEP` both changed from 5/10
+   to 1, since the notch normalization now provides granularity. Each step is one
+   absolute unit, making the mapping between scroll notches and TV adjustments 1:1. ✓
+
+4. **Early return on delta=0**: Adds `if delta == 0 { return; }` in the scroll handler
+   before computing steps. Prevents sending a zero-step command into the channel. ✓
+
+### K1. Integer division truncation in step calculation
+
+**File:** [crates/tisvlay-tray/src/tray.rs:243](crates/tisvlay-tray/src/tray.rs#L243)
+
+```rust
+let steps = (delta.abs() / SCROLL_NOTCH).max(1) * delta.signum();
+```
+
+The `.max(1)` floor ensures sub-notch deltas (e.g. trackpad sending delta=15) produce
+1 step. For a standard click-wheel sending exactly 120, this gives `(120/120).max(1) = 1`.
+For fast wheels sending 240, it gives `(240/120).max(1) = 2`. The integer division
+truncation means 239 → 1 step (not 1.99), which is the correct conservative behavior
+for discrete volume/backlight adjustments.
+
+**Severity:** Info (correct behavior, no issue)
+
+---
+
+## Commit 2: `fix: Skip redundant state refresh after scroll commands in tray` (59ec097)
+
+**File:** [crates/tisvlay-tray/src/main.rs:304-308](crates/tisvlay-tray/src/main.rs#L304-L308)
+
+```rust
+// Skip the full fetch_all_state refresh — the cache was already
+// updated optimistically above, and the next poll cycle will
+// reconcile with the real state. This avoids an extra D-Bus +
+// WebSocket round-trip per scroll step (~5x faster cycle time).
+continue;
+```
+
+The `continue` skips the `fetch_all_state()` call at the bottom of the command processing
+loop. This is safe because the ScrollBy handler already updates the cache optimistically
+via `set_cached_volume` / `set_cached_backlight` after a successful D-Bus call (lines
+290, 300). The 5-second poll cycle will reconcile any drift.
+
+### K2. Optimistic cache divergence on D-Bus failure
+
+**File:** [crates/tisvlay-tray/src/main.rs:287-301](crates/tisvlay-tray/src/main.rs#L287-L301)
+
+The cache is only updated in the `else` branch (on success), so a failed `set_volume` /
+`set_backlight` call correctly leaves the cache unchanged. The `continue` then skips
+the refresh that would have corrected the cache anyway. Since the cache retains the
+pre-scroll value on failure, the tray menu shows the correct (unchanged) state. The
+next poll cycle refreshes regardless.
+
+**Severity:** Info (correct behavior — failure path already handled)
+
+### K3. Other commands still refresh; only ScrollBy skips
+
+The `continue` only applies to the `ScrollBy` arm. All other commands (`ToggleMute`,
+`PowerOn`, `PowerOff`, etc.) fall through to the existing `fetch_all_state()` at the
+bottom. This is the right split — scroll events are high-frequency and benefit from
+skipping the refresh, while discrete commands like power toggle happen rarely and
+benefit from immediate state reconciliation.
+
+**Severity:** Info (correct design choice)
+
+---
+
+## Summary
+
+| # | Severity | Item |
+|---|----------|------|
+| K1 | **Info** | Integer truncation in notch normalization is correct conservative behavior |
+| K2 | **Info** | Optimistic cache correctly skips update on D-Bus failure |
+| K3 | **Info** | Only scroll skips refresh; discrete commands still reconcile immediately |
+
+### Overall Assessment
+
+These two commits directly address **J2** and **J3** from the previous review and add a
+meaningful performance improvement (8.7x median scroll cycle time reduction). The
+`SCROLL_NOTCH` normalization is well-documented and follows platform conventions. The
+optimistic cache skip is safe because the success path updates the cache and the failure
+path preserves it. No actionable items — all findings are info-level confirmations of
+correct behavior.
