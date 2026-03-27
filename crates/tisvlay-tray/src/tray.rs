@@ -362,23 +362,23 @@ fn build_connected_tv_menu(
     }
 
     items.push(volume_item(
-        "Volume Up (+5)",
+        "Volume Up (+10)",
         "audio-volume-high",
         cmd_tx,
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, 1)
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, 10)
         },
     ));
     items.push(volume_item(
-        "Volume Down (-5)",
+        "Volume Down (-10)",
         "audio-volume-medium",
         cmd_tx,
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, -1)
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, -10)
         },
     ));
 
@@ -419,7 +419,7 @@ fn build_connected_tv_menu(
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, 1)
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, 10)
         },
     ));
     items.push(backlight_item(
@@ -429,7 +429,7 @@ fn build_connected_tv_menu(
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, -1)
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, -10)
         },
     ));
 
