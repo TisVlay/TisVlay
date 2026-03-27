@@ -776,7 +776,7 @@ impl DaemonClient {
 
     /// Set a daemon configuration option.
     ///
-    /// Supported keys: `wake_on_boot`, `wake_delay_ms`, `on_shutdown`,
+    /// Supported keys: `wake_on_boot`, `on_shutdown`,
     /// `on_no_active_session`.
     pub async fn set_daemon_option(&self, key: &str, value: &str) -> Result<()> {
         debug!(key = %key, value = %value, "Calling SetDaemonOption on daemon");

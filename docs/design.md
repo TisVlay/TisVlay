@@ -246,7 +246,6 @@ See `crates/tisvlay-core/src/config.rs` for the full schema.
 # /var/lib/tisvlay/config.toml  (daemon-owned)
 [daemon]
 wake_on_boot = true
-wake_delay_ms = 3000
 on_shutdown = "power_off"        # action when system shuts down / reboots
 on_no_active_session = "none"    # action when all user sessions end (login screen)
 

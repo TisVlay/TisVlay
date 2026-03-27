@@ -12,7 +12,6 @@
 //! ```toml
 //! [daemon]
 //! wake_on_boot = true
-//! wake_delay_ms = 3000
 //! on_shutdown = "power_off"
 //! on_no_active_session = "none"
 //!
@@ -233,10 +232,6 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub wake_on_boot: bool,
 
-    /// Delay in milliseconds after WoL before sending commands.
-    #[serde(default = "default_wake_delay")]
-    pub wake_delay_ms: u64,
-
     /// Action when system shuts down or reboots.
     #[serde(default = "default_on_shutdown")]
     pub on_shutdown: SessionAction,
@@ -244,10 +239,6 @@ pub struct DaemonConfig {
     /// Action when all user sessions end (e.g., after logout, before login).
     #[serde(default)]
     pub on_no_active_session: SessionAction,
-}
-
-fn default_wake_delay() -> u64 {
-    3000
 }
 
 fn default_on_shutdown() -> SessionAction {
@@ -258,7 +249,6 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             wake_on_boot: true,
-            wake_delay_ms: default_wake_delay(),
             on_shutdown: default_on_shutdown(),
             on_no_active_session: SessionAction::None,
         }

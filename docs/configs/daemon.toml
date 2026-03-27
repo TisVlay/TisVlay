@@ -1,6 +1,5 @@
 [daemon]
 wake_on_boot = true
-wake_delay_ms = 1000
 on_shutdown = "power_off"
 on_no_active_session = "none"
 

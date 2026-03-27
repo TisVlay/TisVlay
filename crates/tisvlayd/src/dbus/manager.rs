@@ -161,7 +161,7 @@ impl ManagerService {
 
     /// Set a daemon configuration option.
     ///
-    /// Supported keys: `wake_on_boot`, `wake_delay_ms`, `on_shutdown`,
+    /// Supported keys: `wake_on_boot`, `on_shutdown`,
     /// `on_no_active_session`.
     async fn set_daemon_option(&self, key: &str, value: &str) -> Result<(), DaemonError> {
         info!(key = %key, value = %value, "D-Bus: SetDaemonOption");

@@ -290,20 +290,16 @@ impl TvManager {
     /// become reachable (retrying with WoL resends), then sends screen_on
     /// and optionally switches to the configured HDMI input.
     ///
-    /// Uses `wake_and_connect` from the backend, which treats the successful
-    /// WebSocket connection as the readiness signal — no blind delay needed.
-    /// `wake_delay_ms` controls the interval between connection retries and
-    /// WoL resends, not a one-shot sleep.
+    /// The backend owns all transport-specific retry logic (timing, WoL
+    /// resends, connection attempts). Connection success is the readiness
+    /// signal — no blind delay needed.
     ///
     /// Runs in the background so D-Bus registration is not blocked. The
     /// daemon is reachable immediately; the TV comes online when it's ready.
     pub fn boot_wake(self: &Arc<Self>) {
         let manager = self.clone();
         tokio::spawn(async move {
-            let (wake_on_boot, wake_delay_ms) = {
-                let daemon = manager.daemon_config.read().await;
-                (daemon.wake_on_boot, daemon.wake_delay_ms)
-            };
+            let wake_on_boot = manager.daemon_config.read().await.wake_on_boot;
 
             if !wake_on_boot {
                 debug!("Boot-time WoL disabled");
@@ -329,11 +325,9 @@ impl TvManager {
             for (tv_id, tv_config) in &wake_configs {
                 info!(tv_id = %tv_id, "Waking TV and waiting for connection...");
 
-                // wake_and_connect sends WoL, retries connection with WoL resends
-                // between attempts. Connection success = TV is ready for commands.
                 let connection = match manager
                     .registry
-                    .wake_and_connect_tv(tv_config, wake_delay_ms)
+                    .wake_and_connect_tv(tv_config)
                     .await
                 {
                     Ok(conn) => {
@@ -530,9 +524,8 @@ impl TvManager {
 
     /// Power on a TV using Wake-on-LAN.
     ///
-    /// The backend handles all transport-specific retry logic (WoL resend,
-    /// boot wait, connect retry) via `wake_and_connect()`. The daemon
-    /// provides timing policy from config.
+    /// The backend owns all transport-specific retry logic (WoL resend,
+    /// boot wait, connect retry) via `wake_and_connect()`.
     pub async fn power_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let tv_arc = self.get_tv(tv_id).await?;
 
@@ -557,10 +550,9 @@ impl TvManager {
         };
 
         // Backend handles wake + boot wait + connect retry (no lock held)
-        let wake_delay_ms = self.daemon_config.read().await.wake_delay_ms;
         let connection = self
             .registry
-            .wake_and_connect_tv(&config, wake_delay_ms)
+            .wake_and_connect_tv(&config)
             .await
             .map_err(|e| TvManagerError::WakeFailed {
                 tv_id: tv_id.to_string(),
@@ -904,11 +896,6 @@ impl TvManager {
                     daemon.wake_on_boot = value
                         .parse()
                         .map_err(|_| TvManagerError::ConfigError("Invalid bool".into()))?;
-                }
-                "wake_delay_ms" => {
-                    daemon.wake_delay_ms = value
-                        .parse()
-                        .map_err(|_| TvManagerError::ConfigError("Invalid u64".into()))?;
                 }
                 "on_shutdown" => {
                     daemon.on_shutdown =
