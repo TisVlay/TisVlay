@@ -213,18 +213,18 @@ on_no_session = "none"        # action when all user sessions end (default: none
 
 ## Checklist
 
-- [ ] Part 1.1: Remove timing params from `TvConnector::wake_and_connect()`
-- [ ] Part 1.2: Update LG backend (no boot_delay, hardcoded constants)
-- [ ] Part 1.3: Update `BackendRegistry::wake_and_connect_tv()`
-- [ ] Part 1.4: Remove `wake_delay_ms` from all layers
-- [ ] Part 2.1: Replace `wake_on_boot` with `on_startup`
-- [ ] Part 2.2: Add `on_reboot`
-- [ ] Part 2.3: Rename `on_no_active_session` → `on_no_session`
-- [ ] Part 2.4: Detect reboot vs poweroff via logind `ScheduledShutdown`
-- [ ] Part 2.5: Update `on_startup` implementation (replace `boot_wake_tvs`)
-- [ ] Part 2.6: Update `SetDaemonOption` keys
-- [ ] Part 3: Verify no code restricts action-event combinations
-- [ ] Part 4: Audit for remaining transport leaks
-- [ ] Part 5: Update docs, configs, tests
-- [ ] `cargo check` all crates
-- [ ] `cargo test` all crates
+- [x] Part 1.1: Remove timing params from `TvConnector::wake_and_connect()`
+- [x] Part 1.2: Update LG backend (no boot_delay, hardcoded constants)
+- [x] Part 1.3: Update `BackendRegistry::wake_and_connect_tv()`
+- [x] Part 1.4: Remove `wake_delay_ms` from all layers
+- [x] Part 2.1: Replace `wake_on_boot` with `on_startup`
+- [x] Part 2.2: Add `on_reboot`
+- [x] Part 2.3: Rename `on_no_active_session` → `on_no_session`
+- [x] Part 2.4: Detect reboot vs poweroff via logind `ScheduledShutdown`
+- [x] Part 2.5: Update `on_startup` implementation (replace `boot_wake`)
+- [x] Part 2.6: Update `SetDaemonOption` keys
+- [x] Part 3: Verify no code restricts action-event combinations (clean)
+- [x] Part 4: Audit for remaining transport leaks (clean)
+- [x] Part 5: Update docs, configs, tests (done inline with Parts 1–2)
+- [x] `cargo check` all crates
+- [x] `cargo test` all crates
