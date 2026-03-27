@@ -11,9 +11,10 @@
 //!
 //! ```toml
 //! [daemon]
-//! wake_on_boot = true
+//! on_startup = "power_on"
 //! on_shutdown = "power_off"
-//! on_no_active_session = "none"
+//! on_reboot = "none"
+//! on_no_session = "none"
 //!
 //! [profiles.default]
 //! on_screen_lock = "screen_off"
@@ -228,17 +229,25 @@ impl Default for ResolvedProfile {
 /// Daemon configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
-    /// Whether to wake TVs on system boot.
-    #[serde(default)]
-    pub wake_on_boot: bool,
+    /// Action when the daemon starts (system boot or service restart).
+    #[serde(default = "default_on_startup")]
+    pub on_startup: SessionAction,
 
-    /// Action when system shuts down or reboots.
+    /// Action when the system powers off or halts.
     #[serde(default = "default_on_shutdown")]
     pub on_shutdown: SessionAction,
 
-    /// Action when all user sessions end (e.g., after logout, before login).
+    /// Action when the system reboots (including kexec).
     #[serde(default)]
-    pub on_no_active_session: SessionAction,
+    pub on_reboot: SessionAction,
+
+    /// Action when all user sessions end (e.g., after logout, login screen).
+    #[serde(default)]
+    pub on_no_session: SessionAction,
+}
+
+fn default_on_startup() -> SessionAction {
+    SessionAction::PowerOn
 }
 
 fn default_on_shutdown() -> SessionAction {
@@ -248,9 +257,10 @@ fn default_on_shutdown() -> SessionAction {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            wake_on_boot: true,
+            on_startup: default_on_startup(),
             on_shutdown: default_on_shutdown(),
-            on_no_active_session: SessionAction::None,
+            on_reboot: SessionAction::None,
+            on_no_session: SessionAction::None,
         }
     }
 }
@@ -669,9 +679,10 @@ mod tests {
     fn test_default_config() {
         let config = SystemConfig::default();
         assert!(config.tv.is_empty());
-        assert!(config.daemon.wake_on_boot);
+        assert_eq!(config.daemon.on_startup, SessionAction::PowerOn);
         assert_eq!(config.daemon.on_shutdown, SessionAction::PowerOff);
-        assert_eq!(config.daemon.on_no_active_session, SessionAction::None);
+        assert_eq!(config.daemon.on_reboot, SessionAction::None);
+        assert_eq!(config.daemon.on_no_session, SessionAction::None);
     }
 
     #[test]
@@ -726,9 +737,10 @@ default_input = "HDMI_1"
         // New-style system config without profile on [[tv]]
         let toml_str = r#"
 [daemon]
-wake_on_boot = true
+on_startup = "power_on"
 on_shutdown = "power_off"
-on_no_active_session = "screen_on"
+on_reboot = "none"
+on_no_session = "screen_on"
 
 [profiles.default]
 on_screen_lock = "screen_off"
@@ -748,8 +760,10 @@ mac = "AA:BB:CC:DD:EE:FF"
 "#;
 
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.daemon.on_startup, SessionAction::PowerOn);
         assert_eq!(config.daemon.on_shutdown, SessionAction::PowerOff);
-        assert_eq!(config.daemon.on_no_active_session, SessionAction::ScreenOn);
+        assert_eq!(config.daemon.on_reboot, SessionAction::None);
+        assert_eq!(config.daemon.on_no_session, SessionAction::ScreenOn);
 
         let default_profile = config.profiles.get("default").unwrap();
         assert_eq!(
@@ -1180,7 +1194,7 @@ mac = "AA:BB:CC:DD:EE:FF"
         // System config has multiple profiles — session service should see all of them
         let toml_str = r#"
 [daemon]
-wake_on_boot = true
+on_startup = "power_on"
 
 [profiles.default]
 on_screen_lock = "screen_off"
@@ -1343,7 +1357,7 @@ profile = "gaming"
         // This verifies the formats are incompatible — you need separate files.
         let system_toml = r#"
 [daemon]
-wake_on_boot = true
+on_startup = "power_on"
 
 [profiles.default]
 on_screen_lock = "screen_off"
