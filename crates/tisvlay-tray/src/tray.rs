@@ -79,6 +79,15 @@ fn backlight_item(
     .into()
 }
 
+/// Scroll delta units per notch (X11/Wayland smooth-scroll convention).
+///
+/// Standard click-wheels emit 120 units per detent. Dividing the raw delta
+/// by this gives notch-equivalent steps; sub-notch events (e.g. trackpads
+/// sending 5–15 units at a time) are floored to 1 step so they always
+/// register. Fast-spinning wheels that emit 240–480+ per event produce
+/// proportionally more steps, making the scroll feel snappier.
+const SCROLL_NOTCH: i32 = 120;
+
 /// What the scroll wheel adjusts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScrollTarget {
@@ -96,11 +105,11 @@ pub enum TrayCommand {
     ScreenOff(String),
     SwitchInput(String, String),
     SetProfile(String, String),
-    VolumeUp(String),
-    VolumeDown(String),
+    /// Scroll-wheel or menu step: positive steps = up, negative = down.
+    /// Multiple events for the same TV and target are coalesced by the
+    /// command processor into a single D-Bus call to prevent queue buildup.
+    ScrollBy(String, ScrollTarget, i32),
     ToggleMute(String),
-    BacklightUp(String),
-    BacklightDown(String),
     SetManaged(String, bool),
     Refresh,
     Quit,
@@ -223,13 +232,18 @@ impl Tray for TisvlayTray {
             .or_else(|| self.tvs.iter().find(|tv| tv.connected && tv.is_on));
         if let Some(tv) = target {
             let id = tv.id.clone();
-            let cmd = match (self.scroll_target, delta > 0) {
-                (ScrollTarget::Volume, true) => TrayCommand::VolumeUp(id),
-                (ScrollTarget::Volume, false) => TrayCommand::VolumeDown(id),
-                (ScrollTarget::Backlight, true) => TrayCommand::BacklightUp(id),
-                (ScrollTarget::Backlight, false) => TrayCommand::BacklightDown(id),
-            };
-            let _ = self.cmd_tx.send(cmd);
+            if delta == 0 {
+                return;
+            }
+            // Normalize raw delta to notch-equivalent steps:
+            //   - standard click-wheel (120/notch): 1 step per notch
+            //   - fast-spinning wheel (240–480+/event): 2–4 steps per event
+            //   - trackpad / sub-notch (< 120): floor to 1 step so every event registers
+            // The command processor coalesces multiple ScrollBy events into one D-Bus call.
+            let steps = (delta.abs() / SCROLL_NOTCH).max(1) * delta.signum();
+            let _ = self
+                .cmd_tx
+                .send(TrayCommand::ScrollBy(id, self.scroll_target, steps));
         }
     }
 
@@ -348,23 +362,23 @@ fn build_connected_tv_menu(
     }
 
     items.push(volume_item(
-        "Volume Up (+5)",
+        "Volume Up (+10)",
         "audio-volume-high",
         cmd_tx,
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::VolumeUp(id.clone())
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, 10)
         },
     ));
     items.push(volume_item(
-        "Volume Down (-5)",
+        "Volume Down (-10)",
         "audio-volume-medium",
         cmd_tx,
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::VolumeDown(id.clone())
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, -10)
         },
     ));
 
@@ -405,7 +419,7 @@ fn build_connected_tv_menu(
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::BacklightUp(id.clone())
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, 10)
         },
     ));
     items.push(backlight_item(
@@ -415,7 +429,7 @@ fn build_connected_tv_menu(
         &id,
         {
             let id = id.clone();
-            move || TrayCommand::BacklightDown(id.clone())
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, -10)
         },
     ));
 

@@ -391,8 +391,8 @@ Connected TV submenu:
   ├─ Unmanage
   ├─ Input ▶  (RadioGroup: HDMI 1, HDMI 2 ✓, HDMI 3)   [input-tvremote-symbolic]
   ├─ Volume: 60
-  │  ├─ Volume Up (+5)
-  │  ├─ Volume Down (-5)
+  │  ├─ Volume Up (+10)
+  │  ├─ Volume Down (-10)
   │  └─ Mute / Unmute
   ├─ Backlight: 80
   │  ├─ Backlight Up (+10)
