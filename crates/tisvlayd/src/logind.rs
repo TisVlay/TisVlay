@@ -206,9 +206,7 @@ async fn handle_prepare_for_shutdown(
 
             let action = manager.get_daemon_config_action(daemon_action).await;
             if action != SessionAction::None {
-                manager
-                    .execute_action_all_tvs(action, &shutdown_type)
-                    .await;
+                manager.execute_action_all_tvs(action, &shutdown_type).await;
             }
 
             // Release inhibitor lock by dropping the fd
@@ -329,9 +327,7 @@ async fn check_active_sessions(
             .await;
         if action != SessionAction::None {
             info!(action = ?action, "Executing on_no_session action");
-            manager
-                .execute_action_all_tvs(action, "no_session")
-                .await;
+            manager.execute_action_all_tvs(action, "no_session").await;
         }
     }
 }

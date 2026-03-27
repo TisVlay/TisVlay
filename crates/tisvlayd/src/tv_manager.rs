@@ -277,10 +277,7 @@ impl TvManager {
     }
 
     /// Get a daemon config action.
-    pub async fn get_daemon_config_action(
-        &self,
-        action: DaemonAction,
-    ) -> SessionAction {
+    pub async fn get_daemon_config_action(&self, action: DaemonAction) -> SessionAction {
         let daemon = self.daemon_config.read().await;
         match action {
             DaemonAction::Startup => daemon.on_startup,
@@ -365,11 +362,7 @@ impl TvManager {
         for (tv_id, tv_config) in &wake_configs {
             info!(tv_id = %tv_id, "Waking TV and waiting for connection...");
 
-            let connection = match self
-                .registry
-                .wake_and_connect_tv(tv_config)
-                .await
-            {
+            let connection = match self.registry.wake_and_connect_tv(tv_config).await {
                 Ok(conn) => {
                     info!(tv_id = %tv_id, "Startup: TV is online");
                     conn

@@ -5,13 +5,13 @@
 use crate::client::WebOsClient;
 use crate::config::LgVendorConfig;
 use async_trait::async_trait;
+use std::time::Duration;
 use tisvlay_core::{
     Capabilities, Credentials, Error, InputInfo, MacAddress, PairingCommand, PairingSession,
     PairingState, PowerState, Result, TvBackend, TvConnection, TvConnector, TvState,
 };
 #[cfg(feature = "discovery")]
 use tisvlay_core::{DiscoveredTv, TvDiscovery};
-use std::time::Duration;
 use tracing::{debug, info, warn};
 
 /// Maximum number of connection attempts after sending WoL.
@@ -304,10 +304,7 @@ impl TvConnector for LgConnector {
         }
     }
 
-    async fn wake_and_connect(
-        &self,
-        vendor_config: &toml::Value,
-    ) -> Result<Box<dyn TvConnection>> {
+    async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         self.wake(vendor_config).await?;
 
         let config = parse_config(vendor_config)?;

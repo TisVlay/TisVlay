@@ -267,10 +267,7 @@ pub trait TvConnector: Send + Sync {
     /// count, wake packet resends, readiness probes, etc. The daemon does
     /// not provide any timing parameters — each backend knows its own
     /// transport characteristics.
-    async fn wake_and_connect(
-        &self,
-        vendor_config: &toml::Value,
-    ) -> Result<Box<dyn TvConnection>>;
+    async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>>;
 
     /// Start pairing with a new device.
     ///
