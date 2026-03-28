@@ -14,6 +14,7 @@ RestartSec=5
 
 # Runtime state (boot marker in /run/tisvlay/)
 RuntimeDirectory=tisvlay
+RuntimeDirectoryPreserve=restart
 
 # Security hardening
 ProtectSystem=strict
