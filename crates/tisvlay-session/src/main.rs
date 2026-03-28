@@ -25,7 +25,6 @@ use std::sync::Arc;
 use tisvlay_core::{DaemonClient, ProfileConfig, ResolvedProfile, SessionAction, UserConfig};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// tisvlay session service - monitors desktop events and controls TVs.
 #[derive(Parser, Debug)]
@@ -197,30 +196,7 @@ impl SessionState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Use native journald logging when running as a service (not a TTY).
-    // Falls back to formatted stderr for interactive/development use.
-    let env_filter = EnvFilter::from_default_env()
-        .add_directive("tisvlay_session=info".parse()?)
-        .add_directive("zbus=warn".parse()?);
-    let interactive = std::io::IsTerminal::is_terminal(&std::io::stderr());
-    if !interactive {
-        if let Ok(journald) = tracing_journald::layer() {
-            tracing_subscriber::registry()
-                .with(journald)
-                .with(env_filter)
-                .init();
-        } else {
-            tracing_subscriber::registry()
-                .with(fmt::layer().without_time())
-                .with(env_filter)
-                .init();
-        }
-    } else {
-        tracing_subscriber::registry()
-            .with(fmt::layer())
-            .with(env_filter)
-            .init();
-    }
+    tisvlay_core::logging::init(&["tisvlay_session=info", "zbus=warn"])?;
 
     let args = Args::parse();
 

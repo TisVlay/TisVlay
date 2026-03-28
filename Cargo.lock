@@ -1372,6 +1372,8 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-journald",
+ "tracing-subscriber",
  "zbus",
 ]
 
@@ -1406,8 +1408,6 @@ dependencies = [
  "tisvlay-core",
  "tokio",
  "tracing",
- "tracing-journald",
- "tracing-subscriber",
  "wayland-client",
  "wayland-protocols",
  "zbus",
@@ -1423,8 +1423,6 @@ dependencies = [
  "tisvlay-core",
  "tokio",
  "tracing",
- "tracing-journald",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1443,8 +1441,6 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
- "tracing-journald",
- "tracing-subscriber",
  "zbus",
 ]
 

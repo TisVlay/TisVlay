@@ -15,7 +15,6 @@ use std::sync::Arc;
 use tisvlay_core::{SystemConfig, UserConfig};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
@@ -48,30 +47,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Use native journald logging when running as a service (not a TTY).
-    // Falls back to formatted stderr for interactive/development use.
-    let env_filter = EnvFilter::from_default_env()
-        .add_directive("tisvlayd=info".parse()?)
-        .add_directive("zbus=warn".parse()?);
-    let interactive = std::io::IsTerminal::is_terminal(&std::io::stderr());
-    if !interactive {
-        if let Ok(journald) = tracing_journald::layer() {
-            tracing_subscriber::registry()
-                .with(journald)
-                .with(env_filter)
-                .init();
-        } else {
-            tracing_subscriber::registry()
-                .with(fmt::layer().without_time())
-                .with(env_filter)
-                .init();
-        }
-    } else {
-        tracing_subscriber::registry()
-            .with(fmt::layer())
-            .with(env_filter)
-            .init();
-    }
+    tisvlay_core::logging::init(&["tisvlayd=info", "zbus=warn"])?;
 
     info!("tisvlayd starting...");
 
