@@ -1,7 +1,8 @@
 //! logind integration for system lifecycle events.
 //!
 //! Monitors `org.freedesktop.login1` on the system bus for:
-//! - `PrepareForShutdown`: execute `on_shutdown` action for all TVs
+//! - `PrepareForShutdown`: execute `on_shutdown` or `on_reboot` action
+//!   (distinguished via the `ScheduledShutdown` property)
 //! - Session tracking: detect when no user sessions are active
 //!
 //! Takes a shutdown inhibitor lock so the daemon can gracefully
@@ -38,6 +39,11 @@ trait Login1Manager {
     fn list_sessions(
         &self,
     ) -> zbus::Result<Vec<(String, u32, String, String, zbus::zvariant::OwnedObjectPath)>>;
+
+    /// The scheduled shutdown type and timestamp.
+    /// Returns (type, usec) where type is "poweroff", "reboot", "halt", or "kexec".
+    #[zbus(property)]
+    fn scheduled_shutdown(&self) -> zbus::Result<(String, u64)>;
 
     /// Signal emitted before system shutdown/reboot.
     #[zbus(signal)]
@@ -103,7 +109,7 @@ impl LogindMonitor {
     /// This spawns background tasks for:
     /// - Shutdown inhibitor lock management
     /// - PrepareForShutdown signal handling
-    /// - Session tracking for on_no_active_session
+    /// - Session tracking for on_no_session
     ///
     /// Returns immediately after spawning tasks.
     pub async fn start(&self) -> anyhow::Result<()> {
@@ -153,8 +159,9 @@ impl LogindMonitor {
 
 /// Handle PrepareForShutdown signal.
 ///
-/// When the system is about to shut down, execute the configured `on_shutdown`
-/// action for all TVs, then release the inhibitor lock so shutdown can proceed.
+/// Queries `ScheduledShutdown` to distinguish poweroff/halt from reboot/kexec,
+/// then executes the corresponding `on_shutdown` or `on_reboot` action for all
+/// managed TVs before releasing the inhibitor lock.
 async fn handle_prepare_for_shutdown(
     proxy: Login1ManagerProxy<'static>,
     manager: Arc<TvManager>,
@@ -180,13 +187,26 @@ async fn handle_prepare_for_shutdown(
         };
 
         if *args.start() {
-            info!("System is preparing for shutdown");
+            // Determine shutdown type from logind's ScheduledShutdown property
+            let (shutdown_type, daemon_action) = match proxy.scheduled_shutdown().await {
+                Ok((type_str, _usec)) => {
+                    let action = match type_str.as_str() {
+                        "reboot" | "kexec" => DaemonAction::Reboot,
+                        _ => DaemonAction::Shutdown, // poweroff, halt, or unknown
+                    };
+                    (type_str, action)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to query ScheduledShutdown, assuming poweroff");
+                    ("poweroff".to_string(), DaemonAction::Shutdown)
+                }
+            };
 
-            let action = manager
-                .get_daemon_config_action(DaemonAction::Shutdown)
-                .await;
+            info!(shutdown_type = %shutdown_type, "System is preparing for shutdown");
+
+            let action = manager.get_daemon_config_action(daemon_action).await;
             if action != SessionAction::None {
-                execute_action_all_tvs(&manager, action, "shutdown").await;
+                manager.execute_action_all_tvs(action, &shutdown_type).await;
             }
 
             // Release inhibitor lock by dropping the fd
@@ -209,9 +229,9 @@ async fn handle_session_changes(
 
     // Check initial session state before subscribing to signals.
     // If the daemon starts when no user sessions exist (e.g. after a graphical
-    // session has ended or before the DM has started), on_no_active_session
-    // would never fire without this initial check because no SessionRemoved
-    // signal will arrive to trigger it.
+    // session has ended or before the DM has started), on_no_session would
+    // never fire without this initial check because no SessionRemoved signal
+    // will arrive to trigger it.
     check_active_sessions(&proxy, &connection, &manager).await;
 
     // Subscribe to both SessionNew and SessionRemoved
@@ -242,8 +262,8 @@ async fn handle_session_changes(
                     // Do NOT call check_active_sessions here: the new session
                     // object may not yet have Active=true when the D-Bus
                     // round-trips complete (the seat hasn't switched yet).
-                    // Checking here causes a race where on_no_active_session
-                    // can fire in the middle of a login transition.
+                    // Checking here causes a race where on_no_session can
+                    // fire in the middle of a login transition.
                     // We only run the check when sessions disappear.
                 }
             }
@@ -264,7 +284,7 @@ async fn handle_session_changes(
 
 /// Check if there are any active graphical user sessions.
 ///
-/// If no active graphical user sessions exist, execute `on_no_active_session`.
+/// If no active graphical user sessions exist, execute `on_no_session`.
 async fn check_active_sessions(
     proxy: &Login1ManagerProxy<'_>,
     connection: &zbus::Connection,
@@ -303,35 +323,11 @@ async fn check_active_sessions(
     if !has_active_graphical_user {
         debug!("No active graphical user sessions detected");
         let action = manager
-            .get_daemon_config_action(DaemonAction::NoActiveSession)
+            .get_daemon_config_action(DaemonAction::NoSession)
             .await;
         if action != SessionAction::None {
-            info!(action = ?action, "Executing on_no_active_session action");
-            execute_action_all_tvs(manager, action, "no_active_session").await;
-        }
-    }
-}
-
-/// Execute an action on all managed TVs.
-async fn execute_action_all_tvs(manager: &TvManager, action: SessionAction, context: &str) {
-    let tv_ids = manager.list_managed_tv_ids().await;
-    for tv_id in &tv_ids {
-        let result: Result<(), crate::tv_manager::TvManagerError> = match action {
-            SessionAction::ScreenOff => manager.screen_off(tv_id).await,
-            SessionAction::ScreenOn => manager.screen_on(tv_id).await,
-            SessionAction::PowerOff => manager.power_off(tv_id).await,
-            SessionAction::PowerOn => manager.power_on(tv_id).await,
-            SessionAction::None => Ok(()),
-        };
-
-        match result {
-            Ok(()) => {
-                debug!(tv_id = %tv_id, action = ?action, context = context, "Action executed");
-            }
-            Err(e) => {
-                warn!(tv_id = %tv_id, action = ?action, context = context, error = %e,
-                    "Failed to execute action");
-            }
+            info!(action = ?action, "Executing on_no_session action");
+            manager.execute_action_all_tvs(action, "no_session").await;
         }
     }
 }

@@ -245,10 +245,10 @@ See `crates/tisvlay-core/src/config.rs` for the full schema.
 ```toml
 # /var/lib/tisvlay/config.toml  (daemon-owned)
 [daemon]
-wake_on_boot = true
-wake_delay_ms = 3000
-on_shutdown = "power_off"        # action when system shuts down / reboots
-on_no_active_session = "none"    # action when all user sessions end (login screen)
+on_startup = "power_on"          # action on system boot (default: power_on)
+on_shutdown = "power_off"        # action on poweroff/halt (default: power_off)
+on_reboot = "none"               # action on reboot/kexec (default: none)
+on_no_session = "none"           # action when all user sessions end (login screen)
 
 # System default profile — inherited by users without their own config file
 [profiles.default]
@@ -315,20 +315,21 @@ stateDiagram-v2
 
 ### Event → Action Mapping
 
-| Event | Default Action | Notes |
-|-------|---------------|-------|
-| System boot | WoL → wait → switch input | Get TV ready for login screen |
-| Screen lock | Screen off (blank) | Instant resume on unlock |
-| Greeter wake | Screen on | User interacted with lock screen (Wayland only) |
-| Screen unlock | Screen on | Skipped if GreeterWake already unblanked (redundant-action tracking) |
-| User idle timeout | Screen off | `on_idle_timeout` in profile; fires at minimum across all TVs |
-| Activity resumes after idle | Screen on | `on_idle_resume` in profile (default: screen_on) |
-| System suspend | Power off | Network unavailable during sleep |
-| System resume | WoL → wait → power on | Backend handles WoL retry for lost packets |
-| All user sessions end | Configurable | `on_no_active_session` in daemon config (e.g. login screen) |
-| System shutdown / reboot | Power off | `on_shutdown` in daemon config |
+| Event | Default Action | Config | Notes |
+|-------|---------------|--------|-------|
+| System boot | Power on | `on_startup` (daemon) | WoL → connect → screen on → input switch |
+| Screen lock | Screen off | `on_screen_lock` (profile) | Instant resume on unlock |
+| Greeter wake | Screen on | `on_greeter_wake` (profile) | User interacted with lock screen (Wayland only) |
+| Screen unlock | Screen on | `on_screen_unlock` (profile) | Skipped if GreeterWake already unblanked |
+| User idle timeout | Screen off | `on_idle_timeout` (profile) | Fires at minimum across all TVs |
+| Activity resumes | Screen on | `on_idle_resume` (profile) | After idle timeout |
+| System suspend | Power off | `on_sleep` (profile) | Network unavailable during sleep |
+| System resume | Power on | `on_wake` (profile) | Backend handles WoL retry for lost packets |
+| All sessions end | None | `on_no_session` (daemon) | Login screen / after logout |
+| System shutdown | Power off | `on_shutdown` (daemon) | poweroff or halt |
+| System reboot | None | `on_reboot` (daemon) | reboot or kexec; TV stays on for BIOS/TTY |
 
-All actions are configurable per-TV via profiles. Different TVs can respond differently to the same event (e.g., gaming TV ignores screen lock).
+All lifecycle events accept any `SessionAction` value: `power_on`, `power_off`, `screen_on`, `screen_off`, or `none`. Different TVs can respond differently to the same event via profiles (e.g., gaming TV ignores screen lock).
 
 ---
 
@@ -467,7 +468,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 2. Profile field-level inheritance: user profile fields override system defaults, unset fields fall through
 3. `on_idle_resume` added to `ProfileConfig` (action when activity resumes after idle)
 4. `org.tisvlay.Session1` D-Bus interface on session bus: `ListProfiles`, `GetTvProfile`, `SetTvProfile`, `GetEffectiveProfile`, `ReloadConfig`
-5. Daemon gains `org.freedesktop.login1` monitoring: `PrepareForShutdown` (inhibitor lock), `SessionNew`/`SessionRemoved` for `on_no_active_session`
+5. Daemon gains `org.freedesktop.login1` monitoring: `PrepareForShutdown` (inhibitor lock), `SessionNew`/`SessionRemoved` for `on_no_session`
 6. Boot-wake refactored: retry-connect loop with WoL resend replaces blind sleep delay
 7. Session service event replay after late daemon connect
 8. Tray gains Profile submenu per TV (queries session service)

@@ -5,6 +5,7 @@
 use crate::client::WebOsClient;
 use crate::config::LgVendorConfig;
 use async_trait::async_trait;
+use std::time::Duration;
 use tisvlay_core::{
     Capabilities, Credentials, Error, InputInfo, MacAddress, PairingCommand, PairingSession,
     PairingState, PowerState, Result, TvBackend, TvConnection, TvConnector, TvState,
@@ -12,6 +13,12 @@ use tisvlay_core::{
 #[cfg(feature = "discovery")]
 use tisvlay_core::{DiscoveredTv, TvDiscovery};
 use tracing::{debug, info, warn};
+
+/// Maximum number of connection attempts after sending WoL.
+const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 10;
+
+/// Delay between connection retry attempts during wake-and-connect.
+const WAKE_CONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Helper to deserialize LgVendorConfig from a toml::Value.
 fn parse_config(vendor_config: &toml::Value) -> Result<LgVendorConfig> {
@@ -297,20 +304,13 @@ impl TvConnector for LgConnector {
         }
     }
 
-    async fn wake_and_connect(
-        &self,
-        vendor_config: &toml::Value,
-        boot_delay: std::time::Duration,
-        max_attempts: u32,
-        retry_interval: std::time::Duration,
-    ) -> Result<Box<dyn TvConnection>> {
+    async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         self.wake(vendor_config).await?;
-        tokio::time::sleep(boot_delay).await;
 
         let config = parse_config(vendor_config)?;
         let mut last_err = None;
 
-        for attempt in 1..=max_attempts {
+        for attempt in 1..=WAKE_CONNECT_MAX_ATTEMPTS {
             // Resend WoL before retrying — earlier packets may have been
             // lost if the desktop network wasn't up after system resume.
             if attempt > 1 {
@@ -331,7 +331,7 @@ impl TvConnector for LgConnector {
                 Err(e) => {
                     debug!(ip = %config.ip, attempt, error = %e, "LG TV not ready yet");
                     last_err = Some(e);
-                    tokio::time::sleep(retry_interval).await;
+                    tokio::time::sleep(WAKE_CONNECT_RETRY_INTERVAL).await;
                 }
             }
         }

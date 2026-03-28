@@ -1,8 +1,8 @@
 [daemon]
-wake_on_boot = true
-wake_delay_ms = 1000
+on_startup = "power_on"
 on_shutdown = "power_off"
-on_no_active_session = "none"
+on_reboot = "none"
+on_no_session = "none"
 
 [profiles.default]
 on_screen_lock = "screen_off"

@@ -146,9 +146,9 @@ async fn main() -> Result<()> {
 
     info!("D-Bus service registered as {}", DBUS_NAME);
 
-    // Boot-time wake: WoL + retry connect + screen_on + input switch.
+    // Execute on_startup action (e.g., power_on wakes TVs via WoL).
     // Runs in the background so D-Bus is immediately reachable.
-    shared_manager.boot_wake();
+    shared_manager.on_startup();
 
     // Start logind monitoring (shutdown inhibitor, session tracking)
     let logind_monitor = logind::LogindMonitor::new(shared_manager.clone(), args.session);
