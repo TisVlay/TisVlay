@@ -48,15 +48,14 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logging. Under systemd (JOURNAL_STREAM set), skip timestamps
-    // and targets since journald captures both automatically.
-    let under_journal = std::env::var_os("JOURNAL_STREAM").is_some();
+    // Use native journald logging when available (structured fields, no
+    // timestamp duplication). Falls back to formatted stderr for interactive use.
     let env_filter = EnvFilter::from_default_env()
         .add_directive("tisvlayd=info".parse()?)
         .add_directive("zbus=warn".parse()?);
-    if under_journal {
+    if let Ok(journald) = tracing_journald::layer() {
         tracing_subscriber::registry()
-            .with(fmt::layer().without_time())
+            .with(journald)
             .with(env_filter)
             .init();
     } else {
