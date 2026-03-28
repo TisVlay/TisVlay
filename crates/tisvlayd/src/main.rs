@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
         .add_directive("zbus=warn".parse()?);
     if under_journal {
         tracing_subscriber::registry()
-            .with(fmt::layer().without_time().with_target(false))
+            .with(fmt::layer().without_time())
             .with(env_filter)
             .init();
     } else {
