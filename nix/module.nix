@@ -76,6 +76,7 @@ in
         Group = "tisvlay";
         StateDirectory = "tisvlay";
         StateDirectoryMode = "0750";
+        RuntimeDirectory = "tisvlay";
         Restart = "on-failure";
         RestartSec = 5;
         # Security hardening

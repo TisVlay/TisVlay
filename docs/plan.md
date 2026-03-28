@@ -213,46 +213,18 @@ on_no_session = "none"        # action when all user sessions end (default: none
 
 ---
 
-## Part 6: Fix stale-connection race in startup_power_on
+## ~~Part 6: Fix stale-connection race in startup_power_on~~ (DROPPED)
 
-### Problem
+Attempted a `get_state()` check after `wake_and_connect` to detect stale
+connections during the TV's shutdown grace period. Testing showed the TV
+truthfully reports `is_on = true` during the grace period, so the check
+passes and the stale connection is stored anyway. The retry constants
+(delay, max attempts) would also leak transport-specific timing into the
+vendor-agnostic daemon, violating Part 4.
 
-When the TV is powered off and the daemon restarts shortly after, the TV's
-WebSocket server may still be alive during its shutdown grace period.
-`wake_and_connect` sends WoL, connects immediately to the dying WebSocket
-(~30ms), sends `screen_on` which the TV accepts but never acts on because
-it finishes shutting down. The daemon reports success; the TV stays off.
-
-### Fix
-
-**File:** `crates/tisvlayd/src/tv_manager.rs` — `startup_power_on()`
-
-After `wake_and_connect` returns a connection, verify the TV is actually
-powered on by querying its state. If the TV reports as off or the state
-query fails, the connection was to a stale/dying session — close it and
-retry `wake_and_connect`.
-
-```rust
-let connection = loop {
-    let mut conn = wake_and_connect(...)?;
-    match conn.get_state().await {
-        Ok(state) if state.is_on => break conn,
-        Ok(_) => {
-            warn!("Connected to TV but it reports as off — stale session, retrying");
-            conn.close().await;
-            tokio::time::sleep(RETRY_INTERVAL).await;
-        }
-        Err(e) => {
-            warn!("State query failed after connect — retrying");
-            conn.close().await;
-            tokio::time::sleep(RETRY_INTERVAL).await;
-        }
-    }
-};
-```
-
-The retry should be bounded (e.g., 3 attempts) to avoid infinite loops if
-the TV genuinely won't come up.
+The race is fully eliminated by Part 7: `on_startup` only fires on system
+boot (via `/run/` marker), so the daemon never restarts into a TV that was
+just powered off.
 
 ---
 
@@ -318,5 +290,5 @@ not "daemon starts". Update design.md and config examples.
 - [x] Part 5: Update docs, configs, tests (done inline with Parts 1–2)
 - [x] `cargo check` all crates
 - [x] `cargo test` all crates
-- [ ] Part 6: Fix stale-connection race in `startup_power_on`
-- [ ] Part 7: Boot marker to skip `on_startup` on daemon restart
+- [x] ~~Part 6: Stale-connection check~~ (dropped — TV reports is_on=true during grace period; Part 7 eliminates the race)
+- [x] Part 7: Boot marker to skip `on_startup` on daemon restart

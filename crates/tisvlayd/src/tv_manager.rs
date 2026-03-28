@@ -311,7 +311,12 @@ impl TvManager {
         }
     }
 
-    /// Execute the configured `on_startup` action for all managed TVs.
+    /// Execute the configured `on_startup` action for all managed TVs,
+    /// but only on system boot — not on daemon restart.
+    ///
+    /// Uses a marker file in `/run/tisvlay/` (tmpfs, cleared on every boot)
+    /// to distinguish system boot from service restart. This prevents
+    /// unexpected TV power-on during unrelated `systemctl restart`.
     ///
     /// Runs in the background so D-Bus registration is not blocked.
     /// The daemon is reachable immediately; TVs come online when ready.
@@ -320,6 +325,20 @@ impl TvManager {
     /// the screen on, and switches to the configured HDMI input.
     /// Other actions are dispatched directly.
     pub fn on_startup(self: &Arc<Self>) {
+        const BOOT_MARKER: &str = "/run/tisvlay/booted";
+
+        let marker_path = std::path::Path::new(BOOT_MARKER);
+        if marker_path.exists() {
+            info!("Skipping on_startup (service restart, not system boot)");
+            return;
+        }
+
+        // Create the marker for subsequent restarts
+        if let Some(dir) = marker_path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(marker_path, "");
+
         let manager = self.clone();
         tokio::spawn(async move {
             let action = manager

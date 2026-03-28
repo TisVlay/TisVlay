@@ -229,7 +229,7 @@ impl Default for ResolvedProfile {
 /// Daemon configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
-    /// Action when the daemon starts (system boot or service restart).
+    /// Action on system boot.
     #[serde(default = "default_on_startup")]
     pub on_startup: SessionAction,
 

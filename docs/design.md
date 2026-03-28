@@ -245,7 +245,7 @@ See `crates/tisvlay-core/src/config.rs` for the full schema.
 ```toml
 # /var/lib/tisvlay/config.toml  (daemon-owned)
 [daemon]
-on_startup = "power_on"          # action when daemon starts (default: power_on)
+on_startup = "power_on"          # action on system boot (default: power_on)
 on_shutdown = "power_off"        # action on poweroff/halt (default: power_off)
 on_reboot = "none"               # action on reboot/kexec (default: none)
 on_no_session = "none"           # action when all user sessions end (login screen)
@@ -317,7 +317,7 @@ stateDiagram-v2
 
 | Event | Default Action | Config | Notes |
 |-------|---------------|--------|-------|
-| Daemon startup | Power on | `on_startup` (daemon) | WoL → connect → screen on → input switch |
+| System boot | Power on | `on_startup` (daemon) | WoL → connect → screen on → input switch |
 | Screen lock | Screen off | `on_screen_lock` (profile) | Instant resume on unlock |
 | Greeter wake | Screen on | `on_greeter_wake` (profile) | User interacted with lock screen (Wayland only) |
 | Screen unlock | Screen on | `on_screen_unlock` (profile) | Skipped if GreeterWake already unblanked |

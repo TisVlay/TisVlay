@@ -12,6 +12,9 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 
+# Runtime state (boot marker in /run/tisvlay/)
+RuntimeDirectory=tisvlay
+
 # Security hardening
 ProtectSystem=strict
 ProtectHome=read-only
