@@ -40,4 +40,4 @@ zbus = { workspace = true }
 [features]
 default = []
 dbus = ["dep:zbus", "dep:anyhow"]
-logging = ["dep:tracing-subscriber", "dep:tracing-journald"]
+logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:anyhow"]
