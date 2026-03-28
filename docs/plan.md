@@ -205,11 +205,101 @@ Check for:
 
 ```toml
 [daemon]
-on_startup = "power_on"       # action when daemon starts (default: power_on)
+on_startup = "power_on"       # action on system boot only (default: power_on)
 on_shutdown = "power_off"     # action on poweroff/halt (default: power_off)
 on_reboot = "none"            # action on reboot/kexec (default: none)
 on_no_session = "none"        # action when all user sessions end (default: none)
 ```
+
+---
+
+## Part 6: Fix stale-connection race in startup_power_on
+
+### Problem
+
+When the TV is powered off and the daemon restarts shortly after, the TV's
+WebSocket server may still be alive during its shutdown grace period.
+`wake_and_connect` sends WoL, connects immediately to the dying WebSocket
+(~30ms), sends `screen_on` which the TV accepts but never acts on because
+it finishes shutting down. The daemon reports success; the TV stays off.
+
+### Fix
+
+**File:** `crates/tisvlayd/src/tv_manager.rs` — `startup_power_on()`
+
+After `wake_and_connect` returns a connection, verify the TV is actually
+powered on by querying its state. If the TV reports as off or the state
+query fails, the connection was to a stale/dying session — close it and
+retry `wake_and_connect`.
+
+```rust
+let connection = loop {
+    let mut conn = wake_and_connect(...)?;
+    match conn.get_state().await {
+        Ok(state) if state.is_on => break conn,
+        Ok(_) => {
+            warn!("Connected to TV but it reports as off — stale session, retrying");
+            conn.close().await;
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+        Err(e) => {
+            warn!("State query failed after connect — retrying");
+            conn.close().await;
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+    }
+};
+```
+
+The retry should be bounded (e.g., 3 attempts) to avoid infinite loops if
+the TV genuinely won't come up.
+
+---
+
+## Part 7: Distinguish system boot from daemon restart
+
+### Problem
+
+`on_startup` fires on every daemon start, including `systemctl restart
+tisvlayd` and NixOS `nixos-rebuild switch`. A user SSH'd into the machine
+doing a headless system update would have their TV unexpectedly turn on.
+
+### Fix
+
+Use a `/run/` tmpfs marker file. `/run/` is cleared on every boot, so:
+- Daemon start + no marker → system boot → fire `on_startup` + create marker
+- Daemon start + marker exists → service restart → skip `on_startup`
+
+**File:** `crates/tisvlayd/src/tv_manager.rs` (or `main.rs`)
+
+```rust
+const BOOT_MARKER: &str = "/run/tisvlay/booted";
+
+fn is_first_boot() -> bool {
+    !std::path::Path::new(BOOT_MARKER).exists()
+}
+
+fn mark_booted() {
+    let dir = std::path::Path::new(BOOT_MARKER).parent().unwrap();
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(BOOT_MARKER, "");
+}
+```
+
+In `on_startup`:
+```rust
+if !is_first_boot() {
+    info!("Skipping on_startup (service restart, not system boot)");
+    return;
+}
+mark_booted();
+// ... proceed with action
+```
+
+Update doc comment on `DaemonConfig::on_startup` to say "system boot"
+not "daemon starts". Update design.md and config examples.
+
+---
 
 ## Checklist
 
@@ -228,3 +318,5 @@ on_no_session = "none"        # action when all user sessions end (default: none
 - [x] Part 5: Update docs, configs, tests (done inline with Parts 1–2)
 - [x] `cargo check` all crates
 - [x] `cargo test` all crates
+- [ ] Part 6: Fix stale-connection race in `startup_power_on`
+- [ ] Part 7: Boot marker to skip `on_startup` on daemon restart
