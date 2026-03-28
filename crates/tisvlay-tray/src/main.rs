@@ -15,7 +15,6 @@ use clap::Parser;
 use ksni::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use state::fetch_all_state;
 use tisvlay_core::{DaemonClient, SessionClient};
@@ -36,15 +35,7 @@ const BACKLIGHT_STEP: u8 = 1;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::from_default_env()
-                .add_directive("tisvlay_tray=info".parse()?)
-                .add_directive("zbus=warn".parse()?)
-                .add_directive("ksni=warn".parse()?),
-        )
-        .init();
+    tisvlay_core::logging::init(&["tisvlay_tray=info", "zbus=warn", "ksni=warn"])?;
 
     let args = Args::parse();
 

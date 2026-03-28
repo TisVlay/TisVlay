@@ -333,11 +333,16 @@ impl TvManager {
             return;
         }
 
-        // Create the marker for subsequent restarts
+        // Create the marker for subsequent restarts.
+        // Failure is non-fatal but means on_startup will fire on every restart.
         if let Some(dir) = marker_path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                warn!(error = %e, "Failed to create boot marker directory — on_startup will fire on every restart");
+            }
         }
-        let _ = std::fs::write(marker_path, "");
+        if let Err(e) = std::fs::write(marker_path, "") {
+            warn!(error = %e, "Failed to write boot marker — on_startup will fire on every restart");
+        }
 
         let manager = self.clone();
         tokio::spawn(async move {

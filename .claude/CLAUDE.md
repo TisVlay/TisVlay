@@ -74,6 +74,7 @@ tisvlay/
 │   │       ├── config.rs         # TOML config (XDG paths), ProfileConfig
 │   │       ├── dbus_paths.rs     # D-Bus path constants and helpers
 │   │       ├── dbus_client.rs    # D-Bus client for tisvlayd (feature-gated)
+│   │       ├── logging.rs        # Shared logging init with journald (feature-gated)
 │   │       ├── state.rs          # TvState, PowerState, InputInfo
 │   │       ├── wol.rs            # Wake-on-LAN
 │   │       └── error.rs          # Error types
@@ -175,7 +176,7 @@ See [docs/design.md](docs/design.md) for the full CLI command reference.
 | System tray | `ksni` |
 | Wayland | `wayland-client`, `wayland-protocols` |
 | Errors | `thiserror`, `anyhow` |
-| Logging | `tracing`, `tracing-subscriber` |
+| Logging | `tracing`, `tracing-subscriber`, `tracing-journald` |
 | WoL | `socket2` |
 
 ## Known Quirks

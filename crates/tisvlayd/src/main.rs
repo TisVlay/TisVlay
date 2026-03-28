@@ -15,7 +15,6 @@ use std::sync::Arc;
 use tisvlay_core::{SystemConfig, UserConfig};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
@@ -48,11 +47,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logging
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env().add_directive("tisvlayd=info".parse()?))
-        .init();
+    tisvlay_core::logging::init(&["tisvlayd=info", "zbus=warn"])?;
 
     info!("tisvlayd starting...");
 

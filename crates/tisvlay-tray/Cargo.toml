@@ -16,10 +16,9 @@ name = "tisvlay-tray"
 path = "src/main.rs"
 
 [dependencies]
-tisvlay-core = { workspace = true, features = ["dbus"] }
+tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
 tokio = { workspace = true }
 ksni = "0.3"
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

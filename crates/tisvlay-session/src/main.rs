@@ -25,7 +25,6 @@ use std::sync::Arc;
 use tisvlay_core::{DaemonClient, ProfileConfig, ResolvedProfile, SessionAction, UserConfig};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// tisvlay session service - monitors desktop events and controls TVs.
 #[derive(Parser, Debug)]
@@ -197,15 +196,7 @@ impl SessionState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::from_default_env()
-                .add_directive("tisvlay_session=info".parse()?)
-                .add_directive("zbus=warn".parse()?),
-        )
-        .init();
+    tisvlay_core::logging::init(&["tisvlay_session=info", "zbus=warn"])?;
 
     let args = Args::parse();
 

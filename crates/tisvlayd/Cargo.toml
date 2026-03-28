@@ -20,7 +20,7 @@ default = ["discovery"]
 discovery = ["tisvlay-backends/discovery"]
 
 [dependencies]
-tisvlay-core = { workspace = true }
+tisvlay-core = { workspace = true, features = ["logging"] }
 tisvlay-backends = { workspace = true }
 tokio = { workspace = true }
 zbus = { workspace = true }
@@ -28,7 +28,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 futures-util = { workspace = true }
 clap = { workspace = true }

@@ -23,6 +23,7 @@
 //! # Features
 //!
 //! - `dbus` - D-Bus client for communicating with tisvlayd
+//! - `logging` - Shared logging init with journald support for binaries
 //!
 //! # Example
 //!
@@ -54,6 +55,8 @@ pub mod wol;
 // Optional modules
 #[cfg(feature = "dbus")]
 mod dbus_client;
+#[cfg(feature = "logging")]
+pub mod logging;
 
 // =============================================================================
 // Public re-exports: Core abstractions
