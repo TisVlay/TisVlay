@@ -158,3 +158,132 @@ was reverted and reworked with the proper journald layer in the same session, av
 a half-measure landing on the branch.
 
 No actionable items beyond the two low-severity notes (M5 duplication, M6 nix hash).
+
+---
+---
+
+# Review: Logging extraction & cargoHash update (200c75e, 81a4397)
+
+Review of 2 commits that address **M5** (duplicated init pattern) and **M6**
+(cargoHash for new dependency) from the previous review.
+
+Build: clean. Tests: all pass.
+
+---
+
+## N1. `logging::init()` — clean extraction, correct feature gating
+
+**File:** [crates/tisvlay-core/src/logging.rs](crates/tisvlay-core/src/logging.rs)
+
+The full 3-way init logic (journald / fmt-no-time / fmt) is extracted into a single
+`pub fn init(directives: &[&str]) -> anyhow::Result<()>`. Each binary now calls:
+
+```rust
+tisvlay_core::logging::init(&["tisvlayd=info", "zbus=warn"])?;
+```
+
+This directly resolves M5. The implementation is identical to the prior inlined code —
+no behavioral changes, just deduplication. Net result: -93 lines across the three
+binaries, +47 lines in the new module.
+
+The `logging` feature flag is the right approach: `tisvlay-core` is also used by the
+CLI (which doesn't need journald or tracing-subscriber), so making the deps optional
+prevents pulling them in where they're not needed.
+
+**Severity:** Info (correct implementation of M5)
+
+---
+
+## N2. Feature flag makes `tracing-subscriber` and `tracing-journald` optional on core
+
+**File:** [crates/tisvlay-core/Cargo.toml](crates/tisvlay-core/Cargo.toml)
+
+```toml
+[features]
+default = []
+dbus = ["dep:zbus", "dep:anyhow"]
+logging = ["dep:tracing-subscriber", "dep:tracing-journald"]
+```
+
+The three service binaries enable `features = ["logging"]` (plus `"dbus"` where
+needed). The CLI (`tisvlay-cli`) does not enable `logging` — it only depends on
+`tisvlay-core` with `features = ["dbus"]`, so it doesn't pull in the subscriber
+or journald crates. This is the correct dependency boundary.
+
+**Severity:** Info (correct feature design)
+
+---
+
+## N3. `anyhow` dependency for the logging module
+
+**File:** [crates/tisvlay-core/src/logging.rs:20](crates/tisvlay-core/src/logging.rs#L20)
+
+```rust
+pub fn init(directives: &[&str]) -> anyhow::Result<()> {
+```
+
+The function returns `anyhow::Result`, but `anyhow` is gated behind the `dbus` feature,
+not `logging`. This works today because all three binaries that enable `logging` also
+enable `dbus` (which brings in `anyhow`). But if a future binary enabled only `logging`
+without `dbus`, it would fail to compile.
+
+Options:
+1. Add `anyhow` to the `logging` feature's deps: `logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:anyhow"]`
+2. Return `Result<(), Box<dyn std::error::Error>>` instead — avoids coupling to anyhow
+3. Accept the implicit dependency since all service binaries need both features anyway
+
+Option 1 is the minimal correct fix. Option 3 is pragmatic but fragile.
+
+**Severity:** Low (compiles today but the feature is technically incomplete)
+
+---
+
+## N4. `tisvlayd` doesn't enable `dbus` feature on `tisvlay-core`
+
+**File:** [crates/tisvlayd/Cargo.toml](crates/tisvlayd/Cargo.toml)
+
+```toml
+tisvlay-core = { workspace = true, features = ["logging"] }
+```
+
+`tisvlayd` only enables `logging`, not `dbus`. This is correct — the daemon doesn't
+use `DaemonClient` (it *is* the daemon), so it doesn't need the D-Bus client proxy.
+It gets `anyhow` via its own direct dependency, not through `tisvlay-core`'s feature.
+
+However, this means the `logging` module's `anyhow::Result` return type compiles
+because `tisvlayd` has its own `anyhow` dep, not because `tisvlay-core` re-exports it.
+This reinforces N3: if someone tried to use `tisvlay-core` with only `logging` enabled
+and no external `anyhow`, it would fail.
+
+**Severity:** Info (reinforces N3; not a separate issue)
+
+---
+
+## N5. `cargoHash` updated — M6 resolved
+
+**File:** [nix/package.nix](nix/package.nix)
+
+The hash is updated to account for the new `tracing-journald` dependency in
+`Cargo.lock`. This directly resolves M6.
+
+**Severity:** Info (M6 resolved)
+
+---
+
+## Summary
+
+| # | Severity | Item |
+|---|----------|------|
+| N1 | **Info** | Logging extraction is clean; M5 resolved |
+| N2 | **Info** | Feature gating is correct; CLI doesn't pull logging deps |
+| N3 | **Low** | `logging` feature should declare `anyhow` dep for completeness |
+| N4 | **Info** | tisvlayd compiles because of its own anyhow dep, not core's |
+| N5 | **Info** | cargoHash updated; M6 resolved |
+
+## Overall Assessment
+
+Both M5 and M6 from the previous review are resolved. The extraction is clean and
+the feature gating is well-designed. The only minor gap is N3: the `logging` feature
+doesn't declare its `anyhow` dependency, relying on callers to bring it in via
+either `dbus` or their own direct dep. Adding `"dep:anyhow"` to the `logging`
+feature list would make it self-contained.
