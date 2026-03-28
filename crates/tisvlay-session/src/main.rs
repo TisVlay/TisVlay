@@ -197,16 +197,24 @@ impl SessionState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Use native journald logging when available (structured fields, no
-    // timestamp duplication). Falls back to formatted stderr for interactive use.
+    // Use native journald logging when running as a service (not a TTY).
+    // Falls back to formatted stderr for interactive/development use.
     let env_filter = EnvFilter::from_default_env()
         .add_directive("tisvlay_session=info".parse()?)
         .add_directive("zbus=warn".parse()?);
-    if let Ok(journald) = tracing_journald::layer() {
-        tracing_subscriber::registry()
-            .with(journald)
-            .with(env_filter)
-            .init();
+    let interactive = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    if !interactive {
+        if let Ok(journald) = tracing_journald::layer() {
+            tracing_subscriber::registry()
+                .with(journald)
+                .with(env_filter)
+                .init();
+        } else {
+            tracing_subscriber::registry()
+                .with(fmt::layer().without_time())
+                .with(env_filter)
+                .init();
+        }
     } else {
         tracing_subscriber::registry()
             .with(fmt::layer())
