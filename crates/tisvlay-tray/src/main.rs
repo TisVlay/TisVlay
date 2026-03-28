@@ -36,15 +36,24 @@ const BACKLIGHT_STEP: u8 = 1;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::from_default_env()
-                .add_directive("tisvlay_tray=info".parse()?)
-                .add_directive("zbus=warn".parse()?)
-                .add_directive("ksni=warn".parse()?),
-        )
-        .init();
+    // Under systemd (JOURNAL_STREAM set), skip timestamps and targets
+    // since journald captures both automatically.
+    let under_journal = std::env::var_os("JOURNAL_STREAM").is_some();
+    let env_filter = EnvFilter::from_default_env()
+        .add_directive("tisvlay_tray=info".parse()?)
+        .add_directive("zbus=warn".parse()?)
+        .add_directive("ksni=warn".parse()?);
+    if under_journal {
+        tracing_subscriber::registry()
+            .with(fmt::layer().without_time().with_target(false))
+            .with(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(env_filter)
+            .init();
+    }
 
     let args = Args::parse();
 

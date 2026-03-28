@@ -197,15 +197,23 @@ impl SessionState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::from_default_env()
-                .add_directive("tisvlay_session=info".parse()?)
-                .add_directive("zbus=warn".parse()?),
-        )
-        .init();
+    // Initialize logging. Under systemd (JOURNAL_STREAM set), skip timestamps
+    // and targets since journald captures both automatically.
+    let under_journal = std::env::var_os("JOURNAL_STREAM").is_some();
+    let env_filter = EnvFilter::from_default_env()
+        .add_directive("tisvlay_session=info".parse()?)
+        .add_directive("zbus=warn".parse()?);
+    if under_journal {
+        tracing_subscriber::registry()
+            .with(fmt::layer().without_time().with_target(false))
+            .with(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(env_filter)
+            .init();
+    }
 
     let args = Args::parse();
 

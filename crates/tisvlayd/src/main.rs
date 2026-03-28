@@ -48,11 +48,20 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logging
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env().add_directive("tisvlayd=info".parse()?))
-        .init();
+    // Initialize logging. Under systemd (JOURNAL_STREAM set), skip timestamps
+    // and targets since journald captures both automatically.
+    let under_journal = std::env::var_os("JOURNAL_STREAM").is_some();
+    if under_journal {
+        tracing_subscriber::registry()
+            .with(fmt::layer().without_time().with_target(false))
+            .with(EnvFilter::from_default_env().add_directive("tisvlayd=info".parse()?))
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(EnvFilter::from_default_env().add_directive("tisvlayd=info".parse()?))
+            .init();
+    }
 
     info!("tisvlayd starting...");
 
