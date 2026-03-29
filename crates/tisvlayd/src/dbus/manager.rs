@@ -182,26 +182,26 @@ impl ManagerService {
             .map_err(DaemonError::from)
     }
 
-    /// Get the system default profile as JSON.
+    /// Get the admin baseline for user profiles as JSON.
     ///
     /// Returns the `[profiles.default]` from the system config.
     /// Used by session services to inherit defaults when users
     /// have no config file.
-    async fn get_system_profile(&self) -> Result<String, DaemonError> {
-        debug!("D-Bus: GetSystemProfile");
-        let profile = self.manager.get_system_default_profile().await;
+    async fn get_user_profile_default(&self) -> Result<String, DaemonError> {
+        debug!("D-Bus: GetUserProfileDefault");
+        let profile = self.manager.get_user_profile_default().await;
         serde_json::to_string(&profile).map_err(|e| {
             DaemonError::OperationFailed(format!("Failed to serialize profile: {}", e))
         })
     }
 
-    /// Get all system profiles as (name, json) pairs.
+    /// Get all user profiles as (name, json) pairs.
     ///
     /// Returns all profiles defined in the system config.
     /// Used by session services to merge with user-defined profiles.
-    async fn get_system_profiles(&self) -> Result<Vec<(String, String)>, DaemonError> {
-        debug!("D-Bus: GetSystemProfiles");
-        let profiles = self.manager.get_system_profiles().await;
+    async fn list_user_profiles(&self) -> Result<Vec<(String, String)>, DaemonError> {
+        debug!("D-Bus: ListUserProfiles");
+        let profiles = self.manager.list_user_profiles().await;
         profiles
             .into_iter()
             .map(|(name, profile)| {

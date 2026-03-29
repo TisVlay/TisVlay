@@ -113,13 +113,22 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ProfileAction {
-    /// List all available profiles
+    /// User profile management
+    User {
+        #[command(subcommand)]
+        action: UserProfileAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum UserProfileAction {
+    /// List all available user profiles
     List,
 
-    /// Show the profile assigned to a TV
+    /// Show the user profile assigned to a TV
     Get,
 
-    /// Assign a profile to a TV
+    /// Assign a user profile to a TV
     Set {
         /// Profile name to assign
         profile: String,
@@ -279,27 +288,29 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
             match action {
-                ProfileAction::List => {
-                    let profiles = session.list_profiles().await?;
-                    if profiles.is_empty() {
-                        println!("No profiles defined.");
-                    } else {
-                        println!("Available profiles:");
-                        for (name, _) in &profiles {
-                            println!("  {}", name);
+                ProfileAction::User { action } => match action {
+                    UserProfileAction::List => {
+                        let profiles = session.list_user_profiles().await?;
+                        if profiles.is_empty() {
+                            println!("No user profiles defined.");
+                        } else {
+                            println!("Available user profiles:");
+                            for (name, _) in &profiles {
+                                println!("  {}", name);
+                            }
                         }
                     }
-                }
-                ProfileAction::Get => {
-                    let tv_id = tv_id?;
-                    let profile = session.get_tv_profile(&tv_id).await?;
-                    println!("TV '{}' profile: {}", tv_id, profile);
-                }
-                ProfileAction::Set { profile } => {
-                    let tv_id = tv_id?;
-                    session.set_tv_profile(&tv_id, &profile).await?;
-                    println!("TV '{}' profile set to '{}'", tv_id, profile);
-                }
+                    UserProfileAction::Get => {
+                        let tv_id = tv_id?;
+                        let profile = session.get_tv_user_profile(&tv_id).await?;
+                        println!("TV '{}' user profile: {}", tv_id, profile);
+                    }
+                    UserProfileAction::Set { profile } => {
+                        let tv_id = tv_id?;
+                        session.set_tv_user_profile(&tv_id, &profile).await?;
+                        println!("TV '{}' user profile set to '{}'", tv_id, profile);
+                    }
+                },
             }
         }
 

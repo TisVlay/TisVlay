@@ -80,11 +80,11 @@ trait TisvlayManager {
     /// Reload configuration.
     fn reload_config(&self) -> zbus::Result<()>;
 
-    /// Get the system default profile as JSON.
-    fn get_system_profile(&self) -> zbus::Result<String>;
+    /// Get the admin baseline for user profiles as JSON.
+    fn get_user_profile_default(&self) -> zbus::Result<String>;
 
-    /// Get all system profiles as (name, json) pairs.
-    fn get_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+    /// Get all user profiles as (name, json) pairs.
+    fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
     /// Set a daemon configuration option.
     fn set_daemon_option(&self, key: &str, value: &str) -> zbus::Result<()>;
@@ -748,30 +748,30 @@ impl DaemonClient {
         Ok(())
     }
 
-    /// Get the system default profile.
+    /// Get the admin baseline for user profiles.
     ///
     /// Returns the `[profiles.default]` from the daemon's system config.
     /// Used by session services to inherit defaults when users have no config file.
-    pub async fn get_system_profile(&self) -> Result<crate::ProfileConfig> {
-        debug!("Calling GetSystemProfile on daemon");
+    pub async fn get_user_profile_default(&self) -> Result<crate::UserProfileConfig> {
+        debug!("Calling GetUserProfileDefault on daemon");
         let json = self
             .manager
-            .get_system_profile()
+            .get_user_profile_default()
             .await
-            .context("Failed to get system profile from daemon")?;
-        serde_json::from_str(&json).context("Failed to parse system profile JSON")
+            .context("Failed to get user profile default from daemon")?;
+        serde_json::from_str(&json).context("Failed to parse user profile default JSON")
     }
 
-    /// Get all system profiles.
+    /// Get all user profiles.
     ///
     /// Returns all profiles defined in the daemon's system config as
     /// `(name, json)` pairs.
-    pub async fn get_system_profiles(&self) -> Result<Vec<(String, String)>> {
-        debug!("Calling GetSystemProfiles on daemon");
+    pub async fn list_user_profiles(&self) -> Result<Vec<(String, String)>> {
+        debug!("Calling ListUserProfiles on daemon");
         self.manager
-            .get_system_profiles()
+            .list_user_profiles()
             .await
-            .context("Failed to get system profiles from daemon")
+            .context("Failed to list user profiles from daemon")
     }
 
     /// Set a daemon configuration option.
@@ -809,17 +809,17 @@ impl DaemonClient {
     default_path = "/org/tisvlay/Session"
 )]
 trait TisvlaySession {
-    /// List all available profiles.
-    fn list_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+    /// List all available user profiles.
+    fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Get the profile name assigned to a TV.
-    fn get_tv_profile(&self, tv_id: &str) -> zbus::Result<String>;
+    /// Get the user profile name assigned to a TV.
+    fn get_tv_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
 
-    /// Assign a profile to a TV.
-    fn set_tv_profile(&self, tv_id: &str, profile_name: &str) -> zbus::Result<()>;
+    /// Assign a user profile to a TV.
+    fn set_tv_user_profile(&self, tv_id: &str, profile_name: &str) -> zbus::Result<()>;
 
-    /// Get the fully resolved profile for a TV as JSON.
-    fn get_effective_profile(&self, tv_id: &str) -> zbus::Result<String>;
+    /// Get the fully resolved user profile for a TV as JSON.
+    fn get_effective_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
 
     /// Reload user configuration from disk.
     fn reload_config(&self) -> zbus::Result<()>;
@@ -855,35 +855,35 @@ impl SessionClient {
 
     /// Check if the session service is available.
     pub async fn is_available(&self) -> bool {
-        self.proxy.list_profiles().await.is_ok()
+        self.proxy.list_user_profiles().await.is_ok()
     }
 
-    /// List all available profiles.
+    /// List all available user profiles.
     ///
     /// Returns: Vec of (profile_name, profile_json) tuples.
-    pub async fn list_profiles(&self) -> Result<Vec<(String, String)>> {
+    pub async fn list_user_profiles(&self) -> Result<Vec<(String, String)>> {
         self.proxy
-            .list_profiles()
+            .list_user_profiles()
             .await
-            .context("Failed to list profiles from session service")
+            .context("Failed to list user profiles from session service")
     }
 
-    /// Get the profile name assigned to a TV.
-    pub async fn get_tv_profile(&self, tv_id: &str) -> Result<String> {
+    /// Get the user profile name assigned to a TV.
+    pub async fn get_tv_user_profile(&self, tv_id: &str) -> Result<String> {
         self.proxy
-            .get_tv_profile(tv_id)
+            .get_tv_user_profile(tv_id)
             .await
-            .context("Failed to get TV profile from session service")
+            .context("Failed to get TV user profile from session service")
     }
 
-    /// Assign a profile to a TV.
-    pub async fn set_tv_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
+    /// Assign a user profile to a TV.
+    pub async fn set_tv_user_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
         self.proxy
-            .set_tv_profile(tv_id, profile_name)
+            .set_tv_user_profile(tv_id, profile_name)
             .await
             .with_context(|| {
                 format!(
-                    "Failed to set profile '{}' for TV '{}'",
+                    "Failed to set user profile '{}' for TV '{}'",
                     profile_name, tv_id
                 )
             })

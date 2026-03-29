@@ -78,7 +78,7 @@ pub enum SessionAction {
 }
 
 // =============================================================================
-// ProfileConfig (with Option<T> fields for merge support)
+// UserProfileConfig (with Option<T> fields for merge support)
 // =============================================================================
 
 /// Profile configuration for session behavior.
@@ -86,10 +86,10 @@ pub enum SessionAction {
 /// Fields are `Option<T>` to support layered inheritance:
 /// user profile -> system default profile -> hard-coded defaults.
 ///
-/// Use [`ProfileConfig::resolve()`] or [`ProfileConfig::merge_with_base()`]
-/// to produce a [`ResolvedProfile`] with concrete values.
+/// Use [`UserProfileConfig::resolve()`] or [`UserProfileConfig::merge_with_base()`]
+/// to produce a [`ResolvedUserProfile`] with concrete values.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProfileConfig {
+pub struct UserProfileConfig {
     /// Action on screen lock event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_screen_lock: Option<SessionAction>,
@@ -123,13 +123,13 @@ pub struct ProfileConfig {
     pub on_idle_resume: Option<SessionAction>,
 }
 
-impl ProfileConfig {
+impl UserProfileConfig {
     /// Create a profile with all fields set to the built-in sensible defaults.
     ///
     /// Use this when saving a system config to make profiles self-documenting,
     /// or as the system default profile.
     pub fn full_default() -> Self {
-        let d = ResolvedProfile::default();
+        let d = ResolvedUserProfile::default();
         Self {
             on_screen_lock: Some(d.on_screen_lock),
             on_screen_unlock: Some(d.on_screen_unlock),
@@ -146,8 +146,8 @@ impl ProfileConfig {
     ///
     /// Fields that are `None` in `self` are filled from `base`.
     /// Fields that are `Some` in `self` take precedence.
-    pub fn merge_with_base(&self, base: &ProfileConfig) -> ProfileConfig {
-        ProfileConfig {
+    pub fn merge_with_base(&self, base: &UserProfileConfig) -> UserProfileConfig {
+        UserProfileConfig {
             on_screen_lock: self.on_screen_lock.or(base.on_screen_lock),
             on_screen_unlock: self.on_screen_unlock.or(base.on_screen_unlock),
             on_greeter_wake: self.on_greeter_wake.or(base.on_greeter_wake),
@@ -162,10 +162,10 @@ impl ProfileConfig {
     /// Resolve this profile to concrete values.
     ///
     /// Any `None` fields are filled with hard-coded defaults from
-    /// [`ResolvedProfile::default()`].
-    pub fn resolve(&self) -> ResolvedProfile {
-        let d = ResolvedProfile::default();
-        ResolvedProfile {
+    /// [`ResolvedUserProfile::default()`].
+    pub fn resolve(&self) -> ResolvedUserProfile {
+        let d = ResolvedUserProfile::default();
+        ResolvedUserProfile {
             on_screen_lock: self.on_screen_lock.unwrap_or(d.on_screen_lock),
             on_screen_unlock: self.on_screen_unlock.unwrap_or(d.on_screen_unlock),
             on_greeter_wake: self.on_greeter_wake.unwrap_or(d.on_greeter_wake),
@@ -179,16 +179,16 @@ impl ProfileConfig {
 }
 
 // =============================================================================
-// ResolvedProfile (fully resolved, no Option fields)
+// ResolvedUserProfile (fully resolved, no Option fields)
 // =============================================================================
 
 /// A fully resolved profile with no optional fields.
 ///
-/// This is the result of merging a [`ProfileConfig`] chain
+/// This is the result of merging a [`UserProfileConfig`] chain
 /// (user profile -> system default -> hard-coded defaults).
 /// Consumers (session monitor, idle detector) use this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedProfile {
+pub struct ResolvedUserProfile {
     /// Action on screen lock event.
     pub on_screen_lock: SessionAction,
     /// Action on screen unlock event.
@@ -207,7 +207,7 @@ pub struct ResolvedProfile {
     pub on_idle_resume: SessionAction,
 }
 
-impl Default for ResolvedProfile {
+impl Default for ResolvedUserProfile {
     fn default() -> Self {
         Self {
             on_screen_lock: SessionAction::ScreenOff,
@@ -398,7 +398,7 @@ pub struct SystemConfig {
     /// In the system config, `[profiles.default]` is the system default profile
     /// inherited by users who have not created their own config file.
     #[serde(default)]
-    pub profiles: HashMap<String, ProfileConfig>,
+    pub profiles: HashMap<String, UserProfileConfig>,
 
     /// Configured TVs.
     #[serde(default)]
@@ -491,7 +491,7 @@ pub struct UserConfig {
     /// explicit profile assignment. Fields not specified inherit from the
     /// system default profile, NOT from hard-coded defaults.
     #[serde(default)]
-    pub profiles: HashMap<String, ProfileConfig>,
+    pub profiles: HashMap<String, UserProfileConfig>,
 
     /// Per-TV profile assignments. Key is TV ID from system config.
     #[serde(default)]
@@ -572,7 +572,7 @@ impl UserConfig {
     /// 4. Hard-coded defaults
     ///
     /// At each level, individual fields merge (user overrides system).
-    pub fn resolve_profile(&self, tv_id: &str, system_default: &ProfileConfig) -> ResolvedProfile {
+    pub fn resolve_user_profile(&self, tv_id: &str, system_default: &UserProfileConfig) -> ResolvedUserProfile {
         // 1. Find which profile name applies to this TV
         let profile_name = self
             .tv
@@ -620,7 +620,7 @@ impl UserConfig {
     /// Get the profile name assigned to a TV.
     ///
     /// Returns `"default"` if no explicit assignment exists.
-    pub fn get_tv_profile_name(&self, tv_id: &str) -> &str {
+    pub fn get_tv_user_profile_name(&self, tv_id: &str) -> &str {
         self.tv
             .get(tv_id)
             .map(|t| t.profile.as_str())
@@ -628,7 +628,7 @@ impl UserConfig {
     }
 
     /// Assign a profile to a TV.
-    pub fn set_tv_profile(&mut self, tv_id: impl Into<String>, profile: impl Into<String>) {
+    pub fn set_tv_user_profile(&mut self, tv_id: impl Into<String>, profile: impl Into<String>) {
         let profile = profile.into();
         self.tv.insert(tv_id.into(), UserTvConfig { profile });
     }
@@ -865,9 +865,9 @@ mac = "AA:BB:CC:DD:EE:FF"
         let mut config = SystemConfig::default();
         config.profiles.insert(
             "custom".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 on_screen_lock: Some(SessionAction::PowerOff),
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
 
@@ -890,12 +890,12 @@ mac = "AA:BB:CC:DD:EE:FF"
     }
 
     // =========================================================================
-    // ResolvedProfile tests
+    // ResolvedUserProfile tests
     // =========================================================================
 
     #[test]
     fn test_resolved_profile_default() {
-        let resolved = ResolvedProfile::default();
+        let resolved = ResolvedUserProfile::default();
         assert_eq!(resolved.on_screen_lock, SessionAction::ScreenOff);
         assert_eq!(resolved.on_screen_unlock, SessionAction::ScreenOn);
         assert_eq!(resolved.on_greeter_wake, SessionAction::ScreenOn);
@@ -907,9 +907,9 @@ mac = "AA:BB:CC:DD:EE:FF"
 
     #[test]
     fn test_profile_config_full_default() {
-        let full = ProfileConfig::full_default();
+        let full = UserProfileConfig::full_default();
         let resolved = full.resolve();
-        assert_eq!(resolved, ResolvedProfile::default());
+        assert_eq!(resolved, ResolvedUserProfile::default());
     }
 
     // =========================================================================
@@ -918,16 +918,16 @@ mac = "AA:BB:CC:DD:EE:FF"
 
     #[test]
     fn test_merge_with_base_partial_override() {
-        let base = ProfileConfig {
+        let base = UserProfileConfig {
             on_screen_lock: Some(SessionAction::ScreenOff),
             idle_timeout_seconds: Some(300),
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
 
-        let override_profile = ProfileConfig {
+        let override_profile = UserProfileConfig {
             on_screen_lock: Some(SessionAction::None),
             // idle_timeout_seconds not specified — should inherit from base
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
 
         let merged = override_profile.merge_with_base(&base);
@@ -938,8 +938,8 @@ mac = "AA:BB:CC:DD:EE:FF"
 
     #[test]
     fn test_merge_with_base_empty_override() {
-        let base = ProfileConfig::full_default();
-        let empty = ProfileConfig::default(); // all None
+        let base = UserProfileConfig::full_default();
+        let empty = UserProfileConfig::default(); // all None
 
         let merged = empty.merge_with_base(&base);
         // All fields should come from base
@@ -949,8 +949,8 @@ mac = "AA:BB:CC:DD:EE:FF"
 
     #[test]
     fn test_merge_with_base_full_override() {
-        let base = ProfileConfig::full_default();
-        let full_override = ProfileConfig {
+        let base = UserProfileConfig::full_default();
+        let full_override = UserProfileConfig {
             on_screen_lock: Some(SessionAction::None),
             on_screen_unlock: Some(SessionAction::None),
             on_greeter_wake: Some(SessionAction::None),
@@ -969,10 +969,10 @@ mac = "AA:BB:CC:DD:EE:FF"
 
     #[test]
     fn test_resolve_fills_nones() {
-        let partial = ProfileConfig {
+        let partial = UserProfileConfig {
             on_screen_lock: Some(SessionAction::None),
             // Everything else is None
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
 
         let resolved = partial.resolve();
@@ -1007,110 +1007,110 @@ profile = "gaming"
     }
 
     #[test]
-    fn test_user_config_resolve_profile_with_assignment() {
-        let system_default = ProfileConfig {
+    fn test_user_config_resolve_user_profile_with_assignment() {
+        let system_default = UserProfileConfig {
             on_screen_lock: Some(SessionAction::ScreenOff),
             idle_timeout_seconds: Some(300),
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
 
         let mut user = UserConfig::default();
         user.profiles.insert(
             "gaming".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 on_screen_lock: Some(SessionAction::None),
                 // idle_timeout_seconds not specified — should inherit from system
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
-        user.set_tv_profile("living-room", "gaming");
+        user.set_tv_user_profile("living-room", "gaming");
 
-        let resolved = user.resolve_profile("living-room", &system_default);
+        let resolved = user.resolve_user_profile("living-room", &system_default);
         assert_eq!(resolved.on_screen_lock, SessionAction::None); // user gaming
         assert_eq!(resolved.idle_timeout_seconds, 300); // inherited from system
         assert_eq!(resolved.on_sleep, SessionAction::PowerOff); // hard-coded default
     }
 
     #[test]
-    fn test_user_config_resolve_profile_no_assignment() {
-        let system_default = ProfileConfig {
+    fn test_user_config_resolve_user_profile_no_assignment() {
+        let system_default = UserProfileConfig {
             on_screen_lock: Some(SessionAction::ScreenOff),
             idle_timeout_seconds: Some(300),
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
 
         let user = UserConfig::default(); // no profiles, no TV assignments
 
         // TV without assignment uses system default
-        let resolved = user.resolve_profile("office", &system_default);
+        let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_screen_lock, SessionAction::ScreenOff);
         assert_eq!(resolved.idle_timeout_seconds, 300);
     }
 
     #[test]
-    fn test_user_config_resolve_profile_user_default_overrides_system() {
-        let system_default = ProfileConfig {
+    fn test_user_config_resolve_user_profile_user_default_overrides_system() {
+        let system_default = UserProfileConfig {
             on_screen_lock: Some(SessionAction::ScreenOff),
             idle_timeout_seconds: Some(300),
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
 
         let mut user = UserConfig::default();
         user.profiles.insert(
             "default".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 idle_timeout_seconds: Some(600), // user overrides system
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
 
         // TV without explicit assignment uses user's default profile
-        let resolved = user.resolve_profile("office", &system_default);
+        let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_screen_lock, SessionAction::ScreenOff); // from system
         assert_eq!(resolved.idle_timeout_seconds, 600); // user override
     }
 
     #[test]
-    fn test_user_config_resolve_profile_named_inherits_user_default() {
-        let system_default = ProfileConfig {
+    fn test_user_config_resolve_user_profile_named_inherits_user_default() {
+        let system_default = UserProfileConfig {
             on_screen_lock: Some(SessionAction::ScreenOff),
             idle_timeout_seconds: Some(100),
             on_sleep: Some(SessionAction::PowerOff),
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
 
         let mut user = UserConfig::default();
         // User's default profile overrides system idle timeout
         user.profiles.insert(
             "default".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 idle_timeout_seconds: Some(600),
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
         // User's gaming profile overrides screen lock only
         user.profiles.insert(
             "gaming".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 on_screen_lock: Some(SessionAction::None),
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
-        user.set_tv_profile("living-room", "gaming");
+        user.set_tv_user_profile("living-room", "gaming");
 
-        let resolved = user.resolve_profile("living-room", &system_default);
+        let resolved = user.resolve_user_profile("living-room", &system_default);
         assert_eq!(resolved.on_screen_lock, SessionAction::None); // gaming
         assert_eq!(resolved.idle_timeout_seconds, 600); // user default (not system 100)
         assert_eq!(resolved.on_sleep, SessionAction::PowerOff); // system default
     }
 
     #[test]
-    fn test_user_config_get_tv_profile_name() {
+    fn test_user_config_get_tv_user_profile_name() {
         let mut user = UserConfig::default();
-        user.set_tv_profile("living-room", "gaming");
+        user.set_tv_user_profile("living-room", "gaming");
 
-        assert_eq!(user.get_tv_profile_name("living-room"), "gaming");
-        assert_eq!(user.get_tv_profile_name("office"), "default");
+        assert_eq!(user.get_tv_user_profile_name("living-room"), "gaming");
+        assert_eq!(user.get_tv_user_profile_name("office"), "default");
     }
 
     #[test]
@@ -1118,13 +1118,13 @@ profile = "gaming"
         let mut user = UserConfig::default();
         user.profiles.insert(
             "gaming".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 on_screen_lock: Some(SessionAction::None),
                 idle_timeout_seconds: Some(0),
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
-        user.set_tv_profile("living-room", "gaming");
+        user.set_tv_user_profile("living-room", "gaming");
 
         let serialized = toml::to_string_pretty(&user).unwrap();
         let deserialized: UserConfig = toml::from_str(&serialized).unwrap();
@@ -1170,7 +1170,7 @@ mac = "AA:BB:CC:DD:EE:FF"
             .profiles
             .get("custom")
             .cloned()
-            .unwrap_or_else(ProfileConfig::full_default);
+            .unwrap_or_else(UserProfileConfig::full_default);
         assert_eq!(profile.on_screen_lock, Some(SessionAction::PowerOff));
         assert_eq!(profile.on_screen_unlock, Some(SessionAction::PowerOn));
         assert_eq!(profile.on_greeter_wake, Some(SessionAction::None));
@@ -1228,19 +1228,19 @@ ip = "192.168.1.1"
     #[test]
     fn test_merged_profile_list_system_only() {
         // When user has no config, all profiles come from system config
-        let system_profiles: HashMap<String, ProfileConfig> = [
+        let system_profiles: HashMap<String, UserProfileConfig> = [
             (
                 "default".to_string(),
-                ProfileConfig {
+                UserProfileConfig {
                     on_screen_lock: Some(SessionAction::ScreenOff),
-                    ..ProfileConfig::default()
+                    ..UserProfileConfig::default()
                 },
             ),
             (
                 "foo".to_string(),
-                ProfileConfig {
+                UserProfileConfig {
                     on_screen_lock: Some(SessionAction::None),
-                    ..ProfileConfig::default()
+                    ..UserProfileConfig::default()
                 },
             ),
         ]
@@ -1250,7 +1250,7 @@ ip = "192.168.1.1"
         let user_config = UserConfig::default(); // empty
 
         // Merge: system profiles as base, user profiles override
-        let mut merged: HashMap<String, &ProfileConfig> = HashMap::new();
+        let mut merged: HashMap<String, &UserProfileConfig> = HashMap::new();
         for (name, profile) in &system_profiles {
             merged.insert(name.clone(), profile);
         }
@@ -1266,20 +1266,20 @@ ip = "192.168.1.1"
     #[test]
     fn test_merged_profile_list_user_overrides_system() {
         // User defines "default" and "gaming", system has "default" and "foo"
-        let system_profiles: HashMap<String, ProfileConfig> = [
+        let system_profiles: HashMap<String, UserProfileConfig> = [
             (
                 "default".to_string(),
-                ProfileConfig {
+                UserProfileConfig {
                     on_screen_lock: Some(SessionAction::ScreenOff),
                     idle_timeout_seconds: Some(300),
-                    ..ProfileConfig::default()
+                    ..UserProfileConfig::default()
                 },
             ),
             (
                 "foo".to_string(),
-                ProfileConfig {
+                UserProfileConfig {
                     on_screen_lock: Some(SessionAction::None),
-                    ..ProfileConfig::default()
+                    ..UserProfileConfig::default()
                 },
             ),
         ]
@@ -1289,21 +1289,21 @@ ip = "192.168.1.1"
         let mut user_config = UserConfig::default();
         user_config.profiles.insert(
             "default".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 idle_timeout_seconds: Some(600), // user overrides
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
         user_config.profiles.insert(
             "gaming".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 on_screen_lock: Some(SessionAction::None),
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
 
         // Merge: system first, then user overrides
-        let mut merged: HashMap<String, &ProfileConfig> = HashMap::new();
+        let mut merged: HashMap<String, &UserProfileConfig> = HashMap::new();
         for (name, profile) in &system_profiles {
             merged.insert(name.clone(), profile);
         }
@@ -1388,23 +1388,23 @@ ip = "192.168.1.1"
     #[test]
     fn test_on_idle_resume_configurable() {
         // Default resolves to ScreenOn
-        let default_profile = ResolvedProfile::default();
+        let default_profile = ResolvedUserProfile::default();
         assert_eq!(default_profile.on_idle_resume, SessionAction::ScreenOn);
 
         // Can be overridden to None (e.g., gaming setup that doesn't want auto screen-on)
-        let profile = ProfileConfig {
+        let profile = UserProfileConfig {
             on_idle_resume: Some(SessionAction::None),
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
         let resolved = profile.resolve();
         assert_eq!(resolved.on_idle_resume, SessionAction::None);
 
         // Inherits from system default if not set in user profile
-        let system = ProfileConfig {
+        let system = UserProfileConfig {
             on_idle_resume: Some(SessionAction::PowerOn),
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
-        let user_profile = ProfileConfig::default(); // on_idle_resume = None
+        let user_profile = UserProfileConfig::default(); // on_idle_resume = None
         let merged = user_profile.merge_with_base(&system).resolve();
         assert_eq!(merged.on_idle_resume, SessionAction::PowerOn);
     }
@@ -1414,26 +1414,26 @@ ip = "192.168.1.1"
     /// before reaching the system default. Previously the `(None, _)` arm jumped straight
     /// to `system_default.clone()`, silently bypassing any user default the user had set.
     #[test]
-    fn test_user_config_resolve_profile_missing_profile_falls_through_user_default() {
-        let system_default = ProfileConfig {
+    fn test_user_config_resolve_user_profile_missing_profile_falls_through_user_default() {
+        let system_default = UserProfileConfig {
             on_screen_lock: Some(SessionAction::ScreenOff),
             idle_timeout_seconds: Some(300), // system wants 5 min
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
 
         let mut user = UserConfig::default();
         // User has a [profiles.default] that overrides the idle timeout
         user.profiles.insert(
             "default".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 idle_timeout_seconds: Some(600), // user wants 10 min
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
         // Assign TV to a non-existent profile name (typo, or system-only profile)
-        user.set_tv_profile("living-room", "nonexistent");
+        user.set_tv_user_profile("living-room", "nonexistent");
 
-        let resolved = user.resolve_profile("living-room", &system_default);
+        let resolved = user.resolve_user_profile("living-room", &system_default);
         // Must use user default (600), not skip straight to system default (300)
         assert_eq!(resolved.idle_timeout_seconds, 600);
         // Unspecified field still comes from system default
@@ -1441,37 +1441,37 @@ ip = "192.168.1.1"
     }
 
     #[test]
-    fn test_resolve_profile_with_system_profiles_as_base() {
+    fn test_resolve_user_profile_with_system_profiles_as_base() {
         // Simulates the full resolution chain used by the session service:
         // user profile -> user default -> system default -> hard-coded
-        let system_default = ProfileConfig {
+        let system_default = UserProfileConfig {
             on_screen_lock: Some(SessionAction::ScreenOff),
             on_screen_unlock: Some(SessionAction::ScreenOn),
             idle_timeout_seconds: Some(300),
-            ..ProfileConfig::default()
+            ..UserProfileConfig::default()
         };
 
         let mut user = UserConfig::default();
         // User defines "gaming" but not "default"
         user.profiles.insert(
             "gaming".to_string(),
-            ProfileConfig {
+            UserProfileConfig {
                 on_screen_lock: Some(SessionAction::None),
                 // idle_timeout_seconds not set — should inherit from system default
-                ..ProfileConfig::default()
+                ..UserProfileConfig::default()
             },
         );
-        user.set_tv_profile("office", "gaming");
+        user.set_tv_user_profile("office", "gaming");
 
         // Resolve for "office" TV
-        let resolved = user.resolve_profile("office", &system_default);
+        let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_screen_lock, SessionAction::None); // user gaming
         assert_eq!(resolved.idle_timeout_seconds, 300); // system default
         assert_eq!(resolved.on_screen_unlock, SessionAction::ScreenOn); // system default
         assert_eq!(resolved.on_sleep, SessionAction::PowerOff); // hard-coded default
 
         // Resolve for unknown TV (no assignment) — uses system default
-        let resolved_unknown = user.resolve_profile("other-tv", &system_default);
+        let resolved_unknown = user.resolve_user_profile("other-tv", &system_default);
         assert_eq!(resolved_unknown.on_screen_lock, SessionAction::ScreenOff); // system
         assert_eq!(resolved_unknown.idle_timeout_seconds, 300); // system
     }

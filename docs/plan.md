@@ -409,11 +409,11 @@ Checkpoint: `cargo check`, `cargo test`, commit.
 
 ## Checklist
 
-- [ ] A.1: Rename core types (ProfileConfig → UserProfileConfig, etc.)
-- [ ] A.2: Rename D-Bus interfaces and client methods
-- [ ] A.3: Rename session service identifiers
-- [ ] A.4: Rename tray identifiers and labels
-- [ ] A.5: Rename CLI subcommands
+- [x] A.1: Rename core types (ProfileConfig → UserProfileConfig, etc.)
+- [x] A.2: Rename D-Bus interfaces and client methods
+- [x] A.3: Rename session service identifiers
+- [x] A.4: Rename tray identifiers and labels
+- [x] A.5: Rename CLI subcommands
 - [ ] B.1: Add SystemProfileConfig and ResolvedSystemProfile
 - [ ] B.2: Restructure SystemConfig (system/user sections)
 - [ ] B.3: Restructure UserConfig

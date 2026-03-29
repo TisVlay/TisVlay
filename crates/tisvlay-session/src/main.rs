@@ -22,7 +22,7 @@ use session_monitor::{SessionEvent, SessionMonitor};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{DaemonClient, ProfileConfig, ResolvedProfile, SessionAction, UserConfig};
+use tisvlay_core::{DaemonClient, ResolvedUserProfile, SessionAction, UserConfig, UserProfileConfig};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -47,14 +47,14 @@ struct Args {
 
 /// Session state: resolved profiles per TV, kept in sync with config reloads.
 pub(crate) struct SessionState {
-    /// Resolved profiles per TV ID.
-    pub profiles: HashMap<String, ResolvedProfile>,
+    /// Resolved user profiles per TV ID.
+    pub profiles: HashMap<String, ResolvedUserProfile>,
     /// User config (used by Session D-Bus interface for profile management).
     pub user_config: UserConfig,
-    /// System default profile from the daemon.
-    pub system_default: ProfileConfig,
-    /// All system profiles from the daemon (for listing available profiles).
-    pub system_profiles: HashMap<String, ProfileConfig>,
+    /// Admin baseline for user profiles (from the daemon).
+    pub admin_user_default: UserProfileConfig,
+    /// All admin user profiles from the daemon (for listing available profiles).
+    pub admin_user_profiles: HashMap<String, UserProfileConfig>,
     /// TV IDs from the daemon (ordered).
     pub tv_ids: Vec<String>,
 }
@@ -69,32 +69,32 @@ impl SessionState {
             .context("Failed to get TV list from daemon")?;
         let tv_ids: Vec<String> = tv_infos.iter().map(|t| t.id.clone()).collect();
 
-        // Query daemon for system default profile
-        let system_default = match daemon.get_system_profile().await {
+        // Query daemon for admin baseline user profile
+        let admin_user_default = match daemon.get_user_profile_default().await {
             Ok(profile) => {
-                debug!("Loaded system default profile from daemon");
+                debug!("Loaded admin user default profile from daemon");
                 profile
             }
             Err(e) => {
-                warn!(error = %e, "Failed to get system profile, using hard-coded defaults");
-                ProfileConfig::full_default()
+                warn!(error = %e, "Failed to get admin user profile default, using hard-coded defaults");
+                UserProfileConfig::full_default()
             }
         };
 
-        // Query daemon for all system profiles
-        let system_profiles: HashMap<String, ProfileConfig> = match daemon
-            .get_system_profiles()
+        // Query daemon for all admin user profiles
+        let admin_user_profiles: HashMap<String, UserProfileConfig> = match daemon
+            .list_user_profiles()
             .await
         {
             Ok(profiles) => {
-                debug!(count = profiles.len(), "Loaded system profiles from daemon");
+                debug!(count = profiles.len(), "Loaded admin user profiles from daemon");
                 profiles
                     .into_iter()
                     .filter_map(|(name, json)| serde_json::from_str(&json).ok().map(|p| (name, p)))
                     .collect()
             }
             Err(e) => {
-                warn!(error = %e, "Failed to get system profiles");
+                warn!(error = %e, "Failed to get admin user profiles");
                 HashMap::new()
             }
         };
@@ -150,15 +150,15 @@ impl SessionState {
             }
         }
 
-        // Resolve profiles for each TV
+        // Resolve user profiles for each TV
         let mut profiles = HashMap::new();
         for tv_id in &tv_ids {
-            let resolved = user_config.resolve_profile(tv_id, &system_default);
+            let resolved = user_config.resolve_user_profile(tv_id, &admin_user_default);
             debug!(
                 tv_id = %tv_id,
-                profile = user_config.get_tv_profile_name(tv_id),
+                profile = user_config.get_tv_user_profile_name(tv_id),
                 idle_timeout = resolved.idle_timeout_seconds,
-                "Resolved profile"
+                "Resolved user profile"
             );
             profiles.insert(tv_id.clone(), resolved);
         }
@@ -168,8 +168,8 @@ impl SessionState {
         Ok(Self {
             profiles,
             user_config,
-            system_default,
-            system_profiles,
+            admin_user_default,
+            admin_user_profiles,
             tv_ids,
         })
     }
@@ -236,8 +236,8 @@ async fn main() -> Result<()> {
             SessionState {
                 profiles: HashMap::new(),
                 user_config: UserConfig::default(),
-                system_default: ProfileConfig::full_default(),
-                system_profiles: HashMap::new(),
+                admin_user_default: UserProfileConfig::full_default(),
+                admin_user_profiles: HashMap::new(),
                 tv_ids: Vec::new(),
             }
         }
@@ -453,8 +453,8 @@ async fn event_handler(
     info!("Event handler stopped");
 }
 
-/// Get the action for a session event from a resolved profile.
-fn get_action_for_event(event: &SessionEvent, profile: &ResolvedProfile) -> SessionAction {
+/// Get the action for a session event from a resolved user profile.
+fn get_action_for_event(event: &SessionEvent, profile: &ResolvedUserProfile) -> SessionAction {
     match event {
         SessionEvent::ScreenLocked => profile.on_screen_lock,
         SessionEvent::ScreenUnlocked => profile.on_screen_unlock,

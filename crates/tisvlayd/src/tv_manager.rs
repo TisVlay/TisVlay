@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
-    Capabilities, DaemonConfig, PowerState, ProfileConfig, SessionAction, SystemConfig, TvConfig,
+    Capabilities, DaemonConfig, PowerState, UserProfileConfig, SessionAction, SystemConfig, TvConfig,
     TvConnection, TvState,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -160,7 +160,7 @@ pub struct TvManager {
     /// lock acquisition, no risk of blocking behind a slow `power_on`.
     tvs: Arc<RwLock<IndexMap<String, TvEntry>>>,
     /// System profiles from config (updated on reload and set_daemon_option).
-    profiles: RwLock<HashMap<String, ProfileConfig>>,
+    profiles: RwLock<HashMap<String, UserProfileConfig>>,
     /// Daemon settings — kept separately so reload_config() and set_daemon_option()
     /// can update them at runtime without touching the TV connection pool.
     daemon_config: RwLock<DaemonConfig>,
@@ -422,17 +422,17 @@ impl TvManager {
         }
     }
 
-    /// Get the system default profile.
+    /// Get the admin baseline for user profiles.
     ///
     /// Returns the `[profiles.default]` from the system config,
-    /// or an empty ProfileConfig if not defined.
-    pub async fn get_system_default_profile(&self) -> ProfileConfig {
+    /// or an empty UserProfileConfig if not defined.
+    pub async fn get_user_profile_default(&self) -> UserProfileConfig {
         let profiles = self.profiles.read().await;
         profiles.get("default").cloned().unwrap_or_default()
     }
 
-    /// Get all system profiles as (name, ProfileConfig) pairs.
-    pub async fn get_system_profiles(&self) -> Vec<(String, ProfileConfig)> {
+    /// Get all user profiles as (name, UserProfileConfig) pairs.
+    pub async fn list_user_profiles(&self) -> Vec<(String, UserProfileConfig)> {
         let profiles = self.profiles.read().await;
         profiles
             .iter()
