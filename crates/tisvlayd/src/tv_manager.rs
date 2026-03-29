@@ -228,30 +228,6 @@ fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvMa
     Ok(())
 }
 
-/// Resolve a system profile from a `SystemSection` by profile name.
-///
-/// Resolution chain: named profile -> "default" profile -> hard-coded defaults.
-/// This is the same logic as `SystemConfig::resolve_system_profile()` but works
-/// directly with a `SystemSection` reference (avoiding a full config clone).
-fn resolve_system_profile_from_section(
-    system: &SystemSection,
-    profile_name: &str,
-) -> ResolvedSystemProfile {
-    let named = system.profiles.get(profile_name);
-    let default = if profile_name != "default" {
-        system.profiles.get("default")
-    } else {
-        None
-    };
-
-    match (named, default) {
-        (Some(p), Some(d)) => p.merge_with_base(d).resolve(),
-        (Some(p), None) => p.resolve(),
-        (None, Some(d)) => d.resolve(),
-        (None, None) => ResolvedSystemProfile::default(),
-    }
-}
-
 impl TvManager {
     /// Create a new TV manager from configuration.
     ///
@@ -928,7 +904,7 @@ impl TvManager {
         // Add to managed TVs (outer write lock -- modifying the HashMap)
         {
             let system = self.system_section.read().await;
-            let system_profile = resolve_system_profile_from_section(
+            let system_profile = system.resolve_profile(
                 &system,
                 &tv_config.profile.system,
             );
@@ -1040,7 +1016,7 @@ impl TvManager {
             // Re-resolve the system profile when the profile assignment changes.
             if key == "profile.system" {
                 let system = self.system_section.read().await;
-                managed.system_profile = resolve_system_profile_from_section(
+                managed.system_profile = system.resolve_profile(
                     &system,
                     &managed.config.profile.system,
                 );
@@ -1132,7 +1108,7 @@ impl TvManager {
                 } else {
                     // New TV: add to map immediately (no connection to close).
                     info!(tv_id = %tv_config.id, "Adding new TV from config");
-                    let system_profile = resolve_system_profile_from_section(
+                    let system_profile = system.resolve_profile(
                         &new_config.system,
                         &tv_config.profile.system,
                     );
@@ -1197,7 +1173,7 @@ impl TvManager {
             let tvs = self.tvs.read().await;
             for (_, tv_arc) in tvs.values() {
                 let mut tv = tv_arc.lock().await;
-                tv.system_profile = resolve_system_profile_from_section(
+                tv.system_profile = system.resolve_profile(
                     &system,
                     &tv.config.profile.system,
                 );

@@ -344,6 +344,27 @@ pub struct SystemSection {
     pub profiles: HashMap<String, SystemProfileConfig>,
 }
 
+impl SystemSection {
+    /// Resolve a system profile by name.
+    ///
+    /// Resolution chain: named profile → "default" profile → hard-coded defaults.
+    pub fn resolve_profile(&self, profile_name: &str) -> ResolvedSystemProfile {
+        let named = self.profiles.get(profile_name);
+        let default = if profile_name != "default" {
+            self.profiles.get("default")
+        } else {
+            None
+        };
+
+        match (named, default) {
+            (Some(p), Some(d)) => p.merge_with_base(d).resolve(),
+            (Some(p), None) => p.resolve(),
+            (None, Some(d)) => d.resolve(),
+            (None, None) => ResolvedSystemProfile::default(),
+        }
+    }
+}
+
 /// User-level configuration section.
 ///
 /// Contains user profiles that define session event behavior.
@@ -628,20 +649,7 @@ impl SystemConfig {
     /// 2. "default" system profile
     /// 3. Hard-coded defaults
     pub fn resolve_system_profile(&self, tv: &TvConfig) -> ResolvedSystemProfile {
-        let name = &tv.profile.system;
-        let named = self.system.profiles.get(name);
-        let default = if name != "default" {
-            self.system.profiles.get("default")
-        } else {
-            None
-        };
-
-        match (named, default) {
-            (Some(p), Some(d)) => p.merge_with_base(d).resolve(),
-            (Some(p), None) => p.resolve(),
-            (None, Some(d)) => d.resolve(),
-            (None, None) => ResolvedSystemProfile::default(),
-        }
+        self.system.resolve_profile(&tv.profile.system)
     }
 }
 
