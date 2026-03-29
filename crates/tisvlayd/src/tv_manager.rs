@@ -904,10 +904,7 @@ impl TvManager {
         // Add to managed TVs (outer write lock -- modifying the HashMap)
         {
             let system = self.system_section.read().await;
-            let system_profile = system.resolve_profile(
-                &system,
-                &tv_config.profile.system,
-            );
+            let system_profile = system.resolve_profile(&tv_config.profile.system);
             let mut tvs = self.tvs.write().await;
             let mut managed = ManagedTv::new(tv_config.clone(), system_profile);
             managed.connection = Some(connection);
@@ -1008,18 +1005,27 @@ impl TvManager {
         value: &str,
     ) -> Result<(), TvManagerError> {
         // Validate and apply to in-memory TV config first.
+        // Validate system profile name exists before applying.
+        if key == "profile.system" {
+            let system = self.system_section.read().await;
+            if !system.profiles.contains_key(value) {
+                return Err(TvManagerError::ConfigError(format!(
+                    "Unknown system profile: {}",
+                    value
+                )));
+            }
+        }
+
         let tv_arc = self.get_tv(tv_id).await?;
         {
             let mut managed = tv_arc.lock().await;
             apply_tv_option(&mut managed.config, key, value)?;
 
-            // Re-resolve the system profile when the profile assignment changes.
+            // Re-resolve the system profile when the assignment changes.
             if key == "profile.system" {
                 let system = self.system_section.read().await;
-                managed.system_profile = system.resolve_profile(
-                    &system,
-                    &managed.config.profile.system,
-                );
+                managed.system_profile =
+                    system.resolve_profile(&managed.config.profile.system);
             }
         } // per-TV lock released before I/O
 
@@ -1108,10 +1114,8 @@ impl TvManager {
                 } else {
                     // New TV: add to map immediately (no connection to close).
                     info!(tv_id = %tv_config.id, "Adding new TV from config");
-                    let system_profile = system.resolve_profile(
-                        &new_config.system,
-                        &tv_config.profile.system,
-                    );
+                    let system_profile =
+                        new_config.system.resolve_profile(&tv_config.profile.system);
                     tvs.insert(
                         tv_config.id.clone(),
                         (
@@ -1173,10 +1177,7 @@ impl TvManager {
             let tvs = self.tvs.read().await;
             for (_, tv_arc) in tvs.values() {
                 let mut tv = tv_arc.lock().await;
-                tv.system_profile = system.resolve_profile(
-                    &system,
-                    &tv.config.profile.system,
-                );
+                tv.system_profile = system.resolve_profile(&tv.config.profile.system);
             }
         }
 

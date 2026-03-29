@@ -20,7 +20,9 @@ name = "office"
 vendor = "lg"
 only_when_active = false
 managed = true
-profile.system = "default"
+
+[tv.profile]
+system = "default"
 
 [tv.lg]
 client_key = "bec7b2f5afe657547d367e84cbf59095"

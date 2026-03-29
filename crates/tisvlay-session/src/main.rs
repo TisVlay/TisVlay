@@ -141,18 +141,20 @@ impl SessionState {
         };
 
         // Validate TV references in user config
-        for tv_id in user_config.tv.keys() {
-            if !tv_ids.contains(tv_id) {
+        for tv_entry in &user_config.tv {
+            if !tv_ids.contains(&tv_entry.id) {
                 warn!(
-                    tv_id = %tv_id,
+                    tv_id = %tv_entry.id,
                     "User config references unknown TV (not in daemon's TV list)"
                 );
             }
         }
 
-        // Resolve user profiles for each TV
+        // Resolve user profiles for each TV.
         let mut profiles = HashMap::new();
-        for tv_id in &tv_ids {
+        for tv_info in &tv_infos {
+            let tv_id = &tv_info.id;
+
             let resolved = user_config.resolve_user_profile(tv_id, &admin_user_default);
             debug!(
                 tv_id = %tv_id,

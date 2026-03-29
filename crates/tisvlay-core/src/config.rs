@@ -47,7 +47,8 @@
 //! on_screen_lock = "none"
 //! idle_timeout_seconds = 0
 //!
-//! [tv.living-room]
+//! [[tv]]
+//! id = "living-room"
 //! profile.user = "gaming"
 //! ```
 
@@ -384,10 +385,10 @@ pub struct UserSection {
 // TvProfileAssignment
 // =============================================================================
 
-/// Per-TV system profile assignment.
+/// Per-TV profile assignment.
 ///
 /// Stored on `TvConfig` (in the system config's `[[tv]]` entries).
-/// Determines which system profile governs this TV's daemon lifecycle behavior.
+/// `system` determines which system profile governs daemon lifecycle behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvProfileAssignment {
     /// Name of the system profile to use. Defaults to "default".
@@ -673,14 +674,22 @@ pub struct UserConfig {
     #[serde(default)]
     pub user: UserSection,
 
-    /// Per-TV profile assignments. Key is TV ID from system config.
+    /// Per-TV profile assignments. Uses `[[tv]]` array-of-tables syntax.
     #[serde(default)]
-    pub tv: HashMap<String, UserTvConfig>,
+    pub tv: Vec<UserTvConfig>,
 }
 
 /// User's per-TV settings.
+///
+/// All fields except `id` have `#[serde(default)]` so that when parsing
+/// a single-file config (where `[[tv]]` entries contain system fields like
+/// `name`, `vendor`, etc.), unknown fields are silently ignored and missing
+/// user-specific fields get defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserTvConfig {
+    /// TV identifier (matches a TV ID from the system config).
+    pub id: String,
+
     /// Profile assignment for this TV.
     #[serde(default)]
     pub profile: UserTvProfileAssignment,
@@ -752,7 +761,8 @@ impl UserConfig {
         // 1. Find which profile name applies to this TV
         let profile_name = self
             .tv
-            .get(tv_id)
+            .iter()
+            .find(|t| t.id == tv_id)
             .map(|t| t.profile.user.as_str())
             .unwrap_or("default");
 
@@ -798,20 +808,26 @@ impl UserConfig {
     /// Returns `"default"` if no explicit assignment exists.
     pub fn get_tv_user_profile_name(&self, tv_id: &str) -> &str {
         self.tv
-            .get(tv_id)
+            .iter()
+            .find(|t| t.id == tv_id)
             .map(|t| t.profile.user.as_str())
             .unwrap_or("default")
     }
 
     /// Assign a profile to a TV.
+    ///
+    /// If an entry for this TV already exists, updates it. Otherwise appends a new entry.
     pub fn set_tv_user_profile(&mut self, tv_id: impl Into<String>, profile: impl Into<String>) {
+        let tv_id = tv_id.into();
         let profile = profile.into();
-        self.tv.insert(
-            tv_id.into(),
-            UserTvConfig {
+        if let Some(entry) = self.tv.iter_mut().find(|t| t.id == tv_id) {
+            entry.profile.user = profile;
+        } else {
+            self.tv.push(UserTvConfig {
+                id: tv_id,
                 profile: UserTvProfileAssignment { user: profile },
-            },
-        );
+            });
+        }
     }
 }
 
@@ -963,6 +979,84 @@ mac = "AA:BB:CC:DD:EE:FF"
         assert_eq!(user_default.idle_timeout_seconds, Some(300));
         // Unspecified field
         assert_eq!(user_default.on_greeter_wake, None);
+    }
+
+    #[test]
+    fn test_single_file_config_with_both_profiles() {
+        // Single-file mode: system and user profiles + TV definitions with
+        // both profile.system and profile.user on [[tv]] entries.
+        // Both SystemConfig and UserConfig can parse the same TOML:
+        // - SystemConfig sees profile.system, ignores profile.user
+        // - UserConfig sees profile.user, ignores name/vendor/etc.
+        let toml_str = r#"
+[system.profiles.default]
+on_startup = "power_on"
+on_shutdown = "power_off"
+
+[system.profiles.guest]
+on_startup = "none"
+on_shutdown = "screen_off"
+
+[user.profiles.default]
+on_screen_lock = "screen_off"
+
+[user.profiles.gaming]
+on_screen_lock = "none"
+idle_timeout_seconds = 0
+
+[[tv]]
+id = "living-room"
+name = "Living Room"
+vendor = "lg"
+managed = true
+only_when_active = false
+profile.system = "default"
+profile.user = "gaming"
+
+[tv.lg]
+ip = "192.168.1.100"
+
+[[tv]]
+id = "guest-room"
+name = "Guest Room"
+vendor = "lg"
+managed = true
+only_when_active = false
+profile.system = "guest"
+
+[tv.lg]
+ip = "192.168.1.101"
+"#;
+
+        // Parse as SystemConfig
+        let config: SystemConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.tv.len(), 2);
+
+        let living = config.tv.iter().find(|t| t.id == "living-room").unwrap();
+        assert_eq!(living.profile.system, "default");
+
+        let guest = config.tv.iter().find(|t| t.id == "guest-room").unwrap();
+        assert_eq!(guest.profile.system, "guest");
+
+        // System profile resolution works
+        let resolved = config.resolve_system_profile(living);
+        assert_eq!(resolved.on_startup, SessionAction::PowerOn);
+
+        let resolved = config.resolve_system_profile(guest);
+        assert_eq!(resolved.on_startup, SessionAction::None);
+        assert_eq!(resolved.on_shutdown, SessionAction::ScreenOff);
+
+        // Parse the SAME TOML as UserConfig — UserTvConfig ignores unknown
+        // fields (name, vendor, managed, only_when_active, lg, profile.system)
+        // and picks up profile.user.
+        let user_config: UserConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(user_config.tv.len(), 2);
+
+        let living_user = user_config.tv.iter().find(|t| t.id == "living-room").unwrap();
+        assert_eq!(living_user.profile.user, "gaming");
+
+        let guest_user = user_config.tv.iter().find(|t| t.id == "guest-room").unwrap();
+        assert_eq!(guest_user.profile.user, "default"); // not specified, defaults
     }
 
     #[test]
@@ -1328,17 +1422,16 @@ idle_timeout_seconds = 600
 on_screen_lock = "none"
 idle_timeout_seconds = 0
 
-[tv.living-room]
+[[tv]]
+id = "living-room"
 profile.user = "gaming"
 "#;
 
         let config: UserConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.user.profiles.len(), 2);
         assert_eq!(config.tv.len(), 1);
-        assert_eq!(
-            config.tv.get("living-room").unwrap().profile.user,
-            "gaming"
-        );
+        assert_eq!(config.tv[0].id, "living-room");
+        assert_eq!(config.tv[0].profile.user, "gaming");
     }
 
     #[test]
@@ -1470,10 +1563,8 @@ profile.user = "gaming"
         assert_eq!(gaming.idle_timeout_seconds, Some(0));
         // None fields should not be serialized
         assert_eq!(gaming.on_sleep, None);
-        assert_eq!(
-            deserialized.tv.get("living-room").unwrap().profile.user,
-            "gaming"
-        );
+        let living = deserialized.tv.iter().find(|t| t.id == "living-room").unwrap();
+        assert_eq!(living.profile.user, "gaming");
     }
 
     #[test]
@@ -1672,7 +1763,8 @@ idle_timeout_seconds = 600
 [user.profiles.gaming]
 on_screen_lock = "none"
 
-[tv.living-room]
+[[tv]]
+id = "living-room"
 profile.user = "gaming"
 "#;
 
@@ -1680,16 +1772,15 @@ profile.user = "gaming"
         assert_eq!(config.user.profiles.len(), 2);
         assert!(config.user.profiles.contains_key("default"));
         assert!(config.user.profiles.contains_key("gaming"));
-        assert_eq!(
-            config.tv.get("living-room").unwrap().profile.user,
-            "gaming"
-        );
+        let living = config.tv.iter().find(|t| t.id == "living-room").unwrap();
+        assert_eq!(living.profile.user, "gaming");
     }
 
     #[test]
-    fn test_system_config_with_multiple_profiles_as_user_config_fails() {
-        // A system config with [[tv]] (array of tables) cannot be parsed as UserConfig
-        // because UserConfig.tv is HashMap (expects [tv.id] table syntax).
+    fn test_system_config_parses_as_user_config() {
+        // A system config with [[tv]] (array of tables) can now be parsed as UserConfig
+        // because UserConfig.tv is also a Vec. UserTvConfig ignores unknown fields
+        // like name, vendor, lg, etc.
         let system_toml = r#"
 [system.profiles.default]
 on_startup = "power_on"
@@ -1704,17 +1795,18 @@ on_screen_lock = "none"
 id = "office"
 name = "Office"
 vendor = "lg"
+managed = true
+only_when_active = false
 
 [tv.lg]
 ip = "192.168.1.1"
 "#;
 
-        let result = toml::from_str::<UserConfig>(system_toml);
-        // This should fail because [[tv]] is an array, but UserConfig.tv expects a table
-        assert!(
-            result.is_err(),
-            "System config should not parse as UserConfig"
-        );
+        let config: UserConfig = toml::from_str(system_toml).unwrap();
+        assert_eq!(config.tv.len(), 1);
+        assert_eq!(config.tv[0].id, "office");
+        // profile.user defaults to "default" since it's not specified
+        assert_eq!(config.tv[0].profile.user, "default");
     }
 
     /// Test that on_idle_resume is configurable and defaults to ScreenOn.
