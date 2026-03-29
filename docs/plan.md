@@ -199,423 +199,241 @@ Resolved by session service.
 
 ---
 
-## Part 1: Core config restructure
+## Implementation order
 
-### 1.1 Add SystemProfileConfig and ResolvedSystemProfile
+The rename (old "Part 6") must happen first — before adding new system
+profile features — to avoid building new code on top of ambiguous names.
 
-**File:** `crates/tisvlay-core/src/config.rs`
+### Phase A: Rename existing profile identifiers to `user_profile`
 
-- New `SystemProfileConfig` struct (Option fields, serde, merge_with_base,
-  resolve)
-- New `ResolvedSystemProfile` struct (concrete fields, Default impl)
-- Mirror the existing ProfileConfig/ResolvedProfile pattern
+Mechanical rename across all crates. Must compile and pass tests before
+proceeding. Uses the rename tables below.
 
-### 1.2 Rename ProfileConfig → UserProfileConfig
+**A.1 Core types and config** (`tisvlay-core/src/config.rs`, `lib.rs`):
 
-**File:** `crates/tisvlay-core/src/config.rs`
+| Current | New |
+|---------|-----|
+| `ProfileConfig` | `UserProfileConfig` |
+| `ResolvedProfile` | `ResolvedUserProfile` |
+| `get_tv_profile_name()` | `get_tv_user_profile_name()` |
+| `set_tv_profile()` | `set_tv_user_profile()` |
+| `resolve_profile()` | `resolve_user_profile()` |
+| `DaemonConfig` | Keep for now — removed in Phase B |
 
-- Rename `ProfileConfig` → `UserProfileConfig`
-- Rename `ResolvedProfile` → `ResolvedUserProfile`
-- Update all references across all crates
+**A.2 D-Bus interfaces and client** (`dbus_client.rs`, `session_dbus.rs`,
+`dbus/manager.rs`):
 
-### 1.3 Restructure SystemConfig
+Daemon (`org.tisvlay.Manager1`):
 
-**File:** `crates/tisvlay-core/src/config.rs`
+| Current | New |
+|---------|-----|
+| `GetSystemProfile()` | `GetUserProfileDefault()` |
+| `GetSystemProfiles()` | `ListUserProfiles()` |
 
-Replace:
-```rust
-pub struct SystemConfig {
-    pub daemon: DaemonConfig,
-    pub profiles: HashMap<String, ProfileConfig>,
-    pub tv: Vec<TvConfig>,
-}
-```
+Session (`org.tisvlay.Session1`):
 
-With:
-```rust
-pub struct SystemConfig {
-    pub system: SystemSection,
-    pub user: UserSection,
-    pub tv: Vec<TvConfig>,
-}
+| Current | New |
+|---------|-----|
+| `ListProfiles()` | `ListUserProfiles()` |
+| `GetTvProfile(tv_id)` | `GetTvUserProfile(tv_id)` |
+| `SetTvProfile(tv_id, name)` | `SetTvUserProfile(tv_id, name)` |
+| `GetEffectiveProfile(tv_id)` | `GetEffectiveUserProfile(tv_id)` |
 
-pub struct SystemSection {
-    pub profiles: HashMap<String, SystemProfileConfig>,
-}
+Client methods:
 
-pub struct UserSection {
-    pub profiles: HashMap<String, UserProfileConfig>,
-}
-```
+| Current | New |
+|---------|-----|
+| `DaemonClient::get_system_profile()` | `get_user_profile_default()` |
+| `DaemonClient::get_system_profiles()` | `list_user_profiles()` |
+| `SessionClient::list_profiles()` | `list_user_profiles()` |
+| `SessionClient::get_tv_profile()` | `get_tv_user_profile()` |
+| `SessionClient::set_tv_profile()` | `set_tv_user_profile()` |
 
-Remove `DaemonConfig` entirely — its fields move into `SystemProfileConfig`.
+**A.3 Session service** (`tisvlay-session/src/main.rs`):
 
-### 1.4 Restructure UserConfig
+| Current | New |
+|---------|-----|
+| `system_default` (SessionState) | `admin_user_default` |
+| `system_profiles` (SessionState) | `admin_user_profiles` |
 
-**File:** `crates/tisvlay-core/src/config.rs`
+**A.4 Tray** (`tisvlay-tray/src/tray.rs`, `state.rs`, `main.rs`):
 
-Replace:
-```rust
-pub struct UserConfig {
-    pub profiles: HashMap<String, ProfileConfig>,
-    pub tv: HashMap<String, UserTvConfig>,
-}
-```
+| Current | New |
+|---------|-----|
+| `TrayCommand::SetProfile` | `TrayCommand::SetUserProfile` |
+| `available_profiles` (CachedTvState) | `available_user_profiles` |
+| `profile` (CachedTvState) | `user_profile` |
+| "Profile: gaming" label | "User Profile: gaming" |
 
-With:
-```rust
-pub struct UserConfig {
-    pub user: UserSection,
-    pub tv: HashMap<String, UserTvConfig>,
-}
-```
-
-(Reuse the same `UserSection` struct for both system and user config.)
-
-### 1.5 Add profile assignment to TvConfig
-
-**File:** `crates/tisvlay-core/src/config.rs`
-
-Add to `TvConfig`:
-```rust
-pub profile: TvProfileAssignment,
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TvProfileAssignment {
-    #[serde(default = "default_profile_name")]
-    pub system: String,  // default: "default"
-    // No `user` field — per-TV user profile assignment is in UserTvConfig only
-}
-```
-
-### 1.6 Update UserTvConfig
-
-**File:** `crates/tisvlay-core/src/config.rs`
-
-Replace `profile: String` with:
-```rust
-pub profile: UserTvProfileAssignment,
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserTvProfileAssignment {
-    pub user: String,  // only user profile settable from user config
-}
-```
-
-### 1.7 Add system profile resolution
-
-**File:** `crates/tisvlay-core/src/config.rs`
-
-Add method to `SystemConfig`:
-```rust
-pub fn resolve_system_profile(&self, tv: &TvConfig) -> ResolvedSystemProfile {
-    let profile_name = &tv.profile.system;
-    let profile = self.system.profiles.get(profile_name);
-    let default = self.system.profiles.get("default");
-    // merge: named profile → default → hard-coded defaults
-}
-```
-
-### 1.8 Update tests
-
-All config tests use the old shape — update TOML fixtures and assertions.
-
----
-
-## Part 2: Daemon per-TV event dispatch
-
-### 2.1 Store resolved system profiles in TvManager
-
-**File:** `crates/tisvlayd/src/tv_manager.rs`
-
-Add `system_profile: ResolvedSystemProfile` to `ManagedTv`. Resolved
-on load and on config reload.
-
-### 2.2 Replace global event dispatch with per-TV dispatch
-
-**File:** `crates/tisvlayd/src/tv_manager.rs`
-
-Replace `get_daemon_config_action(DaemonAction)` (returns one action for
-all TVs) with per-TV resolution:
-
-```rust
-pub async fn execute_event_all_tvs(&self, event: SystemEvent, context: &str) {
-    let tv_ids = self.list_managed_tv_ids().await;
-    for tv_id in &tv_ids {
-        let action = self.get_system_action(tv_id, event).await;
-        if action != SessionAction::None {
-            self.execute_action(tv_id, action, context).await;
-        }
-    }
-}
-```
-
-Where `get_system_action` reads the per-TV `ResolvedSystemProfile`.
-
-### 2.3 Remove DaemonAction enum and DaemonConfig
-
-**Files:** `crates/tisvlayd/src/tv_manager.rs`, `crates/tisvlayd/src/logind.rs`
-
-Replace `DaemonAction` with `SystemEvent` enum:
-```rust
-pub enum SystemEvent {
-    Startup,
-    Shutdown,
-    Reboot,
-    NoSession,
-}
-```
-
-Update logind.rs to use `execute_event_all_tvs(SystemEvent::Shutdown, ...)`.
-
-### 2.4 Update `on_startup` for per-TV profiles
-
-**File:** `crates/tisvlayd/src/tv_manager.rs`
-
-`startup_power_on` currently wakes all managed TVs. Under per-TV profiles,
-each TV's `on_startup` may differ (PowerOn, ScreenOn, None). The startup
-logic needs to iterate TVs, check each profile, and only WoL the ones
-with `on_startup = PowerOn`.
-
-### 2.5 Update `set_daemon_option` or replace with profile API
-
-**File:** `crates/tisvlayd/src/tv_manager.rs`
-
-The current `SetDaemonOption(key, value)` D-Bus method operates on the
-global DaemonConfig. With per-TV profiles, this needs rethinking:
-- Option A: `SetTvSystemProfile(tv_id, profile_name)` — switch a TV's
-  system profile (analogous to session's `SetTvProfile`)
-- Option B: Keep `SetDaemonOption` for backward compat, but it sets
-  fields on the "default" system profile
-
-Recommend Option A for consistency with the session profile API.
-
----
-
-## Part 3: D-Bus API updates
-
-### 3.1 Add system profile methods to Manager1
-
-**File:** `crates/tisvlayd/src/dbus/manager.rs`
-
-- `GetSystemProfiles() → a{sa{sv}}` — list system profiles with fields
-- `GetSystemProfile(name) → a{sv}` — get a single system profile
-
-### 3.2 Add system profile property to Tv1
-
-**File:** `crates/tisvlayd/src/dbus/tv.rs`
-
-- Add `SystemProfile` property (readable, writable) to `org.tisvlay.Tv1`
-- `SetTvOption(key, value)` with key `"profile.system"` to change assignment
-- Emit `PropertiesChanged` on update
-
-### 3.3 Update DaemonClient
-
-**File:** `crates/tisvlay-core/src/dbus_client.rs`
-
-- Add `get_system_profiles()`, `get_system_profile(name)` methods
-- Add `set_tv_system_profile(tv_id, profile_name)` method
-- Update `list_tvs()` to include `system_profile` field in `TvInfo`
-
----
-
-## Part 4: Session service updates
-
-### 4.1 Update profile resolution for new config shape
-
-**File:** `crates/tisvlay-session/src/main.rs`
-
-- `SessionState::load()` reads `user.profiles` from user config, plus
-  admin baseline `user.profiles.default` from daemon via D-Bus
-- Per-TV user profile assignment comes only from user config
-  (`[tv.{id}] profile.user`), not from system config
-
-### 4.2 Update session D-Bus interface
-
-**File:** `crates/tisvlay-session/src/session_dbus.rs`
-
-- `ListProfiles()` returns user profiles only (no system profiles)
-- `GetTvProfile()` / `SetTvProfile()` operate on `profile.user`
-- `GetEffectiveProfile()` returns resolved user profile
-
----
-
-## Part 5: Tray and CLI updates
-
-### 5.1 Tray: dual profile submenus
-
-**File:** `crates/tisvlay-tray/src/tray.rs`
-
-- Rename existing "Profile" submenu to "User Profile"
-- Add "System Profile" submenu alongside it
-- Query daemon for available system profiles
-- Switch system profile via daemon D-Bus, user profile via session D-Bus
-
-### 5.2 CLI: explicit system/user profile commands
-
-**File:** `crates/tisvlay-cli/src/main.rs`
-
-Replace existing `tisvlay profile list/get/set` with explicit subcommands:
-
-```
-tisvlay profile system list
-tisvlay profile system get [--tv ID]
-tisvlay profile system set <name> [--tv ID]
-
-tisvlay profile user list
-tisvlay profile user get [--tv ID]
-tisvlay profile user set <name> [--tv ID]
-```
-
-No bare `tisvlay profile list` — always require `system` or `user` to
-avoid ambiguity.
-
----
-
-## Part 6: Comprehensive profile rename
-
-The shift from implicit "profile = user profile" to explicit system/user
-duality requires renaming identifiers across the entire codebase. This
-is mostly mechanical but must be thorough to avoid confusion.
-
-### 6.1 Rust types and methods
-
-| Current | New | File(s) |
-|---------|-----|---------|
-| `ProfileConfig` | `UserProfileConfig` | config.rs, lib.rs |
-| `ResolvedProfile` | `ResolvedUserProfile` | config.rs, lib.rs |
-| `get_tv_profile_name()` | `get_tv_user_profile_name()` | config.rs |
-| `set_tv_profile()` | `set_tv_user_profile()` | config.rs |
-| `resolve_profile()` | `resolve_user_profile()` | config.rs |
-| `TrayCommand::SetProfile` | `TrayCommand::SetUserProfile` | tray.rs |
-| `available_profiles` (CachedTvState) | `available_user_profiles` | state.rs, tray.rs |
-| `profile` (CachedTvState) | `user_profile` | state.rs, tray.rs |
-| `system_default` (SessionState) | `admin_user_default` | main.rs (session) |
-| `system_profiles` (SessionState) | `admin_user_profiles` | main.rs (session) |
-
-### 6.2 D-Bus interfaces and methods
-
-**Daemon (`org.tisvlay.Manager1`):**
-
-| Current | New | Notes |
-|---------|-----|-------|
-| `GetSystemProfile()` | `GetUserProfileDefault()` | Admin baseline for user profiles |
-| `GetSystemProfiles()` | `ListUserProfiles()` | Admin-defined user profiles |
-| `SetDaemonOption(key, value)` | Remove | Replaced by system profile API |
-| *(new)* | `ListSystemProfiles()` | System profile definitions |
-| *(new)* | `GetTvSystemProfile(tv_id)` | Per-TV system profile name |
-| *(new)* | `SetTvSystemProfile(tv_id, name)` | Switch TV's system profile |
-
-**Daemon (`org.tisvlay.Tv1`):**
-
-| Current | New | Notes |
-|---------|-----|-------|
-| *(new)* | `SystemProfile` property | Readable + writable |
-
-**Session (`org.tisvlay.Session1`):**
-
-| Current | New | Notes |
-|---------|-----|-------|
-| `ListProfiles()` | `ListUserProfiles()` | Explicit user scope |
-| `GetTvProfile(tv_id)` | `GetTvUserProfile(tv_id)` | Explicit user scope |
-| `SetTvProfile(tv_id, name)` | `SetTvUserProfile(tv_id, name)` | Explicit user scope |
-| `GetEffectiveProfile(tv_id)` | `GetEffectiveUserProfile(tv_id)` | Explicit user scope |
-
-### 6.3 D-Bus client methods
-
-| Current | New | File |
-|---------|-----|------|
-| `DaemonClient::get_system_profile()` | `get_user_profile_default()` | dbus_client.rs |
-| `DaemonClient::get_system_profiles()` | `list_user_profiles()` | dbus_client.rs |
-| `SessionClient::list_profiles()` | `list_user_profiles()` | dbus_client.rs |
-| `SessionClient::get_tv_profile()` | `get_tv_user_profile()` | dbus_client.rs |
-| `SessionClient::set_tv_profile()` | `set_tv_user_profile()` | dbus_client.rs |
-| *(new)* | `DaemonClient::list_system_profiles()` | dbus_client.rs |
-| *(new)* | `DaemonClient::get_tv_system_profile()` | dbus_client.rs |
-| *(new)* | `DaemonClient::set_tv_system_profile()` | dbus_client.rs |
-
-### 6.4 CLI subcommands
+**A.5 CLI** (`tisvlay-cli/src/main.rs`):
 
 | Current | New |
 |---------|-----|
 | `tisvlay profile list` | `tisvlay profile user list` |
 | `tisvlay profile get` | `tisvlay profile user get` |
 | `tisvlay profile set <name>` | `tisvlay profile user set <name>` |
-| *(new)* | `tisvlay profile system list` |
-| *(new)* | `tisvlay profile system get` |
-| *(new)* | `tisvlay profile system set <name>` |
 
-### 6.5 Tray
-
-| Current | New |
-|---------|-----|
-| "Profile: gaming" submenu | "User Profile: gaming" submenu |
-| `TrayCommand::SetProfile` | `TrayCommand::SetUserProfile` |
-| *(new)* | "System Profile: default" submenu |
-| *(new)* | `TrayCommand::SetSystemProfile` |
+Checkpoint: `cargo check`, `cargo test`, commit.
 
 ---
 
-## Part 7: Shared profile utilities
+### Phase B: Core config restructure
 
-### 6.1 Generic merge/resolve
+**B.1** Add `SystemProfileConfig` and `ResolvedSystemProfile` to config.rs.
+Mirror the UserProfileConfig pattern (Option fields, merge_with_base,
+resolve). Consider extracting shared merge logic if it reduces
+duplication without over-abstracting.
 
-Both profile types follow the same pattern: Option fields, merge_with_base,
-resolve to concrete defaults. Extract a generic approach or macro to
-avoid duplicating the merge/resolve logic between SystemProfileConfig
-and UserProfileConfig.
-
-Consider a `ProfileMerge` trait:
+**B.2** Restructure `SystemConfig`:
 ```rust
-trait ProfileMerge: Default {
-    fn merge_with_base(&self, base: &Self) -> Self;
-    fn resolve(&self) -> Self::Resolved;
+pub struct SystemConfig {
+    pub system: SystemSection,
+    pub user: UserSection,
+    pub tv: Vec<TvConfig>,
+}
+pub struct SystemSection {
+    pub profiles: HashMap<String, SystemProfileConfig>,
+}
+pub struct UserSection {
+    pub profiles: HashMap<String, UserProfileConfig>,
+}
+```
+Remove `DaemonConfig` — fields moved into `SystemProfileConfig`.
+
+**B.3** Restructure `UserConfig`:
+```rust
+pub struct UserConfig {
+    pub user: UserSection,
+    pub tv: HashMap<String, UserTvConfig>,
 }
 ```
 
-Or simply keep two parallel impls if the trait adds more complexity than
-it saves (two structs × ~20 lines each is manageable).
+**B.4** Add `TvProfileAssignment` to `TvConfig`:
+```rust
+pub struct TvProfileAssignment {
+    pub system: String,  // default: "default"
+    // No user field — owned by UserTvConfig
+}
+```
+
+**B.5** Update `UserTvConfig` profile field:
+```rust
+pub struct UserTvProfileAssignment {
+    pub user: String,
+}
+```
+
+**B.6** Add `resolve_system_profile()` to `SystemConfig`.
+
+**B.7** Update all config tests for new TOML shape.
+
+Checkpoint: `cargo check`, `cargo test`, commit.
 
 ---
 
-## Part 7: Update docs, configs, tests
+### Phase C: Daemon per-TV event dispatch
+
+**C.1** Add `system_profile: ResolvedSystemProfile` to `ManagedTv`.
+Resolve on load and config reload.
+
+**C.2** Replace `DaemonAction` enum with `SystemEvent`:
+```rust
+pub enum SystemEvent { Startup, Shutdown, Reboot, NoSession }
+```
+
+**C.3** Replace global `execute_action_all_tvs` with per-TV dispatch
+that reads each TV's resolved system profile.
+
+**C.4** Update `on_startup` for per-TV profiles — only WoL TVs whose
+system profile has `on_startup = PowerOn`.
+
+**C.5** Remove `SetDaemonOption` D-Bus method. Replace with
+`SetTvSystemProfile(tv_id, name)` on the per-TV object.
+
+**C.6** Update logind.rs to use `SystemEvent`.
+
+Checkpoint: `cargo check`, `cargo test`, commit.
+
+---
+
+### Phase D: D-Bus API + DaemonClient for system profiles
+
+**D.1** Add to `org.tisvlay.Manager1`:
+- `ListSystemProfiles() → a{sa{sv}}`
+- `GetUserProfileDefault() → a{sv}` (already renamed in Phase A)
+- `ListUserProfiles() → Vec<(String, String)>` (already renamed)
+
+**D.2** Add to `org.tisvlay.Tv1`:
+- `SystemProfile` property (readable, writable)
+- `SetTvOption` key `"profile.system"` to change assignment + persist
+
+**D.3** Update `DaemonClient`:
+- `list_system_profiles()`
+- `get_tv_system_profile(tv_id)`
+- `set_tv_system_profile(tv_id, name)`
+- Update `TvInfo` to include `system_profile`
+
+Checkpoint: `cargo check`, `cargo test`, commit.
+
+---
+
+### Phase E: Session service + tray + CLI updates
+
+**E.1** Session: update `SessionState::load()` for new config shape
+(`user.profiles` namespace, `profile.user` assignment).
+
+**E.2** Session D-Bus: methods already renamed in Phase A. Verify
+correct behavior with new config shape.
+
+**E.3** Tray: add "System Profile" submenu alongside "User Profile".
+Add `TrayCommand::SetSystemProfile`. Query daemon for available
+system profiles and current per-TV assignment.
+
+**E.4** CLI: add `tisvlay profile system list/get/set` subcommands.
+
+Checkpoint: `cargo check`, `cargo test`, commit.
+
+---
+
+### Phase F: Docs, configs, final cleanup
 
 - `docs/design.md` — config schema, D-Bus interface, event→action table
 - `docs/configs/daemon.toml` → new shape
 - `docs/configs/session.toml` → new shape
 - `.claude/CLAUDE.md` — project structure, key implementation details
-- All config test fixtures
+- Verify all test fixtures updated
+
+Checkpoint: `cargo check`, `cargo test`, commit.
 
 ---
 
 ## Checklist
 
-- [ ] Part 1.1: Add SystemProfileConfig and ResolvedSystemProfile
-- [ ] Part 1.2: Rename ProfileConfig → UserProfileConfig
-- [ ] Part 1.3: Restructure SystemConfig (system/user sections)
-- [ ] Part 1.4: Restructure UserConfig
-- [ ] Part 1.5: Add TvProfileAssignment to TvConfig
-- [ ] Part 1.6: Update UserTvConfig profile assignment
-- [ ] Part 1.7: Add system profile resolution
-- [ ] Part 1.8: Update config tests
-- [ ] Part 2.1: Store resolved system profiles in ManagedTv
-- [ ] Part 2.2: Per-TV event dispatch (replace global dispatch)
-- [ ] Part 2.3: Remove DaemonAction/DaemonConfig, add SystemEvent
-- [ ] Part 2.4: Update on_startup for per-TV profiles
-- [ ] Part 2.5: Replace SetDaemonOption with profile API
-- [ ] Part 3.1: System profile D-Bus methods on Manager1
-- [ ] Part 3.2: SystemProfile property on Tv1
-- [ ] Part 3.3: Update DaemonClient
-- [ ] Part 4.1: Session profile resolution for new config shape
-- [ ] Part 4.2: Update session D-Bus interface
-- [ ] Part 5.1: Tray dual profile submenus
-- [ ] Part 5.2: CLI explicit system/user profile commands
-- [ ] Part 6.1: Rename Rust types and methods (ProfileConfig → UserProfileConfig, etc.)
-- [ ] Part 6.2: Rename D-Bus interfaces and methods
-- [ ] Part 6.3: Rename D-Bus client methods
-- [ ] Part 6.4: Rename CLI subcommands
-- [ ] Part 6.5: Rename tray commands and labels
-- [ ] Part 7.1: Shared profile merge/resolve utilities
-- [ ] Part 8: Update docs, configs, tests
+- [ ] A.1: Rename core types (ProfileConfig → UserProfileConfig, etc.)
+- [ ] A.2: Rename D-Bus interfaces and client methods
+- [ ] A.3: Rename session service identifiers
+- [ ] A.4: Rename tray identifiers and labels
+- [ ] A.5: Rename CLI subcommands
+- [ ] B.1: Add SystemProfileConfig and ResolvedSystemProfile
+- [ ] B.2: Restructure SystemConfig (system/user sections)
+- [ ] B.3: Restructure UserConfig
+- [ ] B.4: Add TvProfileAssignment to TvConfig
+- [ ] B.5: Update UserTvConfig profile assignment
+- [ ] B.6: Add system profile resolution
+- [ ] B.7: Update config tests
+- [ ] C.1: Store resolved system profiles in ManagedTv
+- [ ] C.2: Replace DaemonAction with SystemEvent
+- [ ] C.3: Per-TV event dispatch
+- [ ] C.4: Per-TV on_startup
+- [ ] C.5: Replace SetDaemonOption with SetTvSystemProfile
+- [ ] C.6: Update logind.rs
+- [ ] D.1: System profile D-Bus methods on Manager1
+- [ ] D.2: SystemProfile property on Tv1
+- [ ] D.3: Update DaemonClient
+- [ ] E.1: Session profile resolution for new config shape
+- [ ] E.2: Verify session D-Bus with new config
+- [ ] E.3: Tray dual profile submenus
+- [ ] E.4: CLI system/user profile commands
+- [ ] F: Update docs, configs, CLAUDE.md
 - [ ] `cargo check` all crates
 - [ ] `cargo test` all crates
