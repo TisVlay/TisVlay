@@ -104,7 +104,7 @@ impl SessionState {
             Some(path) => match UserConfig::load_from(path) {
                 Ok(Some(config)) => {
                     info!(
-                        profiles = config.profiles.len(),
+                        profiles = config.user.profiles.len(),
                         tv_assignments = config.tv.len(),
                         path = %path.display(),
                         "Loaded user configuration"
@@ -123,7 +123,7 @@ impl SessionState {
             None => match UserConfig::load() {
                 Ok(Some(config)) => {
                     info!(
-                        profiles = config.profiles.len(),
+                        profiles = config.user.profiles.len(),
                         tv_assignments = config.tv.len(),
                         "Loaded user configuration"
                     );

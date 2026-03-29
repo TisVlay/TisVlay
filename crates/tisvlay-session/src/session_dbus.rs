@@ -70,7 +70,7 @@ impl SessionService {
         }
 
         // User profiles override admin profiles with the same name
-        for (name, profile) in &s.user_config.profiles {
+        for (name, profile) in &s.user_config.user.profiles {
             merged.insert(name.clone(), profile);
         }
 
@@ -112,7 +112,7 @@ impl SessionService {
 
         // Verify the profile exists (in user config, admin config, or as "default")
         if profile_name != "default"
-            && !s.user_config.profiles.contains_key(profile_name)
+            && !s.user_config.user.profiles.contains_key(profile_name)
             && !s.admin_user_profiles.contains_key(profile_name)
         {
             return Err(SessionError::ProfileNotFound(format!(

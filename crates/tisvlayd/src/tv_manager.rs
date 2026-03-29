@@ -8,12 +8,11 @@
 
 use crate::registry::BackendRegistry;
 use indexmap::IndexMap;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
-    Capabilities, DaemonConfig, PowerState, UserProfileConfig, SessionAction, SystemConfig, TvConfig,
-    TvConnection, TvState,
+    Capabilities, PowerState, SessionAction, SystemConfig, SystemSection, TvConfig, TvConnection,
+    TvState, UserProfileConfig, UserSection,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
@@ -159,11 +158,10 @@ pub struct TvManager {
     /// `list_managed_tv_ids` can scan it with only the outer read lock — no per-TV
     /// lock acquisition, no risk of blocking behind a slow `power_on`.
     tvs: Arc<RwLock<IndexMap<String, TvEntry>>>,
-    /// System profiles from config (updated on reload and set_daemon_option).
-    profiles: RwLock<HashMap<String, UserProfileConfig>>,
-    /// Daemon settings — kept separately so reload_config() and set_daemon_option()
-    /// can update them at runtime without touching the TV connection pool.
-    daemon_config: RwLock<DaemonConfig>,
+    /// System-level config section (system profiles for daemon lifecycle events).
+    system_section: RwLock<SystemSection>,
+    /// User-level config section (user profiles for session event defaults).
+    user_section: RwLock<UserSection>,
     /// Serializes all load-modify-save disk operations (save_tv_config, delete_tv_config,
     /// set_daemon_option, set_tv_option). Without this, two concurrent callers can each
     /// load a stale snapshot and one overwrites the other's change on disk.
@@ -172,10 +170,10 @@ pub struct TvManager {
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
 }
 
-/// Which daemon config action to look up from `DaemonConfig`.
+/// Which daemon config action to look up from the system profile.
 ///
 /// Used by `logind` to ask the `TvManager` for the configured action without
-/// directly reading the `DaemonConfig` fields by name.
+/// directly reading the system profile fields by name.
 pub(crate) enum DaemonAction {
     Startup,
     Shutdown,
@@ -243,15 +241,15 @@ impl TvManager {
 
         let tvs = Arc::new(RwLock::new(tvs));
         let (state_change_tx, state_change_rx) = mpsc::unbounded_channel();
-        let profiles = RwLock::new(config.profiles.clone());
-        let daemon_config = RwLock::new(config.daemon.clone());
+        let system_section = RwLock::new(config.system.clone());
+        let user_section = RwLock::new(config.user.clone());
 
         let manager = Self {
             config_path,
             registry,
             tvs,
-            profiles,
-            daemon_config,
+            system_section,
+            user_section,
             disk_write_lock: Mutex::new(()),
             state_change_tx,
         };
@@ -276,14 +274,22 @@ impl TvManager {
             .ok_or_else(|| TvManagerError::TvNotFound(tv_id.to_string()))
     }
 
-    /// Get a daemon config action.
+    /// Get a daemon config action from the "default" system profile.
+    ///
+    /// This reads the "default" system profile and returns the action for the
+    /// given event. In Phase C this will be replaced with per-TV dispatch.
     pub async fn get_daemon_config_action(&self, action: DaemonAction) -> SessionAction {
-        let daemon = self.daemon_config.read().await;
+        let system = self.system_section.read().await;
+        let resolved = system
+            .profiles
+            .get("default")
+            .map(|p| p.resolve())
+            .unwrap_or_default();
         match action {
-            DaemonAction::Startup => daemon.on_startup,
-            DaemonAction::Shutdown => daemon.on_shutdown,
-            DaemonAction::Reboot => daemon.on_reboot,
-            DaemonAction::NoSession => daemon.on_no_session,
+            DaemonAction::Startup => resolved.on_startup,
+            DaemonAction::Shutdown => resolved.on_shutdown,
+            DaemonAction::Reboot => resolved.on_reboot,
+            DaemonAction::NoSession => resolved.on_no_session,
         }
     }
 
@@ -424,17 +430,17 @@ impl TvManager {
 
     /// Get the admin baseline for user profiles.
     ///
-    /// Returns the `[profiles.default]` from the system config,
+    /// Returns the `[user.profiles.default]` from the system config,
     /// or an empty UserProfileConfig if not defined.
     pub async fn get_user_profile_default(&self) -> UserProfileConfig {
-        let profiles = self.profiles.read().await;
-        profiles.get("default").cloned().unwrap_or_default()
+        let user = self.user_section.read().await;
+        user.profiles.get("default").cloned().unwrap_or_default()
     }
 
     /// Get all user profiles as (name, UserProfileConfig) pairs.
     pub async fn list_user_profiles(&self) -> Vec<(String, UserProfileConfig)> {
-        let profiles = self.profiles.read().await;
-        profiles
+        let user = self.user_section.read().await;
+        user.profiles
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
@@ -936,15 +942,15 @@ impl TvManager {
 
     /// Set a daemon configuration option, update in-memory state, and persist to disk.
     ///
-    /// Updates `daemon_config` immediately so callers see the new value without a
-    /// full `reload_config`. Persists by loading the on-disk config, patching the
-    /// daemon section, and saving — preserving all other settings.
+    /// Modifies the "default" system profile. In Phase C this will be replaced with
+    /// per-TV system profile management via `SetTvSystemProfile`.
     ///
     /// Uses `spawn_blocking` to avoid blocking the async executor on disk I/O.
     pub async fn set_daemon_option(&self, key: &str, value: &str) -> Result<(), TvManagerError> {
-        // Validate and apply to in-memory daemon config first
+        // Validate and apply to in-memory system profile first
         {
-            let mut daemon = self.daemon_config.write().await;
+            let mut system = self.system_section.write().await;
+            let profile = system.profiles.entry("default".to_string()).or_default();
             match key {
                 "on_startup" | "on_shutdown" | "on_reboot" | "on_no_session" => {
                     let action: SessionAction =
@@ -953,10 +959,10 @@ impl TvManager {
                                 TvManagerError::ConfigError(format!("Invalid action: {}", e))
                             })?;
                     match key {
-                        "on_startup" => daemon.on_startup = action,
-                        "on_shutdown" => daemon.on_shutdown = action,
-                        "on_reboot" => daemon.on_reboot = action,
-                        "on_no_session" => daemon.on_no_session = action,
+                        "on_startup" => profile.on_startup = Some(action),
+                        "on_shutdown" => profile.on_shutdown = Some(action),
+                        "on_reboot" => profile.on_reboot = Some(action),
+                        "on_no_session" => profile.on_no_session = Some(action),
                         _ => unreachable!(),
                     }
                 }
@@ -969,16 +975,16 @@ impl TvManager {
             }
         } // write lock released before I/O
 
-        // Persist to disk: load the full on-disk config, patch daemon section, save.
+        // Persist to disk: load the full on-disk config, patch system section, save.
         // Serialize via disk_write_lock to prevent concurrent load-modify-save races.
         let config_path = self.config_path.clone();
-        let daemon_snapshot = self.daemon_config.read().await.clone();
+        let system_snapshot = self.system_section.read().await.clone();
         let _disk_lock = self.disk_write_lock.lock().await;
         tokio::task::spawn_blocking(move || {
             let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
                 TvManagerError::ConfigError(format!("Failed to load config: {}", e))
             })?;
-            config.daemon = daemon_snapshot;
+            config.system = system_snapshot;
             config
                 .save_to(&config_path)
                 .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
@@ -1134,16 +1140,16 @@ impl TvManager {
 
         info!(tv_count = tv_count, "Configuration reloaded");
 
-        // Update profiles
+        // Update system section (system profiles)
         {
-            let mut profiles = self.profiles.write().await;
-            *profiles = new_config.profiles;
+            let mut system = self.system_section.write().await;
+            *system = new_config.system;
         }
 
-        // Update daemon config so runtime changes (on_shutdown etc.) take effect
+        // Update user section (user profiles)
         {
-            let mut daemon = self.daemon_config.write().await;
-            *daemon = new_config.daemon;
+            let mut user = self.user_section.write().await;
+            *user = new_config.user;
         }
 
         Ok(())

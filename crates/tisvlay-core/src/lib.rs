@@ -76,8 +76,9 @@ pub use pairing::{
 
 // Configuration
 pub use config::{
-    DaemonConfig, ResolvedUserProfile, SessionAction, SystemConfig, TvConfig, UserConfig,
-    UserProfileConfig, UserTvConfig,
+    ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig, SystemProfileConfig,
+    SystemSection, TvConfig, TvProfileAssignment, UserConfig, UserProfileConfig, UserSection,
+    UserTvConfig, UserTvProfileAssignment,
 };
 
 // State

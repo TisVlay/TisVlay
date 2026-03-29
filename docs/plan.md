@@ -414,13 +414,13 @@ Checkpoint: `cargo check`, `cargo test`, commit.
 - [x] A.3: Rename session service identifiers
 - [x] A.4: Rename tray identifiers and labels
 - [x] A.5: Rename CLI subcommands
-- [ ] B.1: Add SystemProfileConfig and ResolvedSystemProfile
-- [ ] B.2: Restructure SystemConfig (system/user sections)
-- [ ] B.3: Restructure UserConfig
-- [ ] B.4: Add TvProfileAssignment to TvConfig
-- [ ] B.5: Update UserTvConfig profile assignment
-- [ ] B.6: Add system profile resolution
-- [ ] B.7: Update config tests
+- [x] B.1: Add SystemProfileConfig and ResolvedSystemProfile
+- [x] B.2: Restructure SystemConfig (system/user sections)
+- [x] B.3: Restructure UserConfig
+- [x] B.4: Add TvProfileAssignment to TvConfig
+- [x] B.5: Update UserTvConfig profile assignment
+- [x] B.6: Add system profile resolution
+- [x] B.7: Update config tests
 - [ ] C.1: Store resolved system profiles in ManagedTv
 - [ ] C.2: Replace DaemonAction with SystemEvent
 - [ ] C.3: Per-TV event dispatch
