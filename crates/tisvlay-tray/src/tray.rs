@@ -105,6 +105,7 @@ pub enum TrayCommand {
     ScreenOff(String),
     SwitchInput(String, String),
     SetUserProfile(String, String),
+    SetSystemProfile(String, String),
     /// Scroll-wheel or menu step: positive steps = up, negative = down.
     /// Multiple events for the same TV and target are coalesced by the
     /// command processor into a single D-Bus call to prevent queue buildup.
@@ -330,9 +331,12 @@ fn build_connected_tv_menu(
         move || TrayCommand::PowerOff(id.clone())
     }));
 
-    // Profile submenu (if profiles available)
+    // Profile submenus (if profiles available)
     if !tv.available_user_profiles.is_empty() {
         items.push(build_profile_submenu(tv, cmd_tx));
+    }
+    if !tv.available_system_profiles.is_empty() {
+        items.push(build_system_profile_submenu(tv, cmd_tx));
     }
     items.push(build_managed_toggle(tv, cmd_tx));
 
@@ -490,9 +494,12 @@ fn build_disconnected_tv_menu(
         move || TrayCommand::PowerOn(id.clone()),
     )];
 
-    // Profile submenu (available even when disconnected)
+    // Profile submenus (available even when disconnected)
     if !tv.available_user_profiles.is_empty() {
         items.push(build_profile_submenu(tv, cmd_tx));
+    }
+    if !tv.available_system_profiles.is_empty() {
+        items.push(build_system_profile_submenu(tv, cmd_tx));
     }
     items.push(build_managed_toggle(tv, cmd_tx));
 
@@ -534,6 +541,53 @@ fn build_profile_submenu(
                 if let Some(profile_name) = profiles.get(idx) {
                     debug!(tv_id = %tv_id, profile = %profile_name, "Switching profile");
                     let _ = tx.send(TrayCommand::SetUserProfile(tv_id.clone(), profile_name.clone()));
+                }
+            }),
+        }
+        .into()],
+        ..Default::default()
+    }
+    .into()
+}
+
+/// Build the system profile switching submenu with radio buttons.
+fn build_system_profile_submenu(
+    tv: &CachedTvState,
+    cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
+) -> MenuItem<TisvlayTray> {
+    let current = tv.system_profile.as_str();
+    let selected = tv
+        .available_system_profiles
+        .iter()
+        .position(|name| name == current)
+        .unwrap_or(0);
+
+    let options: Vec<RadioItem> = tv
+        .available_system_profiles
+        .iter()
+        .map(|name| RadioItem {
+            label: name.clone(),
+            ..Default::default()
+        })
+        .collect();
+
+    let tx = cmd_tx.clone();
+    let profiles: Vec<String> = tv.available_system_profiles.clone();
+    let tv_id = tv.id.clone();
+
+    SubMenu {
+        label: format!("System Profile: {}", current),
+        icon_name: "preferences-system".into(),
+        submenu: vec![RadioGroup {
+            selected,
+            options,
+            select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
+                if let Some(profile_name) = profiles.get(idx) {
+                    debug!(tv_id = %tv_id, profile = %profile_name, "Switching system profile");
+                    let _ = tx.send(TrayCommand::SetSystemProfile(
+                        tv_id.clone(),
+                        profile_name.clone(),
+                    ));
                 }
             }),
         }

@@ -504,6 +504,23 @@ impl TvManager {
             .collect()
     }
 
+    /// Get all system profiles as (name, SystemProfileConfig) pairs.
+    pub async fn list_system_profiles(&self) -> Vec<(String, tisvlay_core::SystemProfileConfig)> {
+        let system = self.system_section.read().await;
+        system
+            .profiles
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// Get the system profile name assigned to a TV.
+    pub async fn get_tv_system_profile(&self, tv_id: &str) -> Option<String> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        Some(tv.config.profile.system.clone())
+    }
+
     /// List all configured TV IDs.
     pub async fn list_tv_ids(&self) -> Vec<String> {
         let tvs = self.tvs.read().await;

@@ -427,13 +427,13 @@ Checkpoint: `cargo check`, `cargo test`, commit.
 - [x] C.4: Per-TV on_startup
 - [x] C.5: Replace SetDaemonOption with SetTvSystemProfile
 - [x] C.6: Update logind.rs
-- [ ] D.1: System profile D-Bus methods on Manager1
-- [ ] D.2: SystemProfile property on Tv1
-- [ ] D.3: Update DaemonClient
-- [ ] E.1: Session profile resolution for new config shape
-- [ ] E.2: Verify session D-Bus with new config
-- [ ] E.3: Tray dual profile submenus
-- [ ] E.4: CLI system/user profile commands
+- [x] D.1: System profile D-Bus methods on Manager1
+- [x] D.2: SystemProfile property on Tv1
+- [x] D.3: Update DaemonClient
+- [x] E.1: Session profile resolution for new config shape
+- [x] E.2: Verify session D-Bus with new config
+- [x] E.3: Tray dual profile submenus
+- [x] E.4: CLI system/user profile commands
 - [ ] F: Update docs, configs, CLAUDE.md
 - [ ] `cargo check` all crates
 - [ ] `cargo test` all crates

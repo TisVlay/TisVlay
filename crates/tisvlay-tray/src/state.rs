@@ -24,6 +24,10 @@ pub struct CachedTvState {
     pub user_profile: Option<String>,
     /// Available user profile names.
     pub available_user_profiles: Vec<String>,
+    /// Current system profile name assigned to this TV.
+    pub system_profile: String,
+    /// Available system profile names.
+    pub available_system_profiles: Vec<String>,
     /// Whether this TV participates in automated management.
     pub managed: bool,
 }
@@ -53,6 +57,15 @@ pub async fn fetch_all_state(
         None => Vec::new(),
     };
 
+    // Fetch available system profiles from daemon (once, shared across TVs)
+    let available_system_profiles: Vec<String> = match daemon.list_system_profiles().await {
+        Ok(profiles) => profiles.into_iter().map(|(name, _)| name).collect(),
+        Err(e) => {
+            debug!(error = %e, "Failed to list system profiles from daemon");
+            Vec::new()
+        }
+    };
+
     let mut states = Vec::with_capacity(tvs.len());
 
     for tv in tvs {
@@ -75,6 +88,8 @@ pub async fn fetch_all_state(
             inputs: Vec::new(),
             user_profile,
             available_user_profiles: available_user_profiles.clone(),
+            system_profile: tv.system_profile.clone(),
+            available_system_profiles: available_system_profiles.clone(),
             managed: tv.managed,
         };
 

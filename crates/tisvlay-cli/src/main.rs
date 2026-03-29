@@ -118,6 +118,11 @@ enum ProfileAction {
         #[command(subcommand)]
         action: UserProfileAction,
     },
+    /// System profile management (daemon lifecycle events)
+    System {
+        #[command(subcommand)]
+        action: SystemProfileAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -129,6 +134,21 @@ enum UserProfileAction {
     Get,
 
     /// Assign a user profile to a TV
+    Set {
+        /// Profile name to assign
+        profile: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SystemProfileAction {
+    /// List all available system profiles
+    List,
+
+    /// Show the system profile assigned to a TV
+    Get,
+
+    /// Assign a system profile to a TV
     Set {
         /// Profile name to assign
         profile: String,
@@ -278,17 +298,17 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Profile { action } => {
-            let session = SessionClient::new()
-                .await
-                .context("Failed to connect to session service")?;
-            if !session.is_available().await {
-                eprintln!("Error: tisvlay-session is not running.");
-                eprintln!("Start it with: systemctl --user start tisvlay-session");
-                std::process::exit(1);
-            }
-            match action {
-                ProfileAction::User { action } => match action {
+        Commands::Profile { action } => match action {
+            ProfileAction::User { action } => {
+                let session = SessionClient::new()
+                    .await
+                    .context("Failed to connect to session service")?;
+                if !session.is_available().await {
+                    eprintln!("Error: tisvlay-session is not running.");
+                    eprintln!("Start it with: systemctl --user start tisvlay-session");
+                    std::process::exit(1);
+                }
+                match action {
                     UserProfileAction::List => {
                         let profiles = session.list_user_profiles().await?;
                         if profiles.is_empty() {
@@ -310,9 +330,37 @@ async fn main() -> Result<()> {
                         session.set_tv_user_profile(&tv_id, &profile).await?;
                         println!("TV '{}' user profile set to '{}'", tv_id, profile);
                     }
-                },
+                }
             }
-        }
+            ProfileAction::System { action } => match action {
+                SystemProfileAction::List => {
+                    let profiles = client.list_system_profiles().await?;
+                    if profiles.is_empty() {
+                        println!("No system profiles defined.");
+                    } else {
+                        println!("Available system profiles:");
+                        for (name, _) in &profiles {
+                            println!("  {}", name);
+                        }
+                    }
+                }
+                SystemProfileAction::Get => {
+                    let tv_id = tv_id?;
+                    let tvs = client.list_tvs().await?;
+                    let system_profile = tvs
+                        .iter()
+                        .find(|t| t.id == tv_id)
+                        .map(|t| t.system_profile.as_str())
+                        .unwrap_or("default");
+                    println!("TV '{}' system profile: {}", tv_id, system_profile);
+                }
+                SystemProfileAction::Set { profile } => {
+                    let tv_id = tv_id?;
+                    client.set_tv_system_profile(&tv_id, &profile).await?;
+                    println!("TV '{}' system profile set to '{}'", tv_id, profile);
+                }
+            },
+        },
 
         Commands::Power { action } => {
             let tv_id = tv_id?;

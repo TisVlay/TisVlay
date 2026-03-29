@@ -184,6 +184,24 @@ impl ManagerService {
         })
     }
 
+    /// Get all system profiles as (name, json) pairs.
+    ///
+    /// Returns all system profiles defined in the system config.
+    /// Used by tray, GUI, and CLI to display available system profiles.
+    async fn list_system_profiles(&self) -> Result<Vec<(String, String)>, DaemonError> {
+        debug!("D-Bus: ListSystemProfiles");
+        let profiles = self.manager.list_system_profiles().await;
+        profiles
+            .into_iter()
+            .map(|(name, profile)| {
+                let json = serde_json::to_string(&profile).map_err(|e| {
+                    DaemonError::OperationFailed(format!("Failed to serialize profile: {}", e))
+                })?;
+                Ok((name, json))
+            })
+            .collect()
+    }
+
     /// Get all user profiles as (name, json) pairs.
     ///
     /// Returns all profiles defined in the system config.

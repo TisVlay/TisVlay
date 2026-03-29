@@ -244,6 +244,14 @@ async fn process_commands(
                     warn!(tv_id = %id, "Cannot set user profile: session service not available");
                 }
             }
+            TrayCommand::SetSystemProfile(id, profile) => {
+                if let Err(e) = daemon
+                    .set_tv_option(&id, "profile.system", &profile)
+                    .await
+                {
+                    warn!(tv_id = %id, profile = %profile, error = %e, "Set system profile failed");
+                }
+            }
             TrayCommand::SwitchInput(id, input) => {
                 if let Err(e) = daemon.switch_input(&id, &input).await {
                     warn!(tv_id = %id, input = %input, error = %e, "Switch input failed");

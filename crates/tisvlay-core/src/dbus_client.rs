@@ -86,6 +86,9 @@ trait TisvlayManager {
     /// Get all user profiles as (name, json) pairs.
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
+    /// Get all system profiles as (name, json) pairs.
+    fn list_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+
     /// Set a system-level TV option.
     fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> zbus::Result<()>;
 }
@@ -244,6 +247,8 @@ pub struct TvInfo {
     pub connected: bool,
     /// Whether this TV participates in automated management.
     pub managed: bool,
+    /// System profile name assigned to this TV.
+    pub system_profile: String,
     /// D-Bus object path.
     pub path: String,
 }
@@ -493,6 +498,10 @@ impl DaemonClient {
             let vendor = get_str("Vendor");
             let connected = get_bool("Connected", false);
             let managed = get_bool("Managed", true);
+            let system_profile = {
+                let sp = get_str("SystemProfile");
+                if sp.is_empty() { "default".to_string() } else { sp }
+            };
 
             let fallbacks = fallbacks.into_inner();
             if !fallbacks.is_empty() {
@@ -515,6 +524,7 @@ impl DaemonClient {
                 vendor,
                 connected,
                 managed,
+                system_profile,
                 path: path.as_str().to_string(),
             });
         }
@@ -769,6 +779,26 @@ impl DaemonClient {
             .list_user_profiles()
             .await
             .context("Failed to list user profiles from daemon")
+    }
+
+    /// Get all system profiles.
+    ///
+    /// Returns all system profiles defined in the daemon's system config as
+    /// `(name, json)` pairs.
+    pub async fn list_system_profiles(&self) -> Result<Vec<(String, String)>> {
+        debug!("Calling ListSystemProfiles on daemon");
+        self.manager
+            .list_system_profiles()
+            .await
+            .context("Failed to list system profiles from daemon")
+    }
+
+    /// Set the system profile for a TV.
+    ///
+    /// Convenience wrapper around `set_tv_option(tv_id, "profile.system", name)`.
+    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
+        self.set_tv_option(tv_id, "profile.system", profile_name)
+            .await
     }
 
     /// Set a system-level TV option.
