@@ -157,7 +157,8 @@ tisvlay/
 
 ### Configuration
 - **System config**: `/var/lib/tisvlay/config.toml` — TV definitions (with `profile.system` assignment), credentials, system profiles (`[system.profiles.*]`), admin baseline user profiles (`[user.profiles.*]`). Owned by `tisvlayd`.
-- **User config**: `~/.config/tisvlay/config.toml` — user profile definitions (`[user.profiles.*]`), per-TV user profile assignments (`profile.user`). Owned by `tisvlay-session`. Optional; admin baseline `user.profiles.default` inherited via D-Bus if absent.
+- **User config**: `~/.config/tisvlay/config.toml` — user profile definitions (`[user.profiles.*]`), per-TV user profile assignments (`[[tv]]` with `profile.user`). Owned by `tisvlay-session`. Optional; admin baseline `user.profiles.default` inherited via D-Bus if absent.
+- Both configs use `[[tv]]` array-of-tables syntax; single-file mode works because each parser ignores unknown fields
 - `tisvlayd --config <PATH>` and `tisvlay-session --config <PATH>` override respective config paths
 - Client keys stored in vendor-specific config section after TV pairing (system config only)
 - `TvConfig.vendor_config` uses `#[serde(flatten)]` with `HashMap<String, toml::Value>` -- core has zero vendor knowledge

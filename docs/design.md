@@ -309,11 +309,14 @@ idle_timeout_seconds = 0
 on_idle_resume = "none"
 
 # Per-TV user profile assignments (TV IDs from system config)
-[tv.living-room]
+[[tv]]
+id = "living-room"
 profile.user = "gaming"
 
 # guest-room inherits user.profiles.default (no override)
 ```
+
+Both system and user configs use the same `[[tv]]` array-of-tables syntax. When using a single-file config, both parsers can read the same `[[tv]]` entries — each ignores fields it doesn't own (serde skips unknown fields by default).
 
 Fields unspecified in a user profile inherit from the admin baseline `user.profiles.default` (system config), not hard-coded defaults. A user who only sets `idle_timeout_seconds = 600` in `[user.profiles.default]` gets all other settings from the system admin's defaults.
 
