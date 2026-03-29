@@ -315,3 +315,190 @@ Two actionable items:
 
 The remaining `O1` (low) duplication is a minor cleanup opportunity — move resolution
 logic to `SystemSection` to eliminate the copy in `tv_manager.rs`.
+
+---
+---
+
+# Follow-on Review: O1/O3/O12 Fixes + Unified TV Config Syntax (ccf198b..a837f01)
+
+Review of 2 implementation commits addressing O1, O3, and O12 from the previous review,
+plus a broader change to unify the `[[tv]]` syntax between system and user configs.
+
+Build: clean. Tests: all pass.
+
+---
+
+## P1. O1 resolved — resolution logic moved to `SystemSection::resolve_profile()`
+
+**File:** [crates/tisvlay-core/src/config.rs:348-367](crates/tisvlay-core/src/config.rs#L348-L367)
+
+The duplicated `resolve_system_profile_from_section()` in `tv_manager.rs` is removed.
+Resolution now lives on `SystemSection::resolve_profile()`, called by both
+`SystemConfig::resolve_system_profile()` (delegates to `self.system.resolve_profile()`)
+and all `tv_manager.rs` call sites directly. Clean deduplication.
+
+**Severity:** Info (O1 resolved)
+
+---
+
+## P2. O3 resolved — `set_tv_option("profile.system")` validates name exists
+
+**File:** [crates/tisvlayd/src/tv_manager.rs:1009-1017](crates/tisvlayd/src/tv_manager.rs#L1009-L1017)
+
+```rust
+if key == "profile.system" {
+    let system = self.system_section.read().await;
+    if !system.profiles.contains_key(value) {
+        return Err(TvManagerError::ConfigError(format!(
+            "Unknown system profile: {}", value
+        )));
+    }
+}
+```
+
+The validation correctly happens before `apply_tv_option`, so invalid names never
+reach the in-memory config or disk. Returns a clear error message.
+
+One minor note: the `system_section` read lock is acquired twice for `profile.system`
+changes — once for validation (line 1010) and once for re-resolution (line 1026). Both
+are read locks so they don't block each other, and the per-TV mutex acquired between
+them is short-lived (pure computation). This is fine — merging them would require
+holding the system read lock across the per-TV lock acquisition, which is a worse
+pattern.
+
+**Severity:** Info (O3 resolved, double-read-lock is acceptable)
+
+---
+
+## P3. O12 resolved — `UserConfig.tv` changed from `HashMap` to `Vec<UserTvConfig>`
+
+**Files:**
+- [crates/tisvlay-core/src/config.rs:677-679](crates/tisvlay-core/src/config.rs#L677-L679)
+- [crates/tisvlay-core/src/config.rs:688-695](crates/tisvlay-core/src/config.rs#L688-L695)
+
+```rust
+pub struct UserConfig {
+    pub tv: Vec<UserTvConfig>,
+}
+
+pub struct UserTvConfig {
+    pub id: String,
+    #[serde(default)]
+    pub profile: UserTvProfileAssignment,
+}
+```
+
+Both config types now use `[[tv]]` array-of-tables syntax. The single-file config
+example from the plan is now valid TOML — `SystemConfig` and `UserConfig` can parse
+the same file, each ignoring fields it doesn't own (serde's default behavior without
+`deny_unknown_fields`).
+
+The test `test_single_file_config_with_both_profiles` verifies this: the same TOML
+is parsed as both `SystemConfig` (reads `profile.system`, vendor config) and
+`UserConfig` (reads `profile.user`, ignores everything else).
+
+The old test `test_system_config_with_multiple_profiles_as_user_config_fails` is
+flipped to `test_system_config_parses_as_user_config` — the assertion now confirms
+parsing succeeds.
+
+**Severity:** Info (O12 resolved)
+
+---
+
+## P4. `set_tv_user_profile` now uses `Vec::find` instead of `HashMap::insert`
+
+**File:** [crates/tisvlay-core/src/config.rs:814-827](crates/tisvlay-core/src/config.rs#L814-L827)
+
+```rust
+pub fn set_tv_user_profile(&mut self, tv_id: impl Into<String>, profile: impl Into<String>) {
+    let tv_id = tv_id.into();
+    if let Some(entry) = self.tv.iter_mut().find(|t| t.id == tv_id) {
+        entry.profile.user = profile;
+    } else {
+        self.tv.push(UserTvConfig { id: tv_id, profile: ... });
+    }
+}
+```
+
+The `HashMap::insert` is replaced with a linear search + update-or-push pattern. This
+is correct but O(n) for each set operation. With typical TV counts (1-10), this is
+negligible. If TV counts ever grew large, the `Vec` should be changed to an `IndexMap`
+(matching `TvManager::tvs`), but that's not needed now.
+
+**Severity:** Info (correct for expected scale)
+
+---
+
+## P5. Config examples use `[tv.profile]` table syntax instead of inline dotted keys
+
+**File:** [docs/configs/daemon.toml](docs/configs/daemon.toml)
+
+```toml
+[tv.profile]
+system = "default"
+```
+
+The old `profile.system = "default"` inline dotted syntax was valid TOML, but the
+serialized output from `toml::to_string_pretty` produces the explicit table form.
+Switching the examples to match the serialized form means round-tripping a config
+(load → save) won't change the syntax. This prevents spurious diffs when the daemon
+saves after a `SetTvOption` call.
+
+**Severity:** Info (good consistency with serialization output)
+
+---
+
+## P6. Session service TV validation updated for Vec
+
+**File:** [crates/tisvlay-session/src/main.rs:144-150](crates/tisvlay-session/src/main.rs#L144-L150)
+
+The TV reference validation loop changed from `user_config.tv.keys()` (HashMap) to
+iterating `user_config.tv` entries and checking `tv_entry.id`. Correct adaptation.
+
+Also, the profile resolution loop now iterates `tv_infos` instead of `tv_ids`,
+though only `tv_info.id` is used. This doesn't change behavior but reads slightly
+better (iterating the source data rather than a derived id list).
+
+**Severity:** Info (correct adaptation)
+
+---
+
+## P7. `UserTvConfig` doc comment correctly describes serde behavior
+
+**File:** [crates/tisvlay-core/src/config.rs:682-687](crates/tisvlay-core/src/config.rs#L682-L687)
+
+```rust
+/// All fields except `id` have `#[serde(default)]` so that when parsing
+/// a single-file config (where `[[tv]]` entries contain system fields like
+/// `name`, `vendor`, etc.), unknown fields are silently ignored and missing
+/// user-specific fields get defaults.
+```
+
+Good documentation of the design rationale. The key insight is that serde's default
+behavior (ignore unknown fields) enables the single-file mode without any special
+handling code.
+
+**Severity:** Info (well-documented)
+
+---
+
+## Summary
+
+| # | Severity | Item |
+|---|----------|------|
+| P1 | **Info** | O1 resolved — resolution logic deduplicated to `SystemSection` |
+| P2 | **Info** | O3 resolved — profile name validated before accepting |
+| P3 | **Info** | O12 resolved — unified `[[tv]]` syntax enables single-file configs |
+| P4 | **Info** | Vec-based TV lookup is O(n) but fine for expected scale |
+| P5 | **Info** | Config examples match `toml::to_string_pretty` output |
+| P6 | **Info** | Session TV validation adapted for Vec |
+| P7 | **Info** | `UserTvConfig` serde behavior well-documented |
+
+## Overall Assessment
+
+All three actionable findings from the previous review (O1, O3, O12) are correctly
+resolved. The `UserConfig.tv` change from `HashMap` to `Vec` is the most impactful —
+it enables genuine single-file config support, verified by a comprehensive test.
+The resolution logic deduplication and profile name validation are clean fixes.
+
+No actionable items.
