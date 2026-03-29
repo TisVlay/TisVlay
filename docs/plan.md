@@ -434,6 +434,6 @@ Checkpoint: `cargo check`, `cargo test`, commit.
 - [x] E.2: Verify session D-Bus with new config
 - [x] E.3: Tray dual profile submenus
 - [x] E.4: CLI system/user profile commands
-- [ ] F: Update docs, configs, CLAUDE.md
-- [ ] `cargo check` all crates
-- [ ] `cargo test` all crates
+- [x] F: Update docs, configs, CLAUDE.md
+- [x] `cargo check` all crates
+- [x] `cargo test` all crates

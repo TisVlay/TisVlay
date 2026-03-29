@@ -12,6 +12,7 @@ on_sleep = "power_off"
 on_wake = "power_on"
 idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
+on_idle_resume = "screen_on"
 
 [[tv]]
 id = "office"
@@ -19,6 +20,7 @@ name = "office"
 vendor = "lg"
 only_when_active = false
 managed = true
+profile.system = "default"
 
 [tv.lg]
 client_key = "bec7b2f5afe657547d367e84cbf59095"
