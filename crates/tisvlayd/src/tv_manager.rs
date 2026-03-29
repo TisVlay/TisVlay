@@ -11,8 +11,8 @@ use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
-    Capabilities, PowerState, SessionAction, SystemConfig, SystemSection, TvConfig, TvConnection,
-    TvState, UserProfileConfig, UserSection,
+    Capabilities, PowerState, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection,
+    TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
@@ -107,14 +107,21 @@ struct ManagedTv {
     connection: Option<Box<dyn TvConnection>>,
     /// TV was intentionally powered off -- don't try to reconnect until power_on.
     powered_off: bool,
+    /// Resolved system profile for daemon lifecycle events.
+    ///
+    /// Resolved from the TV's `profile.system` assignment against the
+    /// system profiles defined in the config. Updated on config reload
+    /// and when the profile assignment changes via `set_tv_option`.
+    system_profile: ResolvedSystemProfile,
 }
 
 impl ManagedTv {
-    fn new(config: TvConfig) -> Self {
+    fn new(config: TvConfig, system_profile: ResolvedSystemProfile) -> Self {
         Self {
             config,
             connection: None,
             powered_off: false,
+            system_profile,
         }
     }
 
@@ -163,18 +170,19 @@ pub struct TvManager {
     /// User-level config section (user profiles for session event defaults).
     user_section: RwLock<UserSection>,
     /// Serializes all load-modify-save disk operations (save_tv_config, delete_tv_config,
-    /// set_daemon_option, set_tv_option). Without this, two concurrent callers can each
-    /// load a stale snapshot and one overwrites the other's change on disk.
+    /// set_tv_option). Without this, two concurrent callers can each load a stale snapshot
+    /// and one overwrites the other's change on disk.
     disk_write_lock: Mutex<()>,
     /// Channel to send state change events.
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
 }
 
-/// Which daemon config action to look up from the system profile.
+/// System lifecycle event type.
 ///
-/// Used by `logind` to ask the `TvManager` for the configured action without
-/// directly reading the system profile fields by name.
-pub(crate) enum DaemonAction {
+/// Used by `logind` and the daemon startup path to dispatch per-TV
+/// actions from each TV's resolved system profile.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SystemEvent {
     Startup,
     Shutdown,
     Reboot,
@@ -207,6 +215,9 @@ fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvMa
         "name" => {
             tv.name = value.to_string();
         }
+        "profile.system" => {
+            tv.profile.system = value.to_string();
+        }
         _ => {
             return Err(TvManagerError::ConfigError(format!(
                 "Unknown TV option: {}",
@@ -215,6 +226,30 @@ fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvMa
         }
     }
     Ok(())
+}
+
+/// Resolve a system profile from a `SystemSection` by profile name.
+///
+/// Resolution chain: named profile -> "default" profile -> hard-coded defaults.
+/// This is the same logic as `SystemConfig::resolve_system_profile()` but works
+/// directly with a `SystemSection` reference (avoiding a full config clone).
+fn resolve_system_profile_from_section(
+    system: &SystemSection,
+    profile_name: &str,
+) -> ResolvedSystemProfile {
+    let named = system.profiles.get(profile_name);
+    let default = if profile_name != "default" {
+        system.profiles.get("default")
+    } else {
+        None
+    };
+
+    match (named, default) {
+        (Some(p), Some(d)) => p.merge_with_base(d).resolve(),
+        (Some(p), None) => p.resolve(),
+        (None, Some(d)) => d.resolve(),
+        (None, None) => ResolvedSystemProfile::default(),
+    }
 }
 
 impl TvManager {
@@ -230,11 +265,15 @@ impl TvManager {
         // returns a stable, deterministic list across restarts.
         let mut tvs = IndexMap::new();
         for tv_config in &config.tv {
+            let system_profile = config.resolve_system_profile(tv_config);
             tvs.insert(
                 tv_config.id.clone(),
                 (
                     tv_config.managed,
-                    Arc::new(Mutex::new(ManagedTv::new(tv_config.clone()))),
+                    Arc::new(Mutex::new(ManagedTv::new(
+                        tv_config.clone(),
+                        system_profile,
+                    ))),
                 ),
             );
         }
@@ -274,29 +313,33 @@ impl TvManager {
             .ok_or_else(|| TvManagerError::TvNotFound(tv_id.to_string()))
     }
 
-    /// Get a daemon config action from the "default" system profile.
+    /// Get the system action for a specific TV and event.
     ///
-    /// This reads the "default" system profile and returns the action for the
-    /// given event. In Phase C this will be replaced with per-TV dispatch.
-    pub async fn get_daemon_config_action(&self, action: DaemonAction) -> SessionAction {
-        let system = self.system_section.read().await;
-        let resolved = system
-            .profiles
-            .get("default")
-            .map(|p| p.resolve())
-            .unwrap_or_default();
-        match action {
-            DaemonAction::Startup => resolved.on_startup,
-            DaemonAction::Shutdown => resolved.on_shutdown,
-            DaemonAction::Reboot => resolved.on_reboot,
-            DaemonAction::NoSession => resolved.on_no_session,
+    /// Reads the TV's resolved system profile to determine the action.
+    /// Returns `SessionAction::None` if the TV is not found.
+    async fn get_system_action(&self, tv_id: &str, event: SystemEvent) -> SessionAction {
+        let tv_arc = match self.get_tv(tv_id).await {
+            Ok(arc) => arc,
+            Err(_) => return SessionAction::None,
+        };
+        let tv = tv_arc.lock().await;
+        match event {
+            SystemEvent::Startup => tv.system_profile.on_startup,
+            SystemEvent::Shutdown => tv.system_profile.on_shutdown,
+            SystemEvent::Reboot => tv.system_profile.on_reboot,
+            SystemEvent::NoSession => tv.system_profile.on_no_session,
         }
     }
 
-    /// Execute an action on all managed TVs.
-    pub async fn execute_action_all_tvs(&self, action: SessionAction, context: &str) {
+    /// Execute a system event on all managed TVs using each TV's resolved system profile.
+    pub async fn execute_system_event(&self, event: SystemEvent, context: &str) {
         let tv_ids = self.list_managed_tv_ids().await;
         for tv_id in &tv_ids {
+            let action = self.get_system_action(tv_id, event).await;
+            if action == SessionAction::None {
+                continue;
+            }
+
             let result: Result<(), TvManagerError> = match action {
                 SessionAction::ScreenOff => self.screen_off(tv_id).await,
                 SessionAction::ScreenOn => self.screen_on(tv_id).await,
@@ -327,9 +370,10 @@ impl TvManager {
     /// Runs in the background so D-Bus registration is not blocked.
     /// The daemon is reachable immediately; TVs come online when ready.
     ///
-    /// For `PowerOn`, this wakes each TV, stores the connection, turns
-    /// the screen on, and switches to the configured HDMI input.
-    /// Other actions are dispatched directly.
+    /// Each managed TV is handled according to its own resolved system profile:
+    /// - `PowerOn`: WoL + connect + screen on + HDMI input switch
+    /// - Other actions: dispatched directly
+    /// - `None`: skipped
     pub fn on_startup(self: &Arc<Self>) {
         const BOOT_MARKER: &str = "/run/tisvlay/booted";
 
@@ -352,80 +396,94 @@ impl TvManager {
 
         let manager = self.clone();
         tokio::spawn(async move {
-            let action = manager
-                .get_daemon_config_action(DaemonAction::Startup)
-                .await;
+            info!("Executing on_startup per-TV actions");
 
-            if action == SessionAction::None {
-                debug!("on_startup action is none, skipping");
-                return;
-            }
+            // Collect per-TV startup actions and configs for TVs that need WoL.
+            let tv_ids = manager.list_managed_tv_ids().await;
 
-            info!(action = ?action, "Executing on_startup action");
+            // First pass: handle PowerOn TVs (WoL + connect flow).
+            for tv_id in &tv_ids {
+                let action = manager.get_system_action(tv_id, SystemEvent::Startup).await;
+                if action != SessionAction::PowerOn {
+                    continue;
+                }
 
-            if action == SessionAction::PowerOn {
-                // PowerOn requires wake-and-connect per TV, plus screen_on and input switch
-                manager.startup_power_on().await;
-            } else {
-                manager.execute_action_all_tvs(action, "startup").await;
-            }
-        });
-    }
-
-    /// Wake all managed TVs, establish connections, turn screens on,
-    /// and switch to configured HDMI inputs.
-    async fn startup_power_on(self: &Arc<Self>) {
-        // Collect wakeable, managed TV configs
-        let mut wake_configs: Vec<(String, TvConfig)> = Vec::new();
-        {
-            let tvs = self.tvs.read().await;
-            for (id, (managed, tv_arc)) in tvs.iter() {
-                if *managed {
+                // Read config under per-TV lock.
+                let tv_config = {
+                    let tv_arc = match manager.get_tv(tv_id).await {
+                        Ok(arc) => arc,
+                        Err(_) => continue,
+                    };
                     let tv = tv_arc.lock().await;
-                    if self.registry.supports_wake(&tv.config) {
-                        wake_configs.push((id.clone(), tv.config.clone()));
+                    if !manager.registry.supports_wake(&tv.config) {
+                        warn!(tv_id = %tv_id, "Startup PowerOn: TV does not support wake, skipping");
+                        continue;
+                    }
+                    tv.config.clone()
+                };
+
+                info!(tv_id = %tv_id, "Waking TV and waiting for connection...");
+                let connection = match manager.registry.wake_and_connect_tv(&tv_config).await {
+                    Ok(conn) => {
+                        info!(tv_id = %tv_id, "Startup: TV is online");
+                        conn
+                    }
+                    Err(e) => {
+                        warn!(tv_id = %tv_id, error = %e, "Startup: TV did not come online after wake");
+                        continue;
+                    }
+                };
+
+                // Store the connection so subsequent commands don't reconnect.
+                {
+                    let tvs = manager.tvs.read().await;
+                    if let Some((_, tv_arc)) = tvs.get(tv_id.as_str()) {
+                        let mut tv = tv_arc.lock().await;
+                        tv.connection = Some(connection);
+                        tv.powered_off = false;
+                    }
+                }
+                manager.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+
+                match manager.screen_on(tv_id).await {
+                    Ok(()) => info!(tv_id = %tv_id, "Startup: screen on"),
+                    Err(e) => warn!(tv_id = %tv_id, error = %e, "Startup: failed to turn screen on"),
+                }
+
+                if let Some(ref input) = tv_config.hdmi_input {
+                    match manager.switch_input(tv_id, input).await {
+                        Ok(()) => info!(tv_id = %tv_id, input = %input, "Startup: switched input"),
+                        Err(e) => warn!(tv_id = %tv_id, error = %e, "Startup: failed to switch input"),
                     }
                 }
             }
-        }
 
-        for (tv_id, tv_config) in &wake_configs {
-            info!(tv_id = %tv_id, "Waking TV and waiting for connection...");
-
-            let connection = match self.registry.wake_and_connect_tv(tv_config).await {
-                Ok(conn) => {
-                    info!(tv_id = %tv_id, "Startup: TV is online");
-                    conn
+            // Second pass: handle non-PowerOn actions (ScreenOn, ScreenOff, PowerOff).
+            for tv_id in &tv_ids {
+                let action = manager.get_system_action(tv_id, SystemEvent::Startup).await;
+                match action {
+                    SessionAction::None | SessionAction::PowerOn => continue, // already handled or skip
+                    _ => {}
                 }
-                Err(e) => {
-                    warn!(tv_id = %tv_id, error = %e, "Startup: TV did not come online after wake");
-                    continue;
-                }
-            };
 
-            // Store the connection so subsequent commands don't reconnect
-            {
-                let tvs = self.tvs.read().await;
-                if let Some((_, tv_arc)) = tvs.get(tv_id.as_str()) {
-                    let mut tv = tv_arc.lock().await;
-                    tv.connection = Some(connection);
-                    tv.powered_off = false;
-                }
-            }
-            self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+                let result: Result<(), TvManagerError> = match action {
+                    SessionAction::ScreenOff => manager.screen_off(tv_id).await,
+                    SessionAction::ScreenOn => manager.screen_on(tv_id).await,
+                    SessionAction::PowerOff => manager.power_off(tv_id).await,
+                    _ => Ok(()),
+                };
 
-            match self.screen_on(tv_id).await {
-                Ok(()) => info!(tv_id = %tv_id, "Startup: screen on"),
-                Err(e) => warn!(tv_id = %tv_id, error = %e, "Startup: failed to turn screen on"),
-            }
-
-            if let Some(ref input) = tv_config.hdmi_input {
-                match self.switch_input(tv_id, input).await {
-                    Ok(()) => info!(tv_id = %tv_id, input = %input, "Startup: switched input"),
-                    Err(e) => warn!(tv_id = %tv_id, error = %e, "Startup: failed to switch input"),
+                match result {
+                    Ok(()) => {
+                        debug!(tv_id = %tv_id, action = ?action, "Startup action executed");
+                    }
+                    Err(e) => {
+                        warn!(tv_id = %tv_id, action = ?action, error = %e,
+                            "Startup: failed to execute action");
+                    }
                 }
             }
-        }
+        });
     }
 
     /// Get the admin baseline for user profiles.
@@ -852,8 +910,13 @@ impl TvManager {
 
         // Add to managed TVs (outer write lock -- modifying the HashMap)
         {
+            let system = self.system_section.read().await;
+            let system_profile = resolve_system_profile_from_section(
+                &system,
+                &tv_config.profile.system,
+            );
             let mut tvs = self.tvs.write().await;
-            let mut managed = ManagedTv::new(tv_config.clone());
+            let mut managed = ManagedTv::new(tv_config.clone(), system_profile);
             managed.connection = Some(connection);
             tvs.insert(
                 tv_id.clone(),
@@ -940,62 +1003,6 @@ impl TvManager {
         .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))?
     }
 
-    /// Set a daemon configuration option, update in-memory state, and persist to disk.
-    ///
-    /// Modifies the "default" system profile. In Phase C this will be replaced with
-    /// per-TV system profile management via `SetTvSystemProfile`.
-    ///
-    /// Uses `spawn_blocking` to avoid blocking the async executor on disk I/O.
-    pub async fn set_daemon_option(&self, key: &str, value: &str) -> Result<(), TvManagerError> {
-        // Validate and apply to in-memory system profile first
-        {
-            let mut system = self.system_section.write().await;
-            let profile = system.profiles.entry("default".to_string()).or_default();
-            match key {
-                "on_startup" | "on_shutdown" | "on_reboot" | "on_no_session" => {
-                    let action: SessionAction =
-                        serde_json::from_value(serde_json::Value::String(value.to_string()))
-                            .map_err(|e| {
-                                TvManagerError::ConfigError(format!("Invalid action: {}", e))
-                            })?;
-                    match key {
-                        "on_startup" => profile.on_startup = Some(action),
-                        "on_shutdown" => profile.on_shutdown = Some(action),
-                        "on_reboot" => profile.on_reboot = Some(action),
-                        "on_no_session" => profile.on_no_session = Some(action),
-                        _ => unreachable!(),
-                    }
-                }
-                _ => {
-                    return Err(TvManagerError::ConfigError(format!(
-                        "Unknown daemon option: {}",
-                        key
-                    )));
-                }
-            }
-        } // write lock released before I/O
-
-        // Persist to disk: load the full on-disk config, patch system section, save.
-        // Serialize via disk_write_lock to prevent concurrent load-modify-save races.
-        let config_path = self.config_path.clone();
-        let system_snapshot = self.system_section.read().await.clone();
-        let _disk_lock = self.disk_write_lock.lock().await;
-        tokio::task::spawn_blocking(move || {
-            let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
-                TvManagerError::ConfigError(format!("Failed to load config: {}", e))
-            })?;
-            config.system = system_snapshot;
-            config
-                .save_to(&config_path)
-                .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
-        })
-        .await
-        .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
-
-        info!(key = %key, value = %value, "Daemon option updated");
-        Ok(())
-    }
-
     /// Set a system-level TV option and persist to disk.
     ///
     /// Applies the change to the in-memory TV config first (which also validates
@@ -1012,6 +1019,15 @@ impl TvManager {
         {
             let mut managed = tv_arc.lock().await;
             apply_tv_option(&mut managed.config, key, value)?;
+
+            // Re-resolve the system profile when the profile assignment changes.
+            if key == "profile.system" {
+                let system = self.system_section.read().await;
+                managed.system_profile = resolve_system_profile_from_section(
+                    &system,
+                    &managed.config.profile.system,
+                );
+            }
         } // per-TV lock released before I/O
 
         // Keep the outer managed flag in sync when toggled via SetTvOption.
@@ -1099,11 +1115,15 @@ impl TvManager {
                 } else {
                     // New TV: add to map immediately (no connection to close).
                     info!(tv_id = %tv_config.id, "Adding new TV from config");
+                    let system_profile = resolve_system_profile_from_section(
+                        &new_config.system,
+                        &tv_config.profile.system,
+                    );
                     tvs.insert(
                         tv_config.id.clone(),
                         (
                             tv_config.managed,
-                            Arc::new(Mutex::new(ManagedTv::new(tv_config))),
+                            Arc::new(Mutex::new(ManagedTv::new(tv_config, system_profile))),
                         ),
                     );
                 }
@@ -1150,6 +1170,21 @@ impl TvManager {
         {
             let mut user = self.user_section.write().await;
             *user = new_config.user;
+        }
+
+        // Phase 3: re-resolve system profiles for all TVs.
+        // The system section may have changed, so every TV's resolved profile
+        // needs to be recomputed from the new system profiles.
+        {
+            let system = self.system_section.read().await;
+            let tvs = self.tvs.read().await;
+            for (_, tv_arc) in tvs.values() {
+                let mut tv = tv_arc.lock().await;
+                tv.system_profile = resolve_system_profile_from_section(
+                    &system,
+                    &tv.config.profile.system,
+                );
+            }
         }
 
         Ok(())

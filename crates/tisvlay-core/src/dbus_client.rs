@@ -86,9 +86,6 @@ trait TisvlayManager {
     /// Get all user profiles as (name, json) pairs.
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Set a daemon configuration option.
-    fn set_daemon_option(&self, key: &str, value: &str) -> zbus::Result<()>;
-
     /// Set a system-level TV option.
     fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> zbus::Result<()>;
 }
@@ -774,21 +771,10 @@ impl DaemonClient {
             .context("Failed to list user profiles from daemon")
     }
 
-    /// Set a daemon configuration option.
-    ///
-    /// Supported keys: `on_startup`, `on_shutdown`, `on_reboot`,
-    /// `on_no_session`.
-    pub async fn set_daemon_option(&self, key: &str, value: &str) -> Result<()> {
-        debug!(key = %key, value = %value, "Calling SetDaemonOption on daemon");
-        self.manager
-            .set_daemon_option(key, value)
-            .await
-            .with_context(|| format!("Failed to set daemon option: {}={}", key, value))
-    }
-
     /// Set a system-level TV option.
     ///
-    /// Supported keys: `hdmi_input`, `only_when_active`, `managed`, `name`.
+    /// Supported keys: `hdmi_input`, `only_when_active`, `managed`, `name`,
+    /// `profile.system`.
     pub async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<()> {
         debug!(tv_id = %tv_id, key = %key, value = %value, "Calling SetTvOption on daemon");
         self.manager

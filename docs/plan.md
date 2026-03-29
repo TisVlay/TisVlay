@@ -421,12 +421,12 @@ Checkpoint: `cargo check`, `cargo test`, commit.
 - [x] B.5: Update UserTvConfig profile assignment
 - [x] B.6: Add system profile resolution
 - [x] B.7: Update config tests
-- [ ] C.1: Store resolved system profiles in ManagedTv
-- [ ] C.2: Replace DaemonAction with SystemEvent
-- [ ] C.3: Per-TV event dispatch
-- [ ] C.4: Per-TV on_startup
-- [ ] C.5: Replace SetDaemonOption with SetTvSystemProfile
-- [ ] C.6: Update logind.rs
+- [x] C.1: Store resolved system profiles in ManagedTv
+- [x] C.2: Replace DaemonAction with SystemEvent
+- [x] C.3: Per-TV event dispatch
+- [x] C.4: Per-TV on_startup
+- [x] C.5: Replace SetDaemonOption with SetTvSystemProfile
+- [x] C.6: Update logind.rs
 - [ ] D.1: System profile D-Bus methods on Manager1
 - [ ] D.2: SystemProfile property on Tv1
 - [ ] D.3: Update DaemonClient

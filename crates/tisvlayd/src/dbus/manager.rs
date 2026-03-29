@@ -159,21 +159,10 @@ impl ManagerService {
     // System Config Management
     // -------------------------------------------------------------------------
 
-    /// Set a daemon configuration option.
-    ///
-    /// Supported keys: `on_startup`, `on_shutdown`, `on_reboot`,
-    /// `on_no_session`.
-    async fn set_daemon_option(&self, key: &str, value: &str) -> Result<(), DaemonError> {
-        info!(key = %key, value = %value, "D-Bus: SetDaemonOption");
-        self.manager
-            .set_daemon_option(key, value)
-            .await
-            .map_err(DaemonError::from)
-    }
-
     /// Set a system-level TV option.
     ///
-    /// Supported keys: `hdmi_input`, `only_when_active`, `managed`, `name`.
+    /// Supported keys: `hdmi_input`, `only_when_active`, `managed`, `name`,
+    /// `profile.system`.
     async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, key = %key, value = %value, "D-Bus: SetTvOption");
         self.manager
