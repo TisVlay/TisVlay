@@ -418,8 +418,8 @@ Connected TV submenu:
 ```
 ▶ Living Room G4  [tvconnected]
   ├─ Power Off
-  ├─ User Profile ▶  (RadioGroup: gaming ✓, default)   [settings-configure]
-  ├─ System Profile ▶  (RadioGroup: default ✓, guest)   [settings-configure]
+  ├─ Profile ▶ User: gaming ▶  (RadioGroup: gaming ✓, default)   [settings-configure]
+  │            System: default ▶  (RadioGroup: default ✓, guest)   [settings-configure]
   ├─ Unmanage
   ├─ Input ▶  (RadioGroup: HDMI 1, HDMI 2 ✓, HDMI 3)   [input-tvremote-symbolic]
   ├─ Volume: 60
@@ -436,8 +436,8 @@ Disconnected TV submenu:
 ```
 ▶ Office C3  [tvdisconnected]
   ├─ Power On (Wake)
-  ├─ User Profile ▶  (RadioGroup: default ✓)
-  ├─ System Profile ▶  (RadioGroup: default ✓)
+  ├─ Profile ▶ User: default ▶  (RadioGroup: default ✓)
+  │            System: default ▶  (RadioGroup: default ✓)
   └─ Unmanage
 ```
 
@@ -445,8 +445,8 @@ Unmanaged connected TV submenu:
 ```
 ▶ Guest TV  [tvtrusted]
   ├─ Power Off
-  ├─ User Profile ▶
-  ├─ System Profile ▶
+  ├─ Profile ▶ User: default ▶
+  │            System: default ▶
   ├─ Manage
   ├─ Input ▶
   └─ ...
