@@ -13,6 +13,6 @@ hooks = [
 repo = "local"
 hooks = [
   { id = "cargo-fmt", name = "cargo fmt", language = "system", entry = "cargo fmt --", files = '\.rs$', types = ["rust"], priority = 1 },
-  { id = "cargo-clippy", name = "cargo clippy", language = "system", entry = "cargo clippy --workspace --all-targets --all-features -- -D warnings", always_run = true, pass_filenames = false, priority = 2 },
+  { id = "cargo-clippy", name = "cargo clippy", language = "system", entry = "cargo clippy --profile test --workspace --all-targets --all-features -- -D warnings", always_run = true, pass_filenames = false, priority = 2 },
   { id = "cargo-test", name = "cargo test", language = "system", entry = "cargo test --workspace --all-features", always_run = true, pass_filenames = false, priority = 3 },
 ]
