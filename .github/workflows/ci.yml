@@ -29,5 +29,5 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Prek
         uses: j178/prek-action@v2
-      - name: Test
-        run: cargo test --verbose
+        with:
+          extra-args: --all-files --fail-fast

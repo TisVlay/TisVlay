@@ -1,17 +1,18 @@
 [[repos]]
 repo = "builtin"
 hooks = [
-  { id = "check-added-large-files" },
-  { id = "check-merge-conflict" },
-  { id = "check-toml" },
-  { id = "check-yaml" },
-  { id = "end-of-file-fixer" },
-  { id = "trailing-whitespace" },
+  { id = "check-added-large-files", priority = 0 },
+  { id = "check-merge-conflict", priority = 0 },
+  { id = "check-toml", priority = 0 },
+  { id = "check-yaml", priority = 0 },
+  { id = "end-of-file-fixer", priority = 0 },
+  { id = "trailing-whitespace", priority = 0 },
 ]
 
 [[repos]]
 repo = "local"
 hooks = [
-  { id = "cargo-fmt", name = "cargo fmt", language = "system", entry = "cargo fmt --", files = '\.rs$', types = ["rust"] },
-  { id = "cargo-clippy", name = "cargo clippy", language = "system", entry = "cargo clippy --workspace --all-targets --all-features -- -D warnings", always_run = true, pass_filenames = false },
+  { id = "cargo-fmt", name = "cargo fmt", language = "system", entry = "cargo fmt --", files = '\.rs$', types = ["rust"], priority = 1 },
+  { id = "cargo-clippy", name = "cargo clippy", language = "system", entry = "cargo clippy --workspace --all-targets --all-features -- -D warnings", always_run = true, pass_filenames = false, priority = 2 },
+  { id = "cargo-test", name = "cargo test", language = "system", entry = "cargo test --workspace --all-features", always_run = true, pass_filenames = false, priority = 3 },
 ]
