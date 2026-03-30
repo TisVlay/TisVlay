@@ -27,7 +27,29 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Prek
+      - name: Lint
         uses: j178/prek-action@v2
         with:
-          extra-args: --all-files --fail-fast
+          extra-args: >-
+            --all-files
+            --skip cargo-build,cargo-clippy,cargo-test
+      - name: Build
+        run: >-
+          cargo build
+          --profile test
+          --workspace
+          --all-targets
+          --all-features
+      - name: Clippy
+        run: >-
+          cargo clippy
+          --profile test
+          --workspace
+          --all-targets
+          --all-features
+          -- -D warnings
+      - name: Test
+        run: >-
+          cargo test
+          --workspace
+          --all-features
