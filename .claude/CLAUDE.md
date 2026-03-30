@@ -282,6 +282,30 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now tisvlayd
 ```
 
+## Linting & CI
+
+All checks are defined in `prek.toml` (single source of truth). Hooks are ordered by priority:
+- **0**: file checks (trailing whitespace, EOF, TOML/YAML validation, merge conflicts, large files)
+- **1**: `cargo fmt`
+- **2**: `cargo build --profile test --workspace --all-targets --all-features`
+- **3**: `cargo clippy --profile test --workspace --all-targets --all-features`
+- **4**: `cargo test --workspace --all-features`
+
+Build and clippy use `--profile test` so `cargo test` reuses all build artifacts with zero recompilation.
+
+```bash
+# Run all checks (local pre-commit)
+prek run -a
+
+# Run only fast file checks + fmt (skip compilation)
+prek run -a --skip cargo-build --skip cargo-clippy --skip cargo-test
+
+# Run a specific hook
+prek run -a cargo-clippy
+
+# CI runs file checks via prek, then build/clippy/test directly for live output
+```
+
 ## Reference Documentation
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
