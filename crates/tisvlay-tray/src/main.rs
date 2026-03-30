@@ -234,14 +234,22 @@ async fn process_commands(
                     warn!(tv_id = %id, error = %e, "Screen off failed");
                 }
             }
-            TrayCommand::SetProfile(id, profile) => {
+            TrayCommand::SetUserProfile(id, profile) => {
                 let session_ref = session.read().await;
                 if let Some(ref session_client) = *session_ref {
-                    if let Err(e) = session_client.set_tv_profile(&id, &profile).await {
-                        warn!(tv_id = %id, profile = %profile, error = %e, "Set profile failed");
+                    if let Err(e) = session_client.set_tv_user_profile(&id, &profile).await {
+                        warn!(tv_id = %id, profile = %profile, error = %e, "Set user profile failed");
                     }
                 } else {
-                    warn!(tv_id = %id, "Cannot set profile: session service not available");
+                    warn!(tv_id = %id, "Cannot set user profile: session service not available");
+                }
+            }
+            TrayCommand::SetSystemProfile(id, profile) => {
+                if let Err(e) = daemon
+                    .set_tv_option(&id, "profile.system", &profile)
+                    .await
+                {
+                    warn!(tv_id = %id, profile = %profile, error = %e, "Set system profile failed");
                 }
             }
             TrayCommand::SwitchInput(id, input) => {

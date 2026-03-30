@@ -20,10 +20,14 @@ pub struct CachedTvState {
     pub backlight: Option<u8>,
     /// Available inputs as `(id, label)` pairs.
     pub inputs: Vec<(String, String)>,
-    /// Current profile name assigned to this TV.
-    pub profile: Option<String>,
-    /// Available profile names.
-    pub available_profiles: Vec<String>,
+    /// Current user profile name assigned to this TV.
+    pub user_profile: Option<String>,
+    /// Available user profile names.
+    pub available_user_profiles: Vec<String>,
+    /// Current system profile name assigned to this TV.
+    pub system_profile: String,
+    /// Available system profile names.
+    pub available_system_profiles: Vec<String>,
     /// Whether this TV participates in automated management.
     pub managed: bool,
 }
@@ -41,24 +45,33 @@ pub async fn fetch_all_state(
         debug!(tv_id = %tv.id, connected = tv.connected, "TV from daemon");
     }
 
-    // Fetch available profiles from session service (once, shared across TVs)
-    let available_profiles: Vec<String> = match session {
-        Some(session_client) => match session_client.list_profiles().await {
+    // Fetch available user profiles from session service (once, shared across TVs)
+    let available_user_profiles: Vec<String> = match session {
+        Some(session_client) => match session_client.list_user_profiles().await {
             Ok(profiles) => profiles.into_iter().map(|(name, _)| name).collect(),
             Err(e) => {
-                debug!(error = %e, "Failed to list profiles from session service");
+                debug!(error = %e, "Failed to list user profiles from session service");
                 Vec::new()
             }
         },
         None => Vec::new(),
     };
 
+    // Fetch available system profiles from daemon (once, shared across TVs)
+    let available_system_profiles: Vec<String> = match daemon.list_system_profiles().await {
+        Ok(profiles) => profiles.into_iter().map(|(name, _)| name).collect(),
+        Err(e) => {
+            debug!(error = %e, "Failed to list system profiles from daemon");
+            Vec::new()
+        }
+    };
+
     let mut states = Vec::with_capacity(tvs.len());
 
     for tv in tvs {
-        // Fetch per-TV profile assignment from session service
-        let profile = match session {
-            Some(session_client) => session_client.get_tv_profile(&tv.id).await.ok(),
+        // Fetch per-TV user profile assignment from session service
+        let user_profile = match session {
+            Some(session_client) => session_client.get_tv_user_profile(&tv.id).await.ok(),
             None => None,
         };
 
@@ -73,8 +86,10 @@ pub async fn fetch_all_state(
             current_input: None,
             backlight: None,
             inputs: Vec::new(),
-            profile,
-            available_profiles: available_profiles.clone(),
+            user_profile,
+            available_user_profiles: available_user_profiles.clone(),
+            system_profile: tv.system_profile.clone(),
+            available_system_profiles: available_system_profiles.clone(),
             managed: tv.managed,
         };
 

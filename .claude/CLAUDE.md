@@ -29,9 +29,9 @@ A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Cur
 
 ## Implementation Status
 
-Phases 1–5C are complete. See [docs/design.md](docs/design.md) for full phase history and details.
+Phases 1–5C and the per-TV system profiles refactor are complete. See [docs/design.md](docs/design.md) for full phase history and details.
 
-**Complete:** Phase 1 (Core + CLI) · Phase 2 (Daemon) · Phase 3 (Session Service) · Phase 4a (CLI D-Bus) · Phase 4b (Tray) · Phase 4C (Config Split) · NixOS Packaging · Phase 5A (`managed` flag + CLI profile parity) · Phase 5B (live managed filtering) · Phase 5C (`ObjectManager` bulk discovery)
+**Complete:** Phase 1 (Core + CLI) · Phase 2 (Daemon) · Phase 3 (Session Service) · Phase 4a (CLI D-Bus) · Phase 4b (Tray) · Phase 4C (Config Split) · NixOS Packaging · Phase 5A (`managed` flag + CLI profile parity) · Phase 5B (live managed filtering) · Phase 5C (`ObjectManager` bulk discovery) · Per-TV System Profiles Refactor
 
 ### Phase 5: Next — GUI Configuration
 
@@ -56,8 +56,11 @@ Architecture refactored to support multiple TV vendors. Daemon and CLI are fully
 - D-Bus: per-TV objects at `/org/tisvlay/Tv/{id}` with `Address` property (not `Ip`)
 - D-Bus: `AddTv(name, vendor, config_json, managed)` -- vendor-specific params as JSON; `managed` required, no default in library
 - D-Bus: `ObjectManager` at `/org/tisvlay` -- `GetManagedObjects` replaces `GetTvs`
+- D-Bus: Manager1 methods: `ListSystemProfiles`, `GetUserProfileDefault`, `ListUserProfiles` (no `SetDaemonOption`)
+- D-Bus: Tv1 properties include `SystemProfile`; Session1 methods: `ListUserProfiles`, `GetTvUserProfile`, `SetTvUserProfile`, `GetEffectiveUserProfile`
 - `DiscoveredTv` uses `address`/`hardware_id` (not `ip`/`mac`)
-- Profile-based config for multi-TV setups with display-aware control
+- Two profile types: system profiles (daemon lifecycle events, per-TV) and user profiles (session events, per-TV)
+- Config shape: `[system.profiles.*]` for daemon events, `[user.profiles.*]` for session events, `profile.system`/`profile.user` for per-TV assignment
 
 ## Current Project Structure
 
@@ -71,7 +74,7 @@ tisvlay/
 │   │       ├── traits.rs         # TvBackend, TvConnection, TvConnector, TvDiscovery
 │   │       ├── capabilities.rs   # Capability bitflags
 │   │       ├── pairing.rs        # Unified pairing state machine
-│   │       ├── config.rs         # TOML config (XDG paths), ProfileConfig
+│   │       ├── config.rs         # TOML config (XDG paths), SystemProfileConfig, UserProfileConfig
 │   │       ├── dbus_paths.rs     # D-Bus path constants and helpers
 │   │       ├── dbus_client.rs    # D-Bus client for tisvlayd (feature-gated)
 │   │       ├── logging.rs        # Shared logging init with journald (feature-gated)
@@ -153,8 +156,9 @@ tisvlay/
 - Tries wss://port 3001 first, falls back to ws://port 3000
 
 ### Configuration
-- **System config**: `/var/lib/tisvlay/config.toml` — TV definitions, credentials, daemon settings, system default profile. Owned by `tisvlayd`.
-- **User config**: `~/.config/tisvlay/config.toml` — profile definitions, per-TV profile assignments. Owned by `tisvlay-session`. Optional; system default profile inherited via D-Bus if absent.
+- **System config**: `/var/lib/tisvlay/config.toml` — TV definitions (with `profile.system` assignment), credentials, system profiles (`[system.profiles.*]`), admin baseline user profiles (`[user.profiles.*]`). Owned by `tisvlayd`.
+- **User config**: `~/.config/tisvlay/config.toml` — user profile definitions (`[user.profiles.*]`), per-TV user profile assignments (`[[tv]]` with `profile.user`). Owned by `tisvlay-session`. Optional; admin baseline `user.profiles.default` inherited via D-Bus if absent.
+- Both configs use `[[tv]]` array-of-tables syntax; single-file mode works because each parser ignores unknown fields
 - `tisvlayd --config <PATH>` and `tisvlay-session --config <PATH>` override respective config paths
 - Client keys stored in vendor-specific config section after TV pairing (system config only)
 - `TvConfig.vendor_config` uses `#[serde(flatten)]` with `HashMap<String, toml::Value>` -- core has zero vendor knowledge
@@ -225,6 +229,9 @@ systemctl --user enable --now tisvlay-tray
 # Manager interface
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 GetSupportedVendors
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ReloadConfig
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ListSystemProfiles
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 GetUserProfileDefault
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ListUserProfiles
 
 # List all objects + properties (replaces GetTvs)
 busctl --user call org.tisvlay.Daemon /org/tisvlay org.freedesktop.DBus.ObjectManager GetManagedObjects
@@ -237,6 +244,7 @@ busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 
 busctl --user introspect org.tisvlay.Daemon /org/tisvlay/Tv/living_room
 busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1 Address
 busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1 Connected
+busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1 SystemProfile
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Power PowerOff
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Screen ScreenOff
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume SetMute b true

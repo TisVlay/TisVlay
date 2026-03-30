@@ -8,9 +8,8 @@
 //! Takes a shutdown inhibitor lock so the daemon can gracefully
 //! shut down TVs before the system powers off.
 
-use crate::tv_manager::{DaemonAction, TvManager};
+use crate::tv_manager::{SystemEvent, TvManager};
 use std::sync::Arc;
-use tisvlay_core::SessionAction;
 use tracing::{debug, error, info, warn};
 use zbus::proxy;
 
@@ -188,26 +187,23 @@ async fn handle_prepare_for_shutdown(
 
         if *args.start() {
             // Determine shutdown type from logind's ScheduledShutdown property
-            let (shutdown_type, daemon_action) = match proxy.scheduled_shutdown().await {
+            let (shutdown_type, event) = match proxy.scheduled_shutdown().await {
                 Ok((type_str, _usec)) => {
-                    let action = match type_str.as_str() {
-                        "reboot" | "kexec" => DaemonAction::Reboot,
-                        _ => DaemonAction::Shutdown, // poweroff, halt, or unknown
+                    let event = match type_str.as_str() {
+                        "reboot" | "kexec" => SystemEvent::Reboot,
+                        _ => SystemEvent::Shutdown, // poweroff, halt, or unknown
                     };
-                    (type_str, action)
+                    (type_str, event)
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to query ScheduledShutdown, assuming poweroff");
-                    ("poweroff".to_string(), DaemonAction::Shutdown)
+                    ("poweroff".to_string(), SystemEvent::Shutdown)
                 }
             };
 
             info!(shutdown_type = %shutdown_type, "System is preparing for shutdown");
 
-            let action = manager.get_daemon_config_action(daemon_action).await;
-            if action != SessionAction::None {
-                manager.execute_action_all_tvs(action, &shutdown_type).await;
-            }
+            manager.execute_system_event(event, &shutdown_type).await;
 
             // Release inhibitor lock by dropping the fd
             if let Some(fd) = inhibitor_fd {
@@ -322,12 +318,8 @@ async fn check_active_sessions(
 
     if !has_active_graphical_user {
         debug!("No active graphical user sessions detected");
-        let action = manager
-            .get_daemon_config_action(DaemonAction::NoSession)
+        manager
+            .execute_system_event(SystemEvent::NoSession, "no_session")
             .await;
-        if action != SessionAction::None {
-            info!(action = ?action, "Executing on_no_session action");
-            manager.execute_action_all_tvs(action, "no_session").await;
-        }
     }
 }

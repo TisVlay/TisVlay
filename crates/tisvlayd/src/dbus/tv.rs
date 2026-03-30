@@ -99,6 +99,16 @@ impl TvService {
             .unwrap_or(true)
     }
 
+    /// System profile name assigned to this TV.
+    #[zbus(property)]
+    async fn system_profile(&self) -> String {
+        let manager = &self.manager;
+        manager
+            .get_tv_system_profile(&self.tv_id)
+            .await
+            .unwrap_or_else(|| "default".to_string())
+    }
+
     /// Capabilities supported by this TV.
     #[zbus(property)]
     async fn capabilities(&self) -> Vec<String> {

@@ -1,10 +1,10 @@
-[daemon]
+[system.profiles.default]
 on_startup = "power_on"
 on_shutdown = "power_off"
 on_reboot = "none"
 on_no_session = "none"
 
-[profiles.default]
+[user.profiles.default]
 on_screen_lock = "screen_off"
 on_screen_unlock = "screen_on"
 on_greeter_wake = "screen_on"
@@ -12,6 +12,7 @@ on_sleep = "power_off"
 on_wake = "power_on"
 idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
+on_idle_resume = "screen_on"
 
 [[tv]]
 id = "office"
@@ -19,6 +20,9 @@ name = "office"
 vendor = "lg"
 only_when_active = false
 managed = true
+
+[tv.profile]
+system = "default"
 
 [tv.lg]
 client_key = "bec7b2f5afe657547d367e84cbf59095"

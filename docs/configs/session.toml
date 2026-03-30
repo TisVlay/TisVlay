@@ -1,4 +1,4 @@
-[profiles.foo]
+[user.profiles.foo]
 on_screen_lock = "screen_off"
 on_screen_unlock = "screen_on"
 on_greeter_wake = "screen_on"
@@ -7,5 +7,8 @@ on_wake = "power_on"
 idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
 
-[tv.office]
-profile = "foo"
+[[tv]]
+id = "office"
+
+[tv.profile]
+user = "foo"
