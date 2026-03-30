@@ -22,7 +22,9 @@ use session_monitor::{SessionEvent, SessionMonitor};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{DaemonClient, ResolvedUserProfile, SessionAction, UserConfig, UserProfileConfig};
+use tisvlay_core::{
+    DaemonClient, ResolvedUserProfile, SessionAction, UserConfig, UserProfileConfig,
+};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -87,7 +89,10 @@ impl SessionState {
             .await
         {
             Ok(profiles) => {
-                debug!(count = profiles.len(), "Loaded admin user profiles from daemon");
+                debug!(
+                    count = profiles.len(),
+                    "Loaded admin user profiles from daemon"
+                );
                 profiles
                     .into_iter()
                     .filter_map(|(name, json)| serde_json::from_str(&json).ok().map(|p| (name, p)))

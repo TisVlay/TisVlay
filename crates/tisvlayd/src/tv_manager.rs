@@ -423,13 +423,17 @@ impl TvManager {
 
                 match manager.screen_on(tv_id).await {
                     Ok(()) => info!(tv_id = %tv_id, "Startup: screen on"),
-                    Err(e) => warn!(tv_id = %tv_id, error = %e, "Startup: failed to turn screen on"),
+                    Err(e) => {
+                        warn!(tv_id = %tv_id, error = %e, "Startup: failed to turn screen on")
+                    }
                 }
 
                 if let Some(ref input) = tv_config.hdmi_input {
                     match manager.switch_input(tv_id, input).await {
                         Ok(()) => info!(tv_id = %tv_id, input = %input, "Startup: switched input"),
-                        Err(e) => warn!(tv_id = %tv_id, error = %e, "Startup: failed to switch input"),
+                        Err(e) => {
+                            warn!(tv_id = %tv_id, error = %e, "Startup: failed to switch input")
+                        }
                     }
                 }
             }
@@ -1024,8 +1028,7 @@ impl TvManager {
             // Re-resolve the system profile when the assignment changes.
             if key == "profile.system" {
                 let system = self.system_section.read().await;
-                managed.system_profile =
-                    system.resolve_profile(&managed.config.profile.system);
+                managed.system_profile = system.resolve_profile(&managed.config.profile.system);
             }
         } // per-TV lock released before I/O
 

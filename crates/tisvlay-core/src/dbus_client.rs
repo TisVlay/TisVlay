@@ -500,7 +500,11 @@ impl DaemonClient {
             let managed = get_bool("Managed", true);
             let system_profile = {
                 let sp = get_str("SystemProfile");
-                if sp.is_empty() { "default".to_string() } else { sp }
+                if sp.is_empty() {
+                    "default".to_string()
+                } else {
+                    sp
+                }
             };
 
             let fallbacks = fallbacks.into_inner();

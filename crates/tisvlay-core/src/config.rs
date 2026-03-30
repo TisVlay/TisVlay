@@ -757,7 +757,11 @@ impl UserConfig {
     /// 4. Hard-coded defaults
     ///
     /// At each level, individual fields merge (user overrides system).
-    pub fn resolve_user_profile(&self, tv_id: &str, system_default: &UserProfileConfig) -> ResolvedUserProfile {
+    pub fn resolve_user_profile(
+        &self,
+        tv_id: &str,
+        system_default: &UserProfileConfig,
+    ) -> ResolvedUserProfile {
         // 1. Find which profile name applies to this TV
         let profile_name = self
             .tv
@@ -972,10 +976,7 @@ mac = "AA:BB:CC:DD:EE:FF"
 
         // Check user profile
         let user_default = config.user.profiles.get("default").unwrap();
-        assert_eq!(
-            user_default.on_screen_lock,
-            Some(SessionAction::ScreenOff)
-        );
+        assert_eq!(user_default.on_screen_lock, Some(SessionAction::ScreenOff));
         assert_eq!(user_default.idle_timeout_seconds, Some(300));
         // Unspecified field
         assert_eq!(user_default.on_greeter_wake, None);
@@ -1052,10 +1053,18 @@ ip = "192.168.1.101"
         let user_config: UserConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(user_config.tv.len(), 2);
 
-        let living_user = user_config.tv.iter().find(|t| t.id == "living-room").unwrap();
+        let living_user = user_config
+            .tv
+            .iter()
+            .find(|t| t.id == "living-room")
+            .unwrap();
         assert_eq!(living_user.profile.user, "gaming");
 
-        let guest_user = user_config.tv.iter().find(|t| t.id == "guest-room").unwrap();
+        let guest_user = user_config
+            .tv
+            .iter()
+            .find(|t| t.id == "guest-room")
+            .unwrap();
         assert_eq!(guest_user.profile.user, "default"); // not specified, defaults
     }
 
@@ -1563,7 +1572,11 @@ profile.user = "gaming"
         assert_eq!(gaming.idle_timeout_seconds, Some(0));
         // None fields should not be serialized
         assert_eq!(gaming.on_sleep, None);
-        let living = deserialized.tv.iter().find(|t| t.id == "living-room").unwrap();
+        let living = deserialized
+            .tv
+            .iter()
+            .find(|t| t.id == "living-room")
+            .unwrap();
         assert_eq!(living.profile.user, "gaming");
     }
 
