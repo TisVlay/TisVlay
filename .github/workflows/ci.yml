@@ -32,7 +32,9 @@ jobs:
         with:
           extra-args: >-
             --all-files
-            --skip cargo-build,cargo-clippy,cargo-test
+            --skip cargo-build
+            --skip cargo-clippy
+            --skip cargo-test
       - name: Build
         run: >-
           cargo build
