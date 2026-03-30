@@ -245,10 +245,7 @@ async fn process_commands(
                 }
             }
             TrayCommand::SetSystemProfile(id, profile) => {
-                if let Err(e) = daemon
-                    .set_tv_option(&id, "profile.system", &profile)
-                    .await
-                {
+                if let Err(e) = daemon.set_tv_option(&id, "profile.system", &profile).await {
                     warn!(tv_id = %id, profile = %profile, error = %e, "Set system profile failed");
                 }
             }

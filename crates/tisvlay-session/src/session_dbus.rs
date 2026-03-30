@@ -105,7 +105,11 @@ impl SessionService {
     /// Assign a user profile to a TV.
     ///
     /// Saves to user config and re-resolves profiles immediately.
-    async fn set_tv_user_profile(&self, tv_id: &str, profile_name: &str) -> Result<(), SessionError> {
+    async fn set_tv_user_profile(
+        &self,
+        tv_id: &str,
+        profile_name: &str,
+    ) -> Result<(), SessionError> {
         info!(tv_id = %tv_id, profile = %profile_name, "D-Bus: SetTvUserProfile");
 
         let mut s = self.state.write().await;
@@ -125,7 +129,9 @@ impl SessionService {
         s.user_config.set_tv_user_profile(tv_id, profile_name);
 
         // Re-resolve the user profile for this TV
-        let resolved = s.user_config.resolve_user_profile(tv_id, &s.admin_user_default);
+        let resolved = s
+            .user_config
+            .resolve_user_profile(tv_id, &s.admin_user_default);
         s.profiles.insert(tv_id.to_string(), resolved);
 
         // Save user config to disk
@@ -147,11 +153,10 @@ impl SessionService {
         debug!(tv_id = %tv_id, "D-Bus: GetEffectiveUserProfile");
         let s = self.state.read().await;
 
-        let resolved = s
-            .profiles
-            .get(tv_id)
-            .cloned()
-            .unwrap_or_else(|| s.user_config.resolve_user_profile(tv_id, &s.admin_user_default));
+        let resolved = s.profiles.get(tv_id).cloned().unwrap_or_else(|| {
+            s.user_config
+                .resolve_user_profile(tv_id, &s.admin_user_default)
+        });
 
         // Serialize ResolvedUserProfile as a UserProfileConfig-like JSON for consumers
         let json = serde_json::json!({
