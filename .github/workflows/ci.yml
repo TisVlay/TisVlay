@@ -12,16 +12,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-    #   - name: Setup
-    #     run: |
-    #       sudo apt-get update
-    #       sudo apt-get install -y \
-    #         libudev-dev
       - name: Cache
         uses: actions/cache@v5
         with:
@@ -30,11 +25,7 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build
-        run: cargo build --verbose
+      - name: Prek
+        uses: j178/prek-action@v2
       - name: Test
         run: cargo test --verbose
-      - name: Clippy
-        run: cargo clippy -- -D warnings
-      - name: Format
-        run: cargo fmt -- --check
