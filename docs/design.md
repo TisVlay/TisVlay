@@ -38,7 +38,7 @@ graph TD
 | Component | Binary | Description |
 |-----------|--------|-------------|
 | **System Daemon** | `tisvlayd` | Systemd system service. Vendor-agnostic TV management, D-Bus API, WoL at boot. |
-| **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (screen lock/unlock, idle, sleep). |
+| **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle). |
 | **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
 | **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
 | **GUI** | `tisvlay-gui` | Slint-based configuration window. (Not yet implemented) |
@@ -261,8 +261,8 @@ on_shutdown = "screen_off"
 # Admin-set baseline for session behavior.
 # Users without their own config inherit this.
 [user.profiles.default]
-on_screen_lock = "screen_off"    # screen_off | power_off | none
-on_screen_unlock = "screen_on"   # screen_on | power_on | none
+on_session_lock = "screen_off"   # screen_off | power_off | none
+on_session_unlock = "screen_on"  # screen_on | power_on | none
 on_greeter_wake = "screen_on"    # unblank on lock screen interaction (Wayland only)
 idle_timeout_seconds = 0         # 0 to disable
 on_idle_timeout = "none"
@@ -304,7 +304,7 @@ idle_timeout_seconds = 300
 on_idle_timeout = "screen_off"
 
 [user.profiles.gaming]
-on_screen_lock = "none"          # don't interrupt gameplay
+on_session_lock = "none"          # don't interrupt gameplay
 idle_timeout_seconds = 0
 on_idle_resume = "none"
 
@@ -344,9 +344,9 @@ stateDiagram-v2
 | Event | Default Action | Config | Notes |
 |-------|---------------|--------|-------|
 | System boot | Power on | `on_startup` (system profile) | WoL → connect → screen on → input switch |
-| Screen lock | Screen off | `on_screen_lock` (user profile) | Instant resume on unlock |
+| Session lock | Screen off | `on_session_lock` (user profile) | Instant resume on unlock |
 | Greeter wake | Screen on | `on_greeter_wake` (user profile) | User interacted with lock screen (Wayland only) |
-| Screen unlock | Screen on | `on_screen_unlock` (user profile) | Skipped if GreeterWake already unblanked |
+| Session unlock | Screen on | `on_session_unlock` (user profile) | Skipped if GreeterWake already unblanked |
 | User idle timeout | Screen off | `on_idle_timeout` (user profile) | Fires at minimum across all TVs |
 | Activity resumes | Screen on | `on_idle_resume` (user profile) | After idle timeout |
 | System suspend | Power off | `on_sleep` (system profile) | Network unavailable during sleep |
@@ -355,7 +355,7 @@ stateDiagram-v2
 | System shutdown | Power off | `on_shutdown` (system profile) | poweroff or halt |
 | System reboot | None | `on_reboot` (system profile) | reboot or kexec; TV stays on for BIOS/TTY |
 
-All lifecycle events accept any `SessionAction` value: `power_on`, `power_off`, `screen_on`, `screen_off`, or `none`. Different TVs can respond differently to the same event via per-TV profile assignments (e.g., gaming TV ignores screen lock via user profile; guest TV only blanks on shutdown via system profile).
+All lifecycle events accept any `SessionAction` value: `power_on`, `power_off`, `screen_on`, `screen_off`, or `none`. Different TVs can respond differently to the same event via per-TV profile assignments (e.g., gaming TV ignores session lock via user profile; guest TV only blanks on shutdown via system profile).
 
 ---
 
@@ -587,7 +587,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 | Newer firmware requires TLS (wss://) | Default to port 3001; fallback to 3000; accept self-signed certs |
 | WebSocket closed on TV idle (~1-2 min) | LG backend auto-reconnects transparently before each command |
 | WoL lost after system resume | Backend resends WoL between connect retries |
-| PowerOff + ScreenLocked race on sleep | Daemon `powered_off` flag prevents blocking connect to dead TV |
+| PowerOff + SessionLocked race on sleep | Daemon `powered_off` flag prevents blocking connect to dead TV |
 | Screen on/off returns 500 when idempotent | LG backend treats application errors as success for screen commands |
 | DHCP IP changes | Use MAC for WoL; re-discover via SSDP |
 | Greeter wake unavailable on X11 | Wayland `ext-idle-notify-v1` only; falls back gracefully |

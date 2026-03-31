@@ -17,7 +17,7 @@ A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Cur
 2. **HDMI Input Switching**: Switch to the HDMI port connected to the desktop
 3. **Screen Blanking**: Turn screen off/on for OLED burn-in protection
 4. **Volume Control**: Adjust volume and mute
-5. **Desktop Integration**: React to D-Bus events (screen lock/unlock, suspend/resume)
+5. **Desktop Integration**: React to D-Bus events (session lock/unlock, suspend/resume)
 
 ## Technical Approach
 
@@ -113,7 +113,7 @@ tisvlay/
 │   │   └── src/
 │   │       ├── main.rs           # Entry point, event handling
 │   │       ├── session_dbus.rs   # org.tisvlay.Session1 D-Bus interface
-│   │       ├── session_monitor.rs # Screen lock/unlock, suspend/resume
+│   │       ├── session_monitor.rs # Session lock/unlock detection
 │   │       ├── wayland_idle.rs   # Wayland greeter wake detection
 │   │       └── idle.rs           # Idle timeout detection
 │   │

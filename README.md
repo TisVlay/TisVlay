@@ -42,8 +42,8 @@ The session service automatically controls your TV based on desktop events:
 ```toml
 # ~/.config/tisvlay/config.toml
 [session]
-on_screen_lock = "screen_off"
-on_screen_unlock = "screen_on"
+on_session_lock = "screen_off"
+on_session_unlock = "screen_on"
 on_greeter_wake = "screen_on"  # Unblank when interacting with lock screen (Wayland only)
 on_sleep = "power_off"
 on_wake = "power_on"

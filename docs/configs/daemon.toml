@@ -7,8 +7,8 @@ on_sleep = "power_off"
 on_wake = "power_on"
 
 [user.profiles.default]
-on_screen_lock = "screen_off"
-on_screen_unlock = "screen_on"
+on_session_lock = "screen_off"
+on_session_unlock = "screen_on"
 on_greeter_wake = "screen_on"
 idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"

@@ -1,6 +1,6 @@
 //! Session D-Bus event monitoring.
 //!
-//! Monitors freedesktop D-Bus signals for screen lock/unlock events.
+//! Monitors freedesktop D-Bus signals for session lock/unlock events.
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
@@ -13,10 +13,10 @@ use zbus::proxy;
 /// Events detected from the desktop session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEvent {
-    /// Screen was locked.
-    ScreenLocked,
-    /// Screen was unlocked.
-    ScreenUnlocked,
+    /// Desktop session was locked.
+    SessionLocked,
+    /// Desktop session was unlocked.
+    SessionUnlocked,
     /// User interaction detected while locked (greeter becoming visible).
     /// This fires when the user moves the mouse or presses a key while locked,
     /// before they actually unlock. Detected via Wayland ext-idle-notify-v1 protocol.
@@ -30,8 +30,8 @@ pub enum SessionEvent {
 impl std::fmt::Display for SessionEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ScreenLocked => write!(f, "ScreenLocked"),
-            Self::ScreenUnlocked => write!(f, "ScreenUnlocked"),
+            Self::SessionLocked => write!(f, "SessionLocked"),
+            Self::SessionUnlocked => write!(f, "SessionUnlocked"),
             Self::GreeterWake => write!(f, "GreeterWake"),
             Self::IdleTimeout => write!(f, "IdleTimeout"),
             Self::IdleResume => write!(f, "IdleResume"),
@@ -121,9 +121,9 @@ async fn monitor_screen_saver(
                 is_locked.store(active, Ordering::SeqCst);
 
                 let event = if active {
-                    SessionEvent::ScreenLocked
+                    SessionEvent::SessionLocked
                 } else {
-                    SessionEvent::ScreenUnlocked
+                    SessionEvent::SessionUnlocked
                 };
                 debug!(event = %event, "ScreenSaver signal received");
                 if tx.send(event).is_err() {

@@ -160,8 +160,8 @@ impl SessionService {
 
         // Serialize ResolvedUserProfile as a UserProfileConfig-like JSON for consumers
         let json = serde_json::json!({
-            "on_screen_lock": resolved.on_screen_lock,
-            "on_screen_unlock": resolved.on_screen_unlock,
+            "on_session_lock": resolved.on_session_lock,
+            "on_session_unlock": resolved.on_session_unlock,
             "on_greeter_wake": resolved.on_greeter_wake,
             "idle_timeout_seconds": resolved.idle_timeout_seconds,
             "on_idle_timeout": resolved.on_idle_timeout,

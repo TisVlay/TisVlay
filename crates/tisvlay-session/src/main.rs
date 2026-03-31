@@ -1,6 +1,6 @@
 //! tisvlay-session - User session service for TV control.
 //!
-//! Monitors desktop D-Bus events (screen lock/unlock, suspend/resume, idle)
+//! Monitors desktop D-Bus events (session lock/unlock, idle)
 //! and controls TVs through the system daemon (`tisvlayd`).
 //!
 //! Configuration is split between system and user levels:
@@ -296,9 +296,9 @@ async fn main() -> Result<()> {
                         // appropriate event so the TV matches the current desktop state.
                         let locked = retry_is_locked.load(std::sync::atomic::Ordering::SeqCst);
                         let replay_event = if locked {
-                            SessionEvent::ScreenLocked
+                            SessionEvent::SessionLocked
                         } else {
-                            SessionEvent::ScreenUnlocked
+                            SessionEvent::SessionUnlocked
                         };
                         info!(event = %replay_event, "Replaying current screen state after late daemon connect");
                         let _ = retry_event_tx.send(replay_event);
@@ -380,7 +380,7 @@ async fn main() -> Result<()> {
 ///
 /// For each event, we iterate through all TVs and apply the action
 /// defined in each TV's resolved profile. Different TVs can respond
-/// differently to the same event (e.g., gaming TV ignores screen lock).
+/// differently to the same event (e.g., gaming TV ignores session lock).
 ///
 /// Tracks the last action sent to each TV to avoid redundant commands.
 async fn event_handler(
@@ -463,8 +463,8 @@ async fn event_handler(
 /// Get the action for a session event from a resolved user profile.
 fn get_action_for_event(event: &SessionEvent, profile: &ResolvedUserProfile) -> SessionAction {
     match event {
-        SessionEvent::ScreenLocked => profile.on_screen_lock,
-        SessionEvent::ScreenUnlocked => profile.on_screen_unlock,
+        SessionEvent::SessionLocked => profile.on_session_lock,
+        SessionEvent::SessionUnlocked => profile.on_session_unlock,
         SessionEvent::GreeterWake => profile.on_greeter_wake,
         SessionEvent::IdleTimeout => profile.on_idle_timeout,
         SessionEvent::IdleResume => profile.on_idle_resume,
