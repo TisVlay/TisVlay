@@ -187,6 +187,8 @@ pub(crate) enum SystemEvent {
     Shutdown,
     Reboot,
     NoSession,
+    Sleep,
+    Wake,
 }
 
 /// Apply a key-value TV option to a `TvConfig`.
@@ -304,6 +306,8 @@ impl TvManager {
             SystemEvent::Shutdown => tv.system_profile.on_shutdown,
             SystemEvent::Reboot => tv.system_profile.on_reboot,
             SystemEvent::NoSession => tv.system_profile.on_no_session,
+            SystemEvent::Sleep => tv.system_profile.on_sleep,
+            SystemEvent::Wake => tv.system_profile.on_wake,
         }
     }
 
