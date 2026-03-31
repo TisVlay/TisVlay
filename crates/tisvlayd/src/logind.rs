@@ -3,6 +3,7 @@
 //! Monitors `org.freedesktop.login1` on the system bus for:
 //! - `PrepareForShutdown`: execute `on_shutdown` or `on_reboot` action
 //!   (distinguished via the `ScheduledShutdown` property)
+//! - `PrepareForSleep`: execute `on_sleep` or `on_wake` action
 //! - Session tracking: detect when no user sessions are active
 //!
 //! Takes a shutdown inhibitor lock so the daemon can gracefully
@@ -47,6 +48,10 @@ trait Login1Manager {
     /// Signal emitted before system shutdown/reboot.
     #[zbus(signal)]
     fn prepare_for_shutdown(&self, start: bool) -> zbus::Result<()>;
+
+    /// Signal emitted before system sleep/hibernate and after wake.
+    #[zbus(signal)]
+    fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
 
     /// Signal emitted when a new session is created.
     #[zbus(signal)]
@@ -144,6 +149,13 @@ impl LogindMonitor {
             handle_prepare_for_shutdown(proxy_for_shutdown, manager, inhibitor_fd).await;
         });
 
+        // Spawn PrepareForSleep handler
+        let manager = self.manager.clone();
+        let proxy_for_sleep = Login1ManagerProxy::new(&connection).await?;
+        tokio::spawn(async move {
+            handle_prepare_for_sleep(proxy_for_sleep, manager).await;
+        });
+
         // Spawn session tracking
         let manager = self.manager.clone();
         let proxy_for_sessions = Login1ManagerProxy::new(&connection).await?;
@@ -211,6 +223,45 @@ async fn handle_prepare_for_shutdown(
                 info!("Released shutdown inhibitor lock");
             }
             break;
+        }
+    }
+}
+
+/// Handle PrepareForSleep signal.
+///
+/// Unlike shutdown, sleep/wake can happen multiple times per session,
+/// so this handler loops. No inhibitor lock is needed — sleep is fast
+/// and TVs can handle the commands asynchronously.
+async fn handle_prepare_for_sleep(proxy: Login1ManagerProxy<'static>, manager: Arc<TvManager>) {
+    use futures_util::StreamExt;
+
+    let mut stream = match proxy.receive_prepare_for_sleep().await {
+        Ok(stream) => stream,
+        Err(e) => {
+            error!(error = %e, "Failed to subscribe to PrepareForSleep signal");
+            return;
+        }
+    };
+
+    while let Some(signal) = stream.next().await {
+        let args = match signal.args() {
+            Ok(args) => args,
+            Err(e) => {
+                warn!(error = %e, "Failed to parse PrepareForSleep args");
+                continue;
+            }
+        };
+
+        if *args.start() {
+            info!("System is preparing for sleep");
+            manager
+                .execute_system_event(SystemEvent::Sleep, "sleep")
+                .await;
+        } else {
+            info!("System resumed from sleep");
+            manager
+                .execute_system_event(SystemEvent::Wake, "wake")
+                .await;
         }
     }
 }

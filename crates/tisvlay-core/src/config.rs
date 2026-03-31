@@ -15,6 +15,8 @@
 //! on_shutdown = "power_off"
 //! on_reboot = "none"
 //! on_no_session = "none"
+//! on_sleep = "power_off"
+//! on_wake = "power_on"
 //!
 //! [user.profiles.default]
 //! on_screen_lock = "screen_off"
@@ -106,6 +108,14 @@ pub struct SystemProfileConfig {
     /// Action when all user sessions end (e.g., after logout, login screen).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_no_session: Option<SessionAction>,
+
+    /// Action on system sleep/suspend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_sleep: Option<SessionAction>,
+
+    /// Action on system wake/resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_wake: Option<SessionAction>,
 }
 
 impl SystemProfileConfig {
@@ -119,6 +129,8 @@ impl SystemProfileConfig {
             on_shutdown: Some(d.on_shutdown),
             on_reboot: Some(d.on_reboot),
             on_no_session: Some(d.on_no_session),
+            on_sleep: Some(d.on_sleep),
+            on_wake: Some(d.on_wake),
         }
     }
 
@@ -132,6 +144,8 @@ impl SystemProfileConfig {
             on_shutdown: self.on_shutdown.or(base.on_shutdown),
             on_reboot: self.on_reboot.or(base.on_reboot),
             on_no_session: self.on_no_session.or(base.on_no_session),
+            on_sleep: self.on_sleep.or(base.on_sleep),
+            on_wake: self.on_wake.or(base.on_wake),
         }
     }
 
@@ -146,6 +160,8 @@ impl SystemProfileConfig {
             on_shutdown: self.on_shutdown.unwrap_or(d.on_shutdown),
             on_reboot: self.on_reboot.unwrap_or(d.on_reboot),
             on_no_session: self.on_no_session.unwrap_or(d.on_no_session),
+            on_sleep: self.on_sleep.unwrap_or(d.on_sleep),
+            on_wake: self.on_wake.unwrap_or(d.on_wake),
         }
     }
 }
@@ -169,6 +185,10 @@ pub struct ResolvedSystemProfile {
     pub on_reboot: SessionAction,
     /// Action when all user sessions end.
     pub on_no_session: SessionAction,
+    /// Action on system sleep/suspend.
+    pub on_sleep: SessionAction,
+    /// Action on system wake/resume.
+    pub on_wake: SessionAction,
 }
 
 impl Default for ResolvedSystemProfile {
@@ -178,6 +198,8 @@ impl Default for ResolvedSystemProfile {
             on_shutdown: SessionAction::PowerOff,
             on_reboot: SessionAction::None,
             on_no_session: SessionAction::None,
+            on_sleep: SessionAction::PowerOff,
+            on_wake: SessionAction::PowerOn,
         }
     }
 }
@@ -207,14 +229,6 @@ pub struct UserProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_greeter_wake: Option<SessionAction>,
 
-    /// Action on system sleep/suspend.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_sleep: Option<SessionAction>,
-
-    /// Action on system wake/resume.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_wake: Option<SessionAction>,
-
     /// Idle timeout in seconds (0 to disable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_timeout_seconds: Option<u64>,
@@ -239,8 +253,6 @@ impl UserProfileConfig {
             on_screen_lock: Some(d.on_screen_lock),
             on_screen_unlock: Some(d.on_screen_unlock),
             on_greeter_wake: Some(d.on_greeter_wake),
-            on_sleep: Some(d.on_sleep),
-            on_wake: Some(d.on_wake),
             idle_timeout_seconds: Some(d.idle_timeout_seconds),
             on_idle_timeout: Some(d.on_idle_timeout),
             on_idle_resume: Some(d.on_idle_resume),
@@ -256,8 +268,6 @@ impl UserProfileConfig {
             on_screen_lock: self.on_screen_lock.or(base.on_screen_lock),
             on_screen_unlock: self.on_screen_unlock.or(base.on_screen_unlock),
             on_greeter_wake: self.on_greeter_wake.or(base.on_greeter_wake),
-            on_sleep: self.on_sleep.or(base.on_sleep),
-            on_wake: self.on_wake.or(base.on_wake),
             idle_timeout_seconds: self.idle_timeout_seconds.or(base.idle_timeout_seconds),
             on_idle_timeout: self.on_idle_timeout.or(base.on_idle_timeout),
             on_idle_resume: self.on_idle_resume.or(base.on_idle_resume),
@@ -274,8 +284,6 @@ impl UserProfileConfig {
             on_screen_lock: self.on_screen_lock.unwrap_or(d.on_screen_lock),
             on_screen_unlock: self.on_screen_unlock.unwrap_or(d.on_screen_unlock),
             on_greeter_wake: self.on_greeter_wake.unwrap_or(d.on_greeter_wake),
-            on_sleep: self.on_sleep.unwrap_or(d.on_sleep),
-            on_wake: self.on_wake.unwrap_or(d.on_wake),
             idle_timeout_seconds: self.idle_timeout_seconds.unwrap_or(d.idle_timeout_seconds),
             on_idle_timeout: self.on_idle_timeout.unwrap_or(d.on_idle_timeout),
             on_idle_resume: self.on_idle_resume.unwrap_or(d.on_idle_resume),
@@ -300,10 +308,6 @@ pub struct ResolvedUserProfile {
     pub on_screen_unlock: SessionAction,
     /// Action when user interacts with the lock screen.
     pub on_greeter_wake: SessionAction,
-    /// Action on system sleep/suspend.
-    pub on_sleep: SessionAction,
-    /// Action on system wake/resume.
-    pub on_wake: SessionAction,
     /// Idle timeout in seconds (0 to disable).
     pub idle_timeout_seconds: u64,
     /// Action on idle timeout.
@@ -318,8 +322,6 @@ impl Default for ResolvedUserProfile {
             on_screen_lock: SessionAction::ScreenOff,
             on_screen_unlock: SessionAction::ScreenOn,
             on_greeter_wake: SessionAction::ScreenOn,
-            on_sleep: SessionAction::PowerOff,
-            on_wake: SessionAction::PowerOn,
             idle_timeout_seconds: 0,
             on_idle_timeout: SessionAction::ScreenOff,
             on_idle_resume: SessionAction::ScreenOn,
@@ -1334,8 +1336,6 @@ ip = "192.168.1.1"
         assert_eq!(resolved.on_screen_lock, SessionAction::ScreenOff);
         assert_eq!(resolved.on_screen_unlock, SessionAction::ScreenOn);
         assert_eq!(resolved.on_greeter_wake, SessionAction::ScreenOn);
-        assert_eq!(resolved.on_sleep, SessionAction::PowerOff);
-        assert_eq!(resolved.on_wake, SessionAction::PowerOn);
         assert_eq!(resolved.idle_timeout_seconds, 0);
         assert_eq!(resolved.on_idle_timeout, SessionAction::ScreenOff);
     }
@@ -1368,7 +1368,6 @@ ip = "192.168.1.1"
         let merged = override_profile.merge_with_base(&base);
         assert_eq!(merged.on_screen_lock, Some(SessionAction::None));
         assert_eq!(merged.idle_timeout_seconds, Some(300)); // inherited
-        assert_eq!(merged.on_sleep, None); // neither specified
     }
 
     #[test]
@@ -1389,8 +1388,6 @@ ip = "192.168.1.1"
             on_screen_lock: Some(SessionAction::None),
             on_screen_unlock: Some(SessionAction::None),
             on_greeter_wake: Some(SessionAction::None),
-            on_sleep: Some(SessionAction::None),
-            on_wake: Some(SessionAction::None),
             idle_timeout_seconds: Some(999),
             on_idle_timeout: Some(SessionAction::PowerOff),
             on_idle_resume: Some(SessionAction::None),
@@ -1413,7 +1410,6 @@ ip = "192.168.1.1"
         let resolved = partial.resolve();
         assert_eq!(resolved.on_screen_lock, SessionAction::None); // from partial
         assert_eq!(resolved.on_screen_unlock, SessionAction::ScreenOn); // hard-coded default
-        assert_eq!(resolved.on_sleep, SessionAction::PowerOff); // hard-coded default
         assert_eq!(resolved.idle_timeout_seconds, 0); // hard-coded default
     }
 
@@ -1465,7 +1461,6 @@ profile.user = "gaming"
         let resolved = user.resolve_user_profile("living-room", &system_default);
         assert_eq!(resolved.on_screen_lock, SessionAction::None); // user gaming
         assert_eq!(resolved.idle_timeout_seconds, 300); // inherited from system
-        assert_eq!(resolved.on_sleep, SessionAction::PowerOff); // hard-coded default
     }
 
     #[test]
@@ -1512,7 +1507,6 @@ profile.user = "gaming"
         let system_default = UserProfileConfig {
             on_screen_lock: Some(SessionAction::ScreenOff),
             idle_timeout_seconds: Some(100),
-            on_sleep: Some(SessionAction::PowerOff),
             ..UserProfileConfig::default()
         };
 
@@ -1538,7 +1532,6 @@ profile.user = "gaming"
         let resolved = user.resolve_user_profile("living-room", &system_default);
         assert_eq!(resolved.on_screen_lock, SessionAction::None); // gaming
         assert_eq!(resolved.idle_timeout_seconds, 600); // user default (not system 100)
-        assert_eq!(resolved.on_sleep, SessionAction::PowerOff); // system default
     }
 
     #[test]
@@ -1571,7 +1564,6 @@ profile.user = "gaming"
         assert_eq!(gaming.on_screen_lock, Some(SessionAction::None));
         assert_eq!(gaming.idle_timeout_seconds, Some(0));
         // None fields should not be serialized
-        assert_eq!(gaming.on_sleep, None);
         let living = deserialized
             .tv
             .iter()
@@ -1583,12 +1575,14 @@ profile.user = "gaming"
     #[test]
     fn test_parse_profile_config_all_fields() {
         let toml_str = r#"
+[system.profiles.custom]
+on_sleep = "none"
+on_wake = "screen_on"
+
 [user.profiles.custom]
 on_screen_lock = "power_off"
 on_screen_unlock = "power_on"
 on_greeter_wake = "none"
-on_sleep = "none"
-on_wake = "screen_on"
 idle_timeout_seconds = 300
 on_idle_timeout = "screen_off"
 
@@ -1605,6 +1599,18 @@ mac = "AA:BB:CC:DD:EE:FF"
 "#;
 
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
+
+        // Check system profile fields
+        let sys_profile = config
+            .system
+            .profiles
+            .get("custom")
+            .cloned()
+            .unwrap_or_else(SystemProfileConfig::full_default);
+        assert_eq!(sys_profile.on_sleep, Some(SessionAction::None));
+        assert_eq!(sys_profile.on_wake, Some(SessionAction::ScreenOn));
+
+        // Check user profile fields
         let profile = config
             .user
             .profiles
@@ -1614,8 +1620,6 @@ mac = "AA:BB:CC:DD:EE:FF"
         assert_eq!(profile.on_screen_lock, Some(SessionAction::PowerOff));
         assert_eq!(profile.on_screen_unlock, Some(SessionAction::PowerOn));
         assert_eq!(profile.on_greeter_wake, Some(SessionAction::None));
-        assert_eq!(profile.on_sleep, Some(SessionAction::None));
-        assert_eq!(profile.on_wake, Some(SessionAction::ScreenOn));
         assert_eq!(profile.idle_timeout_seconds, Some(300));
         assert_eq!(profile.on_idle_timeout, Some(SessionAction::ScreenOff));
 
@@ -1896,7 +1900,6 @@ ip = "192.168.1.1"
         assert_eq!(resolved.on_screen_lock, SessionAction::None);
         assert_eq!(resolved.idle_timeout_seconds, 300);
         assert_eq!(resolved.on_screen_unlock, SessionAction::ScreenOn);
-        assert_eq!(resolved.on_sleep, SessionAction::PowerOff);
 
         let resolved_unknown = user.resolve_user_profile("other-tv", &system_default);
         assert_eq!(resolved_unknown.on_screen_lock, SessionAction::ScreenOff);

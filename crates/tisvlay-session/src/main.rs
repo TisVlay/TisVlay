@@ -466,8 +466,6 @@ fn get_action_for_event(event: &SessionEvent, profile: &ResolvedUserProfile) -> 
         SessionEvent::ScreenLocked => profile.on_screen_lock,
         SessionEvent::ScreenUnlocked => profile.on_screen_unlock,
         SessionEvent::GreeterWake => profile.on_greeter_wake,
-        SessionEvent::PrepareForSleep => profile.on_sleep,
-        SessionEvent::ResumeFromSleep => profile.on_wake,
         SessionEvent::IdleTimeout => profile.on_idle_timeout,
         SessionEvent::IdleResume => profile.on_idle_resume,
     }

@@ -3,13 +3,13 @@ on_startup = "power_on"
 on_shutdown = "power_off"
 on_reboot = "none"
 on_no_session = "none"
+on_sleep = "power_off"
+on_wake = "power_on"
 
 [user.profiles.default]
 on_screen_lock = "screen_off"
 on_screen_unlock = "screen_on"
 on_greeter_wake = "screen_on"
-on_sleep = "power_off"
-on_wake = "power_on"
 idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
 on_idle_resume = "screen_on"

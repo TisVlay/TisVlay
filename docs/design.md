@@ -251,6 +251,8 @@ on_startup = "power_on"          # action on system boot (default: power_on)
 on_shutdown = "power_off"        # action on poweroff/halt (default: power_off)
 on_reboot = "none"               # action on reboot/kexec (default: none)
 on_no_session = "none"           # action when all user sessions end (login screen)
+on_sleep = "power_off"           # action on system suspend/hibernate (default: power_off)
+on_wake = "power_on"             # action on system resume from sleep (default: power_on)
 
 [system.profiles.guest]
 on_startup = "none"
@@ -262,8 +264,6 @@ on_shutdown = "screen_off"
 on_screen_lock = "screen_off"    # screen_off | power_off | none
 on_screen_unlock = "screen_on"   # screen_on | power_on | none
 on_greeter_wake = "screen_on"    # unblank on lock screen interaction (Wayland only)
-on_sleep = "power_off"
-on_wake = "power_on"
 idle_timeout_seconds = 0         # 0 to disable
 on_idle_timeout = "none"
 on_idle_resume = "screen_on"     # action when activity resumes after idle
@@ -349,8 +349,8 @@ stateDiagram-v2
 | Screen unlock | Screen on | `on_screen_unlock` (user profile) | Skipped if GreeterWake already unblanked |
 | User idle timeout | Screen off | `on_idle_timeout` (user profile) | Fires at minimum across all TVs |
 | Activity resumes | Screen on | `on_idle_resume` (user profile) | After idle timeout |
-| System suspend | Power off | `on_sleep` (user profile) | Network unavailable during sleep |
-| System resume | Power on | `on_wake` (user profile) | Backend handles WoL retry for lost packets |
+| System suspend | Power off | `on_sleep` (system profile) | Network unavailable during sleep |
+| System resume | Power on | `on_wake` (system profile) | Backend handles WoL retry for lost packets |
 | All sessions end | None | `on_no_session` (system profile) | Login screen / after logout |
 | System shutdown | Power off | `on_shutdown` (system profile) | poweroff or halt |
 | System reboot | None | `on_reboot` (system profile) | reboot or kexec; TV stays on for BIOS/TTY |

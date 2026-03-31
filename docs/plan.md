@@ -77,10 +77,10 @@ Remove `PrepareForSleep` handling from the session service's
 
 ## Checklist
 
-- [ ] 1: Move on_sleep/on_wake fields between profile types
-- [ ] 2: Add Sleep/Wake to SystemEvent
-- [ ] 3: Add PrepareForSleep handling to daemon logind.rs
-- [ ] 4: Remove sleep/wake from session service
-- [ ] 5: Update configs, tests, docs
-- [ ] `cargo check` all crates
-- [ ] `cargo test` all crates
+- [x] 1: Move on_sleep/on_wake fields between profile types
+- [x] 2: Add Sleep/Wake to SystemEvent
+- [x] 3: Add PrepareForSleep handling to daemon logind.rs
+- [x] 4: Remove sleep/wake from session service
+- [x] 5: Update configs, tests, docs
+- [x] `cargo check` all crates
+- [x] `cargo test` all crates
