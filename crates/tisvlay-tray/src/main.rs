@@ -53,11 +53,31 @@ async fn main() -> Result<()> {
 
     let daemon = Arc::new(daemon);
 
-    // Session client for profile management — lazily connected on each poll.
-    // Wrapped in RwLock so poll_state can establish the connection when the
-    // session service becomes available.
-    let session: Arc<tokio::sync::RwLock<Option<SessionClient>>> =
-        Arc::new(tokio::sync::RwLock::new(None));
+    // Session client for profile management — eagerly connected if available,
+    // then lazily retried on each poll if not.
+    let session: Arc<tokio::sync::RwLock<Option<SessionClient>>> = Arc::new(
+        tokio::sync::RwLock::new(match SessionClient::new().await {
+            Ok(client) if client.is_available().await => {
+                info!("Session service available for profile management");
+                Some(client)
+            }
+            _ => None,
+        }),
+    );
+
+    // Fetch initial state before creating the tray so it starts with full
+    // data. This prevents the first poll from triggering a ksni LayoutUpdated
+    // signal that would close any submenu the user opened early.
+    let (initial_tvs, initial_available) = {
+        let session_ref = session.read().await;
+        match fetch_all_state(&daemon, session_ref.as_ref()).await {
+            Ok(tvs) => (tvs, true),
+            Err(e) => {
+                debug!(error = %e, "Initial state fetch failed");
+                (Vec::new(), false)
+            }
+        }
+    };
 
     // Create command channel
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -65,10 +85,10 @@ async fn main() -> Result<()> {
     // that are encountered while draining scroll events in the processor.
     let requeue_tx = cmd_tx.clone();
 
-    // Create tray with initial empty state
+    // Create tray with initial state
     let tray = TisvlayTray {
-        tvs: Vec::new(),
-        daemon_available: false,
+        tvs: initial_tvs,
+        daemon_available: initial_available,
         cmd_tx,
         scroll_target: Default::default(),
         scroll_tv_id: None,
@@ -197,6 +217,29 @@ async fn poll_state(
         match fetch_all_state(&daemon, session_client).await {
             Ok(tvs) => {
                 if tvs != last_tvs || !last_daemon_available {
+                    // Log which fields changed to diagnose spurious menu rebuilds.
+                    if last_daemon_available {
+                        for (new, old) in tvs.iter().zip(last_tvs.iter()) {
+                            if new.id != old.id { debug!(tv = %new.id, "Poll diff: id"); }
+                            if new.name != old.name { debug!(tv = %new.id, "Poll diff: name"); }
+                            if new.connected != old.connected { debug!(tv = %new.id, old = old.connected, new = new.connected, "Poll diff: connected"); }
+                            if new.is_on != old.is_on { debug!(tv = %new.id, old = old.is_on, new = new.is_on, "Poll diff: is_on"); }
+                            if new.is_screen_on != old.is_screen_on { debug!(tv = %new.id, "Poll diff: is_screen_on"); }
+                            if new.volume != old.volume { debug!(tv = %new.id, old = ?old.volume, new = ?new.volume, "Poll diff: volume"); }
+                            if new.muted != old.muted { debug!(tv = %new.id, old = ?old.muted, new = ?new.muted, "Poll diff: muted"); }
+                            if new.current_input != old.current_input { debug!(tv = %new.id, old = ?old.current_input, new = ?new.current_input, "Poll diff: current_input"); }
+                            if new.backlight != old.backlight { debug!(tv = %new.id, old = ?old.backlight, new = ?new.backlight, "Poll diff: backlight"); }
+                            if new.inputs != old.inputs { debug!(tv = %new.id, "Poll diff: inputs"); }
+                            if new.user_profile != old.user_profile { debug!(tv = %new.id, old = ?old.user_profile, new = ?new.user_profile, "Poll diff: user_profile"); }
+                            if new.available_user_profiles != old.available_user_profiles { debug!(tv = %new.id, old = ?old.available_user_profiles, new = ?new.available_user_profiles, "Poll diff: available_user_profiles"); }
+                            if new.system_profile != old.system_profile { debug!(tv = %new.id, "Poll diff: system_profile"); }
+                            if new.available_system_profiles != old.available_system_profiles { debug!(tv = %new.id, old = ?old.available_system_profiles, new = ?new.available_system_profiles, "Poll diff: available_system_profiles"); }
+                            if new.managed != old.managed { debug!(tv = %new.id, "Poll diff: managed"); }
+                        }
+                        if tvs.len() != last_tvs.len() {
+                            debug!(old = last_tvs.len(), new = tvs.len(), "Poll diff: tv count changed");
+                        }
+                    }
                     debug!(count = tvs.len(), "Poll: state changed, updating menu");
                     handle
                         .update(|t| {
