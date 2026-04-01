@@ -236,7 +236,6 @@ impl Connection {
                     tracing::trace!(
                         id = ?response.id,
                         msg_type = ?response.msg_type,
-                        uri = ?response.uri,
                         "Received response"
                     );
 

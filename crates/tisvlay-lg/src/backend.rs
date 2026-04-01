@@ -239,8 +239,10 @@ impl TvConnection for LgConnection {
     async fn subscribe_state(&mut self) -> Result<mpsc::UnboundedReceiver<TvState>> {
         let client = self.ensure_connected().await?;
 
-        // Subscribe to SSAP state endpoints.
-        client.subscribe_state_updates().await?;
+        // Subscribe to SSAP state endpoints. Returns a mapping of request
+        // ID → URI so we can identify which subscription each update belongs
+        // to (SSAP updates carry the request ID but not the endpoint URI).
+        let id_to_uri = client.subscribe_state_updates().await?;
 
         // Take the subscription receiver from the client.
         let sub_rx = client
@@ -257,7 +259,14 @@ impl TvConnection for LgConnection {
             let mut cached_state = TvState::new();
             let mut sub_rx = sub_rx;
             while let Some(response) = sub_rx.recv().await {
-                if let Some(ref uri) = response.uri {
+                // Look up the endpoint URI from the response ID.
+                let uri = response
+                    .id
+                    .as_ref()
+                    .and_then(|id| id_to_uri.get(id))
+                    .map(|s| s.as_str());
+
+                if let Some(uri) = uri {
                     let changed =
                         update_state_from_subscription(&mut cached_state, uri, &response.payload);
                     if changed && state_tx.send(cached_state.clone()).is_err() {

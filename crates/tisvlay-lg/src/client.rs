@@ -149,17 +149,41 @@ impl WebOsClient {
 
     /// Subscribe to all state endpoints used for push-based updates.
     ///
+    /// Returns a mapping of request ID → endpoint URI so the caller can
+    /// identify which subscription each update belongs to (SSAP subscription
+    /// updates carry the request ID but not the URI).
+    ///
     /// After calling this, subscription updates will arrive on the channel
     /// returned by [`take_subscription_rx`].
-    pub async fn subscribe_state_updates(&mut self) -> Result<()> {
-        // Each subscribe call returns the initial value; we discard it here
-        // since the caller will get ongoing updates via the subscription channel.
-        self.subscribe(power::GET_POWER_STATE).await?;
-        self.subscribe(audio::GET_VOLUME).await?;
-        self.subscribe(audio::GET_MUTE).await?;
-        self.subscribe(input::GET_EXTERNAL_INPUT_LIST).await?;
-        self.subscribe(input::GET_CURRENT_INPUT).await?;
-        Ok(())
+    pub async fn subscribe_state_updates(
+        &mut self,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let mut id_to_uri = std::collections::HashMap::new();
+
+        let endpoints = [
+            power::GET_POWER_STATE,
+            audio::GET_VOLUME,
+            audio::GET_MUTE,
+            input::GET_EXTERNAL_INPUT_LIST,
+            input::GET_CURRENT_INPUT,
+        ];
+
+        for uri in &endpoints {
+            let request = Request::subscribe(self.next_id(), *uri);
+            let req_id = request.id.clone();
+            let timeout = self.timeout;
+            let response = self.conn()?.request(&request, timeout).await?;
+
+            if response.msg_type == ResponseType::Error {
+                if let Some(error) = &response.error {
+                    tracing::warn!(uri, error, "Subscribe returned error");
+                }
+            } else {
+                id_to_uri.insert(req_id, uri.to_string());
+            }
+        }
+
+        Ok(id_to_uri)
     }
 
     /// Take the subscription receiver from the underlying connection.
