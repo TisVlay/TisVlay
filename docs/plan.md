@@ -1,274 +1,334 @@
-# Refactor: Push-based tray updates via D-Bus signals
+# Refactor: End-to-end push-based state updates
 
 ## Motivation
 
-The tray currently polls the daemon every 5 seconds via `fetch_all_state()`
-(which calls `list_tvs()` + `get_state()` per TV + `list_system_profiles()`
-+ `list_user_profiles()` + `get_tv_user_profile()` per TV). This causes:
+State updates currently flow through two polling layers:
 
-1. **Up to 5 seconds of stale data** after CLI commands, session events,
-   or profile switches
-2. **Wasted D-Bus round-trips** when nothing changed (the common case)
-3. **Complex shadow cache + BTreeMap workarounds** to avoid ksni menu
-   rebuilds from identical polls
-4. **Per-field diff logging** that exists only to debug poll artifacts
+1. **Tray → Daemon**: The tray polls the daemon every 5 seconds via
+   `fetch_all_state()` (multiple D-Bus round-trips per TV).
+2. **Daemon → TV**: The daemon only queries TV state on demand — when
+   `get_state()` is called. If the user changes volume with the TV
+   remote, the daemon doesn't know until something asks.
 
-The daemon already emits D-Bus signals when state changes:
+This causes up to 5 seconds of stale data, wasted D-Bus round-trips,
+and complex workarounds (shadow cache, BTreeMap ordering, per-field
+diff logging) to avoid ksni menu rebuilds from identical polls.
+
+## Goal
+
+Full push-based pipeline:
+
+```
+TV remote/app → LG WebSocket push → LG backend → daemon StateChangeEvent
+    → D-Bus signal → tray handle.update()
+```
+
+Every layer notifies the next instead of being polled.
+
+## Architecture
+
+### Layer 1: Backend state subscriptions (TV → daemon)
+
+The LG SSAP protocol supports `subscribe` requests — the same URIs
+used for `request` (GET) commands, but sent with `msg_type: "subscribe"`.
+The TV pushes updates over the existing WebSocket whenever the value
+changes. The Python `aiowebostv` library demonstrates this pattern:
+
+```python
+subscribe_state_updates = {
+    self.subscribe_power_state(self.set_power_state),
+    self.subscribe_current_app(self.set_current_app_state),
+    self.subscribe_muted(self.set_muted_state),
+    self.subscribe_volume(self.set_volume_state),
+    self.subscribe_apps(self.set_apps_state),
+    self.subscribe_inputs(self.set_inputs_state),
+    self.subscribe_sound_output(self.set_sound_output_state),
+}
+```
+
+Our `protocol.rs` already has `RequestType::Subscribe` and
+`Request::subscribe()` — marked `#[allow(dead_code)]`, unused.
+
+**Subscribable SSAP endpoints** (from `endpoints.rs` + `aiowebostv`):
+- `ssap://com.webos.service.tvpower/power/getPowerState` (power state)
+- `ssap://audio/getVolume` (volume)
+- `ssap://audio/getMute` (mute)
+- `ssap://tv/getExternalInputList` (available inputs)
+- `ssap://com.webos.applicationManager/getForegroundAppInfo` (current input/app)
+- `ssap://audio/getSoundOutput` (sound output mode)
+
+Backlight is **not subscribable** — it uses the Luna workaround via
+`createAlert`. For now, backlight is only read on demand (tray open,
+CLI status, after tray commands). A tentative final phase may add
+backend-level backlight polling if the on-demand approach proves
+insufficient, but this is deferred until the subscription-based
+architecture is evaluated.
+
+### Layer 2: Daemon D-Bus signals (daemon → tray)
+
+The daemon already emits signals:
 - `StateChanged(state: s)` on `org.tisvlay.Tv1` per-TV objects
-- `ConnectionChanged(connected: b)` on `org.tisvlay.Tv1` per-TV objects
-- `InterfacesAdded`/`InterfacesRemoved` on the ObjectManager (when TVs
-  are added/removed via pairing)
+- `ConnectionChanged(connected: b)` on `org.tisvlay.Tv1`
+- `InterfacesAdded/Removed` on ObjectManager (TV add/remove)
 
-The tray should subscribe to these signals instead of polling.
+These need to be emitted whenever the backend pushes state, not just
+on explicit commands.
 
-## Design
+### Layer 3: Tray signal subscription (tray → ksni)
 
-### Signal-driven update model2. Push-based state instead of polling (bigger change, eliminates the poll entirely)
-2. Push-based state instead of polling (bigger change, eliminates the poll entirely)
+The tray subscribes to daemon D-Bus signals instead of polling. On any
+signal, it does a targeted refresh and calls `handle.update()`.
 
-The daemon already emits TvStateChanged signals on the D-Bus. Instead of polling every 5 seconds and comparing, the tray could subscribe to those signals and only call handle.update() when the daemon says something changed. This eliminates the poll loop, the shadow cache, and the ordering issue all at once. But it's a bigger architectural change — the tray would need signal subscription logic.
-The daemon already emits TvStateChanged signals on the D-Bus. Instead of polling every 5 seconds and comparing, the tray could subscribe to those signals and only call handle.update() when the daemon says something changed. This eliminates the poll loop, the shadow cache, and the ordering issue all at once. But it's a bigger architectural change — the tray would need signal subscription logic.
+### Vendor-agnostic design
 
-Replace the 5-second poll loop with D-Bus signal subscriptions:
+Not all vendors will support push-based state. The `TvConnection` trait
+gets an optional `subscribe_state()` method:
 
-1. **Subscribe once** at startup to:
-   - `StateChanged` on all TV objects (wildcard path match on
-     `/org/tisvlay/Tv/*`)
-   - `ConnectionChanged` on all TV objects
-   - `InterfacesAdded`/`InterfacesRemoved` on `/org/tisvlay` (TV
-     added/removed)
-   - `PropertiesChanged` on all TV objects (for Managed, SystemProfile
-     changes via SetTvOption)
+```rust
+async fn subscribe_state(&mut self) -> Result<mpsc::UnboundedReceiver<TvState>> {
+    Err(Error::not_supported("subscribe_state", Capabilities::empty()))
+}
+```
 
-2. **On any signal**: do a targeted refresh of the affected TV's state
-   (or full refresh for structural changes like TV add/remove), then
-   call `handle.update()`.
-
-3. **Keep a slow background poll as a fallback** (e.g., 30-60 seconds)
-   for resilience against missed signals (D-Bus signals are not
-   guaranteed delivery if the bus is congested). This is much less
-   aggressive than the current 5-second poll.
-
-### What gets removed
-
-- `POLL_INTERVAL = 5s` constant (replaced by fallback interval)
-- Shadow cache (`last_tvs`, `last_daemon_available`)
-- Per-field diff logging (no longer needed — updates are event-driven)
-- The `PartialEq` derive on `CachedTvState` (no longer needed for
-  comparison, but harmless to keep for tests)
-
-### What stays
-
-- `fetch_all_state()` — still used for the initial fetch and fallback
-  poll, just called less frequently
-- `refresh_state()` — still used after tray commands (scroll, power,
-  profile switch) for immediate feedback
-- `BTreeMap` for profiles — good practice regardless of polling
-- Eager initial state fetch — still needed for first render
+Vendors that support push (LG) implement it. The daemon checks: if
+subscriptions are available, use them; otherwise, fall back to periodic
+polling within the daemon per-TV (not from the tray). This keeps the
+tray always signal-driven regardless of backend capability.
 
 ---
 
-## Part 1: Add signal subscription to DaemonClient
+## Part 1: LG backend — WebSocket state subscriptions
+
+### 1.1 Add subscription support to WebOsClient
+
+**File:** `crates/tisvlay-lg/src/client.rs`
+
+Add a `subscribe()` method that sends a subscribe request and returns
+the initial response:
+
+```rust
+pub async fn subscribe(&mut self, uri: &str) -> Result<Response> {
+    let request = Request::subscribe(self.next_id(), uri);
+    // ... send and recv initial response
+}
+```
+
+Remove `#[allow(dead_code)]` from `RequestType::Subscribe` and
+`Request::subscribe()`.
+
+### 1.2 Add background message receiver to LgConnection
+
+**File:** `crates/tisvlay-lg/src/backend.rs`
+
+Currently `LgConnection` owns the `WebOsClient` which owns the
+WebSocket. Subscription messages arrive asynchronously on the same
+WebSocket. The connection needs a background task that:
+
+1. After connecting and registering, sends subscribe requests for
+   power, volume, mute, inputs, and current input
+2. Continuously reads the WebSocket for incoming messages
+3. Routes subscription updates to a state change channel
+4. Routes command responses to the requesting command
+
+This is a significant refactor of the connection model — currently
+`WebOsClient` uses synchronous request/response (send, then recv
+matching ID). With subscriptions, the WebSocket becomes multiplexed:
+subscription updates and command responses arrive interleaved.
+
+**Design options:**
+
+A. **Split reader/writer**: Spawn a background task that reads the
+   WebSocket and dispatches messages by type. Commands use a
+   oneshot channel to receive their response. Subscription updates
+   go to a broadcast channel.
+
+B. **Polling model**: After each command, drain any pending subscription
+   messages from the WebSocket before returning. Simpler but means
+   subscription updates only arrive when commands are being sent.
+
+Option A is more correct — subscription updates arrive in real time.
+
+### 1.3 Implement TvConnection::subscribe_state()
+
+**File:** `crates/tisvlay-lg/src/backend.rs`
+
+The LG implementation subscribes to the SSAP endpoints and returns
+a channel receiver that emits `TvState` snapshots on each update.
+Each subscription callback updates the relevant field of a cached
+`TvState` and sends the updated snapshot.
+
+---
+
+## Part 2: Daemon per-TV state monitoring
+
+### 2.1 Add subscribe_state() to TvConnection trait
+
+**File:** `crates/tisvlay-core/src/traits.rs`
+
+```rust
+/// Subscribe to state change notifications from the device.
+///
+/// Returns a channel that receives TvState snapshots when the device
+/// reports a change (e.g., volume adjusted via TV remote). Backends
+/// that don't support push-based state return NotSupported.
+async fn subscribe_state(
+    &mut self,
+) -> Result<tokio::sync::mpsc::UnboundedReceiver<TvState>> {
+    Err(Error::not_supported("subscribe_state", Capabilities::empty()))
+}
+```
+
+### 2.2 Daemon subscribes after connecting
+
+**File:** `crates/tisvlayd/src/tv_manager.rs`
+
+After `with_connection` establishes a connection, attempt to subscribe:
+
+```rust
+if let Ok(state_rx) = connection.subscribe_state().await {
+    // Spawn task that reads state_rx and emits StateChangeEvent
+    tokio::spawn(async move {
+        while let Some(state) = state_rx.recv().await {
+            emit_state_change(StateChangeEvent::from_tv_state(tv_id, &state));
+        }
+    });
+}
+```
+
+For backends without subscription support, the daemon can optionally
+run a per-TV poll loop (slower interval, e.g., 30s) to keep state
+fresh for signal consumers.
+
+### 2.3 Emit signals for all state sources
+
+Currently `emit_state_change()` is only called for connection changes
+and explicit commands. With backend subscriptions, it also fires on
+push-based state updates. Verify the D-Bus signal emission path handles
+the increased signal volume (debounce if needed).
+
+---
+
+## Part 3: Tray signal-driven updates
+
+### 3.1 Add signal subscription to DaemonClient
 
 **File:** `crates/tisvlay-core/src/dbus_client.rs`
 
-Add a `TvProxy` definition for `org.tisvlay.Tv1` with signal receivers:
+Use a broad D-Bus match rule to capture all `org.tisvlay.Tv1` signals:
 
 ```rust
-#[proxy(
-    interface = "org.tisvlay.Tv1",
-    default_service = "org.tisvlay.Daemon",
-)]
-trait TisvlayTv {
-    #[zbus(signal)]
-    fn state_changed(&self, state: &str) -> zbus::Result<()>;
-
-    #[zbus(signal)]
-    fn connection_changed(&self, connected: bool) -> zbus::Result<()>;
-}
+pub async fn subscribe_state_changes(&self) -> Result<impl Stream<Item = TvStateChange>>
 ```
 
-Add a method on `DaemonClient` that returns a stream of state change
-events:
-
-```rust
-pub async fn subscribe_state_changes(&self) -> Result<impl Stream<Item = TvStateChange>> {
-    // Use MessageStream on the connection with a match rule for
-    // org.tisvlay.Tv1 signals on any path under /org/tisvlay/Tv/
-}
-```
-
-The `TvStateChange` enum:
+Parse the object path to extract TV ID. The `TvStateChange` enum:
 ```rust
 pub enum TvStateChange {
-    /// A TV's state changed (volume, input, power, etc.)
     StateChanged { tv_id: String, state_json: String },
-    /// A TV's connection status changed
     ConnectionChanged { tv_id: String, connected: bool },
-    /// A TV was added or removed (requires full refresh)
     TvListChanged,
-    /// A TV property changed (Managed, SystemProfile, etc.)
     PropertyChanged { tv_id: String },
 }
 ```
 
-### Alternative: use zbus match rules directly
-
-Instead of per-TV proxy subscriptions (which would require creating a
-proxy for each TV), use a single `MessageStream` on the connection with
-a broad match rule:
-
-```rust
-connection.add_match_rule(
-    zbus::MatchRule::builder()
-        .msg_type(zbus::message::Type::Signal)
-        .interface("org.tisvlay.Tv1")?
-        .build()
-).await?;
-```
-
-This captures all Tv1 signals across all TV object paths. Parse the
-object path to extract the TV ID.
-
----
-
-## Part 2: Add signal watcher task in tray
+### 3.2 Replace poll loop with signal watcher
 
 **File:** `crates/tisvlay-tray/src/main.rs`
 
-Replace the tight poll loop with a signal-driven watcher:
+Replace `poll_state()` with `watch_state()`:
+- Subscribe to daemon D-Bus signals at startup
+- On signal: debounce (coalesce within 100ms), then refresh
+- Fallback poll at 30-60s for resilience
+- Fall back to full polling if signal subscription fails
 
-```rust
-async fn watch_state(
-    daemon: Arc<DaemonClient>,
-    session: Arc<RwLock<Option<SessionClient>>>,
-    handle: ksni::Handle<TisvlayTray>,
-) {
-    let mut signal_stream = match daemon.subscribe_state_changes().await {
-        Ok(stream) => stream,
-        Err(e) => {
-            warn!("Failed to subscribe to state signals, falling back to polling");
-            // Fall back to polling
-            return poll_state_fallback(daemon, session, handle).await;
-        }
-    };
+### 3.3 Simplify tray
 
-    loop {
-        tokio::select! {
-            Some(change) = signal_stream.next() => {
-                debug!(change = ?change, "State signal received");
-                refresh_state(&daemon, &session, &handle).await;
-            }
-            _ = tokio::time::sleep(FALLBACK_POLL_INTERVAL) => {
-                // Periodic fallback poll for resilience
-                refresh_state(&daemon, &session, &handle).await;
-            }
-        }
-    }
-}
-```
+Remove:
+- `POLL_INTERVAL = 5s`
+- Shadow cache (`last_tvs`, `last_daemon_available`)
+- Per-field diff logging
 
-The `FALLBACK_POLL_INTERVAL` would be 30-60 seconds (vs current 5s).
-
-### Debouncing
-
-Multiple signals can arrive in rapid succession (e.g., volume change
-triggers both a StateChanged and a PropertiesChanged). Debounce by
-coalescing signals within a short window (e.g., 100ms) before
-refreshing:
-
-```rust
-loop {
-    // Wait for first signal
-    let change = signal_stream.next().await;
-
-    // Drain any additional signals that arrive within 100ms
-    let deadline = tokio::time::sleep(Duration::from_millis(100));
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            Some(_) = signal_stream.next() => continue,
-            _ = &mut deadline => break,
-        }
-    }
-
-    // Now refresh once for all coalesced signals
-    refresh_state(&daemon, &session, &handle).await;
-}
-```
+Keep:
+- `refresh_state()` for command-triggered updates
+- Eager initial state fetch
+- `BTreeMap` for profiles (good practice)
+- `PartialEq` on `CachedTvState` (useful for tests)
 
 ---
 
-## Part 3: Simplify tray main.rs
+## Part 4: Daemon signal completeness
 
-**File:** `crates/tisvlay-tray/src/main.rs`
+### 4.1 Fix suppressed property change signals
 
-- Replace `poll_state()` with `watch_state()`
-- Remove `POLL_INTERVAL` constant, add `FALLBACK_POLL_INTERVAL`
-- Remove shadow cache variables (`last_tvs`, `last_daemon_available`)
-- Remove per-field diff logging (the debug instrumentation)
-- Keep `refresh_state()` for command-triggered updates
-- Keep eager initial state fetch
-- Keep lazy session service connection (retry on fallback poll)
+**File:** `crates/tisvlayd/src/dbus/tv.rs`
 
----
+`Managed` and `SystemProfile` properties have
+`emits_changed_signal = "false"`. Either:
+- Change to `emits_changed_signal = "true"`, or
+- Emit a manual `StateChanged` in `set_tv_option()` when these change
 
-## Part 4: Session service signal handling (optional enhancement)
+### 4.2 Config reload signal
 
-The session service also affects tray state (user profile changes).
-Currently the tray queries the session service during `fetch_all_state()`.
-For full push-based updates, the tray could also subscribe to session
-service D-Bus signals. However, session profile changes are rare (user
-manually switches), so the fallback poll handles this adequately.
-
-If needed later:
-- Add a `ProfileChanged` signal to `org.tisvlay.Session1`
-- Subscribe in the tray alongside daemon signals
+Add a signal (e.g., on Manager1) when config is reloaded, so the tray
+knows to refresh profile lists. Currently profiles only change on reload.
 
 ---
 
-## Part 5: Daemon signal completeness audit
+## Part 5: Session service signals (optional)
 
-Verify the daemon emits signals for all state changes the tray cares
-about. Currently emitted:
-
-| Event | Signal | Emitted? |
-|-------|--------|----------|
-| TV connects/disconnects | `ConnectionChanged` | Yes |
-| TV state changes (vol, input, etc.) | `StateChanged` | Yes (via `emit_state_change`) |
-| TV added (pairing) | `InterfacesAdded` (ObjectManager) | Yes (automatic from zbus) |
-| TV removed | `InterfacesRemoved` (ObjectManager) | Yes |
-| Managed flag toggled | `PropertiesChanged`? | Needs check |
-| System profile changed | `PropertiesChanged`? | Needs check |
-| Config reloaded | ? | May need a new signal |
-
-If `SetTvOption` changes (managed, profile.system) don't emit
-`PropertiesChanged`, the tray won't know. Check whether zbus
-auto-emits property changes, or if manual signal emission is needed.
-
-Note: zbus properties with `emits_changed_signal = "false"` (currently
-set on Managed and SystemProfile in tv.rs) explicitly suppress
-automatic property change signals. These would need to be changed to
-emit, or we emit a manual `StateChanged` signal when these options
-change.
+Add `UserProfileChanged(tv_id: s, profile: s)` signal to
+`org.tisvlay.Session1` when the user switches profiles. The tray
+subscribes alongside daemon signals. Low priority since profile
+changes are rare and the fallback poll covers it.
 
 ---
 
 ## Part 6: Update docs
 
-- `.claude/CLAUDE.md`: note push-based tray architecture
-- `docs/design.md`: update tray description from polling to signal-driven
-- Remove poll-related comments and shadow cache docs
+- `docs/design.md`: architecture diagram showing push-based pipeline,
+  update tray description, add subscribable endpoints list
+- `.claude/CLAUDE.md`: note push-based architecture, update Known Quirks
+  (backlight not subscribable)
+- `docs/issue.md`: note that push-based updates further reduce ksni
+  LayoutUpdated frequency
+
+---
+
+## Implementation order
+
+Phase 1 (LG backend subscriptions) is the largest and most impactful
+change. It requires refactoring the WebSocket connection from
+synchronous request/response to multiplexed async. This should be done
+first and tested independently.
+
+Phase 2 (daemon plumbing) is straightforward — wire subscription
+channels to StateChangeEvent emission.
+
+Phase 3 (tray signals) can be done independently of Phase 1 — the tray
+benefits from signal subscription even if the daemon only emits signals
+on explicit commands (which it already does). Phase 1 makes it real-time.
+
+Suggested order: Phase 3 → Phase 4 → Phase 2 → Phase 1 → Phase 5 → Phase 6
+
+This way the tray gets signal-driven updates first (immediate UX win),
+then the backend subscription adds real-time TV state awareness.
 
 ---
 
 ## Checklist
 
-- [ ] Part 1: Add signal subscription to DaemonClient
-- [ ] Part 2: Signal watcher task in tray with debouncing
-- [ ] Part 3: Simplify tray main.rs (remove poll artifacts)
-- [ ] Part 4: (Optional) Session service ProfileChanged signal
-- [ ] Part 5: Daemon signal completeness audit
+- [ ] Part 1.1: LG subscribe() method on WebOsClient
+- [ ] Part 1.2: Multiplexed WebSocket reader in LG backend
+- [ ] Part 1.3: LG TvConnection::subscribe_state() implementation
+- [ ] Part 2.1: subscribe_state() on TvConnection trait
+- [ ] Part 2.2: Daemon subscribes after connecting
+- [ ] Part 2.3: Signal emission for subscription updates
+- [ ] Part 3.1: DaemonClient signal subscription API
+- [ ] Part 3.2: Tray signal watcher with debouncing
+- [ ] Part 3.3: Remove poll artifacts from tray
+- [ ] Part 4.1: Fix suppressed property change signals
+- [ ] Part 4.2: Config reload signal
+- [ ] Part 5: Session service UserProfileChanged signal
 - [ ] Part 6: Update docs
+- [ ] Part 7: (Tentative) Backend backlight polling — evaluate after subscription architecture is stable
 - [ ] `cargo check` all crates
 - [ ] `cargo test` all crates
