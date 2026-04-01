@@ -57,12 +57,13 @@ Our `protocol.rs` already has `RequestType::Subscribe` and
 - `ssap://com.webos.applicationManager/getForegroundAppInfo` (current input/app)
 - `ssap://audio/getSoundOutput` (sound output mode)
 
-Backlight is **not subscribable** — it uses the Luna workaround via
-`createAlert`. For now, backlight is only read on demand (tray open,
-CLI status, after tray commands). A tentative final phase may add
-backend-level backlight polling if the on-demand approach proves
-insufficient, but this is deferred until the subscription-based
-architecture is evaluated.
+~~Backlight was assumed not subscribable~~ — **UPDATE**: live probing
+confirmed `ssap://settings/getSystemSettings` with `category: "picture",
+keys: ["backlight"]` supports subscriptions and pushes real-time updates.
+Backlight is now included in the LG subscription list alongside power,
+volume, mute, and inputs. Writing backlight still requires the Luna
+`createAlert` workaround (all direct setSystemSettings methods return
+401 insufficient permissions).
 
 ### Layer 2: Daemon D-Bus signals (daemon → tray)
 
@@ -329,6 +330,6 @@ then the backend subscription adds real-time TV state awareness.
 - [ ] Part 4.2: Config reload signal
 - [ ] Part 5: Session service UserProfileChanged signal
 - [x] Part 6: Update docs
-- [ ] Part 7: (Tentative) Backend backlight polling — evaluate after subscription architecture is stable
+- [x] ~~Part 7~~ Backlight IS subscribable via ssap://settings/getSystemSettings — no polling needed. Added to LG subscription list.
 - [x] `cargo check` all crates
 - [x] `cargo test` all crates
