@@ -5,6 +5,7 @@
 use crate::client::WebOsClient;
 use crate::config::LgVendorConfig;
 use async_trait::async_trait;
+use serde_json::Value;
 use std::time::Duration;
 use tisvlay_core::{
     Capabilities, Credentials, Error, InputInfo, MacAddress, PairingCommand, PairingSession,
@@ -12,6 +13,7 @@ use tisvlay_core::{
 };
 #[cfg(feature = "discovery")]
 use tisvlay_core::{DiscoveredTv, TvDiscovery};
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 /// Maximum number of connection attempts after sending WoL.
@@ -233,6 +235,108 @@ impl TvConnection for LgConnection {
     async fn get_backlight(&mut self) -> Result<u8> {
         self.with_retry(|c| Box::pin(c.get_backlight())).await
     }
+
+    async fn subscribe_state(&mut self) -> Result<mpsc::UnboundedReceiver<TvState>> {
+        let client = self.ensure_connected().await?;
+
+        // Subscribe to SSAP state endpoints.
+        client.subscribe_state_updates().await?;
+
+        // Take the subscription receiver from the client.
+        let sub_rx = client
+            .take_subscription_rx()
+            .ok_or(Error::ConnectionClosed)?;
+
+        // Create a channel for TvState updates.
+        let (state_tx, state_rx) = mpsc::unbounded_channel();
+
+        // Spawn a task that converts SSAP subscription responses into
+        // TvState snapshots. Each update merges into a cached state so
+        // the receiver always gets a complete snapshot.
+        tokio::spawn(async move {
+            let mut cached_state = TvState::new();
+            let mut sub_rx = sub_rx;
+            while let Some(response) = sub_rx.recv().await {
+                if let Some(ref uri) = response.uri {
+                    let changed =
+                        update_state_from_subscription(&mut cached_state, uri, &response.payload);
+                    if changed && state_tx.send(cached_state.clone()).is_err() {
+                        // Receiver dropped — stop processing.
+                        break;
+                    }
+                }
+            }
+            debug!("Subscription state converter task exited");
+        });
+
+        Ok(state_rx)
+    }
+}
+
+/// Update a cached [`TvState`] from an SSAP subscription response.
+///
+/// Returns `true` if the state was actually modified.
+fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Value) -> bool {
+    if uri.contains("getPowerState") {
+        if let Some(state_str) = payload.get("state").and_then(|v| v.as_str()) {
+            let power = PowerState::parse(state_str);
+            state.update_power(power);
+            return true;
+        }
+    } else if uri.contains("getVolume") {
+        if let Some(vol) = payload.get("volume").and_then(|v| v.as_i64()) {
+            state.volume = Some(vol.clamp(0, 100) as u8);
+            // Some firmware includes mute in volume updates.
+            if let Some(muted) = payload.get("mute").and_then(|v| v.as_bool()) {
+                state.muted = Some(muted);
+            }
+            return true;
+        }
+        // Also check nested volumeStatus format.
+        if let Some(status) = payload.get("volumeStatus") {
+            if let Some(vol) = status.get("volume").and_then(|v| v.as_i64()) {
+                state.volume = Some(vol.clamp(0, 100) as u8);
+            }
+            if let Some(muted) = status.get("muted").and_then(|v| v.as_bool()) {
+                state.muted = Some(muted);
+            }
+            return true;
+        }
+    } else if uri.contains("getMute") {
+        if let Some(muted) = payload.get("mute").and_then(|v| v.as_bool()) {
+            state.muted = Some(muted);
+            return true;
+        }
+    } else if uri.contains("getExternalInputList") {
+        if let Some(devices) = payload.get("devices").and_then(|v| v.as_array()) {
+            state.inputs = devices
+                .iter()
+                .filter_map(|d| {
+                    let id = d.get("id")?.as_str()?;
+                    let label = d.get("label")?.as_str()?;
+                    let connected = d
+                        .get("connected")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    Some(InputInfo {
+                        id: id.to_string(),
+                        label: label.to_string(),
+                        connected,
+                    })
+                })
+                .collect();
+            return true;
+        }
+    } else if uri.contains("getForegroundAppInfo") {
+        if let Some(app_id) = payload.get("appId").and_then(|v| v.as_str()) {
+            state.current_app = Some(app_id.to_string());
+            // HDMI inputs appear as apps like "com.webos.app.hdmi1"
+            state.current_input = Some(app_id.to_string());
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Factory for creating LG WebOS connections.

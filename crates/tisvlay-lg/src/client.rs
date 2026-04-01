@@ -9,6 +9,7 @@ use crate::protocol::{
 use serde_json::{json, Value};
 use std::time::Duration;
 use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
+use tokio::sync::mpsc;
 
 /// Client for controlling an LG WebOS TV.
 pub struct WebOsClient {
@@ -47,7 +48,12 @@ impl WebOsClient {
 
     /// Check if the connection is still active.
     pub fn is_connected(&self) -> bool {
-        self.conn.is_some()
+        self.conn.as_ref().is_some_and(|c| c.is_alive())
+    }
+
+    /// Get a reference to the connection, returning an error if closed.
+    fn conn(&self) -> Result<&Connection> {
+        self.conn.as_ref().ok_or(Error::ConnectionClosed)
     }
 
     /// Get a mutable reference to the connection, returning an error if closed.
@@ -56,45 +62,38 @@ impl WebOsClient {
     }
 
     /// Register with the TV and get a client key.
+    ///
+    /// Uses the multiplexed `request()` method which routes the matching
+    /// response via a oneshot channel. Intermediate messages (e.g.,
+    /// subscription updates) are handled by the background reader and
+    /// do not interfere with registration.
     async fn register(&mut self, existing_key: Option<String>) -> Result<String> {
         let payload = RegisterPayload::new(existing_key);
         let request = Request::register(self.next_id(), payload);
 
         // Use longer timeout for pairing (user needs to accept on TV)
         let pairing_timeout = Duration::from_millis(timeouts::PAIRING_MS);
-        self.conn_mut()?.send(&request).await?;
+        let response = self.conn()?.request(&request, pairing_timeout).await?;
 
-        // Wait for registered response
-        let deadline = tokio::time::Instant::now() + pairing_timeout;
-
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::PairingTimeout);
+        match response.msg_type {
+            ResponseType::Registered => {
+                let payload: RegisteredPayload = serde_json::from_value(response.payload)?;
+                tracing::info!("Registered with TV, got client key");
+                Ok(payload.client_key)
             }
-
-            let response = self.conn_mut()?.recv_timeout(remaining).await?;
-
-            match response.msg_type {
-                ResponseType::Registered => {
-                    let payload: RegisteredPayload = serde_json::from_value(response.payload)?;
-                    tracing::info!("Registered with TV, got client key");
-                    return Ok(payload.client_key);
-                }
-                ResponseType::Error => {
-                    if let Some(error) = response.error {
-                        if error.contains("cancelled") || error.contains("rejected") {
-                            return Err(Error::PairingRejected);
-                        }
-                        return Err(Error::TvError(error));
+            ResponseType::Error => {
+                if let Some(error) = response.error {
+                    if error.contains("cancelled") || error.contains("rejected") {
+                        return Err(Error::PairingRejected);
                     }
-                    return Err(Error::PairingRejected);
+                    return Err(Error::TvError(error));
                 }
-                _ => {
-                    // Ignore other messages during registration
-                    tracing::trace!(msg_type = ?response.msg_type, "Ignoring message during registration");
-                }
+                Err(Error::PairingRejected)
             }
+            _ => Err(Error::InvalidResponse(format!(
+                "Unexpected response type during registration: {:?}",
+                response.msg_type
+            ))),
         }
     }
 
@@ -114,7 +113,7 @@ impl WebOsClient {
     async fn command(&mut self, uri: &str, payload: Value) -> Result<Response> {
         let request = Request::command(self.next_id(), uri, payload);
         let timeout = self.timeout;
-        let response = self.conn_mut()?.request(&request, timeout).await?;
+        let response = self.conn()?.request(&request, timeout).await?;
 
         if response.msg_type == ResponseType::Error {
             if let Some(error) = response.error {
@@ -123,6 +122,51 @@ impl WebOsClient {
         }
 
         Ok(response)
+    }
+
+    // -------------------------------------------------------------------------
+    // Subscriptions
+    // -------------------------------------------------------------------------
+
+    /// Subscribe to a single SSAP endpoint.
+    ///
+    /// Sends a subscribe request and returns the initial response (which
+    /// typically contains the current value). Subsequent updates arrive on
+    /// the subscription channel (see [`take_subscription_rx`]).
+    pub async fn subscribe(&mut self, uri: &str) -> Result<Response> {
+        let request = Request::subscribe(self.next_id(), uri);
+        let timeout = self.timeout;
+        let response = self.conn()?.request(&request, timeout).await?;
+
+        if response.msg_type == ResponseType::Error {
+            if let Some(error) = &response.error {
+                tracing::warn!(uri, error, "Subscribe returned error");
+            }
+        }
+
+        Ok(response)
+    }
+
+    /// Subscribe to all state endpoints used for push-based updates.
+    ///
+    /// After calling this, subscription updates will arrive on the channel
+    /// returned by [`take_subscription_rx`].
+    pub async fn subscribe_state_updates(&mut self) -> Result<()> {
+        // Each subscribe call returns the initial value; we discard it here
+        // since the caller will get ongoing updates via the subscription channel.
+        self.subscribe(power::GET_POWER_STATE).await?;
+        self.subscribe(audio::GET_VOLUME).await?;
+        self.subscribe(audio::GET_MUTE).await?;
+        self.subscribe(input::GET_EXTERNAL_INPUT_LIST).await?;
+        self.subscribe(input::GET_CURRENT_INPUT).await?;
+        Ok(())
+    }
+
+    /// Take the subscription receiver from the underlying connection.
+    ///
+    /// Returns `Some` on the first call, `None` on subsequent calls.
+    pub fn take_subscription_rx(&mut self) -> Option<mpsc::UnboundedReceiver<Response>> {
+        self.conn_mut().ok()?.take_subscription_rx()
     }
 
     // -------------------------------------------------------------------------
