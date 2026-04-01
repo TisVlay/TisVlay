@@ -16,7 +16,7 @@ use ksni::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use state::fetch_all_state;
+use state::{fetch_all_state, CachedTvState};
 use tisvlay_core::{DaemonClient, SessionClient};
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
@@ -159,11 +159,18 @@ async fn refresh_state(
 }
 
 /// Periodically fetch TV state and update the tray menu.
+///
+/// Keeps a shadow copy of the last state to avoid calling `handle.update()`
+/// when nothing changed. Each `update()` triggers a ksni menu rebuild that
+/// emits `LayoutUpdated`, which closes any open submenus in the system tray.
 async fn poll_state(
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
 ) {
+    let mut last_tvs: Vec<CachedTvState> = Vec::new();
+    let mut last_daemon_available = false;
+
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
 
@@ -183,7 +190,40 @@ async fn poll_state(
                 }
             }
         }
-        refresh_state(&daemon, &session, &handle).await;
+
+        let session_ref = session.read().await;
+        let session_client = session_ref.as_ref();
+
+        match fetch_all_state(&daemon, session_client).await {
+            Ok(tvs) => {
+                if tvs != last_tvs || !last_daemon_available {
+                    debug!(count = tvs.len(), "Poll: state changed, updating menu");
+                    handle
+                        .update(|t| {
+                            t.tvs = tvs.clone();
+                            t.daemon_available = true;
+                        })
+                        .await;
+                    last_tvs = tvs;
+                    last_daemon_available = true;
+                }
+            }
+            Err(e) => {
+                if last_daemon_available {
+                    debug!(error = %e, "Poll: daemon became unavailable");
+                    handle
+                        .update(|t| {
+                            t.daemon_available = false;
+                            for tv in &mut t.tvs {
+                                tv.connected = false;
+                            }
+                        })
+                        .await;
+                    last_daemon_available = false;
+                    last_tvs.clear();
+                }
+            }
+        }
     }
 }
 

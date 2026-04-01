@@ -7,7 +7,7 @@ use tisvlay_core::{DaemonClient, SessionClient};
 use tracing::debug;
 
 /// Snapshot of a single TV's state, cached locally for menu rendering.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CachedTvState {
     pub id: String,
     pub name: String,
@@ -45,8 +45,10 @@ pub async fn fetch_all_state(
         debug!(tv_id = %tv.id, connected = tv.connected, "TV from daemon");
     }
 
-    // Fetch available user profiles from session service (once, shared across TVs)
-    let available_user_profiles: Vec<String> = match session {
+    // Fetch available user profiles from session service (once, shared across TVs).
+    // Sort for stable ordering — HashMap iteration is non-deterministic, and the
+    // poll loop compares state to avoid unnecessary ksni menu rebuilds.
+    let mut available_user_profiles: Vec<String> = match session {
         Some(session_client) => match session_client.list_user_profiles().await {
             Ok(profiles) => profiles.into_iter().map(|(name, _)| name).collect(),
             Err(e) => {
@@ -56,15 +58,17 @@ pub async fn fetch_all_state(
         },
         None => Vec::new(),
     };
+    available_user_profiles.sort();
 
-    // Fetch available system profiles from daemon (once, shared across TVs)
-    let available_system_profiles: Vec<String> = match daemon.list_system_profiles().await {
+    // Fetch available system profiles from daemon (once, shared across TVs).
+    let mut available_system_profiles: Vec<String> = match daemon.list_system_profiles().await {
         Ok(profiles) => profiles.into_iter().map(|(name, _)| name).collect(),
         Err(e) => {
             debug!(error = %e, "Failed to list system profiles from daemon");
             Vec::new()
         }
     };
+    available_system_profiles.sort();
 
     let mut states = Vec::with_capacity(tvs.len());
 
@@ -135,4 +139,69 @@ pub async fn fetch_all_state(
     }
 
     Ok(states)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_tv_state(
+        system_profiles: Vec<&str>,
+        user_profiles: Vec<&str>,
+    ) -> CachedTvState {
+        CachedTvState {
+            id: "test".into(),
+            name: "Test".into(),
+            connected: true,
+            is_on: true,
+            is_screen_on: true,
+            volume: Some(50),
+            muted: Some(false),
+            current_input: Some("HDMI_1".into()),
+            backlight: Some(80),
+            inputs: vec![("HDMI_1".into(), "HDMI 1".into())],
+            user_profile: Some("default".into()),
+            available_user_profiles: user_profiles.into_iter().map(String::from).collect(),
+            system_profile: "default".into(),
+            available_system_profiles: system_profiles.into_iter().map(String::from).collect(),
+            managed: true,
+        }
+    }
+
+    #[test]
+    fn test_cached_tv_state_equality_same_data() {
+        let a = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
+        let b = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_cached_tv_state_inequality_different_data() {
+        let a = make_tv_state(vec!["default"], vec!["default"]);
+        let mut b = a.clone();
+        b.volume = Some(51);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_cached_tv_state_unsorted_profiles_are_unequal() {
+        // Demonstrates why sorting is necessary: same profiles in different
+        // order (as returned by HashMap iteration) compare as unequal.
+        let a = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
+        let b = make_tv_state(vec!["guest", "default"], vec!["gaming", "default"]);
+        assert_ne!(a, b, "unsorted profile lists should differ");
+    }
+
+    #[test]
+    fn test_cached_tv_state_sorted_profiles_are_equal() {
+        // After sorting (which fetch_all_state does), same profiles in
+        // originally different order compare as equal.
+        let mut a = make_tv_state(vec!["guest", "default"], vec!["gaming", "default"]);
+        let mut b = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
+        a.available_system_profiles.sort();
+        a.available_user_profiles.sort();
+        b.available_system_profiles.sort();
+        b.available_user_profiles.sort();
+        assert_eq!(a, b, "sorted profile lists should be equal");
+    }
 }
