@@ -158,9 +158,12 @@ impl WebOsClient {
     pub async fn subscribe_state_updates(
         &mut self,
     ) -> Result<std::collections::HashMap<String, String>> {
+        use serde_json::json;
+
         let mut id_to_uri = std::collections::HashMap::new();
 
-        let endpoints = [
+        // Plain subscriptions (no payload needed)
+        let plain_endpoints = [
             power::GET_POWER_STATE,
             audio::GET_VOLUME,
             audio::GET_MUTE,
@@ -168,7 +171,7 @@ impl WebOsClient {
             input::GET_CURRENT_INPUT,
         ];
 
-        for uri in &endpoints {
+        for uri in &plain_endpoints {
             let request = Request::subscribe(self.next_id(), *uri);
             let req_id = request.id.clone();
             let timeout = self.timeout;
@@ -180,6 +183,28 @@ impl WebOsClient {
                 }
             } else {
                 id_to_uri.insert(req_id, uri.to_string());
+            }
+        }
+
+        // Subscriptions with payloads (settings endpoints need category + keys)
+        let payload_endpoints: Vec<(&str, serde_json::Value)> = vec![(
+            picture::GET_SYSTEM_SETTINGS,
+            json!({"category": "picture", "keys": ["backlight"]}),
+        )];
+
+        for (uri, payload) in &payload_endpoints {
+            let request = Request::subscribe_with_payload(self.next_id(), *uri, payload.clone());
+            let req_id = request.id.clone();
+            let timeout = self.timeout;
+            let response = self.conn()?.request(&request, timeout).await?;
+
+            if response.msg_type == ResponseType::Error {
+                if let Some(error) = &response.error {
+                    tracing::warn!(uri, error, "Subscribe with payload returned error");
+                }
+            } else {
+                // Use a synthetic URI to distinguish from other getSystemSettings calls
+                id_to_uri.insert(req_id, format!("{}#picture/backlight", uri));
             }
         }
 

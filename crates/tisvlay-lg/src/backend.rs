@@ -301,12 +301,13 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
             }
             return true;
         }
-        // Also check nested volumeStatus format.
+        // Also check nested volumeStatus format (subscription updates use this).
         if let Some(status) = payload.get("volumeStatus") {
             if let Some(vol) = status.get("volume").and_then(|v| v.as_i64()) {
                 state.volume = Some(vol.clamp(0, 100) as u8);
             }
-            if let Some(muted) = status.get("muted").and_then(|v| v.as_bool()) {
+            // The field is "muteStatus" (bool) in volumeStatus, not "muted".
+            if let Some(muted) = status.get("muteStatus").and_then(|v| v.as_bool()) {
                 state.muted = Some(muted);
             }
             return true;
@@ -341,6 +342,17 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
             state.current_app = Some(app_id.to_string());
             // HDMI inputs appear as apps like "com.webos.app.hdmi1"
             state.current_input = Some(app_id.to_string());
+            return true;
+        }
+    } else if uri.contains("#picture/backlight") {
+        // Backlight subscription via ssap://settings/getSystemSettings
+        // with category "picture", keys ["backlight"].
+        if let Some(bl) = payload
+            .get("settings")
+            .and_then(|s| s.get("backlight"))
+            .and_then(|v| v.as_i64())
+        {
+            state.backlight = Some(bl.clamp(0, 100) as u8);
             return true;
         }
     }

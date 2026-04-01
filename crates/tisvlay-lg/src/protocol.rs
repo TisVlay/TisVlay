@@ -342,4 +342,18 @@ impl Request {
             payload: None,
         }
     }
+
+    /// Create a subscribe request with a payload.
+    pub fn subscribe_with_payload(
+        id: impl Into<String>,
+        uri: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            msg_type: RequestType::Subscribe,
+            uri: Some(uri.into()),
+            payload: Some(payload),
+        }
+    }
 }
