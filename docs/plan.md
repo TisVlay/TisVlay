@@ -283,6 +283,35 @@ changes are rare and the fallback poll covers it.
 
 ---
 
+## Part 8: Factor out D-Bus service discovery utility
+
+The tray uses `NameOwnerChanged` to detect when `org.tisvlay.Session`
+appears on the bus — connecting within ~2ms instead of waiting for a
+fallback poll. This pattern is reusable: the GUI will face the same
+startup ordering issue with both the daemon and session services.
+
+Extract a shared utility into `tisvlay-core/src/dbus_client.rs`:
+
+```rust
+/// Watch for a D-Bus service name to appear on the bus.
+///
+/// Returns a stream that yields () each time the given well-known name
+/// is acquired by any process. Useful for clients that need to discover
+/// services like org.tisvlay.Daemon or org.tisvlay.Session that may
+/// start after the client.
+pub async fn watch_service_appear(
+    connection: &zbus::Connection,
+    name: &str,
+) -> Result<impl Stream<Item = ()>>
+```
+
+The tray and future GUI import this instead of directly wiring
+`DBusProxy::receive_name_owner_changed_with_args`. Could also add a
+complementary `watch_service_disappear` or a combined stream that
+yields `ServiceEvent { appeared: bool }`.
+
+---
+
 ## Part 6: Update docs
 
 - `docs/design.md`: architecture diagram showing push-based pipeline,
