@@ -22,3 +22,4 @@ ksni = "0.3"
 tracing = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+futures-util = { workspace = true }

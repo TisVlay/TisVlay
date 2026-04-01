@@ -1365,6 +1365,7 @@ dependencies = [
  "async-trait",
  "bitflags",
  "directories",
+ "futures-util",
  "serde",
  "serde_json",
  "socket2",
@@ -1419,6 +1420,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "futures-util",
  "ksni",
  "tisvlay-core",
  "tokio",

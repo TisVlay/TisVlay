@@ -98,4 +98,4 @@ pub use wol::{wake, wake_with_options, MacAddress, WakeOptions};
 pub use dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
 
 #[cfg(feature = "dbus")]
-pub use dbus_client::{DaemonClient, SessionClient, TvInfo};
+pub use dbus_client::{DaemonClient, SessionClient, TvInfo, TvStateChange};

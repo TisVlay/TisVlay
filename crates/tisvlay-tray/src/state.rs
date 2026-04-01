@@ -141,10 +141,7 @@ pub async fn fetch_all_state(
 mod tests {
     use super::*;
 
-    fn make_tv_state(
-        system_profiles: Vec<&str>,
-        user_profiles: Vec<&str>,
-    ) -> CachedTvState {
+    fn make_tv_state(system_profiles: Vec<&str>, user_profiles: Vec<&str>) -> CachedTvState {
         CachedTvState {
             id: "test".into(),
             name: "Test".into(),

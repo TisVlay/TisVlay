@@ -12,11 +12,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use futures_util::StreamExt;
 use ksni::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use state::{fetch_all_state, CachedTvState};
+use state::fetch_all_state;
 use tisvlay_core::{DaemonClient, SessionClient};
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
@@ -29,7 +30,8 @@ struct Args {
     user: bool,
 }
 
-const POLL_INTERVAL: Duration = Duration::from_secs(5);
+const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const SIGNAL_DEBOUNCE: Duration = Duration::from_millis(100);
 const VOLUME_STEP: u8 = 1;
 const BACKLIGHT_STEP: u8 = 1;
 
@@ -55,15 +57,14 @@ async fn main() -> Result<()> {
 
     // Session client for profile management — eagerly connected if available,
     // then lazily retried on each poll if not.
-    let session: Arc<tokio::sync::RwLock<Option<SessionClient>>> = Arc::new(
-        tokio::sync::RwLock::new(match SessionClient::new().await {
+    let session: Arc<tokio::sync::RwLock<Option<SessionClient>>> =
+        Arc::new(tokio::sync::RwLock::new(match SessionClient::new().await {
             Ok(client) if client.is_available().await => {
                 info!("Session service available for profile management");
                 Some(client)
             }
             _ => None,
-        }),
-    );
+        }));
 
     // Fetch initial state before creating the tray so it starts with full
     // data. This prevents the first poll from triggering a ksni LayoutUpdated
@@ -102,12 +103,12 @@ async fn main() -> Result<()> {
 
     info!("Tray icon spawned");
 
-    // Spawn polling task
-    let poll_daemon = daemon.clone();
-    let poll_session = session.clone();
-    let poll_handle = handle.clone();
+    // Spawn signal watcher (replaces polling)
+    let watch_daemon = daemon.clone();
+    let watch_session = session.clone();
+    let watch_handle = handle.clone();
     tokio::spawn(async move {
-        poll_state(poll_daemon, poll_session, poll_handle).await;
+        watch_state(watch_daemon, watch_session, watch_handle).await;
     });
 
     // Spawn command processor
@@ -178,93 +179,80 @@ async fn refresh_state(
     }
 }
 
-/// Periodically fetch TV state and update the tray menu.
+/// Watch for daemon D-Bus signals and refresh the tray on state changes.
 ///
-/// Keeps a shadow copy of the last state to avoid calling `handle.update()`
-/// when nothing changed. Each `update()` triggers a ksni menu rebuild that
-/// emits `LayoutUpdated`, which closes any open submenus in the system tray.
-async fn poll_state(
+/// Subscribes to `StateChanged`, `ConnectionChanged` (per-TV) and
+/// `InterfacesAdded`/`InterfacesRemoved` (ObjectManager) signals. When a
+/// signal arrives, additional signals within a 100 ms window are drained
+/// (debounced) before a single `refresh_state()` call updates the menu.
+///
+/// A fallback poll at [`FALLBACK_POLL_INTERVAL`] provides resilience if
+/// signals are missed and handles lazy session service reconnection.
+async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
 ) {
-    let mut last_tvs: Vec<CachedTvState> = Vec::new();
-    let mut last_daemon_available = false;
+    // Try to subscribe to daemon signals
+    let mut signal_stream = match daemon.subscribe_state_changes().await {
+        Ok(stream) => {
+            info!("Subscribed to daemon state signals");
+            Some(Box::pin(stream))
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to subscribe to state signals, using fallback polling only");
+            None
+        }
+    };
 
     loop {
-        tokio::time::sleep(POLL_INTERVAL).await;
-
         if handle.is_closed() {
             break;
         }
 
-        // Lazily connect to session service (retries each poll cycle)
-        {
-            let needs_connect = session.read().await.is_none();
-            if needs_connect {
-                if let Ok(client) = SessionClient::new().await {
-                    if client.is_available().await {
-                        info!("Session service now available for profile management");
-                        *session.write().await = Some(client);
-                    }
+        tokio::select! {
+            // Branch 1: signal-driven update (only active if subscription succeeded)
+            Some(change) = async {
+                match signal_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
                 }
-            }
-        }
-
-        let session_ref = session.read().await;
-        let session_client = session_ref.as_ref();
-
-        match fetch_all_state(&daemon, session_client).await {
-            Ok(tvs) => {
-                if tvs != last_tvs || !last_daemon_available {
-                    // Log which fields changed to diagnose spurious menu rebuilds.
-                    if last_daemon_available {
-                        for (new, old) in tvs.iter().zip(last_tvs.iter()) {
-                            if new.id != old.id { debug!(tv = %new.id, "Poll diff: id"); }
-                            if new.name != old.name { debug!(tv = %new.id, "Poll diff: name"); }
-                            if new.connected != old.connected { debug!(tv = %new.id, old = old.connected, new = new.connected, "Poll diff: connected"); }
-                            if new.is_on != old.is_on { debug!(tv = %new.id, old = old.is_on, new = new.is_on, "Poll diff: is_on"); }
-                            if new.is_screen_on != old.is_screen_on { debug!(tv = %new.id, "Poll diff: is_screen_on"); }
-                            if new.volume != old.volume { debug!(tv = %new.id, old = ?old.volume, new = ?new.volume, "Poll diff: volume"); }
-                            if new.muted != old.muted { debug!(tv = %new.id, old = ?old.muted, new = ?new.muted, "Poll diff: muted"); }
-                            if new.current_input != old.current_input { debug!(tv = %new.id, old = ?old.current_input, new = ?new.current_input, "Poll diff: current_input"); }
-                            if new.backlight != old.backlight { debug!(tv = %new.id, old = ?old.backlight, new = ?new.backlight, "Poll diff: backlight"); }
-                            if new.inputs != old.inputs { debug!(tv = %new.id, "Poll diff: inputs"); }
-                            if new.user_profile != old.user_profile { debug!(tv = %new.id, old = ?old.user_profile, new = ?new.user_profile, "Poll diff: user_profile"); }
-                            if new.available_user_profiles != old.available_user_profiles { debug!(tv = %new.id, old = ?old.available_user_profiles, new = ?new.available_user_profiles, "Poll diff: available_user_profiles"); }
-                            if new.system_profile != old.system_profile { debug!(tv = %new.id, "Poll diff: system_profile"); }
-                            if new.available_system_profiles != old.available_system_profiles { debug!(tv = %new.id, old = ?old.available_system_profiles, new = ?new.available_system_profiles, "Poll diff: available_system_profiles"); }
-                            if new.managed != old.managed { debug!(tv = %new.id, "Poll diff: managed"); }
-                        }
-                        if tvs.len() != last_tvs.len() {
-                            debug!(old = last_tvs.len(), new = tvs.len(), "Poll diff: tv count changed");
-                        }
-                    }
-                    debug!(count = tvs.len(), "Poll: state changed, updating menu");
-                    handle
-                        .update(|t| {
-                            t.tvs = tvs.clone();
-                            t.daemon_available = true;
-                        })
-                        .await;
-                    last_tvs = tvs;
-                    last_daemon_available = true;
-                }
-            }
-            Err(e) => {
-                if last_daemon_available {
-                    debug!(error = %e, "Poll: daemon became unavailable");
-                    handle
-                        .update(|t| {
-                            t.daemon_available = false;
-                            for tv in &mut t.tvs {
-                                tv.connected = false;
+            } => {
+                debug!(change = ?change, "State signal received, debouncing");
+                // Drain additional signals within the debounce window
+                let deadline = tokio::time::sleep(SIGNAL_DEBOUNCE);
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        biased;
+                        Some(_) = async {
+                            match signal_stream.as_mut() {
+                                Some(s) => s.next().await,
+                                None => std::future::pending().await,
                             }
-                        })
-                        .await;
-                    last_daemon_available = false;
-                    last_tvs.clear();
+                        } => continue,
+                        _ = &mut deadline => break,
+                    }
                 }
+                refresh_state(&daemon, &session, &handle).await;
+            }
+
+            // Branch 2: fallback poll for resilience + lazy session reconnect
+            _ = tokio::time::sleep(FALLBACK_POLL_INTERVAL) => {
+                // Lazily connect to session service
+                {
+                    let needs_connect = session.read().await.is_none();
+                    if needs_connect {
+                        if let Ok(client) = SessionClient::new().await {
+                            if client.is_available().await {
+                                info!("Session service now available for profile management");
+                                *session.write().await = Some(client);
+                            }
+                        }
+                    }
+                }
+                debug!("Fallback poll: refreshing state");
+                refresh_state(&daemon, &session, &handle).await;
             }
         }
     }
