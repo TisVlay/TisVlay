@@ -87,6 +87,28 @@ impl StateChangeEvent {
             state_json: state.to_string(),
         }
     }
+
+    /// Create a state change event for a TV option change (managed, profile, etc.)
+    pub fn option_change(tv_id: &str, key: &str, value: &str) -> Self {
+        let state = serde_json::json!({
+            "option_changed": { "key": key, "value": value },
+        });
+        Self {
+            tv_id: tv_id.to_string(),
+            state_json: state.to_string(),
+        }
+    }
+
+    /// Create a state change event after a command was executed on a TV.
+    pub fn command_completed(tv_id: &str, command: &str) -> Self {
+        let state = serde_json::json!({
+            "command_completed": command,
+        });
+        Self {
+            tv_id: tv_id.to_string(),
+            state_json: state.to_string(),
+        }
+    }
 }
 
 /// Basic TV information for D-Bus properties.
@@ -734,7 +756,9 @@ impl TvManager {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.screen_on().await })
         })
-        .await
+        .await?;
+        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "screen_on"));
+        Ok(())
     }
 
     /// Turn screen off.
@@ -742,7 +766,9 @@ impl TvManager {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.screen_off().await })
         })
-        .await
+        .await?;
+        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "screen_off"));
+        Ok(())
     }
 
     /// Check if screen is on.
@@ -762,7 +788,9 @@ impl TvManager {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.set_volume(volume).await })
         })
-        .await
+        .await?;
+        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "set_volume"));
+        Ok(())
     }
 
     /// Get volume.
@@ -778,7 +806,9 @@ impl TvManager {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.set_mute(mute).await })
         })
-        .await
+        .await?;
+        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "set_mute"));
+        Ok(())
     }
 
     /// Check if muted.
@@ -797,7 +827,9 @@ impl TvManager {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.switch_input(&input).await })
         })
-        .await
+        .await?;
+        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "switch_input"));
+        Ok(())
     }
 
     /// Get current input.
@@ -828,7 +860,9 @@ impl TvManager {
         self.with_connection(tv_id, |conn| {
             Box::pin(async move { conn.set_backlight(backlight).await })
         })
-        .await
+        .await?;
+        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "set_backlight"));
+        Ok(())
     }
 
     /// Get backlight.
@@ -1068,6 +1102,7 @@ impl TvManager {
         .await
         .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
 
+        self.emit_state_change(StateChangeEvent::option_change(tv_id, key, value));
         info!(tv_id = %tv_id, key = %key, value = %value, "TV option updated");
         Ok(())
     }
@@ -1187,6 +1222,10 @@ impl TvManager {
                 tv.system_profile = system.resolve_profile(&tv.config.profile.system);
             }
         }
+
+        // Notify signal subscribers that configuration changed
+        // (profile lists, TV names, managed flags may all differ).
+        self.emit_state_change(StateChangeEvent::command_completed("_all", "reload_config"));
 
         Ok(())
     }
