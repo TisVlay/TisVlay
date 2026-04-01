@@ -113,18 +113,27 @@ correctly.
 
 ### Fix status
 
-**MR !5688** (Draft, NOT merged as of Plasma 6.6.3):
+**MR !5688** (Draft, closed in favor of !5763):
 https://invent.kde.org/plasma/plasma-workspace/-/merge_requests/5688
 
-The fix modifies `libdbusmenuqt` to prefetch two levels of menu items at
-a time and adds placeholder actions as fallback, preventing the empty-menu
-guard from closing submenus before they populate. This is a shared library
-used by both global menu and system tray, so the fix would address both
-code paths.
+**MR !5763** (replacement, open, targets master):
+https://invent.kde.org/plasma/plasma-workspace/-/merge_requests/5763
 
-**No fix has shipped in any released Plasma version** for the system tray
-variant. The existing bug is filed under kwin/appmenu — a separate bug
-should be filed under plasmashell/System Tray widget to ensure visibility.
+A larger rewrite that replaces `libdbusmenuqt` with new `DBusMenuModel` +
+`DBusMenuView` components. Key changes:
+- Stops sending `AboutToShow` for unexpanded submenus (also fixes Firefox
+  global menu, Mozilla bug 1975681)
+- Reuses menu objects for submenus instead of recreating them
+- Removes reliance on Qt widget-specific details that caused the empty
+  QMenu race condition
+- References BUG: 506439 (same root cause we identified)
+- Removes search functionality (considered problematic with shallow menu
+  layouts)
+
+**No fix has shipped in any released Plasma version** as of 6.6.3. MR
+!5763 is still open and not yet merged to master. The existing bug is
+filed under kwin/appmenu — a separate bug should be filed under
+plasmashell/System Tray widget to ensure visibility.
 
 ### Potential tisvlay workaround
 
@@ -139,7 +148,8 @@ before Qt's empty-menu guard fires. However, this would trigger
 | Bug | Description | Status |
 |-----|-------------|--------|
 | [506439](https://bugs.kde.org/show_bug.cgi?id=506439) | Submenus don't show on mouseover (appmenu) | REPORTED |
-| [MR !5688](https://invent.kde.org/plasma/plasma-workspace/-/merge_requests/5688) | libdbusmenuqt prefetch fix | Draft |
+| [MR !5688](https://invent.kde.org/plasma/plasma-workspace/-/merge_requests/5688) | libdbusmenuqt prefetch fix (closed) | Closed → !5763 |
+| [MR !5763](https://invent.kde.org/plasma/plasma-workspace/-/merge_requests/5763) | Replacement fix | Open |
 | [484216](https://bugs.kde.org/show_bug.cgi?id=484216) | System Tray popups close immediately | RESOLVED FIXED (Plasma 6.1) |
 | [QTBUG-129108](https://bugreports.qt.io/browse/QTBUG-129108) | QMenu: don't show an empty menu | Fixed in Qt 6.8 |
 
