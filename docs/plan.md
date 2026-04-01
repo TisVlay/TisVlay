@@ -316,19 +316,19 @@ then the backend subscription adds real-time TV state awareness.
 
 ## Checklist
 
-- [ ] Part 1.1: LG subscribe() method on WebOsClient
-- [ ] Part 1.2: Multiplexed WebSocket reader in LG backend
-- [ ] Part 1.3: LG TvConnection::subscribe_state() implementation
-- [ ] Part 2.1: subscribe_state() on TvConnection trait
-- [ ] Part 2.2: Daemon subscribes after connecting
-- [ ] Part 2.3: Signal emission for subscription updates
-- [ ] Part 3.1: DaemonClient signal subscription API
-- [ ] Part 3.2: Tray signal watcher with debouncing
-- [ ] Part 3.3: Remove poll artifacts from tray
-- [ ] Part 4.1: Fix suppressed property change signals
+- [x] Part 1.1: LG subscribe() method on WebOsClient
+- [x] Part 1.2: Multiplexed WebSocket reader in LG backend
+- [x] Part 1.3: LG TvConnection::subscribe_state() implementation
+- [x] Part 2.1: subscribe_state() on TvConnection trait
+- [x] Part 2.2: Daemon subscribes after connecting
+- [x] Part 2.3: Signal emission for subscription updates
+- [x] Part 3.1: DaemonClient signal subscription API
+- [x] Part 3.2: Tray signal watcher with debouncing
+- [x] Part 3.3: Remove poll artifacts from tray
+- [x] Part 4.1: Fix suppressed property change signals
 - [ ] Part 4.2: Config reload signal
 - [ ] Part 5: Session service UserProfileChanged signal
-- [ ] Part 6: Update docs
+- [x] Part 6: Update docs
 - [ ] Part 7: (Tentative) Backend backlight polling — evaluate after subscription architecture is stable
-- [ ] `cargo check` all crates
-- [ ] `cargo test` all crates
+- [x] `cargo check` all crates
+- [x] `cargo test` all crates

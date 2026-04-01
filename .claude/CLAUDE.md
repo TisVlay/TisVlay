@@ -50,7 +50,7 @@ Architecture refactored to support multiple TV vendors. Daemon and CLI are fully
 - Separate crates per vendor: `tisvlay-lg` (only `tisvlay-backends` imports vendor crates)
 - Core traits in `tisvlay-core`: `TvBackend`, `TvConnection` (with flattened feature methods), `TvConnector`
 - `TvConnector::connect()` takes `&toml::Value` -- fully transport-agnostic
-- `TvConnection` has all feature methods with default not-supported impls (no downcasting needed)
+- `TvConnection` has all feature methods with default not-supported impls (no downcasting needed); includes `subscribe_state()` for push-based state updates (backends that support it return an `mpsc::UnboundedReceiver<TvState>`)
 - `BackendRegistry` in `tisvlay-backends` provides `connect_tv()`, `wake_tv()`, `start_pairing()`, etc.
 - Capability bitflags (`Capabilities::ALL`) for runtime feature detection
 - D-Bus: per-TV objects at `/org/tisvlay/Tv/{id}` with `Address` property (not `Ip`)
@@ -119,7 +119,7 @@ tisvlay/
 │   │
 │   └── tisvlay-tray/              # System tray app
 │       └── src/
-│           ├── main.rs           # Entry point, polling, command processor
+│           ├── main.rs           # Entry point, signal watcher, command processor
 │           ├── tray.rs           # ksni Tray impl, menu building, TrayCommand
 │           └── state.rs          # CachedTvState, fetch_all_state()
 │
@@ -154,6 +154,7 @@ tisvlay/
 - Uses `rustls` (not native-tls) to avoid OpenSSL dependency
 - Custom `InsecureCertVerifier` accepts LG's self-signed certificates
 - Tries wss://port 3001 first, falls back to ws://port 3000
+- Multiplexed WebSocket: a background reader task routes subscription updates to a state channel and command responses to their callers; SSAP subscriptions (power, volume, mute, inputs) push state changes in real time
 
 ### Configuration
 - **System config**: `/var/lib/tisvlay/config.toml` — TV definitions (with `profile.system` assignment), credentials, system profiles (`[system.profiles.*]`), admin baseline user profiles (`[user.profiles.*]`). Owned by `tisvlayd`.
@@ -190,6 +191,7 @@ See [docs/design.md](docs/design.md) for the full CLI command reference.
 - Need "TV On via Wi-Fi" enabled in TV settings
 - ~1-5 second delay needed between WoL and first command
 - TV closes WebSocket on standby; need reconnection logic
+- Backlight is not SSAP-subscribable; read on demand only (uses Luna `createAlert` workaround)
 
 ## Quick Reference
 

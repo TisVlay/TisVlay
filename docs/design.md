@@ -40,7 +40,7 @@ graph TD
 | **System Daemon** | `tisvlayd` | Systemd system service. Vendor-agnostic TV management, D-Bus API, WoL at boot. |
 | **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle). |
 | **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
-| **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
+| **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Subscribes to daemon D-Bus signals for real-time state updates (30s fallback poll). Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
 | **GUI** | `tisvlay-gui` | Slint-based configuration window. (Not yet implemented) |
 
 ### Crate Structure
@@ -494,7 +494,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 1. `tisvlay-tray`: ksni-based StatusNotifierItem with per-TV submenus
 2. Power/screen/input/volume/backlight/mute controls
 3. Scroll wheel adjusts volume or backlight (context-dependent)
-4. Optimistic state caching, 5s polling, graceful daemon-offline handling
+4. Signal-driven updates via D-Bus `StateChanged`/`ConnectionChanged`/`InterfacesAdded`/`InterfacesRemoved` signals with 100ms debounce and 30s fallback poll
 
 ### Phase 4C: System vs User Config Split - COMPLETE
 
@@ -591,6 +591,38 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 | Screen on/off returns 500 when idempotent | LG backend treats application errors as success for screen commands |
 | DHCP IP changes | Use MAC for WoL; re-discover via SSDP |
 | Greeter wake unavailable on X11 | Wayland `ext-idle-notify-v1` only; falls back gracefully |
+| Backlight not SSAP-subscribable | Read on demand only (tray open, CLI status, after commands); uses Luna `createAlert` workaround |
+
+---
+
+## Push-Based State Pipeline
+
+State updates flow end-to-end without polling:
+
+```
+TV remote/app → WebSocket push → LG backend → daemon StateChangeEvent
+    → D-Bus signal → tray handle.update()
+```
+
+### LG Backend SSAP Subscriptions
+
+The LG SSAP protocol supports `subscribe` requests on the same URIs used for `request` (GET). The TV pushes updates over the existing multiplexed WebSocket whenever a value changes. Subscribed endpoints:
+
+- `ssap://com.webos.service.tvpower/power/getPowerState` (power state)
+- `ssap://audio/getVolume` (volume level)
+- `ssap://audio/getMute` (mute state)
+- `ssap://tv/getExternalInputList` (available inputs)
+- `ssap://com.webos.applicationManager/getForegroundAppInfo` (current input/app)
+
+After connecting and registering, the LG backend sends subscribe requests for all of the above. A background reader task on the multiplexed WebSocket routes subscription updates to a state change channel and command responses to their respective callers.
+
+### Daemon Layer
+
+After establishing a connection, the daemon calls `subscribe_state()` on the `TvConnection`. If the backend supports push (LG does), a spawned task forwards received `TvState` snapshots as `StateChangeEvent`s, which are emitted as D-Bus `StateChanged` signals on the per-TV object.
+
+### Tray Layer
+
+The tray subscribes to daemon D-Bus signals (`StateChanged`, `ConnectionChanged`, `InterfacesAdded`, `InterfacesRemoved`) at startup. Signals within a 100ms window are coalesced before refreshing state and calling `handle.update()`. A 30s fallback poll provides resilience if signals are missed.
 
 ---
 
