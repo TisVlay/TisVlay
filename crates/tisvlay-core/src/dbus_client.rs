@@ -245,6 +245,65 @@ pub enum TvStateChange {
 }
 
 // =============================================================================
+// D-Bus Service Discovery
+// =============================================================================
+
+/// Event indicating a D-Bus service appeared or disappeared.
+#[derive(Debug, Clone)]
+pub enum ServiceEvent {
+    /// The service name was acquired by a process.
+    Appeared,
+    /// The service name was released.
+    Disappeared,
+}
+
+/// Watch for a D-Bus well-known name to appear or disappear on the bus.
+///
+/// Uses the standard `org.freedesktop.DBus.NameOwnerChanged` signal to
+/// detect when a service registers or unregisters its name. This is the
+/// idiomatic D-Bus mechanism for service discovery — no polling needed.
+///
+/// Returns a stream of [`ServiceEvent`]s. The stream will yield
+/// `Appeared` when the name is acquired and `Disappeared` when released.
+///
+/// # Example
+///
+/// ```ignore
+/// let conn = zbus::Connection::session().await?;
+/// let mut stream = watch_service(&conn, "org.tisvlay.Session").await?;
+/// while let Some(event) = stream.next().await {
+///     match event {
+///         ServiceEvent::Appeared => { /* connect to service */ }
+///         ServiceEvent::Disappeared => { /* clear cached client */ }
+///     }
+/// }
+/// ```
+pub async fn watch_service(
+    connection: &zbus::Connection,
+    name: &str,
+) -> Result<impl futures_util::Stream<Item = ServiceEvent>> {
+    use futures_util::StreamExt;
+
+    let proxy = zbus::fdo::DBusProxy::new(connection)
+        .await
+        .context("Failed to create DBus proxy for service discovery")?;
+
+    let stream = proxy
+        .receive_name_owner_changed_with_args(&[(0, name)])
+        .await
+        .context("Failed to subscribe to NameOwnerChanged")?;
+
+    Ok(stream.filter_map(|signal| async move {
+        let args = signal.args().ok()?;
+        if args.new_owner().as_ref().is_some() {
+            Some(ServiceEvent::Appeared)
+        } else {
+            Some(ServiceEvent::Disappeared)
+        }
+    }))
+}
+
+// =============================================================================
 // TV Info Struct
 // =============================================================================
 

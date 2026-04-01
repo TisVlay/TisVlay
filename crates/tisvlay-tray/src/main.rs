@@ -205,22 +205,15 @@ async fn watch_state(
         }
     };
 
-    // Subscribe to NameOwnerChanged on the session bus so we're notified
-    // instantly when the session service appears (instead of waiting for
-    // the fallback poll). This is the standard D-Bus service discovery
-    // mechanism.
+    // Watch for the session service to appear/disappear on the bus.
+    // Uses the standard D-Bus NameOwnerChanged mechanism for instant
+    // detection (~2ms) instead of polling.
     let session_bus = zbus::Connection::session().await.ok();
-    let mut name_stream = match &session_bus {
-        Some(conn) => {
-            let dbus_proxy = zbus::fdo::DBusProxy::new(conn).await.ok();
-            match dbus_proxy {
-                Some(proxy) => proxy
-                    .receive_name_owner_changed_with_args(&[(0, "org.tisvlay.Session")])
-                    .await
-                    .ok(),
-                None => None,
-            }
-        }
+    let mut session_watch = match &session_bus {
+        Some(conn) => tisvlay_core::watch_service(conn, "org.tisvlay.Session")
+            .await
+            .ok()
+            .map(Box::pin),
         None => None,
     };
 
@@ -256,17 +249,15 @@ async fn watch_state(
                 refresh_state(&daemon, &session, &handle).await;
             }
 
-            // Branch 2: session service appeared on the bus
-            Some(signal) = async {
-                match name_stream.as_mut() {
+            // Branch 2: session service appeared/disappeared on the bus
+            Some(event) = async {
+                match session_watch.as_mut() {
                     Some(s) => s.next().await,
                     None => std::future::pending().await,
                 }
             } => {
-                if let Ok(args) = signal.args() {
-                    let new_owner = args.new_owner().as_ref();
-                    if new_owner.is_some() {
-                        // Session service just appeared — connect and refresh
+                match event {
+                    tisvlay_core::ServiceEvent::Appeared => {
                         info!("Session service appeared on D-Bus, connecting");
                         if let Ok(client) = SessionClient::new().await {
                             if client.is_available().await {
@@ -274,8 +265,8 @@ async fn watch_state(
                                 refresh_state(&daemon, &session, &handle).await;
                             }
                         }
-                    } else {
-                        // Session service disappeared — clear and refresh
+                    }
+                    tisvlay_core::ServiceEvent::Disappeared => {
                         debug!("Session service left D-Bus");
                         *session.write().await = None;
                         refresh_state(&daemon, &session, &handle).await;

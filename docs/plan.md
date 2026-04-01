@@ -360,5 +360,6 @@ then the backend subscription adds real-time TV state awareness.
 - [ ] Part 5: Session service UserProfileChanged signal
 - [x] Part 6: Update docs
 - [x] ~~Part 7~~ Backlight IS subscribable via ssap://settings/getSystemSettings — no polling needed. Added to LG subscription list.
+- [x] Part 8: Extract watch_service() D-Bus service discovery utility into tisvlay-core
 - [x] `cargo check` all crates
 - [x] `cargo test` all crates
