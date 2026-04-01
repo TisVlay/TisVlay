@@ -205,13 +205,32 @@ async fn watch_state(
         }
     };
 
+    // Subscribe to NameOwnerChanged on the session bus so we're notified
+    // instantly when the session service appears (instead of waiting for
+    // the fallback poll). This is the standard D-Bus service discovery
+    // mechanism.
+    let session_bus = zbus::Connection::session().await.ok();
+    let mut name_stream = match &session_bus {
+        Some(conn) => {
+            let dbus_proxy = zbus::fdo::DBusProxy::new(conn).await.ok();
+            match dbus_proxy {
+                Some(proxy) => proxy
+                    .receive_name_owner_changed_with_args(&[(0, "org.tisvlay.Session")])
+                    .await
+                    .ok(),
+                None => None,
+            }
+        }
+        None => None,
+    };
+
     loop {
         if handle.is_closed() {
             break;
         }
 
         tokio::select! {
-            // Branch 1: signal-driven update (only active if subscription succeeded)
+            // Branch 1: signal-driven update from daemon
             Some(change) = async {
                 match signal_stream.as_mut() {
                     Some(s) => s.next().await,
@@ -237,20 +256,35 @@ async fn watch_state(
                 refresh_state(&daemon, &session, &handle).await;
             }
 
-            // Branch 2: fallback poll for resilience + lazy session reconnect
-            _ = tokio::time::sleep(FALLBACK_POLL_INTERVAL) => {
-                // Lazily connect to session service
-                {
-                    let needs_connect = session.read().await.is_none();
-                    if needs_connect {
+            // Branch 2: session service appeared on the bus
+            Some(signal) = async {
+                match name_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Ok(args) = signal.args() {
+                    let new_owner = args.new_owner().as_ref();
+                    if new_owner.is_some() {
+                        // Session service just appeared — connect and refresh
+                        info!("Session service appeared on D-Bus, connecting");
                         if let Ok(client) = SessionClient::new().await {
                             if client.is_available().await {
-                                info!("Session service now available for profile management");
                                 *session.write().await = Some(client);
+                                refresh_state(&daemon, &session, &handle).await;
                             }
                         }
+                    } else {
+                        // Session service disappeared — clear and refresh
+                        debug!("Session service left D-Bus");
+                        *session.write().await = None;
+                        refresh_state(&daemon, &session, &handle).await;
                     }
                 }
+            }
+
+            // Branch 3: fallback poll for resilience
+            _ = tokio::time::sleep(FALLBACK_POLL_INTERVAL) => {
                 debug!("Fallback poll: refreshing state");
                 refresh_state(&daemon, &session, &handle).await;
             }
