@@ -46,9 +46,7 @@ pub async fn fetch_all_state(
     }
 
     // Fetch available user profiles from session service (once, shared across TVs).
-    // Sort for stable ordering — HashMap iteration is non-deterministic, and the
-    // poll loop compares state to avoid unnecessary ksni menu rebuilds.
-    let mut available_user_profiles: Vec<String> = match session {
+    let available_user_profiles: Vec<String> = match session {
         Some(session_client) => match session_client.list_user_profiles().await {
             Ok(profiles) => profiles.into_iter().map(|(name, _)| name).collect(),
             Err(e) => {
@@ -58,17 +56,15 @@ pub async fn fetch_all_state(
         },
         None => Vec::new(),
     };
-    available_user_profiles.sort();
 
     // Fetch available system profiles from daemon (once, shared across TVs).
-    let mut available_system_profiles: Vec<String> = match daemon.list_system_profiles().await {
+    let available_system_profiles: Vec<String> = match daemon.list_system_profiles().await {
         Ok(profiles) => profiles.into_iter().map(|(name, _)| name).collect(),
         Err(e) => {
             debug!(error = %e, "Failed to list system profiles from daemon");
             Vec::new()
         }
     };
-    available_system_profiles.sort();
 
     let mut states = Vec::with_capacity(tvs.len());
 
@@ -184,24 +180,16 @@ mod tests {
     }
 
     #[test]
-    fn test_cached_tv_state_unsorted_profiles_are_unequal() {
-        // Demonstrates why sorting is necessary: same profiles in different
-        // order (as returned by HashMap iteration) compare as unequal.
+    fn test_cached_tv_state_profile_order_matters_for_equality() {
+        // Profile lists are Vec<String>, so order matters for PartialEq.
+        // BTreeMap iteration in the daemon ensures consistent ordering,
+        // so the tray always receives profiles in the same sorted order.
         let a = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
-        let b = make_tv_state(vec!["guest", "default"], vec!["gaming", "default"]);
-        assert_ne!(a, b, "unsorted profile lists should differ");
-    }
+        let b = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
+        assert_eq!(a, b);
 
-    #[test]
-    fn test_cached_tv_state_sorted_profiles_are_equal() {
-        // After sorting (which fetch_all_state does), same profiles in
-        // originally different order compare as equal.
-        let mut a = make_tv_state(vec!["guest", "default"], vec!["gaming", "default"]);
-        let mut b = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
-        a.available_system_profiles.sort();
-        a.available_user_profiles.sort();
-        b.available_system_profiles.sort();
-        b.available_user_profiles.sort();
-        assert_eq!(a, b, "sorted profile lists should be equal");
+        // Different ordering would be unequal — BTreeMap prevents this.
+        let c = make_tv_state(vec!["guest", "default"], vec!["gaming", "default"]);
+        assert_ne!(a, c);
     }
 }
