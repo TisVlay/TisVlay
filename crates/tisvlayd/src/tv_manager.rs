@@ -297,6 +297,38 @@ impl TvManager {
     }
 
     /// Emit a state change event.
+    /// Try to subscribe to backend state updates for a TV.
+    ///
+    /// If the backend supports push-based state (e.g., LG SSAP subscriptions),
+    /// spawns a background task that forwards state updates as StateChangeEvents.
+    /// If not supported, does nothing (the tray's fallback poll handles it).
+    async fn try_subscribe_state(&self, tv_id: &str, connection: &mut dyn TvConnection) {
+        match connection.subscribe_state().await {
+            Ok(mut state_rx) => {
+                let tv_id = tv_id.to_string();
+                let tx = self.state_change_tx.clone();
+                info!(tv_id = %tv_id, "Subscribed to backend state updates");
+                tokio::spawn(async move {
+                    while let Some(state) = state_rx.recv().await {
+                        let json = serde_json::to_string(&state).unwrap_or_default();
+                        let event = StateChangeEvent {
+                            tv_id: tv_id.clone(),
+                            state_json: json,
+                        };
+                        if tx.send(event).is_err() {
+                            break;
+                        }
+                    }
+                    debug!(tv_id = %tv_id, "Backend state subscription ended");
+                });
+            }
+            Err(_) => {
+                // Backend doesn't support subscriptions — this is fine,
+                // the tray's fallback poll handles state refresh.
+            }
+        }
+    }
+
     fn emit_state_change(&self, event: StateChangeEvent) {
         if let Err(e) = self.state_change_tx.send(event) {
             debug!("Failed to send state change event: {}", e);
@@ -436,13 +468,16 @@ impl TvManager {
                     }
                 };
 
-                // Store the connection so subsequent commands don't reconnect.
+                // Store the connection and subscribe to state updates.
                 {
                     let tvs = manager.tvs.read().await;
                     if let Some((_, tv_arc)) = tvs.get(tv_id.as_str()) {
                         let mut tv = tv_arc.lock().await;
                         tv.connection = Some(connection);
                         tv.powered_off = false;
+                        if let Some(conn) = tv.connection.as_mut() {
+                            manager.try_subscribe_state(tv_id, conn.as_mut()).await;
+                        }
                     }
                 }
                 manager.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
@@ -601,6 +636,11 @@ impl TvManager {
         info!(tv_id = %tv_id, "Connected to TV");
         tv.connection = Some(connection);
 
+        // Subscribe to backend state updates if supported
+        if let Some(conn) = tv.connection.as_mut() {
+            self.try_subscribe_state(tv_id, conn.as_mut()).await;
+        }
+
         drop(tv);
         self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
 
@@ -643,6 +683,11 @@ impl TvManager {
             info!(tv_id = %tv_id, "Connected to TV");
             tv.connection = Some(connection);
             self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+
+            // Subscribe to backend state updates if supported
+            if let Some(conn) = tv.connection.as_mut() {
+                self.try_subscribe_state(tv_id, conn.as_mut()).await;
+            }
         }
 
         let connection = tv
@@ -700,10 +745,13 @@ impl TvManager {
                 source: e,
             })?;
 
-        // Store the connection under per-TV lock
+        // Store the connection and subscribe to state updates
         {
             let mut tv = tv_arc.lock().await;
             tv.connection = Some(connection);
+            if let Some(conn) = tv.connection.as_mut() {
+                self.try_subscribe_state(tv_id, conn.as_mut()).await;
+            }
         }
 
         let event = StateChangeEvent::connection_change(tv_id, true, None);
@@ -943,13 +991,16 @@ impl TvManager {
             }
         })?;
 
-        // Add to managed TVs (outer write lock -- modifying the HashMap)
+        // Add to managed TVs and subscribe to state updates
         {
             let system = self.system_section.read().await;
             let system_profile = system.resolve_profile(&tv_config.profile.system);
             let mut tvs = self.tvs.write().await;
             let mut managed = ManagedTv::new(tv_config.clone(), system_profile);
             managed.connection = Some(connection);
+            if let Some(conn) = managed.connection.as_mut() {
+                self.try_subscribe_state(&tv_id, conn.as_mut()).await;
+            }
             tvs.insert(
                 tv_id.clone(),
                 (tv_config.managed, Arc::new(Mutex::new(managed))),
