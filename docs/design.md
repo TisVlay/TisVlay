@@ -171,6 +171,38 @@ Bitflags in `crates/tisvlay-core/src/capabilities.rs`: `POWER`, `SCREEN`, `VOLUM
 
 See `crates/tisvlayd/src/dbus/` for the implementation.
 
+### Service overview
+
+```
+org.tisvlay.Daemon  (system bus; session bus in dev)
+├── /org/tisvlay                    ObjectManager
+├── /org/tisvlay/Manager            org.tisvlay.Manager1
+│   ├── Methods:  ListSystemProfiles, GetUserProfileDefault, ListUserProfiles,
+│   │             ReloadConfig, AddTv, RemoveTv, SetTvOption, DiscoverTvs
+│   └── Signals:  TvAdded, TvRemoved, ConfigReloaded
+└── /org/tisvlay/Tv/{id}            org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
+    │                               Tv1.Volume, Tv1.Backlight, Tv1.Input
+    ├── Properties: Id, Name, Vendor, Address, Connected, Managed,
+    │               SystemProfile, Capabilities
+    ├── Methods:  GetState, Reconnect, PowerOff, ScreenOn/Off,
+    │             SetVolume, SetMute, SwitchInput, SetBacklight
+    └── Signals:  StateChanged, ConnectionChanged
+
+org.tisvlay.Session  (session bus)
+└── /org/tisvlay/Session            org.tisvlay.Session1
+    ├── Methods:  ListUserProfiles, GetTvUserProfile, SetTvUserProfile,
+    │             GetEffectiveUserProfile, ReloadConfig
+    └── Signals:  UserProfileChanged
+```
+
+### Clients and signal flow
+
+| Client | Calls | Subscribes to |
+|--------|-------|---------------|
+| **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (commands), Session1 (user profiles) | — |
+| **tisvlay-tray** | Manager1 (profiles), Tv1.* (state + commands), Session1 (user profiles) | Tv1: `StateChanged`, `ConnectionChanged`; Manager1: `ConfigReloaded`; Session1: `UserProfileChanged`; DBus: `NameOwnerChanged` (service discovery) |
+| **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions: screen on/off, power) | — |
+
 ### Object Paths
 
 ```
