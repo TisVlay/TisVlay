@@ -223,25 +223,18 @@ async fn watch_state(
     // it is — no need to conditionally create/destroy the stream.
     let mut session_signal_stream = None;
     if let Some(ref conn) = session_bus {
-        match conn
-            .call_method(
-                Some("org.freedesktop.DBus"),
-                "/org/freedesktop/DBus",
-                Some("org.freedesktop.DBus"),
-                "AddMatch",
-                &"type='signal',sender='org.tisvlay.Session',interface='org.tisvlay.Session1',member='UserProfileChanged',path='/org/tisvlay/Session'",
-            )
-            .await
+        match tisvlay_core::subscribe_signals(
+            conn,
+            "type='signal',sender='org.tisvlay.Session',interface='org.tisvlay.Session1',member='UserProfileChanged',path='/org/tisvlay/Session'",
+        )
+        .await
         {
-            Ok(_) => {
-                use zbus::MessageStream;
-                let raw = MessageStream::from(conn.clone());
+            Ok(raw) => {
                 let filtered = raw.filter_map(|msg_result| async move {
                     let msg = msg_result.ok()?;
                     let header = msg.header();
-                    let iface = header.interface()?.to_string();
                     let member = header.member()?.to_string();
-                    if iface == "org.tisvlay.Session1" && member == "UserProfileChanged" {
+                    if member == "UserProfileChanged" {
                         Some(())
                     } else {
                         None
@@ -251,7 +244,7 @@ async fn watch_state(
                 debug!("Subscribed to session UserProfileChanged signals");
             }
             Err(e) => {
-                warn!(error = %e, "Failed to add match rule for session signals");
+                warn!(error = %e, "Failed to subscribe to session signals");
             }
         }
     }

@@ -247,6 +247,42 @@ pub enum TvStateChange {
 }
 
 // =============================================================================
+// D-Bus Signal Subscription Helpers
+// =============================================================================
+
+/// Add a D-Bus signal match rule on the bus.
+///
+/// Tells the bus daemon to deliver signals matching the given rule to
+/// this connection. Use [`subscribe_signals`] if you also want a
+/// `MessageStream` for receiving them.
+pub async fn add_signal_match(connection: &zbus::Connection, match_rule: &str) -> Result<()> {
+    connection
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "AddMatch",
+            &match_rule,
+        )
+        .await
+        .with_context(|| format!("Failed to add match rule: {}", match_rule))?;
+    Ok(())
+}
+
+/// Add a D-Bus signal match rule and return a `MessageStream`.
+///
+/// Combines [`add_signal_match`] with a `MessageStream` so the caller
+/// can immediately start receiving matching signals. Apply `filter_map`
+/// to parse the signals you care about.
+pub async fn subscribe_signals(
+    connection: &zbus::Connection,
+    match_rule: &str,
+) -> Result<zbus::MessageStream> {
+    add_signal_match(connection, match_rule).await?;
+    Ok(zbus::MessageStream::from(connection.clone()))
+}
+
+// =============================================================================
 // D-Bus Service Discovery
 // =============================================================================
 
@@ -497,57 +533,40 @@ impl DaemonClient {
     pub async fn subscribe_state_changes(
         &self,
     ) -> Result<impl Stream<Item = TvStateChange> + Send + '_> {
-        use zbus::MessageStream;
-
-        // Add match rules so the bus delivers the signals we care about.
         let conn = &self.connection;
 
-        // Match StateChanged and ConnectionChanged on any TV object path.
-        conn.call_method(
-            Some("org.freedesktop.DBus"),
-            "/org/freedesktop/DBus",
-            Some("org.freedesktop.DBus"),
-            "AddMatch",
+        // Add match rules for all signal sources we care about.
+        add_signal_match(
+            conn,
             &format!(
                 "type='signal',sender='{}',interface='org.tisvlay.Tv1',path_namespace='{}'",
                 DAEMON_SERVICE, TV_BASE_PATH
             ),
         )
-        .await
-        .context("Failed to add match rule for Tv1 signals")?;
+        .await?;
 
-        // Match InterfacesAdded/Removed on the ObjectManager root.
-        conn.call_method(
-            Some("org.freedesktop.DBus"),
-            "/org/freedesktop/DBus",
-            Some("org.freedesktop.DBus"),
-            "AddMatch",
+        add_signal_match(
+            conn,
             &format!(
                 "type='signal',sender='{}',interface='org.freedesktop.DBus.ObjectManager',path='{}'",
                 DAEMON_SERVICE,
                 crate::dbus_paths::OBJECT_MANAGER_PATH,
             ),
         )
-        .await
-        .context("Failed to add match rule for ObjectManager signals")?;
+        .await?;
 
-        // Also match the custom TvAdded/TvRemoved on Manager1.
-        conn.call_method(
-            Some("org.freedesktop.DBus"),
-            "/org/freedesktop/DBus",
-            Some("org.freedesktop.DBus"),
-            "AddMatch",
+        add_signal_match(
+            conn,
             &format!(
                 "type='signal',sender='{}',interface='org.tisvlay.Manager1',path='{}'",
                 DAEMON_SERVICE, MANAGER_PATH,
             ),
         )
-        .await
-        .context("Failed to add match rule for Manager1 signals")?;
+        .await?;
 
         let tv_prefix = format!("{}/", TV_BASE_PATH);
 
-        let raw_stream = MessageStream::from(conn.clone());
+        let raw_stream = zbus::MessageStream::from(conn.clone());
 
         let mapped = raw_stream.filter_map(move |msg_result| {
             let tv_prefix = tv_prefix.clone();
