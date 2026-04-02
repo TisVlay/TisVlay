@@ -5,6 +5,7 @@
 use crate::client::WebOsClient;
 use crate::config::LgVendorConfig;
 use async_trait::async_trait;
+use serde_json::Value;
 use std::time::Duration;
 use tisvlay_core::{
     Capabilities, Credentials, Error, InputInfo, MacAddress, PairingCommand, PairingSession,
@@ -12,7 +13,8 @@ use tisvlay_core::{
 };
 #[cfg(feature = "discovery")]
 use tisvlay_core::{DiscoveredTv, TvDiscovery};
-use tracing::{debug, info, warn};
+use tokio::sync::mpsc;
+use tracing::{debug, info, trace, warn};
 
 /// Maximum number of connection attempts after sending WoL.
 const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 10;
@@ -233,6 +235,138 @@ impl TvConnection for LgConnection {
     async fn get_backlight(&mut self) -> Result<u8> {
         self.with_retry(|c| Box::pin(c.get_backlight())).await
     }
+
+    async fn subscribe_state(&mut self) -> Result<mpsc::UnboundedReceiver<TvState>> {
+        let client = self.ensure_connected().await?;
+
+        // Subscribe to SSAP state endpoints. Returns a mapping of request
+        // ID → URI so we can identify which subscription each update belongs
+        // to (SSAP updates carry the request ID but not the endpoint URI),
+        // plus the raw initial responses for seeding the cached state.
+        let (id_to_uri, initial_responses) = client.subscribe_state_updates().await?;
+
+        // Take the subscription receiver from the client.
+        let sub_rx = client
+            .take_subscription_rx()
+            .ok_or(Error::ConnectionClosed)?;
+
+        // Seed the cached state from initial subscription responses so the
+        // first push update produces a complete snapshot instead of a partial
+        // one built from TvState::new().
+        let mut initial_state = TvState::new();
+        for (uri, response) in &initial_responses {
+            update_state_from_subscription(&mut initial_state, uri, &response.payload);
+        }
+
+        // Create a channel for TvState updates.
+        let (state_tx, state_rx) = mpsc::unbounded_channel();
+
+        // Spawn a task that converts SSAP subscription responses into
+        // TvState snapshots. Each update merges into a cached state so
+        // the receiver always gets a complete snapshot.
+        tokio::spawn(async move {
+            let mut cached_state = initial_state;
+            let mut sub_rx = sub_rx;
+            while let Some(response) = sub_rx.recv().await {
+                // Look up the endpoint URI from the response ID.
+                let uri = response
+                    .id
+                    .as_ref()
+                    .and_then(|id| id_to_uri.get(id))
+                    .map(|s| s.as_str());
+
+                if let Some(uri) = uri {
+                    let changed =
+                        update_state_from_subscription(&mut cached_state, uri, &response.payload);
+                    if changed && state_tx.send(cached_state.clone()).is_err() {
+                        // Receiver dropped — stop processing.
+                        break;
+                    }
+                }
+            }
+            trace!("Subscription state converter task exited");
+        });
+
+        Ok(state_rx)
+    }
+}
+
+/// Update a cached [`TvState`] from an SSAP subscription response.
+///
+/// Returns `true` if the state was actually modified.
+fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Value) -> bool {
+    if uri.contains("getPowerState") {
+        if let Some(state_str) = payload.get("state").and_then(|v| v.as_str()) {
+            let power = PowerState::parse(state_str);
+            state.update_power(power);
+            return true;
+        }
+    } else if uri.contains("getVolume") {
+        if let Some(vol) = payload.get("volume").and_then(|v| v.as_i64()) {
+            state.volume = Some(vol.clamp(0, 100) as u8);
+            // Some firmware includes mute in volume updates.
+            if let Some(muted) = payload.get("mute").and_then(|v| v.as_bool()) {
+                state.muted = Some(muted);
+            }
+            return true;
+        }
+        // Also check nested volumeStatus format (subscription updates use this).
+        if let Some(status) = payload.get("volumeStatus") {
+            if let Some(vol) = status.get("volume").and_then(|v| v.as_i64()) {
+                state.volume = Some(vol.clamp(0, 100) as u8);
+            }
+            // The field is "muteStatus" (bool) in volumeStatus, not "muted".
+            if let Some(muted) = status.get("muteStatus").and_then(|v| v.as_bool()) {
+                state.muted = Some(muted);
+            }
+            return true;
+        }
+    } else if uri.contains("getMute") {
+        if let Some(muted) = payload.get("mute").and_then(|v| v.as_bool()) {
+            state.muted = Some(muted);
+            return true;
+        }
+    } else if uri.contains("getExternalInputList") {
+        if let Some(devices) = payload.get("devices").and_then(|v| v.as_array()) {
+            state.inputs = devices
+                .iter()
+                .filter_map(|d| {
+                    let id = d.get("id")?.as_str()?;
+                    let label = d.get("label")?.as_str()?;
+                    let connected = d
+                        .get("connected")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    Some(InputInfo {
+                        id: id.to_string(),
+                        label: label.to_string(),
+                        connected,
+                    })
+                })
+                .collect();
+            return true;
+        }
+    } else if uri.contains("getForegroundAppInfo") {
+        if let Some(app_id) = payload.get("appId").and_then(|v| v.as_str()) {
+            state.current_app = Some(app_id.to_string());
+            // HDMI inputs appear as apps like "com.webos.app.hdmi1"
+            state.current_input = Some(app_id.to_string());
+            return true;
+        }
+    } else if uri.contains("#picture/backlight") {
+        // Backlight subscription via ssap://settings/getSystemSettings
+        // with category "picture", keys ["backlight"].
+        if let Some(bl) = payload
+            .get("settings")
+            .and_then(|s| s.get("backlight"))
+            .and_then(|v| v.as_i64())
+        {
+            state.backlight = Some(bl.clamp(0, 100) as u8);
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Factory for creating LG WebOS connections.

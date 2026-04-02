@@ -1,13 +1,22 @@
 //! WebSocket connection management.
+//!
+//! The connection is split into a writer (shared via `Arc<Mutex>`) and a
+//! background reader task. Incoming messages are routed by request ID:
+//! responses with a pending waiter go to that waiter's oneshot channel,
+//! while subscription updates and unsolicited messages are forwarded to
+//! a shared `mpsc` channel.
 
 use crate::endpoints::{WSS_PORT, WS_PORT};
 use crate::protocol::{Request, Response};
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rustls::pki_types::ServerName;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tisvlay_core::{Error, Result};
 use tokio::net::TcpStream;
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -15,9 +24,28 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 /// Type alias for the WebSocket stream.
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// Type alias for the write half of the WebSocket.
+type WsSink = SplitSink<WsStream, Message>;
+
+/// Pending request waiters keyed by request ID.
+type PendingMap = Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Response>>>>;
+
 /// WebSocket connection to an LG TV.
+///
+/// The connection is split into a shared writer and a background reader
+/// task. Request/response correlation uses oneshot channels keyed by
+/// request ID. Subscription updates (messages with no pending waiter)
+/// are forwarded to `subscription_rx`.
 pub struct Connection {
-    stream: WsStream,
+    /// Shared writer — used by both the caller (requests) and the reader
+    /// task (Pong responses).
+    writer: Arc<Mutex<WsSink>>,
+    /// Pending request waiters: request_id -> oneshot sender.
+    pending: PendingMap,
+    /// Receiver for subscription updates (messages with no pending waiter).
+    subscription_rx: Option<mpsc::UnboundedReceiver<Response>>,
+    /// Handle to the background reader task.
+    reader_handle: tokio::task::JoinHandle<()>,
 }
 
 /// Custom certificate verifier that accepts any certificate.
@@ -102,6 +130,29 @@ impl Connection {
         Self::connect_url_plain(&url, connect_timeout).await
     }
 
+    /// Create a `Connection` from a raw `WsStream` by splitting it and
+    /// spawning the background reader task.
+    fn from_stream(stream: WsStream) -> Self {
+        let (sink, reader) = stream.split();
+        let writer = Arc::new(Mutex::new(sink));
+        let pending: PendingMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let (subscription_tx, subscription_rx) = mpsc::unbounded_channel();
+
+        let reader_handle = tokio::spawn(Self::reader_loop(
+            reader,
+            Arc::clone(&writer),
+            Arc::clone(&pending),
+            subscription_tx,
+        ));
+
+        Self {
+            writer,
+            pending,
+            subscription_rx: Some(subscription_rx),
+            reader_handle,
+        }
+    }
+
     async fn connect_url_tls(url: &str, connect_timeout: Duration) -> Result<Self> {
         // Create TLS config that accepts self-signed certificates
         let tls_config = rustls::ClientConfig::builder()
@@ -125,7 +176,7 @@ impl Connection {
             "WebSocket connected (TLS)"
         );
 
-        Ok(Self { stream })
+        Ok(Self::from_stream(stream))
     }
 
     async fn connect_url_plain(url: &str, connect_timeout: Duration) -> Result<Self> {
@@ -142,98 +193,163 @@ impl Connection {
             "WebSocket connected (plain)"
         );
 
-        Ok(Self { stream })
+        Ok(Self::from_stream(stream))
     }
 
-    /// Send a request to the TV.
-    pub async fn send(&mut self, request: &Request) -> Result<()> {
-        let json = serde_json::to_string(request)?;
-        tracing::trace!(id = %request.id, msg_type = ?request.msg_type, "Sending request");
-
-        self.stream
-            .send(Message::Text(json.into()))
-            .await
-            .map_err(|e| Error::Connection(Box::new(e)))?;
-        Ok(())
-    }
-
-    /// Receive the next response from the TV.
-    pub async fn recv(&mut self) -> Result<Response> {
+    /// Background reader loop.
+    ///
+    /// Reads messages from the WebSocket stream and routes them:
+    /// - Text messages are parsed as JSON `Response` objects. If a pending
+    ///   waiter exists for the response's ID, the response is sent to that
+    ///   waiter. Otherwise it is forwarded to `subscription_tx`.
+    /// - Ping messages get an automatic Pong reply via the shared writer.
+    /// - Close messages (or stream end) terminate the loop.
+    async fn reader_loop(
+        mut stream: SplitStream<WsStream>,
+        writer: Arc<Mutex<WsSink>>,
+        pending: PendingMap,
+        subscription_tx: mpsc::UnboundedSender<Response>,
+    ) {
         loop {
-            let msg = self
-                .stream
-                .next()
-                .await
-                .ok_or(Error::ConnectionClosed)?
-                .map_err(|e| Error::Connection(Box::new(e)))?;
+            let msg = match stream.next().await {
+                Some(Ok(msg)) => msg,
+                Some(Err(e)) => {
+                    tracing::debug!(error = %e, "WebSocket read error, reader task exiting");
+                    break;
+                }
+                None => {
+                    tracing::debug!("WebSocket stream ended, reader task exiting");
+                    break;
+                }
+            };
 
             match msg {
                 Message::Text(text) => {
-                    let response: Response = serde_json::from_str(&text)?;
+                    let response: Response = match serde_json::from_str(&text) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to parse WebSocket message");
+                            continue;
+                        }
+                    };
+
                     tracing::trace!(
                         id = ?response.id,
                         msg_type = ?response.msg_type,
                         "Received response"
                     );
-                    return Ok(response);
+
+                    // Check if there's a pending request waiter for this ID.
+                    let waiter = response
+                        .id
+                        .as_ref()
+                        .and_then(|id| pending.lock().unwrap().remove(id));
+
+                    if let Some(tx) = waiter {
+                        // Matched a pending request — deliver directly.
+                        let _ = tx.send(response);
+                    } else {
+                        // No waiter — subscription update or unsolicited message.
+                        let _ = subscription_tx.send(response);
+                    }
                 }
                 Message::Ping(data) => {
-                    self.stream
-                        .send(Message::Pong(data))
-                        .await
-                        .map_err(|e| Error::Connection(Box::new(e)))?;
+                    let mut w = writer.lock().await;
+                    if let Err(e) = w.send(Message::Pong(data)).await {
+                        tracing::debug!(error = %e, "Failed to send Pong, reader task exiting");
+                        break;
+                    }
                 }
                 Message::Close(_) => {
-                    return Err(Error::ConnectionClosed);
+                    tracing::debug!("WebSocket close received, reader task exiting");
+                    break;
                 }
                 _ => {
                     // Ignore binary and other message types
                 }
             }
         }
+
+        // When the reader exits, fail all pending waiters so they don't hang.
+        let waiters: Vec<oneshot::Sender<Response>> =
+            pending.lock().unwrap().drain().map(|(_, tx)| tx).collect();
+        // Drop them (receivers get RecvError, which callers interpret as ConnectionClosed).
+        drop(waiters);
     }
 
-    /// Receive a response with timeout.
-    pub async fn recv_timeout(&mut self, duration: Duration) -> Result<Response> {
-        timeout(duration, self.recv())
+    /// Send a raw request to the TV.
+    pub async fn send(&self, request: &Request) -> Result<()> {
+        let json = serde_json::to_string(request)?;
+        tracing::trace!(id = %request.id, msg_type = ?request.msg_type, "Sending request");
+
+        let mut w = self.writer.lock().await;
+        w.send(Message::Text(json.into()))
             .await
-            .map_err(|_| Error::RequestTimeout)?
+            .map_err(|e| Error::Connection(Box::new(e)))?;
+        Ok(())
     }
 
     /// Send a request and wait for the response with matching ID.
-    pub async fn request(&mut self, request: &Request, timeout_dur: Duration) -> Result<Response> {
-        self.send(request).await?;
+    ///
+    /// Creates a oneshot channel, registers it in the pending map keyed by
+    /// the request ID, sends the request, and awaits the oneshot receiver
+    /// with a timeout. The background reader task delivers the matching
+    /// response.
+    pub async fn request(&self, request: &Request, timeout_dur: Duration) -> Result<Response> {
+        let (tx, rx) = oneshot::channel();
 
-        let deadline = tokio::time::Instant::now() + timeout_dur;
+        // Register the waiter before sending to avoid race conditions.
+        self.pending.lock().unwrap().insert(request.id.clone(), tx);
 
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::RequestTimeout);
-            }
-
-            let response = self.recv_timeout(remaining).await?;
-
-            // Check if this response matches our request
-            if response.id.as_ref() == Some(&request.id) {
-                return Ok(response);
-            }
-
-            // Log and ignore responses for other requests (subscriptions, etc.)
-            tracing::trace!(
-                id = ?response.id,
-                expected = %request.id,
-                "Received response for different request"
-            );
+        if let Err(e) = self.send(request).await {
+            // Remove the waiter on send failure.
+            self.pending.lock().unwrap().remove(&request.id);
+            return Err(e);
         }
+
+        match timeout(timeout_dur, rx).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(_)) => {
+                // Oneshot sender was dropped — reader task exited.
+                Err(Error::ConnectionClosed)
+            }
+            Err(_) => {
+                // Timeout — remove the stale waiter.
+                self.pending.lock().unwrap().remove(&request.id);
+                Err(Error::RequestTimeout)
+            }
+        }
+    }
+
+    /// Take the subscription receiver.
+    ///
+    /// Returns `Some` on the first call, `None` on subsequent calls.
+    /// The caller owns the receiver and reads subscription updates from it.
+    pub fn take_subscription_rx(&mut self) -> Option<mpsc::UnboundedReceiver<Response>> {
+        self.subscription_rx.take()
+    }
+
+    /// Check whether the reader task is still running.
+    pub fn is_alive(&self) -> bool {
+        !self.reader_handle.is_finished()
     }
 
     /// Close the connection.
     pub async fn close(&mut self) -> Result<()> {
-        self.stream
-            .close(None)
-            .await
-            .map_err(|e| Error::Connection(Box::new(e)))?;
+        // Send a close frame via the writer.
+        let mut w = self.writer.lock().await;
+        let _ = w.close().await;
+        drop(w);
+
+        // The reader task will exit when it sees the close frame or stream end.
+        // We don't need to abort it — just let it finish.
         Ok(())
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        // Abort the reader task to prevent a leaked task.
+        self.reader_handle.abort();
     }
 }

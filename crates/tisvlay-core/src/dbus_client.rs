@@ -30,15 +30,16 @@
 //! ```
 
 use anyhow::{Context, Result};
+use futures_util::{Stream, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH};
+use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH};
 
 // =============================================================================
 // Manager Interface Proxy
@@ -229,6 +230,118 @@ trait TisvlayTvBacklight {
 }
 
 // =============================================================================
+// TV State Change (for signal subscription)
+// =============================================================================
+
+/// A state change event received from the daemon via D-Bus signals.
+#[derive(Debug, Clone)]
+pub enum TvStateChange {
+    /// TV state changed (volume, input, power, etc.).
+    StateChanged { tv_id: String, state_json: String },
+    /// TV connection status changed.
+    ConnectionChanged { tv_id: String, connected: bool },
+    /// TV list structure changed (add/remove) -- requires full refresh.
+    TvListChanged,
+    /// Daemon configuration was reloaded -- profile lists and TV properties may differ.
+    ConfigReloaded,
+}
+
+// =============================================================================
+// D-Bus Signal Subscription Helpers
+// =============================================================================
+
+/// Add a D-Bus signal match rule on the bus.
+///
+/// Tells the bus daemon to deliver signals matching the given rule to
+/// this connection. Use [`subscribe_signals`] if you also want a
+/// `MessageStream` for receiving them.
+pub async fn add_signal_match(connection: &zbus::Connection, match_rule: &str) -> Result<()> {
+    connection
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "AddMatch",
+            &match_rule,
+        )
+        .await
+        .with_context(|| format!("Failed to add match rule: {}", match_rule))?;
+    Ok(())
+}
+
+/// Add a D-Bus signal match rule and return a `MessageStream`.
+///
+/// Combines [`add_signal_match`] with a `MessageStream` so the caller
+/// can immediately start receiving matching signals. Apply `filter_map`
+/// to parse the signals you care about.
+pub async fn subscribe_signals(
+    connection: &zbus::Connection,
+    match_rule: &str,
+) -> Result<zbus::MessageStream> {
+    add_signal_match(connection, match_rule).await?;
+    Ok(zbus::MessageStream::from(connection.clone()))
+}
+
+// =============================================================================
+// D-Bus Service Discovery
+// =============================================================================
+
+/// Event indicating a D-Bus service appeared or disappeared.
+#[derive(Debug, Clone)]
+pub enum ServiceEvent {
+    /// The service name was acquired by a process.
+    Appeared,
+    /// The service name was released.
+    Disappeared,
+}
+
+/// Watch for a D-Bus well-known name to appear or disappear on the bus.
+///
+/// Uses the standard `org.freedesktop.DBus.NameOwnerChanged` signal to
+/// detect when a service registers or unregisters its name. This is the
+/// idiomatic D-Bus mechanism for service discovery — no polling needed.
+///
+/// Returns a stream of [`ServiceEvent`]s. The stream will yield
+/// `Appeared` when the name is acquired and `Disappeared` when released.
+///
+/// # Example
+///
+/// ```ignore
+/// let conn = zbus::Connection::session().await?;
+/// let mut stream = watch_service(&conn, "org.tisvlay.Session").await?;
+/// while let Some(event) = stream.next().await {
+///     match event {
+///         ServiceEvent::Appeared => { /* connect to service */ }
+///         ServiceEvent::Disappeared => { /* clear cached client */ }
+///     }
+/// }
+/// ```
+pub async fn watch_service(
+    connection: &zbus::Connection,
+    name: &str,
+) -> Result<impl futures_util::Stream<Item = ServiceEvent>> {
+    use futures_util::StreamExt;
+
+    let proxy = zbus::fdo::DBusProxy::new(connection)
+        .await
+        .context("Failed to create DBus proxy for service discovery")?;
+
+    let stream = proxy
+        .receive_name_owner_changed_with_args(&[(0, name)])
+        .await
+        .context("Failed to subscribe to NameOwnerChanged")?;
+
+    Ok(stream.filter_map(|signal| async move {
+        let args = signal.args().ok()?;
+        if args.new_owner().as_ref().is_some() {
+            Some(ServiceEvent::Appeared)
+        } else {
+            Some(ServiceEvent::Disappeared)
+        }
+    }))
+}
+
+// =============================================================================
 // TV Info Struct
 // =============================================================================
 
@@ -405,6 +518,99 @@ impl DaemonClient {
     /// Check if the daemon is available and responding.
     pub async fn is_available(&self) -> bool {
         self.object_manager.get_managed_objects().await.is_ok()
+    }
+
+    /// Subscribe to TV state change signals from the daemon.
+    ///
+    /// Returns a stream of [`TvStateChange`] events. The stream captures:
+    /// - `StateChanged` and `ConnectionChanged` signals on `org.tisvlay.Tv1`
+    ///   for any TV object under `/org/tisvlay/Tv/`
+    /// - `InterfacesAdded` and `InterfacesRemoved` on the ObjectManager at
+    ///   `/org/tisvlay` (TV add/remove)
+    ///
+    /// Works with both session and system bus (depends on how the client was
+    /// constructed).
+    pub async fn subscribe_state_changes(
+        &self,
+    ) -> Result<impl Stream<Item = TvStateChange> + Send + '_> {
+        let conn = &self.connection;
+
+        // Add match rules for all signal sources we care about.
+        add_signal_match(
+            conn,
+            &format!(
+                "type='signal',sender='{}',interface='org.tisvlay.Tv1',path_namespace='{}'",
+                DAEMON_SERVICE, TV_BASE_PATH
+            ),
+        )
+        .await?;
+
+        add_signal_match(
+            conn,
+            &format!(
+                "type='signal',sender='{}',interface='org.freedesktop.DBus.ObjectManager',path='{}'",
+                DAEMON_SERVICE,
+                crate::dbus_paths::OBJECT_MANAGER_PATH,
+            ),
+        )
+        .await?;
+
+        add_signal_match(
+            conn,
+            &format!(
+                "type='signal',sender='{}',interface='org.tisvlay.Manager1',path='{}'",
+                DAEMON_SERVICE, MANAGER_PATH,
+            ),
+        )
+        .await?;
+
+        let tv_prefix = format!("{}/", TV_BASE_PATH);
+
+        let raw_stream = zbus::MessageStream::from(conn.clone());
+
+        let mapped = raw_stream.filter_map(move |msg_result| {
+            let tv_prefix = tv_prefix.clone();
+            async move {
+                let msg = msg_result.ok()?;
+                let header = msg.header();
+                let iface = header.interface()?.to_string();
+                let member = header.member()?.to_string();
+                let path = header.path()?.to_string();
+
+                match (iface.as_str(), member.as_str()) {
+                    ("org.tisvlay.Tv1", "StateChanged") => {
+                        let tv_id = path.strip_prefix(&tv_prefix)?.to_string();
+                        let body = msg.body();
+                        let state_json: String = body.deserialize().ok()?;
+                        trace!(tv_id = %tv_id, "StateChanged signal");
+                        Some(TvStateChange::StateChanged { tv_id, state_json })
+                    }
+                    ("org.tisvlay.Tv1", "ConnectionChanged") => {
+                        let tv_id = path.strip_prefix(&tv_prefix)?.to_string();
+                        let body = msg.body();
+                        let connected: bool = body.deserialize().ok()?;
+                        trace!(tv_id = %tv_id, connected = connected, "ConnectionChanged signal");
+                        Some(TvStateChange::ConnectionChanged { tv_id, connected })
+                    }
+                    ("org.freedesktop.DBus.ObjectManager", "InterfacesAdded")
+                    | ("org.freedesktop.DBus.ObjectManager", "InterfacesRemoved") => {
+                        trace!(member = %member, "ObjectManager signal");
+                        Some(TvStateChange::TvListChanged)
+                    }
+                    ("org.tisvlay.Manager1", "TvAdded") | ("org.tisvlay.Manager1", "TvRemoved") => {
+                        trace!(member = %member, "Manager1 TV list signal");
+                        Some(TvStateChange::TvListChanged)
+                    }
+                    ("org.tisvlay.Manager1", "ConfigReloaded") => {
+                        trace!("Manager1 ConfigReloaded signal");
+                        Some(TvStateChange::ConfigReloaded)
+                    }
+                    _ => None,
+                }
+            }
+        });
+
+        Ok(mapped)
     }
 
     /// Execute an operation on a TV's cached proxies, handling proxy lookup boilerplate.

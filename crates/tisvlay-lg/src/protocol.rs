@@ -31,7 +31,6 @@ pub enum RequestType {
     /// Command request.
     Request,
     /// Subscribe to state changes.
-    #[allow(dead_code)] // Valid SSAP protocol type, not yet used
     Subscribe,
 }
 
@@ -43,6 +42,9 @@ pub struct Response {
     /// Response type.
     #[serde(rename = "type")]
     pub msg_type: ResponseType,
+    /// SSAP endpoint URI (present in subscription updates).
+    #[serde(default)]
+    pub uri: Option<String>,
     /// Response payload.
     #[serde(default)]
     pub payload: Value,
@@ -332,13 +334,26 @@ impl Request {
     }
 
     /// Create a subscribe request.
-    #[allow(dead_code)] // Valid SSAP protocol operation, not yet used
     pub fn subscribe(id: impl Into<String>, uri: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             msg_type: RequestType::Subscribe,
             uri: Some(uri.into()),
             payload: None,
+        }
+    }
+
+    /// Create a subscribe request with a payload.
+    pub fn subscribe_with_payload(
+        id: impl Into<String>,
+        uri: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            msg_type: RequestType::Subscribe,
+            uri: Some(uri.into()),
+            payload: Some(payload),
         }
     }
 }

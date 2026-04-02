@@ -56,7 +56,7 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 // =============================================================================
@@ -344,7 +344,7 @@ pub struct SystemSection {
     /// `[system.profiles.default]` is the baseline. Per-TV system profile
     /// assignments can reference other named profiles (e.g., "guest").
     #[serde(default)]
-    pub profiles: HashMap<String, SystemProfileConfig>,
+    pub profiles: BTreeMap<String, SystemProfileConfig>,
 }
 
 impl SystemSection {
@@ -380,7 +380,7 @@ impl SystemSection {
 pub struct UserSection {
     /// Named user profiles for session events.
     #[serde(default)]
-    pub profiles: HashMap<String, UserProfileConfig>,
+    pub profiles: BTreeMap<String, UserProfileConfig>,
 }
 
 // =============================================================================

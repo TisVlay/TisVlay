@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use futures_util::StreamExt;
 use ksni::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -29,7 +30,8 @@ struct Args {
     user: bool,
 }
 
-const POLL_INTERVAL: Duration = Duration::from_secs(5);
+const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const SIGNAL_DEBOUNCE: Duration = Duration::from_millis(100);
 const VOLUME_STEP: u8 = 1;
 const BACKLIGHT_STEP: u8 = 1;
 
@@ -53,11 +55,30 @@ async fn main() -> Result<()> {
 
     let daemon = Arc::new(daemon);
 
-    // Session client for profile management — lazily connected on each poll.
-    // Wrapped in RwLock so poll_state can establish the connection when the
-    // session service becomes available.
+    // Session client for profile management — eagerly connected if available,
+    // then lazily retried on each poll if not.
     let session: Arc<tokio::sync::RwLock<Option<SessionClient>>> =
-        Arc::new(tokio::sync::RwLock::new(None));
+        Arc::new(tokio::sync::RwLock::new(match SessionClient::new().await {
+            Ok(client) if client.is_available().await => {
+                info!("Session service available for profile management");
+                Some(client)
+            }
+            _ => None,
+        }));
+
+    // Fetch initial state before creating the tray so it starts with full
+    // data. This prevents the first poll from triggering a ksni LayoutUpdated
+    // signal that would close any submenu the user opened early.
+    let (initial_tvs, initial_available) = {
+        let session_ref = session.read().await;
+        match fetch_all_state(&daemon, session_ref.as_ref()).await {
+            Ok(tvs) => (tvs, true),
+            Err(e) => {
+                debug!(error = %e, "Initial state fetch failed");
+                (Vec::new(), false)
+            }
+        }
+    };
 
     // Create command channel
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -65,10 +86,10 @@ async fn main() -> Result<()> {
     // that are encountered while draining scroll events in the processor.
     let requeue_tx = cmd_tx.clone();
 
-    // Create tray with initial empty state
+    // Create tray with initial state
     let tray = TisvlayTray {
-        tvs: Vec::new(),
-        daemon_available: false,
+        tvs: initial_tvs,
+        daemon_available: initial_available,
         cmd_tx,
         scroll_target: Default::default(),
         scroll_tv_id: None,
@@ -82,12 +103,12 @@ async fn main() -> Result<()> {
 
     info!("Tray icon spawned");
 
-    // Spawn polling task
-    let poll_daemon = daemon.clone();
-    let poll_session = session.clone();
-    let poll_handle = handle.clone();
+    // Spawn signal watcher (replaces polling)
+    let watch_daemon = daemon.clone();
+    let watch_session = session.clone();
+    let watch_handle = handle.clone();
     tokio::spawn(async move {
-        poll_state(poll_daemon, poll_session, poll_handle).await;
+        watch_state(watch_daemon, watch_session, watch_handle).await;
     });
 
     // Spawn command processor
@@ -158,32 +179,150 @@ async fn refresh_state(
     }
 }
 
-/// Periodically fetch TV state and update the tray menu.
-async fn poll_state(
+/// Watch for daemon D-Bus signals and refresh the tray on state changes.
+///
+/// Subscribes to `StateChanged`, `ConnectionChanged` (per-TV) and
+/// `InterfacesAdded`/`InterfacesRemoved` (ObjectManager) signals. When a
+/// signal arrives, additional signals within a 100 ms window are drained
+/// (debounced) before a single `refresh_state()` call updates the menu.
+///
+/// A fallback poll at [`FALLBACK_POLL_INTERVAL`] provides resilience if
+/// signals are missed and handles lazy session service reconnection.
+async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
 ) {
-    loop {
-        tokio::time::sleep(POLL_INTERVAL).await;
+    // Try to subscribe to daemon signals
+    let mut signal_stream = match daemon.subscribe_state_changes().await {
+        Ok(stream) => {
+            info!("Subscribed to daemon state signals");
+            Some(Box::pin(stream))
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to subscribe to state signals, using fallback polling only");
+            None
+        }
+    };
 
+    // Watch for the session service to appear/disappear on the bus.
+    // Uses the standard D-Bus NameOwnerChanged mechanism for instant
+    // detection (~2ms) instead of polling.
+    let session_bus = zbus::Connection::session().await.ok();
+    let mut session_watch = match &session_bus {
+        Some(conn) => tisvlay_core::watch_service(conn, "org.tisvlay.Session")
+            .await
+            .ok()
+            .map(Box::pin),
+        None => None,
+    };
+
+    // Subscribe to UserProfileChanged signals from the session service.
+    // The match rule is added at startup; it silently receives nothing
+    // while the session service isn't running, and picks up signals when
+    // it is — no need to conditionally create/destroy the stream.
+    let mut session_signal_stream = None;
+    if let Some(ref conn) = session_bus {
+        match tisvlay_core::subscribe_signals(
+            conn,
+            "type='signal',sender='org.tisvlay.Session',interface='org.tisvlay.Session1',member='UserProfileChanged',path='/org/tisvlay/Session'",
+        )
+        .await
+        {
+            Ok(raw) => {
+                let filtered = raw.filter_map(|msg_result| async move {
+                    let msg = msg_result.ok()?;
+                    let header = msg.header();
+                    let member = header.member()?.to_string();
+                    if member == "UserProfileChanged" {
+                        Some(())
+                    } else {
+                        None
+                    }
+                });
+                session_signal_stream = Some(Box::pin(filtered));
+                debug!("Subscribed to session UserProfileChanged signals");
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to subscribe to session signals");
+            }
+        }
+    }
+
+    loop {
         if handle.is_closed() {
             break;
         }
 
-        // Lazily connect to session service (retries each poll cycle)
-        {
-            let needs_connect = session.read().await.is_none();
-            if needs_connect {
-                if let Ok(client) = SessionClient::new().await {
-                    if client.is_available().await {
-                        info!("Session service now available for profile management");
-                        *session.write().await = Some(client);
+        tokio::select! {
+            // Branch 1: signal-driven update from daemon
+            Some(change) = async {
+                match signal_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                debug!(change = ?change, "State signal received, debouncing");
+                // Drain additional signals within the debounce window
+                let deadline = tokio::time::sleep(SIGNAL_DEBOUNCE);
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        biased;
+                        Some(_) = async {
+                            match signal_stream.as_mut() {
+                                Some(s) => s.next().await,
+                                None => std::future::pending().await,
+                            }
+                        } => continue,
+                        _ = &mut deadline => break,
+                    }
+                }
+                refresh_state(&daemon, &session, &handle).await;
+            }
+
+            // Branch 2: session service appeared/disappeared on the bus
+            Some(event) = async {
+                match session_watch.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match event {
+                    tisvlay_core::ServiceEvent::Appeared => {
+                        info!("Session service appeared on D-Bus, connecting");
+                        if let Ok(client) = SessionClient::new().await {
+                            if client.is_available().await {
+                                *session.write().await = Some(client);
+                                refresh_state(&daemon, &session, &handle).await;
+                            }
+                        }
+                    }
+                    tisvlay_core::ServiceEvent::Disappeared => {
+                        debug!("Session service left D-Bus");
+                        *session.write().await = None;
+                        refresh_state(&daemon, &session, &handle).await;
                     }
                 }
             }
+
+            // Branch 3: session UserProfileChanged signal
+            Some(()) = async {
+                match session_signal_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                debug!("Session UserProfileChanged signal received");
+                refresh_state(&daemon, &session, &handle).await;
+            }
+
+            // Branch 4: fallback poll for resilience
+            _ = tokio::time::sleep(FALLBACK_POLL_INTERVAL) => {
+                debug!("Fallback poll: refreshing state");
+                refresh_state(&daemon, &session, &handle).await;
+            }
         }
-        refresh_state(&daemon, &session, &handle).await;
     }
 }
 

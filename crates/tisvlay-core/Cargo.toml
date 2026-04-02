@@ -28,6 +28,7 @@ bitflags = { workspace = true }
 # Optional: D-Bus client for tisvlayd
 zbus = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 
 # Optional: logging init for binaries
 tracing-subscriber = { workspace = true, optional = true }
@@ -39,5 +40,5 @@ zbus = { workspace = true }
 
 [features]
 default = []
-dbus = ["dep:zbus", "dep:anyhow"]
+dbus = ["dep:zbus", "dep:anyhow", "dep:futures-util"]
 logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:anyhow"]

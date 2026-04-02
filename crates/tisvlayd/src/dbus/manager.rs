@@ -235,6 +235,12 @@ impl ManagerService {
         emitter: &SignalEmitter<'_>,
         tv_path: ObjectPath<'_>,
     ) -> zbus::Result<()>;
+
+    /// Signal emitted when configuration is reloaded.
+    ///
+    /// Subscribers should refresh profile lists and TV properties.
+    #[zbus(signal)]
+    pub async fn config_reloaded(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 /// Convert a serde_json::Value to a toml::Value.

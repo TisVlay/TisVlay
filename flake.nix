@@ -38,23 +38,14 @@
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
-            appstream
-            flatpak-builder
-            librsvg
             linuxConsoleTools
             lldb
             pkg-config
             socat
             tcpdump
             wakeonlan
-            python313Packages.aiohttp
-            python313Packages.tomlkit
             rust
           ];
-          # Use librsvg's gdk-pixbuf loader cache file as it enables gdk-pixbuf to load
-          # SVG files (important for icons)
-          # Fixes error: .../share/icons/hicolor/scalable/apps/blabla.svg is not a valid icon: Format not recognized
-          GDK_PIXBUF_MODULE_FILE = "${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
         };
       }
     );

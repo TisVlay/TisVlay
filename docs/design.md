@@ -40,7 +40,7 @@ graph TD
 | **System Daemon** | `tisvlayd` | Systemd system service. Vendor-agnostic TV management, D-Bus API, WoL at boot. |
 | **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle). |
 | **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
-| **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
+| **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Subscribes to daemon D-Bus signals for real-time state updates (30s fallback poll). Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
 | **GUI** | `tisvlay-gui` | Slint-based configuration window. (Not yet implemented) |
 
 ### Crate Structure
@@ -170,6 +170,38 @@ Bitflags in `crates/tisvlay-core/src/capabilities.rs`: `POWER`, `SCREEN`, `VOLUM
 ## D-Bus Interface
 
 See `crates/tisvlayd/src/dbus/` for the implementation.
+
+### Service overview
+
+```
+org.tisvlay.Daemon  (system bus; session bus in dev)
+├── /org/tisvlay                    ObjectManager
+├── /org/tisvlay/Manager            org.tisvlay.Manager1
+│   ├── Methods:  ListSystemProfiles, GetUserProfileDefault, ListUserProfiles,
+│   │             ReloadConfig, AddTv, RemoveTv, SetTvOption, DiscoverTvs
+│   └── Signals:  TvAdded, TvRemoved, ConfigReloaded
+└── /org/tisvlay/Tv/{id}            org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
+    │                               Tv1.Volume, Tv1.Backlight, Tv1.Input
+    ├── Properties: Id, Name, Vendor, Address, Connected, Managed,
+    │               SystemProfile, Capabilities
+    ├── Methods:  GetState, Reconnect, PowerOff, ScreenOn/Off,
+    │             SetVolume, SetMute, SwitchInput, SetBacklight
+    └── Signals:  StateChanged, ConnectionChanged
+
+org.tisvlay.Session  (session bus)
+└── /org/tisvlay/Session            org.tisvlay.Session1
+    ├── Methods:  ListUserProfiles, GetTvUserProfile, SetTvUserProfile,
+    │             GetEffectiveUserProfile, ReloadConfig
+    └── Signals:  UserProfileChanged
+```
+
+### Clients and signal flow
+
+| Client | Calls | Subscribes to |
+|--------|-------|---------------|
+| **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (commands), Session1 (user profiles) | — |
+| **tisvlay-tray** | Manager1 (profiles), Tv1.* (state + commands), Session1 (user profiles) | Tv1: `StateChanged`, `ConnectionChanged`; Manager1: `ConfigReloaded`; Session1: `UserProfileChanged`; DBus: `NameOwnerChanged` (service discovery) |
+| **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions: screen on/off, power) | — |
 
 ### Object Paths
 
@@ -494,7 +526,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 1. `tisvlay-tray`: ksni-based StatusNotifierItem with per-TV submenus
 2. Power/screen/input/volume/backlight/mute controls
 3. Scroll wheel adjusts volume or backlight (context-dependent)
-4. Optimistic state caching, 5s polling, graceful daemon-offline handling
+4. Signal-driven updates via D-Bus `StateChanged`/`ConnectionChanged`/`InterfacesAdded`/`InterfacesRemoved` signals with 100ms debounce and 30s fallback poll
 
 ### Phase 4C: System vs User Config Split - COMPLETE
 
@@ -591,6 +623,58 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 | Screen on/off returns 500 when idempotent | LG backend treats application errors as success for screen commands |
 | DHCP IP changes | Use MAC for WoL; re-discover via SSDP |
 | Greeter wake unavailable on X11 | Wayland `ext-idle-notify-v1` only; falls back gracefully |
+| Backlight write requires workaround | SSAP subscriptions work for reading; writing requires Luna `createAlert` workaround (direct setSystemSettings returns 401) |
+
+---
+
+## Push-Based State Pipeline
+
+State updates flow end-to-end without polling:
+
+```
+TV remote/app → WebSocket push → LG backend → daemon StateChangeEvent
+    → D-Bus signal → tray handle.update()
+```
+
+### LG Backend SSAP Subscriptions
+
+The LG SSAP protocol supports `subscribe` requests on the same URIs used for `request` (GET). The TV pushes updates over the existing multiplexed WebSocket whenever a value changes. Subscribed endpoints:
+
+- `ssap://com.webos.service.tvpower/power/getPowerState` (power state)
+- `ssap://audio/getVolume` (volume level)
+- `ssap://audio/getMute` (mute state)
+- `ssap://tv/getExternalInputList` (available inputs)
+- `ssap://com.webos.applicationManager/getForegroundAppInfo` (current input/app)
+- `ssap://settings/getSystemSettings` with `category: "picture", keys: ["backlight"]` (backlight level)
+
+See [docs/lg/webos.md](lg/webos.md) for full SSAP probe results and subscription behavior details.
+
+After connecting and registering, the LG backend sends subscribe requests for all of the above. A background reader task on the multiplexed WebSocket routes subscription updates (identified by request ID, not URI) to a state change channel and command responses to their respective callers via oneshot channels.
+
+### Vendor-Agnostic Design
+
+The `TvConnection` trait provides an optional `subscribe_state()` method with a default not-supported implementation. Backends that support push (LG) override it to return an `mpsc::UnboundedReceiver<TvState>`. The daemon checks at connection time: if subscriptions are available, use them; otherwise, the 30s fallback poll in the tray provides resilience. This keeps the tray always signal-driven regardless of backend capability.
+
+### Daemon Layer
+
+After establishing a connection, the daemon calls `subscribe_state()` on the `TvConnection`. If the backend supports push (LG does), a spawned task forwards received `TvState` snapshots as `StateChangeEvent`s, which are emitted as D-Bus `StateChanged` signals on the per-TV object. Every write command (set_volume, set_mute, screen_on/off, switch_input, set_backlight) also emits a `StateChangeEvent`, so the tray refreshes after any CLI/D-Bus command without waiting for the fallback poll.
+
+### D-Bus Signal Subscription Model
+
+Clients subscribe to D-Bus signals for real-time updates:
+
+- **Daemon signals** (`org.tisvlay.Tv1`): `StateChanged`, `ConnectionChanged` on per-TV objects; `InterfacesAdded`/`InterfacesRemoved` on ObjectManager for TV add/remove; `ConfigReloaded` on Manager1
+- **Session signals** (`org.tisvlay.Session1`): `UserProfileChanged(tv_id, profile)` when user switches profiles
+- **Service discovery**: `NameOwnerChanged` on `org.freedesktop.DBus` to detect when `org.tisvlay.Session` appears/disappears on the bus — enables sub-second service discovery instead of waiting for fallback poll
+
+Shared utilities in `tisvlay-core/src/dbus_client.rs`:
+- `add_signal_match(conn, rule)` — adds a D-Bus match rule (used when multiple rules share one `MessageStream`)
+- `subscribe_signals(conn, rule)` — adds rule and returns a `MessageStream`
+- `watch_service(conn, name)` — returns a `Stream<ServiceEvent>` (`Appeared`/`Disappeared`) for a well-known bus name
+
+### Tray Layer
+
+The tray subscribes to daemon D-Bus signals (`StateChanged`, `ConnectionChanged`, `InterfacesAdded`, `InterfacesRemoved`) at startup using `subscribe_state_changes()`. Session `UserProfileChanged` signals are subscribed separately via `subscribe_signals()`. Signals within a 100ms window are coalesced (using a biased `tokio::select!` drain loop) before refreshing state and calling `handle.update()`. A 30s fallback poll provides resilience if signals are missed.
 
 ---
 

@@ -222,6 +222,25 @@ pub trait TvConnection: Send + Sync {
             Capabilities::BACKLIGHT,
         ))
     }
+
+    // =========================================================================
+    // State subscriptions (default: not supported)
+    // =========================================================================
+
+    /// Subscribe to state change notifications from the device.
+    ///
+    /// Returns a channel that receives [`TvState`] snapshots whenever the
+    /// device reports a change (e.g., volume adjusted via TV remote).
+    /// Each snapshot reflects the cumulative state at the time of the
+    /// update — not just the changed field.
+    ///
+    /// Backends that don't support push-based state return `NotSupported`.
+    async fn subscribe_state(&mut self) -> Result<tokio::sync::mpsc::UnboundedReceiver<TvState>> {
+        Err(Error::not_supported(
+            "subscribe_state",
+            Capabilities::empty(),
+        ))
+    }
 }
 
 /// Factory for creating connections to TVs.
