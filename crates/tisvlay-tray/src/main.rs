@@ -217,6 +217,45 @@ async fn watch_state(
         None => None,
     };
 
+    // Subscribe to UserProfileChanged signals from the session service.
+    // The match rule is added at startup; it silently receives nothing
+    // while the session service isn't running, and picks up signals when
+    // it is — no need to conditionally create/destroy the stream.
+    let mut session_signal_stream = None;
+    if let Some(ref conn) = session_bus {
+        match conn
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "AddMatch",
+                &"type='signal',sender='org.tisvlay.Session',interface='org.tisvlay.Session1',member='UserProfileChanged',path='/org/tisvlay/Session'",
+            )
+            .await
+        {
+            Ok(_) => {
+                use zbus::MessageStream;
+                let raw = MessageStream::from(conn.clone());
+                let filtered = raw.filter_map(|msg_result| async move {
+                    let msg = msg_result.ok()?;
+                    let header = msg.header();
+                    let iface = header.interface()?.to_string();
+                    let member = header.member()?.to_string();
+                    if iface == "org.tisvlay.Session1" && member == "UserProfileChanged" {
+                        Some(())
+                    } else {
+                        None
+                    }
+                });
+                session_signal_stream = Some(Box::pin(filtered));
+                debug!("Subscribed to session UserProfileChanged signals");
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to add match rule for session signals");
+            }
+        }
+    }
+
     loop {
         if handle.is_closed() {
             break;
@@ -274,7 +313,18 @@ async fn watch_state(
                 }
             }
 
-            // Branch 3: fallback poll for resilience
+            // Branch 3: session UserProfileChanged signal
+            Some(()) = async {
+                match session_signal_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                debug!("Session UserProfileChanged signal received");
+                refresh_state(&daemon, &session, &handle).await;
+            }
+
+            // Branch 4: fallback poll for resilience
             _ = tokio::time::sleep(FALLBACK_POLL_INTERVAL) => {
                 debug!("Fallback poll: refreshing state");
                 refresh_state(&daemon, &session, &handle).await;
