@@ -151,16 +151,22 @@ impl WebOsClient {
     ///
     /// Returns a mapping of request ID → endpoint URI so the caller can
     /// identify which subscription each update belongs to (SSAP subscription
-    /// updates carry the request ID but not the URI).
+    /// updates carry the request ID but not the URI), plus the raw initial
+    /// responses from each successful subscription (which contain the current
+    /// values at subscribe time).
     ///
     /// After calling this, subscription updates will arrive on the channel
     /// returned by [`take_subscription_rx`].
     pub async fn subscribe_state_updates(
         &mut self,
-    ) -> Result<std::collections::HashMap<String, String>> {
+    ) -> Result<(
+        std::collections::HashMap<String, String>,
+        Vec<(String, Response)>,
+    )> {
         use serde_json::json;
 
         let mut id_to_uri = std::collections::HashMap::new();
+        let mut initial_responses = Vec::new();
 
         // Plain subscriptions (no payload needed)
         let plain_endpoints = [
@@ -182,7 +188,9 @@ impl WebOsClient {
                     tracing::warn!(uri, error, "Subscribe returned error");
                 }
             } else {
-                id_to_uri.insert(req_id, uri.to_string());
+                let uri_string = uri.to_string();
+                initial_responses.push((uri_string.clone(), response));
+                id_to_uri.insert(req_id, uri_string);
             }
         }
 
@@ -204,11 +212,13 @@ impl WebOsClient {
                 }
             } else {
                 // Use a synthetic URI to distinguish from other getSystemSettings calls
-                id_to_uri.insert(req_id, format!("{}#picture/backlight", uri));
+                let synthetic_uri = format!("{}#picture/backlight", uri);
+                initial_responses.push((synthetic_uri.clone(), response));
+                id_to_uri.insert(req_id, synthetic_uri);
             }
         }
 
-        Ok(id_to_uri)
+        Ok((id_to_uri, initial_responses))
     }
 
     /// Take the subscription receiver from the underlying connection.

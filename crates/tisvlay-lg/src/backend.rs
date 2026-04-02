@@ -241,13 +241,22 @@ impl TvConnection for LgConnection {
 
         // Subscribe to SSAP state endpoints. Returns a mapping of request
         // ID → URI so we can identify which subscription each update belongs
-        // to (SSAP updates carry the request ID but not the endpoint URI).
-        let id_to_uri = client.subscribe_state_updates().await?;
+        // to (SSAP updates carry the request ID but not the endpoint URI),
+        // plus the raw initial responses for seeding the cached state.
+        let (id_to_uri, initial_responses) = client.subscribe_state_updates().await?;
 
         // Take the subscription receiver from the client.
         let sub_rx = client
             .take_subscription_rx()
             .ok_or(Error::ConnectionClosed)?;
+
+        // Seed the cached state from initial subscription responses so the
+        // first push update produces a complete snapshot instead of a partial
+        // one built from TvState::new().
+        let mut initial_state = TvState::new();
+        for (uri, response) in &initial_responses {
+            update_state_from_subscription(&mut initial_state, uri, &response.payload);
+        }
 
         // Create a channel for TvState updates.
         let (state_tx, state_rx) = mpsc::unbounded_channel();
@@ -256,7 +265,7 @@ impl TvConnection for LgConnection {
         // TvState snapshots. Each update merges into a cached state so
         // the receiver always gets a complete snapshot.
         tokio::spawn(async move {
-            let mut cached_state = TvState::new();
+            let mut cached_state = initial_state;
             let mut sub_rx = sub_rx;
             while let Some(response) = sub_rx.recv().await {
                 // Look up the endpoint URI from the response ID.
