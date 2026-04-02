@@ -591,7 +591,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 | Screen on/off returns 500 when idempotent | LG backend treats application errors as success for screen commands |
 | DHCP IP changes | Use MAC for WoL; re-discover via SSDP |
 | Greeter wake unavailable on X11 | Wayland `ext-idle-notify-v1` only; falls back gracefully |
-| Backlight not SSAP-subscribable | Read on demand only (tray open, CLI status, after commands); uses Luna `createAlert` workaround |
+| Backlight write requires workaround | SSAP subscriptions work for reading; writing requires Luna `createAlert` workaround (direct setSystemSettings returns 401) |
 
 ---
 
@@ -613,16 +613,36 @@ The LG SSAP protocol supports `subscribe` requests on the same URIs used for `re
 - `ssap://audio/getMute` (mute state)
 - `ssap://tv/getExternalInputList` (available inputs)
 - `ssap://com.webos.applicationManager/getForegroundAppInfo` (current input/app)
+- `ssap://settings/getSystemSettings` with `category: "picture", keys: ["backlight"]` (backlight level)
 
-After connecting and registering, the LG backend sends subscribe requests for all of the above. A background reader task on the multiplexed WebSocket routes subscription updates to a state change channel and command responses to their respective callers.
+See [docs/lg/webos.md](lg/webos.md) for full SSAP probe results and subscription behavior details.
+
+After connecting and registering, the LG backend sends subscribe requests for all of the above. A background reader task on the multiplexed WebSocket routes subscription updates (identified by request ID, not URI) to a state change channel and command responses to their respective callers via oneshot channels.
+
+### Vendor-Agnostic Design
+
+The `TvConnection` trait provides an optional `subscribe_state()` method with a default not-supported implementation. Backends that support push (LG) override it to return an `mpsc::UnboundedReceiver<TvState>`. The daemon checks at connection time: if subscriptions are available, use them; otherwise, the 30s fallback poll in the tray provides resilience. This keeps the tray always signal-driven regardless of backend capability.
 
 ### Daemon Layer
 
-After establishing a connection, the daemon calls `subscribe_state()` on the `TvConnection`. If the backend supports push (LG does), a spawned task forwards received `TvState` snapshots as `StateChangeEvent`s, which are emitted as D-Bus `StateChanged` signals on the per-TV object.
+After establishing a connection, the daemon calls `subscribe_state()` on the `TvConnection`. If the backend supports push (LG does), a spawned task forwards received `TvState` snapshots as `StateChangeEvent`s, which are emitted as D-Bus `StateChanged` signals on the per-TV object. Every write command (set_volume, set_mute, screen_on/off, switch_input, set_backlight) also emits a `StateChangeEvent`, so the tray refreshes after any CLI/D-Bus command without waiting for the fallback poll.
+
+### D-Bus Signal Subscription Model
+
+Clients subscribe to D-Bus signals for real-time updates:
+
+- **Daemon signals** (`org.tisvlay.Tv1`): `StateChanged`, `ConnectionChanged` on per-TV objects; `InterfacesAdded`/`InterfacesRemoved` on ObjectManager for TV add/remove; `ConfigReloaded` on Manager1
+- **Session signals** (`org.tisvlay.Session1`): `UserProfileChanged(tv_id, profile)` when user switches profiles
+- **Service discovery**: `NameOwnerChanged` on `org.freedesktop.DBus` to detect when `org.tisvlay.Session` appears/disappears on the bus — enables sub-second service discovery instead of waiting for fallback poll
+
+Shared utilities in `tisvlay-core/src/dbus_client.rs`:
+- `add_signal_match(conn, rule)` — adds a D-Bus match rule (used when multiple rules share one `MessageStream`)
+- `subscribe_signals(conn, rule)` — adds rule and returns a `MessageStream`
+- `watch_service(conn, name)` — returns a `Stream<ServiceEvent>` (`Appeared`/`Disappeared`) for a well-known bus name
 
 ### Tray Layer
 
-The tray subscribes to daemon D-Bus signals (`StateChanged`, `ConnectionChanged`, `InterfacesAdded`, `InterfacesRemoved`) at startup. Signals within a 100ms window are coalesced before refreshing state and calling `handle.update()`. A 30s fallback poll provides resilience if signals are missed.
+The tray subscribes to daemon D-Bus signals (`StateChanged`, `ConnectionChanged`, `InterfacesAdded`, `InterfacesRemoved`) at startup using `subscribe_state_changes()`. Session `UserProfileChanged` signals are subscribed separately via `subscribe_signals()`. Signals within a 100ms window are coalesced (using a biased `tokio::select!` drain loop) before refreshing state and calling `handle.update()`. A 30s fallback poll provides resilience if signals are missed.
 
 ---
 

@@ -191,7 +191,8 @@ See [docs/design.md](docs/design.md) for the full CLI command reference.
 - Need "TV On via Wi-Fi" enabled in TV settings
 - ~1-5 second delay needed between WoL and first command
 - TV closes WebSocket on standby; need reconnection logic
-- Backlight is not SSAP-subscribable; read on demand only (uses Luna `createAlert` workaround)
+- Backlight IS SSAP-subscribable (via `getSystemSettings` with `category: "picture", keys: ["backlight"]`); writing still requires Luna `createAlert` workaround (direct setSystemSettings returns 401)
+- SSAP subscription updates carry the original request ID, not the URI -- routing must use a request-ID-to-URI map
 
 ## Quick Reference
 
