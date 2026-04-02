@@ -242,6 +242,8 @@ pub enum TvStateChange {
     ConnectionChanged { tv_id: String, connected: bool },
     /// TV list structure changed (add/remove) -- requires full refresh.
     TvListChanged,
+    /// Daemon configuration was reloaded -- profile lists and TV properties may differ.
+    ConfigReloaded,
 }
 
 // =============================================================================
@@ -579,6 +581,10 @@ impl DaemonClient {
                     ("org.tisvlay.Manager1", "TvAdded") | ("org.tisvlay.Manager1", "TvRemoved") => {
                         trace!(member = %member, "Manager1 TV list signal");
                         Some(TvStateChange::TvListChanged)
+                    }
+                    ("org.tisvlay.Manager1", "ConfigReloaded") => {
+                        trace!("Manager1 ConfigReloaded signal");
+                        Some(TvStateChange::ConfigReloaded)
                     }
                     _ => None,
                 }

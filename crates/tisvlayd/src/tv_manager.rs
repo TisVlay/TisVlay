@@ -66,13 +66,20 @@ pub enum TvManagerError {
     ConfigError(String),
 }
 
-/// Event emitted when TV state changes.
+/// Event emitted when TV state changes or daemon-wide events occur.
 #[derive(Debug, Clone)]
-pub struct StateChangeEvent {
-    /// The TV identifier.
-    pub tv_id: String,
-    /// The new state (JSON-encoded).
-    pub state_json: String,
+pub enum StateChangeEvent {
+    /// A per-TV state change (connection, command, option, subscription update).
+    TvStateChanged {
+        /// The TV identifier.
+        tv_id: String,
+        /// The new state (JSON-encoded).
+        state_json: String,
+    },
+    /// Configuration was reloaded from disk.
+    ///
+    /// Profile lists, TV names, and managed flags may all differ.
+    ConfigReloaded,
 }
 
 impl StateChangeEvent {
@@ -82,7 +89,7 @@ impl StateChangeEvent {
             "connected": connected,
             "error": error,
         });
-        Self {
+        Self::TvStateChanged {
             tv_id: tv_id.to_string(),
             state_json: state.to_string(),
         }
@@ -93,7 +100,7 @@ impl StateChangeEvent {
         let state = serde_json::json!({
             "option_changed": { "key": key, "value": value },
         });
-        Self {
+        Self::TvStateChanged {
             tv_id: tv_id.to_string(),
             state_json: state.to_string(),
         }
@@ -104,7 +111,7 @@ impl StateChangeEvent {
         let state = serde_json::json!({
             "command_completed": command,
         });
-        Self {
+        Self::TvStateChanged {
             tv_id: tv_id.to_string(),
             state_json: state.to_string(),
         }
@@ -311,7 +318,7 @@ impl TvManager {
                 tokio::spawn(async move {
                     while let Some(state) = state_rx.recv().await {
                         let json = serde_json::to_string(&state).unwrap_or_default();
-                        let event = StateChangeEvent {
+                        let event = StateChangeEvent::TvStateChanged {
                             tv_id: tv_id.clone(),
                             state_json: json,
                         };
@@ -1276,7 +1283,7 @@ impl TvManager {
 
         // Notify signal subscribers that configuration changed
         // (profile lists, TV names, managed flags may all differ).
-        self.emit_state_change(StateChangeEvent::command_completed("_all", "reload_config"));
+        self.emit_state_change(StateChangeEvent::ConfigReloaded);
 
         Ok(())
     }

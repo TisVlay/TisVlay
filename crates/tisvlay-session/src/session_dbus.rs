@@ -10,6 +10,7 @@ use tisvlay_core::DaemonClient;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use zbus::interface;
+use zbus::object_server::SignalEmitter;
 
 /// D-Bus name for the session service.
 pub const SESSION_DBUS_NAME: &str = "org.tisvlay.Session";
@@ -105,8 +106,10 @@ impl SessionService {
     /// Assign a user profile to a TV.
     ///
     /// Saves to user config and re-resolves profiles immediately.
+    /// Emits a `UserProfileChanged` signal on success.
     async fn set_tv_user_profile(
         &self,
+        #[zbus(signal_context)] ctxt: SignalEmitter<'_>,
         tv_id: &str,
         profile_name: &str,
     ) -> Result<(), SessionError> {
@@ -143,6 +146,14 @@ impl SessionService {
             warn!(error = %e, "Failed to save user config after profile change");
         }
 
+        // Drop the write lock before emitting the signal
+        drop(s);
+
+        // Notify subscribers that the profile changed
+        if let Err(e) = Self::user_profile_changed(&ctxt, tv_id, profile_name).await {
+            warn!(error = %e, tv_id = %tv_id, "Failed to emit UserProfileChanged signal");
+        }
+
         Ok(())
     }
 
@@ -169,6 +180,20 @@ impl SessionService {
 
         Ok(json.to_string())
     }
+
+    // -------------------------------------------------------------------------
+    // Signals
+    // -------------------------------------------------------------------------
+
+    /// Signal emitted when a TV's user profile assignment changes.
+    ///
+    /// Subscribers should refresh profile state for the affected TV.
+    #[zbus(signal)]
+    pub async fn user_profile_changed(
+        emitter: &SignalEmitter<'_>,
+        tv_id: &str,
+        profile_name: &str,
+    ) -> zbus::Result<()>;
 
     /// Reload user configuration from disk.
     ///

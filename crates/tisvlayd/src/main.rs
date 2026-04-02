@@ -179,19 +179,39 @@ async fn state_change_signal_emitter(
     info!("State change signal emitter started");
 
     while let Some(event) = rx.recv().await {
-        debug!(tv_id = %event.tv_id, "Emitting state change signals");
+        match event {
+            StateChangeEvent::TvStateChanged {
+                ref tv_id,
+                ref state_json,
+            } => {
+                debug!(tv_id = %tv_id, "Emitting state change signals");
 
-        // Emit on the per-TV object path
-        let path = tv_path(&event.tv_id);
-        match SignalEmitter::new(&connection, path.as_str()) {
-            Ok(emitter) => {
-                // Emit StateChanged signal
-                if let Err(e) = TvService::state_changed(&emitter, &event.state_json).await {
-                    warn!(error = %e, tv_id = %event.tv_id, "Failed to emit StateChanged signal");
+                // Emit on the per-TV object path
+                let path = tv_path(tv_id);
+                match SignalEmitter::new(&connection, path.as_str()) {
+                    Ok(emitter) => {
+                        if let Err(e) = TvService::state_changed(&emitter, state_json).await {
+                            warn!(error = %e, tv_id = %tv_id, "Failed to emit StateChanged signal");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, tv_id = %tv_id, "Failed to create signal emitter");
+                    }
                 }
             }
-            Err(e) => {
-                warn!(error = %e, tv_id = %event.tv_id, "Failed to create signal emitter");
+            StateChangeEvent::ConfigReloaded => {
+                debug!("Emitting ConfigReloaded signal on Manager1");
+
+                match SignalEmitter::new(&connection, MANAGER_PATH) {
+                    Ok(emitter) => {
+                        if let Err(e) = ManagerService::config_reloaded(&emitter).await {
+                            warn!(error = %e, "Failed to emit ConfigReloaded signal");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to create signal emitter for Manager1");
+                    }
+                }
             }
         }
     }
