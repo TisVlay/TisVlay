@@ -14,7 +14,7 @@ use tisvlay_core::{
 #[cfg(feature = "discovery")]
 use tisvlay_core::{DiscoveredTv, TvDiscovery};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// Maximum number of connection attempts after sending WoL.
 const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 10;
@@ -284,7 +284,7 @@ impl TvConnection for LgConnection {
                     }
                 }
             }
-            debug!("Subscription state converter task exited");
+            trace!("Subscription state converter task exited");
         });
 
         Ok(state_rx)
