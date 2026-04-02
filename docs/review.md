@@ -263,3 +263,84 @@ state pipeline from poll-based to push-based. The implementation is thorough:
 No actionable items. All findings are info-level confirmations of correct behavior.
 The live probing documentation in `docs/lg/webos.md` and probe scripts in `scripts/`
 are valuable reference material for future SSAP work.
+
+---
+---
+
+# Follow-on Review: Initial state seeding, log level, session signals (1869201..22beed4)
+
+Review of 3 implementation commits following the Q1–Q12 review.
+
+Build: clean. Tests: all pass.
+
+---
+
+## R1. Initial state seeding from subscribe responses — correct fix
+
+**Files:**
+- [crates/tisvlay-lg/src/client.rs:153-224](crates/tisvlay-lg/src/client.rs#L153-L224)
+- [crates/tisvlay-lg/src/backend.rs:244-268](crates/tisvlay-lg/src/backend.rs#L244-L268)
+
+`subscribe_state_updates()` now returns `(HashMap<id, uri>, Vec<(uri, Response)>)` —
+the ID→URI map plus the raw initial responses. The converter task seeds its cached
+`TvState` by running each initial response through `update_state_from_subscription`
+before entering the receive loop.
+
+This prevents the first push update from producing a partial snapshot (e.g., a volume
+change arriving with all other fields at their `TvState::new()` defaults). The initial
+responses from SSAP subscribe calls contain the current values, so the seeded state
+is complete from the start.
+
+**Severity:** Info (correct fix for incomplete initial state)
+
+---
+
+## R2. Converter exit log downgraded to trace — appropriate
+
+**File:** [crates/tisvlay-lg/src/backend.rs:287](crates/tisvlay-lg/src/backend.rs#L287)
+
+The "Subscription state converter task exited" message fires during every startup
+because `on_startup` replaces the initial connection, dropping the first subscription
+channel. This is expected behavior, not an error. Downgrading from `debug!` to `trace!`
+reduces noise in normal operation while keeping the message available for detailed
+troubleshooting.
+
+**Severity:** Info (correct log level)
+
+---
+
+## R3. Session `UserProfileChanged` subscription in tray — correct approach
+
+**File:** [crates/tisvlay-tray/src/main.rs:220-260](crates/tisvlay-tray/src/main.rs#L220-L260)
+
+The tray adds an `AddMatch` rule for `org.tisvlay.Session1.UserProfileChanged` on
+the session bus at startup. The match rule is unconditional — it silently receives
+nothing while the session service isn't running, and picks up signals when it starts.
+This avoids the need to add/remove the rule when the session service appears/disappears.
+
+The signal is handled as a fourth `tokio::select!` branch that triggers a
+`refresh_state()`. No debounce — profile changes are rare enough that each one
+warrants an immediate refresh.
+
+One observation: the `AddMatch` + `MessageStream` + `filter_map` pattern here
+duplicates the approach in `subscribe_state_changes()` on `DaemonClient`. If the
+session service grows more signals, this could be extracted into a similar
+`subscribe_session_changes()` method. For a single signal, inline is fine.
+
+**Severity:** Info (correct, extraction optional for now)
+
+---
+
+## Summary
+
+| # | Severity | Item |
+|---|----------|------|
+| R1 | **Info** | Initial state seeding prevents incomplete first snapshot |
+| R2 | **Info** | Converter exit log correctly downgraded to trace |
+| R3 | **Info** | Session signal subscription is unconditional and correct |
+
+## Overall Assessment
+
+All three commits are clean fixes that refine the push-based pipeline. The initial
+state seeding (R1) is the most important — without it, the first D-Bus StateChanged
+signal after connection would carry an incomplete TvState. No actionable items.
