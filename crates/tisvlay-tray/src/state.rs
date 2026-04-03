@@ -30,6 +30,8 @@ pub struct CachedTvState {
     pub available_system_profiles: Vec<String>,
     /// Whether this TV participates in automated management.
     pub managed: bool,
+    /// Whether automation should fire for this TV right now.
+    pub automated: bool,
 }
 
 /// Fetch current state for all configured TVs.
@@ -104,6 +106,7 @@ pub async fn fetch_all_state(
             system_profile: tv.system_profile,
             available_system_profiles: available_system_profiles.clone(),
             managed: tv.managed,
+            automated: tv.automated,
         };
 
         debug!(
@@ -141,6 +144,7 @@ mod tests {
             system_profile: "default".into(),
             available_system_profiles: system_profiles.into_iter().map(String::from).collect(),
             managed: true,
+            automated: true,
         }
     }
 

@@ -299,7 +299,7 @@ fn build_tv_submenu(
         build_disconnected_tv_menu(tv, cmd_tx)
     };
 
-    let icon = match (tv.connected, tv.managed) {
+    let icon = match (tv.connected, tv.automated) {
         (true, true) => "tvconnected",
         (true, false) => "tvtrusted",
         (false, _) => "tvdisconnected",
