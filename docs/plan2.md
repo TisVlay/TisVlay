@@ -85,21 +85,62 @@ This aligns with the D-Bus refactor plan (typed `a(ssb)` properties
 instead of JSON), and `current_input` uses the same normalized ID space
 as the input list, making matching trivial.
 
-### Gate scope (decided)
+### Gate scope and D-Bus exposure (decided)
 
-`automate_when` lives in `SystemProfileConfig` and gates all system
-events (startup, shutdown, sleep, wake, reboot, no_session).
+`automate_when` lives in `SystemProfileConfig`. The daemon computes the
+gate result and exposes it as a read-only D-Bus property on Tv1:
 
-The gate composes with `managed`:
-- `managed = false` → skips all automation (global kill switch)
-- `managed = true` + `automate_when = on_primary` + TV not on primary
-  → skips system event automation
-- `managed = true` + `automate_when = always` → always automates
+**D-Bus properties on `org.tisvlay.Tv1`:**
 
-For user events (session lock/unlock, idle), a future `automate_when`
-could be added to `UserProfileConfig` if needed. For now, system
-profile only — user events are session-scoped and the session service
-doesn't currently know the TV's current input.
+| Property | Type | Access | Description |
+|----------|------|--------|-------------|
+| `Managed` | `b` | read-write | Global automation kill switch (existing) |
+| `PrimaryInput` | `s` | read-write | Which input this PC is connected to |
+| `CurrentInput` | `s` | read-only | What the TV is currently showing |
+| `AutomateWhen` | `s` | read-only | From resolved system profile: `"always"`, `"on_primary"`, `"off_primary"` |
+| `Automated` | `b` | read-only | **Computed**: `managed && (automate_when == always \|\| input match)` |
+
+`Automated` is the single boolean that any automation client checks
+before acting. It folds together `managed`, `automate_when`, and the
+current input state into one answer: "should I automate this TV right
+now?"
+
+- `Managed` stays separate for the global kill switch use case
+- `PrimaryInput`, `CurrentInput`, `AutomateWhen` stay separate for
+  diagnostic/GUI display (so the user can see *why* automation is
+  disabled)
+- `Automated` is the convenience property for simple callers
+
+**Automation clients (session service, custom services) use this pattern:**
+
+```
+if daemon.get_property(tv_id, "Automated") {
+    daemon.set_property(tv_id, "ScreenOn", false);  // or any action
+}
+```
+
+Manual actions from the tray and CLI skip the `Automated` check — they
+always execute regardless of input state.
+
+This approach:
+- Scales to arbitrary automation sequences (no structured action strings)
+- Works with the D-Bus refactor (property reads/writes, PropertiesChanged)
+- Keeps policy enforcement centralized in the daemon (single source of
+  truth for `Automated`)
+- Lets any client (session, custom service, GUI) consume the gate without
+  reimplementing the logic
+
+**Gate composition:**
+
+| `managed` | `automate_when` | TV on primary? | `Automated` |
+|:---------:|:---------------:|:--------------:|:-----------:|
+| false | any | any | **false** |
+| true | always | any | **true** |
+| true | on_primary | yes | **true** |
+| true | on_primary | no | **false** |
+| true | on_primary | unknown (TV off) | **true** (benefit of doubt) |
+| true | off_primary | yes | **false** |
+| true | off_primary | no | **true** |
 
 ---
 
@@ -141,31 +182,42 @@ doesn't currently know the TV's current input.
 - Add `automate_when: AutomateWhen` to `ResolvedSystemProfile`
 - Update merge/resolve logic
 
-### Phase 4: Implement input gate in daemon event dispatch
+### Phase 4: Implement gate in daemon and expose `Automated` property
 
-**File:** `crates/tisvlayd/src/tv_manager.rs`
+**Files:** `crates/tisvlayd/src/tv_manager.rs`, `crates/tisvlayd/src/dbus/tv.rs`
 
-- In `execute_system_event()`, before dispatching each TV's action:
-  1. Read the TV's resolved system profile → `automate_when`
-  2. If `Always` → proceed
-  3. If `OnPrimary` → check TV's current input against `primary_input`;
-     skip if not matching
-  4. If `OffPrimary` → inverse check
-- The daemon already knows each TV's current input via push
-  subscriptions (`getForegroundAppInfo` updates `current_input` in
-  real time). Store `current_input` on `ManagedTv` alongside the
-  connection.
-- On startup, if `automate_when = on_primary` and the TV is off (no
-  current input known), `on_startup` should still fire — can't check
-  input when the TV is in standby. The gate only applies when the TV
-  is already on and has a known current input.
+- Store `current_input: Option<String>` on `ManagedTv` — updated by
+  the backend subscription push (`getForegroundAppInfo`). The daemon
+  already receives these updates via `try_subscribe_state`.
+- Add `is_automated()` method on `ManagedTv` or `TvManager` that
+  computes: `managed && (automate_when == Always || input matches)`
+- In `execute_system_event()`, replace the `managed` check with the
+  `is_automated()` check
+- Expose D-Bus properties on Tv1:
+  - `PrimaryInput` (read-write)
+  - `CurrentInput` (read-only, from cached subscription state)
+  - `AutomateWhen` (read-only, from resolved system profile)
+  - `Automated` (read-only, computed from above)
+- When TV is off (no known current input), `Automated` returns `true`
+  (benefit of doubt — can't check input in standby)
 
-### Phase 5: Surface in CLI, tray, D-Bus
+### Phase 5: Update session service to check `Automated`
 
-- CLI `tisvlay status`: show `primary_input` and current input
+**File:** `crates/tisvlay-session/src/main.rs`
+
+- Before executing an action for a TV, query the daemon's `Automated`
+  property: `daemon.get_property(tv_id, "Automated")`
+- If `false`, skip the action for that TV
+- This replaces the current `managed`-only check in the session
+  service's event handler (if any), and now also gates on input state
+
+### Phase 6: Surface in CLI, tray, docs
+
+- CLI `tisvlay status`: show `primary_input`, `current_input`, and
+  `automated` state
 - Tray tooltip: show current input name
-- D-Bus: `PrimaryInput` property on Tv1 (read-write, aligns with
-  D-Bus refactor plan)
+- Tray: `Automated` status could be shown alongside `Managed` in the
+  TV submenu (or as a combined indicator)
 - Config examples and design.md
 
 ---
@@ -175,8 +227,9 @@ doesn't currently know the TV's current input.
 - [ ] Phase 1: Fix input ID normalization and tray radio bug
 - [ ] Phase 2: Rename hdmi_input → primary_input, remove only_when_active
 - [ ] Phase 3: Add AutomateWhen enum to SystemProfileConfig
-- [ ] Phase 4: Implement input gate in daemon event dispatch
-- [ ] Phase 5: Surface in CLI, tray, D-Bus, docs
+- [ ] Phase 4: Implement gate in daemon, expose Automated property
+- [ ] Phase 5: Update session service to check Automated
+- [ ] Phase 6: Surface in CLI, tray, docs
 
 ---
 
