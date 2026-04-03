@@ -14,146 +14,189 @@ Two related issues:
    DVI, AV, coaxial, and even WebOS apps (e.g., "Sling TV") reported
    as inputs. The field needs a vendor-agnostic name.
 
-## Open design questions
+## Design decisions
 
-### Naming
+### Naming (decided)
 
-The config field `hdmi_input` should become something generic. The
-automation gate `only_when_active` should have a name that makes its
-relationship to the input field obvious. Ideas:
+- **`primary_input`** on `TvConfig` — the input this PC is connected to.
+  Vendor-agnostic; not all inputs are HDMI (could be DVI, AV, coaxial,
+  or even a WebOS app ID like "Sling TV").
 
-| Input field | Gate option | Relationship clarity |
-|-------------|------------|---------------------|
-| `pc_input` | `only_when_active` | Low — "active" is vague |
-| `host_input` | `only_when_host_active` | Medium — "host" is server jargon |
-| `desktop_input` | `only_when_desktop_active` | Medium — what about laptops? |
-| `assigned_input` | `only_when_assigned` | High — gate fires when on the assigned input |
-| `bound_input` | `only_when_bound` | Medium — "bound" is technical |
-
-The gate option should be an enum, not a boolean, to allow future
-behaviors beyond simple on/off. Possible enum values:
+- **`automate_when`** on `SystemProfileConfig` — enum controlling when
+  automation fires relative to the TV's current input:
 
 ```rust
-enum InputGate {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum AutomateWhen {
     /// Always apply automation regardless of current input.
+    #[default]
     Always,
-    /// Only apply automation when the TV is on the assigned input.
-    WhenAssigned,
-    /// Skip automation when the TV is on the assigned input (inverse).
-    WhenNotAssigned,
+    /// Only apply automation when the TV is on the primary input.
+    OnPrimary,
+    /// Only apply automation when the TV is NOT on the primary input.
+    OffPrimary,
 }
 ```
 
-This lives in the system profile since it gates system-level automation
-(startup, shutdown, sleep/wake, no_session), similar to how `managed`
-controls automation participation. Could also apply to user profile
-events (session lock/unlock, idle) — TBD.
+`primary_input` is a per-TV hardware fact (which port the PC plugs into).
+`automate_when` is a behavioral policy shared across TVs via profiles.
+An admin can have multiple TVs with different `primary_input` values but
+the same `automate_when` policy via a shared system profile.
 
-**Decision needed:** final names for the input field and gate enum.
+```toml
+[system.profiles.default]
+automate_when = "always"
 
-### Input ID format mismatch (existing bug)
+[system.profiles.shared]
+automate_when = "on_primary"    # only automate when showing the PC
 
-The LG backend has two different ID systems for inputs:
+[[tv]]
+id = "living-room"
+primary_input = "HDMI_1"
+profile.system = "default"
 
-- **`getExternalInputList`** returns physical IDs: `"HDMI_1"`, `"HDMI_2"`, etc.
-- **`getForegroundAppInfo`** returns app IDs: `"com.webos.app.hdmi1"`, `"com.webos.app.livetv"`, etc.
+[[tv]]
+id = "guest-room"
+primary_input = "HDMI_2"
+profile.system = "shared"       # same policy, different physical input
+```
 
-The tray's input submenu shows `inputs` (physical IDs with labels) as
-radio options but compares against `current_input` (app ID) to select
-the current one — **these never match**, so the current input is never
-highlighted in the tray menu.
+### Input ID normalization (decided)
 
-The `pc_input` / `assigned_input` config field would store one of these
-formats. The automation gate needs to compare it against the TV's
-current input. Which format should be canonical?
+The LG backend has two ID systems:
 
-Options:
-- **Physical ID** (`"HDMI_1"`): matches what the user sees in the tray
-  and in the TV's own input picker. Requires mapping app IDs → physical
-  IDs for comparison (e.g., `"com.webos.app.hdmi1"` → `"HDMI_1"`).
-- **App ID** (`"com.webos.app.hdmi1"`): matches what the TV pushes via
-  subscriptions. But non-HDMI "inputs" like "Sling TV" don't have
-  physical IDs — they're only app IDs.
-- **Normalized**: store the physical ID, but the backend provides a
-  mapping table. The daemon compares using the mapping.
+- **`getExternalInputList`**: physical IDs `"HDMI_1"`, `"HDMI_2"`
+- **`getForegroundAppInfo`**: app IDs `"com.webos.app.hdmi1"`, `"com.webos.app.livetv"`
 
-The backend should own the mapping since it's vendor-specific. The
-`InputInfo` struct already has both `id` (physical) and could gain
-an `app_id` field. Or the backend normalizes `current_input` from
-app ID to physical ID before exposing it.
+**Existing bug:** The tray's input submenu compares app IDs against
+physical IDs — they never match, so the current input is never
+highlighted and radio buttons stick when cycling through options.
 
-**Decision needed:** canonical input ID format and where mapping lives.
+**Decision:** The backend normalizes `current_input` to the physical ID
+space. `InputInfo` exposes:
+- `id`: normalized stable identifier (e.g., `"HDMI_1"`) — used for
+  config, matching, automation, D-Bus properties
+- `label`: human-friendly display name (e.g., `"HDMI 1"` or user-renamed
+  `"Gaming PC"`) — used for UI rendering
 
-### Scope of the input gate
+The backend owns the vendor-specific app-ID-to-physical-ID mapping.
+This aligns with the D-Bus refactor plan (typed `a(ssb)` properties
+instead of JSON), and `current_input` uses the same normalized ID space
+as the input list, making matching trivial.
 
-Where should the input gate apply?
+### Gate scope (decided)
 
-| Event type | Owner | Gate applies? | Notes |
-|-----------|-------|:---:|-------|
-| on_startup | System profile | Yes | Don't WoL if user is watching a console |
-| on_shutdown | System profile | Maybe | Still want to power off even if on another input? |
-| on_sleep | System profile | Yes | Don't blank if watching a console |
-| on_wake | System profile | Yes | Don't power on if was watching a console |
-| on_reboot | System profile | Maybe | |
-| on_no_session | System profile | Yes | |
-| on_session_lock | User profile | Yes | Don't blank during console gaming |
-| on_session_unlock | User profile | Yes | |
-| on_idle_timeout | User profile | Yes | Don't blank if watching a movie on console |
-| on_greeter_wake | User profile | Yes | |
+`automate_when` lives in `SystemProfileConfig` and gates all system
+events (startup, shutdown, sleep, wake, reboot, no_session).
 
-If the gate is in the system profile, it only applies to system events.
-If it's in both profile types, it applies to everything. If it's on
-`TvConfig`, it applies to all events globally for that TV.
+The gate composes with `managed`:
+- `managed = false` → skips all automation (global kill switch)
+- `managed = true` + `automate_when = on_primary` + TV not on primary
+  → skips system event automation
+- `managed = true` + `automate_when = always` → always automates
 
-**Decision needed:** gate scope (system profile, both profiles, or TvConfig).
+For user events (session lock/unlock, idle), a future `automate_when`
+could be added to `UserProfileConfig` if needed. For now, system
+profile only — user events are session-scoped and the session service
+doesn't currently know the TV's current input.
 
 ---
 
-## Implementation sketch (pending decisions above)
+## Implementation plan
 
-### Phase 1: Fix input ID mismatch
+### Phase 1: Fix input ID normalization and tray radio bug
 
-- Add `app_id: Option<String>` to `InputInfo` in tisvlay-core
-- LG backend populates `app_id` from the app ID mapping
-- Backend normalizes `current_input` to physical ID (or provides both)
-- Fix tray input submenu comparison to work correctly
+**Files:** `crates/tisvlay-lg/src/backend.rs`, `crates/tisvlay-core/src/state.rs`,
+`crates/tisvlay-tray/src/tray.rs`
 
-### Phase 2: Rename `hdmi_input` → `assigned_input` (or chosen name)
+- LG backend: add app-ID-to-physical-ID mapping (e.g.,
+  `"com.webos.app.hdmi1"` → `"HDMI_1"`)
+- Normalize `current_input` in `update_state_from_subscription()` when
+  handling `getForegroundAppInfo` updates — map the app ID to the
+  physical ID from the input list
+- Fix tray input submenu: `current_input` now matches `inputs[i].id`,
+  so radio selection works correctly
+- Test: switch inputs with the TV remote, verify tray radio updates
 
-- Rename field in `TvConfig`
-- Update all config examples, test fixtures, docs
-- Update `SetTvOption` key name
-- Update design.md
+### Phase 2: Rename `hdmi_input` → `primary_input`
 
-### Phase 3: Implement input gate
+**Files:** `crates/tisvlay-core/src/config.rs`, all config TOML fixtures,
+`crates/tisvlayd/src/tv_manager.rs`, docs
 
-- Add `InputGate` enum (or chosen name) to `SystemProfileConfig`
-- Implement gate check in `execute_system_event()` — before dispatching
-  each TV's action, check if the gate allows it based on current input
-- Requires the daemon to know each TV's current input — which it now
-  does via push subscriptions (subscription updates include
-  `getForegroundAppInfo` which pushes current app/input changes)
+- Rename `TvConfig::hdmi_input` → `TvConfig::primary_input`
+- Rename `SetTvOption` key from `"hdmi_input"` → `"primary_input"`
+- Remove `only_when_active` field from `TvConfig` (dead code)
+- Update all config examples, test fixtures, design.md, CLAUDE.md
+- Update `startup_power_on()` which uses `hdmi_input` for input
+  switching after WoL
 
-### Phase 4: Surface in CLI, tray, docs
+### Phase 3: Add `automate_when` to SystemProfileConfig
 
-- CLI: show current input and gate status in `tisvlay status`
-- Tray: show current input in tooltip, fix radio selection
-- Config docs: examples showing the new field and gate enum
+**Files:** `crates/tisvlay-core/src/config.rs`, `crates/tisvlayd/src/tv_manager.rs`
+
+- Add `AutomateWhen` enum to config.rs
+- Add `automate_when: Option<AutomateWhen>` to `SystemProfileConfig`
+  (Option for merge support, default `Always`)
+- Add `automate_when: AutomateWhen` to `ResolvedSystemProfile`
+- Update merge/resolve logic
+
+### Phase 4: Implement input gate in daemon event dispatch
+
+**File:** `crates/tisvlayd/src/tv_manager.rs`
+
+- In `execute_system_event()`, before dispatching each TV's action:
+  1. Read the TV's resolved system profile → `automate_when`
+  2. If `Always` → proceed
+  3. If `OnPrimary` → check TV's current input against `primary_input`;
+     skip if not matching
+  4. If `OffPrimary` → inverse check
+- The daemon already knows each TV's current input via push
+  subscriptions (`getForegroundAppInfo` updates `current_input` in
+  real time). Store `current_input` on `ManagedTv` alongside the
+  connection.
+- On startup, if `automate_when = on_primary` and the TV is off (no
+  current input known), `on_startup` should still fire — can't check
+  input when the TV is in standby. The gate only applies when the TV
+  is already on and has a known current input.
+
+### Phase 5: Surface in CLI, tray, D-Bus
+
+- CLI `tisvlay status`: show `primary_input` and current input
+- Tray tooltip: show current input name
+- D-Bus: `PrimaryInput` property on Tv1 (read-write, aligns with
+  D-Bus refactor plan)
+- Config examples and design.md
+
+---
+
+## Checklist
+
+- [ ] Phase 1: Fix input ID normalization and tray radio bug
+- [ ] Phase 2: Rename hdmi_input → primary_input, remove only_when_active
+- [ ] Phase 3: Add AutomateWhen enum to SystemProfileConfig
+- [ ] Phase 4: Implement input gate in daemon event dispatch
+- [ ] Phase 5: Surface in CLI, tray, D-Bus, docs
 
 ---
 
 ## Notes
 
-- The `managed` flag and the input gate serve similar purposes (gating
-  automation) but at different levels: `managed` is a global kill switch,
-  the input gate is conditional. They compose: `managed = false` skips
-  everything; `managed = true` + `input_gate = WhenAssigned` + TV not
-  on assigned input → skips.
+- The `managed` flag and `automate_when` compose:
+  `managed = false` → skips all automation (global kill switch);
+  `managed = true` + `automate_when = on_primary` + TV not on primary
+  → skips system event automation.
 
 - The push subscription for `getForegroundAppInfo` already updates
-  `current_input` in real time. The gate check can read this without
+  `current_input` in real time. The gate check reads this without
   additional polling.
 
 - For the GUI: the pairing wizard should show available inputs (from
   `getExternalInputList`) and let the user pick their PC's input. This
-  sets `assigned_input` and optionally enables the gate.
+  sets `primary_input` and the admin can assign a system profile with
+  `automate_when = on_primary`.
+
+- For user events (session lock/unlock, idle): a future `automate_when`
+  could be added to `UserProfileConfig`. This requires the session
+  service to know the TV's current input (query daemon or subscribe).
+  Deferred — system profile coverage is sufficient for now.
