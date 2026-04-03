@@ -52,6 +52,18 @@ impl TvService {
         &self.name
     }
 
+    /// Set TV display name.
+    #[zbus(property)]
+    async fn set_name(&mut self, name: String) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, name = %name, "D-Bus: set Name");
+        self.manager
+            .set_tv_option(&self.tv_id, "name", &name)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.name = name;
+        Ok(())
+    }
+
     /// TV vendor ID.
     #[zbus(property(emits_changed_signal = "const"))]
     fn vendor(&self) -> &str {
@@ -76,10 +88,34 @@ impl TvService {
         self.managed
     }
 
+    /// Set whether this TV participates in automated management.
+    #[zbus(property)]
+    async fn set_managed(&mut self, managed: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, managed = %managed, "D-Bus: set Managed");
+        self.manager
+            .set_tv_option(&self.tv_id, "managed", &managed.to_string())
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.managed = managed;
+        Ok(())
+    }
+
     /// System profile name assigned to this TV.
     #[zbus(property)]
     fn system_profile(&self) -> &str {
         &self.system_profile
+    }
+
+    /// Set the system profile name for this TV.
+    #[zbus(property)]
+    async fn set_system_profile(&mut self, profile: String) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, profile = %profile, "D-Bus: set SystemProfile");
+        self.manager
+            .set_tv_option(&self.tv_id, "profile.system", &profile)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.system_profile = profile;
+        Ok(())
     }
 
     /// Capabilities supported by this TV.
@@ -180,6 +216,9 @@ impl TvPowerService {
 // =============================================================================
 
 /// Screen control interface (OLED-safe blanking).
+///
+/// The screen state is exposed as a writable boolean property `IsScreenOn`.
+/// Setting `true` unblanks the screen, setting `false` blanks it.
 pub struct TvScreenService {
     pub(crate) tv_id: String,
     pub(crate) manager: Arc<TvManager>,
@@ -190,28 +229,26 @@ pub struct TvScreenService {
 
 #[interface(name = "org.tisvlay.Tv1.Screen")]
 impl TvScreenService {
-    /// Turn the screen on (unblank).
-    async fn screen_on(&self) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, "D-Bus: ScreenOn");
-        self.manager
-            .screen_on(&self.tv_id)
-            .await
-            .map_err(DaemonError::from)
-    }
-
-    /// Turn the screen off (blank).
-    async fn screen_off(&self) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, "D-Bus: ScreenOff");
-        self.manager
-            .screen_off(&self.tv_id)
-            .await
-            .map_err(DaemonError::from)
-    }
-
     /// Whether the screen is currently on.
+    ///
+    /// Set `true` to unblank, `false` to blank (OLED-safe screen off).
     #[zbus(property)]
-    fn screen_on_prop(&self) -> bool {
+    fn is_screen_on(&self) -> bool {
         self.is_screen_on
+    }
+
+    /// Set screen on/off state.
+    #[zbus(property)]
+    async fn set_is_screen_on(&mut self, on: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, on = on, "D-Bus: set IsScreenOn");
+        if on {
+            self.manager.screen_on(&self.tv_id).await
+        } else {
+            self.manager.screen_off(&self.tv_id).await
+        }
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.is_screen_on = on;
+        Ok(())
     }
 }
 
@@ -220,6 +257,9 @@ impl TvScreenService {
 // =============================================================================
 
 /// Volume control interface.
+///
+/// Volume and mute are writable properties. Setting them sends the command
+/// to the TV backend and updates the cache on success.
 pub struct TvVolumeService {
     pub(crate) tv_id: String,
     pub(crate) manager: Arc<TvManager>,
@@ -231,34 +271,45 @@ pub struct TvVolumeService {
 
 #[interface(name = "org.tisvlay.Tv1.Volume")]
 impl TvVolumeService {
-    /// Set volume level (0-100).
-    async fn set_volume(&self, level: u8) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, volume = level, "D-Bus: SetVolume");
-        self.manager
-            .set_volume(&self.tv_id, level)
-            .await
-            .map_err(DaemonError::from)
-    }
-
     /// Current volume level (0-100).
     #[zbus(property)]
     fn volume(&self) -> u8 {
         self.volume
     }
 
-    /// Set mute state.
-    async fn set_mute(&self, mute: bool) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, mute = mute, "D-Bus: SetMute");
+    /// Set volume level (0-100).
+    #[zbus(property)]
+    async fn set_volume(&mut self, level: u8) -> zbus::fdo::Result<()> {
+        if level > 100 {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "Volume must be 0-100".into(),
+            ));
+        }
+        info!(tv_id = %self.tv_id, volume = level, "D-Bus: set Volume");
         self.manager
-            .set_mute(&self.tv_id, mute)
+            .set_volume(&self.tv_id, level)
             .await
-            .map_err(DaemonError::from)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.volume = level;
+        Ok(())
     }
 
     /// Whether audio is currently muted.
     #[zbus(property)]
     fn muted(&self) -> bool {
         self.muted
+    }
+
+    /// Set mute state.
+    #[zbus(property)]
+    async fn set_muted(&mut self, muted: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, muted = muted, "D-Bus: set Muted");
+        self.manager
+            .set_mute(&self.tv_id, muted)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.muted = muted;
+        Ok(())
     }
 }
 
@@ -305,6 +356,9 @@ impl TvInputService {
 // =============================================================================
 
 /// Backlight control interface (OLED pixel brightness).
+///
+/// Backlight is a writable property. Setting it sends the command to the
+/// TV backend and updates the cache on success.
 pub struct TvBacklightService {
     pub(crate) tv_id: String,
     pub(crate) manager: Arc<TvManager>,
@@ -315,19 +369,27 @@ pub struct TvBacklightService {
 
 #[interface(name = "org.tisvlay.Tv1.Backlight")]
 impl TvBacklightService {
-    /// Set backlight level (0-100).
-    async fn set_backlight(&self, level: u8) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, backlight = level, "D-Bus: SetBacklight");
-        self.manager
-            .set_backlight(&self.tv_id, level)
-            .await
-            .map_err(DaemonError::from)
-    }
-
     /// Current backlight level (0-100).
     #[zbus(property)]
     fn backlight(&self) -> u8 {
         self.backlight
+    }
+
+    /// Set backlight level (0-100).
+    #[zbus(property)]
+    async fn set_backlight(&mut self, level: u8) -> zbus::fdo::Result<()> {
+        if level > 100 {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "Backlight must be 0-100".into(),
+            ));
+        }
+        info!(tv_id = %self.tv_id, backlight = level, "D-Bus: set Backlight");
+        self.manager
+            .set_backlight(&self.tv_id, level)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.backlight = level;
+        Ok(())
     }
 }
 

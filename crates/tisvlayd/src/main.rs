@@ -309,7 +309,7 @@ async fn update_tv_cached_state(
         if iface.is_screen_on != state.is_screen_on {
             iface.is_screen_on = state.is_screen_on;
             iface
-                .screen_on_prop_changed(iface_ref.signal_emitter())
+                .is_screen_on_changed(iface_ref.signal_emitter())
                 .await
                 .ok();
         }
