@@ -4,218 +4,395 @@
 
 The current D-Bus API diverges from the
 [D-Bus API Design Guidelines](https://dbus.freedesktop.org/doc/dbus-api-design.html)
-in several ways. Conforming to best practices will improve interoperability,
-debuggability (standard tools understand standard patterns), and simplify
-the GUI client implementation.
+and doesn't leverage modern zbus patterns. Conforming to best practices will:
+- Enable standard tooling (`busctl get-property`, `busctl monitor`)
+- Simplify the tray and future GUI (subscribe to `PropertiesChanged` instead
+  of parsing custom JSON signals)
+- Remove the custom `state_change_signal_emitter` task
+- Fix the `Requesting name before setting up the object server` warning
+- Eliminate dead code (`ConnectionChanged` signal defined but never emitted)
+
+## Key architectural shift
+
+**Move TV state INTO the D-Bus interface struct** instead of fetching from
+`TvManager` on every property read.
+
+Currently `TvService` is stateless — every property getter calls into
+`TvManager`, which acquires a per-TV mutex and queries the backend. This
+means property reads are expensive (lock + potential I/O) and change
+notifications must be routed through a custom signal task.
+
+After refactoring:
+- `TvService` holds cached state (volume, muted, backlight, power, etc.)
+- Backend subscription updates write into `TvService` via
+  `InterfaceRef::get_mut()` and call the auto-generated
+  `property_changed()` methods
+- Property reads are instant (no lock, no backend call)
+- `PropertiesChanged` emits automatically via zbus machinery
+- The `state_change_signal_emitter` task is eliminated
+
+This aligns with the zbus book's recommended pattern for external state
+changes (book/src/service.md lines 347-384).
 
 ## Current deviations
 
-### 1. Custom setter method instead of writable properties
+### 1. Custom setter methods instead of writable properties
 
-**Current:** `SetTvOption(tv_id, key, value)` on Manager1 — a generic
-key-value setter that handles `managed`, `profile.system`, `hdmi_input`,
-`only_when_active`, `name`.
+**Current:** `SetVolume(level)`, `SetMute(mute)`, `SetBacklight(level)` as
+explicit methods. `SetTvOption(tv_id, key, value)` as a generic key-value
+setter for config fields.
 
-**Guideline:** "Use the standard `org.freedesktop.DBus.Properties` Set
-method instead of custom `SetPropertyName` methods." Settable values
-should be writable D-Bus properties on the per-TV object, changed via
-`org.freedesktop.DBus.Properties.Set`.
+**Guideline:** "The `Set` method can be used to manipulate properties on an
+object, eliminating redundant `SetPropertyName` methods."
 
-**Fix:** Make `Managed`, `SystemProfile`, `Name`, `HdmiInput`,
-`OnlyWhenActive` writable properties on `org.tisvlay.Tv1`. Remove
-`SetTvOption` from Manager1. The property setter implementation handles
-validation, re-resolution, persistence, and signal emission.
+**Fix:** Make `Volume`, `Muted`, `Backlight` writable properties with
+property setters. The setter calls the backend command and returns
+`zbus::fdo::Result<()>` for validation errors. zbus auto-emits
+`PropertiesChanged` after a successful set.
 
-### 2. Custom state signal instead of PropertiesChanged
+### 2. Custom signals instead of PropertiesChanged
 
-**Current:** Custom `StateChanged(state: s)` signal carries a JSON string
-with changed state. Custom `ConnectionChanged(connected: b)` signal.
-Properties like `Managed` and `SystemProfile` have
-`emits_changed_signal = "false"`.
+**Current:** Custom `StateChanged(state: s)` signal carrying a JSON string.
+`ConnectionChanged(connected: b)` signal defined but never emitted (dead
+code). No `PropertiesChanged` signals emitted anywhere.
 
 **Guideline:** "Use `org.freedesktop.DBus.Properties.PropertiesChanged`
 instead of individual property-change signals. This allows multiple
 properties to be notified in a single signal emission."
 
-**Fix:** Add TV state as D-Bus properties on Tv1 (`Volume`, `Muted`,
-`Backlight`, `PowerState`, `ScreenOn`, `CurrentInput`, `Inputs`).
-Enable `PropertiesChanged` emission on all properties. Remove custom
-`StateChanged` and `ConnectionChanged` signals. The daemon updates
-these properties when the LG backend pushes subscription updates, and
-zbus automatically emits `PropertiesChanged`.
+**Fix:** Remove `StateChanged` and `ConnectionChanged` custom signals.
+Use zbus auto-generated `property_changed()` methods when state updates
+arrive from the backend. For batched updates (e.g., subscription push
+with volume + mute), use `Properties::properties_changed()` directly.
 
 ### 3. JSON strings instead of D-Bus types
 
-**Current:** Several methods pass structured data as JSON strings:
-- `StateChanged(state: s)` — JSON blob
+**Current:**
+- `GetState() → s` — returns JSON blob
 - `GetEffectiveUserProfile(tv_id) → s` — JSON blob
-- `ListSystemProfiles() → a(ss)` — array of (name, json_string)
-- `ListUserProfiles() → a(ss)` — array of (name, json_string)
-- `GetState() → s` (via D-Bus) — returns JSON
+- `ListSystemProfiles() / ListUserProfiles() → a(ss)` — (name, json)
+- `StateChanged(state: s)` — JSON blob
 
-**Guideline:** "Sending structured strings over D-Bus should be avoided,
-as they need to be built and parsed; both are complex operations which
-are prone to bugs."
+**Guideline:** "Sending structured strings over D-Bus should be avoided."
 
-**Fix:** Use proper D-Bus types:
-- Profile lists: `a(sa{sv})` — array of (name, dict of variant values)
-- Effective profile: `a{sv}` — dict of variant values
-- State: individual properties (see #2)
-- Remove `GetState()` method — clients read properties instead
+**Fix:** Replace `GetState()` with typed properties (clients use
+`Properties.GetAll`). Replace profile JSON with `a{sv}` dicts.
 
-### 4. Boolean for managed flag
+### 4. Connection::Builder not used
 
-**Current:** `Managed` is a boolean property.
+**Current:** `connection.request_name()` called after manual interface
+registration, causing the `Requesting name before setting up the object
+server` warning.
 
-**Guideline:** "Enumerated values should be used instead of booleans, as
-they allow extra values to be added in future, and there is no ambiguity
-about the sense of the boolean value."
+**Fix:** Use `connection::Builder` pattern:
+```rust
+let connection = connection::Builder::session()?
+    .name("org.tisvlay.Daemon")?
+    .serve_at("/org/tisvlay/Manager", manager_service)?
+    .serve_at("/org/tisvlay/Tv/office", tv_service)?
+    .build()
+    .await?;
+```
 
-**Assessment:** Low priority. `managed` is a clear boolean with no
-foreseeable third state. Revisit only if we add states like "paused"
-or "limited" automation.
+### 5. ScreenOnProp naming conflict
 
-### 5. GetState() as a bulk query
+**Current:** Property named `screen_on_prop` because `screen_on()` method
+conflicts with the property name.
 
-**Current:** `GetState()` method returns all TV state in one call.
+**Fix:** Rename property to `IsScreenOn` (standard boolean property naming).
+Or make `ScreenOn` a writable boolean property — setting `true` unblanks,
+setting `false` blanks.
 
-**Guideline:** Properties with `GetAll` on the standard Properties
-interface achieves the same thing with type safety and change
-notifications built in.
+### 6. Boolean for managed flag
 
-**Fix:** Replace `GetState()` with D-Bus properties. Clients use
-`org.freedesktop.DBus.Properties.GetAll("org.tisvlay.Tv1")` for bulk
-reads, and `PropertiesChanged` signals for push updates.
+**Guideline:** "Enumerated values should be used instead of booleans."
+
+**Assessment:** Low priority. `managed` is genuinely boolean. Revisit if
+a third state is ever needed.
+
+---
+
+## zbus patterns to use
+
+### Auto-emitted PropertiesChanged on property set
+
+```rust
+#[zbus(property)]
+fn volume(&self) -> u8 {
+    self.volume  // instant read from cached state
+}
+
+#[zbus(property)]
+fn set_volume(&mut self, val: u8) -> zbus::fdo::Result<()> {
+    if val > 100 {
+        return Err(zbus::fdo::Error::InvalidArgs("Volume must be 0-100".into()));
+    }
+    // Call backend to actually change the TV's volume
+    // (need async — see considerations below)
+    self.volume = val;
+    Ok(())
+    // zbus AUTOMATICALLY emits PropertiesChanged after this returns Ok
+}
+```
+
+### Manual property change notification (for push updates)
+
+When the TV's backend subscription pushes a volume change:
+
+```rust
+let iface_ref = object_server
+    .interface::<_, TvService>(tv_path)
+    .await?;
+let mut iface = iface_ref.get_mut().await;
+iface.volume = new_volume;
+iface.volume_changed(iface_ref.signal_emitter()).await?;
+```
+
+### Batched PropertiesChanged
+
+When a subscription push contains multiple changes:
+
+```rust
+let mut changed = HashMap::new();
+changed.insert("Volume", Value::from(50u8));
+changed.insert("Muted", Value::from(false));
+Properties::properties_changed(
+    emitter, interface_name, changed, Cow::Borrowed(&[]),
+).await?;
+```
+
+### emits_changed_signal annotation values
+
+| Value | Behavior | Use for |
+|-------|----------|---------|
+| `"true"` (default) | Emits with new value | Most properties |
+| `"invalidates"` | Emits without value (client re-fetches) | Large properties (input list) |
+| `"const"` | Never emits (value never changes) | Id, Vendor |
+| `"false"` | Never emits | Internal-only properties |
 
 ---
 
 ## Implementation plan
 
-### Phase A: TV state as D-Bus properties
+### Phase A: Restructure TvService to hold state
 
-The highest-impact change — enables `PropertiesChanged` for the tray
-and GUI, eliminates JSON strings, and enables standard D-Bus tooling
-(`busctl get-property`, `busctl monitor`).
+The foundational change — everything else builds on this.
 
-**A.1** Add state properties to `org.tisvlay.Tv1`:
+**A.1** Add state fields to `TvService`:
 
-| Property | Type | Access | Notes |
-|----------|------|--------|-------|
-| `PowerState` | `s` | read | "Active", "Standby", "ScreenOff", etc. |
-| `ScreenOn` | `b` | read | |
-| `Volume` | `y` | read-write | 0–100; setter calls backend |
-| `Muted` | `b` | read-write | setter calls backend |
-| `Backlight` | `y` | read-write | 0–100; setter calls backend |
-| `CurrentInput` | `s` | read | App/input ID |
-| `Inputs` | `a(ssb)` | read | Array of (id, label, connected) |
+```rust
+struct TvService {
+    // Identity (const — set once at registration)
+    tv_id: String,
+    manager: Arc<TvManager>,
 
-Read-write properties use zbus property setters that call the backend
-command (e.g., `set_volume`) and emit `PropertiesChanged` on success.
+    // Cached state (updated by subscription pushes)
+    connected: bool,
+    power_state: String,      // "active", "standby", "screen_off"
+    is_screen_on: bool,
+    volume: u8,
+    muted: bool,
+    backlight: u8,
+    current_input: String,
+    inputs: Vec<(String, String, bool)>,  // (id, label, connected)
 
-**A.2** Update daemon to push property changes:
+    // Config (updated by SetTvOption / config reload)
+    name: String,
+    managed: bool,
+    system_profile: String,
+    capabilities: Vec<String>,
+}
+```
 
-When the LG backend subscription pushes a state update, the daemon
-updates the per-TV D-Bus properties. zbus emits `PropertiesChanged`
-automatically for properties that have `emits_changed_signal = "true"`.
+**A.2** Initialize state at registration time.
 
-This replaces the current `StateChangeEvent::TvStateChanged` → custom
-`StateChanged` signal path.
+When creating `TvService` for a TV, populate from `TvManager`'s current
+state. For TVs that aren't connected yet, use defaults.
 
-**A.3** Update tray to subscribe to `PropertiesChanged`:
+**A.3** Property getters read from cached fields (no lock, no I/O):
 
-Replace the custom signal subscription with
-`org.freedesktop.DBus.Properties.PropertiesChanged` on Tv1 objects.
-The tray can parse the changed properties dict directly instead of
-doing a full `fetch_all_state()` refresh — but the initial approach
-can keep the full refresh for simplicity.
+```rust
+#[zbus(property(emits_changed_signal = "const"))]
+fn id(&self) -> &str { &self.tv_id }
 
-**A.4** Remove `GetState()` method and custom `StateChanged` signal.
+#[zbus(property(emits_changed_signal = "const"))]
+fn vendor(&self) -> &str { /* from config */ }
 
-Clients use `Properties.GetAll("org.tisvlay.Tv1")` instead.
-`ConnectionChanged` may be kept as a convenience or replaced by
-watching the `Connected` property change.
+#[zbus(property)]
+fn volume(&self) -> u8 { self.volume }
 
----
+#[zbus(property)]
+fn connected(&self) -> bool { self.connected }
+```
 
-### Phase B: Writable properties replace SetTvOption
+**A.4** Replace `state_change_signal_emitter` task.
 
-**B.1** Make `Managed`, `SystemProfile`, `Name`, `HdmiInput`,
-`OnlyWhenActive` writable D-Bus properties on Tv1.
+Instead of routing `StateChangeEvent` through a channel → custom signal,
+the subscription forwarding task (from `try_subscribe_state`) writes
+directly into `TvService` via `InterfaceRef::get_mut()` and calls
+`property_changed()`. This requires the forwarding task to have access
+to the `ObjectServer` (or the `Connection`).
 
-Each property setter:
-1. Validates the new value
-2. Updates in-memory config
-3. Persists to disk (via `spawn_blocking`)
-4. zbus emits `PropertiesChanged` automatically
+### Phase B: Writable properties
 
-**B.2** Remove `SetTvOption` from Manager1.
+**B.1** Add property setters for controllable state:
 
-**B.3** Update CLI, tray to use `Properties.Set` instead of `SetTvOption`.
+```rust
+#[zbus(property)]
+async fn set_volume(&mut self, val: u8) -> zbus::fdo::Result<()> {
+    self.manager.set_volume(&self.tv_id, val).await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+    self.volume = val;
+    Ok(())
+}
+```
 
----
+Note: zbus property setters can be `async` — they run with `&mut self`
+under the interface lock. The lock duration includes the backend I/O,
+which blocks other property reads on the same interface. This is
+acceptable for TV commands (fast WebSocket round-trip) but should be
+noted.
 
-### Phase C: Typed profile data instead of JSON strings
+**B.2** Make these writable: `Volume`, `Muted`, `Backlight`, `Managed`,
+`SystemProfile`, `Name`.
 
-**C.1** Change profile list methods to return `a{sv}` dicts:
+**B.3** `IsScreenOn` as writable bool (set `true` = unblank, `false` = blank).
+
+**B.4** Remove explicit command methods that are now redundant:
+- `SetVolume` → property setter
+- `SetMute` → property setter
+- `SetBacklight` → property setter
+- `ScreenOn` / `ScreenOff` → `IsScreenOn` property setter
+- `SetTvOption` → individual property setters
+
+Keep `PowerOn`, `PowerOff`, `Reconnect` as methods (they have complex
+side effects beyond property changes — WoL, connection lifecycle).
+
+### Phase C: Remove custom signals and JSON
+
+**C.1** Remove `StateChanged` signal from Tv1.
+**C.2** Remove `ConnectionChanged` signal from Tv1 (dead code).
+**C.3** Remove `StateChangeEvent` enum.
+**C.4** Remove `state_change_signal_emitter` task from main.rs.
+**C.5** Remove `GetState()` method — replaced by `Properties.GetAll`.
+
+**C.6** Replace JSON profile methods with typed `a{sv}` dicts:
 - `ListSystemProfiles() → a{sa{sv}}`
 - `ListUserProfiles() → a{sa{sv}}`
 - `GetEffectiveUserProfile(tv_id) → a{sv}`
 - `GetUserProfileDefault() → a{sv}`
 
-**C.2** Update `DaemonClient` and `SessionClient` to deserialize the
-typed D-Bus values instead of parsing JSON.
+### Phase D: Connection::Builder
 
-**C.3** Update tray and CLI to work with typed profile data.
+**D.1** Refactor `main.rs` to use `connection::Builder`:
+```rust
+let connection = connection::Builder::session()?
+    .name("org.tisvlay.Daemon")?
+    .serve_at("/org/tisvlay", object_manager)?
+    .serve_at("/org/tisvlay/Manager", manager_service)?
+    .build()
+    .await?;
+```
 
----
+**D.2** Per-TV interfaces registered dynamically via
+`connection.object_server().at(path, tv_service)` after connection
+is built (TVs are loaded from config at startup and can be added
+at runtime via pairing).
 
-### Phase D: Cleanup
+### Phase E: Update clients
 
-- Remove `StateChangeEvent::TvStateChanged` (replaced by property changes)
-- Remove `state_change_signal_emitter` task (replaced by zbus property
-  emission)
-- Remove JSON serialization in profile D-Bus methods
-- Update docs, busctl examples, design.md
+**E.1** `DaemonClient`: replace `subscribe_state_changes()` (custom
+signal parsing) with `PropertiesChanged` subscription via zbus
+`PropertiesProxy::receive_properties_changed()`.
+
+**E.2** Tray: subscribe to `PropertiesChanged` on Tv1 objects.
+On property change, update `CachedTvState` fields directly from
+the changed properties dict — no full `fetch_all_state()` needed.
+(Can keep full refresh as initial simple implementation.)
+
+**E.3** CLI: use `Properties.Get` / `Properties.GetAll` instead of
+`GetState()`.
+
+**E.4** Session service: use `Properties.Set` for writable properties
+if it calls `SetVolume` etc. (currently it calls `screen_on/off` and
+`power_on/off` — `PowerOn`/`PowerOff` stay as methods).
+
+### Phase F: Cleanup
+
+- Remove `GetState` method and JSON serialization
+- Remove `StateChangeEvent`, `emit_state_change`, command_completed/
+  option_change constructors
+- Remove `state_change_signal_emitter` function
+- Remove `add_signal_match` / custom signal subscription code from
+  `DaemonClient` (replaced by PropertiesChanged proxy)
+- Update docs, busctl examples, design.md, CLAUDE.md
 
 ---
 
 ## Considerations
 
-### zbus property change emission
+### Async property setters and interface locking
 
-zbus can emit `PropertiesChanged` automatically when a property value
-changes, but only if the property is stored in a way that zbus can
-detect changes. This may require storing TV state in the D-Bus service
-struct (TvService) rather than behind per-TV mutexes in TvManager.
-Need to investigate how zbus handles async property access and change
-notification — see `emits_changed_signal` annotation options.
+zbus property setters with `&mut self` hold the interface lock for the
+duration of the call. If a setter does async backend I/O (WebSocket
+round-trip to TV, ~20ms), all other property reads/writes on that
+interface are blocked. For the tray's scroll coalescing (one set_volume
+per coalesced burst), this is fine. For rapid programmatic sequences,
+it could be a bottleneck.
+
+Mitigation: the backend commands are fast (sub-millisecond daemon-side,
+~20ms including TV WebSocket). The per-TV interface lock only affects
+that one TV, not others.
+
+### Subscription push → property update path
+
+The current path: backend subscription → `TvState` on channel →
+`state_change_signal_emitter` → `StateChanged` D-Bus signal.
+
+New path: backend subscription → `TvState` on channel → task calls
+`object_server.interface::<_, TvService>(path)` → `get_mut()` →
+update fields → call `property_changed()`.
+
+The forwarding task needs access to the `Connection` (for
+`object_server()`). Pass it a `Connection` clone alongside the
+`state_change_tx` channel, or restructure the forwarding to happen
+inside `TvManager`.
+
+### ObjectManager interaction
+
+`Properties.GetAll` and `PropertiesChanged` work naturally with
+`ObjectManager.GetManagedObjects` — the initial bulk fetch returns
+all properties, and subsequent changes arrive as signals. The
+`list_tvs()` client method can use `GetManagedObjects` to get all
+TV state in one call (it already does, but currently only reads
+identity properties, not state).
 
 ### Backward compatibility
 
-No backward compatibility constraints. The CLI, tray, session service,
-and daemon are all versioned together. The D-Bus introspection XML will
-change but no external consumers exist.
-
-### Signal volume with PropertiesChanged
-
-Each property change emits a separate `PropertiesChanged` signal unless
-batched. Rapid volume changes from the TV remote would produce many
-signals. The tray's 100ms debounce handles this, but the daemon should
-batch property updates from a single subscription push into one
-`PropertiesChanged` emission if possible.
+None needed. CLI, tray, session, and daemon are versioned together.
 
 ---
 
 ## Checklist
 
-- [ ] A.1: Add TV state D-Bus properties to Tv1
-- [ ] A.2: Push backend subscription updates to D-Bus properties
-- [ ] A.3: Tray subscribes to PropertiesChanged
-- [ ] A.4: Remove GetState() and custom StateChanged signal
-- [ ] B.1: Make Managed, SystemProfile, etc. writable properties
-- [ ] B.2: Remove SetTvOption
-- [ ] B.3: Update CLI and tray for Properties.Set
-- [ ] C.1: Typed profile data in D-Bus methods
-- [ ] C.2: Update DaemonClient/SessionClient
-- [ ] C.3: Update tray and CLI
-- [ ] D: Cleanup dead code and update docs
+- [ ] A.1: Add state fields to TvService
+- [ ] A.2: Initialize state at registration
+- [ ] A.3: Property getters read from cached fields
+- [ ] A.4: Replace state_change_signal_emitter with InterfaceRef updates
+- [ ] B.1: Add async property setters
+- [ ] B.2: Make Volume, Muted, Backlight, Managed, SystemProfile, Name writable
+- [ ] B.3: IsScreenOn as writable bool
+- [ ] B.4: Remove redundant command methods
+- [ ] C.1: Remove StateChanged signal
+- [ ] C.2: Remove ConnectionChanged signal (dead code)
+- [ ] C.3: Remove StateChangeEvent enum
+- [ ] C.4: Remove state_change_signal_emitter task
+- [ ] C.5: Remove GetState() method
+- [ ] C.6: Typed profile data (a{sv}) instead of JSON
+- [ ] D.1: connection::Builder for service registration
+- [ ] D.2: Dynamic per-TV interface registration
+- [ ] E.1: DaemonClient uses PropertiesChanged
+- [ ] E.2: Tray subscribes to PropertiesChanged
+- [ ] E.3: CLI uses Properties.Get/GetAll
+- [ ] E.4: Session service updated
+- [ ] F: Cleanup dead code and update docs
