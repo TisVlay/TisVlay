@@ -157,8 +157,7 @@ impl ManagerService {
 
     /// Set a system-level TV option.
     ///
-    /// Supported keys: `hdmi_input`, `only_when_active`, `managed`, `name`,
-    /// `profile.system`.
+    /// Supported keys: `primary_input`, `managed`, `name`, `profile.system`.
     async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, key = %key, value = %value, "D-Bus: SetTvOption");
         self.manager

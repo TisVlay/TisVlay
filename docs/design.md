@@ -224,7 +224,7 @@ Methods:
 - `AddTv(name: s, vendor: s, config_json: s, managed: b) → o` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation
 - `RemoveTv(tv_id: s)` — remove TV from config
 - `ReloadConfig()` — reload config from disk
-- `SetTvOption(tv_id: s, key: s, value: s)` — update a system-level TV field (`hdmi_input`, `only_when_active`, `managed`, `name`, `profile.system`); saves to disk and applies immediately
+- `SetTvOption(tv_id: s, key: s, value: s)` — update a system-level TV field (`primary_input`, `managed`, `name`, `profile.system`); saves to disk and applies immediately
 - `ListSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
 - `GetUserProfileDefault() → s` — admin baseline user profile as JSON; used by session services to inherit defaults
 - `ListUserProfiles() → a(ss)` — all user profiles (admin-defined) as `(name, json)` pairs
@@ -308,8 +308,7 @@ on_idle_resume = "screen_on"     # action when activity resumes after idle
 id = "living-room"
 name = "Living Room G4"
 vendor = "lg"
-hdmi_input = "HDMI_1"            # which HDMI port this PC uses (vendor-agnostic)
-only_when_active = true          # only control when TV is on this input
+primary_input = "HDMI_1"         # which input this PC uses (vendor-agnostic)
 managed = true                   # participates in automation (boot WoL, session events, shutdown)
 profile.system = "default"       # which system profile this TV uses
 

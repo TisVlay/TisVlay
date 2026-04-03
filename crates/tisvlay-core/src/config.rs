@@ -26,9 +26,8 @@
 //! id = "living-room"
 //! name = "Living Room TV"
 //! vendor = "lg"
-//! hdmi_input = "HDMI_1"
-//! only_when_active = true
-//!
+//! primary_input = "HDMI_1"
+//! //!
 //! [tv.lg]
 //! ip = "192.168.1.100"
 //! mac = "AA:BB:CC:DD:EE:FF"
@@ -454,14 +453,13 @@ pub struct TvConfig {
     /// Vendor/backend to use for this TV (e.g., "lg", "samsung").
     pub vendor: String,
 
-    /// HDMI input this PC is connected to.
-    /// Used for display-aware control when `only_when_active` is true.
+    /// The input this PC is connected to (e.g., "HDMI_1", "HDMI_2").
+    ///
+    /// Vendor-agnostic; not all inputs are HDMI (could be DVI, AV, coaxial,
+    /// or even a WebOS app ID). Used for input-aware automation gating
+    /// (see `automate_when` in `SystemProfileConfig`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub hdmi_input: Option<String>,
-
-    /// Only control this TV when it's on the specified HDMI input.
-    /// Requires `hdmi_input` to be set.
-    pub only_when_active: bool,
+    pub primary_input: Option<String>,
 
     /// Whether this TV participates in automated management.
     ///
@@ -501,23 +499,16 @@ impl TvConfig {
             id: id.into(),
             name: name.into(),
             vendor: vendor.into(),
-            hdmi_input: None,
-            only_when_active: false,
+            primary_input: None,
             managed,
             profile: TvProfileAssignment::default(),
             vendor_config: HashMap::new(),
         }
     }
 
-    /// Set the HDMI input for display-aware control.
-    pub fn with_hdmi_input(mut self, input: impl Into<String>) -> Self {
-        self.hdmi_input = Some(input.into());
-        self
-    }
-
-    /// Set whether to only control when active.
-    pub fn with_only_when_active(mut self, only_when_active: bool) -> Self {
-        self.only_when_active = only_when_active;
+    /// Set the primary input (the port this PC is connected to).
+    pub fn with_primary_input(mut self, input: impl Into<String>) -> Self {
+        self.primary_input = Some(input.into());
         self
     }
 
@@ -909,8 +900,7 @@ idle_timeout_seconds = 0
 id = "living-room"
 name = "Living Room TV"
 vendor = "lg"
-hdmi_input = "HDMI_1"
-only_when_active = true
+primary_input = "HDMI_1"
 managed = true
 
 [tv.lg]
@@ -923,8 +913,7 @@ default_input = "HDMI_1"
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.tv.len(), 1);
         assert_eq!(config.tv[0].vendor, "lg");
-        assert_eq!(config.tv[0].hdmi_input, Some("HDMI_1".to_string()));
-        assert!(config.tv[0].only_when_active);
+        assert_eq!(config.tv[0].primary_input, Some("HDMI_1".to_string()));
 
         // Check vendor-specific config
         let lg: TestLgConfig = config.tv[0].get_vendor_config().unwrap();
@@ -958,8 +947,7 @@ idle_timeout_seconds = 300
 id = "living-room"
 name = "Living Room G4"
 vendor = "lg"
-hdmi_input = "HDMI_1"
-only_when_active = false
+primary_input = "HDMI_1"
 managed = true
 
 [tv.lg]
@@ -1012,7 +1000,6 @@ id = "living-room"
 name = "Living Room"
 vendor = "lg"
 managed = true
-only_when_active = false
 profile.system = "default"
 profile.user = "gaming"
 
@@ -1024,7 +1011,6 @@ id = "guest-room"
 name = "Guest Room"
 vendor = "lg"
 managed = true
-only_when_active = false
 profile.system = "guest"
 
 [tv.lg]
@@ -1050,7 +1036,7 @@ ip = "192.168.1.101"
         assert_eq!(resolved.on_shutdown, SessionAction::ScreenOff);
 
         // Parse the SAME TOML as UserConfig — UserTvConfig ignores unknown
-        // fields (name, vendor, managed, only_when_active, lg, profile.system)
+        // fields (name, vendor, managed, lg, profile.system)
         // and picks up profile.user.
         let user_config: UserConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(user_config.tv.len(), 2);
@@ -1296,7 +1282,6 @@ on_startup = "power_on"
 id = "living-room"
 name = "Living Room"
 vendor = "lg"
-only_when_active = false
 managed = true
 profile.system = "guest"
 
@@ -1315,7 +1300,6 @@ ip = "192.168.1.100"
 id = "test"
 name = "Test"
 vendor = "lg"
-only_when_active = false
 managed = true
 
 [tv.lg]
@@ -1590,7 +1574,6 @@ on_idle_timeout = "screen_off"
 id = "test"
 name = "Test"
 vendor = "lg"
-only_when_active = false
 managed = true
 
 [tv.lg]
@@ -1652,7 +1635,6 @@ idle_timeout_seconds = 0
 id = "office"
 name = "Office"
 vendor = "lg"
-only_when_active = false
 managed = true
 
 [tv.lg]
@@ -1813,7 +1795,6 @@ id = "office"
 name = "Office"
 vendor = "lg"
 managed = true
-only_when_active = false
 
 [tv.lg]
 ip = "192.168.1.1"

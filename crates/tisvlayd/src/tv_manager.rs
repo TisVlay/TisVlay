@@ -206,17 +206,12 @@ pub(crate) enum SystemEvent {
 /// config with a single shared field-mapping, so neither can drift from the other.
 fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvManagerError> {
     match key {
-        "hdmi_input" => {
-            tv.hdmi_input = if value.is_empty() {
+        "primary_input" => {
+            tv.primary_input = if value.is_empty() {
                 None
             } else {
                 Some(value.to_string())
             };
-        }
-        "only_when_active" => {
-            tv.only_when_active = value
-                .parse()
-                .map_err(|_| TvManagerError::ConfigError("Invalid bool".into()))?;
         }
         "managed" => {
             tv.managed = value
@@ -483,7 +478,7 @@ impl TvManager {
                     }
                 }
 
-                if let Some(ref input) = tv_config.hdmi_input {
+                if let Some(ref input) = tv_config.primary_input {
                     match manager.switch_input(tv_id, input).await {
                         Ok(()) => info!(tv_id = %tv_id, input = %input, "Startup: switched input"),
                         Err(e) => {

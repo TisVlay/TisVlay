@@ -18,7 +18,6 @@ on_idle_resume = "screen_on"
 id = "office"
 name = "office"
 vendor = "lg"
-only_when_active = false
 managed = true
 
 [tv.profile]
