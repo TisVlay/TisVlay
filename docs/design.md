@@ -182,11 +182,11 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 │   └── Signals:  TvAdded, TvRemoved, ConfigReloaded
 └── /org/tisvlay/Tv/{id}            org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
     │                               Tv1.Volume, Tv1.Backlight, Tv1.Input
-    ├── Properties (rw): Name, Managed, SystemProfile
+    ├── Properties (rw): Name, Managed, SystemProfile, PrimaryInput,
+    │                     IsScreenOn, Volume, Muted, Backlight
     ├── Properties (ro): Id, Vendor, Address, Connected, Capabilities,
-    │                     PowerState, IsScreenOn, Volume, Muted,
-    │                     CurrentInput, AvailableInputs, Backlight
-    ├── Writable props:  IsScreenOn, Volume, Muted, Backlight
+    │                     AutomateWhen, Automated, PowerState,
+    │                     CurrentInput, AvailableInputs
     ├── Methods:  Reconnect, PowerOn, PowerOff, SwitchInput
     └── Signals:  (standard PropertiesChanged only)
 
@@ -247,7 +247,9 @@ Methods:
 
 Properties (read-only): `Id` (const), `Vendor` (const), `Address` (const), `Connected`, `Capabilities` (invalidates)
 
-Properties (read-write): `Name`, `Managed`, `SystemProfile`
+Properties (read-write): `Name`, `Managed`, `SystemProfile`, `PrimaryInput`
+
+Properties (read-only, computed): `AutomateWhen` (from resolved system profile), `Automated` (computed gate: `managed && automate_when.should_automate(primary_input, current_input)`)
 
 Methods: `Reconnect()`
 
@@ -289,6 +291,10 @@ on_reboot = "none"               # action on reboot/kexec (default: none)
 on_no_session = "none"           # action when all user sessions end (login screen)
 on_sleep = "power_off"           # action on system suspend/hibernate (default: power_off)
 on_wake = "power_on"             # action on system resume from sleep (default: power_on)
+automate_when = "always"         # always | on_primary | off_primary (default: always)
+
+[system.profiles.shared]
+automate_when = "on_primary"     # only automate when showing the PC input
 
 [system.profiles.guest]
 on_startup = "none"
@@ -391,6 +397,18 @@ stateDiagram-v2
 | System reboot | None | `on_reboot` (system profile) | reboot or kexec; TV stays on for BIOS/TTY |
 
 All lifecycle events accept any `SessionAction` value: `power_on`, `power_off`, `screen_on`, `screen_off`, or `none`. Different TVs can respond differently to the same event via per-TV profile assignments (e.g., gaming TV ignores session lock via user profile; guest TV only blanks on shutdown via system profile).
+
+All automation (both daemon system events and session user events) is gated by the `Automated` property, which composes `managed`, `automate_when` (from system profile), `primary_input` (from config), and the TV's current input. When `automate_when = on_primary` and the TV is showing a game console, automation is skipped. Manual actions from the tray and CLI always execute regardless of the gate.
+
+| `managed` | `automate_when` | TV on primary? | `Automated` |
+|:---------:|:---------------:|:--------------:|:-----------:|
+| false | any | any | **false** |
+| true | always | any | **true** |
+| true | on_primary | yes | **true** |
+| true | on_primary | no | **false** |
+| true | on_primary | unknown (TV off) | **true** (benefit of doubt) |
+| true | off_primary | yes | **false** |
+| true | off_primary | no | **true** |
 
 ---
 

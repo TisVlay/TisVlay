@@ -503,6 +503,7 @@ fn print_tv_status(tv: &TvInfo) {
     let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
     println!("TV: {}", tv.id);
     println!("Managed: {}", tv.managed);
+    println!("Automated: {}", tv.automated);
     println!("Connected: {}", tv.connected);
     println!("Power: {}", tv.power_state);
     println!("Screen: {}", if tv.is_screen_on { "on" } else { "off" });

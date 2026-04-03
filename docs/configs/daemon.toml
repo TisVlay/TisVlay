@@ -5,6 +5,7 @@ on_reboot = "none"
 on_no_session = "none"
 on_sleep = "power_off"
 on_wake = "power_on"
+automate_when = "always"
 
 [user.profiles.default]
 on_session_lock = "screen_off"
@@ -18,6 +19,7 @@ on_idle_resume = "screen_on"
 id = "office"
 name = "office"
 vendor = "lg"
+primary_input = "HDMI_1"
 managed = true
 
 [tv.profile]
