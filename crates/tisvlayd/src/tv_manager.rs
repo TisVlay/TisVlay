@@ -68,15 +68,15 @@ pub enum TvManagerError {
 
 /// Event emitted when TV state changes or daemon-wide events occur.
 ///
-/// Routed through the state change channel to the signal emitter task in main.rs,
-/// which updates cached D-Bus properties and emits PropertiesChanged / legacy signals.
+/// Routed through the state change channel to the forwarder task in main.rs,
+/// which updates cached D-Bus properties via `InterfaceRef::get_mut()` and
+/// emits `PropertiesChanged` signals.
 #[derive(Debug, Clone)]
 pub enum StateChangeEvent {
     /// Backend subscription push -- full TV state snapshot.
     ///
-    /// The signal emitter updates cached properties on all TV interface structs
-    /// via `InterfaceRef::get_mut()` and emits `PropertiesChanged` for each
-    /// changed property.
+    /// The forwarder updates cached properties on all TV interface structs
+    /// and emits `PropertiesChanged` for each changed property.
     SubscriptionUpdate {
         tv_id: String,
         state: TvState,
@@ -89,42 +89,19 @@ pub enum StateChangeEvent {
         tv_id: String,
         connected: bool,
     },
-    /// A per-TV state change (command completed, option changed).
+    /// A TV config option was changed (managed, name, profile.system, etc.).
     ///
-    /// Legacy: emitted as custom `StateChanged` JSON signal on the per-TV object.
-    /// Will be replaced by structured variants when custom signals are removed.
-    TvStateChanged {
+    /// The forwarder updates the corresponding cached property on TvService
+    /// and emits `PropertiesChanged`.
+    OptionChanged {
         tv_id: String,
-        state_json: String,
+        key: String,
+        value: String,
     },
     /// Configuration was reloaded from disk.
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
-}
-
-impl StateChangeEvent {
-    /// Create a state change event for a TV option change (managed, profile, etc.)
-    pub fn option_change(tv_id: &str, key: &str, value: &str) -> Self {
-        let state = serde_json::json!({
-            "option_changed": { "key": key, "value": value },
-        });
-        Self::TvStateChanged {
-            tv_id: tv_id.to_string(),
-            state_json: state.to_string(),
-        }
-    }
-
-    /// Create a state change event after a command was executed on a TV.
-    pub fn command_completed(tv_id: &str, command: &str) -> Self {
-        let state = serde_json::json!({
-            "command_completed": command,
-        });
-        Self::TvStateChanged {
-            tv_id: tv_id.to_string(),
-            state_json: state.to_string(),
-        }
-    }
 }
 
 /// Basic TV information for D-Bus properties.
@@ -836,7 +813,6 @@ impl TvManager {
             Box::pin(async move { conn.screen_on().await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "screen_on"));
         Ok(())
     }
 
@@ -846,7 +822,6 @@ impl TvManager {
             Box::pin(async move { conn.screen_off().await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "screen_off"));
         Ok(())
     }
 
@@ -868,7 +843,6 @@ impl TvManager {
             Box::pin(async move { conn.set_volume(volume).await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "set_volume"));
         Ok(())
     }
 
@@ -886,7 +860,6 @@ impl TvManager {
             Box::pin(async move { conn.set_mute(mute).await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "set_mute"));
         Ok(())
     }
 
@@ -907,7 +880,6 @@ impl TvManager {
             Box::pin(async move { conn.switch_input(&input).await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "switch_input"));
         Ok(())
     }
 
@@ -940,7 +912,6 @@ impl TvManager {
             Box::pin(async move { conn.set_backlight(backlight).await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "set_backlight"));
         Ok(())
     }
 
@@ -1184,7 +1155,11 @@ impl TvManager {
         .await
         .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
 
-        self.emit_state_change(StateChangeEvent::option_change(tv_id, key, value));
+        self.emit_state_change(StateChangeEvent::OptionChanged {
+            tv_id: tv_id.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+        });
         info!(tv_id = %tv_id, key = %key, value = %value, "TV option updated");
         Ok(())
     }

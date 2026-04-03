@@ -251,10 +251,12 @@ trait TisvlayTvBacklight {
 /// A state change event received from the daemon via D-Bus signals.
 #[derive(Debug, Clone)]
 pub enum TvStateChange {
-    /// TV state changed (volume, input, power, etc.).
-    StateChanged { tv_id: String, state_json: String },
-    /// TV connection status changed.
-    ConnectionChanged { tv_id: String, connected: bool },
+    /// One or more properties changed on a TV (volume, power, connected, etc.).
+    ///
+    /// Triggered by `org.freedesktop.DBus.Properties.PropertiesChanged` signals
+    /// on per-TV objects. The subscriber should re-read the TV's properties or
+    /// do a full state refresh.
+    PropertiesChanged { tv_id: String },
     /// TV list structure changed (add/remove) -- requires full refresh.
     TvListChanged,
     /// Daemon configuration was reloaded -- profile lists and TV properties may differ.
@@ -538,10 +540,10 @@ impl DaemonClient {
     /// Subscribe to TV state change signals from the daemon.
     ///
     /// Returns a stream of [`TvStateChange`] events. The stream captures:
-    /// - `StateChanged` and `ConnectionChanged` signals on `org.tisvlay.Tv1`
-    ///   for any TV object under `/org/tisvlay/Tv/`
+    /// - `PropertiesChanged` signals on any TV interface under `/org/tisvlay/Tv/`
     /// - `InterfacesAdded` and `InterfacesRemoved` on the ObjectManager at
     ///   `/org/tisvlay` (TV add/remove)
+    /// - `ConfigReloaded` on `org.tisvlay.Manager1`
     ///
     /// Works with both session and system bus (depends on how the client was
     /// constructed).
@@ -550,16 +552,17 @@ impl DaemonClient {
     ) -> Result<impl Stream<Item = TvStateChange> + Send + '_> {
         let conn = &self.connection;
 
-        // Add match rules for all signal sources we care about.
+        // PropertiesChanged on any TV interface
         add_signal_match(
             conn,
             &format!(
-                "type='signal',sender='{}',interface='org.tisvlay.Tv1',path_namespace='{}'",
+                "type='signal',sender='{}',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='{}'",
                 DAEMON_SERVICE, TV_BASE_PATH
             ),
         )
         .await?;
 
+        // ObjectManager signals (TV add/remove)
         add_signal_match(
             conn,
             &format!(
@@ -570,6 +573,7 @@ impl DaemonClient {
         )
         .await?;
 
+        // Manager signals (config reload, TV add/remove)
         add_signal_match(
             conn,
             &format!(
@@ -593,19 +597,10 @@ impl DaemonClient {
                 let path = header.path()?.to_string();
 
                 match (iface.as_str(), member.as_str()) {
-                    ("org.tisvlay.Tv1", "StateChanged") => {
+                    ("org.freedesktop.DBus.Properties", "PropertiesChanged") => {
                         let tv_id = path.strip_prefix(&tv_prefix)?.to_string();
-                        let body = msg.body();
-                        let state_json: String = body.deserialize().ok()?;
-                        trace!(tv_id = %tv_id, "StateChanged signal");
-                        Some(TvStateChange::StateChanged { tv_id, state_json })
-                    }
-                    ("org.tisvlay.Tv1", "ConnectionChanged") => {
-                        let tv_id = path.strip_prefix(&tv_prefix)?.to_string();
-                        let body = msg.body();
-                        let connected: bool = body.deserialize().ok()?;
-                        trace!(tv_id = %tv_id, connected = connected, "ConnectionChanged signal");
-                        Some(TvStateChange::ConnectionChanged { tv_id, connected })
+                        trace!(tv_id = %tv_id, "PropertiesChanged signal on TV");
+                        Some(TvStateChange::PropertiesChanged { tv_id })
                     }
                     ("org.freedesktop.DBus.ObjectManager", "InterfacesAdded")
                     | ("org.freedesktop.DBus.ObjectManager", "InterfacesRemoved") => {

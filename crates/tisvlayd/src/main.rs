@@ -172,15 +172,11 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Forward state change events to D-Bus cached properties and signals.
+/// Forward state change events to D-Bus cached properties.
 ///
-/// For subscription updates: updates cached properties on all per-TV interface
-/// structs via `InterfaceRef::get_mut()` and emits `PropertiesChanged` for each
-/// changed property. Also emits legacy `StateChanged` signal for backward compat.
-///
-/// For connection changes: updates the `Connected` cached property.
-///
-/// For other events: emits legacy signals as before.
+/// Updates cached property fields on per-TV interface structs via
+/// `InterfaceRef::get_mut()` and emits standard `PropertiesChanged`
+/// signals. No custom signals are emitted.
 async fn state_change_forwarder(
     connection: zbus::Connection,
     mut rx: mpsc::UnboundedReceiver<StateChangeEvent>,
@@ -196,16 +192,7 @@ async fn state_change_forwarder(
             } => {
                 let path = tv_path(tv_id);
                 debug!(tv_id = %tv_id, "Forwarding subscription update to D-Bus properties");
-
                 update_tv_cached_state(object_server, &path, state).await;
-
-                // Also emit legacy StateChanged signal (backward compat, removed in Phase C)
-                let json = serde_json::to_string(state).unwrap_or_default();
-                if let Ok(emitter) = SignalEmitter::new(&connection, path.as_str()) {
-                    if let Err(e) = TvService::state_changed(&emitter, &json).await {
-                        warn!(error = %e, tv_id = %tv_id, "Failed to emit StateChanged signal");
-                    }
-                }
             }
             StateChangeEvent::ConnectionChanged {
                 ref tv_id,
@@ -228,23 +215,42 @@ async fn state_change_forwarder(
                         }
                     }
                 }
-
-                // Also emit legacy StateChanged signal
-                let json = serde_json::json!({ "connected": connected }).to_string();
-                if let Ok(emitter) = SignalEmitter::new(&connection, path.as_str()) {
-                    TvService::state_changed(&emitter, &json).await.ok();
-                }
             }
-            StateChangeEvent::TvStateChanged {
+            StateChangeEvent::OptionChanged {
                 ref tv_id,
-                ref state_json,
+                ref key,
+                ref value,
             } => {
-                debug!(tv_id = %tv_id, "Emitting legacy state change signal");
-
                 let path = tv_path(tv_id);
-                if let Ok(emitter) = SignalEmitter::new(&connection, path.as_str()) {
-                    if let Err(e) = TvService::state_changed(&emitter, state_json).await {
-                        warn!(error = %e, tv_id = %tv_id, "Failed to emit StateChanged signal");
+                debug!(tv_id = %tv_id, key = %key, value = %value, "Forwarding option change to D-Bus");
+
+                if let Ok(iface_ref) =
+                    object_server.interface::<_, TvService>(&*path).await
+                {
+                    let mut iface = iface_ref.get_mut().await;
+                    let emitter = iface_ref.signal_emitter();
+                    match key.as_str() {
+                        "managed" => {
+                            if let Ok(managed) = value.parse::<bool>() {
+                                if iface.managed != managed {
+                                    iface.managed = managed;
+                                    iface.managed_changed(emitter).await.ok();
+                                }
+                            }
+                        }
+                        "name" => {
+                            if iface.name != *value {
+                                iface.name = value.clone();
+                                iface.name_changed(emitter).await.ok();
+                            }
+                        }
+                        "profile.system" => {
+                            if iface.system_profile != *value {
+                                iface.system_profile = value.clone();
+                                iface.system_profile_changed(emitter).await.ok();
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

@@ -13,7 +13,6 @@ use crate::tv_manager::TvManager;
 use std::sync::Arc;
 use tracing::{debug, info};
 use zbus::interface;
-use zbus::object_server::SignalEmitter;
 
 /// Base TV interface with properties and connection management.
 ///
@@ -144,6 +143,9 @@ impl TvService {
     }
 
     /// Get TV state as JSON.
+    ///
+    /// Deprecated: clients should use `Properties.GetAll` or individual property
+    /// reads instead. Retained temporarily for backward compatibility.
     async fn get_state(&self) -> Result<String, DaemonError> {
         debug!(tv_id = %self.tv_id, "D-Bus: GetState");
         let state = self
@@ -154,21 +156,6 @@ impl TvService {
         serde_json::to_string(&state)
             .map_err(|e| DaemonError::OperationFailed(format!("JSON serialization failed: {}", e)))
     }
-
-    // -------------------------------------------------------------------------
-    // Signals
-    // -------------------------------------------------------------------------
-
-    /// Signal emitted when TV state changes.
-    #[zbus(signal)]
-    pub async fn state_changed(emitter: &SignalEmitter<'_>, state: &str) -> zbus::Result<()>;
-
-    /// Signal emitted when connection status changes.
-    #[zbus(signal)]
-    pub async fn connection_changed(
-        emitter: &SignalEmitter<'_>,
-        connected: bool,
-    ) -> zbus::Result<()>;
 }
 
 // =============================================================================

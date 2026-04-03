@@ -181,7 +181,7 @@ async fn refresh_state(
 
 /// Watch for daemon D-Bus signals and refresh the tray on state changes.
 ///
-/// Subscribes to `StateChanged`, `ConnectionChanged` (per-TV) and
+/// Subscribes to `PropertiesChanged` (per-TV) and
 /// `InterfacesAdded`/`InterfacesRemoved` (ObjectManager) signals. When a
 /// signal arrives, additional signals within a 100 ms window are drained
 /// (debounced) before a single `refresh_state()` call updates the menu.
