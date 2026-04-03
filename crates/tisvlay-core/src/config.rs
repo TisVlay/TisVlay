@@ -80,6 +80,36 @@ pub enum SessionAction {
 }
 
 // =============================================================================
+// AutomateWhen — input-aware automation gating
+// =============================================================================
+
+/// Controls when automation fires relative to the TV's current input.
+///
+/// Combined with the per-TV `primary_input` and the global `managed` flag
+/// to produce the `Automated` D-Bus property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomateWhen {
+    /// Always apply automation regardless of current input.
+    #[default]
+    Always,
+    /// Only apply automation when the TV is on the primary input.
+    OnPrimary,
+    /// Only apply automation when the TV is NOT on the primary input.
+    OffPrimary,
+}
+
+impl std::fmt::Display for AutomateWhen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Always => write!(f, "always"),
+            Self::OnPrimary => write!(f, "on_primary"),
+            Self::OffPrimary => write!(f, "off_primary"),
+        }
+    }
+}
+
+// =============================================================================
 // SystemProfileConfig (with Option<T> fields for merge support)
 // =============================================================================
 
@@ -115,6 +145,10 @@ pub struct SystemProfileConfig {
     /// Action on system wake/resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_wake: Option<SessionAction>,
+
+    /// When to apply automation relative to the TV's current input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automate_when: Option<AutomateWhen>,
 }
 
 impl SystemProfileConfig {
@@ -130,6 +164,7 @@ impl SystemProfileConfig {
             on_no_session: Some(d.on_no_session),
             on_sleep: Some(d.on_sleep),
             on_wake: Some(d.on_wake),
+            automate_when: Some(d.automate_when),
         }
     }
 
@@ -145,6 +180,7 @@ impl SystemProfileConfig {
             on_no_session: self.on_no_session.or(base.on_no_session),
             on_sleep: self.on_sleep.or(base.on_sleep),
             on_wake: self.on_wake.or(base.on_wake),
+            automate_when: self.automate_when.or(base.automate_when),
         }
     }
 
@@ -161,6 +197,7 @@ impl SystemProfileConfig {
             on_no_session: self.on_no_session.unwrap_or(d.on_no_session),
             on_sleep: self.on_sleep.unwrap_or(d.on_sleep),
             on_wake: self.on_wake.unwrap_or(d.on_wake),
+            automate_when: self.automate_when.unwrap_or(d.automate_when),
         }
     }
 }
@@ -188,6 +225,8 @@ pub struct ResolvedSystemProfile {
     pub on_sleep: SessionAction,
     /// Action on system wake/resume.
     pub on_wake: SessionAction,
+    /// When to apply automation relative to the TV's current input.
+    pub automate_when: AutomateWhen,
 }
 
 impl Default for ResolvedSystemProfile {
@@ -199,6 +238,7 @@ impl Default for ResolvedSystemProfile {
             on_no_session: SessionAction::None,
             on_sleep: SessionAction::PowerOff,
             on_wake: SessionAction::PowerOn,
+            automate_when: AutomateWhen::Always,
         }
     }
 }
