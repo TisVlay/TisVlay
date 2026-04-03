@@ -81,14 +81,14 @@ space. `InputInfo` exposes:
   `"Gaming PC"`) — used for UI rendering
 
 The backend owns the vendor-specific app-ID-to-physical-ID mapping.
-This aligns with the D-Bus refactor plan (typed `a(ssb)` properties
-instead of JSON), and `current_input` uses the same normalized ID space
-as the input list, making matching trivial.
+This aligns with the D-Bus refactor (typed properties instead of JSON),
+and `current_input` uses the same normalized ID space as the input list,
+making matching trivial.
 
 ### Gate scope and D-Bus exposure (decided)
 
 `automate_when` lives in `SystemProfileConfig`. The daemon computes the
-gate result and exposes it as a read-only D-Bus property on Tv1:
+gate result and exposes it as read-only D-Bus properties on Tv1:
 
 **D-Bus properties on `org.tisvlay.Tv1`:**
 
@@ -96,9 +96,11 @@ gate result and exposes it as a read-only D-Bus property on Tv1:
 |----------|------|--------|-------------|
 | `Managed` | `b` | read-write | Global automation kill switch (existing) |
 | `PrimaryInput` | `s` | read-write | Which input this PC is connected to |
-| `CurrentInput` | `s` | read-only | What the TV is currently showing |
 | `AutomateWhen` | `s` | read-only | From resolved system profile: `"always"`, `"on_primary"`, `"off_primary"` |
 | `Automated` | `b` | read-only | **Computed**: `managed && (automate_when == always \|\| input match)` |
+
+`CurrentInput` already exists as a read-only property on
+`org.tisvlay.Tv1.Input` (cached, updated by subscription pushes).
 
 `Automated` is the single boolean that any automation client checks
 before acting. It folds together `managed`, `automate_when`, and the
@@ -106,7 +108,7 @@ current input state into one answer: "should I automate this TV right
 now?"
 
 - `Managed` stays separate for the global kill switch use case
-- `PrimaryInput`, `CurrentInput`, `AutomateWhen` stay separate for
+- `PrimaryInput`, `AutomateWhen` stay separate for
   diagnostic/GUI display (so the user can see *why* automation is
   disabled)
 - `Automated` is the convenience property for simple callers
@@ -114,8 +116,8 @@ now?"
 **Automation clients (session service, custom services) use this pattern:**
 
 ```
-if daemon.get_property(tv_id, "Automated") {
-    daemon.set_property(tv_id, "ScreenOn", false);  // or any action
+if tv.automated {
+    daemon.set_property(tv_id, "IsScreenOn", false);  // or any action
 }
 ```
 
@@ -124,7 +126,8 @@ always execute regardless of input state.
 
 This approach:
 - Scales to arbitrary automation sequences (no structured action strings)
-- Works with the D-Bus refactor (property reads/writes, PropertiesChanged)
+- Works with the D-Bus property architecture (writable properties,
+  PropertiesChanged)
 - Keeps policy enforcement centralized in the daemon (single source of
   truth for `Automated`)
 - Lets any client (session, custom service, GUI) consume the gate without
@@ -148,16 +151,16 @@ This approach:
 
 ### Phase 1: Fix input ID normalization and tray radio bug
 
-**Files:** `crates/tisvlay-lg/src/backend.rs`, `crates/tisvlay-core/src/state.rs`,
-`crates/tisvlay-tray/src/tray.rs`
+**Files:** `crates/tisvlay-lg/src/backend.rs`, `crates/tisvlay-core/src/state.rs`
 
 - LG backend: add app-ID-to-physical-ID mapping (e.g.,
   `"com.webos.app.hdmi1"` → `"HDMI_1"`)
 - Normalize `current_input` in `update_state_from_subscription()` when
   handling `getForegroundAppInfo` updates — map the app ID to the
   physical ID from the input list
-- Fix tray input submenu: `current_input` now matches `inputs[i].id`,
-  so radio selection works correctly
+- Tray input submenu: `current_input` now matches `inputs[i].id` in the
+  D-Bus `CurrentInput` property, so radio selection works correctly
+  (tray reads these from `TvInfo` via `GetManagedObjects`)
 - Test: switch inputs with the TV remote, verify tray radio updates
 
 ### Phase 2: Rename `hdmi_input` → `primary_input`
@@ -166,8 +169,10 @@ This approach:
 `crates/tisvlayd/src/tv_manager.rs`, docs
 
 - Rename `TvConfig::hdmi_input` → `TvConfig::primary_input`
-- Rename `SetTvOption` key from `"hdmi_input"` → `"primary_input"`
+- Rename `SetTvOption` key from `"hdmi_input"` → `"primary_input"` in
+  `apply_tv_option()`
 - Remove `only_when_active` field from `TvConfig` (dead code)
+- Remove `"only_when_active"` key from `apply_tv_option()`
 - Update all config examples, test fixtures, design.md, CLAUDE.md
 - Update `startup_power_on()` which uses `hdmi_input` for input
   switching after WoL
@@ -182,22 +187,26 @@ This approach:
 - Add `automate_when: AutomateWhen` to `ResolvedSystemProfile`
 - Update merge/resolve logic
 
-### Phase 4: Implement gate in daemon and expose `Automated` property
+### Phase 4: Implement gate in daemon and expose D-Bus properties
 
-**Files:** `crates/tisvlayd/src/tv_manager.rs`, `crates/tisvlayd/src/dbus/tv.rs`
+**Files:** `crates/tisvlayd/src/dbus/tv.rs`, `crates/tisvlayd/src/main.rs`,
+`crates/tisvlayd/src/tv_manager.rs`
 
-- Store `current_input: Option<String>` on `ManagedTv` — updated by
-  the backend subscription push (`getForegroundAppInfo`). The daemon
-  already receives these updates via `try_subscribe_state`.
-- Add `is_automated()` method on `ManagedTv` or `TvManager` that
-  computes: `managed && (automate_when == Always || input matches)`
-- In `execute_system_event()`, replace the `managed` check with the
-  `is_automated()` check
-- Expose D-Bus properties on Tv1:
-  - `PrimaryInput` (read-write)
-  - `CurrentInput` (read-only, from cached subscription state)
-  - `AutomateWhen` (read-only, from resolved system profile)
-  - `Automated` (read-only, computed from above)
+- Add `primary_input` and `automate_when` cached fields to `TvService`
+  struct, populated from config at registration time
+- Add D-Bus properties on `org.tisvlay.Tv1`:
+  - `PrimaryInput` (read-write) — writable property setter delegates to
+    `set_tv_option("primary_input", ...)`
+  - `AutomateWhen` (read-only) — from resolved system profile
+  - `Automated` (read-only, computed) — the gate result
+- `Automated` getter reads `managed`, `automate_when`, `primary_input`
+  from `TvService` cache and `current_input` from `TvInputService` cache
+  (via `ObjectServer::interface::<_, TvInputService>(path)`)
+- In `execute_system_event()`, replace the `managed`-only check with
+  the `Automated` gate: query the `TvService` and `TvInputService` caches
+  to evaluate the gate in-process (no D-Bus round-trip)
+- Update `state_change_forwarder` `OptionChanged` handler to update
+  `primary_input` cache when changed via `SetTvOption`
 - When TV is off (no known current input), `Automated` returns `true`
   (benefit of doubt — can't check input in standby)
 
@@ -205,11 +214,12 @@ This approach:
 
 **File:** `crates/tisvlay-session/src/main.rs`
 
-- Before executing an action for a TV, query the daemon's `Automated`
-  property: `daemon.get_property(tv_id, "Automated")`
-- If `false`, skip the action for that TV
-- This replaces the current `managed`-only check in the session
-  service's event handler (if any), and now also gates on input state
+- `TvInfo` already includes all properties from `GetManagedObjects`, so
+  add `automated` field to `TvInfo` (read from D-Bus property)
+- In the session event handler, replace the `managed`-only filter with
+  `tv.automated` from `list_tvs()`
+- This means session service automatically respects input-aware gating
+  without any additional D-Bus calls
 
 ### Phase 6: Surface in CLI, tray, docs
 
@@ -227,7 +237,7 @@ This approach:
 - [ ] Phase 1: Fix input ID normalization and tray radio bug
 - [ ] Phase 2: Rename hdmi_input → primary_input, remove only_when_active
 - [ ] Phase 3: Add AutomateWhen enum to SystemProfileConfig
-- [ ] Phase 4: Implement gate in daemon, expose Automated property
+- [ ] Phase 4: Implement gate in daemon, expose D-Bus properties
 - [ ] Phase 5: Update session service to check Automated
 - [ ] Phase 6: Surface in CLI, tray, docs
 
