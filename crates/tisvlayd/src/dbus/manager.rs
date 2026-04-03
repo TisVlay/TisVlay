@@ -19,21 +19,12 @@ use zbus::zvariant::ObjectPath;
 pub struct ManagerService {
     manager: Arc<TvManager>,
     registry: Arc<BackendRegistry>,
-    connection: zbus::Connection,
 }
 
 impl ManagerService {
     /// Create a new manager service.
-    pub fn new(
-        manager: Arc<TvManager>,
-        registry: Arc<BackendRegistry>,
-        connection: zbus::Connection,
-    ) -> Self {
-        Self {
-            manager,
-            registry,
-            connection,
-        }
+    pub fn new(manager: Arc<TvManager>, registry: Arc<BackendRegistry>) -> Self {
+        Self { manager, registry }
     }
 }
 
@@ -90,6 +81,7 @@ impl ManagerService {
     /// Returns: Object path for the new TV.
     async fn add_tv(
         &self,
+        #[zbus(connection)] connection: &zbus::Connection,
         name: &str,
         vendor: &str,
         config_json: &str,
@@ -119,7 +111,7 @@ impl ManagerService {
         // Register D-Bus interfaces for the newly added TV.
         let path = tv_path(&tv_id);
         if let Err(e) =
-            register_tv_interfaces(&self.connection, &path, tv_id.clone(), manager.clone()).await
+            register_tv_interfaces(connection, &path, tv_id.clone(), manager.clone()).await
         {
             warn!(tv_id = %tv_id, error = %e, "Failed to register D-Bus interfaces for new TV");
         }
@@ -128,7 +120,11 @@ impl ManagerService {
     }
 
     /// Remove a TV.
-    async fn remove_tv(&self, tv_path: ObjectPath<'_>) -> Result<(), DaemonError> {
+    async fn remove_tv(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        tv_path: ObjectPath<'_>,
+    ) -> Result<(), DaemonError> {
         // Extract TV ID from path
         let path_str = tv_path.as_str();
         let tv_id = path_str
@@ -141,7 +137,7 @@ impl ManagerService {
         manager.remove_tv(tv_id).await.map_err(DaemonError::from)?;
 
         // Unregister D-Bus interfaces for the removed TV.
-        if let Err(e) = unregister_tv_interfaces(&self.connection, path_str).await {
+        if let Err(e) = unregister_tv_interfaces(connection, path_str).await {
             warn!(tv_id = %tv_id, error = %e, "Failed to unregister D-Bus interfaces for TV");
         }
 

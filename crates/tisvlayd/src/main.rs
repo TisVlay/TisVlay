@@ -92,44 +92,36 @@ async fn main() -> Result<()> {
     // TvManager handles all internal synchronization via per-TV mutexes.
     let shared_manager = Arc::new(tv_manager);
 
-    // Connect to D-Bus (session or system bus)
+    // Create manager D-Bus service (before building connection so it's
+    // registered via serve_at before the name is claimed).
+    let manager_service = ManagerService::new(shared_manager.clone(), registry.clone());
+
+    // Build D-Bus connection with static interfaces registered before the
+    // well-known name is claimed. This ensures clients connecting after
+    // activation find ObjectManager and Manager1 immediately available.
     let builder = if args.session {
         info!("Using session bus (development mode)");
-        zbus::connection::Builder::session().context("Failed to connect to session D-Bus")?
+        zbus::connection::Builder::session().context("Failed to create session bus builder")?
     } else {
         info!("Using system bus");
-        zbus::connection::Builder::system().context("Failed to connect to system D-Bus")?
+        zbus::connection::Builder::system().context("Failed to create system bus builder")?
     };
 
-    // Build connection and request name
     let connection = builder
         .name(DBUS_NAME)
         .context("Failed to request D-Bus name")?
+        .serve_at(OBJECT_MANAGER_PATH, zbus::fdo::ObjectManager)
+        .context("Failed to serve ObjectManager interface")?
+        .serve_at(MANAGER_PATH, manager_service)
+        .context("Failed to serve Manager interface")?
         .build()
         .await
         .context("Failed to build D-Bus connection")?;
 
-    // Register ObjectManager at /org/tisvlay (ancestor of all tisvlay objects).
-    // Must be registered first so that subsequent at() calls trigger InterfacesAdded.
-    connection
-        .object_server()
-        .at(OBJECT_MANAGER_PATH, zbus::fdo::ObjectManager)
-        .await
-        .context("Failed to serve ObjectManager interface")?;
     info!(
-        "ObjectManager interface registered at {}",
-        OBJECT_MANAGER_PATH
+        "D-Bus service registered as {} (ObjectManager at {}, Manager at {})",
+        DBUS_NAME, OBJECT_MANAGER_PATH, MANAGER_PATH
     );
-
-    // Create and register manager service at /org/tisvlay/Manager
-    let manager_service =
-        ManagerService::new(shared_manager.clone(), registry.clone(), connection.clone());
-    connection
-        .object_server()
-        .at(MANAGER_PATH, manager_service)
-        .await
-        .context("Failed to serve Manager interface")?;
-    info!("Manager interface registered at {}", MANAGER_PATH);
 
     // Register per-TV D-Bus objects at /org/tisvlay/Tv/{id}
     for tv_id in &tv_ids {
