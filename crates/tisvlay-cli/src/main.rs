@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tisvlay_core::{DaemonClient, SessionClient, TvState};
+use tisvlay_core::{DaemonClient, SessionClient, TvInfo};
 
 #[derive(Parser)]
 #[command(name = "tisvlay")]
@@ -436,8 +436,9 @@ async fn main() -> Result<()> {
                 MuteState::On => true,
                 MuteState::Off => false,
                 MuteState::Toggle => {
-                    let state = client.get_state(&tv_id).await?;
-                    !state.muted.unwrap_or(false)
+                    let tvs = client.list_tvs().await?;
+                    let tv = tvs.iter().find(|t| t.id == tv_id);
+                    !tv.map(|t| t.muted).unwrap_or(false)
                 }
             };
             client.set_mute(&tv_id, mute).await?;
@@ -460,15 +461,12 @@ async fn main() -> Result<()> {
 
         Commands::Status => {
             let tv_id = tv_id?;
-            let (state, managed) = tokio::try_join!(client.get_state(&tv_id), async {
-                let tvs = client.list_tvs().await?;
-                Ok(tvs
-                    .iter()
-                    .find(|t| t.id == tv_id)
-                    .map(|t| t.managed)
-                    .unwrap_or(true))
-            },)?;
-            print_tv_status(&tv_id, &state, managed);
+            let tvs = client.list_tvs().await?;
+            let tv = tvs
+                .iter()
+                .find(|t| t.id == tv_id)
+                .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
+            print_tv_status(tv);
         }
     }
 
@@ -501,26 +499,23 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
     }
 }
 
-fn print_tv_status(tv_id: &str, state: &TvState, managed: bool) {
-    println!("TV: {}", tv_id);
-    println!("Managed: {}", managed);
-    println!("Power: {}", if state.is_on { "on" } else { "off" });
-    println!("Screen: {}", if state.is_screen_on { "on" } else { "off" });
-    if let Some(vol) = state.volume {
-        let muted = state
-            .muted
-            .map(|m| if m { " (muted)" } else { "" })
-            .unwrap_or("");
-        println!("Volume: {}{}", vol, muted);
+fn print_tv_status(tv: &TvInfo) {
+    let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
+    println!("TV: {}", tv.id);
+    println!("Managed: {}", tv.managed);
+    println!("Connected: {}", tv.connected);
+    println!("Power: {}", tv.power_state);
+    println!("Screen: {}", if tv.is_screen_on { "on" } else { "off" });
+    if is_on {
+        let muted = if tv.muted { " (muted)" } else { "" };
+        println!("Volume: {}{}", tv.volume, muted);
+        println!("Backlight: {}", tv.backlight);
     }
-    if let Some(backlight) = state.backlight {
-        println!("Backlight: {}", backlight);
-    }
-    if !state.inputs.is_empty() {
+    if !tv.inputs.is_empty() {
         println!("Inputs:");
-        for input in &state.inputs {
-            let connected = if input.connected { " *" } else { "" };
-            println!("  {} - {}{}", input.id, input.label, connected);
+        for (id, label) in &tv.inputs {
+            let current = if tv.current_input == *id { " <" } else { "" };
+            println!("  {} - {}{}", id, label, current);
         }
     }
 }

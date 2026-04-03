@@ -11,8 +11,8 @@ use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
-    Capabilities, PowerState, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection,
-    TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
+    Capabilities, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection, TvConfig,
+    TvConnection, TvState, UserProfileConfig, UserSection,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
@@ -77,18 +77,12 @@ pub enum StateChangeEvent {
     ///
     /// The forwarder updates cached properties on all TV interface structs
     /// and emits `PropertiesChanged` for each changed property.
-    SubscriptionUpdate {
-        tv_id: String,
-        state: TvState,
-    },
+    SubscriptionUpdate { tv_id: String, state: TvState },
     /// Connection status changed (connected or disconnected).
     ///
     /// Emitted after successful connect/reconnect (connected=true) or when
     /// a backend subscription ends (connected=false).
-    ConnectionChanged {
-        tv_id: String,
-        connected: bool,
-    },
+    ConnectionChanged { tv_id: String, connected: bool },
     /// A TV config option was changed (managed, name, profile.system, etc.).
     ///
     /// The forwarder updates the corresponding cached property on TvService
@@ -795,14 +789,6 @@ impl TvManager {
         result
     }
 
-    /// Get power state.
-    pub async fn get_power_state(&self, tv_id: &str) -> Result<PowerState, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_power_state().await })
-        })
-        .await
-    }
-
     // -------------------------------------------------------------------------
     // Screen Control
     // -------------------------------------------------------------------------
@@ -825,14 +811,6 @@ impl TvManager {
         Ok(())
     }
 
-    /// Check if screen is on.
-    pub async fn is_screen_on(&self, tv_id: &str) -> Result<bool, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.is_screen_on().await })
-        })
-        .await
-    }
-
     // -------------------------------------------------------------------------
     // Volume Control
     // -------------------------------------------------------------------------
@@ -846,14 +824,6 @@ impl TvManager {
         Ok(())
     }
 
-    /// Get volume.
-    pub async fn get_volume(&self, tv_id: &str) -> Result<u8, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_volume().await })
-        })
-        .await
-    }
-
     /// Set mute.
     pub async fn set_mute(&self, tv_id: &str, mute: bool) -> Result<(), TvManagerError> {
         self.with_connection(tv_id, |conn| {
@@ -861,12 +831,6 @@ impl TvManager {
         })
         .await?;
         Ok(())
-    }
-
-    /// Check if muted.
-    pub async fn is_muted(&self, tv_id: &str) -> Result<bool, TvManagerError> {
-        self.with_connection(tv_id, |conn| Box::pin(async move { conn.is_muted().await }))
-            .await
     }
 
     // -------------------------------------------------------------------------
@@ -883,25 +847,6 @@ impl TvManager {
         Ok(())
     }
 
-    /// Get current input.
-    pub async fn get_current_input(&self, tv_id: &str) -> Result<Option<String>, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_current_input().await })
-        })
-        .await
-    }
-
-    /// Get available inputs.
-    pub async fn get_inputs(&self, tv_id: &str) -> Result<Vec<(String, String)>, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move {
-                let inputs = conn.list_inputs().await?;
-                Ok(inputs.into_iter().map(|i| (i.id, i.label)).collect())
-            })
-        })
-        .await
-    }
-
     // -------------------------------------------------------------------------
     // Backlight Control
     // -------------------------------------------------------------------------
@@ -913,26 +858,6 @@ impl TvManager {
         })
         .await?;
         Ok(())
-    }
-
-    /// Get backlight.
-    pub async fn get_backlight(&self, tv_id: &str) -> Result<u8, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_backlight().await })
-        })
-        .await
-    }
-
-    // -------------------------------------------------------------------------
-    // State
-    // -------------------------------------------------------------------------
-
-    /// Get TV state.
-    pub async fn get_state(&self, tv_id: &str) -> Result<TvState, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_state().await })
-        })
-        .await
     }
 
     // -------------------------------------------------------------------------

@@ -11,7 +11,7 @@
 use crate::dbus::DaemonError;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::info;
 use zbus::interface;
 
 /// Base TV interface with properties and connection management.
@@ -141,21 +141,6 @@ impl TvService {
             .await
             .map_err(DaemonError::from)
     }
-
-    /// Get TV state as JSON.
-    ///
-    /// Deprecated: clients should use `Properties.GetAll` or individual property
-    /// reads instead. Retained temporarily for backward compatibility.
-    async fn get_state(&self) -> Result<String, DaemonError> {
-        debug!(tv_id = %self.tv_id, "D-Bus: GetState");
-        let state = self
-            .manager
-            .get_state(&self.tv_id)
-            .await
-            .map_err(DaemonError::from)?;
-        serde_json::to_string(&state)
-            .map_err(|e| DaemonError::OperationFailed(format!("JSON serialization failed: {}", e)))
-    }
 }
 
 // =============================================================================
@@ -268,9 +253,7 @@ impl TvVolumeService {
     #[zbus(property)]
     async fn set_volume(&mut self, level: u8) -> zbus::fdo::Result<()> {
         if level > 100 {
-            return Err(zbus::fdo::Error::InvalidArgs(
-                "Volume must be 0-100".into(),
-            ));
+            return Err(zbus::fdo::Error::InvalidArgs("Volume must be 0-100".into()));
         }
         info!(tv_id = %self.tv_id, volume = level, "D-Bus: set Volume");
         self.manager

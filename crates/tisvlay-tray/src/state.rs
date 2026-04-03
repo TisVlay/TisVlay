@@ -1,7 +1,7 @@
 //! Cached TV state for tray menu rendering.
 //!
-//! Combines `TvInfo` (from `list_tvs()`) with `TvState` (from `get_state()`)
-//! into a single snapshot used by the tray module to build menus.
+//! Builds snapshots from `TvInfo` (from `list_tvs()` via `GetManagedObjects`)
+//! which includes both identity and cached state properties.
 
 use tisvlay_core::{DaemonClient, SessionClient};
 use tracing::debug;
@@ -34,8 +34,11 @@ pub struct CachedTvState {
 
 /// Fetch current state for all configured TVs.
 ///
-/// Calls `list_tvs()` to get the TV list, then `get_state()` for each
-/// connected TV. Optionally queries the session service for profile info.
+/// Uses a single `GetManagedObjects` call (via `list_tvs()`) to retrieve
+/// both identity and cached state properties for all TVs. No per-TV
+/// round-trips or connection attempts are made.
+///
+/// Optionally queries the session service for user profile info.
 pub async fn fetch_all_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
@@ -75,53 +78,33 @@ pub async fn fetch_all_state(
             None => None,
         };
 
-        let mut cached = CachedTvState {
+        let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
+
+        let cached = CachedTvState {
             id: tv.id.clone(),
             name: tv.name,
             connected: tv.connected,
-            is_on: false,
-            is_screen_on: false,
-            volume: None,
-            muted: None,
-            current_input: None,
-            backlight: None,
-            inputs: Vec::new(),
+            is_on,
+            is_screen_on: tv.is_screen_on,
+            volume: if tv.connected { Some(tv.volume) } else { None },
+            muted: if tv.connected { Some(tv.muted) } else { None },
+            current_input: if tv.current_input.is_empty() {
+                None
+            } else {
+                Some(tv.current_input)
+            },
+            backlight: if tv.connected {
+                Some(tv.backlight)
+            } else {
+                None
+            },
+            inputs: tv.inputs,
             user_profile,
             available_user_profiles: available_user_profiles.clone(),
-            system_profile: tv.system_profile.clone(),
+            system_profile: tv.system_profile,
             available_system_profiles: available_system_profiles.clone(),
             managed: tv.managed,
         };
-
-        // Try get_state for all TVs — the daemon connects on-demand, so a
-        // TV may be reachable even if `Connected` is false. Use a short
-        // timeout for disconnected TVs to avoid blocking the poll on
-        // WebSocket connect timeouts to powered-off TVs.
-        let timeout = if tv.connected {
-            std::time::Duration::from_secs(10)
-        } else {
-            std::time::Duration::from_secs(2)
-        };
-        match tokio::time::timeout(timeout, daemon.get_state(&tv.id)).await {
-            Ok(Ok(state)) => {
-                cached.connected = true;
-                cached.is_on = state.is_on;
-                cached.is_screen_on = state.is_screen_on;
-                cached.volume = state.volume;
-                cached.muted = state.muted;
-                cached.current_input = state.current_input;
-                cached.backlight = state.backlight;
-                cached.inputs = state.inputs.into_iter().map(|i| (i.id, i.label)).collect();
-            }
-            Ok(Err(e)) => {
-                debug!(tv_id = %tv.id, error = %e, "TV state unavailable");
-                cached.connected = false;
-            }
-            Err(_) => {
-                debug!(tv_id = %tv.id, "TV state timed out");
-                cached.connected = false;
-            }
-        }
 
         debug!(
             tv_id = %cached.id,

@@ -147,9 +147,6 @@ trait TisvlayTv {
 
     /// Force reconnection.
     fn reconnect(&self) -> zbus::Result<()>;
-
-    /// Get TV state as JSON.
-    fn get_state(&self) -> zbus::Result<String>;
 }
 
 // =============================================================================
@@ -362,7 +359,12 @@ pub async fn watch_service(
 // TV Info Struct
 // =============================================================================
 
-/// Information about a configured TV.
+/// Information about a configured TV, including cached state.
+///
+/// All fields are populated from a single `GetManagedObjects` call.
+/// State fields reflect the daemon's cached values (updated by backend
+/// subscription pushes). For disconnected TVs, state fields contain
+/// defaults (power_state="unknown", volume=0, etc.).
 #[derive(Debug, Clone)]
 pub struct TvInfo {
     /// TV identifier.
@@ -381,6 +383,22 @@ pub struct TvInfo {
     pub system_profile: String,
     /// D-Bus object path.
     pub path: String,
+
+    // State from sub-interface properties
+    /// Power state (e.g., "active", "standby", "screen_off", "unknown").
+    pub power_state: String,
+    /// Whether the screen is on (not blanked).
+    pub is_screen_on: bool,
+    /// Current volume level (0-100).
+    pub volume: u8,
+    /// Whether audio is muted.
+    pub muted: bool,
+    /// Currently active input ID (empty if unknown).
+    pub current_input: String,
+    /// Current backlight level (0-100).
+    pub backlight: u8,
+    /// Available inputs as (id, label) pairs.
+    pub inputs: Vec<(String, String)>,
 }
 
 // =============================================================================
@@ -723,6 +741,45 @@ impl DaemonClient {
                 }
             };
 
+            // Helper to extract properties from a sub-interface.
+            let get_iface_props = |iface_name: &str| -> Option<&HashMap<String, OwnedValue>> {
+                ifaces
+                    .iter()
+                    .find(|(k, _)| k.as_str() == iface_name)
+                    .map(|(_, v)| v)
+            };
+
+            let get_sub_str = |iface: &str, key: &str, default: &str| -> String {
+                get_iface_props(iface)
+                    .and_then(|p| p.get(key))
+                    .and_then(|v| String::try_from(v.clone()).ok())
+                    .unwrap_or_else(|| default.to_string())
+            };
+            let get_sub_bool = |iface: &str, key: &str, default: bool| -> bool {
+                get_iface_props(iface)
+                    .and_then(|p| p.get(key))
+                    .and_then(|v| bool::try_from(v.clone()).ok())
+                    .unwrap_or(default)
+            };
+            let get_sub_u8 = |iface: &str, key: &str| -> u8 {
+                get_iface_props(iface)
+                    .and_then(|p| p.get(key))
+                    .and_then(|v| u8::try_from(v.clone()).ok())
+                    .unwrap_or(0)
+            };
+
+            // Extract state from sub-interfaces
+            let power_state = get_sub_str("org.tisvlay.Tv1.Power", "PowerState", "unknown");
+            let is_screen_on = get_sub_bool("org.tisvlay.Tv1.Screen", "IsScreenOn", true);
+            let volume = get_sub_u8("org.tisvlay.Tv1.Volume", "Volume");
+            let muted = get_sub_bool("org.tisvlay.Tv1.Volume", "Muted", false);
+            let current_input = get_sub_str("org.tisvlay.Tv1.Input", "CurrentInput", "");
+            let backlight = get_sub_u8("org.tisvlay.Tv1.Backlight", "Backlight");
+            let inputs: Vec<(String, String)> = get_iface_props("org.tisvlay.Tv1.Input")
+                .and_then(|p| p.get("AvailableInputs"))
+                .and_then(|v| <Vec<(String, String)>>::try_from(v.clone()).ok())
+                .unwrap_or_default();
+
             let fallbacks = fallbacks.into_inner();
             if !fallbacks.is_empty() {
                 debug!(
@@ -746,6 +803,13 @@ impl DaemonClient {
                 managed,
                 system_profile,
                 path: path.as_str().to_string(),
+                power_state,
+                is_screen_on,
+                volume,
+                muted,
+                current_input,
+                backlight,
+                inputs,
             });
         }
 
@@ -930,20 +994,6 @@ impl DaemonClient {
     // -------------------------------------------------------------------------
     // State
     // -------------------------------------------------------------------------
-
-    /// Get TV state as a JSON string.
-    ///
-    /// The returned JSON can be parsed into a `TvState` struct.
-    pub async fn get_state_json(&self, tv_id: &str) -> Result<String> {
-        self.with_proxies(tv_id, "get state", |p| Box::pin(p.base.get_state()))
-            .await
-    }
-
-    /// Get TV state as a parsed struct.
-    pub async fn get_state(&self, tv_id: &str) -> Result<crate::TvState> {
-        let json = self.get_state_json(tv_id).await?;
-        serde_json::from_str(&json).context("Failed to parse TV state JSON")
-    }
 
     /// Get TV capabilities.
     pub async fn get_capabilities(&self, tv_id: &str) -> Result<Vec<String>> {
