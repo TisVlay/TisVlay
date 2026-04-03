@@ -67,13 +67,34 @@ pub enum TvManagerError {
 }
 
 /// Event emitted when TV state changes or daemon-wide events occur.
+///
+/// Routed through the state change channel to the signal emitter task in main.rs,
+/// which updates cached D-Bus properties and emits PropertiesChanged / legacy signals.
 #[derive(Debug, Clone)]
 pub enum StateChangeEvent {
-    /// A per-TV state change (connection, command, option, subscription update).
-    TvStateChanged {
-        /// The TV identifier.
+    /// Backend subscription push -- full TV state snapshot.
+    ///
+    /// The signal emitter updates cached properties on all TV interface structs
+    /// via `InterfaceRef::get_mut()` and emits `PropertiesChanged` for each
+    /// changed property.
+    SubscriptionUpdate {
         tv_id: String,
-        /// The new state (JSON-encoded).
+        state: TvState,
+    },
+    /// Connection status changed (connected or disconnected).
+    ///
+    /// Emitted after successful connect/reconnect (connected=true) or when
+    /// a backend subscription ends (connected=false).
+    ConnectionChanged {
+        tv_id: String,
+        connected: bool,
+    },
+    /// A per-TV state change (command completed, option changed).
+    ///
+    /// Legacy: emitted as custom `StateChanged` JSON signal on the per-TV object.
+    /// Will be replaced by structured variants when custom signals are removed.
+    TvStateChanged {
+        tv_id: String,
         state_json: String,
     },
     /// Configuration was reloaded from disk.
@@ -83,18 +104,6 @@ pub enum StateChangeEvent {
 }
 
 impl StateChangeEvent {
-    /// Create a state change event for a connection status change.
-    pub fn connection_change(tv_id: &str, connected: bool, error: Option<&str>) -> Self {
-        let state = serde_json::json!({
-            "connected": connected,
-            "error": error,
-        });
-        Self::TvStateChanged {
-            tv_id: tv_id.to_string(),
-            state_json: state.to_string(),
-        }
-    }
-
     /// Create a state change event for a TV option change (managed, profile, etc.)
     pub fn option_change(tv_id: &str, key: &str, value: &str) -> Self {
         let state = serde_json::json!({
@@ -317,20 +326,24 @@ impl TvManager {
                 info!(tv_id = %tv_id, "Subscribed to backend state updates");
                 tokio::spawn(async move {
                     while let Some(state) = state_rx.recv().await {
-                        let json = serde_json::to_string(&state).unwrap_or_default();
-                        let event = StateChangeEvent::TvStateChanged {
+                        let event = StateChangeEvent::SubscriptionUpdate {
                             tv_id: tv_id.clone(),
-                            state_json: json,
+                            state,
                         };
                         if tx.send(event).is_err() {
                             break;
                         }
                     }
+                    // Subscription ended -- TV likely disconnected.
+                    let _ = tx.send(StateChangeEvent::ConnectionChanged {
+                        tv_id: tv_id.clone(),
+                        connected: false,
+                    });
                     debug!(tv_id = %tv_id, "Backend state subscription ended");
                 });
             }
             Err(_) => {
-                // Backend doesn't support subscriptions — this is fine,
+                // Backend doesn't support subscriptions -- this is fine,
                 // the tray's fallback poll handles state refresh.
             }
         }
@@ -487,7 +500,10 @@ impl TvManager {
                         }
                     }
                 }
-                manager.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+                manager.emit_state_change(StateChangeEvent::ConnectionChanged {
+                    tv_id: tv_id.to_string(),
+                    connected: true,
+                });
 
                 match manager.screen_on(tv_id).await {
                     Ok(()) => info!(tv_id = %tv_id, "Startup: screen on"),
@@ -649,7 +665,10 @@ impl TvManager {
         }
 
         drop(tv);
-        self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+        self.emit_state_change(StateChangeEvent::ConnectionChanged {
+            tv_id: tv_id.to_string(),
+            connected: true,
+        });
 
         Ok(())
     }
@@ -689,7 +708,10 @@ impl TvManager {
 
             info!(tv_id = %tv_id, "Connected to TV");
             tv.connection = Some(connection);
-            self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+            self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                tv_id: tv_id.to_string(),
+                connected: true,
+            });
 
             // Subscribe to backend state updates if supported
             if let Some(conn) = tv.connection.as_mut() {
@@ -761,8 +783,10 @@ impl TvManager {
             }
         }
 
-        let event = StateChangeEvent::connection_change(tv_id, true, None);
-        self.emit_state_change(event);
+        self.emit_state_change(StateChangeEvent::ConnectionChanged {
+            tv_id: tv_id.to_string(),
+            connected: true,
+        });
         info!(tv_id = %tv_id, "TV is online after WoL");
         Ok(())
     }

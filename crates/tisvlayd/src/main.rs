@@ -12,13 +12,14 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{SystemConfig, UserConfig};
+use tisvlay_core::{SystemConfig, TvState, UserConfig};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
-    register_tv_interfaces, tv_path, ManagerService, TvService, DBUS_NAME, MANAGER_PATH,
+    register_tv_interfaces, tv_path, ManagerService, TvBacklightService, TvInputService,
+    TvPowerService, TvScreenService, TvService, TvVolumeService, DBUS_NAME, MANAGER_PATH,
     OBJECT_MANAGER_PATH,
 };
 use crate::registry::create_registry;
@@ -151,8 +152,8 @@ async fn main() -> Result<()> {
         warn!(error = %e, "Failed to start logind monitor (system lifecycle events unavailable)");
     }
 
-    // Spawn task to emit state change signals
-    let signal_worker = tokio::spawn(state_change_signal_emitter(
+    // Spawn task to forward state changes to D-Bus properties and signals
+    let signal_worker = tokio::spawn(state_change_forwarder(
         connection.clone(),
         state_change_rx,
     ));
@@ -171,52 +172,203 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Emit state change signals on the D-Bus.
-async fn state_change_signal_emitter(
+/// Forward state change events to D-Bus cached properties and signals.
+///
+/// For subscription updates: updates cached properties on all per-TV interface
+/// structs via `InterfaceRef::get_mut()` and emits `PropertiesChanged` for each
+/// changed property. Also emits legacy `StateChanged` signal for backward compat.
+///
+/// For connection changes: updates the `Connected` cached property.
+///
+/// For other events: emits legacy signals as before.
+async fn state_change_forwarder(
     connection: zbus::Connection,
     mut rx: mpsc::UnboundedReceiver<StateChangeEvent>,
 ) {
-    info!("State change signal emitter started");
+    info!("State change forwarder started");
+    let object_server = connection.object_server();
 
     while let Some(event) = rx.recv().await {
         match event {
+            StateChangeEvent::SubscriptionUpdate {
+                ref tv_id,
+                ref state,
+            } => {
+                let path = tv_path(tv_id);
+                debug!(tv_id = %tv_id, "Forwarding subscription update to D-Bus properties");
+
+                update_tv_cached_state(object_server, &path, state).await;
+
+                // Also emit legacy StateChanged signal (backward compat, removed in Phase C)
+                let json = serde_json::to_string(state).unwrap_or_default();
+                if let Ok(emitter) = SignalEmitter::new(&connection, path.as_str()) {
+                    if let Err(e) = TvService::state_changed(&emitter, &json).await {
+                        warn!(error = %e, tv_id = %tv_id, "Failed to emit StateChanged signal");
+                    }
+                }
+            }
+            StateChangeEvent::ConnectionChanged {
+                ref tv_id,
+                connected,
+            } => {
+                let path = tv_path(tv_id);
+                debug!(tv_id = %tv_id, connected, "Forwarding connection change to D-Bus");
+
+                if let Ok(iface_ref) =
+                    object_server.interface::<_, TvService>(&*path).await
+                {
+                    let mut iface = iface_ref.get_mut().await;
+                    if iface.connected != connected {
+                        iface.connected = connected;
+                        if let Err(e) = iface
+                            .connected_changed(iface_ref.signal_emitter())
+                            .await
+                        {
+                            warn!(error = %e, tv_id = %tv_id, "Failed to emit Connected property change");
+                        }
+                    }
+                }
+
+                // Also emit legacy StateChanged signal
+                let json = serde_json::json!({ "connected": connected }).to_string();
+                if let Ok(emitter) = SignalEmitter::new(&connection, path.as_str()) {
+                    TvService::state_changed(&emitter, &json).await.ok();
+                }
+            }
             StateChangeEvent::TvStateChanged {
                 ref tv_id,
                 ref state_json,
             } => {
-                debug!(tv_id = %tv_id, "Emitting state change signals");
+                debug!(tv_id = %tv_id, "Emitting legacy state change signal");
 
-                // Emit on the per-TV object path
                 let path = tv_path(tv_id);
-                match SignalEmitter::new(&connection, path.as_str()) {
-                    Ok(emitter) => {
-                        if let Err(e) = TvService::state_changed(&emitter, state_json).await {
-                            warn!(error = %e, tv_id = %tv_id, "Failed to emit StateChanged signal");
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, tv_id = %tv_id, "Failed to create signal emitter");
+                if let Ok(emitter) = SignalEmitter::new(&connection, path.as_str()) {
+                    if let Err(e) = TvService::state_changed(&emitter, state_json).await {
+                        warn!(error = %e, tv_id = %tv_id, "Failed to emit StateChanged signal");
                     }
                 }
             }
             StateChangeEvent::ConfigReloaded => {
                 debug!("Emitting ConfigReloaded signal on Manager1");
 
-                match SignalEmitter::new(&connection, MANAGER_PATH) {
-                    Ok(emitter) => {
-                        if let Err(e) = ManagerService::config_reloaded(&emitter).await {
-                            warn!(error = %e, "Failed to emit ConfigReloaded signal");
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to create signal emitter for Manager1");
+                if let Ok(emitter) = SignalEmitter::new(&connection, MANAGER_PATH) {
+                    if let Err(e) = ManagerService::config_reloaded(&emitter).await {
+                        warn!(error = %e, "Failed to emit ConfigReloaded signal");
                     }
                 }
             }
         }
     }
 
-    info!("State change signal emitter stopped");
+    info!("State change forwarder stopped");
+}
+
+/// Update cached D-Bus properties from a backend subscription state snapshot.
+///
+/// Looks up `InterfaceRef` for each per-TV interface, updates cached fields
+/// via `get_mut()`, and emits `PropertiesChanged` only for properties that
+/// actually changed. The `_changed` methods are generated by the `#[interface]`
+/// macro on the struct and must be called through the `get_mut()` guard.
+async fn update_tv_cached_state(
+    object_server: &zbus::ObjectServer,
+    path: &str,
+    state: &TvState,
+) {
+    // TvService: mark connected (subscription implies connection)
+    if let Ok(iface_ref) = object_server.interface::<_, TvService>(path).await {
+        let mut iface = iface_ref.get_mut().await;
+        if !iface.connected {
+            iface.connected = true;
+            iface
+                .connected_changed(iface_ref.signal_emitter())
+                .await
+                .ok();
+        }
+    }
+
+    // TvPowerService: derive power state from booleans
+    if let Ok(iface_ref) = object_server.interface::<_, TvPowerService>(path).await {
+        let new_power = match (state.is_on, state.is_screen_on) {
+            (false, _) => "standby",
+            (true, false) => "screen_off",
+            (true, true) => "active",
+        };
+        let mut iface = iface_ref.get_mut().await;
+        if iface.power_state != new_power {
+            iface.power_state = new_power.to_string();
+            iface
+                .power_state_changed(iface_ref.signal_emitter())
+                .await
+                .ok();
+        }
+    }
+
+    // TvScreenService
+    if let Ok(iface_ref) = object_server.interface::<_, TvScreenService>(path).await {
+        let mut iface = iface_ref.get_mut().await;
+        if iface.is_screen_on != state.is_screen_on {
+            iface.is_screen_on = state.is_screen_on;
+            iface
+                .screen_on_prop_changed(iface_ref.signal_emitter())
+                .await
+                .ok();
+        }
+    }
+
+    // TvVolumeService
+    if let Ok(iface_ref) = object_server.interface::<_, TvVolumeService>(path).await {
+        let mut iface = iface_ref.get_mut().await;
+        let emitter = iface_ref.signal_emitter();
+        if let Some(vol) = state.volume {
+            if iface.volume != vol {
+                iface.volume = vol;
+                iface.volume_changed(emitter).await.ok();
+            }
+        }
+        if let Some(muted) = state.muted {
+            if iface.muted != muted {
+                iface.muted = muted;
+                iface.muted_changed(emitter).await.ok();
+            }
+        }
+    }
+
+    // TvInputService
+    if let Ok(iface_ref) = object_server.interface::<_, TvInputService>(path).await {
+        let mut iface = iface_ref.get_mut().await;
+        let emitter = iface_ref.signal_emitter();
+        if let Some(ref input) = state.current_input {
+            if iface.current_input != *input {
+                iface.current_input = input.clone();
+                iface.current_input_changed(emitter).await.ok();
+            }
+        }
+        if !state.inputs.is_empty() {
+            let new_inputs: Vec<(String, String)> = state
+                .inputs
+                .iter()
+                .map(|i| (i.id.clone(), i.label.clone()))
+                .collect();
+            if iface.available_inputs != new_inputs {
+                iface.available_inputs = new_inputs;
+                iface.available_inputs_invalidate(emitter).await.ok();
+            }
+        }
+    }
+
+    // TvBacklightService
+    if let Ok(iface_ref) = object_server.interface::<_, TvBacklightService>(path).await {
+        if let Some(bl) = state.backlight {
+            let mut iface = iface_ref.get_mut().await;
+            if iface.backlight != bl {
+                iface.backlight = bl;
+                iface
+                    .backlight_changed(iface_ref.signal_emitter())
+                    .await
+                    .ok();
+            }
+        }
+    }
 }
 
 /// Wait for SIGTERM, SIGINT (shutdown) or SIGHUP (reload).

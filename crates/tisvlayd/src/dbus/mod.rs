@@ -8,7 +8,10 @@ mod manager;
 mod tv;
 
 pub use manager::ManagerService;
-pub use tv::{register_tv_interfaces, unregister_tv_interfaces, TvService};
+pub use tv::{
+    register_tv_interfaces, unregister_tv_interfaces, TvBacklightService, TvInputService,
+    TvPowerService, TvScreenService, TvService, TvVolumeService,
+};
 
 // Re-export D-Bus path constants and helpers from tisvlay-core.
 pub use tisvlay_core::dbus_paths::{
