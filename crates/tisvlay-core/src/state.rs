@@ -1,6 +1,7 @@
 //! TV state model.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Current state of a TV.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -13,7 +14,7 @@ pub struct TvState {
     pub volume: Option<u8>,
     /// Whether audio is muted.
     pub muted: Option<bool>,
-    /// Current input ID (e.g., "HDMI_1").
+    /// Current input ID, normalized to physical ID space (e.g., "HDMI_1").
     pub current_input: Option<String>,
     /// Current backlight level (0-100, OLED pixel brightness).
     pub backlight: Option<u8>,
@@ -21,6 +22,14 @@ pub struct TvState {
     pub current_app: Option<String>,
     /// Available inputs.
     pub inputs: Vec<InputInfo>,
+    /// Vendor-internal mapping from app IDs to physical input IDs.
+    ///
+    /// Populated by backends that use app-based input identification
+    /// (e.g., LG maps `"com.webos.app.hdmi1"` → `"HDMI_1"`). Used to
+    /// normalize `current_input` to the physical ID space so it matches
+    /// the `inputs` list. Skipped during serialization (internal only).
+    #[serde(skip)]
+    pub input_app_id_map: HashMap<String, String>,
 }
 
 /// Information about an input source.
