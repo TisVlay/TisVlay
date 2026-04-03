@@ -379,6 +379,11 @@ pub struct TvInfo {
     pub connected: bool,
     /// Whether this TV participates in automated management.
     pub managed: bool,
+    /// Whether automation should fire for this TV right now.
+    ///
+    /// Computed from `managed`, `automate_when`, `primary_input`, and
+    /// the TV's current input. See gate composition table in plan2.md.
+    pub automated: bool,
     /// System profile name assigned to this TV.
     pub system_profile: String,
     /// D-Bus object path.
@@ -732,6 +737,7 @@ impl DaemonClient {
             let vendor = get_str("Vendor");
             let connected = get_bool("Connected", false);
             let managed = get_bool("Managed", true);
+            let automated = get_bool("Automated", true);
             let system_profile = {
                 let sp = get_str("SystemProfile");
                 if sp.is_empty() {
@@ -801,6 +807,7 @@ impl DaemonClient {
                 vendor,
                 connected,
                 managed,
+                automated,
                 system_profile,
                 path: path.as_str().to_string(),
                 power_state,
