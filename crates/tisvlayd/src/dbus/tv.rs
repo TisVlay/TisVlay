@@ -28,9 +28,13 @@ pub struct TvService {
     pub(crate) address: String,
     pub(crate) managed: bool,
     pub(crate) system_profile: String,
+    pub(crate) primary_input: String,
+    pub(crate) automate_when: tisvlay_core::AutomateWhen,
 
     // Cached runtime state (updated by subscription pushes)
     pub(crate) connected: bool,
+    /// Copy of current_input from TvInputService, used to compute `Automated`.
+    pub(crate) current_input: String,
 }
 
 #[interface(name = "org.tisvlay.Tv1")]
@@ -115,6 +119,47 @@ impl TvService {
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         self.system_profile = profile;
         Ok(())
+    }
+
+    /// The input this PC is connected to (e.g., "HDMI_1").
+    #[zbus(property)]
+    fn primary_input(&self) -> &str {
+        &self.primary_input
+    }
+
+    /// Set the primary input for this TV.
+    #[zbus(property)]
+    async fn set_primary_input(&mut self, input: String) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, input = %input, "D-Bus: set PrimaryInput");
+        self.manager
+            .set_tv_option(&self.tv_id, "primary_input", &input)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.primary_input = input;
+        Ok(())
+    }
+
+    /// When automation fires relative to the TV's current input.
+    ///
+    /// From the resolved system profile: "always", "on_primary", "off_primary".
+    #[zbus(property)]
+    fn automate_when(&self) -> String {
+        self.automate_when.to_string()
+    }
+
+    /// Whether automation should fire for this TV right now.
+    ///
+    /// Computed from `managed`, `automate_when`, `primary_input`, and the
+    /// TV's current input. When the TV is off (no known input), returns
+    /// `true` (benefit of the doubt).
+    #[zbus(property)]
+    fn automated(&self) -> bool {
+        if !self.managed {
+            return false;
+        }
+        let primary = (!self.primary_input.is_empty()).then_some(self.primary_input.as_str());
+        let current = (!self.current_input.is_empty()).then_some(self.current_input.as_str());
+        self.automate_when.should_automate(primary, current)
     }
 
     /// Capabilities supported by this TV.
@@ -404,6 +449,14 @@ pub async fn register_tv_interfaces(
         .get_tv_system_profile(&tv_id)
         .await
         .unwrap_or_else(|| "default".to_string());
+    let primary_input = manager
+        .get_tv_primary_input(&tv_id)
+        .await
+        .unwrap_or_default();
+    let automate_when = manager
+        .get_tv_automate_when(&tv_id)
+        .await
+        .unwrap_or_default();
     let connected = manager.is_connected(&tv_id).await;
 
     let object_server = connection.object_server();
@@ -419,7 +472,10 @@ pub async fn register_tv_interfaces(
                 address,
                 managed,
                 system_profile,
+                primary_input,
+                automate_when,
                 connected,
+                current_input: String::new(),
             },
         )
         .await?;

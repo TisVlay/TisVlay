@@ -122,6 +122,11 @@ struct ManagedTv {
     /// system profiles defined in the config. Updated on config reload
     /// and when the profile assignment changes via `set_tv_option`.
     system_profile: ResolvedSystemProfile,
+    /// Last known current input from backend subscription pushes.
+    ///
+    /// Used by `is_automated()` to evaluate the input-aware gate without
+    /// needing access to the D-Bus interface cache.
+    last_known_input: Option<String>,
 }
 
 impl ManagedTv {
@@ -131,7 +136,22 @@ impl ManagedTv {
             connection: None,
             powered_off: false,
             system_profile,
+            last_known_input: None,
         }
+    }
+
+    /// Whether automation should fire for this TV right now.
+    ///
+    /// Composes `managed`, `automate_when` (from system profile), `primary_input`
+    /// (from config), and `last_known_input` (from subscription pushes).
+    fn is_automated(&self, managed: bool) -> bool {
+        if !managed {
+            return false;
+        }
+        self.system_profile.automate_when.should_automate(
+            self.config.primary_input.as_deref(),
+            self.last_known_input.as_deref(),
+        )
     }
 
     fn is_connected(&self) -> bool {
@@ -289,9 +309,17 @@ impl TvManager {
             Ok(mut state_rx) => {
                 let tv_id = tv_id.to_string();
                 let tx = self.state_change_tx.clone();
+                let tvs = self.tvs.clone();
                 info!(tv_id = %tv_id, "Subscribed to backend state updates");
                 tokio::spawn(async move {
                     while let Some(state) = state_rx.recv().await {
+                        // Update last_known_input on ManagedTv for the automation gate.
+                        if let Some(ref input) = state.current_input {
+                            let tvs_read = tvs.read().await;
+                            if let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) {
+                                tv_arc.lock().await.last_known_input = Some(input.clone());
+                            }
+                        }
                         let event = StateChangeEvent::SubscriptionUpdate {
                             tv_id: tv_id.clone(),
                             state,
@@ -351,9 +379,22 @@ impl TvManager {
         }
     }
 
-    /// Execute a system event on all managed TVs using each TV's resolved system profile.
+    /// List TV IDs where automation should fire (managed + input-aware gate).
+    async fn list_automated_tv_ids(&self) -> Vec<String> {
+        let tvs = self.tvs.read().await;
+        let mut result = Vec::new();
+        for (id, (managed, tv_arc)) in tvs.iter() {
+            let tv = tv_arc.lock().await;
+            if tv.is_automated(*managed) {
+                result.push(id.clone());
+            }
+        }
+        result
+    }
+
+    /// Execute a system event on all automated TVs using each TV's resolved system profile.
     pub async fn execute_system_event(&self, event: SystemEvent, context: &str) {
-        let tv_ids = self.list_managed_tv_ids().await;
+        let tv_ids = self.list_automated_tv_ids().await;
         for tv_id in &tv_ids {
             let action = self.get_system_action(tv_id, event).await;
             if action == SessionAction::None {
@@ -549,6 +590,23 @@ impl TvManager {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
         let tv = tv_arc.lock().await;
         Some(tv.config.profile.system.clone())
+    }
+
+    /// Get the resolved `automate_when` policy for a TV.
+    pub async fn get_tv_automate_when(
+        &self,
+        tv_id: &str,
+    ) -> Option<tisvlay_core::AutomateWhen> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        Some(tv.system_profile.automate_when)
+    }
+
+    /// Get the primary input for a TV (from config).
+    pub async fn get_tv_primary_input(&self, tv_id: &str) -> Option<String> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        tv.config.primary_input.clone()
     }
 
     /// List all configured TV IDs.

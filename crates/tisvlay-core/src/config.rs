@@ -99,6 +99,31 @@ pub enum AutomateWhen {
     OffPrimary,
 }
 
+impl AutomateWhen {
+    /// Evaluate the automation gate.
+    ///
+    /// Returns `true` if automation should fire given the current input state.
+    /// When either `primary_input` or `current_input` is unknown (`None`),
+    /// returns `true` (benefit of the doubt — can't check input in standby).
+    pub fn should_automate(
+        self,
+        primary_input: Option<&str>,
+        current_input: Option<&str>,
+    ) -> bool {
+        match self {
+            Self::Always => true,
+            Self::OnPrimary => match (primary_input, current_input) {
+                (None, _) | (_, None) => true,
+                (Some(primary), Some(current)) => current == primary,
+            },
+            Self::OffPrimary => match (primary_input, current_input) {
+                (None, _) | (_, None) => true,
+                (Some(primary), Some(current)) => current != primary,
+            },
+        }
+    }
+}
+
 impl std::fmt::Display for AutomateWhen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
