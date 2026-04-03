@@ -593,10 +593,7 @@ impl TvManager {
     }
 
     /// Get the resolved `automate_when` policy for a TV.
-    pub async fn get_tv_automate_when(
-        &self,
-        tv_id: &str,
-    ) -> Option<tisvlay_core::AutomateWhen> {
+    pub async fn get_tv_automate_when(&self, tv_id: &str) -> Option<tisvlay_core::AutomateWhen> {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
         let tv = tv_arc.lock().await;
         Some(tv.system_profile.automate_when)
