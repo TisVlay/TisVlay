@@ -321,6 +321,26 @@ impl Connection {
         }
     }
 
+    /// Wait for an additional response to an already-sent request.
+    ///
+    /// Like [`request`], but only registers a oneshot waiter without
+    /// re-sending the request. Used for multi-phase protocols (e.g., LG
+    /// pairing sends a `Response` acknowledgment first, then `Registered`
+    /// with the client key after the user accepts the TV prompt).
+    pub async fn request_wait(&self, id: &str, timeout_dur: Duration) -> Result<Response> {
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(id.to_string(), tx);
+
+        match timeout(timeout_dur, rx).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(_)) => Err(Error::ConnectionClosed),
+            Err(_) => {
+                self.pending.lock().unwrap().remove(id);
+                Err(Error::RequestTimeout)
+            }
+        }
+    }
+
     /// Take the subscription receiver.
     ///
     /// Returns `Some` on the first call, `None` on subsequent calls.

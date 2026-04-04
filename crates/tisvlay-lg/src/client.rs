@@ -71,9 +71,53 @@ impl WebOsClient {
         let payload = RegisterPayload::new(existing_key);
         let request = Request::register(self.next_id(), payload);
 
-        // Use longer timeout for pairing (user needs to accept on TV)
+        // The TV may send multiple messages for the same request ID:
+        //   1. Response { pairingType: "PROMPT", returnValue: true } — prompt shown
+        //   2. Registered { client-key: "..." } — user accepted
+        //
+        // The multiplexed request() uses a oneshot channel: the background
+        // reader removes the pending entry after delivering the first match.
+        // To handle the two-phase flow, we use request_wait() which only
+        // registers the oneshot (no send) for the second phase.
         let pairing_timeout = Duration::from_millis(timeouts::PAIRING_MS);
+        let deadline = tokio::time::Instant::now() + pairing_timeout;
+
+        // Phase 1: send the register request and get the first response.
         let response = self.conn()?.request(&request, pairing_timeout).await?;
+        tracing::debug!(msg_type = ?response.msg_type, payload = %response.payload, "Registration response (phase 1)");
+
+        match response.msg_type {
+            ResponseType::Registered => {
+                let payload: RegisteredPayload = serde_json::from_value(response.payload)?;
+                tracing::info!("Registered with TV, got client key");
+                return Ok(payload.client_key);
+            }
+            ResponseType::Response => {
+                // Intermediate acknowledgment — pairing prompt shown on TV.
+                // The user needs to accept; the TV will then send Registered.
+                tracing::debug!("Pairing prompt shown on TV, waiting for user to accept");
+            }
+            ResponseType::Error => {
+                if let Some(error) = response.error {
+                    if error.contains("cancelled") || error.contains("rejected") {
+                        return Err(Error::PairingRejected);
+                    }
+                    return Err(Error::TvError(error));
+                }
+                return Err(Error::PairingRejected);
+            }
+            _ => {
+                return Err(Error::InvalidResponse(format!(
+                    "Unexpected response type during registration: {:?}",
+                    response.msg_type
+                )));
+            }
+        }
+
+        // Phase 2: wait for the Registered response (no re-send).
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let response = self.conn()?.request_wait(&request.id, remaining).await?;
+        tracing::debug!(msg_type = ?response.msg_type, payload = %response.payload, "Registration response (phase 2)");
 
         match response.msg_type {
             ResponseType::Registered => {
