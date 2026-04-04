@@ -726,7 +726,11 @@ impl TvManager {
                 continue;
             }
             let tv = tv_arc.lock().await;
-            if !self.registry.transport_for(&tv.config).is_network_dependent() {
+            if !self
+                .registry
+                .transport_for(&tv.config)
+                .is_network_dependent()
+            {
                 continue;
             }
             if tv.is_connected() || tv.powered_off || tv.reconnecting {
@@ -761,7 +765,11 @@ impl TvManager {
             let tvs = self.tvs.read().await;
             for (tv_id, (_, tv_arc)) in tvs.iter() {
                 let mut tv = tv_arc.lock().await;
-                if !self.registry.transport_for(&tv.config).is_network_dependent() {
+                if !self
+                    .registry
+                    .transport_for(&tv.config)
+                    .is_network_dependent()
+                {
                     continue;
                 }
                 if tv.reconnecting {
