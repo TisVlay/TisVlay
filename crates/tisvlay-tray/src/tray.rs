@@ -177,33 +177,51 @@ impl Tray for TisvlayTray {
     }
 
     fn tool_tip(&self) -> ToolTip {
+        // Resolve effective scroll target: explicit selection or first connected TV.
+        let effective_scroll_tv: Option<&str> = self
+            .scroll_tv_id
+            .as_deref()
+            .filter(|id| {
+                self.tvs
+                    .iter()
+                    .any(|tv| tv.id == *id && tv.connected && tv.is_on)
+            })
+            .or_else(|| {
+                self.tvs
+                    .iter()
+                    .find(|tv| tv.connected && tv.is_on)
+                    .map(|tv| tv.id.as_str())
+            });
+
         let description = if !self.daemon_available {
             "Daemon not available".into()
         } else {
             self.tvs
                 .iter()
                 .map(|tv| {
+                    let active =
+                        |t| effective_scroll_tv == Some(tv.id.as_str()) && self.scroll_target == t;
+                    let m = |t| if active(t) { "►" } else { " " };
                     if !tv.connected {
-                        return format!("{}: off", tv.name);
+                        return format!("{}\n  off", tv.name);
                     }
-                    let mut parts = Vec::new();
-                    if let Some(vol) = tv.volume {
+                    let vol = tv.volume.map(|v| {
                         let muted = if tv.muted == Some(true) {
                             " (muted)"
                         } else {
                             ""
                         };
-                        parts.push(format!("vol {}{}", vol, muted));
-                    }
-                    if let Some(bl) = tv.backlight {
-                        parts.push(format!("bl {}", bl));
-                    }
-                    let status = if parts.is_empty() {
-                        "on".to_string()
-                    } else {
-                        parts.join(", ")
-                    };
-                    format!("{}: {}", tv.name, status)
+                        format!("\n{} volume {v}{muted}", m(ScrollTarget::Volume))
+                    });
+                    let bl = tv
+                        .backlight
+                        .map(|b| format!("\n{} backlight {b}", m(ScrollTarget::Backlight)));
+                    format!(
+                        "{}:{}{}",
+                        tv.name,
+                        vol.unwrap_or_default(),
+                        bl.unwrap_or_default()
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
