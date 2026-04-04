@@ -201,6 +201,24 @@ Current HEAD — Option B from Phase 4.
 | Duplicate connect attempts | no |
 | Notes | All NM events (restored + lost) suppressed during 30s wake window. logind on_wake WoL retry runs cleanly. NM reconnect still works for non-wake network blips (tested: 136ms via nmcli cycle). |
 
+### Variant A: Per-TV reconnecting flag (SELECTED)
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | 8ms |
+| Wake → subscribed | 14.8s |
+| Duplicate connect attempts | no |
+| Notes | `reconnecting` flag on ManagedTv set during WoL, checked by `reconnect_disconnected`. NM oscillation during wake is harmless — `disconnect_all` on a TV mid-WoL is a no-op. Fastest and cleanest. |
+
+### Variant C: Deferred wake via NM
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | 4ms |
+| Wake → subscribed | 18.0s |
+| Duplicate connect attempts | yes (NM oscillation) |
+| Notes | logind emits SystemWake, forwarder defers on_wake until NM restored. NM oscillation kills in-flight connections and a late NM flap at +18s killed an already-working subscription. Fragile. |
+
 ### NM blip recovery (non-wake, nmcli off/on)
 
 | Metric | Value |
@@ -216,12 +234,15 @@ Current HEAD — Option B from Phase 4.
 | Baseline (no NM) | 18.6s | never | no |
 | V1 (no debounce) | 16.1s | 8ms | **yes** |
 | V2 (500ms debounce) | 35.3s | 504ms | **yes** |
-| **V3B (wake suppression)** | **18.4s** | **9ms** | **no** |
+| V3B (wake suppression) | 18.4s | 9ms | no |
+| **VA (reconnecting flag)** | **14.8s** | **8ms** | **no** |
+| VC (deferred wake) | 18.0s | 4ms | **yes** |
 
-Wake time is bottlenecked by TV firmware boot (~11s of WebSocket
-close retries before SSAP is ready). No code change can improve this.
-The NM watcher's value: instant disconnect detection + sub-second
-network blip recovery + no interference with wake.
+**Variant A selected**: fastest wake (14.8s), instant disconnect (8ms),
+no racing, simple implementation (one bool flag). Wake time is
+bottlenecked by TV firmware boot (~11s of WebSocket close retries
+before SSAP is ready). The NM watcher's value: instant disconnect
+detection + sub-second network blip recovery + no interference with wake.
 
 ---
 
