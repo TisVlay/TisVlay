@@ -365,7 +365,7 @@ pub async fn watch_service(
 /// State fields reflect the daemon's cached values (updated by backend
 /// subscription pushes). For disconnected TVs, state fields contain
 /// defaults (power_state="unknown", volume=0, etc.).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TvInfo {
     /// TV identifier.
     pub id: String,

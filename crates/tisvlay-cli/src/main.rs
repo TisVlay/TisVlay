@@ -23,6 +23,10 @@ struct Cli {
     #[arg(long, global = true)]
     user: bool,
 
+    /// Output in JSON format (for scripting and tools like Nushell)
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -227,7 +231,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::List => {
             let tvs = client.list_tvs().await?;
-            if tvs.is_empty() {
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&tvs)?);
+            } else if tvs.is_empty() {
                 println!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
             } else {
                 println!("Configured TVs:");
@@ -466,7 +472,11 @@ async fn main() -> Result<()> {
                 .iter()
                 .find(|t| t.id == tv_id)
                 .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-            print_tv_status(tv);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(tv)?);
+            } else {
+                print_tv_status(tv);
+            }
         }
     }
 
