@@ -34,7 +34,7 @@ impl ManagerService {
     // Discovery
     // -------------------------------------------------------------------------
 
-    /// Discover TVs on the network.
+    /// Discover available TVs using all registered backends.
     ///
     /// Returns: Array of (id, name, address, hardware_id, vendor) tuples.
     #[cfg(feature = "discovery")]

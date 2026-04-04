@@ -177,33 +177,51 @@ impl Tray for TisvlayTray {
     }
 
     fn tool_tip(&self) -> ToolTip {
+        // Resolve effective scroll target: explicit selection or first connected TV.
+        let effective_scroll_tv: Option<&str> = self
+            .scroll_tv_id
+            .as_deref()
+            .filter(|id| {
+                self.tvs
+                    .iter()
+                    .any(|tv| tv.id == *id && tv.connected && tv.is_on)
+            })
+            .or_else(|| {
+                self.tvs
+                    .iter()
+                    .find(|tv| tv.connected && tv.is_on)
+                    .map(|tv| tv.id.as_str())
+            });
+
         let description = if !self.daemon_available {
             "Daemon not available".into()
         } else {
             self.tvs
                 .iter()
                 .map(|tv| {
+                    let active =
+                        |t| effective_scroll_tv == Some(tv.id.as_str()) && self.scroll_target == t;
+                    let m = |t| if active(t) { "►" } else { " " };
                     if !tv.connected {
-                        return format!("{}: off", tv.name);
+                        return format!("{}\n  off", tv.name);
                     }
-                    let mut parts = Vec::new();
-                    if let Some(vol) = tv.volume {
+                    let vol = tv.volume.map(|v| {
                         let muted = if tv.muted == Some(true) {
                             " (muted)"
                         } else {
                             ""
                         };
-                        parts.push(format!("vol {}{}", vol, muted));
-                    }
-                    if let Some(bl) = tv.backlight {
-                        parts.push(format!("bl {}", bl));
-                    }
-                    let status = if parts.is_empty() {
-                        "on".to_string()
-                    } else {
-                        parts.join(", ")
-                    };
-                    format!("{}: {}", tv.name, status)
+                        format!("\n{} volume {v}{muted}", m(ScrollTarget::Volume))
+                    });
+                    let bl = tv
+                        .backlight
+                        .map(|b| format!("\n{} backlight {b}", m(ScrollTarget::Backlight)));
+                    format!(
+                        "{}:{}{}",
+                        tv.name,
+                        vol.unwrap_or_default(),
+                        bl.unwrap_or_default()
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -246,6 +264,31 @@ impl Tray for TisvlayTray {
                 .cmd_tx
                 .send(TrayCommand::ScrollBy(id, self.scroll_target, steps));
         }
+    }
+
+    fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        // Middle-click cycles the scroll target TV to the next connected TV.
+        let connected: Vec<&str> = self
+            .tvs
+            .iter()
+            .filter(|tv| tv.connected && tv.is_on)
+            .map(|tv| tv.id.as_str())
+            .collect();
+        if connected.is_empty() {
+            return;
+        }
+        let next = match &self.scroll_tv_id {
+            Some(current) => {
+                let pos = connected.iter().position(|id| *id == current);
+                match pos {
+                    Some(i) => connected[(i + 1) % connected.len()],
+                    None => connected[0],
+                }
+            }
+            None => connected[0],
+        };
+        debug!(tv_id = %next, target = ?self.scroll_target, "Middle-click: scroll target switched");
+        self.scroll_tv_id = Some(next.to_string());
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {

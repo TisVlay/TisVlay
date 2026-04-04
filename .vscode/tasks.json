@@ -19,9 +19,43 @@
             }
         },
         {
+            "label": "daemon: start (system bus)",
+            "type": "shell",
+            "command": "cargo build --bin tisvlayd && sudo -E ./target/debug/tisvlayd --config docs/configs/daemon.toml",
+            "isBackground": true,
+            "options": {
+                "env": {
+                    "RUST_LOG": "debug,zbus=warn,rustls=warn,tungstenite=warn"
+                }
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "tisvlay"
+            }
+        },
+        {
             "label": "session: start",
             "type": "shell",
             "command": "cargo run --bin tisvlay-session -- --user --config docs/configs/session.toml",
+            "isBackground": true,
+            "options": {
+                "env": {
+                    "RUST_LOG": "debug,zbus=warn"
+                }
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "tisvlay"
+            }
+        },
+        {
+            "label": "session: start (system bus)",
+            "type": "shell",
+            "command": "cargo run --bin tisvlay-session -- --config docs/configs/session.toml",
             "isBackground": true,
             "options": {
                 "env": {
@@ -53,8 +87,31 @@
             }
         },
         {
+            "label": "tray: start (system bus)",
+            "type": "shell",
+            "command": "cargo run --bin tisvlay-tray",
+            "isBackground": true,
+            "options": {
+                "env": {
+                    "RUST_LOG": "debug,zbus=warn,ksni=warn"
+                }
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "tisvlay"
+            }
+        },
+        {
             "label": "all: start",
             "dependsOn": ["daemon: start", "session: start", "tray: start"],
+            "dependsOrder": "parallel",
+            "problemMatcher": []
+        },
+        {
+            "label": "all: start (system bus)",
+            "dependsOn": ["daemon: start (system bus)", "session: start (system bus)", "tray: start (system bus)"],
             "dependsOrder": "parallel",
             "problemMatcher": []
         },

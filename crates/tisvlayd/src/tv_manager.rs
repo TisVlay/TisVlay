@@ -96,6 +96,16 @@ pub enum StateChangeEvent {
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
+    /// Network connectivity restored (from NetworkManager).
+    ///
+    /// The forwarder triggers reconnection for all disconnected,
+    /// non-powered-off TVs.
+    NetworkRestored,
+    /// Network connectivity lost (from NetworkManager).
+    ///
+    /// The forwarder drops all TV connections and updates D-Bus
+    /// `Connected=false` properties immediately.
+    NetworkLost,
 }
 
 /// Basic TV information for D-Bus properties.
@@ -116,6 +126,9 @@ struct ManagedTv {
     connection: Option<Box<dyn TvConnection>>,
     /// TV was intentionally powered off -- don't try to reconnect until power_on.
     powered_off: bool,
+    /// A connection attempt is already in progress (WoL retry, on_wake, etc.).
+    /// Prevents NM reconnect from racing with an existing attempt.
+    reconnecting: bool,
     /// Resolved system profile for daemon lifecycle events.
     ///
     /// Resolved from the TV's `profile.system` assignment against the
@@ -135,6 +148,7 @@ impl ManagedTv {
             config,
             connection: None,
             powered_off: false,
+            reconnecting: false,
             system_profile,
             last_known_input: None,
         }
@@ -341,6 +355,11 @@ impl TvManager {
                 // the tray's fallback poll handles state refresh.
             }
         }
+    }
+
+    /// Get a clone of the state change sender for external event sources.
+    pub fn state_change_sender(&self) -> mpsc::UnboundedSender<StateChangeEvent> {
+        self.state_change_tx.clone()
     }
 
     fn emit_state_change(&self, event: StateChangeEvent) {
@@ -694,6 +713,87 @@ impl TvManager {
         Ok(())
     }
 
+    /// Reconnect managed, network-dependent TVs that are currently disconnected.
+    ///
+    /// Called when network connectivity is restored (e.g., after a network
+    /// blip or NIC reset). Skips non-network transports (serial, USB, CEC),
+    /// TVs that are intentionally powered off, and TVs with an in-flight
+    /// WoL attempt. Each reconnection runs concurrently via spawned tasks.
+    pub async fn reconnect_disconnected(self: &Arc<Self>) {
+        let tvs = self.tvs.read().await;
+        for (tv_id, (managed, tv_arc)) in tvs.iter() {
+            if !managed {
+                continue;
+            }
+            let tv = tv_arc.lock().await;
+            if !self
+                .registry
+                .transport_for(&tv.config)
+                .is_network_dependent()
+            {
+                continue;
+            }
+            if tv.is_connected() || tv.powered_off || tv.reconnecting {
+                if tv.reconnecting {
+                    debug!(tv_id = %tv_id, "Skipping reconnect, WoL already in progress");
+                }
+                continue;
+            }
+            let tv_id = tv_id.clone();
+            let manager = Arc::clone(self);
+            drop(tv);
+            tokio::spawn(async move {
+                info!(tv_id = %tv_id, "Network connectivity restored: attempting reconnect");
+                if let Err(e) = manager.reconnect(&tv_id).await {
+                    debug!(tv_id = %tv_id, error = %e, "Reconnect failed (TV may be off)");
+                }
+            });
+        }
+    }
+
+    /// Drop connections for all network-dependent TVs and emit disconnection events.
+    ///
+    /// Called when network connectivity is lost. Clears connections immediately
+    /// so D-Bus `Connected` properties update without waiting for TCP keepalive
+    /// timeouts. Skips non-network transports (serial, USB, CEC) and TVs with
+    /// an in-flight WoL attempt.
+    pub async fn disconnect_network_tvs(&self) {
+        // Collect connections to close outside the per-TV locks.
+        let mut to_close: Vec<(String, Box<dyn TvConnection>)> = Vec::new();
+
+        {
+            let tvs = self.tvs.read().await;
+            for (tv_id, (_, tv_arc)) in tvs.iter() {
+                let mut tv = tv_arc.lock().await;
+                if !self
+                    .registry
+                    .transport_for(&tv.config)
+                    .is_network_dependent()
+                {
+                    continue;
+                }
+                if tv.reconnecting {
+                    debug!(tv_id = %tv_id, "Skipping disconnect, WoL already in progress");
+                    continue;
+                }
+                if let Some(conn) = tv.connection.take() {
+                    tv.last_known_input = None;
+                    to_close.push((tv_id.clone(), conn));
+                }
+            }
+        }
+
+        // Close connections and emit events outside all locks.
+        for (tv_id, mut conn) in to_close {
+            let _ = conn.close().await;
+            info!(tv_id = %tv_id, "Network connectivity lost: disconnected");
+            self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                tv_id,
+                connected: false,
+            });
+        }
+    }
+
     /// Execute a command on a TV connection.
     ///
     /// Connects if not already connected, then executes the command.
@@ -778,6 +878,7 @@ impl TvManager {
 
             // Drop any stale connection and clear the powered-off flag
             tv.powered_off = false;
+            tv.reconnecting = true;
             if let Some(mut conn) = tv.connection.take() {
                 let _ = conn.close().await;
             }
@@ -786,21 +887,25 @@ impl TvManager {
         };
 
         // Backend handles wake + boot wait + connect retry (no lock held)
-        let connection = self
-            .registry
-            .wake_and_connect_tv(&config)
-            .await
-            .map_err(|e| TvManagerError::WakeFailed {
-                tv_id: tv_id.to_string(),
-                source: e,
-            })?;
+        let result = self.registry.wake_and_connect_tv(&config).await;
 
         // Store the connection and subscribe to state updates
         {
             let mut tv = tv_arc.lock().await;
-            tv.connection = Some(connection);
-            if let Some(conn) = tv.connection.as_mut() {
-                self.try_subscribe_state(tv_id, conn.as_mut()).await;
+            tv.reconnecting = false;
+            match result {
+                Ok(connection) => {
+                    tv.connection = Some(connection);
+                    if let Some(conn) = tv.connection.as_mut() {
+                        self.try_subscribe_state(tv_id, conn.as_mut()).await;
+                    }
+                }
+                Err(e) => {
+                    return Err(TvManagerError::WakeFailed {
+                        tv_id: tv_id.to_string(),
+                        source: e,
+                    });
+                }
             }
         }
 

@@ -18,10 +18,17 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 /// Each directive is a `tracing` filter string like `"tisvlayd=info"` or
 /// `"zbus=warn"`.
 pub fn init(directives: &[&str]) -> anyhow::Result<()> {
-    let mut env_filter = EnvFilter::from_default_env();
-    for directive in directives {
-        env_filter = env_filter.add_directive(directive.parse()?);
-    }
+    // RUST_LOG takes full precedence when set (for development/debugging).
+    // Hardcoded directives are only used as defaults when RUST_LOG is absent.
+    let env_filter = if std::env::var_os("RUST_LOG").is_some() {
+        EnvFilter::from_default_env()
+    } else {
+        let mut filter = EnvFilter::from_default_env();
+        for directive in directives {
+            filter = filter.add_directive(directive.parse()?);
+        }
+        filter
+    };
 
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let journald_layer = tracing_journald::layer().ok();

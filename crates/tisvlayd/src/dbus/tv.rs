@@ -73,7 +73,7 @@ impl TvService {
         &self.vendor
     }
 
-    /// TV display address (vendor-specific, e.g. IP address).
+    /// TV display address (vendor-specific, e.g. IP address, serial port path).
     #[zbus(property(emits_changed_signal = "const"))]
     fn address(&self) -> &str {
         &self.address

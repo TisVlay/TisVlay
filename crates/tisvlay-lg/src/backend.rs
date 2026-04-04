@@ -17,10 +17,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
 /// Maximum number of connection attempts after sending WoL.
-const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 10;
+const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 60;
 
 /// Delay between connection retry attempts during wake-and-connect.
-const WAKE_CONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(3);
+/// Each attempt is cheap (~50ms TCP connect + close frame), so we
+/// poll aggressively to find the earliest moment the TV is ready.
+const WAKE_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Helper to deserialize LgVendorConfig from a toml::Value.
 fn parse_config(vendor_config: &toml::Value) -> Result<LgVendorConfig> {
@@ -409,6 +411,10 @@ impl Default for LgConnector {
 
 #[async_trait]
 impl TvConnector for LgConnector {
+    fn transport(&self) -> tisvlay_core::Transport {
+        tisvlay_core::Transport::Network
+    }
+
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
 

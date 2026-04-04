@@ -23,6 +23,10 @@ struct Cli {
     #[arg(long, global = true)]
     user: bool,
 
+    /// Output in JSON format (for scripting and tools like Nushell)
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -86,10 +90,10 @@ enum Commands {
         #[arg(long)]
         vendor: String,
 
-        /// Pair as unmanaged — skips automation (boot WoL, session events, shutdown).
-        /// Manual control via tray and CLI still works.
-        #[arg(long, default_value_t = false)]
-        unmanaged: bool,
+        /// Participate in automation (boot WoL, session events, shutdown).
+        /// Pass --managed false to pair for manual control only.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        managed: bool,
     },
 
     /// List configured TVs
@@ -227,7 +231,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::List => {
             let tvs = client.list_tvs().await?;
-            if tvs.is_empty() {
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&tvs)?);
+            } else if tvs.is_empty() {
                 println!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
             } else {
                 println!("Configured TVs:");
@@ -252,7 +258,7 @@ async fn main() -> Result<()> {
             name,
             wake_id,
             vendor,
-            unmanaged,
+            managed,
         } => {
             let tv_name = name.unwrap_or_else(|| format!("TV at {}", address));
             println!("Connecting to TV at {}...", address);
@@ -261,7 +267,7 @@ async fn main() -> Result<()> {
             // Build vendor-agnostic config JSON for the daemon
             let config_json = build_pairing_config_json(&address, wake_id.as_deref());
             let tv_id = client
-                .pair_tv(&tv_name, &vendor, &config_json, !unmanaged)
+                .pair_tv(&tv_name, &vendor, &config_json, managed)
                 .await?;
             println!("TV '{}' paired successfully with ID: {}", tv_name, tv_id);
 
@@ -466,7 +472,21 @@ async fn main() -> Result<()> {
                 .iter()
                 .find(|t| t.id == tv_id)
                 .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
-            print_tv_status(tv);
+            // Try to get user profile from session service (optional)
+            let user_profile = match SessionClient::new().await {
+                Ok(session) => session.get_tv_user_profile(&tv_id).await.ok(),
+                Err(_) => None,
+            };
+            if cli.json {
+                // Include user_profile in JSON output
+                let mut json = serde_json::to_value(tv)?;
+                if let Some(ref profile) = user_profile {
+                    json["user_profile"] = serde_json::Value::String(profile.clone());
+                }
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                print_tv_status(tv, user_profile.as_deref());
+            }
         }
     }
 
@@ -499,24 +519,35 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
     }
 }
 
-fn print_tv_status(tv: &TvInfo) {
+fn print_tv_status(tv: &TvInfo, user_profile: Option<&str>) {
     let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
-    println!("TV: {}", tv.id);
+    println!("TV: {} ({})", tv.id, tv.name);
+    println!("  Vendor: {}", tv.vendor);
+    println!("  Address: {}", tv.address);
     println!("Managed: {}", tv.managed);
-    println!("Automated: {}", tv.automated);
+    println!("  Automated: {}", tv.automated);
+    println!("Profile:");
+    println!("  System: {}", tv.system_profile);
+    if let Some(profile) = user_profile {
+        println!("  User: {}", profile);
+    }
     println!("Connected: {}", tv.connected);
-    println!("Power: {}", tv.power_state);
-    println!("Screen: {}", if tv.is_screen_on { "on" } else { "off" });
+    println!("  Power: {}", tv.power_state);
+    println!("  Screen: {}", if tv.is_screen_on { "on" } else { "off" });
     if is_on {
         let muted = if tv.muted { " (muted)" } else { "" };
-        println!("Volume: {}{}", tv.volume, muted);
-        println!("Backlight: {}", tv.backlight);
+        println!("  Volume: {}{}", tv.volume, muted);
+        println!("  Backlight: {}", tv.backlight);
     }
     if !tv.inputs.is_empty() {
         println!("Inputs:");
-        for (id, label) in &tv.inputs {
-            let current = if tv.current_input == *id { " <" } else { "" };
-            println!("  {} - {}{}", id, label, current);
+        for (id, _) in &tv.inputs {
+            let marker = if tv.current_input == *id {
+                " (current)"
+            } else {
+                ""
+            };
+            println!("  {id}{marker}");
         }
     }
 }
