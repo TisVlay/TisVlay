@@ -514,9 +514,9 @@ fn print_tv_status(tv: &TvInfo) {
     }
     if !tv.inputs.is_empty() {
         println!("Inputs:");
-        for (id, label) in &tv.inputs {
-            let current = if tv.current_input == *id { " <" } else { "" };
-            println!("  {} - {}{}", id, label, current);
+        for (id, _label) in &tv.inputs {
+            let current = if tv.current_input == *id { " (current)" } else { "" };
+            println!("  {}{}", id, current);
         }
     }
 }
