@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
 
     info!("D-Bus service registered as {}", DBUS_NAME);
 
-    // Execute on_startup action (e.g., power_on wakes TVs via WoL).
+    // Execute on_startup action (e.g., power_on wakes TVs via WoL or other transport).
     // Runs in the background so D-Bus is immediately reachable.
     shared_manager.on_startup();
 
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
         shared_manager.clone(),
     ));
 
-    // Spawn NetworkManager watcher for proactive reconnection on network events.
+    // Spawn NetworkManager watcher for proactive reconnection of network-transport TVs.
     // Always connects to the system bus (NM is system-bus-only).
     network_watcher::spawn_network_watcher(shared_manager.state_change_sender());
 
@@ -262,12 +262,12 @@ async fn state_change_forwarder(
                 }
             }
             StateChangeEvent::NetworkRestored => {
-                info!("Network restored: reconnecting disconnected TVs");
+                info!("Network restored: reconnecting network-transport TVs");
                 manager.reconnect_disconnected().await;
             }
             StateChangeEvent::NetworkLost => {
-                info!("Network lost: disconnecting all TVs");
-                manager.disconnect_all().await;
+                info!("Network lost: disconnecting network-transport TVs");
+                manager.disconnect_network_tvs().await;
             }
         }
     }

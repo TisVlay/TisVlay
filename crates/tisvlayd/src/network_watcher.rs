@@ -1,10 +1,11 @@
-//! NetworkManager D-Bus watcher for proactive TV reconnection.
+//! NetworkManager D-Bus watcher for network-transport TV reconnection.
 //!
 //! Monitors `org.freedesktop.NetworkManager` on the **system bus** for
-//! connectivity state transitions. When the network is restored after
-//! a drop, sends a `StateChangeEvent::NetworkRestored` so the daemon
-//! can immediately reconnect to TVs instead of waiting for the next
-//! user action or fallback poll.
+//! connectivity state transitions relevant to network-connected TVs.
+//! When network connectivity is restored after a drop, sends a
+//! `StateChangeEvent::NetworkRestored` so the daemon can reconnect
+//! network-transport TVs. Non-network transports (serial, USB, CEC)
+//! are unaffected by these events.
 //!
 //! Always connects to the system bus regardless of `--session` flag
 //! (NetworkManager is system-bus-only). Degrades gracefully if
@@ -127,12 +128,12 @@ async fn watch_network_state(tx: mpsc::UnboundedSender<StateChangeEvent>) -> zbu
         debug!(state = ?new_state, has_network, last_had_network, "NetworkManager state changed");
 
         if has_network && !last_had_network {
-            info!(state = ?new_state, "Network restored, triggering TV reconnection");
+            info!(state = ?new_state, "Network connectivity restored, reconnecting network-transport TVs");
             if tx.send(StateChangeEvent::NetworkRestored).is_err() {
                 break; // channel closed, daemon shutting down
             }
         } else if !has_network && last_had_network {
-            info!(state = ?new_state, "Network lost, disconnecting TVs");
+            info!(state = ?new_state, "Network connectivity lost, disconnecting network-transport TVs");
             if tx.send(StateChangeEvent::NetworkLost).is_err() {
                 break;
             }

@@ -713,10 +713,12 @@ impl TvManager {
         Ok(())
     }
 
-    /// Reconnect all disconnected TVs that aren't intentionally powered off.
+    /// Reconnect managed, network-dependent TVs that are currently disconnected.
     ///
-    /// Called when the network is restored (e.g., after wake or NIC reset).
-    /// Each reconnection runs concurrently via spawned tasks.
+    /// Called when network connectivity is restored (e.g., after a network
+    /// blip or NIC reset). Skips non-network transports (serial, USB, CEC),
+    /// TVs that are intentionally powered off, and TVs with an in-flight
+    /// WoL attempt. Each reconnection runs concurrently via spawned tasks.
     pub async fn reconnect_disconnected(self: &Arc<Self>) {
         let tvs = self.tvs.read().await;
         for (tv_id, (managed, tv_arc)) in tvs.iter() {
@@ -729,7 +731,7 @@ impl TvManager {
             }
             if tv.is_connected() || tv.powered_off || tv.reconnecting {
                 if tv.reconnecting {
-                    debug!(tv_id = %tv_id, "Skipping NM reconnect, WoL already in progress");
+                    debug!(tv_id = %tv_id, "Skipping reconnect, WoL already in progress");
                 }
                 continue;
             }
@@ -737,7 +739,7 @@ impl TvManager {
             let manager = Arc::clone(self);
             drop(tv);
             tokio::spawn(async move {
-                info!(tv_id = %tv_id, "Network restored: attempting reconnect");
+                info!(tv_id = %tv_id, "Network connectivity restored: attempting reconnect");
                 if let Err(e) = manager.reconnect(&tv_id).await {
                     debug!(tv_id = %tv_id, error = %e, "Reconnect failed (TV may be off)");
                 }
@@ -745,12 +747,13 @@ impl TvManager {
         }
     }
 
-    /// Drop all TV connections and emit disconnection events.
+    /// Drop connections for all network-dependent TVs and emit disconnection events.
     ///
-    /// Called when the network is lost. Clears connections immediately
-    /// so D-Bus `Connected` properties update without waiting for TCP
-    /// keepalive timeouts.
-    pub async fn disconnect_all(&self) {
+    /// Called when network connectivity is lost. Clears connections immediately
+    /// so D-Bus `Connected` properties update without waiting for TCP keepalive
+    /// timeouts. Skips non-network transports (serial, USB, CEC) and TVs with
+    /// an in-flight WoL attempt.
+    pub async fn disconnect_network_tvs(&self) {
         let tvs = self.tvs.read().await;
         for (tv_id, (_, tv_arc)) in tvs.iter() {
             let mut tv = tv_arc.lock().await;
@@ -758,12 +761,12 @@ impl TvManager {
                 continue;
             }
             if tv.reconnecting {
-                debug!(tv_id = %tv_id, "Skipping NM disconnect, WoL already in progress");
+                debug!(tv_id = %tv_id, "Skipping disconnect, WoL already in progress");
                 continue;
             }
             if let Some(mut conn) = tv.connection.take() {
                 let _ = conn.close().await;
-                info!(tv_id = %tv_id, "Network lost: disconnected");
+                info!(tv_id = %tv_id, "Network connectivity lost: disconnected");
                 tv.last_known_input = None;
                 drop(tv);
                 self.emit_state_change(StateChangeEvent::ConnectionChanged {
