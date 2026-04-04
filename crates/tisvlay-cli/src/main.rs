@@ -514,9 +514,13 @@ fn print_tv_status(tv: &TvInfo) {
     }
     if !tv.inputs.is_empty() {
         println!("Inputs:");
-        for (id, _label) in &tv.inputs {
-            let current = if tv.current_input == *id { " (current)" } else { "" };
-            println!("  {}{}", id, current);
+        for (id, _) in &tv.inputs {
+            let marker = if tv.current_input == *id {
+                " (current)"
+            } else {
+                ""
+            };
+            println!("  {id}{marker}");
         }
     }
 }
