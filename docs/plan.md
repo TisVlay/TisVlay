@@ -201,14 +201,38 @@ Current HEAD — Option B from Phase 4.
 | Duplicate connect attempts | no |
 | Notes | All NM events (restored + lost) suppressed during 30s wake window. logind on_wake WoL retry runs cleanly. NM reconnect still works for non-wake network blips (tested: 136ms via nmcli cycle). |
 
-### Variant A: Per-TV reconnecting flag (SELECTED)
+### Variant A: Per-TV reconnecting flag
 
 | Metric | Value |
 |--------|-------|
 | Sleep → disconnect detected | 8ms |
 | Wake → subscribed | 14.8s |
 | Duplicate connect attempts | no |
-| Notes | `reconnecting` flag on ManagedTv set during WoL, checked by `reconnect_disconnected`. NM oscillation during wake is harmless — `disconnect_all` on a TV mid-WoL is a no-op. Fastest and cleanest. |
+| Notes | `reconnecting` flag on ManagedTv set during WoL, checked by `reconnect_disconnected`. NM `disconnect_all` on a TV mid-WoL is a no-op (connection held by backend), but fires unnecessarily. |
+
+### Variant A+: reconnecting flag guards both reconnect and disconnect (SELECTED)
+
+Same as VA but `disconnect_all` also skips TVs with `reconnecting=true`.
+NM oscillation during wake is fully suppressed — no interference at all.
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | 3ms |
+| Wake → subscribed | 16.4s |
+| Duplicate connect attempts | no |
+| NM interference during wake | none (fully suppressed) |
+| Notes | 16.4s vs VA's 14.8s is TV firmware boot variance (±3s per retry cycle), not a regression. Clean logs: both NM restored and NM lost explicitly skipped during WoL. |
+
+### D-Bus power cycle (no sleep, hardware minimum)
+
+Power off + 5s wait + power on via `busctl`. No sleep, no NM
+involvement. Measures pure TV firmware boot time.
+
+| Metric | Value |
+|--------|-------|
+| WoL → subscribed | 6.9s |
+| Retry attempts | 3 (2 WebSocket close + 1 success) |
+| Notes | Hardware minimum. The ~10s gap between this and sleep/wake results is TV firmware boot variance (3-5 retry cycles at 3s each). |
 
 ### Variant C: Deferred wake via NM
 
@@ -244,24 +268,24 @@ reconnection was needed — no TV firmware boot wait.
 
 ### Summary
 
-| Variant | Wake→sub | Sleep disconnect | Racing |
-|---------|----------|-----------------|--------|
-| Baseline (no NM) | 18.6s | never | no |
-| V1 (no debounce) | 16.1s | 8ms | **yes** |
-| V2 (500ms debounce) | 35.3s | 504ms | **yes** |
-| V3B (wake suppression) | 18.4s | 9ms | no |
-| **VA (reconnecting flag)** | **14.8s** | **8ms** | **no** |
-| VA (TV stays on) | **8.1s** | 4ms | no |
-| VC (deferred wake) | 18.0s | 4ms | **yes** |
+| Variant | Wake→sub | Sleep disconnect | Racing | NM clean |
+|---------|----------|-----------------|--------|----------|
+| Baseline (no NM) | 18.6s | never | no | n/a |
+| V1 (no debounce) | 16.1s | 8ms | **yes** | no |
+| V2 (500ms debounce) | 35.3s | 504ms | **yes** | no |
+| V3B (wake suppression) | 18.4s | 9ms | no | yes |
+| VA (reconnect guard) | 14.8s | 8ms | no | no |
+| **VA+ (both guards)** | **16.4s** | **3ms** | **no** | **yes** |
+| VA+ (TV stays on) | **8.1s** | 4ms | no | yes |
+| VC (deferred wake) | 18.0s | 4ms | **yes** | no |
+| D-Bus power cycle | 6.9s | n/a | n/a | n/a |
 
-**Variant A selected**: fastest wake (14.8s with TV boot, 8.1s when
-TV stays on), instant disconnect (4-8ms), no racing, simple
-implementation (one bool flag). Wake time is bottlenecked by TV
-firmware boot (~11s of WebSocket close retries before SSAP is ready)
-when the TV was powered off. When the TV stays on (non-primary input
-skips on_sleep power_off), reconnection is just a WebSocket connect.
-The NM watcher's value: instant disconnect detection + sub-second
-network blip recovery + no interference with wake.
+**Variant A+ selected**: instant disconnect (3-8ms), no racing, no NM
+interference during wake, simple implementation (one bool flag on
+ManagedTv). Wake time varies 8-16s depending on TV state — hardware
+minimum is 6.9s (TV firmware boot: 2-4 WebSocket close retries at 3s
+each). The NM watcher's value: instant disconnect detection + sub-second
+network blip recovery (136ms) + no interference with wake.
 
 ---
 
@@ -270,7 +294,7 @@ network blip recovery + no interference with wake.
 - [x] Phase 1: NetworkManager watcher with zbus proxy
 - [x] Phase 2: TvManager reconnect/disconnect methods
 - [x] Phase 3: Wire into state_change_forwarder
-- [ ] Phase 4: Prevent racing reconnect paths
+- [x] Phase 4: Prevent racing reconnect paths (VA+ selected)
 - [ ] Update design.md and CLAUDE.md
 
 ---

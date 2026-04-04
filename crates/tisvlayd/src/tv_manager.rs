@@ -751,6 +751,10 @@ impl TvManager {
         let tvs = self.tvs.read().await;
         for (tv_id, (_, tv_arc)) in tvs.iter() {
             let mut tv = tv_arc.lock().await;
+            if tv.reconnecting {
+                debug!(tv_id = %tv_id, "Skipping NM disconnect, WoL already in progress");
+                continue;
+            }
             if let Some(mut conn) = tv.connection.take() {
                 let _ = conn.close().await;
                 info!(tv_id = %tv_id, "Network lost: disconnected");
