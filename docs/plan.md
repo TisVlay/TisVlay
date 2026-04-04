@@ -291,22 +291,52 @@ TV within one poll of SSAP becoming ready instead of waiting up to
 | Duplicate connect attempts | no |
 | Notes | TV boots slower from deep sleep (~13s) vs short power off (~5.2s). 500ms polling catches SSAP within one cycle. "WoL resend failed" during NM oscillation is harmless (initial WoL already sent). |
 
+### VA+ with 500ms retries + static IP (sleep cycle)
+
+Static IP on the desktop NIC eliminates DHCP negotiation after wake.
+NM declares `ConnectedSite` in 3.6s instead of 7.9s with DHCP.
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | 3ms |
+| Wake → NM restored | 3.6s (was 7.9s with DHCP) |
+| Wake → TV online | 12.0s |
+| Wake → session unlock | 10.1s |
+| Wake → subscribed | 14.4s |
+| Notes | User typed password before TV showed desktop (greeter visible on lock screen at 1s). Static IP saved 4.3s of DHCP negotiation. |
+
 ### Summary
 
 | Variant | Wake→login | Wake→sub | Sleep disconnect | Racing | NM clean |
 |---------|------------|----------|-----------------|--------|----------|
-| Baseline (no NM, 3s) | 16.5s | 18.6s | never | no | n/a |
-| VA+ (3s retries) | 15.8s | 16.4s | 3ms | no | yes |
-| **VA+ (500ms retries)** | **13.0s** | **19.7s** | **3ms** | **no** | **yes** |
+| Baseline (no NM, DHCP, 3s) | 16.5s | 18.6s | never | no | n/a |
+| VA+ (DHCP, 3s retries) | 15.8s | 16.4s | 3ms | no | yes |
+| VA+ (DHCP, 500ms retries) | 13.0s | 19.7s | 3ms | no | yes |
+| **VA+ (static, 500ms)** | **10.1s** | **14.4s** | **3ms** | **no** | **yes** |
 | VA+ (TV stays on) | — | 8.1s | 4ms | no | yes |
 | D-Bus power cycle (3s) | — | 6.9s | n/a | n/a | n/a |
 | D-Bus power cycle (500ms) | — | 6.8s | n/a | n/a | n/a |
-| Theoretical min | 11.1s | — | — | — | — |
+| TV display boot (est.) | ~8s | — | — | — | — |
 
-**VA+ with 500ms retries selected**: 13.0s wake-to-login (2.8s faster
-than 3s retries, 1.9s over theoretical minimum). Instant disconnect
-(3ms), no racing, no NM interference, simple implementation. The
-remaining 1.9s is TV deep-sleep boot variance — hardware, not code.
+### Improvement breakdown
+
+| Change | Wake→login | Delta |
+|--------|-----------|-------|
+| Baseline (DHCP + 3s retries) | 15.8s | — |
+| + NM watcher + VA+ flag | 15.8s | 0s (prevents racing, no speed gain alone) |
+| + 500ms retries | 13.0s | -2.8s |
+| + static IP | **10.1s** | -2.9s |
+| **Total** | **10.1s** | **-5.7s (36% faster)** |
+
+NM restore time: 7.9s (DHCP) → 3.6s (static) = 4.3s saved.
+WoL retry waste: up to 2.9s (3s interval) → <500ms (500ms interval).
+
+Note: the TV displays its HDMI input as soon as its display pipeline
+boots — this happens **before** SSAP accepts WebSocket connections.
+The greeter is visible ~8s after WoL (estimated), while SSAP comes
+up at ~12s. The daemon's connection time doesn't affect when the user
+can see the screen and start typing. Wake→login of 10.1s reflects
+real user-perceived latency (WoL → TV display → type password).
 
 Retry costs are negligible: each attempt is ~50ms (TCP connect + WebSocket
 close frame). 500ms interval × 20+ attempts is fine — the TV handles
