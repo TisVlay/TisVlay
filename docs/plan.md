@@ -291,30 +291,36 @@ TV within one poll of SSAP becoming ready instead of waiting up to
 | Duplicate connect attempts | no |
 | Notes | TV boots slower from deep sleep (~13s) vs short power off (~5.2s). 500ms polling catches SSAP within one cycle. "WoL resend failed" during NM oscillation is harmless (initial WoL already sent). |
 
-### VA+ with 500ms retries + static IP (sleep cycle)
+### Static IP experiment
 
-Static IP on the desktop NIC eliminates DHCP negotiation after wake.
-NM declares `ConnectedSite` in 3.6s instead of 7.9s with DHCP.
+Hypothesis: static IP eliminates DHCP negotiation, saving 2-3s.
 
-| Metric | Value |
-|--------|-------|
-| Sleep → disconnect detected | 3ms |
-| Wake → NM restored | 3.6s (was 7.9s with DHCP) |
-| Wake → TV online | 12.0s |
-| Wake → session unlock | 10.1s |
-| Wake → subscribed | 14.4s |
-| Notes | User typed password before TV showed desktop (greeter visible on lock screen at 1s). Static IP saved 4.3s of DHCP negotiation. |
+Three samples with static IP on eno2 (NM `ensureProfiles`):
+
+| Sample | NM restore | Wake→login | Notes |
+|--------|-----------|------------|-------|
+| 1 | 3.6s | 10.1s | First test after `nmcli connection up` — interface warm |
+| 2 | 7.7s | 10.4s | Old DHCP profiles still present, may have interfered |
+| 3 | 8.1s | 13.4s | DHCP profiles deleted, clean static only |
+
+**Conclusion: static IP does not consistently improve NM restore time.**
+Sample 1's 3.6s was an outlier (warm interface). Real wake-from-sleep
+NM restore is 7.7-8.1s regardless of DHCP vs static. The bottleneck
+is **Ethernet link negotiation** (~3-4s for NIC to re-negotiate speed
+with the switch after wake), not DHCP. Static IP only skips the DHCP
+handshake (~1-2s), which is a small fraction of the total.
+
+The NixOS static IP config is kept for cleanliness (no IP churn) but
+is not a performance optimization.
 
 ### Summary
 
 | Variant | Wake→login | Wake→sub | Sleep disconnect | Racing | NM clean |
 |---------|------------|----------|-----------------|--------|----------|
-| Baseline (no NM, DHCP, 3s) | 16.5s | 18.6s | never | no | n/a |
-| VA+ (DHCP, 3s retries) | 15.8s | 16.4s | 3ms | no | yes |
-| VA+ (DHCP, 500ms retries) | 13.0s | 19.7s | 3ms | no | yes |
-| **VA+ (static, 500ms)** | **10.1s** | **14.4s** | **3ms** | **no** | **yes** |
+| Baseline (no NM, 3s) | 16.5s | 18.6s | never | no | n/a |
+| VA+ (3s retries) | 15.8s | 16.4s | 3ms | no | yes |
+| **VA+ (500ms retries)** | **10-13s** | **14-18s** | **3ms** | **no** | **yes** |
 | VA+ (TV stays on) | — | 8.1s | 4ms | no | yes |
-| D-Bus power cycle (3s) | — | 6.9s | n/a | n/a | n/a |
 | D-Bus power cycle (500ms) | — | 6.8s | n/a | n/a | n/a |
 | TV display boot (est.) | ~8s | — | — | — | — |
 
@@ -322,25 +328,36 @@ NM declares `ConnectedSite` in 3.6s instead of 7.9s with DHCP.
 
 | Change | Wake→login | Delta |
 |--------|-----------|-------|
-| Baseline (DHCP + 3s retries) | 15.8s | — |
-| + NM watcher + VA+ flag | 15.8s | 0s (prevents racing, no speed gain alone) |
-| + 500ms retries | 13.0s | -2.8s |
-| + static IP | **10.1s** | -2.9s |
-| **Total** | **10.1s** | **-5.7s (36% faster)** |
+| Baseline (3s retries) | 15.8s | — |
+| + NM watcher + VA+ flag | 15.8s | 0s (prevents racing) |
+| + 500ms retries | **10-13s** | **-3 to -6s** |
 
-NM restore time: 7.9s (DHCP) → 3.6s (static) = 4.3s saved.
-WoL retry waste: up to 2.9s (3s interval) → <500ms (500ms interval).
+Wake→login variance (10-13s) depends on TV deep-sleep boot time,
+which varies per sleep cycle. The daemon catches the TV within
+500ms of SSAP becoming ready — no further code optimization possible.
 
 Note: the TV displays its HDMI input as soon as its display pipeline
 boots — this happens **before** SSAP accepts WebSocket connections.
 The greeter is visible ~8s after WoL (estimated), while SSAP comes
-up at ~12s. The daemon's connection time doesn't affect when the user
-can see the screen and start typing. Wake→login of 10.1s reflects
-real user-perceived latency (WoL → TV display → type password).
+up at ~10-12s. The daemon's connection time doesn't affect when the
+user can see the screen and start typing.
 
-Retry costs are negligible: each attempt is ~50ms (TCP connect + WebSocket
-close frame). 500ms interval × 20+ attempts is fine — the TV handles
-concurrent discovery clients routinely.
+Retry costs are negligible: each attempt is ~50ms (TCP connect +
+WebSocket close frame). 500ms interval × 60 max attempts is fine —
+the TV handles concurrent discovery clients routinely.
+
+### Remaining bottleneck
+
+The ~8s wake-to-greeter-visible is dominated by:
+1. Ethernet link negotiation after wake (~3-4s)
+2. TV firmware boot from deep standby (~5-8s)
+
+Neither is improvable from daemon code. Potential system-level ideas:
+- **Pre-send WoL on sleep**: send WoL in `PrepareForSleep(true)` so
+  the TV starts booting *during* the sleep transition. Risk: TV boots,
+  finds no client, may go back to standby.
+- **Faster link negotiation**: NIC/switch specific; may require
+  `ethtool` settings (e.g., forcing link speed instead of auto-negotiate).
 
 ---
 
