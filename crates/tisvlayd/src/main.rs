@@ -183,6 +183,9 @@ async fn state_change_forwarder(
     info!("State change forwarder started");
     let object_server = connection.object_server();
 
+    // Tracks whether we're waiting for NetworkRestored to execute on_wake.
+    let mut pending_wake = false;
+
     while let Some(event) = rx.recv().await {
         match event {
             StateChangeEvent::SubscriptionUpdate {
@@ -261,9 +264,29 @@ async fn state_change_forwarder(
                     }
                 }
             }
+            StateChangeEvent::SystemWake => {
+                // Defer on_wake until network is ready. logind fires
+                // PrepareForSleep(false) before NM restores connectivity.
+                info!("System wake: waiting for network to execute on_wake");
+                pending_wake = true;
+            }
             StateChangeEvent::NetworkRestored => {
-                info!("Network restored: reconnecting disconnected TVs");
-                manager.reconnect_disconnected().await;
+                if pending_wake {
+                    // Network is ready after wake — execute on_wake actions
+                    // (WoL + screen_on + input switch) now.
+                    info!("Network restored after wake: executing on_wake actions");
+                    pending_wake = false;
+                    manager
+                        .execute_system_event(
+                            crate::tv_manager::SystemEvent::Wake,
+                            "wake (network ready)",
+                        )
+                        .await;
+                } else {
+                    // Normal network blip recovery (not a wake).
+                    info!("Network restored: reconnecting disconnected TVs");
+                    manager.reconnect_disconnected().await;
+                }
             }
             StateChangeEvent::NetworkLost => {
                 info!("Network lost: disconnecting all TVs");
