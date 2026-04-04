@@ -118,22 +118,119 @@ no busy-wait.
   - `NetworkLost`: call `TvManager::disconnect_all()`, update D-Bus
     `Connected=false` for all TVs
 
-### Phase 4: Debounce and edge cases
+### Phase 4: Prevent racing reconnect paths
 
-- Debounce rapid state transitions (NetworkManager may fire multiple
-  signals during a reconnect cycle)
-- Skip reconnection if a WoL/power_on is already in progress for a TV
-- On daemon startup in session mode: the watcher still connects to the
-  system bus for NetworkManager (independent of the daemon's bus choice)
+On wake, two paths may try to reconnect the same TV concurrently:
+1. logind `PrepareForSleep(false)` → `on_wake` → WoL retry loop
+2. NM `StateChanged` → `NetworkRestored` → `reconnect_disconnected`
+
+The duplicate connections confuse the TV (WebSocket close frames) and
+double the reconnection time. Options:
+
+- **A. Skip NM reconnect during active WoL**: add a per-TV
+  `reconnecting` flag set by `power_on`/`on_wake`, checked by
+  `reconnect_disconnected`. Simple, but requires flag lifecycle.
+- **B. Suppress NM reconnect after wake**: ignore `NetworkRestored`
+  for N seconds after `PrepareForSleep(false)`. Simpler, but uses a
+  time window heuristic.
+- **C. Remove WoL from on_wake entirely**: let the NM watcher handle
+  reconnection. logind wake just clears state; NM restored does the
+  actual reconnect. Clean separation, but changes the wake semantics
+  (no WoL on wake, which may be needed if TV went to standby).
+- **D. Debounce NM signals**: absorb NM oscillation during wake with a
+  500ms window. Tested — adds latency without helping (the real issue
+  is duplicate reconnect paths, not signal noise).
+
+---
+
+## Test matrix
+
+Run on system bus via `all: start (system bus)`. Each test is a
+desktop sleep cycle (suspend → resume). Measure with:
+
+```
+./scripts/bench_network.py --since 5
+```
+
+Also check full logs for racing/duplicate connection attempts:
+
+```
+journalctl -t tisvlayd --since "5 min ago" -o short-precise | \
+  grep -E "sleep|wake|resumed|Network|Connecting|Connected|Subscribed|disconnected|WebSocket close"
+```
+
+### Baseline (no NM watcher)
+
+Commit: `e9384c77` (before NM watcher)
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | never |
+| Wake → subscribed | 18.6s |
+| Duplicate connect attempts | no |
+| Notes | logind on_wake WoL retry only |
+
+### Variant 1: NM watcher, no debounce
+
+Commit: first NM watcher implementation (no debounce)
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | 8ms |
+| Wake → subscribed | 16.1s |
+| Duplicate connect attempts | yes (logind + NM race) |
+| Notes | NM oscillated during wake: restored→lost→restored. First reconnect killed by second NM lost signal 47ms later |
+
+### Variant 2: NM watcher + 500ms debounce
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | 504ms |
+| Wake → subscribed | 35.3s |
+| Duplicate connect attempts | yes (logind + NM race) |
+| Notes | Debounce absorbed NM oscillation but logind and NM paths still race. Much worse overall. Reverted. |
+
+### Variant 3B: Wake window suppression (SELECTED)
+
+Current HEAD — Option B from Phase 4.
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | 9ms |
+| Wake → subscribed | 18.4s |
+| Duplicate connect attempts | no |
+| Notes | All NM events (restored + lost) suppressed during 30s wake window. logind on_wake WoL retry runs cleanly. NM reconnect still works for non-wake network blips (tested: 136ms via nmcli cycle). |
+
+### NM blip recovery (non-wake, nmcli off/on)
+
+| Metric | Value |
+|--------|-------|
+| NM lost → Connected=false | <1ms |
+| NM restored → subscribed | 136ms |
+| Notes | Purely event-driven, no polling. |
+
+### Summary
+
+| Variant | Wake→sub | Sleep disconnect | Racing |
+|---------|----------|-----------------|--------|
+| Baseline (no NM) | 18.6s | never | no |
+| V1 (no debounce) | 16.1s | 8ms | **yes** |
+| V2 (500ms debounce) | 35.3s | 504ms | **yes** |
+| **V3B (wake suppression)** | **18.4s** | **9ms** | **no** |
+
+Wake time is bottlenecked by TV firmware boot (~11s of WebSocket
+close retries before SSAP is ready). No code change can improve this.
+The NM watcher's value: instant disconnect detection + sub-second
+network blip recovery + no interference with wake.
 
 ---
 
 ## Checklist
 
-- [ ] Phase 1: NetworkManager watcher with zbus proxy
-- [ ] Phase 2: TvManager reconnect/disconnect methods
-- [ ] Phase 3: Wire into state_change_forwarder
-- [ ] Phase 4: Debounce and edge cases
+- [x] Phase 1: NetworkManager watcher with zbus proxy
+- [x] Phase 2: TvManager reconnect/disconnect methods
+- [x] Phase 3: Wire into state_change_forwarder
+- [ ] Phase 4: Prevent racing reconnect paths
 - [ ] Update design.md and CLAUDE.md
 
 ---
@@ -150,3 +247,8 @@ no busy-wait.
 - For `on_wake`: logind's `PrepareForSleep(false)` fires before the
   network is restored. The NM watcher bridges this gap — logind tells
   us we woke up, NM tells us the network is ready.
+- The TV accepts WebSocket connections during boot but sends an
+  immediate `close` frame — the SSAP service isn't ready yet. The
+  backend's retry loop handles this (3s intervals, 10 attempts).
+- WoL → TV NIC online → SSAP ready takes ~10s in practice (3-4
+  retry cycles). The bottleneck is the TV firmware boot, not network.
