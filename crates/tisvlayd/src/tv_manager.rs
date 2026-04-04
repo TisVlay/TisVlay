@@ -754,26 +754,35 @@ impl TvManager {
     /// timeouts. Skips non-network transports (serial, USB, CEC) and TVs with
     /// an in-flight WoL attempt.
     pub async fn disconnect_network_tvs(&self) {
-        let tvs = self.tvs.read().await;
-        for (tv_id, (_, tv_arc)) in tvs.iter() {
-            let mut tv = tv_arc.lock().await;
-            if !self.registry.transport_for(&tv.config).is_network_dependent() {
-                continue;
+        // Collect connections to close outside the per-TV locks.
+        let mut to_close: Vec<(String, Box<dyn TvConnection>)> = Vec::new();
+
+        {
+            let tvs = self.tvs.read().await;
+            for (tv_id, (_, tv_arc)) in tvs.iter() {
+                let mut tv = tv_arc.lock().await;
+                if !self.registry.transport_for(&tv.config).is_network_dependent() {
+                    continue;
+                }
+                if tv.reconnecting {
+                    debug!(tv_id = %tv_id, "Skipping disconnect, WoL already in progress");
+                    continue;
+                }
+                if let Some(conn) = tv.connection.take() {
+                    tv.last_known_input = None;
+                    to_close.push((tv_id.clone(), conn));
+                }
             }
-            if tv.reconnecting {
-                debug!(tv_id = %tv_id, "Skipping disconnect, WoL already in progress");
-                continue;
-            }
-            if let Some(mut conn) = tv.connection.take() {
-                let _ = conn.close().await;
-                info!(tv_id = %tv_id, "Network connectivity lost: disconnected");
-                tv.last_known_input = None;
-                drop(tv);
-                self.emit_state_change(StateChangeEvent::ConnectionChanged {
-                    tv_id: tv_id.clone(),
-                    connected: false,
-                });
-            }
+        }
+
+        // Close connections and emit events outside all locks.
+        for (tv_id, mut conn) in to_close {
+            let _ = conn.close().await;
+            info!(tv_id = %tv_id, "Network connectivity lost: disconnected");
+            self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                tv_id,
+                connected: false,
+            });
         }
     }
 
