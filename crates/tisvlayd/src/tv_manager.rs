@@ -96,11 +96,6 @@ pub enum StateChangeEvent {
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
-    /// System resumed from sleep (from logind PrepareForSleep(false)).
-    ///
-    /// Used by the forwarder to suppress NM reconnect attempts that would
-    /// race with the logind on_wake WoL retry loop.
-    SystemWake,
     /// Network connectivity restored (from NetworkManager).
     ///
     /// The forwarder triggers reconnection for all disconnected,
@@ -361,11 +356,6 @@ impl TvManager {
     /// Get a clone of the state change sender for external event sources.
     pub fn state_change_sender(&self) -> mpsc::UnboundedSender<StateChangeEvent> {
         self.state_change_tx.clone()
-    }
-
-    /// Notify the forwarder that the system just woke from sleep.
-    pub fn emit_system_wake(&self) {
-        self.emit_state_change(StateChangeEvent::SystemWake);
     }
 
     fn emit_state_change(&self, event: StateChangeEvent) {

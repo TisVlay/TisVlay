@@ -183,11 +183,6 @@ async fn state_change_forwarder(
     info!("State change forwarder started");
     let object_server = connection.object_server();
 
-    // Track when a system wake occurred so we can suppress NM reconnect
-    // attempts that would race with the logind on_wake WoL retry loop.
-    let mut last_wake: Option<tokio::time::Instant> = None;
-    const WAKE_SUPPRESS_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
-
     while let Some(event) = rx.recv().await {
         match event {
             StateChangeEvent::SubscriptionUpdate {
@@ -266,34 +261,11 @@ async fn state_change_forwarder(
                     }
                 }
             }
-            StateChangeEvent::SystemWake => {
-                // logind PrepareForSleep(false) — mark the wake time so we
-                // can suppress NM reconnect that would race with on_wake WoL.
-                info!("System wake marker set");
-                last_wake = Some(tokio::time::Instant::now());
-            }
             StateChangeEvent::NetworkRestored => {
-                // Suppress NM reconnect shortly after a system wake to avoid
-                // racing with logind's on_wake WoL retry loop.
-                if let Some(wake_time) = last_wake {
-                    if wake_time.elapsed() < WAKE_SUPPRESS_WINDOW {
-                        info!("Network restored during wake window, logind handling reconnection");
-                        continue;
-                    }
-                }
                 info!("Network restored: reconnecting disconnected TVs");
                 manager.reconnect_disconnected().await;
             }
             StateChangeEvent::NetworkLost => {
-                // Suppress NM disconnect during wake window — NM oscillates
-                // (restored→lost→restored) and disconnect_all would kill
-                // in-flight logind WoL connection attempts.
-                if let Some(wake_time) = last_wake {
-                    if wake_time.elapsed() < WAKE_SUPPRESS_WINDOW {
-                        info!("Network lost during wake window, suppressing disconnect");
-                        continue;
-                    }
-                }
                 info!("Network lost: disconnecting all TVs");
                 manager.disconnect_all().await;
             }
