@@ -227,6 +227,21 @@ Current HEAD — Option B from Phase 4.
 | NM restored → subscribed | 136ms |
 | Notes | Purely event-driven, no polling. |
 
+### VA with TV staying on (automate_when=on_primary, non-primary input)
+
+TV not powered off during sleep (Automated=false skipped on_sleep).
+On wake, `last_known_input` is `None` (cleared by disconnect_all),
+so `is_automated` returns `true` (benefit of doubt) and on_wake
+fires WoL. WoL is harmless to an already-on TV. Only WebSocket
+reconnection was needed — no TV firmware boot wait.
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | 4ms |
+| Wake → subscribed | 8.1s |
+| TV powered off during sleep | no |
+| Notes | Fastest wake: TV NIC already up, only WebSocket reconnect needed. Benefit-of-doubt gate works correctly — unknown input after disconnect defaults to automated. |
+
 ### Summary
 
 | Variant | Wake→sub | Sleep disconnect | Racing |
@@ -236,13 +251,17 @@ Current HEAD — Option B from Phase 4.
 | V2 (500ms debounce) | 35.3s | 504ms | **yes** |
 | V3B (wake suppression) | 18.4s | 9ms | no |
 | **VA (reconnecting flag)** | **14.8s** | **8ms** | **no** |
+| VA (TV stays on) | **8.1s** | 4ms | no |
 | VC (deferred wake) | 18.0s | 4ms | **yes** |
 
-**Variant A selected**: fastest wake (14.8s), instant disconnect (8ms),
-no racing, simple implementation (one bool flag). Wake time is
-bottlenecked by TV firmware boot (~11s of WebSocket close retries
-before SSAP is ready). The NM watcher's value: instant disconnect
-detection + sub-second network blip recovery + no interference with wake.
+**Variant A selected**: fastest wake (14.8s with TV boot, 8.1s when
+TV stays on), instant disconnect (4-8ms), no racing, simple
+implementation (one bool flag). Wake time is bottlenecked by TV
+firmware boot (~11s of WebSocket close retries before SSAP is ready)
+when the TV was powered off. When the TV stays on (non-primary input
+skips on_sleep power_off), reconnection is just a WebSocket connect.
+The NM watcher's value: instant disconnect detection + sub-second
+network blip recovery + no interference with wake.
 
 ---
 
