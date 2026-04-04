@@ -86,10 +86,10 @@ enum Commands {
         #[arg(long)]
         vendor: String,
 
-        /// Pair as unmanaged — skips automation (boot WoL, session events, shutdown).
-        /// Manual control via tray and CLI still works.
-        #[arg(long, default_value_t = false)]
-        unmanaged: bool,
+        /// Participate in automation (boot WoL, session events, shutdown).
+        /// Pass --managed false to pair for manual control only.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        managed: bool,
     },
 
     /// List configured TVs
@@ -252,7 +252,7 @@ async fn main() -> Result<()> {
             name,
             wake_id,
             vendor,
-            unmanaged,
+            managed,
         } => {
             let tv_name = name.unwrap_or_else(|| format!("TV at {}", address));
             println!("Connecting to TV at {}...", address);
@@ -261,7 +261,7 @@ async fn main() -> Result<()> {
             // Build vendor-agnostic config JSON for the daemon
             let config_json = build_pairing_config_json(&address, wake_id.as_deref());
             let tv_id = client
-                .pair_tv(&tv_name, &vendor, &config_json, !unmanaged)
+                .pair_tv(&tv_name, &vendor, &config_json, managed)
                 .await?;
             println!("TV '{}' paired successfully with ID: {}", tv_name, tv_id);
 
