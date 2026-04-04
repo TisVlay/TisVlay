@@ -126,6 +126,9 @@ struct ManagedTv {
     connection: Option<Box<dyn TvConnection>>,
     /// TV was intentionally powered off -- don't try to reconnect until power_on.
     powered_off: bool,
+    /// A connection attempt is already in progress (WoL retry, on_wake, etc.).
+    /// Prevents NM reconnect from racing with an existing attempt.
+    reconnecting: bool,
     /// Resolved system profile for daemon lifecycle events.
     ///
     /// Resolved from the TV's `profile.system` assignment against the
@@ -145,6 +148,7 @@ impl ManagedTv {
             config,
             connection: None,
             powered_off: false,
+            reconnecting: false,
             system_profile,
             last_known_input: None,
         }
@@ -720,7 +724,10 @@ impl TvManager {
                 continue;
             }
             let tv = tv_arc.lock().await;
-            if tv.is_connected() || tv.powered_off {
+            if tv.is_connected() || tv.powered_off || tv.reconnecting {
+                if tv.reconnecting {
+                    debug!(tv_id = %tv_id, "Skipping NM reconnect, WoL already in progress");
+                }
                 continue;
             }
             let tv_id = tv_id.clone();
@@ -841,6 +848,7 @@ impl TvManager {
 
             // Drop any stale connection and clear the powered-off flag
             tv.powered_off = false;
+            tv.reconnecting = true;
             if let Some(mut conn) = tv.connection.take() {
                 let _ = conn.close().await;
             }
@@ -849,21 +857,25 @@ impl TvManager {
         };
 
         // Backend handles wake + boot wait + connect retry (no lock held)
-        let connection = self
-            .registry
-            .wake_and_connect_tv(&config)
-            .await
-            .map_err(|e| TvManagerError::WakeFailed {
-                tv_id: tv_id.to_string(),
-                source: e,
-            })?;
+        let result = self.registry.wake_and_connect_tv(&config).await;
 
         // Store the connection and subscribe to state updates
         {
             let mut tv = tv_arc.lock().await;
-            tv.connection = Some(connection);
-            if let Some(conn) = tv.connection.as_mut() {
-                self.try_subscribe_state(tv_id, conn.as_mut()).await;
+            tv.reconnecting = false;
+            match result {
+                Ok(connection) => {
+                    tv.connection = Some(connection);
+                    if let Some(conn) = tv.connection.as_mut() {
+                        self.try_subscribe_state(tv_id, conn.as_mut()).await;
+                    }
+                }
+                Err(e) => {
+                    return Err(TvManagerError::WakeFailed {
+                        tv_id: tv_id.to_string(),
+                        source: e,
+                    });
+                }
             }
         }
 
