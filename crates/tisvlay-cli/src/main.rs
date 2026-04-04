@@ -472,10 +472,20 @@ async fn main() -> Result<()> {
                 .iter()
                 .find(|t| t.id == tv_id)
                 .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
+            // Try to get user profile from session service (optional)
+            let user_profile = match SessionClient::new().await {
+                Ok(session) => session.get_tv_user_profile(&tv_id).await.ok(),
+                Err(_) => None,
+            };
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(tv)?);
+                // Include user_profile in JSON output
+                let mut json = serde_json::to_value(tv)?;
+                if let Some(ref profile) = user_profile {
+                    json["user_profile"] = serde_json::Value::String(profile.clone());
+                }
+                println!("{}", serde_json::to_string_pretty(&json)?);
             } else {
-                print_tv_status(tv);
+                print_tv_status(tv, user_profile.as_deref());
             }
         }
     }
@@ -509,18 +519,25 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
     }
 }
 
-fn print_tv_status(tv: &TvInfo) {
+fn print_tv_status(tv: &TvInfo, user_profile: Option<&str>) {
     let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
-    println!("TV: {}", tv.id);
+    println!("TV: {} ({})", tv.id, tv.name);
+    println!("  Vendor: {}", tv.vendor);
+    println!("  Address: {}", tv.address);
     println!("Managed: {}", tv.managed);
-    println!("Automated: {}", tv.automated);
+    println!("  Automated: {}", tv.automated);
+    println!("Profile:");
+    println!("  System: {}", tv.system_profile);
+    if let Some(profile) = user_profile {
+        println!("  User: {}", profile);
+    }
     println!("Connected: {}", tv.connected);
-    println!("Power: {}", tv.power_state);
-    println!("Screen: {}", if tv.is_screen_on { "on" } else { "off" });
+    println!("  Power: {}", tv.power_state);
+    println!("  Screen: {}", if tv.is_screen_on { "on" } else { "off" });
     if is_on {
         let muted = if tv.muted { " (muted)" } else { "" };
-        println!("Volume: {}{}", tv.volume, muted);
-        println!("Backlight: {}", tv.backlight);
+        println!("  Volume: {}{}", tv.volume, muted);
+        println!("  Backlight: {}", tv.backlight);
     }
     if !tv.inputs.is_empty() {
         println!("Inputs:");
