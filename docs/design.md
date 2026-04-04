@@ -103,6 +103,7 @@ classDiagram
     }
 
     class TvConnector {
+        +transport() Transport
         +connect(vendor_config) TvConnection
         +display_address(vendor_config) String
         +supports_wake(vendor_config) bool
@@ -149,7 +150,10 @@ See `crates/tisvlay-core/src/traits.rs` for the full trait definitions.
 
 The `TvConnector` interface is fully transport-agnostic. All transport details (IP addresses, serial ports, CEC addresses, etc.) are encapsulated in the vendor config (`toml::Value`), which only the vendor crate knows how to interpret. The daemon and CLI never see transport-specific types.
 
+Each connector declares its `Transport` type (`Network`, `Serial`, `Usb`, `Cec`). The daemon uses `Transport::is_network_dependent()` to scope system events — only network-dependent connections are affected by NetworkManager events. Non-network backends (serial, USB, CEC) are unaffected by network loss.
+
 Key `TvConnector` methods:
+- `transport()` — communication transport used by this connector
 - `connect(vendor_config)` — create a connection using vendor-specific transport
 - `display_address(vendor_config)` — human-readable address for logging/UI
 - `supports_wake(vendor_config)` / `wake(vendor_config)` — abstract over WoL, CEC, etc.
@@ -672,6 +676,19 @@ The `TvConnection` trait provides an optional `subscribe_state()` method with a 
 After establishing a connection, the daemon calls `subscribe_state()` on the `TvConnection`. If the backend supports push (LG does), a spawned task forwards received `TvState` snapshots as `StateChangeEvent::SubscriptionUpdate`s through an internal channel. The `state_change_forwarder` task receives these and updates cached property fields on all per-TV D-Bus interface structs via `InterfaceRef::get_mut()`, emitting standard `PropertiesChanged` signals only for properties that actually changed.
 
 Write commands via writable property setters (Volume, Muted, Backlight, IsScreenOn) update the cache and auto-emit `PropertiesChanged` on success via zbus machinery. The backend subscription then confirms the state shortly after, but the property update is typically a no-op since the setter already set the value.
+
+### NetworkManager-Aware Reconnection
+
+A background `network_watcher` task monitors `org.freedesktop.NetworkManager` on the system bus for `StateChanged` signals. When network connectivity transitions:
+
+- **Lost** (state < ConnectedLocal): `disconnect_network_tvs()` drops all network-transport TV connections immediately, updating D-Bus `Connected=false` without waiting for TCP keepalive timeouts
+- **Restored** (state ≥ ConnectedLocal): `reconnect_disconnected()` attempts reconnection for managed, network-dependent TVs that are not powered off
+
+Both methods check `Transport::is_network_dependent()` via the `BackendRegistry` — non-network transports (serial, USB, CEC) are unaffected. A per-TV `reconnecting` flag prevents NM events from racing with in-flight WoL retry loops during system wake.
+
+The watcher always connects to the system bus (NM is system-bus-only) regardless of the daemon's `--session` flag. If NM is unavailable, the watcher logs a warning and exits gracefully — the daemon falls back to passive disconnect detection via subscription end + tray fallback poll.
+
+See [docs/lg/benchmarks/wake-reconnect.md](lg/benchmarks/wake-reconnect.md) for measured timing data.
 
 ### Tray Layer
 

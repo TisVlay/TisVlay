@@ -64,6 +64,7 @@ tisvlay/
 │   │       ├── main.rs           # Entry point, connection::Builder, state_change_forwarder
 │   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.* with cached properties)
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
+│   │       ├── network_watcher.rs # NetworkManager D-Bus watcher (network-transport reconnection)
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool, disk serialization
 │   │
@@ -125,6 +126,9 @@ tisvlay/
 - Backlight IS SSAP-subscribable (via `getSystemSettings` with `category: "picture", keys: ["backlight"]`); writing still requires Luna `createAlert` workaround (direct setSystemSettings returns 401)
 - SSAP subscription updates carry the original request ID, not the URI -- routing must use a request-ID-to-URI map
 - Multiplexed WebSocket: background reader routes subscription updates to state channel and command responses to callers; SSAP subscriptions (power, volume, mute, inputs, foreground app, backlight) push state in real time
+- LG pairing is two-phase: TV sends `Response` (prompt shown), then `Registered` (user accepted). `request_wait()` on the multiplexed WebSocket handles the second phase without re-sending
+- `Transport` enum on `TvConnector`: Network, Serial, Usb, Cec. Daemon scopes NM events to network-dependent backends only
+- NetworkManager watcher monitors `StateChanged` on the system bus; `reconnecting` flag prevents NM from racing with in-flight WoL retry loops
 
 ## Quick Reference
 
