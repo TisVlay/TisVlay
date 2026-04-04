@@ -266,6 +266,31 @@ impl Tray for TisvlayTray {
         }
     }
 
+    fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        // Middle-click cycles the scroll target TV to the next connected TV.
+        let connected: Vec<&str> = self
+            .tvs
+            .iter()
+            .filter(|tv| tv.connected && tv.is_on)
+            .map(|tv| tv.id.as_str())
+            .collect();
+        if connected.is_empty() {
+            return;
+        }
+        let next = match &self.scroll_tv_id {
+            Some(current) => {
+                let pos = connected.iter().position(|id| *id == current);
+                match pos {
+                    Some(i) => connected[(i + 1) % connected.len()],
+                    None => connected[0],
+                }
+            }
+            None => connected[0],
+        };
+        debug!(tv_id = %next, target = ?self.scroll_target, "Middle-click: scroll target switched");
+        self.scroll_tv_id = Some(next.to_string());
+    }
+
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let mut items = Vec::new();
 
