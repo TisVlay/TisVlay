@@ -411,6 +411,10 @@ impl Default for LgConnector {
 
 #[async_trait]
 impl TvConnector for LgConnector {
+    fn transport(&self) -> tisvlay_core::Transport {
+        tisvlay_core::Transport::Network
+    }
+
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
 

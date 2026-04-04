@@ -147,6 +147,16 @@ impl BackendRegistry {
             .unwrap_or_else(|| "unknown".to_string())
     }
 
+    /// Get the transport type for a TV's backend.
+    ///
+    /// Returns `Transport::Network` if the vendor is unknown (safe default —
+    /// network events will still disconnect it, which is correct for unknown devices).
+    pub fn transport_for(&self, tv_config: &TvConfig) -> tisvlay_core::Transport {
+        self.get_connector(&tv_config.vendor)
+            .map(|c| c.transport())
+            .unwrap_or(tisvlay_core::Transport::Network)
+    }
+
     /// Check if a TV's transport supports waking.
     pub fn supports_wake(&self, tv_config: &TvConfig) -> bool {
         self.get_connector(&tv_config.vendor)

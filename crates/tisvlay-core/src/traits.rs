@@ -33,6 +33,33 @@ use crate::{
 };
 use async_trait::async_trait;
 
+/// Communication transport used by a backend to connect to a device.
+///
+/// The daemon uses this to scope system events (e.g., NetworkManager
+/// signals) to the appropriate devices — only network-dependent
+/// connections are affected by network loss/restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// TCP/IP network (WebSocket, HTTP, raw TCP).
+    Network,
+    /// Serial port (RS-232, RS-485).
+    Serial,
+    /// USB device connection.
+    Usb,
+    /// HDMI-CEC (Consumer Electronics Control).
+    Cec,
+}
+
+impl Transport {
+    /// Whether this transport depends on network connectivity.
+    ///
+    /// Returns `true` for transports that go down when the network
+    /// interface is lost (e.g., system sleep, NIC reset).
+    pub fn is_network_dependent(self) -> bool {
+        matches!(self, Self::Network)
+    }
+}
+
 /// Core trait that all TV backends must implement.
 ///
 /// This trait provides metadata about the backend (vendor identification and capabilities).
@@ -251,6 +278,9 @@ pub trait TvConnection: Send + Sync {
 /// (`toml::Value`), which only the vendor crate knows how to interpret.
 #[async_trait]
 pub trait TvConnector: Send + Sync {
+    /// The communication transport used by this connector.
+    fn transport(&self) -> Transport;
+
     /// Connect to a TV using vendor-specific config.
     ///
     /// The vendor config contains all transport and credential parameters.
