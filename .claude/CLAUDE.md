@@ -90,9 +90,12 @@ tisvlay/
 │   └── org.tisvlay.Daemon.conf    # D-Bus policy configuration
 │
 ├── packaging/
-│   └── nix/
-│       ├── package.nix           # Nix package derivation (rustPlatform.buildRustPackage)
-│       └── module.nix            # NixOS module (services.tisvlay.enable)
+│   ├── nix/
+│   │   ├── package.nix           # Nix package derivation (rustPlatform.buildRustPackage)
+│   │   └── module.nix            # NixOS module (services.tisvlay.enable)
+│   └── scripts/
+│       ├── postinstall.sh        # Distro package post-install (systemd + D-Bus reload)
+│       └── preremove.sh          # Distro package pre-remove (stop services)
 │
 ├── docs/
 │   ├── design.md                 # Full architecture design

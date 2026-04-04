@@ -557,17 +557,31 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 8. Tray gains User Profile and System Profile submenus per TV
 9. Manager1 additions: `SetTvOption`, `ListSystemProfiles`, `GetUserProfileDefault`, `ListUserProfiles`
 
-### NixOS Packaging - COMPLETE
+### Packaging - COMPLETE
 
-**Goal**: `services.tisvlay.enable = true` deploys the full stack.
+**Goal**: Install the full stack on any distro.
 
+**NixOS** (`services.tisvlay.enable = true`):
 1. `packaging/nix/package.nix`: `rustPlatform.buildRustPackage` for all four binaries
 2. `packaging/nix/module.nix`: NixOS module — system daemon, user services, D-Bus policy, dedicated user/group
 3. `flake.nix`: `nixosModules.default`, `overlays.default`, `packages.default`
-4. `tisvlayd`/`tisvlay-session` `--config` flag for explicit config path
-5. System daemon uses `StateDirectory` (`/var/lib/tisvlay/`) for writable config (supports `ProtectHome=true`)
-6. D-Bus policy installed via `services.dbus.packages` (idiomatic NixOS)
-7. User services auto-start on `graphical-session.target`
+
+**Multi-distro** (via `cargo-nfpm`):
+1. `[package.metadata.nfpm]` on `tisvlayd/Cargo.toml` — single config for all formats
+2. `cargo nfpm package -p tisvlayd --no-build -f deb|rpm|archlinux`
+3. Output package named `tisvlay` — bundles all 4 binaries, systemd services, D-Bus policy
+4. `packaging/scripts/postinstall.sh` — create config dir, reload systemd + D-Bus
+5. `packaging/scripts/preremove.sh` — stop and disable services
+
+**GitHub releases**: `.github/workflows/release.yml` — builds and uploads .deb, .rpm, .pkg.tar.zst on `v*` tags
+
+**crates.io**: each crate published independently; `cargo install` provides binaries only (no service files)
+
+**Common**:
+- `tisvlayd`/`tisvlay-session` `--config` flag for explicit config path
+- System daemon uses `StateDirectory` (`/var/lib/tisvlay/`) for writable config (supports `ProtectHome=true`)
+- D-Bus policy in `systemd/org.tisvlay.Daemon.conf`
+- User services auto-start on `graphical-session.target`
 
 ### Phase 5A: `managed` Flag + CLI Profile Parity - COMPLETE
 
