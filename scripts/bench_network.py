@@ -32,7 +32,9 @@ EVENT_PATTERNS = [
     ("sub_update",         re.compile(r"Forwarding subscription update")),
     ("conn_change",        re.compile(r"Forwarding connection change")),
     ("sub_ended",          re.compile(r"Backend state subscription ended")),
-    ("nm_state",           re.compile(r"NetworkManager|Network event|network restored|network lost")),
+    ("nm_lost",            re.compile(r"Network lost, disconnecting")),
+    ("nm_restored",        re.compile(r"Network restored, triggering")),
+    ("nm_watcher",         re.compile(r"NetworkManager watcher started")),
 ]
 
 # Interesting latency pairs to measure.
@@ -45,7 +47,8 @@ LATENCY_PAIRS = [
     ("ws_connected",   "registered",    "Registration handshake"),
     ("registered",     "subscribed",    "Subscribe setup"),
     ("sub_ended",      "conn_change",   "Subscription end → Connected=false"),
-    ("nm_state",       "subscribed",    "NM event → reconnected"),
+    ("nm_restored",    "subscribed",    "NM restored → reconnected"),
+    ("nm_lost",        "conn_change",   "NM lost → Connected=false"),
 ]
 
 
