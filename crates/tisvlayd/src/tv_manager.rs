@@ -96,11 +96,6 @@ pub enum StateChangeEvent {
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
-    /// System resumed from sleep (from logind PrepareForSleep(false)).
-    ///
-    /// The forwarder defers on_wake execution until NetworkRestored,
-    /// so the wake actions run when the network is actually ready.
-    SystemWake,
     /// Network connectivity restored (from NetworkManager).
     ///
     /// The forwarder triggers reconnection for all disconnected,
@@ -363,7 +358,7 @@ impl TvManager {
         self.state_change_tx.clone()
     }
 
-    pub(crate) fn emit_state_change(&self, event: StateChangeEvent) {
+    fn emit_state_change(&self, event: StateChangeEvent) {
         if let Err(e) = self.state_change_tx.send(event) {
             debug!("Failed to send state change event: {}", e);
         }

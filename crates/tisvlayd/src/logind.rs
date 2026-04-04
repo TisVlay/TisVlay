@@ -9,7 +9,7 @@
 //! Takes a shutdown inhibitor lock so the daemon can gracefully
 //! shut down TVs before the system powers off.
 
-use crate::tv_manager::{StateChangeEvent, SystemEvent, TvManager};
+use crate::tv_manager::{SystemEvent, TvManager};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 use zbus::proxy;
@@ -259,9 +259,9 @@ async fn handle_prepare_for_sleep(proxy: Login1ManagerProxy<'static>, manager: A
                 .await;
         } else {
             info!("System resumed from sleep");
-            // Defer on_wake execution until NetworkRestored — the network
-            // isn't ready yet at PrepareForSleep(false) time.
-            manager.emit_state_change(StateChangeEvent::SystemWake);
+            manager
+                .execute_system_event(SystemEvent::Wake, "wake")
+                .await;
         }
     }
 }
