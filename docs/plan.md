@@ -228,11 +228,21 @@ NM oscillation during wake is fully suppressed — no interference at all.
 Power off + 5s wait + power on via `busctl`. No sleep, no NM
 involvement. Measures pure TV firmware boot time.
 
+With 3s retries:
+
 | Metric | Value |
 |--------|-------|
 | WoL → subscribed | 6.9s |
 | Retry attempts | 3 (2 WebSocket close + 1 success) |
-| Notes | Hardware minimum. The ~10s gap between this and sleep/wake results is TV firmware boot variance (3-5 retry cycles at 3s each). |
+| Notes | TV SSAP ready ~5.2s after WoL. 3s retry caught it by luck — could waste up to 2.9s on unlucky timing. |
+
+With 500ms retries:
+
+| Metric | Value |
+|--------|-------|
+| WoL → subscribed | 6.8s |
+| Retry attempts | 8-9 (7-8 close + 1 success) |
+| Notes | Catches TV within 500ms of SSAP ready. Each attempt is cheap (~50ms TCP connect + close frame). Consistent across runs. |
 
 ### Variant C: Deferred wake via NM
 
@@ -266,26 +276,41 @@ reconnection was needed — no TV firmware boot wait.
 | TV powered off during sleep | no |
 | Notes | Fastest wake: TV NIC already up, only WebSocket reconnect needed. Benefit-of-doubt gate works correctly — unknown input after disconnect defaults to automated. |
 
+### VA+ with 500ms retries (sleep cycle)
+
+Same as VA+ but with 500ms retry interval instead of 3s. Catches the
+TV within one poll of SSAP becoming ready instead of waiting up to
+2.9s for the next 3s retry.
+
+| Metric | Value |
+|--------|-------|
+| Sleep → disconnect detected | 3ms |
+| Wake → TV online | 13.2s |
+| Wake → session unlock | 13.0s |
+| Wake → subscribed | 19.7s |
+| Duplicate connect attempts | no |
+| Notes | TV boots slower from deep sleep (~13s) vs short power off (~5.2s). 500ms polling catches SSAP within one cycle. "WoL resend failed" during NM oscillation is harmless (initial WoL already sent). |
+
 ### Summary
 
-| Variant | Wake→sub | Sleep disconnect | Racing | NM clean |
-|---------|----------|-----------------|--------|----------|
-| Baseline (no NM) | 18.6s | never | no | n/a |
-| V1 (no debounce) | 16.1s | 8ms | **yes** | no |
-| V2 (500ms debounce) | 35.3s | 504ms | **yes** | no |
-| V3B (wake suppression) | 18.4s | 9ms | no | yes |
-| VA (reconnect guard) | 14.8s | 8ms | no | no |
-| **VA+ (both guards)** | **16.4s** | **3ms** | **no** | **yes** |
-| VA+ (TV stays on) | **8.1s** | 4ms | no | yes |
-| VC (deferred wake) | 18.0s | 4ms | **yes** | no |
-| D-Bus power cycle | 6.9s | n/a | n/a | n/a |
+| Variant | Wake→login | Wake→sub | Sleep disconnect | Racing | NM clean |
+|---------|------------|----------|-----------------|--------|----------|
+| Baseline (no NM, 3s) | 16.5s | 18.6s | never | no | n/a |
+| VA+ (3s retries) | 15.8s | 16.4s | 3ms | no | yes |
+| **VA+ (500ms retries)** | **13.0s** | **19.7s** | **3ms** | **no** | **yes** |
+| VA+ (TV stays on) | — | 8.1s | 4ms | no | yes |
+| D-Bus power cycle (3s) | — | 6.9s | n/a | n/a | n/a |
+| D-Bus power cycle (500ms) | — | 6.8s | n/a | n/a | n/a |
+| Theoretical min | 11.1s | — | — | — | — |
 
-**Variant A+ selected**: instant disconnect (3-8ms), no racing, no NM
-interference during wake, simple implementation (one bool flag on
-ManagedTv). Wake time varies 8-16s depending on TV state — hardware
-minimum is 6.9s (TV firmware boot: 2-4 WebSocket close retries at 3s
-each). The NM watcher's value: instant disconnect detection + sub-second
-network blip recovery (136ms) + no interference with wake.
+**VA+ with 500ms retries selected**: 13.0s wake-to-login (2.8s faster
+than 3s retries, 1.9s over theoretical minimum). Instant disconnect
+(3ms), no racing, no NM interference, simple implementation. The
+remaining 1.9s is TV deep-sleep boot variance — hardware, not code.
+
+Retry costs are negligible: each attempt is ~50ms (TCP connect + WebSocket
+close frame). 500ms interval × 20+ attempts is fine — the TV handles
+concurrent discovery clients routinely.
 
 ---
 
