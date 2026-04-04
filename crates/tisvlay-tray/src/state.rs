@@ -120,6 +120,7 @@ pub async fn fetch_all_state(
         states.push(cached);
     }
 
+    states.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(states)
 }
 
