@@ -259,6 +259,9 @@ async fn handle_prepare_for_sleep(proxy: Login1ManagerProxy<'static>, manager: A
                 .await;
         } else {
             info!("System resumed from sleep");
+            // Notify the forwarder before executing on_wake, so it can
+            // suppress NM reconnect attempts that would race with WoL.
+            manager.emit_system_wake();
             manager
                 .execute_system_event(SystemEvent::Wake, "wake")
                 .await;
