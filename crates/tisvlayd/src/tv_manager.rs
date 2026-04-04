@@ -11,8 +11,8 @@ use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
-    Capabilities, PowerState, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection,
-    TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
+    Capabilities, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection, TvConfig,
+    TvConnection, TvState, UserProfileConfig, UserSection,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
@@ -67,55 +67,35 @@ pub enum TvManagerError {
 }
 
 /// Event emitted when TV state changes or daemon-wide events occur.
+///
+/// Routed through the state change channel to the forwarder task in main.rs,
+/// which updates cached D-Bus properties via `InterfaceRef::get_mut()` and
+/// emits `PropertiesChanged` signals.
 #[derive(Debug, Clone)]
 pub enum StateChangeEvent {
-    /// A per-TV state change (connection, command, option, subscription update).
-    TvStateChanged {
-        /// The TV identifier.
+    /// Backend subscription push -- full TV state snapshot.
+    ///
+    /// The forwarder updates cached properties on all TV interface structs
+    /// and emits `PropertiesChanged` for each changed property.
+    SubscriptionUpdate { tv_id: String, state: TvState },
+    /// Connection status changed (connected or disconnected).
+    ///
+    /// Emitted after successful connect/reconnect (connected=true) or when
+    /// a backend subscription ends (connected=false).
+    ConnectionChanged { tv_id: String, connected: bool },
+    /// A TV config option was changed (managed, name, profile.system, etc.).
+    ///
+    /// The forwarder updates the corresponding cached property on TvService
+    /// and emits `PropertiesChanged`.
+    OptionChanged {
         tv_id: String,
-        /// The new state (JSON-encoded).
-        state_json: String,
+        key: String,
+        value: String,
     },
     /// Configuration was reloaded from disk.
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
-}
-
-impl StateChangeEvent {
-    /// Create a state change event for a connection status change.
-    pub fn connection_change(tv_id: &str, connected: bool, error: Option<&str>) -> Self {
-        let state = serde_json::json!({
-            "connected": connected,
-            "error": error,
-        });
-        Self::TvStateChanged {
-            tv_id: tv_id.to_string(),
-            state_json: state.to_string(),
-        }
-    }
-
-    /// Create a state change event for a TV option change (managed, profile, etc.)
-    pub fn option_change(tv_id: &str, key: &str, value: &str) -> Self {
-        let state = serde_json::json!({
-            "option_changed": { "key": key, "value": value },
-        });
-        Self::TvStateChanged {
-            tv_id: tv_id.to_string(),
-            state_json: state.to_string(),
-        }
-    }
-
-    /// Create a state change event after a command was executed on a TV.
-    pub fn command_completed(tv_id: &str, command: &str) -> Self {
-        let state = serde_json::json!({
-            "command_completed": command,
-        });
-        Self::TvStateChanged {
-            tv_id: tv_id.to_string(),
-            state_json: state.to_string(),
-        }
-    }
 }
 
 /// Basic TV information for D-Bus properties.
@@ -142,6 +122,11 @@ struct ManagedTv {
     /// system profiles defined in the config. Updated on config reload
     /// and when the profile assignment changes via `set_tv_option`.
     system_profile: ResolvedSystemProfile,
+    /// Last known current input from backend subscription pushes.
+    ///
+    /// Used by `is_automated()` to evaluate the input-aware gate without
+    /// needing access to the D-Bus interface cache.
+    last_known_input: Option<String>,
 }
 
 impl ManagedTv {
@@ -151,7 +136,22 @@ impl ManagedTv {
             connection: None,
             powered_off: false,
             system_profile,
+            last_known_input: None,
         }
+    }
+
+    /// Whether automation should fire for this TV right now.
+    ///
+    /// Composes `managed`, `automate_when` (from system profile), `primary_input`
+    /// (from config), and `last_known_input` (from subscription pushes).
+    fn is_automated(&self, managed: bool) -> bool {
+        if !managed {
+            return false;
+        }
+        self.system_profile.automate_when.should_automate(
+            self.config.primary_input.as_deref(),
+            self.last_known_input.as_deref(),
+        )
     }
 
     fn is_connected(&self) -> bool {
@@ -226,17 +226,12 @@ pub(crate) enum SystemEvent {
 /// config with a single shared field-mapping, so neither can drift from the other.
 fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvManagerError> {
     match key {
-        "hdmi_input" => {
-            tv.hdmi_input = if value.is_empty() {
+        "primary_input" => {
+            tv.primary_input = if value.is_empty() {
                 None
             } else {
                 Some(value.to_string())
             };
-        }
-        "only_when_active" => {
-            tv.only_when_active = value
-                .parse()
-                .map_err(|_| TvManagerError::ConfigError("Invalid bool".into()))?;
         }
         "managed" => {
             tv.managed = value
@@ -314,23 +309,35 @@ impl TvManager {
             Ok(mut state_rx) => {
                 let tv_id = tv_id.to_string();
                 let tx = self.state_change_tx.clone();
+                let tvs = self.tvs.clone();
                 info!(tv_id = %tv_id, "Subscribed to backend state updates");
                 tokio::spawn(async move {
                     while let Some(state) = state_rx.recv().await {
-                        let json = serde_json::to_string(&state).unwrap_or_default();
-                        let event = StateChangeEvent::TvStateChanged {
+                        // Update last_known_input on ManagedTv for the automation gate.
+                        if let Some(ref input) = state.current_input {
+                            let tvs_read = tvs.read().await;
+                            if let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) {
+                                tv_arc.lock().await.last_known_input = Some(input.clone());
+                            }
+                        }
+                        let event = StateChangeEvent::SubscriptionUpdate {
                             tv_id: tv_id.clone(),
-                            state_json: json,
+                            state,
                         };
                         if tx.send(event).is_err() {
                             break;
                         }
                     }
+                    // Subscription ended -- TV likely disconnected.
+                    let _ = tx.send(StateChangeEvent::ConnectionChanged {
+                        tv_id: tv_id.clone(),
+                        connected: false,
+                    });
                     debug!(tv_id = %tv_id, "Backend state subscription ended");
                 });
             }
             Err(_) => {
-                // Backend doesn't support subscriptions — this is fine,
+                // Backend doesn't support subscriptions -- this is fine,
                 // the tray's fallback poll handles state refresh.
             }
         }
@@ -372,9 +379,22 @@ impl TvManager {
         }
     }
 
-    /// Execute a system event on all managed TVs using each TV's resolved system profile.
+    /// List TV IDs where automation should fire (managed + input-aware gate).
+    async fn list_automated_tv_ids(&self) -> Vec<String> {
+        let tvs = self.tvs.read().await;
+        let mut result = Vec::new();
+        for (id, (managed, tv_arc)) in tvs.iter() {
+            let tv = tv_arc.lock().await;
+            if tv.is_automated(*managed) {
+                result.push(id.clone());
+            }
+        }
+        result
+    }
+
+    /// Execute a system event on all automated TVs using each TV's resolved system profile.
     pub async fn execute_system_event(&self, event: SystemEvent, context: &str) {
-        let tv_ids = self.list_managed_tv_ids().await;
+        let tv_ids = self.list_automated_tv_ids().await;
         for tv_id in &tv_ids {
             let action = self.get_system_action(tv_id, event).await;
             if action == SessionAction::None {
@@ -487,7 +507,10 @@ impl TvManager {
                         }
                     }
                 }
-                manager.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+                manager.emit_state_change(StateChangeEvent::ConnectionChanged {
+                    tv_id: tv_id.to_string(),
+                    connected: true,
+                });
 
                 match manager.screen_on(tv_id).await {
                     Ok(()) => info!(tv_id = %tv_id, "Startup: screen on"),
@@ -496,7 +519,7 @@ impl TvManager {
                     }
                 }
 
-                if let Some(ref input) = tv_config.hdmi_input {
+                if let Some(ref input) = tv_config.primary_input {
                     match manager.switch_input(tv_id, input).await {
                         Ok(()) => info!(tv_id = %tv_id, input = %input, "Startup: switched input"),
                         Err(e) => {
@@ -567,6 +590,20 @@ impl TvManager {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
         let tv = tv_arc.lock().await;
         Some(tv.config.profile.system.clone())
+    }
+
+    /// Get the resolved `automate_when` policy for a TV.
+    pub async fn get_tv_automate_when(&self, tv_id: &str) -> Option<tisvlay_core::AutomateWhen> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        Some(tv.system_profile.automate_when)
+    }
+
+    /// Get the primary input for a TV (from config).
+    pub async fn get_tv_primary_input(&self, tv_id: &str) -> Option<String> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        tv.config.primary_input.clone()
     }
 
     /// List all configured TV IDs.
@@ -649,7 +686,10 @@ impl TvManager {
         }
 
         drop(tv);
-        self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+        self.emit_state_change(StateChangeEvent::ConnectionChanged {
+            tv_id: tv_id.to_string(),
+            connected: true,
+        });
 
         Ok(())
     }
@@ -689,7 +729,10 @@ impl TvManager {
 
             info!(tv_id = %tv_id, "Connected to TV");
             tv.connection = Some(connection);
-            self.emit_state_change(StateChangeEvent::connection_change(tv_id, true, None));
+            self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                tv_id: tv_id.to_string(),
+                connected: true,
+            });
 
             // Subscribe to backend state updates if supported
             if let Some(conn) = tv.connection.as_mut() {
@@ -761,8 +804,10 @@ impl TvManager {
             }
         }
 
-        let event = StateChangeEvent::connection_change(tv_id, true, None);
-        self.emit_state_change(event);
+        self.emit_state_change(StateChangeEvent::ConnectionChanged {
+            tv_id: tv_id.to_string(),
+            connected: true,
+        });
         info!(tv_id = %tv_id, "TV is online after WoL");
         Ok(())
     }
@@ -794,14 +839,6 @@ impl TvManager {
         result
     }
 
-    /// Get power state.
-    pub async fn get_power_state(&self, tv_id: &str) -> Result<PowerState, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_power_state().await })
-        })
-        .await
-    }
-
     // -------------------------------------------------------------------------
     // Screen Control
     // -------------------------------------------------------------------------
@@ -812,7 +849,6 @@ impl TvManager {
             Box::pin(async move { conn.screen_on().await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "screen_on"));
         Ok(())
     }
 
@@ -822,16 +858,7 @@ impl TvManager {
             Box::pin(async move { conn.screen_off().await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "screen_off"));
         Ok(())
-    }
-
-    /// Check if screen is on.
-    pub async fn is_screen_on(&self, tv_id: &str) -> Result<bool, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.is_screen_on().await })
-        })
-        .await
     }
 
     // -------------------------------------------------------------------------
@@ -844,16 +871,7 @@ impl TvManager {
             Box::pin(async move { conn.set_volume(volume).await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "set_volume"));
         Ok(())
-    }
-
-    /// Get volume.
-    pub async fn get_volume(&self, tv_id: &str) -> Result<u8, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_volume().await })
-        })
-        .await
     }
 
     /// Set mute.
@@ -862,14 +880,7 @@ impl TvManager {
             Box::pin(async move { conn.set_mute(mute).await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "set_mute"));
         Ok(())
-    }
-
-    /// Check if muted.
-    pub async fn is_muted(&self, tv_id: &str) -> Result<bool, TvManagerError> {
-        self.with_connection(tv_id, |conn| Box::pin(async move { conn.is_muted().await }))
-            .await
     }
 
     // -------------------------------------------------------------------------
@@ -883,27 +894,7 @@ impl TvManager {
             Box::pin(async move { conn.switch_input(&input).await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "switch_input"));
         Ok(())
-    }
-
-    /// Get current input.
-    pub async fn get_current_input(&self, tv_id: &str) -> Result<Option<String>, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_current_input().await })
-        })
-        .await
-    }
-
-    /// Get available inputs.
-    pub async fn get_inputs(&self, tv_id: &str) -> Result<Vec<(String, String)>, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move {
-                let inputs = conn.list_inputs().await?;
-                Ok(inputs.into_iter().map(|i| (i.id, i.label)).collect())
-            })
-        })
-        .await
     }
 
     // -------------------------------------------------------------------------
@@ -916,28 +907,7 @@ impl TvManager {
             Box::pin(async move { conn.set_backlight(backlight).await })
         })
         .await?;
-        self.emit_state_change(StateChangeEvent::command_completed(tv_id, "set_backlight"));
         Ok(())
-    }
-
-    /// Get backlight.
-    pub async fn get_backlight(&self, tv_id: &str) -> Result<u8, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_backlight().await })
-        })
-        .await
-    }
-
-    // -------------------------------------------------------------------------
-    // State
-    // -------------------------------------------------------------------------
-
-    /// Get TV state.
-    pub async fn get_state(&self, tv_id: &str) -> Result<TvState, TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.get_state().await })
-        })
-        .await
     }
 
     // -------------------------------------------------------------------------
@@ -1160,7 +1130,11 @@ impl TvManager {
         .await
         .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
 
-        self.emit_state_change(StateChangeEvent::option_change(tv_id, key, value));
+        self.emit_state_change(StateChangeEvent::OptionChanged {
+            tv_id: tv_id.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+        });
         info!(tv_id = %tv_id, key = %key, value = %value, "TV option updated");
         Ok(())
     }

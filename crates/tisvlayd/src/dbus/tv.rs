@@ -11,29 +11,30 @@
 use crate::dbus::DaemonError;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::info;
 use zbus::interface;
-use zbus::object_server::SignalEmitter;
-
-/// Shared state for all TV interfaces.
-type TvState = (String, Arc<TvManager>);
 
 /// Base TV interface with properties and connection management.
+///
+/// Holds cached state that is updated by the subscription forwarding task
+/// via `InterfaceRef::get_mut()`. Property reads are instant (no lock, no I/O).
 pub struct TvService {
-    tv_id: String,
-    manager: Arc<TvManager>,
-}
+    pub(crate) tv_id: String,
+    pub(crate) manager: Arc<TvManager>,
 
-impl TvService {
-    /// Create a new TV service.
-    pub fn new(tv_id: String, manager: Arc<TvManager>) -> Self {
-        Self { tv_id, manager }
-    }
+    // Cached identity/config (set at registration, updated on config reload)
+    pub(crate) name: String,
+    pub(crate) vendor: String,
+    pub(crate) address: String,
+    pub(crate) managed: bool,
+    pub(crate) system_profile: String,
+    pub(crate) primary_input: String,
+    pub(crate) automate_when: tisvlay_core::AutomateWhen,
 
-    /// Get the shared state for creating feature interfaces.
-    pub fn state(&self) -> TvState {
-        (self.tv_id.clone(), self.manager.clone())
-    }
+    // Cached runtime state (updated by subscription pushes)
+    pub(crate) connected: bool,
+    /// Copy of current_input from TvInputService, used to compute `Automated`.
+    pub(crate) current_input: String,
 }
 
 #[interface(name = "org.tisvlay.Tv1")]
@@ -43,77 +44,130 @@ impl TvService {
     // -------------------------------------------------------------------------
 
     /// TV identifier.
-    #[zbus(property)]
-    async fn id(&self) -> String {
-        self.tv_id.clone()
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn id(&self) -> &str {
+        &self.tv_id
     }
 
     /// TV display name.
     #[zbus(property)]
-    async fn name(&self) -> String {
-        let manager = &self.manager;
-        manager
-            .get_tv_info(&self.tv_id)
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Set TV display name.
+    #[zbus(property)]
+    async fn set_name(&mut self, name: String) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, name = %name, "D-Bus: set Name");
+        self.manager
+            .set_tv_option(&self.tv_id, "name", &name)
             .await
-            .map(|info| info.name)
-            .unwrap_or_default()
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.name = name;
+        Ok(())
     }
 
     /// TV vendor ID.
-    #[zbus(property)]
-    async fn vendor(&self) -> String {
-        let manager = &self.manager;
-        manager
-            .get_tv_info(&self.tv_id)
-            .await
-            .map(|info| info.vendor)
-            .unwrap_or_default()
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn vendor(&self) -> &str {
+        &self.vendor
     }
 
     /// TV display address (vendor-specific, e.g. IP address).
-    #[zbus(property)]
-    async fn address(&self) -> String {
-        let manager = &self.manager;
-        manager
-            .get_tv_info(&self.tv_id)
-            .await
-            .map(|info| info.address)
-            .unwrap_or_default()
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn address(&self) -> &str {
+        &self.address
     }
 
     /// Whether the TV is currently connected.
     #[zbus(property)]
-    async fn connected(&self) -> bool {
-        let manager = &self.manager;
-        manager.is_connected(&self.tv_id).await
+    fn connected(&self) -> bool {
+        self.connected
     }
 
     /// Whether this TV participates in automated management.
     #[zbus(property)]
-    async fn managed(&self) -> bool {
-        let manager = &self.manager;
-        manager
-            .get_tv_info(&self.tv_id)
+    fn managed(&self) -> bool {
+        self.managed
+    }
+
+    /// Set whether this TV participates in automated management.
+    #[zbus(property)]
+    async fn set_managed(&mut self, managed: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, managed = %managed, "D-Bus: set Managed");
+        self.manager
+            .set_tv_option(&self.tv_id, "managed", &managed.to_string())
             .await
-            .map(|info| info.managed)
-            .unwrap_or(true)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.managed = managed;
+        Ok(())
     }
 
     /// System profile name assigned to this TV.
     #[zbus(property)]
-    async fn system_profile(&self) -> String {
-        let manager = &self.manager;
-        manager
-            .get_tv_system_profile(&self.tv_id)
+    fn system_profile(&self) -> &str {
+        &self.system_profile
+    }
+
+    /// Set the system profile name for this TV.
+    #[zbus(property)]
+    async fn set_system_profile(&mut self, profile: String) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, profile = %profile, "D-Bus: set SystemProfile");
+        self.manager
+            .set_tv_option(&self.tv_id, "profile.system", &profile)
             .await
-            .unwrap_or_else(|| "default".to_string())
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.system_profile = profile;
+        Ok(())
+    }
+
+    /// The input this PC is connected to (e.g., "HDMI_1").
+    #[zbus(property)]
+    fn primary_input(&self) -> &str {
+        &self.primary_input
+    }
+
+    /// Set the primary input for this TV.
+    #[zbus(property)]
+    async fn set_primary_input(&mut self, input: String) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, input = %input, "D-Bus: set PrimaryInput");
+        self.manager
+            .set_tv_option(&self.tv_id, "primary_input", &input)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.primary_input = input;
+        Ok(())
+    }
+
+    /// When automation fires relative to the TV's current input.
+    ///
+    /// From the resolved system profile: "always", "on_primary", "off_primary".
+    #[zbus(property)]
+    fn automate_when(&self) -> String {
+        self.automate_when.to_string()
+    }
+
+    /// Whether automation should fire for this TV right now.
+    ///
+    /// Computed from `managed`, `automate_when`, `primary_input`, and the
+    /// TV's current input. When the TV is off (no known input), returns
+    /// `true` (benefit of the doubt).
+    #[zbus(property)]
+    fn automated(&self) -> bool {
+        if !self.managed {
+            return false;
+        }
+        let primary = (!self.primary_input.is_empty()).then_some(self.primary_input.as_str());
+        let current = (!self.current_input.is_empty()).then_some(self.current_input.as_str());
+        self.automate_when.should_automate(primary, current)
     }
 
     /// Capabilities supported by this TV.
-    #[zbus(property)]
+    ///
+    /// Queried live from the backend (populated after connection).
+    #[zbus(property(emits_changed_signal = "invalidates"))]
     async fn capabilities(&self) -> Vec<String> {
-        let manager = &self.manager;
-        manager
+        self.manager
             .get_capabilities(&self.tv_id)
             .await
             .map(|caps| caps.to_strings().into_iter().map(String::from).collect())
@@ -127,39 +181,11 @@ impl TvService {
     /// Force reconnection to the TV.
     async fn reconnect(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: Reconnect");
-        let manager = &self.manager;
-        manager
+        self.manager
             .reconnect(&self.tv_id)
             .await
             .map_err(DaemonError::from)
     }
-
-    /// Get TV state as JSON.
-    async fn get_state(&self) -> Result<String, DaemonError> {
-        debug!(tv_id = %self.tv_id, "D-Bus: GetState");
-        let manager = &self.manager;
-        let state = manager
-            .get_state(&self.tv_id)
-            .await
-            .map_err(DaemonError::from)?;
-        serde_json::to_string(&state)
-            .map_err(|e| DaemonError::OperationFailed(format!("JSON serialization failed: {}", e)))
-    }
-
-    // -------------------------------------------------------------------------
-    // Signals
-    // -------------------------------------------------------------------------
-
-    /// Signal emitted when TV state changes.
-    #[zbus(signal)]
-    pub async fn state_changed(emitter: &SignalEmitter<'_>, state: &str) -> zbus::Result<()>;
-
-    /// Signal emitted when connection status changes.
-    #[zbus(signal)]
-    pub async fn connection_changed(
-        emitter: &SignalEmitter<'_>,
-        connected: bool,
-    ) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -168,18 +194,11 @@ impl TvService {
 
 /// Power control interface.
 pub struct TvPowerService {
-    tv_id: String,
-    manager: Arc<TvManager>,
-}
+    pub(crate) tv_id: String,
+    pub(crate) manager: Arc<TvManager>,
 
-impl TvPowerService {
-    /// Create a new power service from shared state.
-    pub fn from_state(state: &TvState) -> Self {
-        Self {
-            tv_id: state.0.clone(),
-            manager: state.1.clone(),
-        }
-    }
+    // Cached state
+    pub(crate) power_state: String,
 }
 
 #[interface(name = "org.tisvlay.Tv1.Power")]
@@ -187,8 +206,7 @@ impl TvPowerService {
     /// Power on the TV (Wake-on-LAN).
     async fn power_on(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: PowerOn");
-        let manager = &self.manager;
-        manager
+        self.manager
             .power_on(&self.tv_id)
             .await
             .map_err(DaemonError::from)
@@ -197,8 +215,7 @@ impl TvPowerService {
     /// Power off the TV.
     async fn power_off(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: PowerOff");
-        let manager = &self.manager;
-        manager
+        self.manager
             .power_off(&self.tv_id)
             .await
             .map_err(DaemonError::from)
@@ -206,13 +223,8 @@ impl TvPowerService {
 
     /// Get current power state.
     #[zbus(property)]
-    async fn power_state(&self) -> String {
-        let manager = &self.manager;
-        manager
-            .get_power_state(&self.tv_id)
-            .await
-            .map(|s| format!("{:?}", s).to_lowercase())
-            .unwrap_or_else(|_| "unknown".to_string())
+    fn power_state(&self) -> &str {
+        &self.power_state
     }
 }
 
@@ -221,48 +233,39 @@ impl TvPowerService {
 // =============================================================================
 
 /// Screen control interface (OLED-safe blanking).
+///
+/// The screen state is exposed as a writable boolean property `IsScreenOn`.
+/// Setting `true` unblanks the screen, setting `false` blanks it.
 pub struct TvScreenService {
-    tv_id: String,
-    manager: Arc<TvManager>,
-}
+    pub(crate) tv_id: String,
+    pub(crate) manager: Arc<TvManager>,
 
-impl TvScreenService {
-    /// Create a new screen service from shared state.
-    pub fn from_state(state: &TvState) -> Self {
-        Self {
-            tv_id: state.0.clone(),
-            manager: state.1.clone(),
-        }
-    }
+    // Cached state
+    pub(crate) is_screen_on: bool,
 }
 
 #[interface(name = "org.tisvlay.Tv1.Screen")]
 impl TvScreenService {
-    /// Turn the screen on (unblank).
-    async fn screen_on(&self) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, "D-Bus: ScreenOn");
-        let manager = &self.manager;
-        manager
-            .screen_on(&self.tv_id)
-            .await
-            .map_err(DaemonError::from)
-    }
-
-    /// Turn the screen off (blank).
-    async fn screen_off(&self) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, "D-Bus: ScreenOff");
-        let manager = &self.manager;
-        manager
-            .screen_off(&self.tv_id)
-            .await
-            .map_err(DaemonError::from)
-    }
-
     /// Whether the screen is currently on.
+    ///
+    /// Set `true` to unblank, `false` to blank (OLED-safe screen off).
     #[zbus(property)]
-    async fn screen_on_prop(&self) -> bool {
-        let manager = &self.manager;
-        manager.is_screen_on(&self.tv_id).await.unwrap_or(true)
+    fn is_screen_on(&self) -> bool {
+        self.is_screen_on
+    }
+
+    /// Set screen on/off state.
+    #[zbus(property)]
+    async fn set_is_screen_on(&mut self, on: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, on = on, "D-Bus: set IsScreenOn");
+        if on {
+            self.manager.screen_on(&self.tv_id).await
+        } else {
+            self.manager.screen_off(&self.tv_id).await
+        }
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.is_screen_on = on;
+        Ok(())
     }
 }
 
@@ -271,55 +274,57 @@ impl TvScreenService {
 // =============================================================================
 
 /// Volume control interface.
+///
+/// Volume and mute are writable properties. Setting them sends the command
+/// to the TV backend and updates the cache on success.
 pub struct TvVolumeService {
-    tv_id: String,
-    manager: Arc<TvManager>,
-}
+    pub(crate) tv_id: String,
+    pub(crate) manager: Arc<TvManager>,
 
-impl TvVolumeService {
-    /// Create a new volume service from shared state.
-    pub fn from_state(state: &TvState) -> Self {
-        Self {
-            tv_id: state.0.clone(),
-            manager: state.1.clone(),
-        }
-    }
+    // Cached state
+    pub(crate) volume: u8,
+    pub(crate) muted: bool,
 }
 
 #[interface(name = "org.tisvlay.Tv1.Volume")]
 impl TvVolumeService {
-    /// Set volume level (0-100).
-    async fn set_volume(&self, level: u8) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, volume = level, "D-Bus: SetVolume");
-        let manager = &self.manager;
-        manager
-            .set_volume(&self.tv_id, level)
-            .await
-            .map_err(DaemonError::from)
-    }
-
     /// Current volume level (0-100).
     #[zbus(property)]
-    async fn volume(&self) -> u8 {
-        let manager = &self.manager;
-        manager.get_volume(&self.tv_id).await.unwrap_or(0)
+    fn volume(&self) -> u8 {
+        self.volume
     }
 
-    /// Set mute state.
-    async fn set_mute(&self, mute: bool) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, mute = mute, "D-Bus: SetMute");
-        let manager = &self.manager;
-        manager
-            .set_mute(&self.tv_id, mute)
+    /// Set volume level (0-100).
+    #[zbus(property)]
+    async fn set_volume(&mut self, level: u8) -> zbus::fdo::Result<()> {
+        if level > 100 {
+            return Err(zbus::fdo::Error::InvalidArgs("Volume must be 0-100".into()));
+        }
+        info!(tv_id = %self.tv_id, volume = level, "D-Bus: set Volume");
+        self.manager
+            .set_volume(&self.tv_id, level)
             .await
-            .map_err(DaemonError::from)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.volume = level;
+        Ok(())
     }
 
     /// Whether audio is currently muted.
     #[zbus(property)]
-    async fn muted(&self) -> bool {
-        let manager = &self.manager;
-        manager.is_muted(&self.tv_id).await.unwrap_or(false)
+    fn muted(&self) -> bool {
+        self.muted
+    }
+
+    /// Set mute state.
+    #[zbus(property)]
+    async fn set_muted(&mut self, muted: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, muted = muted, "D-Bus: set Muted");
+        self.manager
+            .set_mute(&self.tv_id, muted)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.muted = muted;
+        Ok(())
     }
 }
 
@@ -329,18 +334,12 @@ impl TvVolumeService {
 
 /// Input switching interface.
 pub struct TvInputService {
-    tv_id: String,
-    manager: Arc<TvManager>,
-}
+    pub(crate) tv_id: String,
+    pub(crate) manager: Arc<TvManager>,
 
-impl TvInputService {
-    /// Create a new input service from shared state.
-    pub fn from_state(state: &TvState) -> Self {
-        Self {
-            tv_id: state.0.clone(),
-            manager: state.1.clone(),
-        }
-    }
+    // Cached state
+    pub(crate) current_input: String,
+    pub(crate) available_inputs: Vec<(String, String)>,
 }
 
 #[interface(name = "org.tisvlay.Tv1.Input")]
@@ -348,8 +347,7 @@ impl TvInputService {
     /// Switch to the specified input.
     async fn switch_input(&self, input_id: &str) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, input_id = %input_id, "D-Bus: SwitchInput");
-        let manager = &self.manager;
-        manager
+        self.manager
             .switch_input(&self.tv_id, input_id)
             .await
             .map_err(DaemonError::from)
@@ -357,20 +355,14 @@ impl TvInputService {
 
     /// Currently active input ID.
     #[zbus(property)]
-    async fn current_input(&self) -> String {
-        let manager = &self.manager;
-        manager
-            .get_current_input(&self.tv_id)
-            .await
-            .unwrap_or(None)
-            .unwrap_or_default()
+    fn current_input(&self) -> &str {
+        &self.current_input
     }
 
     /// Available inputs as (id, label) tuples.
-    #[zbus(property)]
-    async fn available_inputs(&self) -> Vec<(String, String)> {
-        let manager = &self.manager;
-        manager.get_inputs(&self.tv_id).await.unwrap_or_default()
+    #[zbus(property(emits_changed_signal = "invalidates"))]
+    fn available_inputs(&self) -> Vec<(String, String)> {
+        self.available_inputs.clone()
     }
 }
 
@@ -379,38 +371,40 @@ impl TvInputService {
 // =============================================================================
 
 /// Backlight control interface (OLED pixel brightness).
+///
+/// Backlight is a writable property. Setting it sends the command to the
+/// TV backend and updates the cache on success.
 pub struct TvBacklightService {
-    tv_id: String,
-    manager: Arc<TvManager>,
-}
+    pub(crate) tv_id: String,
+    pub(crate) manager: Arc<TvManager>,
 
-impl TvBacklightService {
-    /// Create a new backlight service from shared state.
-    pub fn from_state(state: &TvState) -> Self {
-        Self {
-            tv_id: state.0.clone(),
-            manager: state.1.clone(),
-        }
-    }
+    // Cached state
+    pub(crate) backlight: u8,
 }
 
 #[interface(name = "org.tisvlay.Tv1.Backlight")]
 impl TvBacklightService {
-    /// Set backlight level (0-100).
-    async fn set_backlight(&self, level: u8) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, backlight = level, "D-Bus: SetBacklight");
-        let manager = &self.manager;
-        manager
-            .set_backlight(&self.tv_id, level)
-            .await
-            .map_err(DaemonError::from)
-    }
-
     /// Current backlight level (0-100).
     #[zbus(property)]
-    async fn backlight(&self) -> u8 {
-        let manager = &self.manager;
-        manager.get_backlight(&self.tv_id).await.unwrap_or(0)
+    fn backlight(&self) -> u8 {
+        self.backlight
+    }
+
+    /// Set backlight level (0-100).
+    #[zbus(property)]
+    async fn set_backlight(&mut self, level: u8) -> zbus::fdo::Result<()> {
+        if level > 100 {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "Backlight must be 0-100".into(),
+            ));
+        }
+        info!(tv_id = %self.tv_id, backlight = level, "D-Bus: set Backlight");
+        self.manager
+            .set_backlight(&self.tv_id, level)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        self.backlight = level;
+        Ok(())
     }
 }
 
@@ -424,7 +418,7 @@ pub async fn unregister_tv_interfaces(
     path: &str,
 ) -> zbus::Result<()> {
     let object_server = connection.object_server();
-    // Ignore errors — the interface may not be registered (e.g., added but never connected).
+    // Ignore errors -- the interface may not be registered (e.g., added but never connected).
     let _ = object_server.remove::<TvBacklightService, _>(path).await;
     let _ = object_server.remove::<TvInputService, _>(path).await;
     let _ = object_server.remove::<TvVolumeService, _>(path).await;
@@ -435,35 +429,112 @@ pub async fn unregister_tv_interfaces(
 }
 
 /// Register all TV interfaces at the given object path.
+///
+/// Populates cached state from the manager's current config. Runtime state
+/// (volume, power, etc.) starts at defaults and is filled in by subscription
+/// pushes once the TV connects.
 pub async fn register_tv_interfaces(
     connection: &zbus::Connection,
     path: &str,
     tv_id: String,
     manager: Arc<TvManager>,
 ) -> zbus::Result<()> {
-    let base = TvService::new(tv_id, manager);
-    let state = base.state();
+    // Fetch config-based properties for initial cache
+    let (name, vendor, address, managed) = manager
+        .get_tv_info(&tv_id)
+        .await
+        .map(|info| (info.name, info.vendor, info.address, info.managed))
+        .unwrap_or_else(|| (String::new(), String::new(), String::new(), true));
+    let system_profile = manager
+        .get_tv_system_profile(&tv_id)
+        .await
+        .unwrap_or_else(|| "default".to_string());
+    let primary_input = manager
+        .get_tv_primary_input(&tv_id)
+        .await
+        .unwrap_or_default();
+    let automate_when = manager
+        .get_tv_automate_when(&tv_id)
+        .await
+        .unwrap_or_default();
+    let connected = manager.is_connected(&tv_id).await;
 
     let object_server = connection.object_server();
 
-    // Register base interface
-    object_server.at(path, base).await?;
+    object_server
+        .at(
+            path,
+            TvService {
+                tv_id: tv_id.clone(),
+                manager: manager.clone(),
+                name,
+                vendor,
+                address,
+                managed,
+                system_profile,
+                primary_input,
+                automate_when,
+                connected,
+                current_input: String::new(),
+            },
+        )
+        .await?;
 
-    // Register feature interfaces
     object_server
-        .at(path, TvPowerService::from_state(&state))
+        .at(
+            path,
+            TvPowerService {
+                tv_id: tv_id.clone(),
+                manager: manager.clone(),
+                power_state: "unknown".to_string(),
+            },
+        )
         .await?;
+
     object_server
-        .at(path, TvScreenService::from_state(&state))
+        .at(
+            path,
+            TvScreenService {
+                tv_id: tv_id.clone(),
+                manager: manager.clone(),
+                is_screen_on: true,
+            },
+        )
         .await?;
+
     object_server
-        .at(path, TvVolumeService::from_state(&state))
+        .at(
+            path,
+            TvVolumeService {
+                tv_id: tv_id.clone(),
+                manager: manager.clone(),
+                volume: 0,
+                muted: false,
+            },
+        )
         .await?;
+
     object_server
-        .at(path, TvInputService::from_state(&state))
+        .at(
+            path,
+            TvInputService {
+                tv_id: tv_id.clone(),
+                manager: manager.clone(),
+                current_input: String::new(),
+                available_inputs: Vec::new(),
+            },
+        )
         .await?;
+
     object_server
-        .at(path, TvBacklightService::from_state(&state))
+        .at(
+            path,
+            TvBacklightService {
+                tv_id: tv_id.clone(),
+                manager: manager.clone(),
+                backlight: 0,
+            },
+        )
         .await?;
 
     Ok(())

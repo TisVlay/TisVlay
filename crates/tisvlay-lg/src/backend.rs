@@ -261,6 +261,11 @@ impl TvConnection for LgConnection {
         // Create a channel for TvState updates.
         let (state_tx, state_rx) = mpsc::unbounded_channel();
 
+        // Send the initial seeded state so D-Bus cached properties are
+        // populated immediately, rather than waiting for the first
+        // subsequent WebSocket push from the TV.
+        let _ = state_tx.send(initial_state.clone());
+
         // Spawn a task that converts SSAP subscription responses into
         // TvState snapshots. Each update merges into a cached state so
         // the receiver always gets a complete snapshot.
@@ -328,6 +333,7 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
         }
     } else if uri.contains("getExternalInputList") {
         if let Some(devices) = payload.get("devices").and_then(|v| v.as_array()) {
+            state.input_app_id_map.clear();
             state.inputs = devices
                 .iter()
                 .filter_map(|d| {
@@ -337,6 +343,15 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
                         .get("connected")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
+                    // Build reverse mapping: app ID → physical input ID.
+                    // LG reports inputs as apps (e.g., "com.webos.app.hdmi1")
+                    // in getForegroundAppInfo, but uses physical IDs (e.g.,
+                    // "HDMI_1") in the input list. This map normalizes them.
+                    if let Some(app_id) = d.get("appId").and_then(|v| v.as_str()) {
+                        state
+                            .input_app_id_map
+                            .insert(app_id.to_string(), id.to_string());
+                    }
                     Some(InputInfo {
                         id: id.to_string(),
                         label: label.to_string(),
@@ -349,8 +364,15 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
     } else if uri.contains("getForegroundAppInfo") {
         if let Some(app_id) = payload.get("appId").and_then(|v| v.as_str()) {
             state.current_app = Some(app_id.to_string());
-            // HDMI inputs appear as apps like "com.webos.app.hdmi1"
-            state.current_input = Some(app_id.to_string());
+            // Normalize app ID to physical input ID using the mapping
+            // built from getExternalInputList. Falls back to the raw app
+            // ID if no mapping exists (e.g., non-input apps like Netflix).
+            let input_id = state
+                .input_app_id_map
+                .get(app_id)
+                .cloned()
+                .unwrap_or_else(|| app_id.to_string());
+            state.current_input = Some(input_id);
             return true;
         }
     } else if uri.contains("#picture/backlight") {

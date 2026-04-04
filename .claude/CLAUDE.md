@@ -4,6 +4,8 @@
 
 A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Currently supports LG WebOS TVs, with a vendor-agnostic architecture designed for adding Samsung, Sony, and other backends. The user's Nvidia GPU does not support HDMI-CEC, so network-based control via vendor protocols (e.g., LG WebOS SSAP) is required.
 
+See [docs/design.md](docs/design.md) for the full architecture, D-Bus interface specs, config schema, CLI reference, and implementation phase history.
+
 ## Target Hardware
 
 - **LG OLED evo C3 42"** (OLED42C3PUA) - 2023 model
@@ -11,56 +13,12 @@ A Rust utility to control smart TVs from a Linux desktop connected via HDMI. Cur
 - Linux desktop with Nvidia GPU (no HDMI-CEC support)
 - KDE Plasma desktop environment
 
-## Core Objectives
-
-1. **Power Management**: Turn TV on (via Wake-on-LAN) and off
-2. **HDMI Input Switching**: Switch to the HDMI port connected to the desktop
-3. **Screen Blanking**: Turn screen off/on for OLED burn-in protection
-4. **Volume Control**: Adjust volume and mute
-5. **Desktop Integration**: React to D-Bus events (session lock/unlock, suspend/resume)
-
-## Technical Approach
-
-- **Architecture**: Vendor-agnostic core with pluggable backends (`tisvlay-lg`, future `tisvlay-samsung`, etc.)
-- **LG Protocol**: WebOS SSAP over WebSocket (ws://port 3000, wss://port 3001)
-- **Authentication**: TV pairing prompt, persist credentials in vendor-specific config section
-- **Wake-on-LAN**: Required for power-on (TV network may be inactive in standby)
-- **Async**: Use tokio runtime for non-blocking I/O
-
-## Implementation Status
-
-Phases 1–5C and the per-TV system profiles refactor are complete. See [docs/design.md](docs/design.md) for full phase history and details.
-
-**Complete:** Phase 1 (Core + CLI) · Phase 2 (Daemon) · Phase 3 (Session Service) · Phase 4a (CLI D-Bus) · Phase 4b (Tray) · Phase 4C (Config Split) · NixOS Packaging · Phase 5A (`managed` flag + CLI profile parity) · Phase 5B (live managed filtering) · Phase 5C (`ObjectManager` bulk discovery) · Per-TV System Profiles Refactor
-
-### Phase 5: Next — GUI Configuration
+## What's Next
 
 - `tisvlay-gui`: Slint-based settings window
 - TV discovery and pairing wizard (with managed checkbox)
 - Per-TV configuration and session behavior settings
-
-### Multi-Vendor Refactor (COMPLETE)
-
-Architecture refactored to support multiple TV vendors. Daemon and CLI are fully vendor-agnostic and transport-agnostic.
-
-**Design Documents**:
-- [docs/design.md](docs/design.md) - Full architecture specification
-
-**Key Architectural Decisions**:
-- Separate crates per vendor: `tisvlay-lg` (only `tisvlay-backends` imports vendor crates)
-- Core traits in `tisvlay-core`: `TvBackend`, `TvConnection` (with flattened feature methods), `TvConnector`
-- `TvConnector::connect()` takes `&toml::Value` -- fully transport-agnostic
-- `TvConnection` has all feature methods with default not-supported impls (no downcasting needed); includes `subscribe_state()` for push-based state updates (backends that support it return an `mpsc::UnboundedReceiver<TvState>`)
-- `BackendRegistry` in `tisvlay-backends` provides `connect_tv()`, `wake_tv()`, `start_pairing()`, etc.
-- Capability bitflags (`Capabilities::ALL`) for runtime feature detection
-- D-Bus: per-TV objects at `/org/tisvlay/Tv/{id}` with `Address` property (not `Ip`)
-- D-Bus: `AddTv(name, vendor, config_json, managed)` -- vendor-specific params as JSON; `managed` required, no default in library
-- D-Bus: `ObjectManager` at `/org/tisvlay` -- `GetManagedObjects` replaces `GetTvs`
-- D-Bus: Manager1 methods: `ListSystemProfiles`, `GetUserProfileDefault`, `ListUserProfiles` (no `SetDaemonOption`)
-- D-Bus: Tv1 properties include `SystemProfile`; Session1 methods: `ListUserProfiles`, `GetTvUserProfile`, `SetTvUserProfile`, `GetEffectiveUserProfile`
-- `DiscoveredTv` uses `address`/`hardware_id` (not `ip`/`mac`)
-- Two profile types: system profiles (daemon lifecycle events, per-TV) and user profiles (session events, per-TV)
-- Config shape: `[system.profiles.*]` for daemon events, `[user.profiles.*]` for session events, `profile.system`/`profile.user` for per-TV assignment
+- Input-aware automation (`primary_input`, `automate_when`) — see design.md § Power & Screen State Machine
 
 ## Current Project Structure
 
@@ -103,8 +61,8 @@ tisvlay/
 │   │
 │   ├── tisvlayd/                  # System daemon
 │   │   └── src/
-│   │       ├── main.rs           # Entry point, signal handling
-│   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.*)
+│   │       ├── main.rs           # Entry point, connection::Builder, state_change_forwarder
+│   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.* with cached properties)
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool, disk serialization
@@ -141,33 +99,6 @@ tisvlay/
 └── .claude/CLAUDE.md             # This file
 ```
 
-## Key Implementation Details
-
-### Transport-Agnostic Architecture
-- `TvConnector::connect(&self, vendor_config: &toml::Value)` -- connectors own all transport details
-- `TvConnection` has all feature methods directly with default not-supported impls
-- `BackendRegistry` provides `connect_tv()`, `display_address()`, `supports_wake()`, `wake_tv()`, `start_pairing()`, `build_config_from_pairing()`
-- Daemon depends on `tisvlay-backends`; CLI depends only on `tisvlay-core` (daemon-only)
-- Adding a new vendor: create crate, add to `tisvlay-backends/Cargo.toml`, register in `create_registry()`
-
-### TLS/WebSocket (LG backend)
-- Uses `rustls` (not native-tls) to avoid OpenSSL dependency
-- Custom `InsecureCertVerifier` accepts LG's self-signed certificates
-- Tries wss://port 3001 first, falls back to ws://port 3000
-- Multiplexed WebSocket: a background reader task routes subscription updates to a state channel and command responses to their callers; SSAP subscriptions (power, volume, mute, inputs) push state changes in real time
-
-### Configuration
-- **System config**: `/var/lib/tisvlay/config.toml` — TV definitions (with `profile.system` assignment), credentials, system profiles (`[system.profiles.*]`), admin baseline user profiles (`[user.profiles.*]`). Owned by `tisvlayd`.
-- **User config**: `~/.config/tisvlay/config.toml` — user profile definitions (`[user.profiles.*]`), per-TV user profile assignments (`[[tv]]` with `profile.user`). Owned by `tisvlay-session`. Optional; admin baseline `user.profiles.default` inherited via D-Bus if absent.
-- Both configs use `[[tv]]` array-of-tables syntax; single-file mode works because each parser ignores unknown fields
-- `tisvlayd --config <PATH>` and `tisvlay-session --config <PATH>` override respective config paths
-- Client keys stored in vendor-specific config section after TV pairing (system config only)
-- `TvConfig.vendor_config` uses `#[serde(flatten)]` with `HashMap<String, toml::Value>` -- core has zero vendor knowledge
-
-See [docs/design.md](docs/design.md) for full schema and config examples.
-
-See [docs/design.md](docs/design.md) for the full CLI command reference.
-
 ## Key Crates
 
 | Purpose | Crate |
@@ -186,43 +117,28 @@ See [docs/design.md](docs/design.md) for the full CLI command reference.
 
 ## Known Quirks
 
-- Newer firmware requires wss:// (port 3001) with self-signed cert
+- Newer firmware requires wss:// (port 3001) with self-signed cert; uses `rustls` with custom `InsecureCertVerifier`
 - TV may ignore WoL during pixel refresh
 - Need "TV On via Wi-Fi" enabled in TV settings
 - ~1-5 second delay needed between WoL and first command
 - TV closes WebSocket on standby; need reconnection logic
 - Backlight IS SSAP-subscribable (via `getSystemSettings` with `category: "picture", keys: ["backlight"]`); writing still requires Luna `createAlert` workaround (direct setSystemSettings returns 401)
 - SSAP subscription updates carry the original request ID, not the URI -- routing must use a request-ID-to-URI map
+- Multiplexed WebSocket: background reader routes subscription updates to state channel and command responses to callers; SSAP subscriptions (power, volume, mute, inputs, foreground app, backlight) push state in real time
 
 ## Quick Reference
 
-### Running the Daemon
+### Running the Stack
 
 ```bash
 # Development (session bus):
 tisvlayd --session
-
-# Production (system bus):
-sudo tisvlayd
-```
-
-### Running the Session Service
-
-```bash
-# Development (with tisvlayd --session):
 tisvlay-session --user
-
-# Production (as systemd user service):
-systemctl --user enable --now tisvlay-session
-```
-
-### Running the Tray App
-
-```bash
-# Development (with tisvlayd --session):
 tisvlay-tray --user
 
-# Production (as systemd user service):
+# Production (system bus, as systemd services):
+sudo tisvlayd
+systemctl --user enable --now tisvlay-session
 systemctl --user enable --now tisvlay-tray
 ```
 
@@ -233,26 +149,27 @@ systemctl --user enable --now tisvlay-tray
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 GetSupportedVendors
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ReloadConfig
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ListSystemProfiles
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 GetUserProfileDefault
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ListUserProfiles
 
-# List all objects + properties (replaces GetTvs)
+# List all objects + properties (single round-trip for all TV state)
 busctl --user call org.tisvlay.Daemon /org/tisvlay org.freedesktop.DBus.ObjectManager GetManagedObjects
 
-# Add TV (name, vendor, config_json, managed)
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 AddTv sssb \
-  "Living Room" "lg" '{"ip":"192.168.1.100","mac":"AA:BB:CC:DD:EE:FF"}' true
-
-# Per-TV interfaces (replace living_room with TV ID)
+# Per-TV properties (replace living_room with TV ID)
 busctl --user introspect org.tisvlay.Daemon /org/tisvlay/Tv/living_room
-busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1 Address
 busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1 Connected
-busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1 SystemProfile
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Power PowerOff
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Screen ScreenOff
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume SetMute b true
+busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume Volume
 
-# Monitor signals
+# Writable properties (set via Properties.Set)
+busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume Volume y 30
+busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume Muted b true
+busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Screen IsScreenOn b false
+busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Backlight Backlight y 80
+
+# Methods (complex operations that aren't simple property sets)
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Power PowerOff
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Power PowerOn
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Input SwitchInput s HDMI_2
+
+# Monitor PropertiesChanged signals
 busctl --user monitor org.tisvlay.Daemon
 ```
 
@@ -274,16 +191,6 @@ This sets up:
 - `tisvlay-session` user service (auto-starts on graphical session)
 - `tisvlay-tray` user service (auto-starts on graphical session)
 - D-Bus policy and CLI in `$PATH`
-
-### Manual Systemd Installation
-
-```bash
-sudo cp systemd/tisvlayd.service /etc/systemd/system/
-sudo cp systemd/org.tisvlay.Daemon.service /usr/share/dbus-1/system-services/
-sudo cp systemd/org.tisvlay.Daemon.conf /etc/dbus-1/system.d/
-sudo systemctl daemon-reload
-sudo systemctl enable --now tisvlayd
-```
 
 ## Linting & CI
 

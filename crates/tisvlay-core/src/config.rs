@@ -26,9 +26,8 @@
 //! id = "living-room"
 //! name = "Living Room TV"
 //! vendor = "lg"
-//! hdmi_input = "HDMI_1"
-//! only_when_active = true
-//!
+//! primary_input = "HDMI_1"
+//! //!
 //! [tv.lg]
 //! ip = "192.168.1.100"
 //! mac = "AA:BB:CC:DD:EE:FF"
@@ -81,6 +80,57 @@ pub enum SessionAction {
 }
 
 // =============================================================================
+// AutomateWhen — input-aware automation gating
+// =============================================================================
+
+/// Controls when automation fires relative to the TV's current input.
+///
+/// Combined with the per-TV `primary_input` and the global `managed` flag
+/// to produce the `Automated` D-Bus property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomateWhen {
+    /// Always apply automation regardless of current input.
+    #[default]
+    Always,
+    /// Only apply automation when the TV is on the primary input.
+    OnPrimary,
+    /// Only apply automation when the TV is NOT on the primary input.
+    OffPrimary,
+}
+
+impl AutomateWhen {
+    /// Evaluate the automation gate.
+    ///
+    /// Returns `true` if automation should fire given the current input state.
+    /// When either `primary_input` or `current_input` is unknown (`None`),
+    /// returns `true` (benefit of the doubt — can't check input in standby).
+    pub fn should_automate(self, primary_input: Option<&str>, current_input: Option<&str>) -> bool {
+        match self {
+            Self::Always => true,
+            Self::OnPrimary => match (primary_input, current_input) {
+                (None, _) | (_, None) => true,
+                (Some(primary), Some(current)) => current == primary,
+            },
+            Self::OffPrimary => match (primary_input, current_input) {
+                (None, _) | (_, None) => true,
+                (Some(primary), Some(current)) => current != primary,
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for AutomateWhen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Always => write!(f, "always"),
+            Self::OnPrimary => write!(f, "on_primary"),
+            Self::OffPrimary => write!(f, "off_primary"),
+        }
+    }
+}
+
+// =============================================================================
 // SystemProfileConfig (with Option<T> fields for merge support)
 // =============================================================================
 
@@ -116,6 +166,10 @@ pub struct SystemProfileConfig {
     /// Action on system wake/resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_wake: Option<SessionAction>,
+
+    /// When to apply automation relative to the TV's current input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automate_when: Option<AutomateWhen>,
 }
 
 impl SystemProfileConfig {
@@ -131,6 +185,7 @@ impl SystemProfileConfig {
             on_no_session: Some(d.on_no_session),
             on_sleep: Some(d.on_sleep),
             on_wake: Some(d.on_wake),
+            automate_when: Some(d.automate_when),
         }
     }
 
@@ -146,6 +201,7 @@ impl SystemProfileConfig {
             on_no_session: self.on_no_session.or(base.on_no_session),
             on_sleep: self.on_sleep.or(base.on_sleep),
             on_wake: self.on_wake.or(base.on_wake),
+            automate_when: self.automate_when.or(base.automate_when),
         }
     }
 
@@ -162,6 +218,7 @@ impl SystemProfileConfig {
             on_no_session: self.on_no_session.unwrap_or(d.on_no_session),
             on_sleep: self.on_sleep.unwrap_or(d.on_sleep),
             on_wake: self.on_wake.unwrap_or(d.on_wake),
+            automate_when: self.automate_when.unwrap_or(d.automate_when),
         }
     }
 }
@@ -189,6 +246,8 @@ pub struct ResolvedSystemProfile {
     pub on_sleep: SessionAction,
     /// Action on system wake/resume.
     pub on_wake: SessionAction,
+    /// When to apply automation relative to the TV's current input.
+    pub automate_when: AutomateWhen,
 }
 
 impl Default for ResolvedSystemProfile {
@@ -200,6 +259,7 @@ impl Default for ResolvedSystemProfile {
             on_no_session: SessionAction::None,
             on_sleep: SessionAction::PowerOff,
             on_wake: SessionAction::PowerOn,
+            automate_when: AutomateWhen::Always,
         }
     }
 }
@@ -454,14 +514,13 @@ pub struct TvConfig {
     /// Vendor/backend to use for this TV (e.g., "lg", "samsung").
     pub vendor: String,
 
-    /// HDMI input this PC is connected to.
-    /// Used for display-aware control when `only_when_active` is true.
+    /// The input this PC is connected to (e.g., "HDMI_1", "HDMI_2").
+    ///
+    /// Vendor-agnostic; not all inputs are HDMI (could be DVI, AV, coaxial,
+    /// or even a WebOS app ID). Used for input-aware automation gating
+    /// (see `automate_when` in `SystemProfileConfig`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub hdmi_input: Option<String>,
-
-    /// Only control this TV when it's on the specified HDMI input.
-    /// Requires `hdmi_input` to be set.
-    pub only_when_active: bool,
+    pub primary_input: Option<String>,
 
     /// Whether this TV participates in automated management.
     ///
@@ -501,23 +560,16 @@ impl TvConfig {
             id: id.into(),
             name: name.into(),
             vendor: vendor.into(),
-            hdmi_input: None,
-            only_when_active: false,
+            primary_input: None,
             managed,
             profile: TvProfileAssignment::default(),
             vendor_config: HashMap::new(),
         }
     }
 
-    /// Set the HDMI input for display-aware control.
-    pub fn with_hdmi_input(mut self, input: impl Into<String>) -> Self {
-        self.hdmi_input = Some(input.into());
-        self
-    }
-
-    /// Set whether to only control when active.
-    pub fn with_only_when_active(mut self, only_when_active: bool) -> Self {
-        self.only_when_active = only_when_active;
+    /// Set the primary input (the port this PC is connected to).
+    pub fn with_primary_input(mut self, input: impl Into<String>) -> Self {
+        self.primary_input = Some(input.into());
         self
     }
 
@@ -909,8 +961,7 @@ idle_timeout_seconds = 0
 id = "living-room"
 name = "Living Room TV"
 vendor = "lg"
-hdmi_input = "HDMI_1"
-only_when_active = true
+primary_input = "HDMI_1"
 managed = true
 
 [tv.lg]
@@ -923,8 +974,7 @@ default_input = "HDMI_1"
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.tv.len(), 1);
         assert_eq!(config.tv[0].vendor, "lg");
-        assert_eq!(config.tv[0].hdmi_input, Some("HDMI_1".to_string()));
-        assert!(config.tv[0].only_when_active);
+        assert_eq!(config.tv[0].primary_input, Some("HDMI_1".to_string()));
 
         // Check vendor-specific config
         let lg: TestLgConfig = config.tv[0].get_vendor_config().unwrap();
@@ -958,8 +1008,7 @@ idle_timeout_seconds = 300
 id = "living-room"
 name = "Living Room G4"
 vendor = "lg"
-hdmi_input = "HDMI_1"
-only_when_active = false
+primary_input = "HDMI_1"
 managed = true
 
 [tv.lg]
@@ -1012,7 +1061,6 @@ id = "living-room"
 name = "Living Room"
 vendor = "lg"
 managed = true
-only_when_active = false
 profile.system = "default"
 profile.user = "gaming"
 
@@ -1024,7 +1072,6 @@ id = "guest-room"
 name = "Guest Room"
 vendor = "lg"
 managed = true
-only_when_active = false
 profile.system = "guest"
 
 [tv.lg]
@@ -1050,7 +1097,7 @@ ip = "192.168.1.101"
         assert_eq!(resolved.on_shutdown, SessionAction::ScreenOff);
 
         // Parse the SAME TOML as UserConfig — UserTvConfig ignores unknown
-        // fields (name, vendor, managed, only_when_active, lg, profile.system)
+        // fields (name, vendor, managed, lg, profile.system)
         // and picks up profile.user.
         let user_config: UserConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(user_config.tv.len(), 2);
@@ -1296,7 +1343,6 @@ on_startup = "power_on"
 id = "living-room"
 name = "Living Room"
 vendor = "lg"
-only_when_active = false
 managed = true
 profile.system = "guest"
 
@@ -1315,7 +1361,6 @@ ip = "192.168.1.100"
 id = "test"
 name = "Test"
 vendor = "lg"
-only_when_active = false
 managed = true
 
 [tv.lg]
@@ -1590,7 +1635,6 @@ on_idle_timeout = "screen_off"
 id = "test"
 name = "Test"
 vendor = "lg"
-only_when_active = false
 managed = true
 
 [tv.lg]
@@ -1652,7 +1696,6 @@ idle_timeout_seconds = 0
 id = "office"
 name = "Office"
 vendor = "lg"
-only_when_active = false
 managed = true
 
 [tv.lg]
@@ -1813,7 +1856,6 @@ id = "office"
 name = "Office"
 vendor = "lg"
 managed = true
-only_when_active = false
 
 [tv.lg]
 ip = "192.168.1.1"

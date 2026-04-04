@@ -24,23 +24,25 @@ pub fn init(directives: &[&str]) -> anyhow::Result<()> {
     }
 
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stderr());
-    if !interactive {
-        if let Ok(journald) = tracing_journald::layer() {
-            tracing_subscriber::registry()
-                .with(journald)
-                .with(env_filter)
-                .init();
-        } else {
-            tracing_subscriber::registry()
-                .with(fmt::layer().without_time())
-                .with(env_filter)
-                .init();
-        }
-    } else {
-        tracing_subscriber::registry()
+    let journald_layer = tracing_journald::layer().ok();
+
+    match (interactive, journald_layer) {
+        // TTY: stderr with timestamps + journald if available
+        (true, journald) => tracing_subscriber::registry()
             .with(fmt::layer())
+            .with(journald)
             .with(env_filter)
-            .init();
+            .init(),
+        // Non-TTY with journald: journald only (systemd service)
+        (false, Some(journald)) => tracing_subscriber::registry()
+            .with(journald)
+            .with(env_filter)
+            .init(),
+        // Non-TTY without journald: stderr without timestamps
+        (false, None) => tracing_subscriber::registry()
+            .with(fmt::layer().without_time())
+            .with(env_filter)
+            .init(),
     }
 
     Ok(())

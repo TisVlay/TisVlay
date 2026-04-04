@@ -182,11 +182,13 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 │   └── Signals:  TvAdded, TvRemoved, ConfigReloaded
 └── /org/tisvlay/Tv/{id}            org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
     │                               Tv1.Volume, Tv1.Backlight, Tv1.Input
-    ├── Properties: Id, Name, Vendor, Address, Connected, Managed,
-    │               SystemProfile, Capabilities
-    ├── Methods:  GetState, Reconnect, PowerOff, ScreenOn/Off,
-    │             SetVolume, SetMute, SwitchInput, SetBacklight
-    └── Signals:  StateChanged, ConnectionChanged
+    ├── Properties (rw): Name, Managed, SystemProfile, PrimaryInput,
+    │                     IsScreenOn, Volume, Muted, Backlight
+    ├── Properties (ro): Id, Vendor, Address, Connected, Capabilities,
+    │                     AutomateWhen, Automated, PowerState,
+    │                     CurrentInput, AvailableInputs
+    ├── Methods:  Reconnect, PowerOn, PowerOff, SwitchInput
+    └── Signals:  (standard PropertiesChanged only)
 
 org.tisvlay.Session  (session bus)
 └── /org/tisvlay/Session            org.tisvlay.Session1
@@ -199,21 +201,11 @@ org.tisvlay.Session  (session bus)
 
 | Client | Calls | Subscribes to |
 |--------|-------|---------------|
-| **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (commands), Session1 (user profiles) | — |
-| **tisvlay-tray** | Manager1 (profiles), Tv1.* (state + commands), Session1 (user profiles) | Tv1: `StateChanged`, `ConnectionChanged`; Manager1: `ConfigReloaded`; Session1: `UserProfileChanged`; DBus: `NameOwnerChanged` (service discovery) |
-| **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions: screen on/off, power) | — |
+| **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (properties + commands), Session1 (user profiles) | — |
+| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `ConfigReloaded`; Session1: `UserProfileChanged`; DBus: `NameOwnerChanged` (service discovery) |
+| **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions via writable properties) | — |
 
-### Object Paths
-
-```
-/org/tisvlay                      # ObjectManager root (org.freedesktop.DBus.ObjectManager)
-/org/tisvlay/Manager              # Manager interface
-/org/tisvlay/Tv/{tv_id}           # Per-TV objects (e.g., /org/tisvlay/Tv/living_room)
-```
-
-`org.freedesktop.DBus.ObjectManager` is registered at `/org/tisvlay`. Clients use
-`GetManagedObjects()` to retrieve all object paths and their interface properties in a
-single round-trip — replacing the old `GetTvs` + per-property pattern.
+`org.freedesktop.DBus.ObjectManager` at `/org/tisvlay` provides `GetManagedObjects()` — a single round-trip returning all TV object paths and their interface properties.
 
 ### org.tisvlay.Manager1
 
@@ -222,7 +214,7 @@ Methods:
 - `AddTv(name: s, vendor: s, config_json: s, managed: b) → o` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation
 - `RemoveTv(tv_id: s)` — remove TV from config
 - `ReloadConfig()` — reload config from disk
-- `SetTvOption(tv_id: s, key: s, value: s)` — update a system-level TV field (`hdmi_input`, `only_when_active`, `managed`, `name`, `profile.system`); saves to disk and applies immediately
+- `SetTvOption(tv_id: s, key: s, value: s)` — update a system-level TV field (`primary_input`, `managed`, `name`, `profile.system`); saves to disk and applies immediately
 - `ListSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
 - `GetUserProfileDefault() → s` — admin baseline user profile as JSON; used by session services to inherit defaults
 - `ListUserProfiles() → a(ss)` — all user profiles (admin-defined) as `(name, json)` pairs
@@ -243,21 +235,25 @@ Methods:
 
 ### org.tisvlay.Tv1 (Base Interface)
 
-Properties: `Id`, `Name`, `Vendor`, `Address` (transport-agnostic display address), `Connected`, `Managed`, `SystemProfile`, `Capabilities`
+Properties (read-only): `Id` (const), `Vendor` (const), `Address` (const), `Connected`, `Capabilities` (invalidates)
 
-Methods: `Reconnect()`, `GetState()`
+Properties (read-write): `Name`, `Managed`, `SystemProfile`, `PrimaryInput`
 
-Signals: `StateChanged`, `ConnectionChanged`
+Properties (read-only, computed): `AutomateWhen` (from resolved system profile), `Automated` (computed gate: `managed && automate_when.should_automate(primary_input, current_input)`)
+
+Methods: `Reconnect()`
+
+No custom signals — uses standard `org.freedesktop.DBus.Properties.PropertiesChanged` for all state notifications. TV state is cached in the D-Bus interface structs and updated by backend subscription pushes via `InterfaceRef::get_mut()`.
 
 ### Feature Interfaces
 
-Each feature interface is implemented on per-TV objects based on the TV's capabilities:
+Each feature interface is implemented on per-TV objects. Controllable state is exposed as writable properties — setting them sends the command to the TV backend and updates the cache on success. zbus auto-emits `PropertiesChanged` after each successful set.
 
-- **org.tisvlay.Tv1.Power** — `PowerOn()`, `PowerOff()`, `PowerState` property
-- **org.tisvlay.Tv1.Screen** — `ScreenOn()`, `ScreenOff()`, `ScreenOn` property
-- **org.tisvlay.Tv1.Volume** — `SetVolume(level: y)`, `SetMute(mute: b)`, `Volume`/`Muted` properties
-- **org.tisvlay.Tv1.Input** — `SwitchInput(input_id: s)`, `CurrentInput`/`AvailableInputs` properties
-- **org.tisvlay.Tv1.Backlight** — `SetBacklight(level: y)`, `Backlight` property
+- **org.tisvlay.Tv1.Power** — `PowerOn()`, `PowerOff()` methods; `PowerState` (ro) property
+- **org.tisvlay.Tv1.Screen** — `IsScreenOn` (rw) property; set `true` to unblank, `false` to blank
+- **org.tisvlay.Tv1.Volume** — `Volume` (rw, 0-100), `Muted` (rw) properties
+- **org.tisvlay.Tv1.Input** — `SwitchInput(input_id: s)` method; `CurrentInput` (ro), `AvailableInputs` (ro, invalidates) properties
+- **org.tisvlay.Tv1.Backlight** — `Backlight` (rw, 0-100) property
 
 ---
 
@@ -285,6 +281,10 @@ on_reboot = "none"               # action on reboot/kexec (default: none)
 on_no_session = "none"           # action when all user sessions end (login screen)
 on_sleep = "power_off"           # action on system suspend/hibernate (default: power_off)
 on_wake = "power_on"             # action on system resume from sleep (default: power_on)
+automate_when = "always"         # always | on_primary | off_primary (default: always)
+
+[system.profiles.shared]
+automate_when = "on_primary"     # only automate when showing the PC input
 
 [system.profiles.guest]
 on_startup = "none"
@@ -304,8 +304,7 @@ on_idle_resume = "screen_on"     # action when activity resumes after idle
 id = "living-room"
 name = "Living Room G4"
 vendor = "lg"
-hdmi_input = "HDMI_1"            # which HDMI port this PC uses (vendor-agnostic)
-only_when_active = true          # only control when TV is on this input
+primary_input = "HDMI_1"         # which input this PC uses (vendor-agnostic)
 managed = true                   # participates in automation (boot WoL, session events, shutdown)
 profile.system = "default"       # which system profile this TV uses
 
@@ -388,6 +387,18 @@ stateDiagram-v2
 | System reboot | None | `on_reboot` (system profile) | reboot or kexec; TV stays on for BIOS/TTY |
 
 All lifecycle events accept any `SessionAction` value: `power_on`, `power_off`, `screen_on`, `screen_off`, or `none`. Different TVs can respond differently to the same event via per-TV profile assignments (e.g., gaming TV ignores session lock via user profile; guest TV only blanks on shutdown via system profile).
+
+All automation (both daemon system events and session user events) is gated by the `Automated` property, which composes `managed`, `automate_when` (from system profile), `primary_input` (from config), and the TV's current input. When `automate_when = on_primary` and the TV is showing a game console, automation is skipped. Manual actions from the tray and CLI always execute regardless of the gate.
+
+| `managed` | `automate_when` | TV on primary? | `Automated` |
+|:---------:|:---------------:|:--------------:|:-----------:|
+| false | any | any | **false** |
+| true | always | any | **true** |
+| true | on_primary | yes | **true** |
+| true | on_primary | no | **false** |
+| true | on_primary | unknown (TV off) | **true** (benefit of doubt) |
+| true | off_primary | yes | **false** |
+| true | off_primary | no | **true** |
 
 ---
 
@@ -526,7 +537,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 1. `tisvlay-tray`: ksni-based StatusNotifierItem with per-TV submenus
 2. Power/screen/input/volume/backlight/mute controls
 3. Scroll wheel adjusts volume or backlight (context-dependent)
-4. Signal-driven updates via D-Bus `StateChanged`/`ConnectionChanged`/`InterfacesAdded`/`InterfacesRemoved` signals with 100ms debounce and 30s fallback poll
+4. Signal-driven updates via `PropertiesChanged`/`InterfacesAdded`/`InterfacesRemoved` signals with 100ms debounce and 30s fallback poll
 
 ### Phase 4C: System vs User Config Split - COMPLETE
 
@@ -633,7 +644,8 @@ State updates flow end-to-end without polling:
 
 ```
 TV remote/app → WebSocket push → LG backend → daemon StateChangeEvent
-    → D-Bus signal → tray handle.update()
+    → InterfaceRef cached property update → PropertiesChanged signal
+    → tray handle.update()
 ```
 
 ### LG Backend SSAP Subscriptions
@@ -657,24 +669,13 @@ The `TvConnection` trait provides an optional `subscribe_state()` method with a 
 
 ### Daemon Layer
 
-After establishing a connection, the daemon calls `subscribe_state()` on the `TvConnection`. If the backend supports push (LG does), a spawned task forwards received `TvState` snapshots as `StateChangeEvent`s, which are emitted as D-Bus `StateChanged` signals on the per-TV object. Every write command (set_volume, set_mute, screen_on/off, switch_input, set_backlight) also emits a `StateChangeEvent`, so the tray refreshes after any CLI/D-Bus command without waiting for the fallback poll.
+After establishing a connection, the daemon calls `subscribe_state()` on the `TvConnection`. If the backend supports push (LG does), a spawned task forwards received `TvState` snapshots as `StateChangeEvent::SubscriptionUpdate`s through an internal channel. The `state_change_forwarder` task receives these and updates cached property fields on all per-TV D-Bus interface structs via `InterfaceRef::get_mut()`, emitting standard `PropertiesChanged` signals only for properties that actually changed.
 
-### D-Bus Signal Subscription Model
-
-Clients subscribe to D-Bus signals for real-time updates:
-
-- **Daemon signals** (`org.tisvlay.Tv1`): `StateChanged`, `ConnectionChanged` on per-TV objects; `InterfacesAdded`/`InterfacesRemoved` on ObjectManager for TV add/remove; `ConfigReloaded` on Manager1
-- **Session signals** (`org.tisvlay.Session1`): `UserProfileChanged(tv_id, profile)` when user switches profiles
-- **Service discovery**: `NameOwnerChanged` on `org.freedesktop.DBus` to detect when `org.tisvlay.Session` appears/disappears on the bus — enables sub-second service discovery instead of waiting for fallback poll
-
-Shared utilities in `tisvlay-core/src/dbus_client.rs`:
-- `add_signal_match(conn, rule)` — adds a D-Bus match rule (used when multiple rules share one `MessageStream`)
-- `subscribe_signals(conn, rule)` — adds rule and returns a `MessageStream`
-- `watch_service(conn, name)` — returns a `Stream<ServiceEvent>` (`Appeared`/`Disappeared`) for a well-known bus name
+Write commands via writable property setters (Volume, Muted, Backlight, IsScreenOn) update the cache and auto-emit `PropertiesChanged` on success via zbus machinery. The backend subscription then confirms the state shortly after, but the property update is typically a no-op since the setter already set the value.
 
 ### Tray Layer
 
-The tray subscribes to daemon D-Bus signals (`StateChanged`, `ConnectionChanged`, `InterfacesAdded`, `InterfacesRemoved`) at startup using `subscribe_state_changes()`. Session `UserProfileChanged` signals are subscribed separately via `subscribe_signals()`. Signals within a 100ms window are coalesced (using a biased `tokio::select!` drain loop) before refreshing state and calling `handle.update()`. A 30s fallback poll provides resilience if signals are missed.
+The tray subscribes to `PropertiesChanged` on per-TV objects, `InterfacesAdded`/`InterfacesRemoved` (ObjectManager), `ConfigReloaded` (Manager1), and `UserProfileChanged` (Session1) at startup. Signals within a 100ms window are coalesced (biased `tokio::select!` drain loop) before refreshing state via a single `GetManagedObjects` call and calling `handle.update()`. A 30s fallback poll provides resilience if signals are missed. `NameOwnerChanged` detects the session service appearing/disappearing on the bus for sub-second service discovery.
 
 ---
 

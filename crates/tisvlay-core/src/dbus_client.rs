@@ -109,6 +109,10 @@ trait TisvlayTv {
     #[zbus(property)]
     fn name(&self) -> zbus::Result<String>;
 
+    /// Set TV display name.
+    #[zbus(property)]
+    fn set_name(&self, name: &str) -> zbus::Result<()>;
+
     /// TV vendor ID.
     #[zbus(property)]
     fn vendor(&self) -> zbus::Result<String>;
@@ -118,14 +122,24 @@ trait TisvlayTv {
     fn address(&self) -> zbus::Result<String>;
 
     /// Whether the TV is currently connected.
-    /// Uncached — always fetches from the daemon since connection status
-    /// changes without emitting PropertiesChanged signals.
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property)]
     fn connected(&self) -> zbus::Result<bool>;
 
     /// Whether this TV participates in automated management.
-    #[zbus(property(emits_changed_signal = "false"))]
+    #[zbus(property)]
     fn managed(&self) -> zbus::Result<bool>;
+
+    /// Set whether this TV participates in automated management.
+    #[zbus(property)]
+    fn set_managed(&self, managed: bool) -> zbus::Result<()>;
+
+    /// System profile name assigned to this TV.
+    #[zbus(property)]
+    fn system_profile(&self) -> zbus::Result<String>;
+
+    /// Set the system profile for this TV.
+    #[zbus(property)]
+    fn set_system_profile(&self, profile: &str) -> zbus::Result<()>;
 
     /// Capabilities supported by this TV.
     #[zbus(property)]
@@ -133,9 +147,6 @@ trait TisvlayTv {
 
     /// Force reconnection.
     fn reconnect(&self) -> zbus::Result<()>;
-
-    /// Get TV state as JSON.
-    fn get_state(&self) -> zbus::Result<String>;
 }
 
 // =============================================================================
@@ -165,15 +176,13 @@ trait TisvlayTvPower {
     default_service = "org.tisvlay.Daemon"
 )]
 trait TisvlayTvScreen {
-    /// Turn screen on.
-    fn screen_on(&self) -> zbus::Result<()>;
-
-    /// Turn screen off.
-    fn screen_off(&self) -> zbus::Result<()>;
-
     /// Whether screen is on.
     #[zbus(property)]
-    fn screen_on_prop(&self) -> zbus::Result<bool>;
+    fn is_screen_on(&self) -> zbus::Result<bool>;
+
+    /// Set screen on/off (true = unblank, false = blank).
+    #[zbus(property)]
+    fn set_is_screen_on(&self, on: bool) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for TV volume control.
@@ -182,19 +191,21 @@ trait TisvlayTvScreen {
     default_service = "org.tisvlay.Daemon"
 )]
 trait TisvlayTvVolume {
-    /// Set volume level.
-    fn set_volume(&self, level: u8) -> zbus::Result<()>;
-
-    /// Get current volume.
+    /// Current volume level (0-100).
     #[zbus(property)]
     fn volume(&self) -> zbus::Result<u8>;
 
-    /// Set mute state.
-    fn set_mute(&self, mute: bool) -> zbus::Result<()>;
+    /// Set volume level (0-100).
+    #[zbus(property)]
+    fn set_volume(&self, level: u8) -> zbus::Result<()>;
 
-    /// Whether muted.
+    /// Whether audio is currently muted.
     #[zbus(property)]
     fn muted(&self) -> zbus::Result<bool>;
+
+    /// Set mute state.
+    #[zbus(property)]
+    fn set_muted(&self, muted: bool) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for TV input control.
@@ -221,12 +232,13 @@ trait TisvlayTvInput {
     default_service = "org.tisvlay.Daemon"
 )]
 trait TisvlayTvBacklight {
-    /// Set backlight level.
-    fn set_backlight(&self, level: u8) -> zbus::Result<()>;
-
-    /// Get current backlight level.
+    /// Current backlight level (0-100).
     #[zbus(property)]
     fn backlight(&self) -> zbus::Result<u8>;
+
+    /// Set backlight level (0-100).
+    #[zbus(property)]
+    fn set_backlight(&self, level: u8) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -236,10 +248,12 @@ trait TisvlayTvBacklight {
 /// A state change event received from the daemon via D-Bus signals.
 #[derive(Debug, Clone)]
 pub enum TvStateChange {
-    /// TV state changed (volume, input, power, etc.).
-    StateChanged { tv_id: String, state_json: String },
-    /// TV connection status changed.
-    ConnectionChanged { tv_id: String, connected: bool },
+    /// One or more properties changed on a TV (volume, power, connected, etc.).
+    ///
+    /// Triggered by `org.freedesktop.DBus.Properties.PropertiesChanged` signals
+    /// on per-TV objects. The subscriber should re-read the TV's properties or
+    /// do a full state refresh.
+    PropertiesChanged { tv_id: String },
     /// TV list structure changed (add/remove) -- requires full refresh.
     TvListChanged,
     /// Daemon configuration was reloaded -- profile lists and TV properties may differ.
@@ -345,7 +359,12 @@ pub async fn watch_service(
 // TV Info Struct
 // =============================================================================
 
-/// Information about a configured TV.
+/// Information about a configured TV, including cached state.
+///
+/// All fields are populated from a single `GetManagedObjects` call.
+/// State fields reflect the daemon's cached values (updated by backend
+/// subscription pushes). For disconnected TVs, state fields contain
+/// defaults (power_state="unknown", volume=0, etc.).
 #[derive(Debug, Clone)]
 pub struct TvInfo {
     /// TV identifier.
@@ -360,10 +379,31 @@ pub struct TvInfo {
     pub connected: bool,
     /// Whether this TV participates in automated management.
     pub managed: bool,
+    /// Whether automation should fire for this TV right now.
+    ///
+    /// Computed from `managed`, `automate_when`, `primary_input`, and
+    /// the TV's current input. See gate composition table in plan2.md.
+    pub automated: bool,
     /// System profile name assigned to this TV.
     pub system_profile: String,
     /// D-Bus object path.
     pub path: String,
+
+    // State from sub-interface properties
+    /// Power state (e.g., "active", "standby", "screen_off", "unknown").
+    pub power_state: String,
+    /// Whether the screen is on (not blanked).
+    pub is_screen_on: bool,
+    /// Current volume level (0-100).
+    pub volume: u8,
+    /// Whether audio is muted.
+    pub muted: bool,
+    /// Currently active input ID (empty if unknown).
+    pub current_input: String,
+    /// Current backlight level (0-100).
+    pub backlight: u8,
+    /// Available inputs as (id, label) pairs.
+    pub inputs: Vec<(String, String)>,
 }
 
 // =============================================================================
@@ -523,10 +563,10 @@ impl DaemonClient {
     /// Subscribe to TV state change signals from the daemon.
     ///
     /// Returns a stream of [`TvStateChange`] events. The stream captures:
-    /// - `StateChanged` and `ConnectionChanged` signals on `org.tisvlay.Tv1`
-    ///   for any TV object under `/org/tisvlay/Tv/`
+    /// - `PropertiesChanged` signals on any TV interface under `/org/tisvlay/Tv/`
     /// - `InterfacesAdded` and `InterfacesRemoved` on the ObjectManager at
     ///   `/org/tisvlay` (TV add/remove)
+    /// - `ConfigReloaded` on `org.tisvlay.Manager1`
     ///
     /// Works with both session and system bus (depends on how the client was
     /// constructed).
@@ -535,16 +575,17 @@ impl DaemonClient {
     ) -> Result<impl Stream<Item = TvStateChange> + Send + '_> {
         let conn = &self.connection;
 
-        // Add match rules for all signal sources we care about.
+        // PropertiesChanged on any TV interface
         add_signal_match(
             conn,
             &format!(
-                "type='signal',sender='{}',interface='org.tisvlay.Tv1',path_namespace='{}'",
+                "type='signal',sender='{}',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='{}'",
                 DAEMON_SERVICE, TV_BASE_PATH
             ),
         )
         .await?;
 
+        // ObjectManager signals (TV add/remove)
         add_signal_match(
             conn,
             &format!(
@@ -555,6 +596,7 @@ impl DaemonClient {
         )
         .await?;
 
+        // Manager signals (config reload, TV add/remove)
         add_signal_match(
             conn,
             &format!(
@@ -578,19 +620,10 @@ impl DaemonClient {
                 let path = header.path()?.to_string();
 
                 match (iface.as_str(), member.as_str()) {
-                    ("org.tisvlay.Tv1", "StateChanged") => {
+                    ("org.freedesktop.DBus.Properties", "PropertiesChanged") => {
                         let tv_id = path.strip_prefix(&tv_prefix)?.to_string();
-                        let body = msg.body();
-                        let state_json: String = body.deserialize().ok()?;
-                        trace!(tv_id = %tv_id, "StateChanged signal");
-                        Some(TvStateChange::StateChanged { tv_id, state_json })
-                    }
-                    ("org.tisvlay.Tv1", "ConnectionChanged") => {
-                        let tv_id = path.strip_prefix(&tv_prefix)?.to_string();
-                        let body = msg.body();
-                        let connected: bool = body.deserialize().ok()?;
-                        trace!(tv_id = %tv_id, connected = connected, "ConnectionChanged signal");
-                        Some(TvStateChange::ConnectionChanged { tv_id, connected })
+                        trace!(tv_id = %tv_id, "PropertiesChanged signal on TV");
+                        Some(TvStateChange::PropertiesChanged { tv_id })
                     }
                     ("org.freedesktop.DBus.ObjectManager", "InterfacesAdded")
                     | ("org.freedesktop.DBus.ObjectManager", "InterfacesRemoved") => {
@@ -704,6 +737,7 @@ impl DaemonClient {
             let vendor = get_str("Vendor");
             let connected = get_bool("Connected", false);
             let managed = get_bool("Managed", true);
+            let automated = get_bool("Automated", true);
             let system_profile = {
                 let sp = get_str("SystemProfile");
                 if sp.is_empty() {
@@ -712,6 +746,45 @@ impl DaemonClient {
                     sp
                 }
             };
+
+            // Helper to extract properties from a sub-interface.
+            let get_iface_props = |iface_name: &str| -> Option<&HashMap<String, OwnedValue>> {
+                ifaces
+                    .iter()
+                    .find(|(k, _)| k.as_str() == iface_name)
+                    .map(|(_, v)| v)
+            };
+
+            let get_sub_str = |iface: &str, key: &str, default: &str| -> String {
+                get_iface_props(iface)
+                    .and_then(|p| p.get(key))
+                    .and_then(|v| String::try_from(v.clone()).ok())
+                    .unwrap_or_else(|| default.to_string())
+            };
+            let get_sub_bool = |iface: &str, key: &str, default: bool| -> bool {
+                get_iface_props(iface)
+                    .and_then(|p| p.get(key))
+                    .and_then(|v| bool::try_from(v.clone()).ok())
+                    .unwrap_or(default)
+            };
+            let get_sub_u8 = |iface: &str, key: &str| -> u8 {
+                get_iface_props(iface)
+                    .and_then(|p| p.get(key))
+                    .and_then(|v| u8::try_from(v.clone()).ok())
+                    .unwrap_or(0)
+            };
+
+            // Extract state from sub-interfaces
+            let power_state = get_sub_str("org.tisvlay.Tv1.Power", "PowerState", "unknown");
+            let is_screen_on = get_sub_bool("org.tisvlay.Tv1.Screen", "IsScreenOn", true);
+            let volume = get_sub_u8("org.tisvlay.Tv1.Volume", "Volume");
+            let muted = get_sub_bool("org.tisvlay.Tv1.Volume", "Muted", false);
+            let current_input = get_sub_str("org.tisvlay.Tv1.Input", "CurrentInput", "");
+            let backlight = get_sub_u8("org.tisvlay.Tv1.Backlight", "Backlight");
+            let inputs: Vec<(String, String)> = get_iface_props("org.tisvlay.Tv1.Input")
+                .and_then(|p| p.get("AvailableInputs"))
+                .and_then(|v| <Vec<(String, String)>>::try_from(v.clone()).ok())
+                .unwrap_or_default();
 
             let fallbacks = fallbacks.into_inner();
             if !fallbacks.is_empty() {
@@ -734,8 +807,16 @@ impl DaemonClient {
                 vendor,
                 connected,
                 managed,
+                automated,
                 system_profile,
                 path: path.as_str().to_string(),
+                power_state,
+                is_screen_on,
+                volume,
+                muted,
+                current_input,
+                backlight,
+                inputs,
             });
         }
 
@@ -836,14 +917,16 @@ impl DaemonClient {
 
     /// Turn screen on (resume from blank).
     pub async fn screen_on(&self, tv_id: &str) -> Result<()> {
-        self.with_proxies(tv_id, "turn screen on", |p| Box::pin(p.screen.screen_on()))
-            .await
+        self.with_proxies(tv_id, "turn screen on", |p| {
+            Box::pin(p.screen.set_is_screen_on(true))
+        })
+        .await
     }
 
     /// Turn screen off (OLED-safe blank).
     pub async fn screen_off(&self, tv_id: &str) -> Result<()> {
         self.with_proxies(tv_id, "turn screen off", |p| {
-            Box::pin(p.screen.screen_off())
+            Box::pin(p.screen.set_is_screen_on(false))
         })
         .await
     }
@@ -891,7 +974,7 @@ impl DaemonClient {
 
     /// Set mute state.
     pub async fn set_mute(&self, tv_id: &str, mute: bool) -> Result<()> {
-        self.with_proxies(tv_id, "set mute", |p| Box::pin(p.volume.set_mute(mute)))
+        self.with_proxies(tv_id, "set mute", |p| Box::pin(p.volume.set_muted(mute)))
             .await
     }
 
@@ -918,20 +1001,6 @@ impl DaemonClient {
     // -------------------------------------------------------------------------
     // State
     // -------------------------------------------------------------------------
-
-    /// Get TV state as a JSON string.
-    ///
-    /// The returned JSON can be parsed into a `TvState` struct.
-    pub async fn get_state_json(&self, tv_id: &str) -> Result<String> {
-        self.with_proxies(tv_id, "get state", |p| Box::pin(p.base.get_state()))
-            .await
-    }
-
-    /// Get TV state as a parsed struct.
-    pub async fn get_state(&self, tv_id: &str) -> Result<crate::TvState> {
-        let json = self.get_state_json(tv_id).await?;
-        serde_json::from_str(&json).context("Failed to parse TV state JSON")
-    }
 
     /// Get TV capabilities.
     pub async fn get_capabilities(&self, tv_id: &str) -> Result<Vec<String>> {
@@ -1013,8 +1082,7 @@ impl DaemonClient {
 
     /// Set a system-level TV option.
     ///
-    /// Supported keys: `hdmi_input`, `only_when_active`, `managed`, `name`,
-    /// `profile.system`.
+    /// Supported keys: `primary_input`, `managed`, `name`, `profile.system`.
     pub async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<()> {
         debug!(tv_id = %tv_id, key = %key, value = %value, "Calling SetTvOption on daemon");
         self.manager
