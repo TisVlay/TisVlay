@@ -18,7 +18,7 @@ See [docs/design.md](docs/design.md) for the full architecture, D-Bus interface 
 - `tisvlay-gui`: Slint-based settings window
 - TV discovery and pairing wizard (with managed checkbox)
 - Per-TV configuration and session behavior settings
-- Input-aware automation (`primary_input`, `automate_when`) — see [docs/plan2.md](docs/plan2.md)
+- Input-aware automation (`primary_input`, `automate_when`) — see design.md § Power & Screen State Machine
 
 ## Current Project Structure
 

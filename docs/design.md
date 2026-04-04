@@ -205,17 +205,7 @@ org.tisvlay.Session  (session bus)
 | **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `ConfigReloaded`; Session1: `UserProfileChanged`; DBus: `NameOwnerChanged` (service discovery) |
 | **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions via writable properties) | — |
 
-### Object Paths
-
-```
-/org/tisvlay                      # ObjectManager root (org.freedesktop.DBus.ObjectManager)
-/org/tisvlay/Manager              # Manager interface
-/org/tisvlay/Tv/{tv_id}           # Per-TV objects (e.g., /org/tisvlay/Tv/living_room)
-```
-
-`org.freedesktop.DBus.ObjectManager` is registered at `/org/tisvlay`. Clients use
-`GetManagedObjects()` to retrieve all object paths and their interface properties in a
-single round-trip — replacing the old `GetTvs` + per-property pattern.
+`org.freedesktop.DBus.ObjectManager` at `/org/tisvlay` provides `GetManagedObjects()` — a single round-trip returning all TV object paths and their interface properties.
 
 ### org.tisvlay.Manager1
 
@@ -683,24 +673,9 @@ After establishing a connection, the daemon calls `subscribe_state()` on the `Tv
 
 Write commands via writable property setters (Volume, Muted, Backlight, IsScreenOn) update the cache and auto-emit `PropertiesChanged` on success via zbus machinery. The backend subscription then confirms the state shortly after, but the property update is typically a no-op since the setter already set the value.
 
-### D-Bus Signal Subscription Model
-
-Clients subscribe to standard D-Bus signals for real-time updates:
-
-- **Property changes** (`org.freedesktop.DBus.Properties`): `PropertiesChanged` on per-TV objects under `/org/tisvlay/Tv/` — emitted automatically when cached properties are updated by subscription pushes or writable property setters
-- **Object lifecycle** (`org.freedesktop.DBus.ObjectManager`): `InterfacesAdded`/`InterfacesRemoved` at `/org/tisvlay` for TV add/remove
-- **Daemon signals** (`org.tisvlay.Manager1`): `TvAdded`, `TvRemoved`, `ConfigReloaded`
-- **Session signals** (`org.tisvlay.Session1`): `UserProfileChanged(tv_id, profile)` when user switches profiles
-- **Service discovery**: `NameOwnerChanged` on `org.freedesktop.DBus` to detect when `org.tisvlay.Session` appears/disappears on the bus — enables sub-second service discovery instead of waiting for fallback poll
-
-Shared utilities in `tisvlay-core/src/dbus_client.rs`:
-- `add_signal_match(conn, rule)` — adds a D-Bus match rule (used when multiple rules share one `MessageStream`)
-- `subscribe_signals(conn, rule)` — adds rule and returns a `MessageStream`
-- `watch_service(conn, name)` — returns a `Stream<ServiceEvent>` (`Appeared`/`Disappeared`) for a well-known bus name
-
 ### Tray Layer
 
-The tray subscribes to `PropertiesChanged` on per-TV objects, `InterfacesAdded`/`InterfacesRemoved` (ObjectManager), and `ConfigReloaded` (Manager1) at startup using `subscribe_state_changes()`. Session `UserProfileChanged` signals are subscribed separately via `subscribe_signals()`. Signals within a 100ms window are coalesced (using a biased `tokio::select!` drain loop) before refreshing state via a single `GetManagedObjects` call and calling `handle.update()`. A 30s fallback poll provides resilience if signals are missed.
+The tray subscribes to `PropertiesChanged` on per-TV objects, `InterfacesAdded`/`InterfacesRemoved` (ObjectManager), `ConfigReloaded` (Manager1), and `UserProfileChanged` (Session1) at startup. Signals within a 100ms window are coalesced (biased `tokio::select!` drain loop) before refreshing state via a single `GetManagedObjects` call and calling `handle.update()`. A 30s fallback poll provides resilience if signals are missed. `NameOwnerChanged` detects the session service appearing/disappearing on the bus for sub-second service discovery.
 
 ---
 
