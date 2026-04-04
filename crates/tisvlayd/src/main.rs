@@ -5,6 +5,7 @@
 
 mod dbus;
 mod logind;
+mod network_watcher;
 mod registry;
 mod tv_manager;
 
@@ -145,7 +146,15 @@ async fn main() -> Result<()> {
     }
 
     // Spawn task to forward state changes to D-Bus properties and signals
-    let signal_worker = tokio::spawn(state_change_forwarder(connection.clone(), state_change_rx));
+    let signal_worker = tokio::spawn(state_change_forwarder(
+        connection.clone(),
+        state_change_rx,
+        shared_manager.clone(),
+    ));
+
+    // Spawn NetworkManager watcher for proactive reconnection on network events.
+    // Always connects to the system bus (NM is system-bus-only).
+    network_watcher::spawn_network_watcher(shared_manager.state_change_sender());
 
     // Wait for shutdown or reload signal
     wait_for_signals(shared_manager).await;
@@ -169,6 +178,7 @@ async fn main() -> Result<()> {
 async fn state_change_forwarder(
     connection: zbus::Connection,
     mut rx: mpsc::UnboundedReceiver<StateChangeEvent>,
+    manager: Arc<TvManager>,
 ) {
     info!("State change forwarder started");
     let object_server = connection.object_server();
@@ -250,6 +260,14 @@ async fn state_change_forwarder(
                         warn!(error = %e, "Failed to emit ConfigReloaded signal");
                     }
                 }
+            }
+            StateChangeEvent::NetworkRestored => {
+                info!("Network restored: reconnecting disconnected TVs");
+                manager.reconnect_disconnected().await;
+            }
+            StateChangeEvent::NetworkLost => {
+                info!("Network lost: disconnecting all TVs");
+                manager.disconnect_all().await;
             }
         }
     }

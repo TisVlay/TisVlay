@@ -96,6 +96,16 @@ pub enum StateChangeEvent {
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
+    /// Network connectivity restored (from NetworkManager).
+    ///
+    /// The forwarder triggers reconnection for all disconnected,
+    /// non-powered-off TVs.
+    NetworkRestored,
+    /// Network connectivity lost (from NetworkManager).
+    ///
+    /// The forwarder drops all TV connections and updates D-Bus
+    /// `Connected=false` properties immediately.
+    NetworkLost,
 }
 
 /// Basic TV information for D-Bus properties.
@@ -341,6 +351,11 @@ impl TvManager {
                 // the tray's fallback poll handles state refresh.
             }
         }
+    }
+
+    /// Get a clone of the state change sender for external event sources.
+    pub fn state_change_sender(&self) -> mpsc::UnboundedSender<StateChangeEvent> {
+        self.state_change_tx.clone()
     }
 
     fn emit_state_change(&self, event: StateChangeEvent) {
@@ -692,6 +707,54 @@ impl TvManager {
         });
 
         Ok(())
+    }
+
+    /// Reconnect all disconnected TVs that aren't intentionally powered off.
+    ///
+    /// Called when the network is restored (e.g., after wake or NIC reset).
+    /// Each reconnection runs concurrently via spawned tasks.
+    pub async fn reconnect_disconnected(self: &Arc<Self>) {
+        let tvs = self.tvs.read().await;
+        for (tv_id, (managed, tv_arc)) in tvs.iter() {
+            if !managed {
+                continue;
+            }
+            let tv = tv_arc.lock().await;
+            if tv.is_connected() || tv.powered_off {
+                continue;
+            }
+            let tv_id = tv_id.clone();
+            let manager = Arc::clone(self);
+            drop(tv);
+            tokio::spawn(async move {
+                info!(tv_id = %tv_id, "Network restored: attempting reconnect");
+                if let Err(e) = manager.reconnect(&tv_id).await {
+                    debug!(tv_id = %tv_id, error = %e, "Reconnect failed (TV may be off)");
+                }
+            });
+        }
+    }
+
+    /// Drop all TV connections and emit disconnection events.
+    ///
+    /// Called when the network is lost. Clears connections immediately
+    /// so D-Bus `Connected` properties update without waiting for TCP
+    /// keepalive timeouts.
+    pub async fn disconnect_all(&self) {
+        let tvs = self.tvs.read().await;
+        for (tv_id, (_, tv_arc)) in tvs.iter() {
+            let mut tv = tv_arc.lock().await;
+            if let Some(mut conn) = tv.connection.take() {
+                let _ = conn.close().await;
+                info!(tv_id = %tv_id, "Network lost: disconnected");
+                tv.last_known_input = None;
+                drop(tv);
+                self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                    tv_id: tv_id.clone(),
+                    connected: false,
+                });
+            }
+        }
     }
 
     /// Execute a command on a TV connection.
