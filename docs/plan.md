@@ -367,6 +367,8 @@ Neither is improvable from daemon code. Potential system-level ideas:
 - [x] Phase 2: TvManager reconnect/disconnect methods
 - [x] Phase 3: Wire into state_change_forwarder
 - [x] Phase 4: Prevent racing reconnect paths (VA+ selected)
+- [ ] Phase 5: Transport enum + scoped NM events
+- [ ] Phase 6: 500ms WoL retry interval
 - [ ] Update design.md and CLAUDE.md
 
 ---
@@ -388,3 +390,71 @@ Neither is improvable from daemon code. Potential system-level ideas:
   backend's retry loop handles this (3s intervals, 10 attempts).
 - WoL → TV NIC online → SSAP ready takes ~10s in practice (3-4
   retry cycles). The bottleneck is the TV firmware boot, not network.
+
+---
+
+## Transport abstraction
+
+### Design decisions
+
+Based on research into FOSS device integration patterns (Home Assistant,
+OpenHAB, GStreamer, libp2p, PipeWire), two key principles:
+
+1. **Transport is a property of the connector**, not the device interface.
+   The `TvConnection` trait stays transport-agnostic. The `TvConnector`
+   (factory) declares what transport it uses.
+
+2. **Network dependency is derived from transport**, not a separate bool.
+   A `Transport` enum with `is_network_dependent()` method is more
+   future-proof than a raw bool — it provides a standard taxonomy that
+   scales as new transports are added.
+
+### Transport enum (tisvlay-core)
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// TCP/IP network (WebSocket, HTTP, raw TCP).
+    Network,
+    /// Serial port (RS-232, RS-485).
+    Serial,
+    /// USB device connection.
+    Usb,
+    /// HDMI-CEC (Consumer Electronics Control).
+    Cec,
+}
+
+impl Transport {
+    pub fn is_network_dependent(&self) -> bool {
+        matches!(self, Self::Network)
+    }
+}
+```
+
+### Trait placement
+
+`transport()` is a static method on `TvConnector` — it's a property of
+the backend, not per-connection state. If a vendor later supports
+multiple transports (e.g., Epson via TCP or RS-232), it would be
+refactored to `transport_for(config) -> Transport`.
+
+### Scoping NM events
+
+`disconnect_all()` and `reconnect_disconnected()` check transport via
+the `BackendRegistry` and skip non-network TVs:
+
+```rust
+if !self.registry.transport_for(&tv.config).is_network_dependent() {
+    continue;
+}
+```
+
+### References
+
+- **OpenHAB Bridge pattern**: bridge knows transport; when bridge is
+  offline, devices become unavailable
+- **Home Assistant**: connectivity is separate from device interface;
+  integrations subscribe to network events if relevant
+- **libp2p**: `Transport` trait is orthogonal to protocol behavior
+- **GStreamer DeviceProvider**: transport inferred from plugin, opaque
+  to application
