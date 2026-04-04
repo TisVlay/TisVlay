@@ -191,9 +191,10 @@ of service files from the repo.
 - [x] Phase 1: cargo-nfpm config on tisvlayd
 - [x] Phase 2: postinstall/preremove scripts
 - [x] Phase 3: Build and test packages (.deb 13MB, .rpm 14MB, .pkg.tar.zst 12MB)
-- [ ] Phase 4: GitHub Actions release workflow
-- [ ] Phase 5: crates.io publishing prep
+- [x] Phase 4: GitHub Actions release workflow (draft releases on v* tags)
+- [x] Phase 5: crates.io publishing prep (dry-run passes, all metadata present)
 - [ ] Update design.md and CLAUDE.md
+- [ ] Merge to main, tag v0.1.0, verify release workflow
 
 ---
 
