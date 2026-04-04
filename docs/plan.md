@@ -367,8 +367,9 @@ Neither is improvable from daemon code. Potential system-level ideas:
 - [x] Phase 2: TvManager reconnect/disconnect methods
 - [x] Phase 3: Wire into state_change_forwarder
 - [x] Phase 4: Prevent racing reconnect paths (VA+ selected)
-- [ ] Phase 5: Transport enum + scoped NM events
-- [ ] Phase 6: 500ms WoL retry interval
+- [x] Phase 5: Transport enum + scoped NM events
+- [x] Phase 6: 500ms WoL retry interval
+- [x] Remove network-transport bias from daemon docs and logs
 - [ ] Update design.md and CLAUDE.md
 
 ---
