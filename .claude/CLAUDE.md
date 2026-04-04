@@ -89,9 +89,10 @@ tisvlay/
 │   ├── org.tisvlay.Daemon.service # D-Bus activation service
 │   └── org.tisvlay.Daemon.conf    # D-Bus policy configuration
 │
-├── nix/
-│   ├── package.nix               # Nix package derivation (rustPlatform.buildRustPackage)
-│   └── module.nix                # NixOS module (services.tisvlay.enable)
+├── packaging/
+│   └── nix/
+│       ├── package.nix           # Nix package derivation (rustPlatform.buildRustPackage)
+│       └── module.nix            # NixOS module (services.tisvlay.enable)
 │
 ├── docs/
 │   ├── design.md                 # Full architecture design

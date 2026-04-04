@@ -19,10 +19,10 @@
     }:
     # System-agnostic outputs
     {
-      nixosModules.default = import ./nix/module.nix;
+      nixosModules.default = import ./packaging/nix/module.nix;
 
       overlays.default = final: prev: {
-        tisvlay = final.callPackage ./nix/package.nix { };
+        tisvlay = final.callPackage ./packaging/nix/package.nix { };
       };
     }
     # Per-system outputs (packages, devShell)
@@ -34,7 +34,7 @@
         rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in
       {
-        packages.default = pkgs.callPackage ./nix/package.nix { };
+        packages.default = pkgs.callPackage ./packaging/nix/package.nix { };
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [

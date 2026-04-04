@@ -561,8 +561,8 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 
 **Goal**: `services.tisvlay.enable = true` deploys the full stack.
 
-1. `nix/package.nix`: `rustPlatform.buildRustPackage` for all four binaries
-2. `nix/module.nix`: NixOS module — system daemon, user services, D-Bus policy, dedicated user/group
+1. `packaging/nix/package.nix`: `rustPlatform.buildRustPackage` for all four binaries
+2. `packaging/nix/module.nix`: NixOS module — system daemon, user services, D-Bus policy, dedicated user/group
 3. `flake.nix`: `nixosModules.default`, `overlays.default`, `packages.default`
 4. `tisvlayd`/`tisvlay-session` `--config` flag for explicit config path
 5. System daemon uses `StateDirectory` (`/var/lib/tisvlay/`) for writable config (supports `ProtectHome=true`)
