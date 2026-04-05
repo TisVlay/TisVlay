@@ -580,7 +580,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 **Common**:
 - `tisvlayd`/`tisvlay-session` `--config` flag for explicit config path
 - System daemon uses `StateDirectory` (`/var/lib/tisvlay/`) for writable config (supports `ProtectHome=true`)
-- D-Bus policy in `systemd/org.tisvlay.Daemon.conf`
+- D-Bus policy in `packaging/systemd/org.tisvlay.Daemon.conf`
 - User services auto-start on `graphical-session.target`
 
 ### Phase 5A: `managed` Flag + CLI Profile Parity - COMPLETE

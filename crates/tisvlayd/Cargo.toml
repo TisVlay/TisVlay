@@ -53,14 +53,14 @@ contents = [
     { src = "target/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
     { src = "target/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
     # Systemd system service
-    { src = "systemd/tisvlayd.service", dst = "/usr/lib/systemd/system/tisvlayd.service" },
+    { src = "packaging/systemd/tisvlayd.service", dst = "/usr/lib/systemd/system/tisvlayd.service" },
     # Systemd user services
-    { src = "systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
-    { src = "systemd/tisvlay-tray.service", dst = "/usr/lib/systemd/user/tisvlay-tray.service" },
+    { src = "packaging/systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
+    { src = "packaging/systemd/tisvlay-tray.service", dst = "/usr/lib/systemd/user/tisvlay-tray.service" },
     # D-Bus activation service
-    { src = "systemd/org.tisvlay.Daemon.service", dst = "/usr/share/dbus-1/system-services/org.tisvlay.Daemon.service" },
+    { src = "packaging/systemd/org.tisvlay.Daemon.service", dst = "/usr/share/dbus-1/system-services/org.tisvlay.Daemon.service" },
     # D-Bus policy
-    { src = "systemd/org.tisvlay.Daemon.conf", dst = "/etc/dbus-1/system.d/org.tisvlay.Daemon.conf", type = "config" },
+    { src = "packaging/systemd/org.tisvlay.Daemon.conf", dst = "/etc/dbus-1/system.d/org.tisvlay.Daemon.conf", type = "config" },
 ]
 
 [package.metadata.nfpm.scripts]
