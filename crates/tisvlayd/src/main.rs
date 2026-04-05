@@ -188,7 +188,35 @@ async fn state_change_forwarder(
     info!("State change forwarder started");
     let object_server = connection.object_server();
 
-    while let Some(event) = rx.recv().await {
+    // Trailing-edge debounce for route changes: schedule a re-resolve 500ms
+    // after the LAST route event. This ensures we catch the final state after
+    // a burst of route changes (kernel fires dozens per NM disconnect).
+    let mut route_resolve_deadline: Option<tokio::time::Instant> = None;
+    const ROUTE_RESOLVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+    loop {
+        // Wait for either a new event or the route resolve deadline.
+        let event = if let Some(deadline) = route_resolve_deadline {
+            tokio::select! {
+                biased;
+                event = rx.recv() => match event {
+                    Some(e) => e,
+                    None => break,
+                },
+                _ = tokio::time::sleep_until(deadline) => {
+                    route_resolve_deadline = None;
+                    debug!("Route resolve deadline: re-resolving monitored interfaces");
+                    manager.re_resolve_all_interfaces().await;
+                    continue;
+                }
+            }
+        } else {
+            match rx.recv().await {
+                Some(e) => e,
+                None => break,
+            }
+        };
+
         match event {
             StateChangeEvent::SubscriptionUpdate {
                 ref tv_id,
@@ -283,8 +311,9 @@ async fn state_change_forwarder(
                 manager.reconnect_tvs_on_interface(interface).await;
             }
             StateChangeEvent::RouteChanged => {
-                debug!("Route changed: re-resolving monitored interfaces");
-                manager.re_resolve_all_interfaces().await;
+                // Reset the trailing-edge deadline — re-resolve 500ms after
+                // the last route event in the burst.
+                route_resolve_deadline = Some(tokio::time::Instant::now() + ROUTE_RESOLVE_DELAY);
             }
         }
     }

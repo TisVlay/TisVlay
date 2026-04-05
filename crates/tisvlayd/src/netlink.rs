@@ -45,14 +45,25 @@ pub async fn resolve_interface_for_ip(ip: IpAddr) -> Option<String> {
 }
 
 async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String> {
-    // Build a route query message for the destination IP
+    // Build a route query message for the destination IP.
+    // Set LookupTable flag to match `ip route get` behavior — without it,
+    // the kernel may return cached/stale routes for deconfigured interfaces.
+    use netlink_packet_route::route::RouteFlags;
     let route_msg = match ip {
-        IpAddr::V4(v4) => RouteMessageBuilder::<Ipv4Addr>::new()
-            .destination_prefix(v4, 32)
-            .build(),
-        IpAddr::V6(v6) => RouteMessageBuilder::<Ipv6Addr>::new()
-            .destination_prefix(v6, 128)
-            .build(),
+        IpAddr::V4(v4) => {
+            let mut msg = RouteMessageBuilder::<Ipv4Addr>::new()
+                .destination_prefix(v4, 32)
+                .build();
+            msg.header.flags.insert(RouteFlags::LookupTable);
+            msg
+        }
+        IpAddr::V6(v6) => {
+            let mut msg = RouteMessageBuilder::<Ipv6Addr>::new()
+                .destination_prefix(v6, 128)
+                .build();
+            msg.header.flags.insert(RouteFlags::LookupTable);
+            msg
+        }
     };
 
     let mut routes = handle.route().get(route_msg).execute();
@@ -79,6 +90,30 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
                     }
                 });
                 if let Some(name) = name {
+                    // Verify the interface has a non-link-local IP address.
+                    // NM software disconnect removes routable IPs but
+                    // IPv6 link-local (fe80::) persists. Check that the
+                    // interface has a usable address for TV communication.
+                    use netlink_packet_route::AddressFamily;
+                    let mut addrs = handle.address().get().set_link_index_filter(oif).execute();
+                    let mut has_routable_addr = false;
+                    while let Ok(Some(addr_msg)) = addrs.try_next().await {
+                        // Skip IPv6 link-local (family=AF_INET6, scope=253/link)
+                        if addr_msg.header.family == AddressFamily::Inet {
+                            has_routable_addr = true;
+                            break;
+                        }
+                        if addr_msg.header.family == AddressFamily::Inet6
+                            && !matches!(addr_msg.header.scope, netlink_packet_route::address::AddressScope::Link) {
+                            has_routable_addr = true;
+                            break;
+                        }
+                    }
+                    let has_addr = has_routable_addr;
+                    if !has_addr {
+                        debug!(ip = %ip, interface = %name, "Route exists but interface has no IP address");
+                        return None;
+                    }
                     debug!(ip = %ip, interface = %name, index = oif, "Resolved route");
                     return Some(name);
                 }
@@ -120,6 +155,8 @@ async fn watch_link_carrier(
 
     let (conn, _handle, mut messages) = new_multicast_connection(&[
         MulticastGroup::Link,
+        MulticastGroup::Ipv4Ifaddr,
+        MulticastGroup::Ipv6Ifaddr,
         MulticastGroup::Ipv4Route,
         MulticastGroup::Ipv6Route,
     ])?;
@@ -135,7 +172,22 @@ async fn watch_link_carrier(
             match msg {
                 RouteNetlinkMessage::NewLink(link_msg) => {
                     let index = link_msg.header.index;
-                    let has_carrier = link_msg.header.flags.contains(LinkFlags::LowerUp);
+
+                    // Check both physical carrier (IFF_LOWER_UP) and operational
+                    // state (IFLA_OPERSTATE). Physical carrier tracks cable
+                    // plug/unplug; OperState tracks software disconnect (NM GUI,
+                    // nmcli). A link is usable when both are true.
+                    let physical_carrier =
+                        link_msg.header.flags.contains(LinkFlags::LowerUp);
+                    let oper_up = link_msg.attributes.iter().any(|attr| {
+                        matches!(
+                            attr,
+                            LinkAttribute::OperState(
+                                netlink_packet_route::link::State::Up
+                            )
+                        )
+                    });
+                    let is_usable = physical_carrier && oper_up;
 
                     // Find the interface name from attributes
                     let name = link_msg.attributes.iter().find_map(|attr| {
@@ -149,12 +201,12 @@ async fn watch_link_carrier(
                     let Some(name) = name else { continue };
 
                     // Check for state transition
-                    let prev = carrier_state.insert(index, has_carrier);
-                    if prev == Some(has_carrier) {
+                    let prev = carrier_state.insert(index, is_usable);
+                    if prev == Some(is_usable) {
                         continue; // No change
                     }
 
-                    if has_carrier {
+                    if is_usable {
                         info!(interface = %name, "Carrier up");
                         if tx
                             .send(crate::tv_manager::StateChangeEvent::InterfaceUp {
@@ -176,7 +228,10 @@ async fn watch_link_carrier(
                         }
                     }
                 }
-                RouteNetlinkMessage::NewRoute(_) | RouteNetlinkMessage::DelRoute(_) => {
+                RouteNetlinkMessage::NewRoute(_)
+                | RouteNetlinkMessage::DelRoute(_)
+                | RouteNetlinkMessage::NewAddress(_)
+                | RouteNetlinkMessage::DelAddress(_) => {
                     debug!("Route table changed, triggering interface re-resolution");
                     if tx
                         .send(crate::tv_manager::StateChangeEvent::RouteChanged)

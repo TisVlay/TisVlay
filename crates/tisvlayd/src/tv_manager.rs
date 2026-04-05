@@ -417,13 +417,58 @@ impl TvManager {
         let interface = crate::netlink::resolve_interface_for_ip(ip).await;
         let mut tv = tv_arc.lock().await;
         if tv.monitored_interface != interface {
+            let previous = tv.monitored_interface.clone();
             info!(
                 tv_id = %tv_id,
                 interface = ?interface,
-                previous = ?tv.monitored_interface,
+                previous = ?previous,
                 "Monitored interface updated"
             );
-            tv.monitored_interface = interface;
+            tv.monitored_interface = interface.clone();
+
+            // Determine what action to take based on the transition.
+            enum RouteAction {
+                Disconnect(Box<dyn TvConnection>),
+                Reconnect,
+                None,
+            }
+
+            let action = if interface.is_none() && previous.is_some() && !tv.reconnecting {
+                // Route disappeared — TV is unreachable.
+                if let Some(conn) = tv.connection.take() {
+                    tv.last_known_input = None;
+                    RouteAction::Disconnect(conn)
+                } else {
+                    RouteAction::None
+                }
+            } else if interface.is_some() && previous.is_none() && !tv.is_connected() && !tv.powered_off && !tv.reconnecting {
+                // Route reappeared — TV may be reachable again.
+                // Don't reconnect here (recursive async fn). Emit event
+                // so the forwarder can trigger reconnection.
+                RouteAction::Reconnect
+            } else {
+                RouteAction::None
+            };
+
+            drop(tv);
+
+            match action {
+                RouteAction::Disconnect(mut conn) => {
+                    info!(tv_id = %tv_id, "Route lost: disconnecting TV");
+                    let _ = conn.close().await;
+                    self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                        tv_id: tv_id.to_string(),
+                        connected: false,
+                    });
+                }
+                RouteAction::Reconnect => {
+                    info!(tv_id = %tv_id, "Route restored: signalling reconnect");
+                    self.emit_state_change(StateChangeEvent::InterfaceUp {
+                        interface: interface.unwrap_or_default(),
+                    });
+                }
+                RouteAction::None => {}
+            }
         }
     }
 
