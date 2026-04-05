@@ -162,14 +162,21 @@ async fn main() -> Result<()> {
     netlink::spawn_link_monitor(shared_manager.state_change_sender());
 
     // Wait for shutdown or reload signal
+    let shutdown_manager = shared_manager.clone();
     wait_for_signals(shared_manager).await;
 
     info!("Shutting down...");
 
+    // Close all TV connections gracefully so the TV drops its SSAP
+    // session immediately (avoids "Connection reset" on warm restart).
+    shutdown_manager.close_all_connections().await;
+
     // Abort the signal worker
     signal_worker.abort();
 
-    // Drop connection to unregister from D-Bus
+    // Drop connection to unregister from D-Bus.
+    // This releases the well-known name, triggering NameOwnerChanged
+    // so clients (tray) detect the daemon went away.
     drop(connection);
 
     Ok(())

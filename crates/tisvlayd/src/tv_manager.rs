@@ -564,12 +564,83 @@ impl TvManager {
     /// - `PowerOn`: WoL + connect + screen on + HDMI input switch
     /// - Other actions: dispatched directly
     /// - `None`: skipped
+    /// Connect to all configured TVs without executing startup actions.
+    ///
+    /// Used on warm restart (daemon process restart, not system boot).
+    /// The TVs are likely already on — just re-establish WebSocket
+    /// connections, subscribe to state updates, and resolve monitored
+    /// interfaces. No WoL, no screen_on, no input switching.
+    fn connect_all_on_restart(self: Arc<Self>) {
+        tokio::spawn(async move {
+            let tv_ids = self.list_tv_ids().await;
+            for tv_id in &tv_ids {
+                let config = {
+                    let tv_arc = match self.get_tv(tv_id).await {
+                        Ok(arc) => arc,
+                        Err(_) => continue,
+                    };
+                    let tv = tv_arc.lock().await;
+                    if !self.registry.transport_for(&tv.config).is_network_dependent() {
+                        continue;
+                    }
+                    tv.config.clone()
+                };
+
+                let display_addr = self.registry.display_address(&config);
+                info!(tv_id = %tv_id, address = %display_addr, "Warm restart: connecting to TV");
+
+                // Retry a few times — the TV may reject the first attempt
+                // if the previous daemon's WebSocket session is still alive.
+                let mut connection = None;
+                for attempt in 1..=5u32 {
+                    match self.registry.connect_tv(&config).await {
+                        Ok(conn) => {
+                            connection = Some(conn);
+                            break;
+                        }
+                        Err(e) => {
+                            debug!(tv_id = %tv_id, attempt, error = %e, "Warm restart: retrying");
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
+                    }
+                }
+
+                match connection {
+                    Some(connection) => {
+                        let tv_arc = match self.get_tv(tv_id).await {
+                            Ok(arc) => arc,
+                            Err(_) => continue,
+                        };
+                        let mut tv = tv_arc.lock().await;
+                        tv.connection = Some(connection);
+                        if let Some(conn) = tv.connection.as_mut() {
+                            self.try_subscribe_state(tv_id, conn.as_mut()).await;
+                        }
+                        drop(tv);
+                        self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                            tv_id: tv_id.to_string(),
+                            connected: true,
+                        });
+                        self.resolve_monitored_interface(tv_id).await;
+                        info!(tv_id = %tv_id, "Warm restart: connected");
+                    }
+                    None => {
+                        debug!(tv_id = %tv_id, "Warm restart: connection failed after retries (TV may be off)");
+                    }
+                }
+            }
+        });
+    }
+
     pub fn on_startup(self: &Arc<Self>) {
         const BOOT_MARKER: &str = "/run/tisvlay/booted";
 
         let marker_path = std::path::Path::new(BOOT_MARKER);
         if marker_path.exists() {
-            info!("Skipping on_startup (service restart, not system boot)");
+            info!("Skipping on_startup actions (service restart, not system boot)");
+            // Still connect to all TVs — they're likely already on from
+            // before the restart. No WoL, no screen_on, no input switch.
+            self.clone().connect_all_on_restart();
             return;
         }
 
@@ -909,6 +980,28 @@ impl TvManager {
     ///
     /// Called when a specific NIC's carrier goes down. Only affects TVs
     /// routed through that interface — other TVs are untouched.
+    /// Close all TV connections gracefully.
+    ///
+    /// Called during daemon shutdown so TVs drop their SSAP sessions
+    /// immediately. Without this, the TV holds the stale session until
+    /// TCP keepalive times out, causing "Connection reset" on warm restart.
+    pub async fn close_all_connections(&self) {
+        let mut to_close: Vec<(String, Box<dyn TvConnection>)> = Vec::new();
+        {
+            let tvs = self.tvs.read().await;
+            for (tv_id, (_, tv_arc)) in tvs.iter() {
+                let mut tv = tv_arc.lock().await;
+                if let Some(conn) = tv.connection.take() {
+                    to_close.push((tv_id.clone(), conn));
+                }
+            }
+        }
+        for (tv_id, mut conn) in to_close {
+            debug!(tv_id = %tv_id, "Closing connection");
+            let _ = conn.close().await;
+        }
+    }
+
     pub async fn disconnect_tvs_on_interface(&self, interface: &str) {
         let mut to_close: Vec<(String, Box<dyn TvConnection>)> = Vec::new();
 
