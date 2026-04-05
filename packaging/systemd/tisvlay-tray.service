@@ -1,0 +1,14 @@
+[Unit]
+Description=tisvlay System Tray
+Documentation=https://github.com/ruffsl/tisvlay
+After=graphical-session.target tisvlay-session.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tisvlay-tray
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

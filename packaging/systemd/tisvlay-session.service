@@ -1,15 +1,15 @@
 [Unit]
-Description=tisvlay TV Control System Tray
+Description=tisvlay Session Event Monitor
 Documentation=https://github.com/ruffsl/tisvlay
 After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/tisvlay-tray
+ExecStart=/usr/bin/tisvlay-session
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
-Slice=session.slice
 
 [Install]
 WantedBy=graphical-session.target

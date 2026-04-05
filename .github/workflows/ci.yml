@@ -17,10 +17,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
       - name: Toolchain
         run: rustup show
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
+
       - name: Lint
         uses: j178/prek-action@v2
         with:
@@ -29,6 +32,7 @@ jobs:
             --skip cargo-build
             --skip cargo-clippy
             --skip cargo-test
+
       - name: Build
         run: >-
           cargo build
@@ -36,6 +40,7 @@ jobs:
           --workspace
           --all-targets
           --all-features
+
       - name: Clippy
         run: >-
           cargo clippy
@@ -44,6 +49,7 @@ jobs:
           --all-targets
           --all-features
           -- -D warnings
+
       - name: Test
         run: >-
           cargo test

@@ -134,6 +134,55 @@
                 "reveal": "always",
                 "panel": "shared"
             }
+        },
+        {
+            "label": "package: build (musl)",
+            "type": "shell",
+            "command": "rm -f target/release 2>/dev/null; cargo build --release --workspace --target x86_64-unknown-linux-musl && rm -rf target/release && ln -sf x86_64-unknown-linux-musl/release target/release",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "package: deb",
+            "type": "shell",
+            "command": "cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-musl -f deb",
+            "dependsOn": ["package: build (musl)"],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "package: rpm",
+            "type": "shell",
+            "command": "cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-musl -f rpm",
+            "dependsOn": ["package: build (musl)"],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "package: archlinux",
+            "type": "shell",
+            "command": "cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-musl -f archlinux",
+            "dependsOn": ["package: build (musl)"],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "package: all",
+            "dependsOn": ["package: deb", "package: rpm", "package: archlinux"],
+            "dependsOrder": "parallel",
+            "problemMatcher": []
         }
     ]
 }

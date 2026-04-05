@@ -1,4 +1,5 @@
 [D-BUS Service]
 Name=org.tisvlay.Daemon
 Exec=/usr/bin/tisvlayd
-User=root
+User=tisvlay
+SystemdService=tisvlayd.service

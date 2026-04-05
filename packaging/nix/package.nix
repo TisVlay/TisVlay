@@ -8,9 +8,9 @@ rustPlatform.buildRustPackage {
   pname = "tisvlay";
   version = "0.1.0";
 
-  src = lib.cleanSource ../.;
+  src = lib.cleanSource ../../.;
 
-  cargoHash = "sha256-+MOT/Uzw2jbCYesjJYq2M07AOjxS3joGDbuEqbWZRjg=";
+  cargoHash = "sha256-c51Y4CUbtQfUt8qTeyD9vBGYONUCLF7vetYewLQu2kk=";
 
   nativeBuildInputs = [
     pkg-config

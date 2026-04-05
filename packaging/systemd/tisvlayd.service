@@ -1,5 +1,5 @@
 [Unit]
-Description=LG WebOS TV Control Daemon
+Description=tisvlay TV Control Daemon
 Documentation=https://github.com/ruffsl/tisvlay
 After=network-online.target
 Wants=network-online.target
@@ -9,8 +9,15 @@ Type=dbus
 BusName=org.tisvlay.Daemon
 ExecStart=/usr/bin/tisvlayd
 ExecReload=/bin/kill -HUP $MAINPID
+User=tisvlay
+Group=tisvlay
 Restart=on-failure
 RestartSec=5
+
+# Config and state in /var/lib/tisvlay/ (writable, persists across restarts).
+# Works on immutable root filesystems (Silverblue, Bazzite, etc.).
+StateDirectory=tisvlay
+StateDirectoryMode=0750
 
 # Runtime state (boot marker in /run/tisvlay/)
 RuntimeDirectory=tisvlay
@@ -18,12 +25,9 @@ RuntimeDirectoryPreserve=restart
 
 # Security hardening
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-
-# Allow access to config directory
-ReadWritePaths=/etc/tisvlay
 
 [Install]
 WantedBy=multi-user.target

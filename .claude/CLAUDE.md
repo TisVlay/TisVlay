@@ -82,16 +82,19 @@ tisvlay/
 │           ├── tray.rs           # ksni Tray impl, menu building, TrayCommand
 │           └── state.rs          # CachedTvState, fetch_all_state()
 │
-├── systemd/
-│   ├── tisvlayd.service           # Systemd system service
-│   ├── tisvlay-session.service    # Systemd user service
-│   ├── tisvlay-tray.service       # Systemd user service (tray)
-│   ├── org.tisvlay.Daemon.service # D-Bus activation service
-│   └── org.tisvlay.Daemon.conf    # D-Bus policy configuration
-│
-├── nix/
-│   ├── package.nix               # Nix package derivation (rustPlatform.buildRustPackage)
-│   └── module.nix                # NixOS module (services.tisvlay.enable)
+├── packaging/
+│   ├── nix/
+│   │   ├── package.nix           # Nix package derivation (rustPlatform.buildRustPackage)
+│   │   └── module.nix            # NixOS module (services.tisvlay.enable)
+│   ├── scripts/
+│   │   ├── postinstall.sh        # Distro package post-install (systemd + D-Bus reload)
+│   │   └── preremove.sh          # Distro package pre-remove (stop services)
+│   └── systemd/
+│       ├── tisvlayd.service           # Systemd system service
+│       ├── tisvlay-session.service    # Systemd user service
+│       ├── tisvlay-tray.service       # Systemd user service (tray)
+│       ├── org.tisvlay.Daemon.service # D-Bus activation service
+│       └── org.tisvlay.Daemon.conf    # D-Bus policy configuration
 │
 ├── docs/
 │   ├── design.md                 # Full architecture design

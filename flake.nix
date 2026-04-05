@@ -19,10 +19,10 @@
     }:
     # System-agnostic outputs
     {
-      nixosModules.default = import ./nix/module.nix;
+      nixosModules.default = import ./packaging/nix/module.nix;
 
       overlays.default = final: prev: {
-        tisvlay = final.callPackage ./nix/package.nix { };
+        tisvlay = final.callPackage ./packaging/nix/package.nix { };
       };
     }
     # Per-system outputs (packages, devShell)
@@ -31,21 +31,27 @@
       let
         overlays = [ rust-overlay.overlays.default ];
         pkgs = import nixpkgs { inherit overlays system; };
-        rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        rust = (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml).override {
+          targets = [ "x86_64-unknown-linux-musl" ];
+        };
       in
       {
-        packages.default = pkgs.callPackage ./nix/package.nix { };
+        packages.default = pkgs.callPackage ./packaging/nix/package.nix { };
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             linuxConsoleTools
             lldb
             pkg-config
+            pkgsMusl.stdenv.cc
             socat
             tcpdump
             wakeonlan
             rust
           ];
+
+          # Tell cargo where to find the musl linker
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${pkgs.pkgsMusl.stdenv.cc}/bin/cc";
         };
       }
     );

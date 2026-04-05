@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Toolchain
+        run: rustup show
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nfpm
+        run: cargo install --locked cargo-nfpm
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Package (.deb)
+        run: cargo nfpm package -p tisvlayd --no-build -f deb
+
+      - name: Package (.rpm)
+        run: cargo nfpm package -p tisvlayd --no-build -f rpm
+
+      - name: Package (.pkg.tar.zst)
+        run: cargo nfpm package -p tisvlayd --no-build -f archlinux
+
+      - name: Checksums
+        run: |
+          cd target/release
+          sha256sum tisvlay_*.deb tisvlay-*.rpm tisvlay-*.pkg.tar.zst > checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            target/release/tisvlay_*.deb
+            target/release/tisvlay-*.rpm
+            target/release/tisvlay-*.pkg.tar.zst
+            target/release/checksums-sha256.txt

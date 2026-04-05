@@ -33,3 +33,42 @@ futures-util = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }
 indexmap = { workspace = true }
+
+
+# =============================================================================
+# Distro packaging via cargo-nfpm
+# =============================================================================
+# Generates .deb, .rpm, .pkg.tar.zst from a single config.
+# Usage: cargo nfpm package -p tisvlayd --no-build -f deb
+# The package name is "tisvlay" (all binaries + services bundled).
+
+[package.metadata.nfpm]
+name = "tisvlay"
+section = "utils"
+priority = "optional"
+
+contents = [
+    # Binaries (tisvlayd is auto-added by cargo-nfpm from the -p target)
+    { src = "target/release/tisvlay", dst = "/usr/bin/tisvlay" },
+    { src = "target/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
+    { src = "target/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
+    # Systemd system service
+    { src = "packaging/systemd/tisvlayd.service", dst = "/usr/lib/systemd/system/tisvlayd.service" },
+    # Systemd user services
+    { src = "packaging/systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
+    { src = "packaging/systemd/tisvlay-tray.service", dst = "/usr/lib/systemd/user/tisvlay-tray.service" },
+    # D-Bus activation service
+    { src = "packaging/systemd/org.tisvlay.Daemon.service", dst = "/usr/share/dbus-1/system-services/org.tisvlay.Daemon.service" },
+    # D-Bus policy
+    { src = "packaging/systemd/org.tisvlay.Daemon.conf", dst = "/etc/dbus-1/system.d/org.tisvlay.Daemon.conf", type = "config" },
+]
+
+[package.metadata.nfpm.scripts]
+postinstall = "packaging/scripts/postinstall.sh"
+preremove = "packaging/scripts/preremove.sh"
+
+[package.metadata.nfpm.deb]
+depends = ["libc6"]
+
+[package.metadata.nfpm.rpm]
+depends = ["glibc"]
