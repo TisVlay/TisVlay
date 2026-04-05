@@ -223,6 +223,24 @@ prek run -a cargo-clippy
 # CI runs file checks via prek, then build/clippy/test directly for live output
 ```
 
+### Dead Code Detection
+
+Rust's `dead_code` lint only catches unused *private* items. Public items are invisible
+to it — the compiler assumes external consumers exist. Since this workspace has no
+external consumers, use `cargo-workspace-unused-pub` for cross-crate unused pub detection:
+
+```bash
+# Ad-hoc check (generates SCIP index via rust-analyzer, may take a moment)
+cargo workspace-unused-pub
+
+# Review output manually — false positives include:
+# - Trait impl methods required by frameworks (rustls, ksni, zbus proxy traits)
+# - Builder methods reserved for future use (discovery wizard, GUI)
+```
+
+Not in the `prek` pipeline (requires rust-analyzer, slower than clippy). Run periodically
+after major refactors to catch orphaned public API surface.
+
 ## Reference Documentation
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
