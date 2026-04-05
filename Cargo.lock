@@ -1512,12 +1512,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "futures-util",
  "ksni",
  "tisvlay-core",
  "tokio",
  "tracing",
- "zbus",
 ]
 
 [[package]]

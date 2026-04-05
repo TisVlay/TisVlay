@@ -95,10 +95,13 @@ pub use wol::{wake, wake_with_options, MacAddress, WakeOptions};
 // =============================================================================
 
 // D-Bus path constants (always available, no feature gate)
-pub use dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, TV_BASE_PATH};
+pub use dbus_paths::{
+    tv_path, DAEMON_SERVICE, MANAGER_PATH, SESSION_INTERFACE, SESSION_PATH, SESSION_SERVICE,
+    TV_BASE_PATH,
+};
 
 #[cfg(feature = "dbus")]
 pub use dbus_client::{
     add_signal_match, subscribe_signals, watch_service, DaemonClient, ServiceEvent, SessionClient,
-    TvInfo, TvStateChange,
+    StateEvent, StateWatcher, StateWatcherConfig, TvInfo, TvStateChange,
 };

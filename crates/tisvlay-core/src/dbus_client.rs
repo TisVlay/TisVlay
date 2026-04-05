@@ -34,7 +34,7 @@ use futures_util::{Stream, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -536,6 +536,14 @@ impl DaemonClient {
             object_manager,
             tv_proxies: Arc::new(RwLock::new(HashMap::new())),
         })
+    }
+
+    /// Access the underlying D-Bus connection.
+    ///
+    /// Useful for callers that need to set up additional signal watches
+    /// on the same bus (e.g., [`StateWatcher`]).
+    pub fn connection(&self) -> &zbus::Connection {
+        &self.connection
     }
 
     /// Get or create proxies for a TV.
@@ -1189,5 +1197,344 @@ impl SessionClient {
             .reload_config()
             .await
             .context("Failed to reload session configuration")
+    }
+}
+
+// =============================================================================
+// State Watcher
+// =============================================================================
+
+/// A high-level event from the D-Bus service watcher.
+///
+/// Consumers receive these from [`StateWatcher::next()`] and decide
+/// how to react (refresh UI, reconnect clients, etc.).
+#[derive(Debug, Clone)]
+pub enum StateEvent {
+    /// One or more daemon state signals were received (debounced).
+    ///
+    /// The inner value is the first signal in the debounce window
+    /// (useful for logging); additional signals were coalesced.
+    DaemonStateChanged(TvStateChange),
+
+    /// The daemon service appeared on D-Bus.
+    DaemonAppeared,
+
+    /// The daemon service disappeared from D-Bus.
+    DaemonDisappeared,
+
+    /// The session service appeared on D-Bus.
+    SessionAppeared,
+
+    /// The session service disappeared from D-Bus.
+    SessionDisappeared,
+
+    /// A `UserProfileChanged` signal was received from the session service.
+    SessionProfileChanged,
+
+    /// The fallback poll timer fired.
+    FallbackPoll,
+}
+
+/// Configuration for [`StateWatcher`].
+pub struct StateWatcherConfig {
+    /// Duration to debounce daemon state signals (default: 100ms).
+    pub signal_debounce: std::time::Duration,
+    /// Interval for the fallback poll timer (default: 30s).
+    pub fallback_poll_interval: std::time::Duration,
+}
+
+impl Default for StateWatcherConfig {
+    fn default() -> Self {
+        Self {
+            signal_debounce: std::time::Duration::from_millis(100),
+            fallback_poll_interval: std::time::Duration::from_secs(30),
+        }
+    }
+}
+
+/// Watches D-Bus services and signals, emitting [`StateEvent`]s.
+///
+/// Encapsulates all the D-Bus subscription and lifecycle watching logic
+/// common across consumers (tray, GUI, etc.). The consumer drives the
+/// event loop by calling [`next()`](Self::next).
+///
+/// # Setup
+///
+/// On construction, the watcher subscribes to:
+/// - Daemon `PropertiesChanged`, `ObjectManager`, and `Manager1` signals
+/// - Daemon well-known name appear/disappear (`NameOwnerChanged`)
+/// - Session service well-known name appear/disappear
+/// - Session `UserProfileChanged` signals
+///
+/// # Example
+///
+/// ```ignore
+/// let daemon = DaemonClient::new_session().await?;
+/// let mut watcher = StateWatcher::new(&daemon, Default::default()).await?;
+///
+/// loop {
+///     let Some(event) = watcher.next().await else { break };
+///     match event {
+///         StateEvent::DaemonStateChanged(_) | StateEvent::FallbackPoll => {
+///             // refresh UI state
+///         }
+///         StateEvent::DaemonDisappeared => {
+///             // mark all TVs unavailable
+///         }
+///         // ...
+///         _ => {}
+///     }
+/// }
+/// ```
+pub struct StateWatcher {
+    /// Stream of daemon PropertiesChanged / ObjectManager / ConfigReloaded signals.
+    signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = TvStateChange> + Send>>>,
+    /// Stream of daemon service appear/disappear events.
+    daemon_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
+    /// Stream of session service appear/disappear events.
+    session_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
+    /// Stream of session UserProfileChanged signals (filtered).
+    session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>>,
+    /// Configuration.
+    config: StateWatcherConfig,
+}
+
+impl StateWatcher {
+    /// Create a new watcher for the given daemon client.
+    ///
+    /// Uses `daemon.connection()` to derive the correct bus for the daemon
+    /// name watch. Session service watching always uses the session bus.
+    pub async fn new(daemon: &DaemonClient, config: StateWatcherConfig) -> Result<Self> {
+        use crate::dbus_paths::{SESSION_INTERFACE, SESSION_PATH, SESSION_SERVICE};
+
+        let conn = daemon.connection();
+
+        // --- Daemon state signals ---
+        // Subscribe to the same match rules as subscribe_state_changes(),
+        // but produce 'static streams since we clone the connection.
+
+        add_signal_match(
+            conn,
+            &format!(
+                "type='signal',sender='{}',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='{}'",
+                DAEMON_SERVICE, TV_BASE_PATH
+            ),
+        )
+        .await?;
+
+        add_signal_match(
+            conn,
+            &format!(
+                "type='signal',sender='{}',interface='org.freedesktop.DBus.ObjectManager',path='{}'",
+                DAEMON_SERVICE,
+                crate::dbus_paths::OBJECT_MANAGER_PATH,
+            ),
+        )
+        .await?;
+
+        add_signal_match(
+            conn,
+            &format!(
+                "type='signal',sender='{}',interface='org.tisvlay.Manager1',path='{}'",
+                DAEMON_SERVICE, MANAGER_PATH,
+            ),
+        )
+        .await?;
+
+        let tv_prefix = format!("{}/", TV_BASE_PATH);
+        let raw_stream = zbus::MessageStream::from(conn.clone());
+
+        let signal_stream: std::pin::Pin<Box<dyn Stream<Item = TvStateChange> + Send>> =
+            Box::pin(raw_stream.filter_map(move |msg_result| {
+                let tv_prefix = tv_prefix.clone();
+                async move {
+                    let msg = msg_result.ok()?;
+                    let header = msg.header();
+                    let iface = header.interface()?.to_string();
+                    let member = header.member()?.to_string();
+                    let path = header.path()?.to_string();
+
+                    match (iface.as_str(), member.as_str()) {
+                        ("org.freedesktop.DBus.Properties", "PropertiesChanged") => {
+                            let tv_id = path.strip_prefix(&tv_prefix)?.to_string();
+                            trace!(tv_id = %tv_id, "PropertiesChanged signal on TV");
+                            Some(TvStateChange::PropertiesChanged { tv_id })
+                        }
+                        ("org.freedesktop.DBus.ObjectManager", "InterfacesAdded")
+                        | ("org.freedesktop.DBus.ObjectManager", "InterfacesRemoved") => {
+                            trace!(member = %member, "ObjectManager signal");
+                            Some(TvStateChange::TvListChanged)
+                        }
+                        ("org.tisvlay.Manager1", "TvAdded" | "TvRemoved") => {
+                            trace!(member = %member, "Manager1 TV list signal");
+                            Some(TvStateChange::TvListChanged)
+                        }
+                        ("org.tisvlay.Manager1", "ConfigReloaded") => {
+                            trace!("Manager1 ConfigReloaded signal");
+                            Some(TvStateChange::ConfigReloaded)
+                        }
+                        _ => None,
+                    }
+                }
+            }));
+
+        // --- Daemon name watch ---
+        let daemon_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>> =
+            match watch_service(conn, DAEMON_SERVICE).await {
+                Ok(stream) => Some(Box::pin(stream)),
+                Err(e) => {
+                    warn!(error = %e, "Failed to watch daemon service name");
+                    None
+                }
+            };
+
+        // --- Session name watch (always session bus) ---
+        let session_bus = zbus::Connection::session().await.ok();
+
+        let session_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>> =
+            match &session_bus {
+                Some(sconn) => match watch_service(sconn, SESSION_SERVICE).await {
+                    Ok(stream) => Some(Box::pin(stream)),
+                    Err(e) => {
+                        warn!(error = %e, "Failed to watch session service name");
+                        None
+                    }
+                },
+                None => None,
+            };
+
+        // --- Session UserProfileChanged signals ---
+        let session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>> =
+            match &session_bus {
+                Some(sconn) => {
+                    let rule = format!(
+                        "type='signal',sender='{}',interface='{}',member='UserProfileChanged',path='{}'",
+                        SESSION_SERVICE, SESSION_INTERFACE, SESSION_PATH,
+                    );
+                    match subscribe_signals(sconn, &rule).await {
+                        Ok(raw) => {
+                            let filtered = raw.filter_map(|msg_result| async move {
+                                let msg = msg_result.ok()?;
+                                let header = msg.header();
+                                let member = header.member()?.to_string();
+                                if member == "UserProfileChanged" {
+                                    Some(())
+                                } else {
+                                    None
+                                }
+                            });
+                            debug!("Subscribed to session UserProfileChanged signals");
+                            Some(Box::pin(filtered))
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to subscribe to session signals");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+
+        info!("State watcher initialized");
+
+        Ok(Self {
+            signal_stream: Some(signal_stream),
+            daemon_watch,
+            session_watch,
+            session_signal_stream,
+            config,
+        })
+    }
+
+    /// Receive the next state event.
+    ///
+    /// Daemon state signals are debounced: when the first signal arrives,
+    /// additional signals within [`StateWatcherConfig::signal_debounce`] are
+    /// drained before a single [`StateEvent::DaemonStateChanged`] is returned.
+    ///
+    /// Returns `None` if all underlying streams have closed (unlikely in
+    /// practice since the fallback poll timer keeps the watcher alive).
+    pub async fn next(&mut self) -> Option<StateEvent> {
+        tokio::select! {
+            // Branch 1: daemon state signal (debounced)
+            Some(change) = async {
+                match self.signal_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                debug!(change = ?change, "State signal received, debouncing");
+                let deadline = tokio::time::sleep(self.config.signal_debounce);
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        biased;
+                        Some(_) = async {
+                            match self.signal_stream.as_mut() {
+                                Some(s) => s.next().await,
+                                None => std::future::pending().await,
+                            }
+                        } => continue,
+                        _ = &mut deadline => break,
+                    }
+                }
+                Some(StateEvent::DaemonStateChanged(change))
+            }
+
+            // Branch 2: daemon appeared/disappeared
+            Some(event) = async {
+                match self.daemon_watch.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match event {
+                    ServiceEvent::Appeared => {
+                        info!("Daemon appeared on D-Bus");
+                        Some(StateEvent::DaemonAppeared)
+                    }
+                    ServiceEvent::Disappeared => {
+                        info!("Daemon left D-Bus");
+                        Some(StateEvent::DaemonDisappeared)
+                    }
+                }
+            }
+
+            // Branch 3: session service appeared/disappeared
+            Some(event) = async {
+                match self.session_watch.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match event {
+                    ServiceEvent::Appeared => {
+                        info!("Session service appeared on D-Bus");
+                        Some(StateEvent::SessionAppeared)
+                    }
+                    ServiceEvent::Disappeared => {
+                        debug!("Session service left D-Bus");
+                        Some(StateEvent::SessionDisappeared)
+                    }
+                }
+            }
+
+            // Branch 4: session UserProfileChanged signal
+            Some(()) = async {
+                match self.session_signal_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                debug!("Session UserProfileChanged signal received");
+                Some(StateEvent::SessionProfileChanged)
+            }
+
+            // Branch 5: fallback poll
+            _ = tokio::time::sleep(self.config.fallback_poll_interval) => {
+                debug!("Fallback poll timer fired");
+                Some(StateEvent::FallbackPoll)
+            }
+        }
     }
 }

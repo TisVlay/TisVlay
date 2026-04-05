@@ -104,7 +104,11 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
                             break;
                         }
                         if addr_msg.header.family == AddressFamily::Inet6
-                            && !matches!(addr_msg.header.scope, netlink_packet_route::address::AddressScope::Link) {
+                            && !matches!(
+                                addr_msg.header.scope,
+                                netlink_packet_route::address::AddressScope::Link
+                            )
+                        {
                             has_routable_addr = true;
                             break;
                         }
@@ -177,14 +181,11 @@ async fn watch_link_carrier(
                     // state (IFLA_OPERSTATE). Physical carrier tracks cable
                     // plug/unplug; OperState tracks software disconnect (NM GUI,
                     // nmcli). A link is usable when both are true.
-                    let physical_carrier =
-                        link_msg.header.flags.contains(LinkFlags::LowerUp);
+                    let physical_carrier = link_msg.header.flags.contains(LinkFlags::LowerUp);
                     let oper_up = link_msg.attributes.iter().any(|attr| {
                         matches!(
                             attr,
-                            LinkAttribute::OperState(
-                                netlink_packet_route::link::State::Up
-                            )
+                            LinkAttribute::OperState(netlink_packet_route::link::State::Up)
                         )
                     });
                     let is_usable = physical_carrier && oper_up;

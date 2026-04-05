@@ -441,7 +441,12 @@ impl TvManager {
                 } else {
                     RouteAction::None
                 }
-            } else if interface.is_some() && previous.is_none() && !tv.is_connected() && !tv.powered_off && !tv.reconnecting {
+            } else if interface.is_some()
+                && previous.is_none()
+                && !tv.is_connected()
+                && !tv.powered_off
+                && !tv.reconnecting
+            {
                 // Route reappeared — TV may be reachable again.
                 // Don't reconnect here (recursive async fn). Emit event
                 // so the forwarder can trigger reconnection.
@@ -550,20 +555,6 @@ impl TvManager {
         }
     }
 
-    /// Execute the configured `on_startup` action for all managed TVs,
-    /// but only on system boot — not on daemon restart.
-    ///
-    /// Uses a marker file in `/run/tisvlay/` (tmpfs, cleared on every boot)
-    /// to distinguish system boot from service restart. This prevents
-    /// unexpected TV power-on during unrelated `systemctl restart`.
-    ///
-    /// Runs in the background so D-Bus registration is not blocked.
-    /// The daemon is reachable immediately; TVs come online when ready.
-    ///
-    /// Each managed TV is handled according to its own resolved system profile:
-    /// - `PowerOn`: WoL + connect + screen on + HDMI input switch
-    /// - Other actions: dispatched directly
-    /// - `None`: skipped
     /// Connect to all configured TVs without executing startup actions.
     ///
     /// Used on warm restart (daemon process restart, not system boot).
@@ -587,12 +578,28 @@ impl TvManager {
 
                 match self.reconnect(tv_id).await {
                     Ok(()) => info!(tv_id = %tv_id, "Warm restart: connected"),
-                    Err(e) => debug!(tv_id = %tv_id, error = %e, "Warm restart: connection failed (TV may be off)"),
+                    Err(e) => {
+                        debug!(tv_id = %tv_id, error = %e, "Warm restart: connection failed (TV may be off)")
+                    }
                 }
             }
         });
     }
 
+    /// Execute the configured `on_startup` action for all managed TVs,
+    /// but only on system boot — not on daemon restart.
+    ///
+    /// Uses a marker file in `/run/tisvlay/` (tmpfs, cleared on every boot)
+    /// to distinguish system boot from service restart. This prevents
+    /// unexpected TV power-on during unrelated `systemctl restart`.
+    ///
+    /// Runs in the background so D-Bus registration is not blocked.
+    /// The daemon is reachable immediately; TVs come online when ready.
+    ///
+    /// Each managed TV is handled according to its own resolved system profile:
+    /// - `PowerOn`: WoL + connect + screen on + HDMI input switch
+    /// - Other actions: dispatched directly
+    /// - `None`: skipped
     pub fn on_startup(self: &Arc<Self>) {
         const BOOT_MARKER: &str = "/run/tisvlay/booted";
 
