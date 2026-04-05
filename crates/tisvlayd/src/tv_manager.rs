@@ -442,6 +442,22 @@ impl TvManager {
                     RouteAction::None
                 }
             } else if interface.is_some()
+                && previous.is_some()
+                && interface != previous
+                && tv.is_connected()
+                && !tv.reconnecting
+                && !self.registry.survives_source_ip_change(&config)
+            {
+                // Route shifted to a different NIC and the backend's
+                // protocol can't survive a source IP change (e.g.,
+                // WebSocket over TCP). Close and reconnect via the new NIC.
+                if let Some(conn) = tv.connection.take() {
+                    tv.last_known_input = None;
+                    RouteAction::Disconnect(conn)
+                } else {
+                    RouteAction::None
+                }
+            } else if interface.is_some()
                 && previous.is_none()
                 && !tv.is_connected()
                 && !tv.powered_off
@@ -459,12 +475,18 @@ impl TvManager {
 
             match action {
                 RouteAction::Disconnect(mut conn) => {
-                    info!(tv_id = %tv_id, "Route lost: disconnecting TV");
                     let _ = conn.close().await;
+                    info!(tv_id = %tv_id, "Route changed: disconnected");
                     self.emit_state_change(StateChangeEvent::ConnectionChanged {
                         tv_id: tv_id.to_string(),
                         connected: false,
                     });
+                    // If a route still exists, signal reconnection via the new NIC.
+                    if interface.is_some() {
+                        self.emit_state_change(StateChangeEvent::InterfaceUp {
+                            interface: interface.clone().unwrap_or_default(),
+                        });
+                    }
                 }
                 RouteAction::Reconnect => {
                     info!(tv_id = %tv_id, "Route restored: signalling reconnect");

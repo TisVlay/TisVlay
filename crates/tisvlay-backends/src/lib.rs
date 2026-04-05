@@ -157,6 +157,15 @@ impl BackendRegistry {
             .unwrap_or(tisvlay_core::Transport::Network)
     }
 
+    /// Whether a TV's backend connections survive client source IP changes.
+    ///
+    /// Returns `false` for unknown vendors (safe default — reconnect on NIC change).
+    pub fn survives_source_ip_change(&self, tv_config: &TvConfig) -> bool {
+        self.get_connector(&tv_config.vendor)
+            .map(|c| c.survives_source_ip_change())
+            .unwrap_or(false)
+    }
+
     /// Check if a TV's transport supports waking.
     pub fn supports_wake(&self, tv_config: &TvConfig) -> bool {
         self.get_connector(&tv_config.vendor)
