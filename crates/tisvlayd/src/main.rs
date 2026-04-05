@@ -282,6 +282,10 @@ async fn state_change_forwarder(
                 info!(interface = %interface, "Interface carrier up: reconnecting affected TVs");
                 manager.reconnect_tvs_on_interface(interface).await;
             }
+            StateChangeEvent::RouteChanged => {
+                debug!("Route changed: re-resolving monitored interfaces");
+                manager.re_resolve_all_interfaces().await;
+            }
         }
     }
 

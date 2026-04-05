@@ -117,6 +117,12 @@ pub enum StateChangeEvent {
     /// From kernel netlink RTMGRP_LINK. Disconnects TVs whose
     /// `monitored_interface` matches this interface.
     InterfaceDown { interface: String },
+    /// The kernel routing table changed.
+    ///
+    /// From kernel netlink RTMGRP_ROUTE. Re-resolves `monitored_interface`
+    /// for all connected network TVs in case their route shifted to a
+    /// different NIC (failover, DHCP renewal, VPN up/down).
+    RouteChanged,
 }
 
 /// Basic TV information for D-Bus properties.
@@ -912,6 +918,21 @@ impl TvManager {
                     debug!(tv_id = %tv_id, error = %e, "Reconnect failed (TV may be off)");
                 }
             });
+        }
+    }
+
+    /// Re-resolve `monitored_interface` for all connected network TVs.
+    ///
+    /// Called when the kernel routing table changes. If a TV's route shifted
+    /// to a different NIC (failover, DHCP renewal), updates the mapping so
+    /// carrier monitoring tracks the correct interface.
+    pub async fn re_resolve_all_interfaces(&self) {
+        let tv_ids: Vec<String> = {
+            let tvs = self.tvs.read().await;
+            tvs.keys().cloned().collect()
+        };
+        for tv_id in &tv_ids {
+            self.resolve_monitored_interface(tv_id).await;
         }
     }
 

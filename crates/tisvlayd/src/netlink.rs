@@ -118,7 +118,11 @@ async fn watch_link_carrier(
     use rtnetlink::{new_multicast_connection, MulticastGroup};
     use std::collections::HashMap;
 
-    let (conn, _handle, mut messages) = new_multicast_connection(&[MulticastGroup::Link])?;
+    let (conn, _handle, mut messages) = new_multicast_connection(&[
+        MulticastGroup::Link,
+        MulticastGroup::Ipv4Route,
+        MulticastGroup::Ipv6Route,
+    ])?;
     tokio::spawn(conn);
 
     info!("Link carrier monitor started");
@@ -128,47 +132,60 @@ async fn watch_link_carrier(
 
     while let Some((message, _)) = messages.next().await {
         if let NetlinkPayload::InnerMessage(msg) = message.payload {
-            let link_msg = match msg {
-                RouteNetlinkMessage::NewLink(m) => m,
-                _ => continue,
-            };
+            match msg {
+                RouteNetlinkMessage::NewLink(link_msg) => {
+                    let index = link_msg.header.index;
+                    let has_carrier = link_msg.header.flags.contains(LinkFlags::LowerUp);
 
-            let index = link_msg.header.index;
-            let has_carrier = link_msg.header.flags.contains(LinkFlags::LowerUp);
+                    // Find the interface name from attributes
+                    let name = link_msg.attributes.iter().find_map(|attr| {
+                        if let LinkAttribute::IfName(name) = attr {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    });
 
-            // Find the interface name from attributes
-            let name = link_msg.attributes.iter().find_map(|attr| {
-                if let LinkAttribute::IfName(name) = attr {
-                    Some(name.clone())
-                } else {
-                    None
+                    let Some(name) = name else { continue };
+
+                    // Check for state transition
+                    let prev = carrier_state.insert(index, has_carrier);
+                    if prev == Some(has_carrier) {
+                        continue; // No change
+                    }
+
+                    if has_carrier {
+                        info!(interface = %name, "Carrier up");
+                        if tx
+                            .send(crate::tv_manager::StateChangeEvent::InterfaceUp {
+                                interface: name,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    } else {
+                        info!(interface = %name, "Carrier down");
+                        if tx
+                            .send(crate::tv_manager::StateChangeEvent::InterfaceDown {
+                                interface: name,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
-            });
-
-            let Some(name) = name else { continue };
-
-            // Check for state transition
-            let prev = carrier_state.insert(index, has_carrier);
-            if prev == Some(has_carrier) {
-                continue; // No change
-            }
-
-            if has_carrier {
-                info!(interface = %name, "Carrier up");
-                if tx
-                    .send(crate::tv_manager::StateChangeEvent::InterfaceUp { interface: name })
-                    .is_err()
-                {
-                    break;
+                RouteNetlinkMessage::NewRoute(_) | RouteNetlinkMessage::DelRoute(_) => {
+                    debug!("Route table changed, triggering interface re-resolution");
+                    if tx
+                        .send(crate::tv_manager::StateChangeEvent::RouteChanged)
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
-            } else {
-                info!(interface = %name, "Carrier down");
-                if tx
-                    .send(crate::tv_manager::StateChangeEvent::InterfaceDown { interface: name })
-                    .is_err()
-                {
-                    break;
-                }
+                _ => {}
             }
         }
     }
