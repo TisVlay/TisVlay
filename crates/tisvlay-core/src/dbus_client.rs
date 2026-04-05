@@ -568,92 +568,6 @@ impl DaemonClient {
         self.object_manager.get_managed_objects().await.is_ok()
     }
 
-    /// Subscribe to TV state change signals from the daemon.
-    ///
-    /// Returns a stream of [`TvStateChange`] events. The stream captures:
-    /// - `PropertiesChanged` signals on any TV interface under `/org/tisvlay/Tv/`
-    /// - `InterfacesAdded` and `InterfacesRemoved` on the ObjectManager at
-    ///   `/org/tisvlay` (TV add/remove)
-    /// - `ConfigReloaded` on `org.tisvlay.Manager1`
-    ///
-    /// Works with both session and system bus (depends on how the client was
-    /// constructed).
-    pub async fn subscribe_state_changes(
-        &self,
-    ) -> Result<impl Stream<Item = TvStateChange> + Send + '_> {
-        let conn = &self.connection;
-
-        // PropertiesChanged on any TV interface
-        add_signal_match(
-            conn,
-            &format!(
-                "type='signal',sender='{}',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='{}'",
-                DAEMON_SERVICE, TV_BASE_PATH
-            ),
-        )
-        .await?;
-
-        // ObjectManager signals (TV add/remove)
-        add_signal_match(
-            conn,
-            &format!(
-                "type='signal',sender='{}',interface='org.freedesktop.DBus.ObjectManager',path='{}'",
-                DAEMON_SERVICE,
-                crate::dbus_paths::OBJECT_MANAGER_PATH,
-            ),
-        )
-        .await?;
-
-        // Manager signals (config reload, TV add/remove)
-        add_signal_match(
-            conn,
-            &format!(
-                "type='signal',sender='{}',interface='org.tisvlay.Manager1',path='{}'",
-                DAEMON_SERVICE, MANAGER_PATH,
-            ),
-        )
-        .await?;
-
-        let tv_prefix = format!("{}/", TV_BASE_PATH);
-
-        let raw_stream = zbus::MessageStream::from(conn.clone());
-
-        let mapped = raw_stream.filter_map(move |msg_result| {
-            let tv_prefix = tv_prefix.clone();
-            async move {
-                let msg = msg_result.ok()?;
-                let header = msg.header();
-                let iface = header.interface()?.to_string();
-                let member = header.member()?.to_string();
-                let path = header.path()?.to_string();
-
-                match (iface.as_str(), member.as_str()) {
-                    ("org.freedesktop.DBus.Properties", "PropertiesChanged") => {
-                        let tv_id = path.strip_prefix(&tv_prefix)?.to_string();
-                        trace!(tv_id = %tv_id, "PropertiesChanged signal on TV");
-                        Some(TvStateChange::PropertiesChanged { tv_id })
-                    }
-                    ("org.freedesktop.DBus.ObjectManager", "InterfacesAdded")
-                    | ("org.freedesktop.DBus.ObjectManager", "InterfacesRemoved") => {
-                        trace!(member = %member, "ObjectManager signal");
-                        Some(TvStateChange::TvListChanged)
-                    }
-                    ("org.tisvlay.Manager1", "TvAdded") | ("org.tisvlay.Manager1", "TvRemoved") => {
-                        trace!(member = %member, "Manager1 TV list signal");
-                        Some(TvStateChange::TvListChanged)
-                    }
-                    ("org.tisvlay.Manager1", "ConfigReloaded") => {
-                        trace!("Manager1 ConfigReloaded signal");
-                        Some(TvStateChange::ConfigReloaded)
-                    }
-                    _ => None,
-                }
-            }
-        });
-
-        Ok(mapped)
-    }
-
     /// Execute an operation on a TV's cached proxies, handling proxy lookup boilerplate.
     ///
     /// This helper ensures the proxy cache is populated for the given TV, acquires a
@@ -1310,8 +1224,6 @@ impl StateWatcher {
         let conn = daemon.connection();
 
         // --- Daemon state signals ---
-        // Subscribe to the same match rules as subscribe_state_changes(),
-        // but produce 'static streams since we clone the connection.
 
         add_signal_match(
             conn,
