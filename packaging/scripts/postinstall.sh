@@ -15,6 +15,10 @@ if ! getent passwd tisvlay >/dev/null 2>&1; then
         --gid tisvlay --comment "tisvlay daemon" tisvlay
 fi
 
+# Create state directory (systemd's StateDirectory= creates it on service
+# start, but D-Bus activation may run the daemon before that).
+install -d -m 0750 -o tisvlay -g tisvlay /var/lib/tisvlay 2>/dev/null || true
+
 # Reload systemd to pick up new service files
 systemctl daemon-reload || true
 

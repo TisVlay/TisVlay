@@ -2,3 +2,4 @@
 Name=org.tisvlay.Daemon
 Exec=/usr/bin/tisvlayd
 User=tisvlay
+SystemdService=tisvlayd.service
