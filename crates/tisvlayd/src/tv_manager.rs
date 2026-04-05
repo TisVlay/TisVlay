@@ -140,6 +140,12 @@ struct ManagedTv {
     /// Used by `is_automated()` to evaluate the input-aware gate without
     /// needing access to the D-Bus interface cache.
     last_known_input: Option<String>,
+    /// NIC carrying traffic to this TV, resolved from the routing table.
+    ///
+    /// Set at connection time via `resolve_interface_for_ip()`. Used to
+    /// scope carrier monitoring to the correct interface — only disconnect
+    /// this TV when its specific NIC goes down, not when any NIC changes.
+    monitored_interface: Option<String>,
 }
 
 impl ManagedTv {
@@ -151,6 +157,7 @@ impl ManagedTv {
             reconnecting: false,
             system_profile,
             last_known_input: None,
+            monitored_interface: None,
         }
     }
 
@@ -362,6 +369,47 @@ impl TvManager {
         self.state_change_tx.clone()
     }
 
+    /// Resolve and store the NIC carrying traffic to a TV.
+    ///
+    /// Parses the TV's display address as an IP, queries the kernel routing
+    /// table, and stores the result on `ManagedTv::monitored_interface`.
+    /// Only meaningful for network-transport TVs.
+    async fn resolve_monitored_interface(&self, tv_id: &str) {
+        let tv_arc = match self.get_tv(tv_id).await {
+            Ok(arc) => arc,
+            Err(_) => return,
+        };
+        let config = {
+            let tv = tv_arc.lock().await;
+            tv.config.clone()
+        };
+
+        if !self.registry.transport_for(&config).is_network_dependent() {
+            return;
+        }
+
+        let address = self.registry.display_address(&config);
+        let ip: std::net::IpAddr = match address.parse() {
+            Ok(ip) => ip,
+            Err(_) => {
+                debug!(tv_id = %tv_id, address = %address, "Cannot parse TV address as IP for route resolution");
+                return;
+            }
+        };
+
+        let interface = crate::netlink::resolve_interface_for_ip(ip).await;
+        let mut tv = tv_arc.lock().await;
+        if tv.monitored_interface != interface {
+            info!(
+                tv_id = %tv_id,
+                interface = ?interface,
+                previous = ?tv.monitored_interface,
+                "Monitored interface updated"
+            );
+            tv.monitored_interface = interface;
+        }
+    }
+
     fn emit_state_change(&self, event: StateChangeEvent) {
         if let Err(e) = self.state_change_tx.send(event) {
             debug!("Failed to send state change event: {}", e);
@@ -530,6 +578,7 @@ impl TvManager {
                     tv_id: tv_id.to_string(),
                     connected: true,
                 });
+                manager.resolve_monitored_interface(tv_id).await;
 
                 match manager.screen_on(tv_id).await {
                     Ok(()) => info!(tv_id = %tv_id, "Startup: screen on"),
@@ -709,6 +758,7 @@ impl TvManager {
             tv_id: tv_id.to_string(),
             connected: true,
         });
+        self.resolve_monitored_interface(tv_id).await;
 
         Ok(())
     }
@@ -833,6 +883,22 @@ impl TvManager {
                 connected: true,
             });
 
+            // Resolve which NIC routes to this TV (inline — we hold the lock)
+            if self
+                .registry
+                .transport_for(&tv.config)
+                .is_network_dependent()
+            {
+                let address = self.registry.display_address(&tv.config);
+                if let Ok(ip) = address.parse::<std::net::IpAddr>() {
+                    let interface = crate::netlink::resolve_interface_for_ip(ip).await;
+                    if tv.monitored_interface != interface {
+                        debug!(tv_id = %tv_id, interface = ?interface, "Monitored interface resolved");
+                        tv.monitored_interface = interface;
+                    }
+                }
+            }
+
             // Subscribe to backend state updates if supported
             if let Some(conn) = tv.connection.as_mut() {
                 self.try_subscribe_state(tv_id, conn.as_mut()).await;
@@ -912,6 +978,7 @@ impl TvManager {
             tv_id: tv_id.to_string(),
             connected: true,
         });
+        self.resolve_monitored_interface(tv_id).await;
         info!(tv_id = %tv_id, "TV is online after WoL");
         Ok(())
     }

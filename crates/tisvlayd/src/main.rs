@@ -5,6 +5,7 @@
 
 mod dbus;
 mod logind;
+mod netlink;
 mod network_watcher;
 mod registry;
 mod tv_manager;
