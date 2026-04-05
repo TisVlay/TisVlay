@@ -1,4 +1,4 @@
-# Plan: Per-device NM carrier monitoring for accurate disconnect detection
+# Plan: Per-device carrier monitoring for accurate disconnect detection
 
 ## Problem
 
@@ -16,192 +16,215 @@ even though the NIC carrying TV traffic is down.
 
 ## Design
 
+### Two-layer monitoring
+
+**Layer 1: Kernel netlink (primary, always available)**
+
+The `rtnetlink` crate provides async event-driven monitoring of:
+- **Route changes** (`RTMGRP_ROUTE`) — detect when the route to a TV's
+  IP changes (interface failover, DHCP renewal)
+- **Link state** (`RTMGRP_LINK`) — detect carrier up/down instantly
+  via `IFF_LOWER_UP` flag
+
+This layer works without NetworkManager — it's kernel-level.
+
+**Layer 2: NM global state (fallback, when NM is available)**
+
+Keep the existing `StateChanged` watcher as a fallback. It catches
+scenarios the netlink layer might miss (e.g., NM connectivity checks
+detecting a captive portal).
+
 ### Route-based device resolution
 
-When a network-transport TV connects, the daemon resolves which NM
-device carries traffic to its IP via the OS routing table:
+When a network-transport TV connects, the daemon resolves which NIC
+carries traffic to its IP via the kernel routing table (rtnetlink
+`RTM_GETROUTE`). This is the equivalent of `ip route get <IP>`:
 
 ```
 ip route get 192.168.1.170
 → 192.168.1.170 dev eno2 src 192.168.1.79
 ```
 
-This maps: TV IP → NIC name → NM device object path.
+This maps: TV IP → NIC name (e.g., `eno2`).
 
 The daemon doesn't need to ask the user which interface to use —
 the kernel routing table already knows. This works correctly with
 bridges, VLANs, bonding, VPNs, etc.
 
-### Per-device carrier monitoring
-
-Instead of (or in addition to) NM global `StateChanged`, the watcher
-monitors `Carrier` property changes on the specific NM device object
-that routes to each TV:
-
-```
-/org/freedesktop/NetworkManager/Devices/3
-    org.freedesktop.NetworkManager.Device.Wired
-        Carrier: true → false (instant on cable pull)
-```
-
-Carrier changes fire within milliseconds of physical link up/down.
-No connectivity check delay.
-
 ### Architectural layers
 
 ```
-Vendor (LG, Epson, Sony)
-    ↓ connects via
-Protocol (SSAP, PJLink, HTTP)
-    ↓ carried over
-Transport (Network, Serial, USB, CEC)  ← TvConnector::transport()
-    ↓ routed through
-NM Device (eno2, wlan0, br0)           ← route lookup (daemon-owned)
-    ↓ signals
-Carrier state (up/down)                ← NM Device.Wired.Carrier
+Vendor (LG, Epson, Sony)         ← backend crate
+Protocol (SSAP, PJLink, HTTP)    ← backend crate
+Transport (Network, Serial, ...)  ← TvConnector::transport()
+NIC (eno2, wlan0, br0)           ← route lookup (daemon, rtnetlink)
+Carrier state (up/down)          ← netlink RTMGRP_LINK (daemon)
 ```
 
-The backend declares `Transport::Network`. The daemon resolves the
-NM device. The NM watcher monitors per-device carrier. This keeps
-backends vendor-agnostic and protocol-agnostic — only the daemon
-knows about NM devices.
+Backends declare `Transport::Network` and provide the IP via
+`display_address()`. The daemon resolves IP → NIC → carrier. This
+keeps backends vendor-agnostic and protocol-agnostic.
 
-### Where does the route lookup live?
+### Relevant Rust crates
 
-The route lookup is a **daemon** responsibility, not a backend concern:
+| Crate | Purpose | Status |
+|-------|---------|--------|
+| `rtnetlink` | Async route queries + link monitoring via kernel netlink | Active (v0.18), production-grade |
+| `nmrs` | Typed async NM D-Bus bindings (device state, connections) | Active (v2.0), zbus-based |
+| `netwatcher` | Cross-platform network change events | Active, simpler API |
 
-- The backend provides the TV's address (IP) via `display_address()`
-- The daemon resolves IP → NM device at connection time
-- The NM watcher uses this mapping to monitor the right device
+`rtnetlink` is the primary tool — kernel-level, no NM dependency,
+event-driven, async. `nmrs` is optional for NM-specific features.
 
-This is transport-level logic that the daemon owns (same as how the
-daemon owns the `reconnecting` flag and NM event scoping).
+### NM remains optional
 
-### State machine per TV
+All NM-specific monitoring (global state, device properties) is
+gated on NM availability — if NM isn't running, the watcher logs
+a warning and exits. The kernel netlink layer works regardless.
 
+---
+
+## Answers to open questions
+
+### Q1: When to resolve the route?
+
+Resolve at **connection time** and at **reconnection time**. If the
+route changes between sessions (DHCP, failover), the reconnect path
+picks up the new route. The mapping is: TV connects → resolve route →
+monitor that NIC's carrier. If the NIC goes down and comes back, the
+reconnect re-resolves (may find a different NIC if routes changed).
+
+### Q2: Multiple routes / failover
+
+**Primary route only.** When the primary NIC goes down:
+1. Carrier lost → disconnect TV
+2. Re-resolve route for TV IP
+3. If a new route exists (failover NIC) → reconnect via new NIC,
+   monitor new NIC's carrier
+4. If no route exists → TV stays disconnected until a route appears
+
+No need to monitor all possible paths simultaneously. The kernel
+routing table is the source of truth — if a failover NIC takes over,
+`ip route get` returns the new path. We follow the kernel's decision.
+
+If the **original NIC comes back**, two scenarios:
+- If the TV is already connected via the failover NIC → do nothing
+  (connection is working). The kernel may or may not switch the route
+  back depending on metrics. If it does, the next reconnect cycle
+  picks up the change.
+- If the TV is disconnected → re-resolve finds the original NIC →
+  reconnect.
+
+This is the same approach WireGuard and OpenVPN use: follow the OS
+routing table, don't second-guess it.
+
+### Q3: Wired ↔ Wi-Fi switching
+
+**With continuity (both NICs up briefly):** The TV's TCP connection
+survives if the IP doesn't change (same subnet). The route may shift
+from `eno2` to `wlan0` — the daemon detects this on the next
+RTMGRP_ROUTE event and updates the monitored NIC. No disconnect.
+
+**Without continuity (gap between NICs):** The wired NIC goes down
+→ carrier lost → TV disconnected. Wi-Fi NIC comes up → route to TV
+IP becomes available → reconnect via Wi-Fi. Same as failover (Q2).
+
+For **carrier detection on Wi-Fi**: kernel netlink `IFF_LOWER_UP`
+works for both wired and wireless interfaces. NM's `Device.Wired.Carrier`
+is wired-only, but the kernel flag is universal. Using rtnetlink
+RTMGRP_LINK avoids this NM limitation.
+
+### Q4: Where to track NM device / NIC on ManagedTv?
+
+Looking at our prior design research (OpenHAB Bridge pattern, Home
+Assistant connectivity model), the pattern is:
+
+- **Connection state is a property of the connection instance**
+- **Transport details are tracked by the daemon, not the backend**
+
+`ManagedTv` already tracks `connection`, `powered_off`, `reconnecting`,
+`last_known_input`. Adding `monitored_interface: Option<String>` (the
+NIC name, e.g., `"eno2"`) fits naturally — it's connection lifecycle
+state that the daemon owns.
+
+This is **not** a backend concern (the LG backend doesn't know or care
+about NICs). It's **not** a config concern (the user doesn't specify
+it). It's runtime state resolved from the routing table, stored
+alongside other runtime state on `ManagedTv`.
+
+```rust
+struct ManagedTv {
+    config: TvConfig,
+    connection: Option<Box<dyn TvConnection>>,
+    powered_off: bool,
+    reconnecting: bool,
+    system_profile: ResolvedSystemProfile,
+    last_known_input: Option<String>,
+    /// NIC carrying traffic to this TV, resolved from routing table.
+    /// Used to scope carrier monitoring to the correct interface.
+    monitored_interface: Option<String>,
+}
 ```
-Disconnected → [connect] → Connected (resolve NM device, start monitoring)
-Connected → [carrier lost on device] → Disconnecting → Disconnected
-Connected → [NM global lost] → Disconnecting → Disconnected (fallback)
-Disconnected → [carrier restored on device] → Reconnecting → Connected
-```
 
-### IP resolution approach
-
-Options for resolving TV IP → NM device:
-
-**A. `ip route get <ip>`** — shell out to iproute2. Simple, always
-correct (uses the kernel FIB), but requires spawning a process.
-
-**B. Netlink socket** — query the kernel routing table directly via
-rtnetlink. No process spawn, async-friendly. The `rtnetlink` or
-`netlink-packet-route` crate can do this.
-
-**C. NM D-Bus** — query NM's `GetDeviceByIpIface` or inspect
-`ActiveConnection` objects for the IP range. Stays within D-Bus
-but adds NM API coupling.
-
-**D. `libc::getifaddrs` + routing table** — pure Rust, no external
-dependencies. More code but fully self-contained.
-
-Recommendation: **A** for simplicity now. It's a one-shot call at
-connection time, not a hot path. Can be upgraded to B later if the
-process spawn is a concern.
-
-### Multiple TVs on different interfaces
-
-If TV A is on eno2 and TV B is on wlan0, the watcher monitors both
-devices. Carrier loss on eno2 disconnects only TV A. This is correct
-behavior — a wired disconnect shouldn't affect Wi-Fi TVs.
-
-### Fallback to global state
-
-Keep the existing global `StateChanged` monitoring as a fallback for:
-- TVs where route resolution fails (shouldn't happen, but defensive)
-- Non-NM systems (the global watcher already degrades gracefully)
-- Scenarios where per-device monitoring misses an event
-
-The global watcher remains as the safety net. Per-device carrier is
-the primary signal for faster detection.
-
-## Questions to resolve
-
-1. **When to resolve the route?** At connection time (once) or
-   periodically? Routes can change (DHCP renewal, failover). Once
-   at connection time is probably sufficient — if the route changes,
-   the TCP connection would break anyway.
-
-2. **Multiple routes to same TV?** Bonding/ECMP could have multiple
-   paths. Monitor all devices in the route? Or just the primary?
-
-3. **Wi-Fi carrier?** NM's `Carrier` property exists on
-   `Device.Wired` but not `Device.Wireless`. For Wi-Fi, use
-   `Device.Wireless.ActiveAccessPoint` or the device's generic
-   `State` property instead.
-
-4. **Should we track the NM device path on ManagedTv?** Adding
-   `nm_device: Option<String>` to `ManagedTv` would let
-   `disconnect_network_tvs` check per-device carrier instead of
-   disconnecting all network TVs.
+---
 
 ## Implementation plan
 
-### Phase 1: Route resolution utility
+### Phase 1: Add `rtnetlink` dependency and route resolution
 
-Add a function to resolve TV IP → NIC name:
+Add `rtnetlink` to tisvlayd. Implement async route resolution:
 
 ```rust
 /// Resolve which network interface routes to the given IP.
-async fn resolve_interface(ip: &str) -> Option<String> {
-    // Shell out to: ip route get <ip>
-    // Parse: "... dev <ifname> ..."
-}
+/// Returns the interface name (e.g., "eno2") or None if no route.
+async fn resolve_interface_for_ip(ip: IpAddr) -> Option<String>;
 ```
 
-### Phase 2: NM device lookup
+Call at connection time, store result on `ManagedTv::monitored_interface`.
 
-Map NIC name → NM device object path via NM D-Bus:
+### Phase 2: Kernel link monitoring via RTMGRP_LINK
 
-```rust
-/// Find the NM device object path for a network interface.
-async fn nm_device_for_interface(conn: &Connection, ifname: &str) -> Option<OwnedObjectPath> {
-    // Call: org.freedesktop.NetworkManager.GetDeviceByIpIface(ifname)
-}
-```
+Subscribe to netlink `RTMGRP_LINK` events. When `IFF_LOWER_UP` goes
+false on a monitored interface, disconnect only the TVs using that
+interface.
 
-### Phase 3: Per-device carrier monitoring
+### Phase 3: Route change monitoring via RTMGRP_ROUTE
 
-Subscribe to `PropertiesChanged` on each NM device object. When
-`Carrier` changes to `false`, disconnect the associated TV(s).
+Subscribe to netlink `RTMGRP_ROUTE` events. When the route to a
+TV's IP changes, update `monitored_interface` and switch carrier
+monitoring to the new NIC.
 
-### Phase 4: Track NM device on ManagedTv
+### Phase 4: Keep NM global state as fallback
 
-Add `nm_device: Option<String>` to `ManagedTv`. Set at connection
-time via route resolution. Used by disconnect/reconnect to scope
-events to the correct device.
+Existing NM watcher remains. Per-interface carrier is the primary
+signal; NM global state is the safety net.
 
-### Phase 5: Integrate with existing watcher
+### Phase 5: Test matrix
 
-Keep global `StateChanged` as fallback. Per-device carrier is the
-primary signal. Both paths feed into the same `StateChangeEvent`
-channel.
+- Cable pull on primary NIC: instant disconnect
+- Cable pull with virbr0 present: instant disconnect (not delayed)
+- Wi-Fi → wired failover: seamless reconnect
+- Sleep/wake cycle: same or better than current
+- No NM installed: kernel netlink still works
 
 ---
 
 ## Checklist
 
-- [ ] Phase 1: Route resolution utility
-- [ ] Phase 2: NM device lookup
-- [ ] Phase 3: Per-device carrier monitoring
-- [ ] Phase 4: Track NM device on ManagedTv
-- [ ] Phase 5: Integrate with existing watcher
+- [ ] Phase 1: rtnetlink route resolution
+- [ ] Phase 2: Kernel link monitoring (RTMGRP_LINK)
+- [ ] Phase 3: Route change monitoring (RTMGRP_ROUTE)
+- [ ] Phase 4: Keep NM global state as fallback
+- [ ] Phase 5: Test matrix
 - [ ] Update design.md and CLAUDE.md
 
 ---
 
 ## References
 
-- [NM Device D-Bus API](https://networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.Device.html)
-- [NM Device.Wired](https://networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.Device.Wired.html) — `Carrier` property
-- [rtnetlink crate](https://docs.rs/rtnetlink/) — async Rust netlink
-- Current NM watcher: `crates/tisvlayd/src/network_watcher.rs`
+- [rtnetlink crate](https://crates.io/crates/rtnetlink) (v0.18, async)
+- [nmrs crate](https://crates.io/crates/nmrs) (v2.0, zbus-based NM bindings)
+- [netlink(7)](https://man7.org/linux/man-pages/man7/netlink.7.html)
+- [rtnetlink(7)](https://man7.org/linux/man-pages/man7/rtnetlink.7.html)
+- [Monitoring Linux Networking State Using Netlink](https://olegkutkov.me/2018/02/14/monitoring-linux-networking-state-using-netlink/)
+- Prior design: Transport enum, OpenHAB Bridge pattern, Home Assistant connectivity model
