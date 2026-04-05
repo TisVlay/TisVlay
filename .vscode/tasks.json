@@ -138,7 +138,7 @@
         {
             "label": "package: build (musl)",
             "type": "shell",
-            "command": "cargo build --release --workspace --target x86_64-unknown-linux-musl && rm -rf target/release && ln -sf x86_64-unknown-linux-musl/release target/release",
+            "command": "rm -f target/release 2>/dev/null; cargo build --release --workspace --target x86_64-unknown-linux-musl && rm -rf target/release && ln -sf x86_64-unknown-linux-musl/release target/release",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
