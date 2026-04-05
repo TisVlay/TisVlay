@@ -69,12 +69,13 @@ keeps backends vendor-agnostic and protocol-agnostic.
 
 | Crate | Purpose | Status |
 |-------|---------|--------|
-| `rtnetlink` | Async route queries + link monitoring via kernel netlink | Active (v0.18), production-grade |
-| `nmrs` | Typed async NM D-Bus bindings (device state, connections) | Active (v2.0), zbus-based |
-| `netwatcher` | Cross-platform network change events | Active, simpler API |
+| `rtnetlink` v0.20 | Async route queries + link/route multicast monitoring | Active, production-grade |
+| `netlink-packet-route` v0.28 | Route/link message types (`RouteAttribute`, `LinkFlags`, etc.) | Active, required by rtnetlink |
+| `netlink-packet-core` v0.8 | Netlink message envelope (`NetlinkPayload`) | Active, required by rtnetlink |
 
 `rtnetlink` is the primary tool — kernel-level, no NM dependency,
-event-driven, async. `nmrs` is optional for NM-specific features.
+event-driven, async. `nmrs` was evaluated but not needed — raw
+rtnetlink provides everything we need without NM API coupling.
 
 ### NM remains optional
 
@@ -190,9 +191,12 @@ interface.
 
 ### Phase 3: Route change monitoring via RTMGRP_ROUTE
 
-Subscribe to netlink `RTMGRP_ROUTE` events. When the route to a
-TV's IP changes, update `monitored_interface` and switch carrier
-monitoring to the new NIC.
+Subscribe to netlink `RTMGRP_IPV4_ROUTE` + `RTMGRP_IPV6_ROUTE` events
+(combined with `RTMGRP_LINK` in a single `new_multicast_connection`).
+On `NewRoute`/`DelRoute`, call `re_resolve_all_interfaces()` which
+re-resolves every connected TV's `monitored_interface` from the
+routing table. Route events don't identify which TV was affected,
+so re-resolving all is the correct approach.
 
 ### Phase 4: Keep NM global state as fallback
 
@@ -211,10 +215,10 @@ signal; NM global state is the safety net.
 
 ## Checklist
 
-- [ ] Phase 1: rtnetlink route resolution
-- [ ] Phase 2: Kernel link monitoring (RTMGRP_LINK)
-- [ ] Phase 3: Route change monitoring (RTMGRP_ROUTE)
-- [ ] Phase 4: Keep NM global state as fallback
+- [x] Phase 1: rtnetlink route resolution (resolve_interface_for_ip, monitored_interface on ManagedTv)
+- [x] Phase 2: Kernel link monitoring (RTMGRP_LINK, InterfaceUp/InterfaceDown events)
+- [x] Phase 3: Route change monitoring (RTMGRP_ROUTE, RouteChanged re-resolves interfaces)
+- [x] Phase 4: Keep NM global state as fallback (existing watcher + per-interface primary)
 - [ ] Phase 5: Test matrix
 - [ ] Update design.md and CLAUDE.md
 
