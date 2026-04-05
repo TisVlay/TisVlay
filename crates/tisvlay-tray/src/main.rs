@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
     let watch_session = session.clone();
     let watch_handle = handle.clone();
     tokio::spawn(async move {
-        watch_state(watch_daemon, watch_session, watch_handle).await;
+        watch_state(watch_daemon, watch_session, watch_handle, args.user).await;
     });
 
     // Spawn command processor
@@ -192,6 +192,7 @@ async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
+    user_mode: bool,
 ) {
     // Try to subscribe to daemon signals
     let mut signal_stream = match daemon.subscribe_state_changes().await {
@@ -203,6 +204,22 @@ async fn watch_state(
             warn!(error = %e, "Failed to subscribe to state signals, using fallback polling only");
             None
         }
+    };
+
+    // Watch for the daemon to appear/disappear on the bus.
+    // When the daemon exits, the tray immediately marks all TVs as unavailable
+    // instead of waiting for the 30s fallback poll.
+    let daemon_bus = if user_mode {
+        zbus::Connection::session().await.ok()
+    } else {
+        zbus::Connection::system().await.ok()
+    };
+    let mut daemon_watch = match &daemon_bus {
+        Some(conn) => tisvlay_core::watch_service(conn, "org.tisvlay.Daemon")
+            .await
+            .ok()
+            .map(Box::pin),
+        None => None,
     };
 
     // Watch for the session service to appear/disappear on the bus.
@@ -306,7 +323,29 @@ async fn watch_state(
                 }
             }
 
-            // Branch 3: session UserProfileChanged signal
+            // Branch 3: daemon appeared/disappeared on the bus
+            Some(event) = async {
+                match daemon_watch.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match event {
+                    tisvlay_core::ServiceEvent::Appeared => {
+                        info!("Daemon appeared on D-Bus");
+                        refresh_state(&daemon, &session, &handle).await;
+                    }
+                    tisvlay_core::ServiceEvent::Disappeared => {
+                        info!("Daemon left D-Bus, marking all TVs as unavailable");
+                        handle.update(|tray: &mut TisvlayTray| {
+                            tray.daemon_available = false;
+                            tray.tvs.clear();
+                        }).await;
+                    }
+                }
+            }
+
+            // Branch 4: session UserProfileChanged signal
             Some(()) = async {
                 match session_signal_stream.as_mut() {
                     Some(s) => s.next().await,
