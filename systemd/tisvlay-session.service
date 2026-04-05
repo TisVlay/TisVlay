@@ -1,5 +1,5 @@
 [Unit]
-Description=LG WebOS TV Session Service
+Description=tisvlay Session Event Monitor
 Documentation=https://github.com/ruffsl/tisvlay
 After=graphical-session.target
 PartOf=graphical-session.target
@@ -10,9 +10,6 @@ ExecStart=/usr/bin/tisvlay-session
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
-
-# Run in user session context
-Slice=session.slice
 
 [Install]
 WantedBy=graphical-session.target

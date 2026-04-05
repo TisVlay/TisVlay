@@ -1,7 +1,7 @@
 [Unit]
-Description=tisvlay TV Control System Tray
+Description=tisvlay System Tray
 Documentation=https://github.com/ruffsl/tisvlay
-After=graphical-session.target
+After=graphical-session.target tisvlay-session.service
 PartOf=graphical-session.target
 
 [Service]
@@ -9,7 +9,6 @@ Type=simple
 ExecStart=/usr/bin/tisvlay-tray
 Restart=on-failure
 RestartSec=5
-Slice=session.slice
 
 [Install]
 WantedBy=graphical-session.target

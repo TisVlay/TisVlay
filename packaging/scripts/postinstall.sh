@@ -1,12 +1,19 @@
 #!/bin/sh
 # Post-installation script for tisvlay.
-# Creates config directory, reloads systemd and D-Bus.
+# Creates system user, reloads systemd and D-Bus.
 
 set -e
 
-# Create config directory if it doesn't exist
-mkdir -p /etc/tisvlay
-chmod 750 /etc/tisvlay
+# Create dedicated system user and group (if they don't exist).
+# The daemon runs as this user; config in /var/lib/tisvlay/ is
+# owned by this user via systemd StateDirectory.
+if ! getent group tisvlay >/dev/null 2>&1; then
+    groupadd --system tisvlay
+fi
+if ! getent passwd tisvlay >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin \
+        --gid tisvlay --comment "tisvlay daemon" tisvlay
+fi
 
 # Reload systemd to pick up new service files
 systemctl daemon-reload || true
@@ -17,9 +24,12 @@ systemctl reload dbus 2>/dev/null || dbus-send --system --type=method_call \
     org.freedesktop.DBus.ReloadConfig 2>/dev/null || true
 
 # Enable (but don't start) the system daemon.
-# The user should configure /etc/tisvlay/config.toml before starting.
+# The user should pair a TV before starting:
+#   sudo systemctl start tisvlayd
+#   tisvlay pair <address> --vendor lg --name "My TV" -w <mac>
 systemctl enable tisvlayd.service 2>/dev/null || true
 
-echo "tisvlay installed. Configure /etc/tisvlay/config.toml then run:"
+echo "tisvlay installed. Pair a TV then start the daemon:"
 echo "  sudo systemctl start tisvlayd"
+echo "  tisvlay pair <address> --vendor lg --name \"My TV\" -w <mac>"
 echo "  systemctl --user enable --now tisvlay-session tisvlay-tray"

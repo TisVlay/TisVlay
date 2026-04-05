@@ -8,9 +8,12 @@ set -e
 systemctl stop tisvlayd.service 2>/dev/null || true
 systemctl disable tisvlayd.service 2>/dev/null || true
 
-# Note: user services (tisvlay-session, tisvlay-tray) are per-user
-# and managed by individual users. We don't touch them here — systemd
-# will handle missing binaries on the next user login.
-
 # Reload systemd
 systemctl daemon-reload || true
+
+# Note: the tisvlay user/group and /var/lib/tisvlay/ are intentionally
+# preserved on removal — they contain TV credentials. The user can
+# manually remove them with:
+#   sudo userdel tisvlay
+#   sudo groupdel tisvlay
+#   sudo rm -rf /var/lib/tisvlay
