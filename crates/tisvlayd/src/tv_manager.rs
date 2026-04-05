@@ -713,18 +713,17 @@ impl TvManager {
         Ok(())
     }
 
-    /// Reconnect managed, network-dependent TVs that are currently disconnected.
+    /// Reconnect network-dependent TVs that are currently disconnected.
     ///
     /// Called when network connectivity is restored (e.g., after a network
-    /// blip or NIC reset). Skips non-network transports (serial, USB, CEC),
-    /// TVs that are intentionally powered off, and TVs with an in-flight
-    /// WoL attempt. Each reconnection runs concurrently via spawned tasks.
+    /// blip or NIC reset). Reconnects all TVs regardless of managed status —
+    /// managed gates automation (actions), not connectivity. Skips non-network
+    /// transports (serial, USB, CEC), TVs that are intentionally powered off,
+    /// and TVs with an in-flight WoL attempt. Each reconnection runs
+    /// concurrently via spawned tasks.
     pub async fn reconnect_disconnected(self: &Arc<Self>) {
         let tvs = self.tvs.read().await;
-        for (tv_id, (managed, tv_arc)) in tvs.iter() {
-            if !managed {
-                continue;
-            }
+        for (tv_id, (_, tv_arc)) in tvs.iter() {
             let tv = tv_arc.lock().await;
             if !self
                 .registry
