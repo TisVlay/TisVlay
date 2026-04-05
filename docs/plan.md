@@ -205,11 +205,43 @@ signal; NM global state is the safety net.
 
 ### Phase 5: Test matrix
 
-- Cable pull on primary NIC: instant disconnect
-- Cable pull with virbr0 present: instant disconnect (not delayed)
-- Wi-Fi → wired failover: seamless reconnect
-- Sleep/wake cycle: same or better than current
-- No NM installed: kernel netlink still works
+- [x] Cable pull on primary NIC: instant disconnect (carrier down via RTMGRP_LINK)
+- [x] Cable pull with virbr0 present: instant disconnect (per-interface, not global NM state)
+- [x] NM GUI disconnect: ~500ms detection (trailing-edge debounce on route/addr events)
+- [x] NM GUI reconnect: ~100ms detection
+- [x] nmcli device disconnect/connect: same as NM GUI
+- [x] Sleep/wake cycle: unchanged (reconnecting flag prevents NM/WoL racing)
+- [ ] Wi-Fi → wired failover: seamless reconnect (untested)
+- [ ] No NM installed: kernel netlink still works (untested)
+
+### Phase 6: Daemon lifecycle (post-carrier)
+
+Graceful shutdown and warm restart were needed to complement carrier
+monitoring — without them, a daemon restart left stale SSAP sessions
+on the TV, causing "Connection reset" on reconnect.
+
+- [x] Graceful shutdown: close all TV WebSocket sessions before D-Bus
+  name release (c4be594)
+- [x] Warm restart: proactively connect to all configured TVs on process
+  restart (not system boot), using boot marker in /run/tisvlay/ (c4be594)
+- [x] Move connection retry from daemon to LG backend — the 5-attempt
+  retry for stale sessions is an LG/SSAP concern (d6ff212)
+
+### Fixes discovered during carrier testing
+
+- [x] RTM_F_LOOKUP_TABLE: kernel returned cached routes for deconfigured
+  interfaces; fixed by setting RouteFlags::LookupTable on RTM_GETROUTE
+  queries (36471c4)
+- [x] IPv6 link-local persistence: fe80:: addresses survive NM disconnect;
+  fixed by filtering to only count IPv4 or non-link-local IPv6 as
+  "routable" (36471c4)
+- [x] Leading-edge debounce missed settled state: replaced with 500ms
+  trailing-edge debounce that fires after the last event in the
+  burst (36471c4)
+- [x] OperState check: link "usable" now requires both IFF_LOWER_UP
+  (physical carrier) AND OperState::Up (software state) (36471c4)
+- [x] Subscribe to RTMGRP_IPV4_IFADDR/RTMGRP_IPV6_IFADDR for IP
+  address add/remove events (36471c4)
 
 ---
 
@@ -219,7 +251,8 @@ signal; NM global state is the safety net.
 - [x] Phase 2: Kernel link monitoring (RTMGRP_LINK, InterfaceUp/InterfaceDown events)
 - [x] Phase 3: Route change monitoring (RTMGRP_ROUTE, RouteChanged re-resolves interfaces)
 - [x] Phase 4: Keep NM global state as fallback (existing watcher + per-interface primary)
-- [ ] Phase 5: Test matrix
+- [x] Phase 5: Test matrix (cable pull, NM disconnect/reconnect, sleep/wake verified)
+- [x] Phase 6: Daemon lifecycle (graceful shutdown, warm restart, retry refactor)
 - [ ] Update design.md and CLAUDE.md
 
 ---
