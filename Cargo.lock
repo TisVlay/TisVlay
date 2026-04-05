@@ -1528,6 +1528,7 @@ dependencies = [
  "clap",
  "futures-util",
  "indexmap",
+ "netlink-packet-core",
  "netlink-packet-route",
  "rtnetlink",
  "serde",

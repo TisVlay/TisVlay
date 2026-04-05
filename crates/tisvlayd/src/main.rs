@@ -157,6 +157,10 @@ async fn main() -> Result<()> {
     // Always connects to the system bus (NM is system-bus-only).
     network_watcher::spawn_network_watcher(shared_manager.state_change_sender());
 
+    // Spawn kernel link carrier monitor for instant per-interface disconnect detection.
+    // Primary signal — fires within milliseconds of cable pull regardless of NM state.
+    netlink::spawn_link_monitor(shared_manager.state_change_sender());
+
     // Wait for shutdown or reload signal
     wait_for_signals(shared_manager).await;
 
@@ -269,6 +273,14 @@ async fn state_change_forwarder(
             StateChangeEvent::NetworkLost => {
                 info!("Network lost: disconnecting network-transport TVs");
                 manager.disconnect_network_tvs().await;
+            }
+            StateChangeEvent::InterfaceDown { ref interface } => {
+                info!(interface = %interface, "Interface carrier down: disconnecting affected TVs");
+                manager.disconnect_tvs_on_interface(interface).await;
+            }
+            StateChangeEvent::InterfaceUp { ref interface } => {
+                info!(interface = %interface, "Interface carrier up: reconnecting affected TVs");
+                manager.reconnect_tvs_on_interface(interface).await;
             }
         }
     }

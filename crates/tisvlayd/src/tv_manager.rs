@@ -96,16 +96,27 @@ pub enum StateChangeEvent {
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
-    /// Network connectivity restored (from NetworkManager).
+    /// Network connectivity restored (from NetworkManager global state).
     ///
-    /// The forwarder triggers reconnection for all disconnected,
-    /// non-powered-off TVs.
+    /// Fallback: triggers reconnection for all disconnected,
+    /// non-powered-off network TVs. Per-interface carrier events
+    /// are the primary signal when available.
     NetworkRestored,
-    /// Network connectivity lost (from NetworkManager).
+    /// Network connectivity lost (from NetworkManager global state).
     ///
-    /// The forwarder drops all TV connections and updates D-Bus
-    /// `Connected=false` properties immediately.
+    /// Fallback: drops connections for network TVs. Per-interface
+    /// carrier events are the primary signal when available.
     NetworkLost,
+    /// A network interface's carrier went up (cable plugged in, link established).
+    ///
+    /// From kernel netlink RTMGRP_LINK. Triggers reconnection for TVs
+    /// whose `monitored_interface` matches this interface.
+    InterfaceUp { interface: String },
+    /// A network interface's carrier went down (cable unplugged, link lost).
+    ///
+    /// From kernel netlink RTMGRP_LINK. Disconnects TVs whose
+    /// `monitored_interface` matches this interface.
+    InterfaceDown { interface: String },
 }
 
 /// Basic TV information for D-Bus properties.
@@ -839,6 +850,67 @@ impl TvManager {
             self.emit_state_change(StateChangeEvent::ConnectionChanged {
                 tv_id,
                 connected: false,
+            });
+        }
+    }
+
+    /// Disconnect TVs whose monitored interface matches the given name.
+    ///
+    /// Called when a specific NIC's carrier goes down. Only affects TVs
+    /// routed through that interface — other TVs are untouched.
+    pub async fn disconnect_tvs_on_interface(&self, interface: &str) {
+        let mut to_close: Vec<(String, Box<dyn TvConnection>)> = Vec::new();
+
+        {
+            let tvs = self.tvs.read().await;
+            for (tv_id, (_, tv_arc)) in tvs.iter() {
+                let mut tv = tv_arc.lock().await;
+                if tv.monitored_interface.as_deref() != Some(interface) {
+                    continue;
+                }
+                if tv.reconnecting {
+                    debug!(tv_id = %tv_id, "Skipping disconnect, WoL already in progress");
+                    continue;
+                }
+                if let Some(conn) = tv.connection.take() {
+                    tv.last_known_input = None;
+                    to_close.push((tv_id.clone(), conn));
+                }
+            }
+        }
+
+        for (tv_id, mut conn) in to_close {
+            let _ = conn.close().await;
+            info!(tv_id = %tv_id, interface = %interface, "Interface carrier lost: disconnected");
+            self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                tv_id,
+                connected: false,
+            });
+        }
+    }
+
+    /// Reconnect TVs whose monitored interface matches the given name.
+    ///
+    /// Called when a specific NIC's carrier comes back up. Only attempts
+    /// reconnection for TVs that were routed through that interface.
+    pub async fn reconnect_tvs_on_interface(self: &Arc<Self>, interface: &str) {
+        let tvs = self.tvs.read().await;
+        for (tv_id, (_, tv_arc)) in tvs.iter() {
+            let tv = tv_arc.lock().await;
+            if tv.monitored_interface.as_deref() != Some(interface) {
+                continue;
+            }
+            if tv.is_connected() || tv.powered_off || tv.reconnecting {
+                continue;
+            }
+            let tv_id = tv_id.clone();
+            let manager = Arc::clone(self);
+            drop(tv);
+            tokio::spawn(async move {
+                info!(tv_id = %tv_id, "Interface carrier restored: attempting reconnect");
+                if let Err(e) = manager.reconnect(&tv_id).await {
+                    debug!(tv_id = %tv_id, error = %e, "Reconnect failed (TV may be off)");
+                }
             });
         }
     }
