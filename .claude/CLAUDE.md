@@ -34,7 +34,7 @@ tisvlay/
 │   │       ├── pairing.rs        # Unified pairing state machine
 │   │       ├── config.rs         # TOML config (XDG paths), SystemProfileConfig, UserProfileConfig
 │   │       ├── dbus_paths.rs     # D-Bus path constants and helpers
-│   │       ├── dbus_client.rs    # D-Bus client for tisvlayd (feature-gated)
+│   │       ├── dbus_client.rs    # D-Bus client, StateWatcher, signal helpers (feature-gated)
 │   │       ├── logging.rs        # Shared logging init with journald (feature-gated)
 │   │       ├── state.rs          # TvState, PowerState, InputInfo
 │   │       ├── wol.rs            # Wake-on-LAN
@@ -64,7 +64,8 @@ tisvlay/
 │   │       ├── main.rs           # Entry point, connection::Builder, state_change_forwarder
 │   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.* with cached properties)
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
-│   │       ├── network_watcher.rs # NetworkManager D-Bus watcher (network-transport reconnection)
+│   │       ├── netlink.rs        # Kernel netlink: route resolution + carrier/route monitoring
+│   │       ├── network_watcher.rs # NetworkManager D-Bus watcher (fallback reconnection)
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool, disk serialization
 │   │
@@ -98,7 +99,9 @@ tisvlay/
 │
 ├── docs/
 │   ├── design.md                 # Full architecture design
-│   └── firewall.md               # SSDP firewall configuration
+│   ├── firewall.md               # SSDP firewall configuration
+│   └── watchers/
+│       └── network.md            # Network monitoring: carrier, route resolution, pitfalls
 │
 └── .claude/CLAUDE.md             # This file
 ```
@@ -118,6 +121,7 @@ tisvlay/
 | Errors | `thiserror`, `anyhow` |
 | Logging | `tracing`, `tracing-subscriber`, `tracing-journald` |
 | WoL | `socket2` |
+| Netlink | `rtnetlink`, `netlink-packet-route`, `netlink-packet-core` |
 
 ## Known Quirks
 
@@ -244,4 +248,5 @@ after major refactors to catch orphaned public API surface.
 ## Reference Documentation
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
+- [docs/watchers/network.md](docs/watchers/network.md) - Network monitoring: carrier detection, route resolution, pitfalls
 - [docs/firewall.md](docs/firewall.md) - SSDP discovery firewall configuration
