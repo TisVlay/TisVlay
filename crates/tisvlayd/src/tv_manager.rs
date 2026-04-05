@@ -574,59 +574,20 @@ impl TvManager {
         tokio::spawn(async move {
             let tv_ids = self.list_tv_ids().await;
             for tv_id in &tv_ids {
-                let config = {
+                let display_addr = {
                     let tv_arc = match self.get_tv(tv_id).await {
                         Ok(arc) => arc,
                         Err(_) => continue,
                     };
                     let tv = tv_arc.lock().await;
-                    if !self.registry.transport_for(&tv.config).is_network_dependent() {
-                        continue;
-                    }
-                    tv.config.clone()
+                    self.registry.display_address(&tv.config)
                 };
 
-                let display_addr = self.registry.display_address(&config);
                 info!(tv_id = %tv_id, address = %display_addr, "Warm restart: connecting to TV");
 
-                // Retry a few times — the TV may reject the first attempt
-                // if the previous daemon's WebSocket session is still alive.
-                let mut connection = None;
-                for attempt in 1..=5u32 {
-                    match self.registry.connect_tv(&config).await {
-                        Ok(conn) => {
-                            connection = Some(conn);
-                            break;
-                        }
-                        Err(e) => {
-                            debug!(tv_id = %tv_id, attempt, error = %e, "Warm restart: retrying");
-                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        }
-                    }
-                }
-
-                match connection {
-                    Some(connection) => {
-                        let tv_arc = match self.get_tv(tv_id).await {
-                            Ok(arc) => arc,
-                            Err(_) => continue,
-                        };
-                        let mut tv = tv_arc.lock().await;
-                        tv.connection = Some(connection);
-                        if let Some(conn) = tv.connection.as_mut() {
-                            self.try_subscribe_state(tv_id, conn.as_mut()).await;
-                        }
-                        drop(tv);
-                        self.emit_state_change(StateChangeEvent::ConnectionChanged {
-                            tv_id: tv_id.to_string(),
-                            connected: true,
-                        });
-                        self.resolve_monitored_interface(tv_id).await;
-                        info!(tv_id = %tv_id, "Warm restart: connected");
-                    }
-                    None => {
-                        debug!(tv_id = %tv_id, "Warm restart: connection failed after retries (TV may be off)");
-                    }
+                match self.reconnect(tv_id).await {
+                    Ok(()) => info!(tv_id = %tv_id, "Warm restart: connected"),
+                    Err(e) => debug!(tv_id = %tv_id, error = %e, "Warm restart: connection failed (TV may be off)"),
                 }
             }
         });
