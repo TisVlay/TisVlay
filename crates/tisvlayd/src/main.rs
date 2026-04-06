@@ -6,7 +6,6 @@
 mod dbus;
 mod logind;
 mod netlink;
-mod network_watcher;
 mod registry;
 mod tv_manager;
 
@@ -16,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{SystemConfig, TvState, UserConfig};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
@@ -153,12 +152,8 @@ async fn main() -> Result<()> {
         shared_manager.clone(),
     ));
 
-    // Spawn NetworkManager watcher for proactive reconnection of network-transport TVs.
-    // Always connects to the system bus (NM is system-bus-only).
-    network_watcher::spawn_network_watcher(shared_manager.state_change_sender());
-
-    // Spawn kernel link carrier monitor for instant per-interface disconnect detection.
-    // Primary signal — fires within milliseconds of cable pull regardless of NM state.
+    // Spawn kernel netlink monitor for per-interface carrier detection and route changes.
+    // Fires within milliseconds of cable pull, NM disconnect, or route failover.
     netlink::spawn_link_monitor(shared_manager.state_change_sender());
 
     // Wait for shutdown or reload signal
@@ -195,35 +190,7 @@ async fn state_change_forwarder(
     info!("State change forwarder started");
     let object_server = connection.object_server();
 
-    // Trailing-edge debounce for route changes: schedule a re-resolve 500ms
-    // after the LAST route event. This ensures we catch the final state after
-    // a burst of route changes (kernel fires dozens per NM disconnect).
-    let mut route_resolve_deadline: Option<tokio::time::Instant> = None;
-    const ROUTE_RESOLVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
-
-    loop {
-        // Wait for either a new event or the route resolve deadline.
-        let event = if let Some(deadline) = route_resolve_deadline {
-            tokio::select! {
-                biased;
-                event = rx.recv() => match event {
-                    Some(e) => e,
-                    None => break,
-                },
-                _ = tokio::time::sleep_until(deadline) => {
-                    route_resolve_deadline = None;
-                    debug!("Route resolve deadline: re-resolving monitored interfaces");
-                    manager.re_resolve_all_interfaces().await;
-                    continue;
-                }
-            }
-        } else {
-            match rx.recv().await {
-                Some(e) => e,
-                None => break,
-            }
-        };
-
+    while let Some(event) = rx.recv().await {
         match event {
             StateChangeEvent::SubscriptionUpdate {
                 ref tv_id,
@@ -301,26 +268,38 @@ async fn state_change_forwarder(
                     }
                 }
             }
-            StateChangeEvent::NetworkRestored => {
-                info!("Network restored: reconnecting network-transport TVs");
-                manager.reconnect_disconnected().await;
-            }
-            StateChangeEvent::NetworkLost => {
-                info!("Network lost: disconnecting network-transport TVs");
-                manager.disconnect_network_tvs().await;
-            }
             StateChangeEvent::InterfaceDown { ref interface } => {
-                info!(interface = %interface, "Interface carrier down: disconnecting affected TVs");
+                debug!(interface = %interface, "Interface carrier down: disconnecting affected TVs");
                 manager.disconnect_tvs_on_interface(interface).await;
             }
             StateChangeEvent::InterfaceUp { ref interface } => {
-                info!(interface = %interface, "Interface carrier up: reconnecting affected TVs");
+                debug!(interface = %interface, "Interface carrier up: reconnecting affected TVs");
                 manager.reconnect_tvs_on_interface(interface).await;
             }
             StateChangeEvent::RouteChanged => {
-                // Reset the trailing-edge deadline — re-resolve 500ms after
-                // the last route event in the burst.
-                route_resolve_deadline = Some(tokio::time::Instant::now() + ROUTE_RESOLVE_DELAY);
+                trace!("Route changed: re-resolving monitored interfaces");
+                manager.re_resolve_all_interfaces().await;
+                // Coalesce: brief collection window then drain queued
+                // RouteChanged events. The resolve above is instant
+                // (microseconds), but route events arrive in bursts
+                // over seconds — the 100ms pause lets stragglers
+                // accumulate so they collapse into a single pass.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let mut coalesced = 0u32;
+                loop {
+                    match rx.try_recv() {
+                        Ok(StateChangeEvent::RouteChanged) => coalesced += 1,
+                        Ok(other) => {
+                            let _ = manager.state_change_sender().send(other);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if coalesced > 0 {
+                    trace!(coalesced, "Re-resolving after coalesced route events");
+                    manager.re_resolve_all_interfaces().await;
+                }
             }
         }
     }

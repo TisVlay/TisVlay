@@ -14,7 +14,7 @@ use netlink_packet_route::link::LinkAttribute;
 use netlink_packet_route::route::RouteAttribute;
 use rtnetlink::{new_connection, RouteMessageBuilder};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// Resolve which network interface routes traffic to the given IP.
 ///
@@ -118,7 +118,7 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
                         debug!(ip = %ip, interface = %name, "Route exists but interface has no IP address");
                         return None;
                     }
-                    debug!(ip = %ip, interface = %name, index = oif, "Resolved route");
+                    trace!(ip = %ip, interface = %name, index = oif, "Resolved route");
                     return Some(name);
                 }
             }
@@ -233,7 +233,7 @@ async fn watch_link_carrier(
                 | RouteNetlinkMessage::DelRoute(_)
                 | RouteNetlinkMessage::NewAddress(_)
                 | RouteNetlinkMessage::DelAddress(_) => {
-                    debug!("Route table changed, triggering interface re-resolution");
+                    trace!("Route table changed, triggering interface re-resolution");
                     if tx
                         .send(crate::tv_manager::StateChangeEvent::RouteChanged)
                         .is_err()
