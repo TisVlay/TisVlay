@@ -65,7 +65,6 @@ tisvlay/
 │   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.* with cached properties)
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
 │   │       ├── netlink.rs        # Kernel netlink: route resolution + carrier/route monitoring
-│   │       ├── network_watcher.rs # NetworkManager D-Bus watcher (fallback reconnection)
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool, disk serialization
 │   │
@@ -134,8 +133,9 @@ tisvlay/
 - SSAP subscription updates carry the original request ID, not the URI -- routing must use a request-ID-to-URI map
 - Multiplexed WebSocket: background reader routes subscription updates to state channel and command responses to callers; SSAP subscriptions (power, volume, mute, inputs, foreground app, backlight) push state in real time
 - LG pairing is two-phase: TV sends `Response` (prompt shown), then `Registered` (user accepted). `request_wait()` on the multiplexed WebSocket handles the second phase without re-sending
-- `Transport` enum on `TvConnector`: Network, Serial, Usb, Cec. Daemon scopes NM events to network-dependent backends only
-- NetworkManager watcher monitors `StateChanged` on the system bus; `reconnecting` flag prevents NM from racing with in-flight WoL retry loops
+- `Transport` enum on `TvConnector`: Network, Serial, Usb, Cec. Daemon scopes carrier/route events to network-dependent backends only
+- `TvConnector::survives_source_ip_change()`: backends declare whether their protocol survives client IP changes (WebSocket: false, future QUIC: true). Daemon uses this on NIC failover to decide whether to reconnect
+- Per-TV `reconnecting` flag prevents carrier/route events from racing with in-flight WoL retry loops
 
 ## Quick Reference
 

@@ -1,10 +1,8 @@
 # Network Watcher Architecture
 
-How the daemon detects network connectivity changes and scopes them to individual TVs. This covers both the kernel netlink layer and the NetworkManager fallback.
+How the daemon detects network connectivity changes and scopes them to individual TVs using kernel netlink — no NetworkManager dependency.
 
-## Two-Layer Monitoring
-
-### Layer 1: Kernel netlink (primary, always available)
+## Kernel Netlink Monitoring
 
 File: `crates/tisvlayd/src/netlink.rs`
 
@@ -18,13 +16,7 @@ A single `rtnetlink` multicast connection subscribes to five groups:
 | `RTMGRP_IPV4_IFADDR` | IPv4 address add/remove | `RouteChanged` |
 | `RTMGRP_IPV6_IFADDR` | IPv6 address add/remove | `RouteChanged` |
 
-This layer works without NetworkManager — it's kernel-level, fires within milliseconds of a state change.
-
-### Layer 2: NetworkManager global state (fallback)
-
-File: `crates/tisvlayd/src/network_watcher.rs`
-
-Monitors `org.freedesktop.NetworkManager` `StateChanged` on the system bus. Catches scenarios the netlink layer might miss (e.g., captive portal detection). Gracefully exits if NM is unavailable.
+This is kernel-level, fires within milliseconds of a state change, and works without NetworkManager.
 
 ## Route-Based Device Resolution
 
@@ -55,31 +47,37 @@ Backends declare `Transport::Network` and provide the IP via `display_address()`
 
 - **Connection time**: TV connects → resolve route → monitor that NIC
 - **Reconnection time**: new route may point to a different NIC
-- **Route change events**: trailing-edge debounce → re-resolve all TVs
+- **Route change events**: coalesced → re-resolve all TVs
 
 ## Carrier Detection
 
 A link is considered "usable" when **both** conditions are true:
 
 - `IFF_LOWER_UP` (physical carrier — cable plugged in)
-- `OperState::Up` (software state — NM considers the link operational)
+- `OperState::Up` (software state — link is operationally up)
 
 This catches both:
 - Cable pull: `IFF_LOWER_UP` goes false
 - NM software disconnect (GUI/CLI): `OperState` goes to `Down` while carrier stays true (cable still plugged in)
 
-### Route transition actions
+## Route Transition Actions
 
-When `resolve_monitored_interface` runs on a route change event:
+When `resolve_monitored_interface` detects a route change:
 
 | Previous | Current | Action |
 |----------|---------|--------|
-| `Some("eno2")` | `None` | Disconnect TV, emit `ConnectionChanged(false)` |
-| `None` | `Some("eno2")` | Emit `InterfaceUp` to trigger reconnection |
-| `Some("eno2")` | `Some("wlan0")` | Update monitored interface (failover) |
+| `Some("eno2")` | `None` | Disconnect TV |
+| `None` | `Some("eno2")` | Signal reconnection |
+| `Some("eno2")` | `Some("wlp7s0")` | Disconnect + reconnect if `!survives_source_ip_change()` |
 | `Some("eno2")` | `Some("eno2")` | No change |
 
-The `Reconnect` case emits an event instead of calling `reconnect()` directly, avoiding recursive async.
+The NIC-change case checks `TvConnector::survives_source_ip_change()` — TCP/TLS protocols (WebSocket) return `false` (connection bound to 4-tuple), while future QUIC backends could return `true`. This is a connector-level property, not a transport category — see the design decision in `TvConnector` docs.
+
+## Route Event Coalescing
+
+NIC transitions fire dozens of route/address events over seconds. Route events are coalesced: the first event triggers immediate re-resolution, then a 100ms collection window drains queued duplicates before a final pass. This gives instant response with no per-event noise.
+
+High-frequency route sampling (10ms, `scripts/bouncing_routes.py`) confirmed the kernel routing table never produces transient wrong results — `RTM_GETROUTE` is always consistent with the current FIB state. No debounce needed for correctness.
 
 ## Pitfalls Discovered
 
@@ -91,23 +89,17 @@ Without `RouteFlags::LookupTable` on `RTM_GETROUTE` queries, the kernel returns 
 msg.header.flags.insert(RouteFlags::LookupTable);
 ```
 
-Without this flag, `resolve_interface_for_ip` would still return `Some("eno2")` after NM deconfigured the interface.
-
 ### IPv6 link-local address persistence
 
-After NM disconnect, `fe80::` link-local addresses persist on the interface. Without filtering, the address validation check would pass and the interface would appear "usable" despite having no routable address.
-
-Fix: only count IPv4 addresses or IPv6 addresses with `scope != Link` as "routable".
-
-### Trailing-edge debounce for route changes
-
-NM disconnect fires dozens of route/address events in a burst (one per route removed, one per address removed). A **leading-edge** debounce runs re-resolution on the first event — before routes are flushed — gets a stale result, then blocks subsequent events for the debounce window. The settled state is never checked.
-
-A **trailing-edge** debounce resets a 500ms deadline on each event. Re-resolution runs 500ms after the last event, when the route table has fully settled. Implemented as a `tokio::select!` between the event channel and a `tokio::time::sleep_until(deadline)`.
+After NM disconnect, `fe80::` link-local addresses persist on the interface. Without filtering, the address validation check would pass and the interface would appear "usable" despite having no routable address. Fix: only count IPv4 addresses or IPv6 addresses with `scope != Link` as "routable".
 
 ### Virtual bridges (virbr0, docker0)
 
-NM global state = best state across all interfaces. With virbr0 "connected (externally)", NM stays at `ConnectedLocal` even after the real NIC loses carrier. This is why per-interface carrier monitoring via kernel netlink is the primary layer — NM global state cannot distinguish which interface matters.
+NM global state = best state across all interfaces. With virbr0 "connected (externally)", NM stays at `ConnectedLocal` even after the real NIC loses carrier. Per-interface carrier monitoring via kernel netlink avoids this — each TV is scoped to its resolved NIC.
+
+### NetworkManager watcher removed
+
+An earlier implementation included an NM `StateChanged` watcher as a fallback. Testing showed NM's global state oscillates during NIC transitions, causing false disconnects that raced with the per-device carrier monitor. The kernel netlink layer handles all scenarios without NM, so the watcher was removed entirely.
 
 ## Failover Behavior
 
@@ -123,13 +115,13 @@ The kernel routing table is the source of truth — same approach as WireGuard a
 
 ### Wired ↔ Wi-Fi switching
 
-**With continuity** (both NICs up briefly): TCP connection survives if the IP doesn't change. Route shifts from `eno2` to `wlan0`; daemon updates monitored NIC on the next route event.
+**With continuity** (both NICs up): route stays on the preferred NIC (lower metric). No action until one NIC goes down. High-frequency sampling confirmed zero transient route flaps during Wi-Fi bring-up.
 
-**Without continuity** (gap between NICs): carrier lost → disconnect → Wi-Fi comes up → route available → reconnect.
+**Without continuity** (gap between NICs): carrier lost → disconnect → new NIC comes up → route available → reconnect.
 
-### NM/WoL racing during wake
+### Sleep/wake
 
-NM oscillates during system wake (`restored → lost → restored` within ~100ms). A per-TV `reconnecting` flag guards both `reconnect_disconnected` and `disconnect_network_tvs`, preventing NM events from racing with in-flight WoL retry loops.
+A per-TV `reconnecting` flag guards carrier/route event handlers, preventing them from interfering with in-flight WoL retry loops during system resume.
 
 ## Crates
 
@@ -145,7 +137,9 @@ NM oscillates during system wake (`restored → lost → restored` within ~100ms
 |----------|--------|-----------|
 | Cable pull | Instant disconnect | `RTMGRP_LINK` carrier detection |
 | Cable pull with virbr0 | Instant disconnect | Per-interface, not NM global state |
-| NM GUI disconnect | ~500ms detection | Trailing-edge debounce on route/addr events |
+| NM GUI disconnect | ~100ms detection | Route re-resolution + coalesce |
 | NM GUI reconnect | ~100ms detection | Route reappears → `InterfaceUp` |
-| nmcli disconnect/connect | Same as NM GUI | Same mechanism |
-| Sleep/wake cycle | Unchanged | `reconnecting` flag prevents racing |
+| Wi-Fi connect while wired | No false trigger | Route stays on preferred NIC |
+| Wired disconnect (failover) | Instant disconnect + reconnect via Wi-Fi | Carrier + route + `survives_source_ip_change` |
+| Wired reconnect (failback) | NIC change → reconnect via wired | Route change + `survives_source_ip_change` |
+| Sleep/wake | Unchanged | `reconnecting` flag prevents racing |
