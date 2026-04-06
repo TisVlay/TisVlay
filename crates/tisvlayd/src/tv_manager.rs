@@ -405,83 +405,53 @@ impl TvManager {
 
         let interface = crate::netlink::resolve_interface_for_ip(ip).await;
         let mut tv = tv_arc.lock().await;
-        if tv.monitored_interface != interface {
-            let previous = tv.monitored_interface.clone();
-            info!(
-                tv_id = %tv_id,
-                "Monitored interface: {previous:?} -> {interface:?}"
-            );
-            tv.monitored_interface = interface.clone();
+        if tv.monitored_interface == interface {
+            return;
+        }
 
-            // Determine what action to take based on the transition.
-            enum RouteAction {
-                Disconnect(Box<dyn TvConnection>),
-                Reconnect,
-                None,
-            }
+        let previous = tv.monitored_interface.clone();
+        info!(tv_id = %tv_id, "Monitored interface: {previous:?} -> {interface:?}");
+        tv.monitored_interface = interface.clone();
 
-            let action = if interface.is_none() && previous.is_some() && !tv.reconnecting {
+        // Should we tear down the existing connection?
+        let should_disconnect = !tv.reconnecting
+            && match (&previous, &interface) {
                 // Route disappeared — TV is unreachable.
-                if let Some(conn) = tv.connection.take() {
-                    tv.last_known_input = None;
-                    RouteAction::Disconnect(conn)
-                } else {
-                    RouteAction::None
+                (Some(_), None) => true,
+                // Route shifted to a different NIC — close if the protocol
+                // can't survive a source IP change (e.g., WebSocket over TCP).
+                (Some(_), Some(_)) => {
+                    tv.is_connected() && !self.registry.survives_source_ip_change(&config)
                 }
-            } else if interface.is_some()
-                && previous.is_some()
-                && interface != previous
-                && tv.is_connected()
-                && !tv.reconnecting
-                && !self.registry.survives_source_ip_change(&config)
-            {
-                // Route shifted to a different NIC and the backend's
-                // protocol can't survive a source IP change (e.g.,
-                // WebSocket over TCP). Close and reconnect via the new NIC.
-                if let Some(conn) = tv.connection.take() {
-                    tv.last_known_input = None;
-                    RouteAction::Disconnect(conn)
-                } else {
-                    RouteAction::None
-                }
-            } else if interface.is_some()
-                && previous.is_none()
-                && !tv.is_connected()
-                && !tv.powered_off
-                && !tv.reconnecting
-            {
-                // Route reappeared — TV may be reachable again.
-                // Don't reconnect here (recursive async fn). Emit event
-                // so the forwarder can trigger reconnection.
-                RouteAction::Reconnect
-            } else {
-                RouteAction::None
+                _ => false,
             };
 
-            drop(tv);
+        // Should we signal reconnection?
+        let should_reconnect =
+            interface.is_some() && !tv.is_connected() && !tv.powered_off && !tv.reconnecting;
 
-            match action {
-                RouteAction::Disconnect(mut conn) => {
-                    let _ = conn.close().await;
-                    info!(tv_id = %tv_id, "Route changed ({previous:?} -> {interface:?}): disconnected");
-                    self.emit_state_change(StateChangeEvent::ConnectionChanged {
-                        tv_id: tv_id.to_string(),
-                        connected: false,
-                    });
-                    // If a route still exists, signal reconnection via the new NIC.
-                    if interface.is_some() {
-                        self.emit_state_change(StateChangeEvent::InterfaceUp {
-                            interface: interface.clone().unwrap_or_default(),
-                        });
-                    }
-                }
-                RouteAction::Reconnect => {
-                    info!(tv_id = %tv_id, "Route restored ({interface:?}): signalling reconnect");
-                    self.emit_state_change(StateChangeEvent::InterfaceUp {
-                        interface: interface.unwrap_or_default(),
-                    });
-                }
-                RouteAction::None => {}
+        // Take connection outside the lock if disconnecting.
+        let conn = if should_disconnect {
+            tv.last_known_input = None;
+            tv.connection.take()
+        } else {
+            None
+        };
+
+        drop(tv);
+
+        if let Some(mut conn) = conn {
+            let _ = conn.close().await;
+            info!(tv_id = %tv_id, "Route changed ({previous:?} -> {interface:?}): disconnected");
+            self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                tv_id: tv_id.to_string(),
+                connected: false,
+            });
+        }
+
+        if should_disconnect || should_reconnect {
+            if let Some(iface) = interface {
+                self.emit_state_change(StateChangeEvent::InterfaceUp { interface: iface });
             }
         }
     }
