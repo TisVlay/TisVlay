@@ -15,6 +15,15 @@ pub const MANAGER_PATH: &str = "/org/tisvlay/Manager";
 /// Base path for TV objects.
 pub const TV_BASE_PATH: &str = "/org/tisvlay/Tv";
 
+/// D-Bus service name for the session service.
+pub const SESSION_SERVICE: &str = "org.tisvlay.Session";
+
+/// D-Bus interface name for the session service.
+pub const SESSION_INTERFACE: &str = "org.tisvlay.Session1";
+
+/// D-Bus object path for the session service.
+pub const SESSION_PATH: &str = "/org/tisvlay/Session";
+
 /// Generate the D-Bus object path for a TV.
 ///
 /// Sanitizes the TV ID by replacing any non-alphanumeric, non-underscore

@@ -281,6 +281,23 @@ pub trait TvConnector: Send + Sync {
     /// The communication transport used by this connector.
     fn transport(&self) -> Transport;
 
+    /// Whether connections from this backend survive client source IP changes.
+    ///
+    /// TCP/TLS-based protocols (WebSocket, raw TCP) return `false` — the
+    /// connection is bound to a 4-tuple and dies when the source IP changes.
+    /// QUIC-based protocols may return `true` if connection migration is
+    /// supported. Stateless protocols (HTTP request-response) may also
+    /// return `true`.
+    ///
+    /// Only called for network-dependent transports (gated by
+    /// `transport().is_network_dependent()`). The daemon uses this when
+    /// the route to a TV shifts to a different NIC: if `false`, the
+    /// existing connection is closed and a new one established via the
+    /// new interface.
+    fn survives_source_ip_change(&self) -> bool {
+        false
+    }
+
     /// Connect to a TV using vendor-specific config.
     ///
     /// The vendor config contains all transport and credential parameters.

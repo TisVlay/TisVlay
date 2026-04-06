@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::{
     globals::{registry_queue_init, GlobalList, GlobalListContents},
@@ -71,13 +71,13 @@ impl WaylandState {
 
     /// Handle the idle notification becoming idle.
     fn handle_idled(&mut self) {
-        debug!("Wayland idle notification: idled");
+        trace!("Wayland idle notification: idled");
         self.is_idle = true;
     }
 
     /// Handle the idle notification being resumed (user activity detected).
     fn handle_resumed(&mut self) {
-        debug!("Wayland idle notification: resumed");
+        trace!("Wayland idle notification: resumed");
         self.is_idle = false;
 
         // Only fire GreeterWake if:

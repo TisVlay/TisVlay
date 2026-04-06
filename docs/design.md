@@ -691,22 +691,35 @@ After establishing a connection, the daemon calls `subscribe_state()` on the `Tv
 
 Write commands via writable property setters (Volume, Muted, Backlight, IsScreenOn) update the cache and auto-emit `PropertiesChanged` on success via zbus machinery. The backend subscription then confirms the state shortly after, but the property update is typically a no-op since the setter already set the value.
 
-### NetworkManager-Aware Reconnection
+### Per-Device Network Monitoring
 
-A background `network_watcher` task monitors `org.freedesktop.NetworkManager` on the system bus for `StateChanged` signals. When network connectivity transitions:
+The daemon uses kernel netlink to detect network state changes per TV, scoped to the exact NIC carrying traffic. No NetworkManager dependency.
 
-- **Lost** (state < ConnectedLocal): `disconnect_network_tvs()` drops all network-transport TV connections immediately, updating D-Bus `Connected=false` without waiting for TCP keepalive timeouts
-- **Restored** (state ≥ ConnectedLocal): `reconnect_disconnected()` attempts reconnection for managed, network-dependent TVs that are not powered off
+A single `rtnetlink` multicast connection subscribes to link, route, and address events. Carrier up/down fires within milliseconds of a cable pull or NM software disconnect. Route/address changes are coalesced and trigger re-resolution of all TV → NIC mappings.
 
-Both methods check `Transport::is_network_dependent()` via the `BackendRegistry` — non-network transports (serial, USB, CEC) are unaffected. A per-TV `reconnecting` flag prevents NM events from racing with in-flight WoL retry loops during system wake.
+When a network-transport TV connects, the daemon resolves its IP to a NIC via `RTM_GETROUTE` (equivalent to `ip route get`) and stores the result on `ManagedTv::monitored_interface`. Carrier events are then scoped to only the TVs routed through the affected NIC — virtual bridges (virbr0, docker0) don't mask real disconnects.
 
-The watcher always connects to the system bus (NM is system-bus-only) regardless of the daemon's `--session` flag. If NM is unavailable, the watcher logs a warning and exits gracefully — the daemon falls back to passive disconnect detection via subscription end + tray fallback poll.
+When a route shifts to a different NIC (e.g., wired → Wi-Fi failover), the daemon checks `TvConnector::survives_source_ip_change()`. TCP/TLS-based protocols (WebSocket) return `false` — the connection is bound to a source IP and must be closed and re-established via the new interface. Future QUIC-based backends could return `true`.
+
+All checks use `Transport::is_network_dependent()` — non-network transports (serial, USB, CEC) are unaffected. A per-TV `reconnecting` flag prevents carrier/route events from racing with in-flight WoL retry loops during system wake.
+
+See [docs/watchers/network.md](watchers/network.md) for the full architecture, pitfalls discovered (RTM_F_LOOKUP_TABLE, IPv6 link-local persistence, NM watcher removal), and failover behavior.
 
 See [docs/lg/benchmarks/wake-reconnect.md](lg/benchmarks/wake-reconnect.md) for measured timing data.
 
-### Tray Layer
+### Daemon Lifecycle
 
-The tray subscribes to `PropertiesChanged` on per-TV objects, `InterfacesAdded`/`InterfacesRemoved` (ObjectManager), `ConfigReloaded` (Manager1), and `UserProfileChanged` (Session1) at startup. Signals within a 100ms window are coalesced (biased `tokio::select!` drain loop) before refreshing state via a single `GetManagedObjects` call and calling `handle.update()`. A 30s fallback poll provides resilience if signals are missed. `NameOwnerChanged` detects the session service appearing/disappearing on the bus for sub-second service discovery.
+On **shutdown** (SIGINT/SIGTERM), the daemon closes all TV WebSocket sessions gracefully before releasing the D-Bus name. This ensures TVs drop their protocol sessions immediately — without it, the TV holds the stale session until TCP keepalive timeout, causing "Connection reset" on the next daemon start.
+
+On **warm restart** (process restart, not system boot), the daemon proactively connects to all configured TVs. A boot marker in `/run/tisvlay/` (tmpfs, cleared every boot) distinguishes system boot from service restart. No WoL or startup actions are fired — the TVs are already on. Connection retry for stale sessions is handled internally by the vendor backend (e.g., LG retries up to 5 times with 1s interval).
+
+### Tray / GUI Layer
+
+D-Bus signal subscription, service lifecycle watching (daemon + session), signal debouncing, and fallback polling are encapsulated in `StateWatcher` (`tisvlay-core`, behind the `dbus` feature gate). The watcher emits a `StateEvent` enum — consumers provide only the UI-specific response.
+
+The tray's event loop is ~45 lines: create a `StateWatcher`, match on events, and call `refresh_state()` or handle service appear/disappear. The future GUI will use the same `StateWatcher` with its own event handler.
+
+Signals within a 100ms window are coalesced before the watcher emits `DaemonStateChanged`. A 30s fallback poll provides resilience. `NameOwnerChanged` detects services appearing/disappearing on the bus for sub-second discovery.
 
 ---
 

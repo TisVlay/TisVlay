@@ -420,8 +420,22 @@ impl TvConnector for LgConnector {
 
         debug!(ip = %config.ip, has_key = config.client_key.is_some(), "Connecting to LG TV");
 
-        let client = WebOsClient::connect(&config.ip, config.client_key.clone()).await?;
-        Ok(Box::new(LgConnection::new(client, config)))
+        // Retry on connection reset — the TV only allows one SSAP WebSocket
+        // session at a time. If a previous daemon's session is still alive
+        // (e.g., after daemon restart), the TV resets the new connection.
+        // The stale session typically drops within a few seconds.
+        let mut last_err = None;
+        for attempt in 1..=5u32 {
+            match WebOsClient::connect(&config.ip, config.client_key.clone()).await {
+                Ok(client) => return Ok(Box::new(LgConnection::new(client, config))),
+                Err(e) => {
+                    debug!(ip = %config.ip, attempt, error = %e, "LG TV not ready, retrying");
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+        Err(last_err.unwrap())
     }
 
     fn display_address(&self, vendor_config: &toml::Value) -> String {

@@ -8,17 +8,15 @@ mod state;
 mod tray;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use futures_util::StreamExt;
 use ksni::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use state::fetch_all_state;
-use tisvlay_core::{DaemonClient, SessionClient};
+use tisvlay_core::{DaemonClient, SessionClient, StateEvent, StateWatcher};
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
 /// tisvlay system tray - TV control from your taskbar.
@@ -30,8 +28,6 @@ struct Args {
     user: bool,
 }
 
-const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(30);
-const SIGNAL_DEBOUNCE: Duration = Duration::from_millis(100);
 const VOLUME_STEP: u8 = 1;
 const BACKLIGHT_STEP: u8 = 1;
 
@@ -181,145 +177,57 @@ async fn refresh_state(
 
 /// Watch for daemon D-Bus signals and refresh the tray on state changes.
 ///
-/// Subscribes to `PropertiesChanged` (per-TV) and
-/// `InterfacesAdded`/`InterfacesRemoved` (ObjectManager) signals. When a
-/// signal arrives, additional signals within a 100 ms window are drained
-/// (debounced) before a single `refresh_state()` call updates the menu.
-///
-/// A fallback poll at [`FALLBACK_POLL_INTERVAL`] provides resilience if
-/// signals are missed and handles lazy session service reconnection.
+/// Delegates all D-Bus subscription and lifecycle watching to
+/// [`StateWatcher`], which handles signal debouncing, service name
+/// monitoring, and fallback polling. This function only contains the
+/// tray-specific responses to each event.
 async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
 ) {
-    // Try to subscribe to daemon signals
-    let mut signal_stream = match daemon.subscribe_state_changes().await {
-        Ok(stream) => {
-            info!("Subscribed to daemon state signals");
-            Some(Box::pin(stream))
-        }
+    let mut watcher = match StateWatcher::new(&daemon, Default::default()).await {
+        Ok(w) => w,
         Err(e) => {
-            warn!(error = %e, "Failed to subscribe to state signals, using fallback polling only");
-            None
+            warn!(error = %e, "Failed to create state watcher");
+            return;
         }
     };
-
-    // Watch for the session service to appear/disappear on the bus.
-    // Uses the standard D-Bus NameOwnerChanged mechanism for instant
-    // detection (~2ms) instead of polling.
-    let session_bus = zbus::Connection::session().await.ok();
-    let mut session_watch = match &session_bus {
-        Some(conn) => tisvlay_core::watch_service(conn, "org.tisvlay.Session")
-            .await
-            .ok()
-            .map(Box::pin),
-        None => None,
-    };
-
-    // Subscribe to UserProfileChanged signals from the session service.
-    // The match rule is added at startup; it silently receives nothing
-    // while the session service isn't running, and picks up signals when
-    // it is — no need to conditionally create/destroy the stream.
-    let mut session_signal_stream = None;
-    if let Some(ref conn) = session_bus {
-        match tisvlay_core::subscribe_signals(
-            conn,
-            "type='signal',sender='org.tisvlay.Session',interface='org.tisvlay.Session1',member='UserProfileChanged',path='/org/tisvlay/Session'",
-        )
-        .await
-        {
-            Ok(raw) => {
-                let filtered = raw.filter_map(|msg_result| async move {
-                    let msg = msg_result.ok()?;
-                    let header = msg.header();
-                    let member = header.member()?.to_string();
-                    if member == "UserProfileChanged" {
-                        Some(())
-                    } else {
-                        None
-                    }
-                });
-                session_signal_stream = Some(Box::pin(filtered));
-                debug!("Subscribed to session UserProfileChanged signals");
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to subscribe to session signals");
-            }
-        }
-    }
 
     loop {
         if handle.is_closed() {
             break;
         }
 
-        tokio::select! {
-            // Branch 1: signal-driven update from daemon
-            Some(change) = async {
-                match signal_stream.as_mut() {
-                    Some(s) => s.next().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                debug!(change = ?change, "State signal received, debouncing");
-                // Drain additional signals within the debounce window
-                let deadline = tokio::time::sleep(SIGNAL_DEBOUNCE);
-                tokio::pin!(deadline);
-                loop {
-                    tokio::select! {
-                        biased;
-                        Some(_) = async {
-                            match signal_stream.as_mut() {
-                                Some(s) => s.next().await,
-                                None => std::future::pending().await,
-                            }
-                        } => continue,
-                        _ = &mut deadline => break,
-                    }
-                }
+        let Some(event) = watcher.next().await else {
+            break;
+        };
+
+        match event {
+            StateEvent::DaemonStateChanged(_)
+            | StateEvent::DaemonAppeared
+            | StateEvent::SessionProfileChanged
+            | StateEvent::FallbackPoll => {
                 refresh_state(&daemon, &session, &handle).await;
             }
-
-            // Branch 2: session service appeared/disappeared on the bus
-            Some(event) = async {
-                match session_watch.as_mut() {
-                    Some(s) => s.next().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                match event {
-                    tisvlay_core::ServiceEvent::Appeared => {
-                        info!("Session service appeared on D-Bus, connecting");
-                        if let Ok(client) = SessionClient::new().await {
-                            if client.is_available().await {
-                                *session.write().await = Some(client);
-                                refresh_state(&daemon, &session, &handle).await;
-                            }
-                        }
-                    }
-                    tisvlay_core::ServiceEvent::Disappeared => {
-                        debug!("Session service left D-Bus");
-                        *session.write().await = None;
+            StateEvent::DaemonDisappeared => {
+                handle
+                    .update(|tray: &mut TisvlayTray| {
+                        tray.daemon_available = false;
+                        tray.tvs.clear();
+                    })
+                    .await;
+            }
+            StateEvent::SessionAppeared => {
+                if let Ok(client) = SessionClient::new().await {
+                    if client.is_available().await {
+                        *session.write().await = Some(client);
                         refresh_state(&daemon, &session, &handle).await;
                     }
                 }
             }
-
-            // Branch 3: session UserProfileChanged signal
-            Some(()) = async {
-                match session_signal_stream.as_mut() {
-                    Some(s) => s.next().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                debug!("Session UserProfileChanged signal received");
-                refresh_state(&daemon, &session, &handle).await;
-            }
-
-            // Branch 4: fallback poll for resilience
-            _ = tokio::time::sleep(FALLBACK_POLL_INTERVAL) => {
-                debug!("Fallback poll: refreshing state");
+            StateEvent::SessionDisappeared => {
+                *session.write().await = None;
                 refresh_state(&daemon, &session, &handle).await;
             }
         }

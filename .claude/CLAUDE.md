@@ -34,7 +34,7 @@ tisvlay/
 │   │       ├── pairing.rs        # Unified pairing state machine
 │   │       ├── config.rs         # TOML config (XDG paths), SystemProfileConfig, UserProfileConfig
 │   │       ├── dbus_paths.rs     # D-Bus path constants and helpers
-│   │       ├── dbus_client.rs    # D-Bus client for tisvlayd (feature-gated)
+│   │       ├── dbus_client.rs    # D-Bus client, StateWatcher, signal helpers (feature-gated)
 │   │       ├── logging.rs        # Shared logging init with journald (feature-gated)
 │   │       ├── state.rs          # TvState, PowerState, InputInfo
 │   │       ├── wol.rs            # Wake-on-LAN
@@ -64,7 +64,7 @@ tisvlay/
 │   │       ├── main.rs           # Entry point, connection::Builder, state_change_forwarder
 │   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.* with cached properties)
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
-│   │       ├── network_watcher.rs # NetworkManager D-Bus watcher (network-transport reconnection)
+│   │       ├── netlink.rs        # Kernel netlink: route resolution + carrier/route monitoring
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool, disk serialization
 │   │
@@ -98,7 +98,9 @@ tisvlay/
 │
 ├── docs/
 │   ├── design.md                 # Full architecture design
-│   └── firewall.md               # SSDP firewall configuration
+│   ├── firewall.md               # SSDP firewall configuration
+│   └── watchers/
+│       └── network.md            # Network monitoring: carrier, route resolution, pitfalls
 │
 └── .claude/CLAUDE.md             # This file
 ```
@@ -118,6 +120,7 @@ tisvlay/
 | Errors | `thiserror`, `anyhow` |
 | Logging | `tracing`, `tracing-subscriber`, `tracing-journald` |
 | WoL | `socket2` |
+| Netlink | `rtnetlink`, `netlink-packet-route`, `netlink-packet-core` |
 
 ## Known Quirks
 
@@ -130,8 +133,9 @@ tisvlay/
 - SSAP subscription updates carry the original request ID, not the URI -- routing must use a request-ID-to-URI map
 - Multiplexed WebSocket: background reader routes subscription updates to state channel and command responses to callers; SSAP subscriptions (power, volume, mute, inputs, foreground app, backlight) push state in real time
 - LG pairing is two-phase: TV sends `Response` (prompt shown), then `Registered` (user accepted). `request_wait()` on the multiplexed WebSocket handles the second phase without re-sending
-- `Transport` enum on `TvConnector`: Network, Serial, Usb, Cec. Daemon scopes NM events to network-dependent backends only
-- NetworkManager watcher monitors `StateChanged` on the system bus; `reconnecting` flag prevents NM from racing with in-flight WoL retry loops
+- `Transport` enum on `TvConnector`: Network, Serial, Usb, Cec. Daemon scopes carrier/route events to network-dependent backends only
+- `TvConnector::survives_source_ip_change()`: backends declare whether their protocol survives client IP changes (WebSocket: false, future QUIC: true). Daemon uses this on NIC failover to decide whether to reconnect
+- Per-TV `reconnecting` flag prevents carrier/route events from racing with in-flight WoL retry loops
 
 ## Quick Reference
 
@@ -223,7 +227,26 @@ prek run -a cargo-clippy
 # CI runs file checks via prek, then build/clippy/test directly for live output
 ```
 
+### Dead Code Detection
+
+Rust's `dead_code` lint only catches unused *private* items. Public items are invisible
+to it — the compiler assumes external consumers exist. Since this workspace has no
+external consumers, use `cargo-workspace-unused-pub` for cross-crate unused pub detection:
+
+```bash
+# Ad-hoc check (generates SCIP index via rust-analyzer, may take a moment)
+cargo workspace-unused-pub
+
+# Review output manually — false positives include:
+# - Trait impl methods required by frameworks (rustls, ksni, zbus proxy traits)
+# - Builder methods reserved for future use (discovery wizard, GUI)
+```
+
+Not in the `prek` pipeline (requires rust-analyzer, slower than clippy). Run periodically
+after major refactors to catch orphaned public API surface.
+
 ## Reference Documentation
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
+- [docs/watchers/network.md](docs/watchers/network.md) - Network monitoring: carrier detection, route resolution, pitfalls
 - [docs/firewall.md](docs/firewall.md) - SSDP discovery firewall configuration

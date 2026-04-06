@@ -96,16 +96,22 @@ pub enum StateChangeEvent {
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
-    /// Network connectivity restored (from NetworkManager).
+    /// A network interface's carrier went up (cable plugged in, link established).
     ///
-    /// The forwarder triggers reconnection for all disconnected,
-    /// non-powered-off TVs.
-    NetworkRestored,
-    /// Network connectivity lost (from NetworkManager).
+    /// From kernel netlink RTMGRP_LINK. Triggers reconnection for TVs
+    /// whose `monitored_interface` matches this interface.
+    InterfaceUp { interface: String },
+    /// A network interface's carrier went down (cable unplugged, link lost).
     ///
-    /// The forwarder drops all TV connections and updates D-Bus
-    /// `Connected=false` properties immediately.
-    NetworkLost,
+    /// From kernel netlink RTMGRP_LINK. Disconnects TVs whose
+    /// `monitored_interface` matches this interface.
+    InterfaceDown { interface: String },
+    /// The kernel routing table changed.
+    ///
+    /// From kernel netlink RTMGRP_ROUTE. Re-resolves `monitored_interface`
+    /// for all connected network TVs in case their route shifted to a
+    /// different NIC (failover, DHCP renewal, VPN up/down).
+    RouteChanged,
 }
 
 /// Basic TV information for D-Bus properties.
@@ -127,7 +133,7 @@ struct ManagedTv {
     /// TV was intentionally powered off -- don't try to reconnect until power_on.
     powered_off: bool,
     /// A connection attempt is already in progress (WoL retry, on_wake, etc.).
-    /// Prevents NM reconnect from racing with an existing attempt.
+    /// Prevents carrier/route events from racing with an existing attempt.
     reconnecting: bool,
     /// Resolved system profile for daemon lifecycle events.
     ///
@@ -140,6 +146,12 @@ struct ManagedTv {
     /// Used by `is_automated()` to evaluate the input-aware gate without
     /// needing access to the D-Bus interface cache.
     last_known_input: Option<String>,
+    /// NIC carrying traffic to this TV, resolved from the routing table.
+    ///
+    /// Set at connection time via `resolve_interface_for_ip()`. Used to
+    /// scope carrier monitoring to the correct interface — only disconnect
+    /// this TV when its specific NIC goes down, not when any NIC changes.
+    monitored_interface: Option<String>,
 }
 
 impl ManagedTv {
@@ -151,6 +163,7 @@ impl ManagedTv {
             reconnecting: false,
             system_profile,
             last_known_input: None,
+            monitored_interface: None,
         }
     }
 
@@ -362,6 +375,87 @@ impl TvManager {
         self.state_change_tx.clone()
     }
 
+    /// Resolve and store the NIC carrying traffic to a TV.
+    ///
+    /// Parses the TV's display address as an IP, queries the kernel routing
+    /// table, and stores the result on `ManagedTv::monitored_interface`.
+    /// Only meaningful for network-transport TVs.
+    async fn resolve_monitored_interface(&self, tv_id: &str) {
+        let tv_arc = match self.get_tv(tv_id).await {
+            Ok(arc) => arc,
+            Err(_) => return,
+        };
+        let config = {
+            let tv = tv_arc.lock().await;
+            tv.config.clone()
+        };
+
+        if !self.registry.transport_for(&config).is_network_dependent() {
+            return;
+        }
+
+        let address = self.registry.display_address(&config);
+        let ip: std::net::IpAddr = match address.parse() {
+            Ok(ip) => ip,
+            Err(_) => {
+                debug!(tv_id = %tv_id, address = %address, "Cannot parse TV address as IP for route resolution");
+                return;
+            }
+        };
+
+        let interface = crate::netlink::resolve_interface_for_ip(ip).await;
+        let mut tv = tv_arc.lock().await;
+        if tv.monitored_interface == interface {
+            return;
+        }
+
+        let previous = tv.monitored_interface.clone();
+        info!(tv_id = %tv_id, "Monitored interface: {previous:?} -> {interface:?}");
+        tv.monitored_interface = interface.clone();
+
+        // Should we tear down the existing connection?
+        let should_disconnect = !tv.reconnecting
+            && match (&previous, &interface) {
+                // Route disappeared — TV is unreachable.
+                (Some(_), None) => true,
+                // Route shifted to a different NIC — close if the protocol
+                // can't survive a source IP change (e.g., WebSocket over TCP).
+                (Some(_), Some(_)) => {
+                    tv.is_connected() && !self.registry.survives_source_ip_change(&config)
+                }
+                _ => false,
+            };
+
+        // Should we signal reconnection?
+        let should_reconnect =
+            interface.is_some() && !tv.is_connected() && !tv.powered_off && !tv.reconnecting;
+
+        // Take connection outside the lock if disconnecting.
+        let conn = if should_disconnect {
+            tv.last_known_input = None;
+            tv.connection.take()
+        } else {
+            None
+        };
+
+        drop(tv);
+
+        if let Some(mut conn) = conn {
+            let _ = conn.close().await;
+            info!(tv_id = %tv_id, "Route changed ({previous:?} -> {interface:?}): disconnected");
+            self.emit_state_change(StateChangeEvent::ConnectionChanged {
+                tv_id: tv_id.to_string(),
+                connected: false,
+            });
+        }
+
+        if should_disconnect || should_reconnect {
+            if let Some(iface) = interface {
+                self.emit_state_change(StateChangeEvent::InterfaceUp { interface: iface });
+            }
+        }
+    }
+
     fn emit_state_change(&self, event: StateChangeEvent) {
         if let Err(e) = self.state_change_tx.send(event) {
             debug!("Failed to send state change event: {}", e);
@@ -440,6 +534,37 @@ impl TvManager {
         }
     }
 
+    /// Connect to all configured TVs without executing startup actions.
+    ///
+    /// Used on warm restart (daemon process restart, not system boot).
+    /// The TVs are likely already on — just re-establish WebSocket
+    /// connections, subscribe to state updates, and resolve monitored
+    /// interfaces. No WoL, no screen_on, no input switching.
+    fn connect_all_on_restart(self: Arc<Self>) {
+        tokio::spawn(async move {
+            let tv_ids = self.list_tv_ids().await;
+            for tv_id in &tv_ids {
+                let display_addr = {
+                    let tv_arc = match self.get_tv(tv_id).await {
+                        Ok(arc) => arc,
+                        Err(_) => continue,
+                    };
+                    let tv = tv_arc.lock().await;
+                    self.registry.display_address(&tv.config)
+                };
+
+                info!(tv_id = %tv_id, address = %display_addr, "Warm restart: connecting to TV");
+
+                match self.reconnect(tv_id).await {
+                    Ok(()) => info!(tv_id = %tv_id, "Warm restart: connected"),
+                    Err(e) => {
+                        debug!(tv_id = %tv_id, error = %e, "Warm restart: connection failed (TV may be off)")
+                    }
+                }
+            }
+        });
+    }
+
     /// Execute the configured `on_startup` action for all managed TVs,
     /// but only on system boot — not on daemon restart.
     ///
@@ -459,7 +584,10 @@ impl TvManager {
 
         let marker_path = std::path::Path::new(BOOT_MARKER);
         if marker_path.exists() {
-            info!("Skipping on_startup (service restart, not system boot)");
+            info!("Skipping on_startup actions (service restart, not system boot)");
+            // Still connect to all TVs — they're likely already on from
+            // before the restart. No WoL, no screen_on, no input switch.
+            self.clone().connect_all_on_restart();
             return;
         }
 
@@ -530,6 +658,7 @@ impl TvManager {
                     tv_id: tv_id.to_string(),
                     connected: true,
                 });
+                manager.resolve_monitored_interface(tv_id).await;
 
                 match manager.screen_on(tv_id).await {
                     Ok(()) => info!(tv_id = %tv_id, "Startup: screen on"),
@@ -709,67 +838,53 @@ impl TvManager {
             tv_id: tv_id.to_string(),
             connected: true,
         });
+        self.resolve_monitored_interface(tv_id).await;
 
         Ok(())
     }
 
-    /// Reconnect managed, network-dependent TVs that are currently disconnected.
+    /// Reconnect network-dependent TVs that are currently disconnected.
     ///
     /// Called when network connectivity is restored (e.g., after a network
-    /// blip or NIC reset). Skips non-network transports (serial, USB, CEC),
-    /// TVs that are intentionally powered off, and TVs with an in-flight
-    /// WoL attempt. Each reconnection runs concurrently via spawned tasks.
-    pub async fn reconnect_disconnected(self: &Arc<Self>) {
-        let tvs = self.tvs.read().await;
-        for (tv_id, (managed, tv_arc)) in tvs.iter() {
-            if !managed {
-                continue;
-            }
-            let tv = tv_arc.lock().await;
-            if !self
-                .registry
-                .transport_for(&tv.config)
-                .is_network_dependent()
-            {
-                continue;
-            }
-            if tv.is_connected() || tv.powered_off || tv.reconnecting {
-                if tv.reconnecting {
-                    debug!(tv_id = %tv_id, "Skipping reconnect, WoL already in progress");
+    /// blip or NIC reset). Reconnects all TVs regardless of managed status —
+    /// managed gates automation (actions), not connectivity. Skips non-network
+    /// transports (serial, USB, CEC), TVs that are intentionally powered off,
+    /// and TVs with an in-flight WoL attempt. Each reconnection runs
+    /// concurrently via spawned tasks.
+    /// Disconnect TVs whose monitored interface matches the given name.
+    ///
+    /// Called when a specific NIC's carrier goes down. Only affects TVs
+    /// routed through that interface — other TVs are untouched.
+    /// Close all TV connections gracefully.
+    ///
+    /// Called during daemon shutdown so TVs drop their SSAP sessions
+    /// immediately. Without this, the TV holds the stale session until
+    /// TCP keepalive times out, causing "Connection reset" on warm restart.
+    pub async fn close_all_connections(&self) {
+        let mut to_close: Vec<(String, Box<dyn TvConnection>)> = Vec::new();
+        {
+            let tvs = self.tvs.read().await;
+            for (tv_id, (_, tv_arc)) in tvs.iter() {
+                let mut tv = tv_arc.lock().await;
+                if let Some(conn) = tv.connection.take() {
+                    to_close.push((tv_id.clone(), conn));
                 }
-                continue;
             }
-            let tv_id = tv_id.clone();
-            let manager = Arc::clone(self);
-            drop(tv);
-            tokio::spawn(async move {
-                info!(tv_id = %tv_id, "Network connectivity restored: attempting reconnect");
-                if let Err(e) = manager.reconnect(&tv_id).await {
-                    debug!(tv_id = %tv_id, error = %e, "Reconnect failed (TV may be off)");
-                }
-            });
+        }
+        for (tv_id, mut conn) in to_close {
+            debug!(tv_id = %tv_id, "Closing connection");
+            let _ = conn.close().await;
         }
     }
 
-    /// Drop connections for all network-dependent TVs and emit disconnection events.
-    ///
-    /// Called when network connectivity is lost. Clears connections immediately
-    /// so D-Bus `Connected` properties update without waiting for TCP keepalive
-    /// timeouts. Skips non-network transports (serial, USB, CEC) and TVs with
-    /// an in-flight WoL attempt.
-    pub async fn disconnect_network_tvs(&self) {
-        // Collect connections to close outside the per-TV locks.
+    pub async fn disconnect_tvs_on_interface(&self, interface: &str) {
         let mut to_close: Vec<(String, Box<dyn TvConnection>)> = Vec::new();
 
         {
             let tvs = self.tvs.read().await;
             for (tv_id, (_, tv_arc)) in tvs.iter() {
                 let mut tv = tv_arc.lock().await;
-                if !self
-                    .registry
-                    .transport_for(&tv.config)
-                    .is_network_dependent()
-                {
+                if tv.monitored_interface.as_deref() != Some(interface) {
                     continue;
                 }
                 if tv.reconnecting {
@@ -783,14 +898,58 @@ impl TvManager {
             }
         }
 
-        // Close connections and emit events outside all locks.
+        if to_close.is_empty() {
+            debug!(interface = %interface, "No TVs monitored on this interface");
+        }
         for (tv_id, mut conn) in to_close {
             let _ = conn.close().await;
-            info!(tv_id = %tv_id, "Network connectivity lost: disconnected");
+            info!(tv_id = %tv_id, "Carrier lost on {interface}: disconnected");
             self.emit_state_change(StateChangeEvent::ConnectionChanged {
                 tv_id,
                 connected: false,
             });
+        }
+    }
+
+    /// Reconnect TVs whose monitored interface matches the given name.
+    ///
+    /// Called when a specific NIC's carrier comes back up. Only attempts
+    /// reconnection for TVs that were routed through that interface.
+    pub async fn reconnect_tvs_on_interface(self: &Arc<Self>, interface: &str) {
+        let tvs = self.tvs.read().await;
+        for (tv_id, (_, tv_arc)) in tvs.iter() {
+            let tv = tv_arc.lock().await;
+            if tv.monitored_interface.as_deref() != Some(interface) {
+                continue;
+            }
+            if tv.is_connected() || tv.powered_off || tv.reconnecting {
+                continue;
+            }
+            let tv_id = tv_id.clone();
+            let iface = interface.to_owned();
+            let manager = Arc::clone(self);
+            drop(tv);
+            tokio::spawn(async move {
+                info!(tv_id = %tv_id, "Carrier restored on {iface}: reconnecting");
+                if let Err(e) = manager.reconnect(&tv_id).await {
+                    debug!(tv_id = %tv_id, error = %e, "Reconnect failed (TV may be off)");
+                }
+            });
+        }
+    }
+
+    /// Re-resolve `monitored_interface` for all connected network TVs.
+    ///
+    /// Called when the kernel routing table changes. If a TV's route shifted
+    /// to a different NIC (failover, DHCP renewal), updates the mapping so
+    /// carrier monitoring tracks the correct interface.
+    pub async fn re_resolve_all_interfaces(&self) {
+        let tv_ids: Vec<String> = {
+            let tvs = self.tvs.read().await;
+            tvs.keys().cloned().collect()
+        };
+        for tv_id in &tv_ids {
+            self.resolve_monitored_interface(tv_id).await;
         }
     }
 
@@ -833,6 +992,22 @@ impl TvManager {
                 tv_id: tv_id.to_string(),
                 connected: true,
             });
+
+            // Resolve which NIC routes to this TV (inline — we hold the lock)
+            if self
+                .registry
+                .transport_for(&tv.config)
+                .is_network_dependent()
+            {
+                let address = self.registry.display_address(&tv.config);
+                if let Ok(ip) = address.parse::<std::net::IpAddr>() {
+                    let interface = crate::netlink::resolve_interface_for_ip(ip).await;
+                    if tv.monitored_interface != interface {
+                        debug!(tv_id = %tv_id, interface = ?interface, "Monitored interface resolved");
+                        tv.monitored_interface = interface;
+                    }
+                }
+            }
 
             // Subscribe to backend state updates if supported
             if let Some(conn) = tv.connection.as_mut() {
@@ -913,6 +1088,7 @@ impl TvManager {
             tv_id: tv_id.to_string(),
             connected: true,
         });
+        self.resolve_monitored_interface(tv_id).await;
         info!(tv_id = %tv_id, "TV is online after WoL");
         Ok(())
     }

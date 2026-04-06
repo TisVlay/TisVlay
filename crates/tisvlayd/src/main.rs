@@ -5,7 +5,7 @@
 
 mod dbus;
 mod logind;
-mod network_watcher;
+mod netlink;
 mod registry;
 mod tv_manager;
 
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{SystemConfig, TvState, UserConfig};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
@@ -152,19 +152,26 @@ async fn main() -> Result<()> {
         shared_manager.clone(),
     ));
 
-    // Spawn NetworkManager watcher for proactive reconnection of network-transport TVs.
-    // Always connects to the system bus (NM is system-bus-only).
-    network_watcher::spawn_network_watcher(shared_manager.state_change_sender());
+    // Spawn kernel netlink monitor for per-interface carrier detection and route changes.
+    // Fires within milliseconds of cable pull, NM disconnect, or route failover.
+    netlink::spawn_link_monitor(shared_manager.state_change_sender());
 
     // Wait for shutdown or reload signal
+    let shutdown_manager = shared_manager.clone();
     wait_for_signals(shared_manager).await;
 
     info!("Shutting down...");
 
+    // Close all TV connections gracefully so the TV drops its SSAP
+    // session immediately (avoids "Connection reset" on warm restart).
+    shutdown_manager.close_all_connections().await;
+
     // Abort the signal worker
     signal_worker.abort();
 
-    // Drop connection to unregister from D-Bus
+    // Drop connection to unregister from D-Bus.
+    // This releases the well-known name, triggering NameOwnerChanged
+    // so clients (tray) detect the daemon went away.
     drop(connection);
 
     Ok(())
@@ -261,13 +268,38 @@ async fn state_change_forwarder(
                     }
                 }
             }
-            StateChangeEvent::NetworkRestored => {
-                info!("Network restored: reconnecting network-transport TVs");
-                manager.reconnect_disconnected().await;
+            StateChangeEvent::InterfaceDown { ref interface } => {
+                debug!(interface = %interface, "Interface carrier down: disconnecting affected TVs");
+                manager.disconnect_tvs_on_interface(interface).await;
             }
-            StateChangeEvent::NetworkLost => {
-                info!("Network lost: disconnecting network-transport TVs");
-                manager.disconnect_network_tvs().await;
+            StateChangeEvent::InterfaceUp { ref interface } => {
+                debug!(interface = %interface, "Interface carrier up: reconnecting affected TVs");
+                manager.reconnect_tvs_on_interface(interface).await;
+            }
+            StateChangeEvent::RouteChanged => {
+                trace!("Route changed: re-resolving monitored interfaces");
+                manager.re_resolve_all_interfaces().await;
+                // Coalesce: brief collection window then drain queued
+                // RouteChanged events. The resolve above is instant
+                // (microseconds), but route events arrive in bursts
+                // over seconds — the 100ms pause lets stragglers
+                // accumulate so they collapse into a single pass.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let mut coalesced = 0u32;
+                loop {
+                    match rx.try_recv() {
+                        Ok(StateChangeEvent::RouteChanged) => coalesced += 1,
+                        Ok(other) => {
+                            let _ = manager.state_change_sender().send(other);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if coalesced > 0 {
+                    trace!(coalesced, "Re-resolving after coalesced route events");
+                    manager.re_resolve_all_interfaces().await;
+                }
             }
         }
     }
