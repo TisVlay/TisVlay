@@ -1,8 +1,12 @@
 # Plan: Handle NIC failover for live connections
 
+## Status: Complete
+
+All steps implemented and verified with hardware testing.
+
 ## Problem
 
-When the route to a TV shifts from one NIC to another (e.g., wired → Wi-Fi), the daemon updates `monitored_interface` but leaves the existing connection in place. For TCP/TLS-based protocols (WebSocket), the connection is dead — it was bound to the old NIC's source IP. The tray still shows the TV as "connected" but commands silently fail until something triggers a reconnect.
+When the route to a TV shifts from one NIC to another (e.g., wired → Wi-Fi), the daemon updated `monitored_interface` but left the existing connection in place. For TCP/TLS-based protocols (WebSocket), the connection was dead — bound to the old NIC's source IP. The tray showed the TV as "connected" but commands silently failed until something triggered a reconnect.
 
 ## Why `check_health` failed
 
@@ -30,32 +34,19 @@ Surveyed libp2p, GStreamer, Home Assistant, OpenHAB, and tower for how they sepa
 **Pattern**: connection migration is a **connector-level concern** (the thing that creates connections), not a transport-category concern. Our `Transport` enum is the right granularity for "should NM events affect this?" (`is_network_dependent()`). But "does this specific backend's protocol survive IP changes?" is a narrower question about the backend's protocol choice.
 
 Putting it on `Transport` conflates two distinct concerns:
-- `Transport::Network` → "this backend uses IP networking" (scopes NM events)
+- `Transport::Network` → "this backend uses IP networking" (scopes carrier events)
 - `survives_source_ip_change()` → "this backend's protocol can handle client IP migration" (scopes reconnection on NIC change)
 
 These are independent. A WebSocket backend and an HTTP backend both use `Transport::Network`, but only one needs reconnection on IP change.
 
-## Design: Declarative on `TvConnector` ← selected
+## Design: Declarative on `TvConnector`
 
 ```rust
 trait TvConnector {
     fn transport(&self) -> Transport;
 
     /// Whether connections from this backend survive client source IP changes.
-    ///
-    /// TCP/TLS-based protocols (WebSocket, raw TCP) return `false` — the
-    /// connection is bound to a 4-tuple and dies when the source IP changes.
-    /// QUIC-based protocols may return `true` if connection migration is
-    /// supported. Stateless protocols (HTTP request-response) may also
-    /// return `true`.
-    ///
-    /// Only called for network-dependent transports (gated by
-    /// `transport().is_network_dependent()`). The daemon uses this when
-    /// the route to a TV shifts to a different NIC: if `false`, the
-    /// existing connection is closed and a new one established via the
-    /// new interface.
-    ///
-    /// Default: `false` (conservative — assumes connection dies).
+    /// Default: false (conservative — assumes connection dies).
     fn survives_source_ip_change(&self) -> bool { false }
 }
 ```
@@ -76,36 +67,40 @@ Why `TvConnector`:
 
 **Runtime probe (`check_health`)**: unreliable — TCP send buffers mask dead connections.
 
-## `is_connected` vs `check_health`
+## Additional discoveries during testing
 
-- `is_connected()`: local check — "does the handle look valid?" Returns `true` on a dead TCP connection until a read/write actually fails.
-- `check_health()`: intended as a network probe, but unreliable — TCP `send()` succeeds into the kernel buffer even on a dead path.
+### NM watcher caused false disconnects
 
-Neither can reliably detect a dead-but-not-yet-failed TCP connection. The declarative approach avoids the problem entirely.
+Testing with simultaneous wired + Wi-Fi showed NM's global `StateChanged` signal caused false disconnects during NIC transitions — it oscillated through `Disconnected` before settling, racing with the per-device carrier monitor. Removed the NM watcher entirely; kernel netlink handles all scenarios.
 
-## Implementation steps
+### Route debounce was unnecessary
 
-### Step 1: Add `survives_source_ip_change` to `TvConnector`
+High-frequency route sampling (`scripts/bouncing_routes.py` at 10ms) confirmed the kernel routing table never produces transient wrong results during NIC transitions — `ip route get` is always consistent with the current FIB state. Replaced the 500ms trailing-edge debounce with event coalescing (instant first event, drain duplicates after resolve).
 
-In `traits.rs`, add the method with default `false`. No backend changes needed — LG uses the default.
+### tracing-log bridge noise
 
-### Step 2: Expose via `BackendRegistry`
+The `netlink-packet-route` crate emits `log::debug!()` on every link event for newer kernel attributes. The `tracing-log` bridge forwarded these with mismatched metadata (`target="log"`, wrong journal priority), bypassing `EnvFilter`. Fixed by disabling the bridge (`default-features = false` on `tracing-subscriber`).
 
-Add a `survives_source_ip_change(&self, config: &TvConfig) -> bool` method to `BackendRegistry`, mirroring the existing `transport_for()` pattern.
+## What was implemented
 
-### Step 3: Remove `check_health`
+- [x] `TvConnector::survives_source_ip_change()` with default `false`
+- [x] `BackendRegistry::survives_source_ip_change()` mirroring `transport_for()`
+- [x] Daemon route transition: NIC change + `!survives_source_ip_change()` → disconnect + reconnect
+- [x] Removed `check_health` from `TvConnection`, LG backend, `Connection`
+- [x] Removed NM watcher module, `NetworkRestored`/`NetworkLost` events, `reconnect_disconnected`/`disconnect_network_tvs`
+- [x] Replaced route debounce with coalesce (instant first event, drain duplicates)
+- [x] Demoted per-event route logs to trace; info only on actual transitions
+- [x] Log messages include TV ID and NIC names
+- [x] Disabled `tracing-log` bridge to suppress `netlink-packet-route` noise
+- [x] Route bounce telemetry script (`scripts/bouncing_routes.py`)
 
-Remove from: `TvConnection` (trait default), `LgConnection`, `WebOsClient`, `Connection`.
+## Tested scenarios
 
-### Step 4: Simplify daemon route transition
-
-Replace `RouteAction::CheckHealth` with a synchronous check:
-
-```rust
-// Some(old) → Some(new), old != new, TV is connected:
-if !self.registry.survives_source_ip_change(&tv.config) {
-    take connection, close it, emit disconnect + InterfaceUp for reconnect
-}
-```
-
-No async probe, no taking the connection out and putting it back.
+| Scenario | Result |
+|----------|--------|
+| Wi-Fi connect while wired active | No false trigger (route stays on eno2) |
+| Wired disconnect (failover to Wi-Fi) | Instant disconnect + reconnect via wlp7s0 |
+| Wired reconnect (failback from Wi-Fi) | NIC change detected, reconnect via eno2 |
+| Wi-Fi disconnect while wired active | No effect (TV monitored on eno2) |
+| Cable pull | Instant via carrier detection |
+| Sleep/wake | Reconnecting flag prevents racing |
