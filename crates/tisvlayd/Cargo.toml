@@ -18,6 +18,9 @@ path = "src/main.rs"
 [features]
 default = ["discovery"]
 discovery = ["tisvlay-backends/discovery"]
+# Include the in-memory mock backend. Off by default in release/distro
+# builds; enabled by dev/test workflows that need the mock vendor.
+mock = ["tisvlay-backends/mock"]
 
 [dependencies]
 tisvlay-core = { workspace = true, features = ["logging"] }

@@ -51,6 +51,14 @@ tisvlay/
 │   │       ├── config.rs         # LgVendorConfig
 │   │       └── discovery.rs      # SSDP TV discovery (feature-gated)
 │   │
+│   ├── tisvlay-mock/              # In-memory mock backend (optional, for dev/tests)
+│   │   └── src/
+│   │       ├── lib.rs            # Public exports, VENDOR_ID
+│   │       ├── backend.rs        # MockBackend (metadata)
+│   │       ├── connector.rs      # MockConnector (factory, pairing stub)
+│   │       ├── connection.rs     # MockConnection (in-memory state + push subscriptions)
+│   │       └── config.rs         # MockVendorConfig (initial state)
+│   │
 │   ├── tisvlay-backends/          # Backend registry (composition point)
 │   │   └── src/
 │   │       └── lib.rs            # BackendRegistry, vendor registration
@@ -269,6 +277,47 @@ cargo workspace-unused-pub
 
 Not in the `prek` pipeline (requires rust-analyzer, slower than clippy). Run periodically
 after major refactors to catch orphaned public API surface.
+
+### Mock Backend
+
+`tisvlay-mock` implements the full `TvBackend` / `TvConnector` /
+`TvConnection` trait surface with an in-memory state machine. Gated
+behind the `mock` feature on `tisvlay-backends`, default-off in release
+builds (distro packages) and default-on in workspace dev/test builds.
+
+Reasons to use it:
+- Developing UX/UI features (CLI, tray, future GUI) without real hardware
+- Integration testing the daemon against a realistic backend with push
+  subscriptions, pairing, and capability reporting
+- CI runs where no TV is available
+
+The mock reports `Transport::Network` and `survives_source_ip_change()
+-> false` so it exercises the same carrier/route event paths and NIC
+failover logic the LG backend does. `subscribe_state()` returns a real
+`mpsc::UnboundedReceiver<TvState>` that pushes cumulative state
+snapshots on every mutation, mirroring LG's SSAP subscription model.
+
+Enable in a local config with `vendor = "mock"` and `[tv.mock]` block:
+
+```toml
+[[tv]]
+id = "dev-mock"
+name = "Mock Living Room"
+vendor = "mock"
+managed = true
+
+[tv.mock]
+address = "mock://living_room"
+initial_volume = 30
+initial_input = "HDMI_1"
+inputs = [["HDMI_1", "HDMI 1"], ["HDMI_2", "HDMI 2"]]
+```
+
+Then run `cargo run --bin tisvlayd --features mock -- --session`.
+
+Integration tests at `crates/tisvlay-backends/tests/mock_backend.rs`
+exercise the full registry → connector → connection → subscription
+flow end-to-end.
 
 ### Testing
 

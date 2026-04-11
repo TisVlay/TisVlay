@@ -11,6 +11,11 @@ keywords = ["tisvlay", "backends", "registry"]
 [features]
 default = []
 discovery = ["tisvlay-lg/discovery"]
+# Include the in-memory mock backend.
+#
+# Default-off in release builds (not in distro packages), default-on in
+# the workspace dev-dependencies so integration tests always have it.
+mock = ["dep:tisvlay-mock"]
 
 [dependencies]
 # Core traits and types
@@ -18,6 +23,7 @@ tisvlay-core.workspace = true
 
 # Vendor implementations (only this crate imports these)
 tisvlay-lg.workspace = true
+tisvlay-mock = { workspace = true, optional = true }
 
 # Serialization
 toml.workspace = true

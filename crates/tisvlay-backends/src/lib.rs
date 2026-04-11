@@ -292,6 +292,21 @@ pub fn create_registry() -> BackendRegistry {
     );
 
     // =========================================================================
+    // Register mock backend (optional, gated behind the `mock` feature)
+    // =========================================================================
+    #[cfg(feature = "mock")]
+    {
+        let mock_connector = Arc::new(tisvlay_mock::MockConnector::new());
+        registry.register(
+            tisvlay_mock::VENDOR_ID,
+            tisvlay_mock::VENDOR_NAME,
+            Capabilities::ALL,
+            mock_connector,
+            None,
+        );
+    }
+
+    // =========================================================================
     // Future: Register Samsung backend
     // =========================================================================
     // let samsung_connector = Arc::new(tisvlay_samsung::SamsungConnector::new());
