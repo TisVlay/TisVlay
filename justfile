@@ -33,11 +33,16 @@ test:
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
 
-# Run the test suite with the CI profile (JUnit XML output, retry once)
+# Run tests under coverage instrumentation (CI): produces JUnit XML via
+# the 'ci' nextest profile, coverage data, then generates lcov.info and
+# checks the ratchet — all from one test run. Doc tests run separately
+# without coverage (stable rustc doesn't support doctest coverage).
 [group('check')]
 test-ci:
-    cargo nextest run --workspace --all-features --profile ci
+    NEXTEST_PROFILE=ci cargo llvm-cov --no-report nextest --workspace --all-features
     cargo test --workspace --all-features --doc
+    cargo llvm-cov report --lcov --output-path lcov.info
+    cargo llvm-cov report --fail-under-lines {{ cov_baseline_lines }} --summary-only
 
 # Run all fast checks in order (what prek runs)
 [group('check')]

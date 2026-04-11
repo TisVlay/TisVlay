@@ -23,12 +23,15 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Toolchain
-        run: rustup show
+        run: |
+          rustup component add llvm-tools-preview
+          rustup show
 
       - name: Setup
         uses: taiki-e/install-action@v2
         with:
           tool: |
+            cargo-llvm-cov
             cargo-nextest
             just
 
@@ -52,6 +55,25 @@ jobs:
 
       - name: Test
         run: just test-ci
+
+      # TODO: Enable Codecov upload once the repository is public.
+      # Codecov is free for OSS, gives PR diff annotations, and tracks
+      # coverage trends over time.
+      #
+      # - name: Upload to Codecov
+      #   uses: codecov/codecov-action@v4
+      #   with:
+      #     files: lcov.info
+      #     fail_ci_if_error: true
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 14
 
       # NOTE: When this repo becomes public, fork PRs cannot create check
       # runs (read-only token). See the "Recommended setup for public
