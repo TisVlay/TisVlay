@@ -41,6 +41,7 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             cargo-llvm-cov
+            just
             linuxConsoleTools
             lldb
             llvmPackages_21.bintools-unwrapped
