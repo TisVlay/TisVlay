@@ -48,6 +48,16 @@ test-ci:
 [group('check')]
 check: fmt build clippy test
 
+# Review pending snapshot changes (insta)
+[group('check')]
+test-snapshot-review:
+    cargo insta review
+
+# Accept all pending snapshot changes (insta)
+[group('check')]
+test-snapshot-accept:
+    cargo insta accept
+
 # --- Coverage -----------------------------------------------------------
 
 # Baseline line-coverage percentage. Bump on PRs that improve coverage.

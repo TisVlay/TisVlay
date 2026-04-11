@@ -37,6 +37,7 @@ tracing-journald = { workspace = true, optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 zbus = { workspace = true }
+insta = { workspace = true }
 
 [features]
 default = []

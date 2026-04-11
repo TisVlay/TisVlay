@@ -40,6 +40,7 @@
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
+            cargo-insta
             cargo-llvm-cov
             cargo-nextest
             just

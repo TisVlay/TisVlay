@@ -278,8 +278,10 @@ compiled tests. Doc tests still use `cargo test --doc` because nextest
 doesn't run them yet.
 
 ```bash
-just test     # cargo nextest run (workspace, all features) + doc tests
-just test-ci  # same but with the 'ci' profile (JUnit XML, retry once)
+just test                   # cargo nextest run (workspace, all features) + doc tests
+just test-ci                # same but with the 'ci' profile + coverage + lcov + ratchet
+just test-snapshot-review   # review pending insta snapshot changes
+just test-snapshot-accept   # accept all pending insta snapshot changes
 ```
 
 Configuration lives in `.config/nextest.toml` with two profiles:
@@ -291,6 +293,29 @@ Configuration lives in `.config/nextest.toml` with two profiles:
 Process-per-test isolation matters here because the daemon code uses
 global state (D-Bus, netlink, file paths) — `cargo test`'s shared-process
 model would have tests stepping on each other.
+
+#### Snapshot tests ([`insta`](https://insta.rs/))
+
+Snapshot tests compare generated output against a saved reference file.
+Useful for anything with structured output that would be tedious to
+hand-write and error-prone to maintain (JSON/YAML serialization,
+CLI output, D-Bus message shapes).
+
+Snapshots live in `crates/*/tests/snapshots/` next to their test source.
+Workflow:
+
+1. Write a test using `insta::assert_json_snapshot!(value)` (or
+   `assert_snapshot!`, `assert_yaml_snapshot!`, `assert_debug_snapshot!`)
+2. Run `just test` — new/changed snapshots fail the test and write
+   `.snap.new` files next to the old `.snap`
+3. `just test-snapshot-review` — interactive TUI showing each diff;
+   accept or reject per snapshot
+4. Commit the updated `.snap` files alongside the code change
+
+In CI, snapshots must match exactly (no `.snap.new` files are written).
+A failing snapshot test is a real test failure.
+
+See `crates/tisvlay-core/tests/tv_info_snapshot.rs` for a working example.
 
 ### Test Coverage
 
