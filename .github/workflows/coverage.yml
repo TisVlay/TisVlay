@@ -1,0 +1,57 @@
+name: Coverage
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Toolchain
+        run: rustup show
+
+      - name: Install llvm-tools-preview
+        run: rustup component add llvm-tools-preview
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Coverage (ratchet)
+        run: ./scripts/coverage.sh ratchet
+
+      - name: Coverage (lcov)
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+      # TODO: Enable Codecov upload once the repository is public.
+      # Codecov is free for OSS, gives PR diff annotations, and tracks
+      # coverage trends over time.
+      #
+      # - name: Upload to Codecov
+      #   uses: codecov/codecov-action@v4
+      #   with:
+      #     files: lcov.info
+      #     fail_ci_if_error: true
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 14

@@ -183,6 +183,46 @@
             "dependsOn": ["package: deb", "package: rpm", "package: archlinux"],
             "dependsOrder": "parallel",
             "problemMatcher": []
+        },
+        {
+            "label": "coverage: summary",
+            "type": "shell",
+            "command": "./scripts/coverage.sh summary",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "coverage: html",
+            "type": "shell",
+            "command": "./scripts/coverage.sh html",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "coverage: lcov",
+            "type": "shell",
+            "command": "./scripts/coverage.sh lcov",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "coverage: ratchet",
+            "type": "shell",
+            "command": "./scripts/coverage.sh ratchet",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
         }
     ]
 }

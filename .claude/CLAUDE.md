@@ -245,6 +245,34 @@ cargo workspace-unused-pub
 Not in the `prek` pipeline (requires rust-analyzer, slower than clippy). Run periodically
 after major refactors to catch orphaned public API surface.
 
+### Test Coverage
+
+Coverage is measured with `cargo-llvm-cov` and ratcheted in CI — new code should
+not lower the workspace baseline. The Nix dev shell provides `cargo-llvm-cov`,
+`llvm-cov`, and `llvm-profdata` (matching `rustc`'s LLVM 21).
+
+```bash
+# Text summary
+./scripts/coverage.sh summary
+
+# HTML report (opens in browser)
+./scripts/coverage.sh html
+
+# Generate lcov.info for VS Code Coverage Gutters
+./scripts/coverage.sh lcov
+
+# Ratchet check — fails if below baseline (used by CI)
+./scripts/coverage.sh ratchet
+```
+
+The baseline lives in `scripts/coverage.sh` (`BASELINE_LINES`). Bump it on PRs
+that improve coverage; never lower it. CI runs `coverage: ratchet` on every PR
+via `.github/workflows/coverage.yml`.
+
+Outside the Nix dev shell, install with `cargo install cargo-llvm-cov` and
+ensure `llvm-tools-preview` is available (rustup component or matching system
+LLVM).
+
 ## Reference Documentation
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
