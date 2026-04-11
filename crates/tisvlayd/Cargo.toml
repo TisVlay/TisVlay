@@ -42,8 +42,12 @@ netlink-packet-route = "0.28"
 # Distro packaging via cargo-nfpm
 # =============================================================================
 # Generates .deb, .rpm, .pkg.tar.zst from a single config.
-# Usage: cargo nfpm package -p tisvlayd --no-build -f deb
-# The package name is "tisvlay" (all binaries + services bundled).
+# Usage: just package-deb | just package-rpm | just package-archlinux
+#
+# Paths use the musl target directory directly so packaging never touches
+# the native dev build cache at target/release/. cargo-nfpm auto-adds the
+# main binary (tisvlayd) using the correct --target path; the other three
+# binaries are listed explicitly and must use the same target directory.
 
 [package.metadata.nfpm]
 name = "tisvlay"
@@ -52,9 +56,9 @@ priority = "optional"
 
 contents = [
     # Binaries (tisvlayd is auto-added by cargo-nfpm from the -p target)
-    { src = "target/release/tisvlay", dst = "/usr/bin/tisvlay" },
-    { src = "target/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
-    { src = "target/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
+    { src = "target/x86_64-unknown-linux-musl/release/tisvlay", dst = "/usr/bin/tisvlay" },
+    { src = "target/x86_64-unknown-linux-musl/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
+    { src = "target/x86_64-unknown-linux-musl/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
     # Systemd system service
     { src = "packaging/systemd/tisvlayd.service", dst = "/usr/lib/systemd/system/tisvlayd.service" },
     # Systemd user services

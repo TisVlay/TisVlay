@@ -96,12 +96,11 @@ cli-status:
 
 # --- Packaging ----------------------------------------------------------
 
-# Build musl static binaries and symlink target/release to the musl output
+# Build musl static binaries for packaging. Writes to
+# target/x86_64-unknown-linux-musl/release/ and never touches
+# the native dev build cache at target/release/.
 package-build-musl:
-    rm -f target/release 2>/dev/null || true
     cargo build --release --workspace --target x86_64-unknown-linux-musl
-    rm -rf target/release
-    ln -sf x86_64-unknown-linux-musl/release target/release
 
 # Build .deb package
 package-deb: package-build-musl
