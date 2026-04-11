@@ -9,16 +9,19 @@ Establish an extensible testing and measurement framework for the tisvlay worksp
 3. Measure code coverage and treat it as a property to monitor over time
 4. Support LLM-assisted development (clear conventions, fast feedback, structured outputs)
 5. Run in CI on every PR with results visible inline
-6. Lay the groundwork for a future mock backend
+6. Lay the groundwork for a mock backend that enables testing high-level features (pairing, discovery, profiles, CLI, GUI) without real hardware
 
-## Current state
+## Status
 
-- **Workspace**: 8 crates (`tisvlay-core`, `tisvlay-lg`, `tisvlay-backends`, `tisvlayd`, `tisvlay-cli`, `tisvlay-session`, `tisvlay-tray`, `tisvlay-core` D-Bus integration test)
-- **Test count**: ~10 unit tests scattered across `config.rs`, `wol.rs`, `pairing.rs`, `capabilities.rs`, `error.rs`, `dbus_paths.rs`, `discovery.rs`, `lib.rs`, `state.rs`, `netlink.rs`. One integration test (`tisvlay-core/tests/dbus_client.rs`) using a mock zbus interface.
-- **Test runner**: `cargo test --workspace --all-features` (built-in)
-- **CI**: `.github/workflows/ci.yml` runs prek (file checks + fmt) then build/clippy/test directly. No coverage, no test reports, no nextest.
-- **Local pre-commit**: `prek.toml` with the same checks.
-- **No coverage measurement**, no benchmark infrastructure, no mock backend, no property tests.
+**Phases 1–6 complete.** The framework is in place:
+- Ratchet coverage at 20.24% lines (baseline 19%)
+- 94 tests pass in <1s via nextest; JUnit XML published via dorny/test-reporter
+- insta snapshots pin the `TvInfo` wire format
+- rstest converts three flat test functions into 7 labelled cases
+- proptest runs ~1,800 randomised inputs across 7 properties
+- tisvlay-mock crate implements the full `TvBackend` / `TvConnector` / `TvConnection` surface with push-state subscriptions
+
+**Phase 7 deferred** until the repo becomes public (the only remaining work is uncommenting the Codecov upload block). Phases **A** and **B** below are the natural follow-ups now that the mock backend exists.
 
 ## Design principles
 
@@ -44,177 +47,201 @@ This is the "ratchet" approach from the primer. It pressures new code to come wi
 | Parameterized tests | unit/integration tests | every change | `rstest` |
 | Snapshot tests | `crates/*/tests/snapshots/` | every change | `insta` |
 | Property tests | inside unit/integration tests | every change | `proptest` |
-| Mock backend tests | `crates/tisvlay-mock/` | every change | new crate |
+| Mock backend tests | `crates/tisvlay-mock/` + `tisvlay-backends/tests/` | every change | mock crate |
 | Fuzzing | `fuzz/` (future) | scheduled | `cargo-fuzz` |
-
-The first three are free (built-in). The next four are the immediate additions. The last is future work.
 
 ### 3. Single test runner: `cargo-nextest`
 
-Switch from `cargo test` to `cargo nextest`. Reasons:
-- Process-per-test isolation matters because the daemon code uses global state (D-Bus, netlink, file paths)
-- JUnit XML output for inline PR test results in GitHub Actions
-- Faster than `cargo test` on cold runs
-- Configurable per-profile (`default` for local, `ci` for CI)
-
-Keep `cargo test` working as a fallback (nextest doesn't support doc tests directly — those still need `cargo test --doc`).
+Process-per-test isolation matters because the daemon code uses global state (D-Bus, netlink, file paths). JUnit XML output for inline PR test results. Faster than `cargo test` on cold runs. Doc tests still run through `cargo test --doc` because nextest doesn't support them.
 
 ### 4. Keep it transport-agnostic and vendor-agnostic
 
-The same architecture lessons from the daemon apply: test layers should not know about specific vendors. The mock backend (future) implements `TvBackend`/`TvConnector`/`TvConnection` so any test that exercises the daemon can swap LG for the mock without changes. Tests of vendor-specific code stay in the vendor crate.
+The same architecture lessons from the daemon apply: test layers should not know about specific vendors. The mock backend implements `TvBackend`/`TvConnector`/`TvConnection` so any test that exercises the daemon can swap LG for the mock without changes.
 
 ### 5. LLM-friendly conventions
 
-- **Predictable test layout**: unit tests in `mod tests`, integration tests in `tests/`, snapshot files in `tests/snapshots/`. No magic.
-- **Snapshot tests** (insta) for anything with structured output (config parsing, D-Bus message format, CLI output). LLMs can generate these confidently because the assertion is "the output matched the recorded version."
-- **Fast feedback**: full test suite in under 30s; coverage report in under 60s. Slow tests get marked `#[ignore]` and run on demand.
-- **Test names describe behavior**, not method names: `nm_disconnect_does_not_affect_other_nics` not `test_disconnect`.
-- **`cargo nextest --profile ci` outputs JUnit XML** which LLMs can parse from CI logs to identify exactly which test broke.
+- Predictable test layout: unit tests in `mod tests`, integration tests in `tests/`, snapshot files in `tests/snapshots/`. No magic.
+- Snapshot tests for anything with structured output (config parsing, D-Bus message format, CLI output)
+- Fast feedback: full test suite in under 30s; coverage report in under 60s
+- Test names describe behavior, not method names: `nm_disconnect_does_not_affect_other_nics` not `test_disconnect`
+- `cargo nextest --profile ci` outputs JUnit XML which LLMs can parse from CI logs to identify exactly which test broke
 
 ## Implementation plan
 
-### Phase 1: Coverage measurement (immediate)
+### Phase 1 — Coverage measurement ✅ complete
 
-**Goal**: see where the gaps are.
+Set up `cargo-llvm-cov` with ratchet check. Baseline measured at 19.59% → currently 20.24% lines. `just cov`, `just cov-html`, `just cov-lcov`, `just cov-ratchet` recipes. Codecov upload block pre-written but commented out until the repo is public.
 
-1. Add `cargo-llvm-cov` install instructions to `.claude/CLAUDE.md`
-2. Add `coverage` task to `.vscode/tasks.json` for local HTML reports
-3. Add `scripts/coverage.sh` for the standard ratchet command
-4. Generate baseline coverage report and record it as the initial threshold (e.g., `--fail-under-lines N`)
-5. Add a coverage workflow with the Codecov upload step **pre-written but commented out**. Enabling it later is a one-line uncomment once the repo is public.
+### Phase 2 — Test runner upgrade (`cargo-nextest`) ✅ complete
 
-**No code changes required** beyond CI/scripts. This phase just establishes measurement.
+Installed via flake + `taiki-e/install-action`. `.config/nextest.toml` with `default` and `ci` profiles. CI uses `just test-ci` which runs nextest under coverage instrumentation and publishes JUnit XML via `dorny/test-reporter@v3` with `list-suites: failed` / `list-tests: failed`. Doc tests run separately via `cargo test --doc`.
 
-**Files**:
-- `.github/workflows/coverage.yml` (new) — runs `cargo llvm-cov` with ratchet check; Codecov upload block commented
-- `.claude/CLAUDE.md` — add "Running coverage" section
-- `scripts/coverage.sh` (new) — local coverage helper
+### Phase 3 — Snapshot tests (`insta`) ✅ complete
 
-### Phase 2: Test runner upgrade (`cargo-nextest`)
+`insta` in workspace dev-deps, `cargo-insta` in flake. Three snapshot tests in `crates/tisvlay-core/tests/tv_info_snapshot.rs` pin the `TvInfo` wire format (connected / disconnected / list shapes). `just test-snapshot-review` and `just test-snapshot-accept` for the review workflow.
 
-**Goal**: better test isolation and CI reporting.
+### Phase 4 — Parameterized tests (`rstest`) ✅ complete
 
-1. Add `.config/nextest.toml` with `default` and `ci` profiles
-2. Update `prek.toml` to use `cargo nextest run` for the test hook
-3. Update `.github/workflows/ci.yml`:
-   - Install `cargo-nextest` via `taiki-e/install-action`
-   - Run `cargo nextest run --profile ci` instead of `cargo test`
-   - Add `dorny/test-reporter` to display JUnit results inline on PRs
-4. Keep `cargo test --doc` as a separate step for doc tests (nextest doesn't run them)
-5. Document the workflow in `.claude/CLAUDE.md`
+`rstest` in workspace dev-deps (la10736/rstest 0.26). Three flat `tv_path` tests consolidated into one `#[rstest]` with 7 labelled cases, adding coverage for four edge cases that weren't worth writing separately before.
 
-**No source code changes** — existing `#[test]` and `#[tokio::test]` functions work unchanged.
+### Phase 5 — Property tests (`proptest`) ✅ complete
 
-**Files**:
-- `.config/nextest.toml` (new)
-- `.github/workflows/ci.yml` (modified)
-- `prek.toml` (modified)
-- `.claude/CLAUDE.md` (modified)
+`proptest` in workspace dev-deps. Three properties on `tv_path` (suffix validity, char count preservation, valid-input passthrough) and four on `MacAddress` (parse/display roundtrip, separator equivalence, case insensitivity, length rejection). Each proptest runs 256 random inputs per invocation, ~1,800 distinct cases total.
 
-### Phase 3: Snapshot test infrastructure (`insta`)
+### Phase 6 — Mock backend skeleton ✅ complete
 
-**Goal**: cheap regression tests for structured output.
+`crates/tisvlay-mock/` implements the full trait surface with an in-memory state machine:
+- `MockBackend` — vendor metadata (`Capabilities::ALL`)
+- `MockConnector` — `Transport::Network`, `survives_source_ip_change() -> false` (matches LG), stub pairing that completes instantly
+- `MockConnection` — `Arc<Mutex<TvState>>` backing, real `subscribe_state()` pushing cumulative snapshots on every mutation (matches LG's SSAP model)
+- `MockVendorConfig` — configurable initial state
 
-1. Add `insta` to workspace dev-dependencies
-2. Add a single example snapshot test to demonstrate the pattern (e.g., `TvInfo` JSON serialization in the CLI crate)
-3. Document the workflow: `cargo insta test`, `cargo insta review`, `cargo insta accept`
-4. Add `cargo-insta` to the install instructions
+Gated behind the `mock` Cargo feature on `tisvlay-backends` (default-off in release, default-on in workspace `--all-features` dev/test builds). Distro package build (`cargo build -p tisvlayd`) links zero mock code. Six integration tests at `crates/tisvlay-backends/tests/mock_backend.rs` cover registration, transport semantics, state mutation, push subscription pipeline, input validation, and power_off lifecycle.
 
-**Files**:
-- `Cargo.toml` (workspace) — add `insta` to workspace deps
-- one example snapshot test demonstrating the pattern
-- `.claude/CLAUDE.md` — add snapshot workflow section
+### Phase 7 — CI integration polish (deferred)
 
-### Phase 4: Parameterized tests (`rstest`)
+**Deferred until the repo becomes public.** The only remaining work is uncommenting the Codecov upload block in `.github/workflows/ci.yml` (one-line change). Test workflow already publishes JUnit XML; coverage workflow already enforces the ratchet; permissions and action versions are up to date.
 
-**Goal**: table-driven tests without boilerplate, with per-case failure reporting.
+### Phase A — Discovery + pairing user story (next)
 
-1. Add `rstest` to workspace dev-dependencies
-2. Convert 1-2 existing tests that would benefit (e.g., `tv_path` sanitization cases, config parsing variants) as demonstrations
-3. Document the `#[rstest]` + `#[case(...)]` pattern
+**Goal**: extend the mock backend to support device discovery and failure-mode pairing so the entire "new user pairs their first TV" flow can be tested end-to-end.
 
-`rstest` generates a separate test function per `#[case]`, so failures report exactly which input broke. Complements `proptest` (property tests discover edge cases; parameterized tests pin known cases).
+**Scope**:
 
-**Files**:
-- `Cargo.toml` (workspace) — add `rstest`
-- 1-2 example parameterized tests in existing crates
-- `.claude/CLAUDE.md` — add parameterized test section
+1. **`MockDiscovery`** implementing `TvDiscovery`. Reads the list of discoverable TVs from a test fixture so different tests can configure different networks.
+   - Fixture format TBD (env var? TOML file? `MockDiscoveryConfig` struct?) — see open questions below
+2. **Register in `create_registry`** under the `mock` feature, alongside the connector
+3. **`MockPairingMode`** enum on `MockConnector` allowing tests to exercise:
+   - `Accept` — current behavior (completes instantly with dummy credentials)
+   - `Reject` — returns `PairingError::rejected()` to simulate the user pressing "no" on the TV remote
+   - `Timeout` — returns `PairingError::timeout()` after a configurable delay
+   - `DelayedAccept(Duration)` — useful for testing UX behavior during a slow accept
+4. **Integration tests** covering the user stories:
+   - Discover → pair → save config → connect (the happy path)
+   - Discover → pair → user rejects → error surfaces correctly
+   - Discover → pair → timeout → error surfaces correctly
+   - Discover empty network → clear "no TVs found" behavior
+   - Multiple TVs discovered → pick one
+5. **CLI snapshot test** for `tisvlay pair` output via `insta-cmd`
 
-### Phase 5: Property test infrastructure (`proptest`)
-
-**Goal**: edge-case discovery for input-handling code.
-
-1. Add `proptest` to workspace dev-dependencies
-2. Identify 1-2 functions that benefit from property testing as initial demonstrations:
-   - `dbus_paths::tv_path` sanitization (any input → valid D-Bus path)
-   - `wol::MacAddress` parsing (roundtrip stability)
-3. Add a `tests/proptest-regressions/` ignore note if generated
-4. Document the pattern
+**What this unlocks**:
+- The pairing wizard becomes testable without hardware
+- Future GUI pairing dialog has a regression suite
+- Error-path CLI output is snapshotted
 
 **Files**:
-- `Cargo.toml` (workspace) — add `proptest`
-- 1-2 example proptest in existing crates
-- `.claude/CLAUDE.md` — add property test section
+- `crates/tisvlay-mock/src/discovery.rs` (new)
+- `crates/tisvlay-mock/src/connector.rs` — add pairing mode state
+- `crates/tisvlay-backends/src/lib.rs` — register `MockDiscovery`
+- `crates/tisvlay-backends/tests/mock_discovery.rs` (new) — integration tests
+- `crates/tisvlay-cli/tests/pair_snapshot.rs` (new) — CLI snapshot test
+- `.claude/CLAUDE.md` — document the pairing failure modes
 
-### Phase 6: Mock backend skeleton (foundation, no tests yet)
+**Estimated effort**: ~1-2 focused sessions.
 
-**Goal**: lay the groundwork for future feature development without committing to the full mock yet.
+### Phase B — Daemon integration tests (larger)
 
-1. Create `crates/tisvlay-mock/` crate (published to crates.io alongside the other tisvlay crates)
-2. Implement minimal `TvBackend`, `TvConnector`, `TvConnection` returning sensible defaults (power state, volume, etc. as in-memory state)
-3. Make it discoverable via `tisvlay-backends`, gated behind a `mock` Cargo feature (default-off)
-4. Add one integration test that exercises the daemon end-to-end with the mock backend
-5. Document its purpose and how to extend it
+**Goal**: test the daemon's core flows (profile dispatch, multi-TV orchestration, D-Bus contract) against mock TVs, in-process, without needing a real D-Bus session.
 
-**Distribution**:
-- **Distro packages (.deb, .rpm, NixOS module)**: build without `mock` → smaller binary, no unused vendor surface
-- **Dev/test builds**: `mock` enabled via workspace-level dev-dependencies → always available in tests
-- **Users who want to try without hardware**: `cargo install tisvlay --features mock` from crates.io
-- **Matches Home Assistant's "demo" integration pattern**: always present in the codebase, opt-in for deployment
+**Scope**:
 
-This is the foundation for testing high-level features (UX/UI, GUI client) without requiring a real TV. **Defer** until phases 1-5 prove the framework is working.
+1. **Test harness helper** in `crates/tisvlayd/tests/common/`:
+   - Loads a test config from a fixture directory
+   - Boots `TvManager` in-process with mock TVs
+   - Optionally registers the D-Bus interfaces on a temporary session bus (using `zbus::connection::Builder::session()`)
+   - Exposes the `TvManager` and a scoped D-Bus connection to tests
+   - Tears down cleanly
+
+2. **TvManager unit tests** exercising the currently-0%-covered dispatch code in `tv_manager.rs`:
+   - Profile resolution (`on_startup`, `on_shutdown`, `on_sleep`, `on_wake`, `on_session_lock`, `on_session_unlock`, `on_idle_timeout`, `on_idle_resume`, `on_no_session`) against mock TVs
+   - `Automated` gate composition (managed × automate_when × primary_input × current_input)
+   - Multi-TV concurrent operations (two mocks with different profiles respond independently)
+   - `SetTvOption` for `managed`, `name`, `profile.system`, `primary_input`
+   - Config reload live-updating property cache
+
+3. **D-Bus contract tests** (most ambitious):
+   - Spawn the daemon's D-Bus interfaces on a temp session bus
+   - Connect a `DaemonClient` from `tisvlay-core` to it
+   - Drive mock TVs via the client, assert state changes propagate through the real D-Bus layer
+   - This is the test shape that currently exists only in `tisvlay-core/tests/dbus_client.rs` (for name-watch behavior) — we'd extend it to cover the full Tv1.* interface surface
+   - Would catch regressions in the `InterfaceRef::get_mut()` property cache and `PropertiesChanged` signal emission
+
+4. **Session service integration tests**:
+   - Spin up the session service against a daemon backed by mocks
+   - Inject logind `PrepareForSleep(true)` signals
+   - Assert the right `SessionAction` fires on the right TVs
+   - Covers the user profile resolution and event replay paths
+
+5. **StateWatcher integration** (tests for the watcher we extracted in the earlier branch):
+   - Test that the tray's `StateWatcher` correctly reflects daemon state changes
+   - Mock daemon emits PropertiesChanged → watcher debounces → emits DaemonStateChanged event
+
+**What this unlocks**:
+- Profile dispatch code goes from 0% coverage to well-covered
+- The D-Bus contract becomes a first-class tested interface
+- Regressions in the session service event flow surface in CI, not in user reports
+- Refactors of `TvManager` become safe
 
 **Files**:
-- `crates/tisvlay-mock/` (new crate)
-- `crates/tisvlay-backends/Cargo.toml` (modified) — add `mock` feature
-- One integration test in `crates/tisvlayd/tests/`
+- `crates/tisvlayd/tests/common/mod.rs` (new) — harness
+- `crates/tisvlayd/tests/profile_dispatch.rs` (new)
+- `crates/tisvlayd/tests/automated_gate.rs` (new)
+- `crates/tisvlayd/tests/dbus_contract.rs` (new)
+- `crates/tisvlayd/tests/concurrent_tvs.rs` (new)
+- `crates/tisvlay-session/tests/session_events.rs` (new)
+- `crates/tisvlay-tray/tests/state_watcher.rs` (new)
 
-### Phase 7: CI integration polish
+**Estimated effort**: 1-2 weeks of focused work. This is where the coverage numbers jump significantly because `tv_manager.rs`, `logind.rs`, `session_dbus.rs`, and `session_monitor.rs` are currently all at 0%.
 
-**Goal**: tighten the feedback loop on PRs.
-
-1. Coverage workflow uploads to Codecov on PRs (uncomment the pre-written block once the repo is public)
-2. Test workflow uploads JUnit XML for inline PR results
-3. Coverage check uses `--fail-under-lines` set to the ratchet baseline
-4. Optional: separate "fast tier" and "thorough tier" workflows per primer recommendation
-
-**Files**: `.github/workflows/*.yml`
+**Prerequisites**:
+- Phase A complete (so the mock supports the full range of scenarios these tests need)
+- Some refactoring of `TvManager` to expose test hooks (e.g., injectable clocks for timeout testing) — scope TBD as we go
 
 ## Out of scope (for now)
 
 These belong in a future plan once the framework is established:
 
-- **Mutation testing** (`cargo-mutants`) — too slow and noisy until the basic test suite has good coverage
-- **Fuzzing** (`cargo-fuzz`) — requires clear "input parsing" entry points; defer until we have something worth fuzzing
+- **Mutation testing** (`cargo-mutants`) — worth running once Phase B lands and coverage jumps; too noisy until then
+- **Fuzzing** (`cargo-fuzz`) — needs clear input-parsing entry points; defer until something obvious emerges
 - **Benchmark infrastructure** (`criterion`, `bencher`) — performance is not a current concern for tisvlay
-- **Mutation testing alongside coverage** — wait for the test suite to be more complete first
 - **`cargo-deny` / `cargo-audit`** — separate concern from testing; tracked elsewhere
 
 ## Decisions
 
-1. **Codecov**: pre-write the upload step in the coverage workflow, leave it commented out. Enable with a one-line uncomment once the repo is public.
-2. **Mock backend**: new crate `crates/tisvlay-mock/`, published to crates.io alongside the other tisvlay crates, gated behind a `mock` Cargo feature in `tisvlay-backends` (default-off in release builds, default-on in workspace dev-dependencies).
-3. **Parameterized tests**: adopt `rstest` as its own phase. Complements proptest (pins known cases vs. discovers unknown ones).
-4. **Coverage baseline**: measured in phase 1, used as the ratchet floor thereafter. No arbitrary target.
+1. **Codecov**: pre-written, commented out. Enable with a one-line uncomment once the repo is public.
+2. **Mock backend**: published to crates.io alongside the other tisvlay crates, gated behind a `mock` Cargo feature. Default-off in release, default-on in workspace dev-deps.
+3. **Parameterized tests**: `rstest` as its own phase, complementing proptest.
+4. **Coverage baseline**: measured in phase 1, used as the ratchet floor. No arbitrary target.
 
-## Implementation order
+## Open questions for Phase A & B
 
-Phases are ordered to give value early and minimize risk:
+1. **Mock discovery fixture format**: how should `MockDiscovery` know what TVs to return? Options:
+   - **Env var** (simplest): `TISVLAY_MOCK_DISCOVERY_TVS=id1:addr1,id2:addr2`. Easy to set per-test. Downside: flat key-value, no way to configure failure modes per TV.
+   - **Global state** (`once_cell::Lazy<Mutex<...>>` inside the mock crate): tests call a helper to register discoverable TVs. Clean in-process API but order-sensitive if tests run in parallel.
+   - **Test fixture TOML file**: e.g., `tests/fixtures/discovery/<scenario>.toml` loaded from an env var pointing at the path. Most flexible but most files.
+   - **`MockDiscoveryConfig` struct** in `MockConnector::new_with_config(...)`: clean API but requires each test to construct its own registry rather than using `create_registry()`.
 
-1. **Phase 1** (coverage) is pure infrastructure with no code changes — lowest risk, highest information value
-2. **Phase 2** (nextest) is a one-time switch with immediate CI improvements
-3. **Phase 3** (insta), **Phase 4** (rstest), and **Phase 5** (proptest) can happen in parallel — all additive
-4. **Phase 6** (mock backend) requires phases 1-5 to validate the framework is solid
-5. **Phase 7** (CI polish) is iterative throughout
+2. **Pairing failure modes** — should the mode be set per-connector (test-wide) or per-connection (per-TV)? Per-TV is more realistic but more complex. I'd lean per-TV by reading it from the vendor config (`mock.pairing_mode = "reject"`), which gives each test fixture fine control.
 
-Do phase 1 first, evaluate coverage results, and decide whether to proceed with phases 2-5 in parallel or sequentially based on what the coverage report reveals.
+3. **D-Bus contract tests** — do we register the daemon's interfaces on a **session bus** or the **system bus**? Session bus is easier (no root, no polkit), but the production daemon uses the system bus. I'd lean **session bus** for tests (matches what `--session` dev mode does) and accept the small divergence from prod.
+
+4. **Test isolation for D-Bus contract tests** — running multiple D-Bus tests in parallel risks name collisions on the session bus. We can either:
+   - Mark them `#[serial]` via the `serial_test` crate
+   - Use unique service names per test (`org.tisvlay.test.<uuid>.Daemon`)
+   - Configure nextest to run D-Bus tests in their own test group with `test-threads = 1`
+   - The last option is cleanest (nextest supports per-test-group concurrency limits)
+
+5. **Phase A first or Phase B first?** Phase A is small and self-contained. Phase B is larger and more valuable (it's where the coverage numbers actually improve). I'd lean **Phase A first** because:
+   - It's a small wins that validates the mock is extensible
+   - Phase B's D-Bus contract tests need pairing to work anyway
+   - The `MockPairingMode` affordances it adds are reusable by Phase B's tests
+
+## Implementation order for A & B
+
+1. **Phase A.1**: `MockDiscovery` + `create_registry` wiring (smallest increment)
+2. **Phase A.2**: `MockPairingMode` + per-mode tests
+3. **Phase A.3**: CLI pair snapshot test (`insta-cmd`)
+4. **Phase B.1**: `TvManager` harness + profile dispatch tests (biggest coverage win)
+5. **Phase B.2**: `Automated` gate composition tests
+6. **Phase B.3**: D-Bus contract tests (most complex, most valuable for refactoring safety)
+7. **Phase B.4**: Session service + tray integration tests
