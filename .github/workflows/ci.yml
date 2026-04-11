@@ -47,9 +47,6 @@ jobs:
             --skip clippy
             --skip test
 
-      - name: Build
-        run: just build
-
       - name: Clippy
         run: just clippy
 
