@@ -41,6 +41,7 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             cargo-llvm-cov
+            cargo-nextest
             just
             linuxConsoleTools
             lldb

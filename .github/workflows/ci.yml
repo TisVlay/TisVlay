@@ -21,10 +21,10 @@ jobs:
       - name: Toolchain
         run: rustup show
 
-      - name: Install just
+      - name: Install just and cargo-nextest
         uses: taiki-e/install-action@v2
         with:
-          tool: just
+          tool: just,cargo-nextest
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -45,4 +45,13 @@ jobs:
         run: just clippy
 
       - name: Test
-        run: just test
+        run: just test-ci
+
+      - name: Report
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Tests
+          path: target/nextest/ci/junit.xml
+          reporter: java-junit
+          fail-on-error: false

@@ -210,11 +210,12 @@ single source of truth. prek hooks, VSCode tasks, and CI workflows all
 dispatch through `just` so command strings are defined in exactly one place.
 
 ```bash
-just              # list all recipes
+just              # list all recipes, grouped by purpose
 just check        # fmt + build + clippy + test (all fast checks)
 just build        # cargo build --profile test --workspace --all-targets --all-features
 just clippy       # cargo clippy ... -- -D warnings
-just test         # cargo test --workspace --all-features
+just test         # cargo nextest run + cargo test --doc
+just test-ci      # nextest with the 'ci' profile (JUnit XML output)
 just daemon-start # start tisvlayd on the session bus (dev mode)
 just cov          # coverage summary
 just cov-ratchet  # coverage ratchet check (CI)
@@ -268,6 +269,28 @@ cargo workspace-unused-pub
 
 Not in the `prek` pipeline (requires rust-analyzer, slower than clippy). Run periodically
 after major refactors to catch orphaned public API surface.
+
+### Testing
+
+Tests run through [`cargo-nextest`](https://nexte.st/), a parallel test
+runner with process-per-test isolation. It replaces `cargo test` for all
+compiled tests. Doc tests still use `cargo test --doc` because nextest
+doesn't run them yet.
+
+```bash
+just test     # cargo nextest run (workspace, all features) + doc tests
+just test-ci  # same but with the 'ci' profile (JUnit XML, retry once)
+```
+
+Configuration lives in `.config/nextest.toml` with two profiles:
+- `default` — local use, no retries, warn on tests >60s
+- `ci` — CI use, retry once (transient D-Bus flakes), JUnit XML output
+  at `target/nextest/ci/junit.xml` for PR inline test results via
+  `dorny/test-reporter`
+
+Process-per-test isolation matters here because the daemon code uses
+global state (D-Bus, netlink, file paths) — `cargo test`'s shared-process
+model would have tests stepping on each other.
 
 ### Test Coverage
 

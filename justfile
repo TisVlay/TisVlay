@@ -27,10 +27,17 @@ build:
 clippy:
     cargo clippy --profile test --workspace --all-targets --all-features -- -D warnings
 
-# Run the test suite
+# Run the test suite with cargo-nextest (parallel, process-per-test isolation)
 [group('check')]
 test:
-    cargo test --workspace --all-features
+    cargo nextest run --workspace --all-features
+    cargo test --workspace --all-features --doc
+
+# Run the test suite with the CI profile (JUnit XML output, retry once)
+[group('check')]
+test-ci:
+    cargo nextest run --workspace --all-features --profile ci
+    cargo test --workspace --all-features --doc
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
