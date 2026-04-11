@@ -27,16 +27,16 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install cargo-llvm-cov
+      - name: Install just and cargo-llvm-cov
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov
+          tool: just,cargo-llvm-cov
 
       - name: Coverage (ratchet)
-        run: ./scripts/coverage.sh ratchet
+        run: just cov-ratchet
 
       - name: Coverage (lcov)
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+        run: just cov-lcov
 
       # TODO: Enable Codecov upload once the repository is public.
       # Codecov is free for OSS, gives PR diff annotations, and tracks

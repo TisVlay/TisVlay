@@ -21,6 +21,11 @@ jobs:
       - name: Toolchain
         run: rustup show
 
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
@@ -34,24 +39,10 @@ jobs:
             --skip cargo-test
 
       - name: Build
-        run: >-
-          cargo build
-          --profile test
-          --workspace
-          --all-targets
-          --all-features
+        run: just build
 
       - name: Clippy
-        run: >-
-          cargo clippy
-          --profile test
-          --workspace
-          --all-targets
-          --all-features
-          -- -D warnings
+        run: just clippy
 
       - name: Test
-        run: >-
-          cargo test
-          --workspace
-          --all-features
+        run: just test

@@ -4,13 +4,8 @@
         {
             "label": "daemon: start",
             "type": "shell",
-            "command": "cargo run --bin tisvlayd -- --session --config docs/configs/daemon.toml",
+            "command": "just daemon-start",
             "isBackground": true,
-            "options": {
-                "env": {
-                    "RUST_LOG": "debug,zbus=warn,rustls=warn,tungstenite=warn"
-                }
-            },
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -21,13 +16,8 @@
         {
             "label": "daemon: start (system bus)",
             "type": "shell",
-            "command": "cargo build --bin tisvlayd && sudo -E ./target/debug/tisvlayd --config docs/configs/daemon.toml",
+            "command": "just daemon-start-system",
             "isBackground": true,
-            "options": {
-                "env": {
-                    "RUST_LOG": "debug,zbus=warn,rustls=warn,tungstenite=warn"
-                }
-            },
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -38,13 +28,8 @@
         {
             "label": "session: start",
             "type": "shell",
-            "command": "cargo run --bin tisvlay-session -- --user --config docs/configs/session.toml",
+            "command": "just session-start",
             "isBackground": true,
-            "options": {
-                "env": {
-                    "RUST_LOG": "debug,zbus=warn"
-                }
-            },
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -55,13 +40,8 @@
         {
             "label": "session: start (system bus)",
             "type": "shell",
-            "command": "cargo run --bin tisvlay-session -- --config docs/configs/session.toml",
+            "command": "just session-start-system",
             "isBackground": true,
-            "options": {
-                "env": {
-                    "RUST_LOG": "debug,zbus=warn"
-                }
-            },
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -72,13 +52,8 @@
         {
             "label": "tray: start",
             "type": "shell",
-            "command": "cargo run --bin tisvlay-tray -- --user",
+            "command": "just tray-start",
             "isBackground": true,
-            "options": {
-                "env": {
-                    "RUST_LOG": "debug,zbus=warn,ksni=warn"
-                }
-            },
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -89,13 +64,8 @@
         {
             "label": "tray: start (system bus)",
             "type": "shell",
-            "command": "cargo run --bin tisvlay-tray",
+            "command": "just tray-start-system",
             "isBackground": true,
-            "options": {
-                "env": {
-                    "RUST_LOG": "debug,zbus=warn,ksni=warn"
-                }
-            },
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -118,7 +88,7 @@
         {
             "label": "all: stop",
             "type": "shell",
-            "command": "pkill -f 'target/debug/tisvlayd' ; pkill -f 'target/debug/tisvlay-session' ; pkill -f 'target/debug/tisvlay-tray' ; echo 'All stopped'",
+            "command": "just stop-all",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -128,7 +98,7 @@
         {
             "label": "cli: status",
             "type": "shell",
-            "command": "cargo run --bin tisvlay -- --user status",
+            "command": "just cli-status",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -138,7 +108,7 @@
         {
             "label": "package: build (musl)",
             "type": "shell",
-            "command": "rm -f target/release 2>/dev/null; cargo build --release --workspace --target x86_64-unknown-linux-musl && rm -rf target/release && ln -sf x86_64-unknown-linux-musl/release target/release",
+            "command": "just package-build-musl",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -148,8 +118,7 @@
         {
             "label": "package: deb",
             "type": "shell",
-            "command": "cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-musl -f deb",
-            "dependsOn": ["package: build (musl)"],
+            "command": "just package-deb",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -159,8 +128,7 @@
         {
             "label": "package: rpm",
             "type": "shell",
-            "command": "cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-musl -f rpm",
-            "dependsOn": ["package: build (musl)"],
+            "command": "just package-rpm",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -170,8 +138,7 @@
         {
             "label": "package: archlinux",
             "type": "shell",
-            "command": "cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-musl -f archlinux",
-            "dependsOn": ["package: build (musl)"],
+            "command": "just package-archlinux",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -180,14 +147,18 @@
         },
         {
             "label": "package: all",
-            "dependsOn": ["package: deb", "package: rpm", "package: archlinux"],
-            "dependsOrder": "parallel",
-            "problemMatcher": []
+            "type": "shell",
+            "command": "just package-all",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
         },
         {
             "label": "coverage: summary",
             "type": "shell",
-            "command": "./scripts/coverage.sh summary",
+            "command": "just cov",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -197,7 +168,7 @@
         {
             "label": "coverage: html",
             "type": "shell",
-            "command": "./scripts/coverage.sh html",
+            "command": "just cov-html",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -207,7 +178,7 @@
         {
             "label": "coverage: lcov",
             "type": "shell",
-            "command": "./scripts/coverage.sh lcov",
+            "command": "just cov-lcov",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -217,7 +188,7 @@
         {
             "label": "coverage: ratchet",
             "type": "shell",
-            "command": "./scripts/coverage.sh ratchet",
+            "command": "just cov-ratchet",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",

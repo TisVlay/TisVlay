@@ -203,14 +203,37 @@ This sets up:
 - `tisvlay-tray` user service (auto-starts on graphical session)
 - D-Bus policy and CLI in `$PATH`
 
+## Tasks & Commands (`just`)
+
+All project commands live in the `justfile` at the repo root — it is the
+single source of truth. prek hooks, VSCode tasks, and CI workflows all
+dispatch through `just` so command strings are defined in exactly one place.
+
+```bash
+just              # list all recipes
+just check        # fmt + build + clippy + test (all fast checks)
+just build        # cargo build --profile test --workspace --all-targets --all-features
+just clippy       # cargo clippy ... -- -D warnings
+just test         # cargo test --workspace --all-features
+just daemon-start # start tisvlayd on the session bus (dev mode)
+just cov          # coverage summary
+just cov-ratchet  # coverage ratchet check (CI)
+just package-deb  # build the .deb package
+```
+
+`just` is provided by the Nix dev shell. Outside Nix, install with
+`cargo install just` or your distro package manager.
+
 ## Linting & CI
 
-All checks are defined in `prek.toml` (single source of truth). Hooks are ordered by priority:
+All checks are defined in `prek.toml`, which dispatches to `just` recipes.
+Hooks are ordered by priority:
+
 - **0**: file checks (trailing whitespace, EOF, TOML/YAML validation, merge conflicts, large files)
-- **1**: `cargo fmt`
-- **2**: `cargo build --profile test --workspace --all-targets --all-features`
-- **3**: `cargo clippy --profile test --workspace --all-targets --all-features`
-- **4**: `cargo test --workspace --all-features`
+- **1**: `just fmt`
+- **2**: `just build` (test profile, all targets, all features)
+- **3**: `just clippy` (warnings denied)
+- **4**: `just test`
 
 Build and clippy use `--profile test` so `cargo test` reuses all build artifacts with zero recompilation.
 
@@ -224,7 +247,7 @@ prek run -a --skip cargo-build --skip cargo-clippy --skip cargo-test
 # Run a specific hook
 prek run -a cargo-clippy
 
-# CI runs file checks via prek, then build/clippy/test directly for live output
+# CI runs file checks via prek, then just build/clippy/test directly for live output
 ```
 
 ### Dead Code Detection
@@ -252,21 +275,14 @@ not lower the workspace baseline. The Nix dev shell provides `cargo-llvm-cov`,
 `llvm-cov`, and `llvm-profdata` (matching `rustc`'s LLVM 21).
 
 ```bash
-# Text summary
-./scripts/coverage.sh summary
-
-# HTML report (opens in browser)
-./scripts/coverage.sh html
-
-# Generate lcov.info for VS Code Coverage Gutters
-./scripts/coverage.sh lcov
-
-# Ratchet check — fails if below baseline (used by CI)
-./scripts/coverage.sh ratchet
+just cov          # text summary
+just cov-html     # HTML report, opens in browser
+just cov-lcov     # write lcov.info for VS Code Coverage Gutters
+just cov-ratchet  # fails if below baseline (used by CI)
 ```
 
-The baseline lives in `scripts/coverage.sh` (`BASELINE_LINES`). Bump it on PRs
-that improve coverage; never lower it. CI runs `coverage: ratchet` on every PR
+The baseline lives in the `justfile` as `cov_baseline_lines`. Bump it on PRs
+that improve coverage; never lower it. CI runs `just cov-ratchet` on every PR
 via `.github/workflows/coverage.yml`.
 
 Outside the Nix dev shell, install with `cargo install cargo-llvm-cov` and
