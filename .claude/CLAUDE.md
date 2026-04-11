@@ -319,6 +319,49 @@ readable; without it you get `case_1`, `case_2`, etc.
 
 See `crates/tisvlay-core/src/dbus_paths.rs` for a working example.
 
+#### Property tests ([`proptest`](https://proptest-rs.github.io/proptest/))
+
+Where `rstest` pins known cases, `proptest` discovers unknown ones. It
+generates random inputs matching a type or regex spec, runs the test,
+shrinks any failing input to a minimal reproduction, and records
+failing seeds so regressions replay on future runs.
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    /// The sanitized suffix must only contain valid D-Bus path characters.
+    #[test]
+    fn tv_path_suffix_is_valid(tv_id in ".*") {
+        let path = tv_path(&tv_id);
+        let suffix = path.strip_prefix(&format!("{}/", TV_BASE_PATH)).unwrap();
+        prop_assert!(suffix.chars().all(|c| c.is_alphanumeric() || c == '_'));
+    }
+
+    /// Parse/Display roundtrip: any 6 random bytes → Display → parse → same bytes.
+    #[test]
+    fn mac_parse_display_roundtrip(bytes in any::<[u8; 6]>()) {
+        let original = MacAddress(bytes);
+        let parsed = MacAddress::parse(&original.to_string()).unwrap();
+        prop_assert_eq!(parsed, original);
+    }
+}
+```
+
+Key patterns:
+- **Regex input specs** (`"[A-Za-z0-9_]+"`, `".*"`) for string inputs
+- **`any::<T>()`** for arbitrary values of any type with an `Arbitrary` impl
+- **`prop_assert!` / `prop_assert_eq!`** instead of `assert!` inside `proptest!` blocks — they cooperate with shrinking
+- Each test runs **256 cases by default**; increase with `#[proptest_config(ProptestConfig::with_cases(N))]`
+
+When a proptest fails, proptest writes a `.proptest-regressions` file
+next to the source with the failing seed. **Commit these files** — they
+ensure the same failing input is replayed on future runs, turning the
+discovery into a regression test.
+
+See `crates/tisvlay-core/src/dbus_paths.rs` and `crates/tisvlay-core/src/wol.rs`
+for working examples.
+
 #### Snapshot tests ([`insta`](https://insta.rs/))
 
 Snapshot tests compare generated output against a saved reference file.

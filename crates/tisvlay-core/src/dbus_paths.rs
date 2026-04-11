@@ -45,6 +45,7 @@ pub fn tv_path(tv_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use rstest::rstest;
 
     #[rstest]
@@ -57,5 +58,35 @@ mod tests {
     #[case::all_alphanumeric("LivingRoom42", "/org/tisvlay/Tv/LivingRoom42")]
     fn tv_path_sanitization(#[case] tv_id: &str, #[case] expected: &str) {
         assert_eq!(tv_path(tv_id), expected);
+    }
+
+    proptest! {
+        /// The sanitized suffix must only contain valid D-Bus object path
+        /// component characters: alphanumerics or underscore.
+        #[test]
+        fn tv_path_suffix_is_valid(tv_id in ".*") {
+            let path = tv_path(&tv_id);
+            let suffix = path.strip_prefix(&format!("{}/", TV_BASE_PATH)).unwrap();
+            prop_assert!(
+                suffix.chars().all(|c| c.is_alphanumeric() || c == '_'),
+                "suffix {:?} contains invalid D-Bus path characters", suffix
+            );
+        }
+
+        /// The sanitized suffix has the same character count as the input
+        /// (one replacement per bad character, never dropped or added).
+        #[test]
+        fn tv_path_preserves_char_count(tv_id in ".*") {
+            let path = tv_path(&tv_id);
+            let suffix = path.strip_prefix(&format!("{}/", TV_BASE_PATH)).unwrap();
+            prop_assert_eq!(suffix.chars().count(), tv_id.chars().count());
+        }
+
+        /// Already-valid inputs (alphanumeric + underscore) pass through unchanged.
+        #[test]
+        fn tv_path_valid_input_unchanged(tv_id in "[A-Za-z0-9_]+") {
+            let path = tv_path(&tv_id);
+            prop_assert_eq!(path, format!("{}/{}", TV_BASE_PATH, tv_id));
+        }
     }
 }

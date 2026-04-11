@@ -82,6 +82,7 @@ tisvlay-backends = { path = "crates/tisvlay-backends" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml"] }
+proptest = "1"
 rstest = "0.26"
 
 [workspace.metadata.deb]
