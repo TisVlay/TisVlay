@@ -227,13 +227,14 @@ just package-deb  # build the .deb package
 ## Linting & CI
 
 All checks are defined in `prek.toml`, which dispatches to `just` recipes.
-Hooks are ordered by priority:
+Hook ids match the corresponding `just` recipe names. Hooks are ordered by
+priority:
 
 - **0**: file checks (trailing whitespace, EOF, TOML/YAML validation, merge conflicts, large files)
-- **1**: `just fmt`
-- **2**: `just build` (test profile, all targets, all features)
-- **3**: `just clippy` (warnings denied)
-- **4**: `just test`
+- **1**: `fmt` → `just fmt`
+- **2**: `build` → `just build` (test profile, all targets, all features)
+- **3**: `clippy` → `just clippy` (warnings denied)
+- **4**: `test` → `just test`
 
 Build and clippy use `--profile test` so `cargo test` reuses all build artifacts with zero recompilation.
 
@@ -242,10 +243,10 @@ Build and clippy use `--profile test` so `cargo test` reuses all build artifacts
 prek run -a
 
 # Run only fast file checks + fmt (skip compilation)
-prek run -a --skip cargo-build --skip cargo-clippy --skip cargo-test
+prek run -a --skip build --skip clippy --skip test
 
 # Run a specific hook
-prek run -a cargo-clippy
+prek run -a clippy
 
 # CI runs file checks via prek, then just build/clippy/test directly for live output
 ```

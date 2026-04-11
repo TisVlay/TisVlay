@@ -34,9 +34,9 @@ jobs:
         with:
           extra-args: >-
             --all-files
-            --skip cargo-build
-            --skip cargo-clippy
-            --skip cargo-test
+            --skip build
+            --skip clippy
+            --skip test
 
       - name: Build
         run: just build
