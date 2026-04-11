@@ -294,6 +294,31 @@ Process-per-test isolation matters here because the daemon code uses
 global state (D-Bus, netlink, file paths) — `cargo test`'s shared-process
 model would have tests stepping on each other.
 
+#### Parameterized tests ([`rstest`](https://docs.rs/rstest/))
+
+`rstest` lets you write one test function that runs against many inputs,
+each case reported as a separate test. Use it when you'd otherwise write
+multiple near-identical `#[test]` functions with different inputs.
+
+```rust
+use rstest::rstest;
+
+#[rstest]
+#[case::simple("living_room", "/org/tisvlay/Tv/living_room")]
+#[case::with_dash("living-room", "/org/tisvlay/Tv/living_room")]
+#[case::with_space("living room", "/org/tisvlay/Tv/living_room")]
+fn tv_path_sanitization(#[case] tv_id: &str, #[case] expected: &str) {
+    assert_eq!(tv_path(tv_id), expected);
+}
+```
+
+nextest reports each case individually (`tv_path_sanitization::case_1_simple`,
+`case_2_with_dash`, etc.), so a failure points directly at the failing
+input. The `::label` after `#[case` is optional but makes failures more
+readable; without it you get `case_1`, `case_2`, etc.
+
+See `crates/tisvlay-core/src/dbus_paths.rs` for a working example.
+
 #### Snapshot tests ([`insta`](https://insta.rs/))
 
 Snapshot tests compare generated output against a saved reference file.

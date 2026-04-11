@@ -45,19 +45,17 @@ pub fn tv_path(tv_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn test_tv_path_simple() {
-        assert_eq!(tv_path("living_room"), "/org/tisvlay/Tv/living_room");
-    }
-
-    #[test]
-    fn test_tv_path_with_dash() {
-        assert_eq!(tv_path("living-room"), "/org/tisvlay/Tv/living_room");
-    }
-
-    #[test]
-    fn test_tv_path_with_spaces() {
-        assert_eq!(tv_path("living room"), "/org/tisvlay/Tv/living_room");
+    #[rstest]
+    #[case::simple("living_room", "/org/tisvlay/Tv/living_room")]
+    #[case::with_dash("living-room", "/org/tisvlay/Tv/living_room")]
+    #[case::with_space("living room", "/org/tisvlay/Tv/living_room")]
+    #[case::with_dot("living.room", "/org/tisvlay/Tv/living_room")]
+    #[case::multiple_bad("living!@#room", "/org/tisvlay/Tv/living___room")]
+    #[case::numeric("tv1", "/org/tisvlay/Tv/tv1")]
+    #[case::all_alphanumeric("LivingRoom42", "/org/tisvlay/Tv/LivingRoom42")]
+    fn tv_path_sanitization(#[case] tv_id: &str, #[case] expected: &str) {
+        assert_eq!(tv_path(tv_id), expected);
     }
 }
