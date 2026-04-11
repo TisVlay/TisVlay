@@ -21,10 +21,12 @@ jobs:
       - name: Toolchain
         run: rustup show
 
-      - name: Install just and cargo-nextest
+      - name: Setup
         uses: taiki-e/install-action@v2
         with:
-          tool: just,cargo-nextest
+          tool: |
+            cargo-nextest
+            just
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
