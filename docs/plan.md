@@ -41,12 +41,13 @@ This is the "ratchet" approach from the primer. It pressures new code to come wi
 | Unit tests | `#[cfg(test)] mod tests` inside source | every change | built-in |
 | Integration tests | `crates/*/tests/` | every change | built-in |
 | Doc tests | `///` examples in `pub` items | every change | built-in |
+| Parameterized tests | unit/integration tests | every change | `rstest` |
 | Snapshot tests | `crates/*/tests/snapshots/` | every change | `insta` |
-| Property tests | inside unit/integration tests | every change | `proptest` (existing ecosystem fit) |
-| Mock backend tests | `crates/tisvlay-mock/` (future) | every change | custom |
+| Property tests | inside unit/integration tests | every change | `proptest` |
+| Mock backend tests | `crates/tisvlay-mock/` | every change | new crate |
 | Fuzzing | `fuzz/` (future) | scheduled | `cargo-fuzz` |
 
-The first three are free (built-in). The next three are the immediate additions. The last is future work.
+The first three are free (built-in). The next four are the immediate additions. The last is future work.
 
 ### 3. Single test runner: `cargo-nextest`
 
@@ -78,16 +79,16 @@ The same architecture lessons from the daemon apply: test layers should not know
 
 1. Add `cargo-llvm-cov` install instructions to `.claude/CLAUDE.md`
 2. Add `coverage` task to `.vscode/tasks.json` for local HTML reports
-3. Add `make coverage` script (or similar) for the standard ratchet command
-4. Generate baseline coverage report and commit it as the initial threshold
-5. Add Codecov upload step to CI (optional — defer if Codecov account not desired)
+3. Add `scripts/coverage.sh` for the standard ratchet command
+4. Generate baseline coverage report and record it as the initial threshold (e.g., `--fail-under-lines N`)
+5. Add a coverage workflow with the Codecov upload step **pre-written but commented out**. Enabling it later is a one-line uncomment once the repo is public.
 
 **No code changes required** beyond CI/scripts. This phase just establishes measurement.
 
 **Files**:
-- `.github/workflows/coverage.yml` (new) — separate workflow for coverage
+- `.github/workflows/coverage.yml` (new) — runs `cargo llvm-cov` with ratchet check; Codecov upload block commented
 - `.claude/CLAUDE.md` — add "Running coverage" section
-- `scripts/coverage.sh` (new, optional) — local coverage helper
+- `scripts/coverage.sh` (new) — local coverage helper
 
 ### Phase 2: Test runner upgrade (`cargo-nextest`)
 
@@ -124,7 +125,22 @@ The same architecture lessons from the daemon apply: test layers should not know
 - one example snapshot test demonstrating the pattern
 - `.claude/CLAUDE.md` — add snapshot workflow section
 
-### Phase 4: Property test infrastructure (`proptest`)
+### Phase 4: Parameterized tests (`rstest`)
+
+**Goal**: table-driven tests without boilerplate, with per-case failure reporting.
+
+1. Add `rstest` to workspace dev-dependencies
+2. Convert 1-2 existing tests that would benefit (e.g., `tv_path` sanitization cases, config parsing variants) as demonstrations
+3. Document the `#[rstest]` + `#[case(...)]` pattern
+
+`rstest` generates a separate test function per `#[case]`, so failures report exactly which input broke. Complements `proptest` (property tests discover edge cases; parameterized tests pin known cases).
+
+**Files**:
+- `Cargo.toml` (workspace) — add `rstest`
+- 1-2 example parameterized tests in existing crates
+- `.claude/CLAUDE.md` — add parameterized test section
+
+### Phase 5: Property test infrastructure (`proptest`)
 
 **Goal**: edge-case discovery for input-handling code.
 
@@ -140,30 +156,36 @@ The same architecture lessons from the daemon apply: test layers should not know
 - 1-2 example proptest in existing crates
 - `.claude/CLAUDE.md` — add property test section
 
-### Phase 5: Mock backend skeleton (foundation, no tests yet)
+### Phase 6: Mock backend skeleton (foundation, no tests yet)
 
 **Goal**: lay the groundwork for future feature development without committing to the full mock yet.
 
-1. Create `crates/tisvlay-mock/` crate
+1. Create `crates/tisvlay-mock/` crate (published to crates.io alongside the other tisvlay crates)
 2. Implement minimal `TvBackend`, `TvConnector`, `TvConnection` returning sensible defaults (power state, volume, etc. as in-memory state)
-3. Make it discoverable via `tisvlay-backends` (gated behind a `mock` feature)
+3. Make it discoverable via `tisvlay-backends`, gated behind a `mock` Cargo feature (default-off)
 4. Add one integration test that exercises the daemon end-to-end with the mock backend
 5. Document its purpose and how to extend it
 
-This is the foundation for testing high-level features (UX/UI, GUI client) without requiring a real TV. **Defer** until phases 1-4 prove the framework is working.
+**Distribution**:
+- **Distro packages (.deb, .rpm, NixOS module)**: build without `mock` → smaller binary, no unused vendor surface
+- **Dev/test builds**: `mock` enabled via workspace-level dev-dependencies → always available in tests
+- **Users who want to try without hardware**: `cargo install tisvlay --features mock` from crates.io
+- **Matches Home Assistant's "demo" integration pattern**: always present in the codebase, opt-in for deployment
+
+This is the foundation for testing high-level features (UX/UI, GUI client) without requiring a real TV. **Defer** until phases 1-5 prove the framework is working.
 
 **Files**:
 - `crates/tisvlay-mock/` (new crate)
 - `crates/tisvlay-backends/Cargo.toml` (modified) — add `mock` feature
 - One integration test in `crates/tisvlayd/tests/`
 
-### Phase 6: CI integration polish
+### Phase 7: CI integration polish
 
 **Goal**: tighten the feedback loop on PRs.
 
-1. Coverage workflow uploads to Codecov on PRs (with diff annotations)
+1. Coverage workflow uploads to Codecov on PRs (uncomment the pre-written block once the repo is public)
 2. Test workflow uploads JUnit XML for inline PR results
-3. Coverage check uses `--fail-under-lines` set to baseline
+3. Coverage check uses `--fail-under-lines` set to the ratchet baseline
 4. Optional: separate "fast tier" and "thorough tier" workflows per primer recommendation
 
 **Files**: `.github/workflows/*.yml`
@@ -178,12 +200,12 @@ These belong in a future plan once the framework is established:
 - **Mutation testing alongside coverage** — wait for the test suite to be more complete first
 - **`cargo-deny` / `cargo-audit`** — separate concern from testing; tracked elsewhere
 
-## Open questions
+## Decisions
 
-1. **Codecov vs self-hosted vs no service?** Codecov is free for OSS and gives PR annotations. The tradeoff is depending on a third-party service. Defer the decision: run coverage in CI without uploading first, then decide.
-2. **Where does the mock backend live?** New crate `tisvlay-mock` vs feature flag on an existing crate. New crate is cleaner for the dependency graph but adds workspace overhead. The plan assumes new crate.
-3. **Should we adopt `rstest` for parameterized tests?** Useful for table-driven tests but adds a dependency. Defer until we have a concrete use case.
-4. **What's the coverage baseline target?** Cannot know until phase 1 completes. The ratchet approach handles this — start where we are.
+1. **Codecov**: pre-write the upload step in the coverage workflow, leave it commented out. Enable with a one-line uncomment once the repo is public.
+2. **Mock backend**: new crate `crates/tisvlay-mock/`, published to crates.io alongside the other tisvlay crates, gated behind a `mock` Cargo feature in `tisvlay-backends` (default-off in release builds, default-on in workspace dev-dependencies).
+3. **Parameterized tests**: adopt `rstest` as its own phase. Complements proptest (pins known cases vs. discovers unknown ones).
+4. **Coverage baseline**: measured in phase 1, used as the ratchet floor thereafter. No arbitrary target.
 
 ## Implementation order
 
@@ -191,8 +213,8 @@ Phases are ordered to give value early and minimize risk:
 
 1. **Phase 1** (coverage) is pure infrastructure with no code changes — lowest risk, highest information value
 2. **Phase 2** (nextest) is a one-time switch with immediate CI improvements
-3. **Phase 3** (insta) and **Phase 4** (proptest) can happen in parallel — both are additive
-4. **Phase 5** (mock backend) requires phases 1-4 to validate the framework is solid
-5. **Phase 6** (CI polish) is iterative throughout
+3. **Phase 3** (insta), **Phase 4** (rstest), and **Phase 5** (proptest) can happen in parallel — all additive
+4. **Phase 6** (mock backend) requires phases 1-5 to validate the framework is solid
+5. **Phase 7** (CI polish) is iterative throughout
 
-Do phase 1 first, evaluate coverage results, and decide whether to proceed with phases 2-4 in parallel or sequentially based on what the coverage report reveals.
+Do phase 1 first, evaluate coverage results, and decide whether to proceed with phases 2-5 in parallel or sequentially based on what the coverage report reveals.
