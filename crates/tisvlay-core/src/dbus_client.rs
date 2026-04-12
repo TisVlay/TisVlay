@@ -515,7 +515,14 @@ impl DaemonClient {
     }
 
     /// Create a client from an existing D-Bus connection.
-    async fn from_connection(connection: zbus::Connection) -> Result<Self> {
+    ///
+    /// Use this when the connection has been built explicitly (e.g.,
+    /// via [`zbus::connection::Builder::address`] in tests pointing at
+    /// a private `dbus-daemon`). Going through `Builder::address`
+    /// bypasses the per-process `OnceCell` cache that
+    /// [`zbus::Connection::session`] / `system` use, so each test gets
+    /// an isolated connection.
+    pub async fn from_connection(connection: zbus::Connection) -> Result<Self> {
         let manager = TisvlayManagerProxy::builder(&connection)
             .destination(DAEMON_SERVICE)?
             .path(MANAGER_PATH)?
@@ -1219,9 +1226,31 @@ impl StateWatcher {
     /// Uses `daemon.connection()` to derive the correct bus for the daemon
     /// name watch. Session service watching always uses the session bus.
     pub async fn new(daemon: &DaemonClient, config: StateWatcherConfig) -> Result<Self> {
+        let session_bus = zbus::Connection::session().await.ok();
+        Self::from_connections(daemon.connection(), session_bus.as_ref(), config).await
+    }
+
+    /// Create a watcher from explicit daemon and session connections.
+    ///
+    /// `daemon_conn` is used for `PropertiesChanged` / `ObjectManager` /
+    /// `Manager1` signal subscriptions and the daemon name watch.
+    /// `session_conn` is used for session-service name watching and
+    /// `UserProfileChanged` signals; pass `None` to skip session watching.
+    ///
+    /// In tests, both arguments can point at the same private bus —
+    /// the daemon and session-service registrations live on one bus
+    /// and the watcher subscribes to both via the same connection.
+    /// In production, [`StateWatcher::new`] supplies the system bus
+    /// (or session bus in dev mode) for the daemon and the user
+    /// session bus for the session service.
+    pub async fn from_connections(
+        daemon_conn: &zbus::Connection,
+        session_conn: Option<&zbus::Connection>,
+        config: StateWatcherConfig,
+    ) -> Result<Self> {
         use crate::dbus_paths::{SESSION_INTERFACE, SESSION_PATH, SESSION_SERVICE};
 
-        let conn = daemon.connection();
+        let conn = daemon_conn;
 
         // --- Daemon state signals ---
 
@@ -1300,11 +1329,9 @@ impl StateWatcher {
                 }
             };
 
-        // --- Session name watch (always session bus) ---
-        let session_bus = zbus::Connection::session().await.ok();
-
+        // --- Session name watch ---
         let session_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>> =
-            match &session_bus {
+            match session_conn {
                 Some(sconn) => match watch_service(sconn, SESSION_SERVICE).await {
                     Ok(stream) => Some(Box::pin(stream)),
                     Err(e) => {
@@ -1317,7 +1344,7 @@ impl StateWatcher {
 
         // --- Session UserProfileChanged signals ---
         let session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>> =
-            match &session_bus {
+            match session_conn {
                 Some(sconn) => {
                     let rule = format!(
                         "type='signal',sender='{}',interface='{}',member='UserProfileChanged',path='{}'",
