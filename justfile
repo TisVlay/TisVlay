@@ -61,7 +61,7 @@ test-snapshot-accept:
 # --- Coverage -----------------------------------------------------------
 
 # Baseline line-coverage percentage. Bump on PRs that improve coverage.
-cov_baseline_lines := "36"
+cov_baseline_lines := "40"
 
 # Text summary of workspace coverage (uses nextest for process-per-test
 # isolation — some tests share a private dbus-daemon and are flaky under
