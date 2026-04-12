@@ -103,16 +103,16 @@ async fn pair_with_rejected_pairing_returns_error() {
     assert!(tvs.is_empty(), "rejected TV should not be in list");
 }
 
-/// Regression test for https://github.com/ruffsl/tisvlay/issues/XXX
+/// Regression test for https://github.com/ruffsl/TisVlay/issues/21
 ///
 /// After pairing, the D-Bus properties should reflect the mock's actual
 /// state (volume=30, backlight=80, input=HDMI_1, power=active), not
 /// zeroed defaults (volume=0, backlight=0, input="", power="unknown").
 ///
-/// The bug: `register_tv_interfaces()` creates D-Bus interface structs
+/// The bug: `register_tv_interfaces()` created D-Bus interface structs
 /// with hardcoded defaults, and the initial subscription updates from
-/// `subscribe_state()` arrive before the interfaces are registered, so
-/// the state-change forwarder silently drops them.
+/// `subscribe_state()` arrived before the interfaces were registered,
+/// so the state-change forwarder silently dropped them.
 #[tokio::test]
 async fn pair_state_reflects_mock_defaults_not_zeroed() {
     let (daemon, client) = empty_daemon().await;
