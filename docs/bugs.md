@@ -4,3 +4,4 @@
 - [`RemoveTv` still derives TV ID from D-Bus path](bugs/remove-tv-derives-id-from-path.md) — open
 - [`TvManager::pair_tv` has no timeout on `wait_for_completion`](bugs/pair-tv-no-timeout.md) — open
 - [Session event handler `last_action` cache survives daemon reconnects](bugs/last-action-cache-survives-reconnect.md) — open
+- [Newly paired TV has zeroed D-Bus properties until next subscription update](bugs/paired-tv-initial-state-zeroed.md) — open
