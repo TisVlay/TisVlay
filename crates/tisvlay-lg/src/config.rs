@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// ```toml
 /// [[tv]]
-/// id = "living-room"
+/// id = "living_room"
 /// name = "Living Room TV"
 /// vendor = "lg"
 ///

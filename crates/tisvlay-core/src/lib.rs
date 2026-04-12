@@ -76,9 +76,9 @@ pub use pairing::{
 
 // Configuration
 pub use config::{
-    AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
-    SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment,
+    is_valid_tv_id, tv_id_from_name, AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile,
+    SessionAction, SystemConfig, SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment,
+    UserConfig, UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment,
 };
 
 // State

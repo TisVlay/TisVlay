@@ -23,7 +23,7 @@
 //! on_session_unlock = "screen_on"
 //!
 //! [[tv]]
-//! id = "living-room"
+//! id = "living_room"
 //! name = "Living Room TV"
 //! vendor = "lg"
 //! primary_input = "HDMI_1"
@@ -49,7 +49,7 @@
 //! idle_timeout_seconds = 0
 //!
 //! [[tv]]
-//! id = "living-room"
+//! id = "living_room"
 //! profile.user = "gaming"
 //! ```
 
@@ -503,9 +503,33 @@ fn default_profile_name() -> String {
 /// (boot WoL, session events, shutdown). Unmanaged TVs remain available for
 /// manual control via the tray and CLI but are skipped by all event-driven paths.
 ///
+/// Check whether a TV ID is valid for use in D-Bus object paths.
+///
+/// Valid IDs contain only ASCII alphanumerics and underscores
+/// (`[A-Za-z0-9_]`). This ensures the ID can be used directly as a
+/// D-Bus object path component without lossy sanitization.
+pub fn is_valid_tv_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Generate a D-Bus-safe TV ID from a display name.
+///
+/// Lowercases, replaces whitespace with `_`, and strips anything
+/// outside `[a-z0-9_]`. The result is always a valid TV ID.
+pub fn tv_id_from_name(name: &str) -> String {
+    name.to_lowercase()
+        .replace(' ', "_")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvConfig {
     /// Unique identifier for this TV.
+    ///
+    /// Must match `[A-Za-z0-9_]+` so it can be used as a D-Bus object
+    /// path component without lossy sanitization.
     pub id: String,
 
     /// Display name.
@@ -636,6 +660,9 @@ impl SystemConfig {
     }
 
     /// Load configuration from a specific path.
+    ///
+    /// Validates TV IDs and checks for D-Bus path collisions after
+    /// deserialization.
     pub fn load_from(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
@@ -643,6 +670,7 @@ impl SystemConfig {
 
         let content = std::fs::read_to_string(path)?;
         let config: SystemConfig = toml::from_str(&content)?;
+        config.validate_tv_ids()?;
         Ok(config)
     }
 
@@ -669,6 +697,35 @@ impl SystemConfig {
     /// Returns `/var/lib/tisvlay/config.toml`.
     pub fn system_config_path() -> PathBuf {
         PathBuf::from("/var/lib/tisvlay/config.toml")
+    }
+
+    /// Validate all TV IDs are D-Bus-safe and unique.
+    ///
+    /// Called after deserialization to catch invalid or colliding IDs
+    /// before they hit the D-Bus path sanitizer.
+    pub fn validate_tv_ids(&self) -> Result<()> {
+        let mut seen = std::collections::HashMap::<&str, usize>::new();
+        for (i, tv) in self.tv.iter().enumerate() {
+            if !is_valid_tv_id(&tv.id) {
+                let suggestion = tv_id_from_name(&tv.id);
+                return Err(Error::ConfigValidation(format!(
+                    "TV ID '{}' contains characters not allowed in D-Bus paths. \
+                     Only ASCII alphanumerics and underscores are valid. \
+                     Suggestion: use '{}'",
+                    tv.id, suggestion,
+                )));
+            }
+            if let Some(&prev) = seen.get(tv.id.as_str()) {
+                return Err(Error::ConfigValidation(format!(
+                    "Duplicate TV ID '{}' (entries {} and {})",
+                    tv.id,
+                    prev + 1,
+                    i + 1,
+                )));
+            }
+            seen.insert(&tv.id, i);
+        }
+        Ok(())
     }
 
     /// Find a TV by ID.
@@ -958,7 +1015,7 @@ on_session_lock = "none"
 idle_timeout_seconds = 0
 
 [[tv]]
-id = "living-room"
+id = "living_room"
 name = "Living Room TV"
 vendor = "lg"
 primary_input = "HDMI_1"
@@ -1005,7 +1062,7 @@ on_session_lock = "screen_off"
 idle_timeout_seconds = 300
 
 [[tv]]
-id = "living-room"
+id = "living_room"
 name = "Living Room G4"
 vendor = "lg"
 primary_input = "HDMI_1"
@@ -1057,7 +1114,7 @@ on_session_lock = "none"
 idle_timeout_seconds = 0
 
 [[tv]]
-id = "living-room"
+id = "living_room"
 name = "Living Room"
 vendor = "lg"
 managed = true
@@ -1068,7 +1125,7 @@ profile.user = "gaming"
 ip = "192.168.1.100"
 
 [[tv]]
-id = "guest-room"
+id = "guest_room"
 name = "Guest Room"
 vendor = "lg"
 managed = true
@@ -1082,10 +1139,10 @@ ip = "192.168.1.101"
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.tv.len(), 2);
 
-        let living = config.tv.iter().find(|t| t.id == "living-room").unwrap();
+        let living = config.tv.iter().find(|t| t.id == "living_room").unwrap();
         assert_eq!(living.profile.system, "default");
 
-        let guest = config.tv.iter().find(|t| t.id == "guest-room").unwrap();
+        let guest = config.tv.iter().find(|t| t.id == "guest_room").unwrap();
         assert_eq!(guest.profile.system, "guest");
 
         // System profile resolution works
@@ -1105,14 +1162,14 @@ ip = "192.168.1.101"
         let living_user = user_config
             .tv
             .iter()
-            .find(|t| t.id == "living-room")
+            .find(|t| t.id == "living_room")
             .unwrap();
         assert_eq!(living_user.profile.user, "gaming");
 
         let guest_user = user_config
             .tv
             .iter()
-            .find(|t| t.id == "guest-room")
+            .find(|t| t.id == "guest_room")
             .unwrap();
         assert_eq!(guest_user.profile.user, "default"); // not specified, defaults
     }
@@ -1301,13 +1358,13 @@ ip = "192.168.1.101"
         );
 
         // TV with default profile
-        let tv_default = TvConfig::new("living-room", "Living Room", "lg", true);
+        let tv_default = TvConfig::new("living_room", "Living Room", "lg", true);
         let resolved = config.resolve_system_profile(&tv_default);
         assert_eq!(resolved.on_startup, SessionAction::PowerOn);
         assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
 
         // TV with guest profile
-        let mut tv_guest = TvConfig::new("guest-room", "Guest Room", "lg", true);
+        let mut tv_guest = TvConfig::new("guest_room", "Guest Room", "lg", true);
         tv_guest.profile.system = "guest".to_string();
         let resolved = config.resolve_system_profile(&tv_guest);
         assert_eq!(resolved.on_startup, SessionAction::None);
@@ -1340,7 +1397,7 @@ ip = "192.168.1.101"
 on_startup = "power_on"
 
 [[tv]]
-id = "living-room"
+id = "living_room"
 name = "Living Room"
 vendor = "lg"
 managed = true
@@ -1473,14 +1530,14 @@ on_session_lock = "none"
 idle_timeout_seconds = 0
 
 [[tv]]
-id = "living-room"
+id = "living_room"
 profile.user = "gaming"
 "#;
 
         let config: UserConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.user.profiles.len(), 2);
         assert_eq!(config.tv.len(), 1);
-        assert_eq!(config.tv[0].id, "living-room");
+        assert_eq!(config.tv[0].id, "living_room");
         assert_eq!(config.tv[0].profile.user, "gaming");
     }
 
@@ -1501,9 +1558,9 @@ profile.user = "gaming"
                 ..UserProfileConfig::default()
             },
         );
-        user.set_tv_user_profile("living-room", "gaming");
+        user.set_tv_user_profile("living_room", "gaming");
 
-        let resolved = user.resolve_user_profile("living-room", &system_default);
+        let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None); // user gaming
         assert_eq!(resolved.idle_timeout_seconds, 300); // inherited from system
     }
@@ -1572,9 +1629,9 @@ profile.user = "gaming"
                 ..UserProfileConfig::default()
             },
         );
-        user.set_tv_user_profile("living-room", "gaming");
+        user.set_tv_user_profile("living_room", "gaming");
 
-        let resolved = user.resolve_user_profile("living-room", &system_default);
+        let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None); // gaming
         assert_eq!(resolved.idle_timeout_seconds, 600); // user default (not system 100)
     }
@@ -1582,9 +1639,9 @@ profile.user = "gaming"
     #[test]
     fn test_user_config_get_tv_user_profile_name() {
         let mut user = UserConfig::default();
-        user.set_tv_user_profile("living-room", "gaming");
+        user.set_tv_user_profile("living_room", "gaming");
 
-        assert_eq!(user.get_tv_user_profile_name("living-room"), "gaming");
+        assert_eq!(user.get_tv_user_profile_name("living_room"), "gaming");
         assert_eq!(user.get_tv_user_profile_name("office"), "default");
     }
 
@@ -1599,7 +1656,7 @@ profile.user = "gaming"
                 ..UserProfileConfig::default()
             },
         );
-        user.set_tv_user_profile("living-room", "gaming");
+        user.set_tv_user_profile("living_room", "gaming");
 
         let serialized = toml::to_string_pretty(&user).unwrap();
         let deserialized: UserConfig = toml::from_str(&serialized).unwrap();
@@ -1612,7 +1669,7 @@ profile.user = "gaming"
         let living = deserialized
             .tv
             .iter()
-            .find(|t| t.id == "living-room")
+            .find(|t| t.id == "living_room")
             .unwrap();
         assert_eq!(living.profile.user, "gaming");
     }
@@ -1824,7 +1881,7 @@ idle_timeout_seconds = 600
 on_session_lock = "none"
 
 [[tv]]
-id = "living-room"
+id = "living_room"
 profile.user = "gaming"
 "#;
 
@@ -1832,7 +1889,7 @@ profile.user = "gaming"
         assert_eq!(config.user.profiles.len(), 2);
         assert!(config.user.profiles.contains_key("default"));
         assert!(config.user.profiles.contains_key("gaming"));
-        let living = config.tv.iter().find(|t| t.id == "living-room").unwrap();
+        let living = config.tv.iter().find(|t| t.id == "living_room").unwrap();
         assert_eq!(living.profile.user, "gaming");
     }
 
@@ -1912,9 +1969,9 @@ ip = "192.168.1.1"
                 ..UserProfileConfig::default()
             },
         );
-        user.set_tv_user_profile("living-room", "nonexistent");
+        user.set_tv_user_profile("living_room", "nonexistent");
 
-        let resolved = user.resolve_user_profile("living-room", &system_default);
+        let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.idle_timeout_seconds, 600);
         assert_eq!(resolved.on_session_lock, SessionAction::ScreenOff);
     }
@@ -1943,8 +2000,74 @@ ip = "192.168.1.1"
         assert_eq!(resolved.idle_timeout_seconds, 300);
         assert_eq!(resolved.on_session_unlock, SessionAction::ScreenOn);
 
-        let resolved_unknown = user.resolve_user_profile("other-tv", &system_default);
+        let resolved_unknown = user.resolve_user_profile("other_tv", &system_default);
         assert_eq!(resolved_unknown.on_session_lock, SessionAction::ScreenOff);
         assert_eq!(resolved_unknown.idle_timeout_seconds, 300);
+    }
+
+    // =========================================================================
+    // TV ID validation
+    // =========================================================================
+
+    #[test]
+    fn test_is_valid_tv_id() {
+        assert!(is_valid_tv_id("living_room"));
+        assert!(is_valid_tv_id("tv1"));
+        assert!(is_valid_tv_id("LivingRoom42"));
+        assert!(!is_valid_tv_id("living-room"));
+        assert!(!is_valid_tv_id("living room"));
+        assert!(!is_valid_tv_id("living.room"));
+        assert!(!is_valid_tv_id(""));
+    }
+
+    #[test]
+    fn test_tv_id_from_name() {
+        assert_eq!(tv_id_from_name("Living Room"), "living_room");
+        assert_eq!(tv_id_from_name("Office TV"), "office_tv");
+        assert_eq!(tv_id_from_name("Bedroom"), "bedroom");
+        assert_eq!(tv_id_from_name("My TV #2"), "my_tv_2");
+    }
+
+    #[test]
+    fn test_validate_rejects_hyphenated_id() {
+        let mut config = SystemConfig::default();
+        config
+            .tv
+            .push(TvConfig::new("living-room", "Living Room", "lg", true));
+        let err = config.validate_tv_ids().unwrap_err();
+        assert!(
+            err.to_string().contains("living-room"),
+            "error should name the invalid ID: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_ids() {
+        let mut config = SystemConfig::default();
+        config
+            .tv
+            .push(TvConfig::new("living_room", "Living Room", "lg", true));
+        config
+            .tv
+            .push(TvConfig::new("living_room", "Office", "lg", true));
+        let err = config.validate_tv_ids().unwrap_err();
+        assert!(
+            err.to_string().contains("Duplicate"),
+            "error should say duplicate: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_accepts_valid_ids() {
+        let mut config = SystemConfig::default();
+        config
+            .tv
+            .push(TvConfig::new("living_room", "Living Room", "lg", true));
+        config
+            .tv
+            .push(TvConfig::new("office", "Office", "lg", true));
+        config.validate_tv_ids().unwrap();
     }
 }

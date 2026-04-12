@@ -93,14 +93,14 @@ trait TisvlayManager {
     /// Add a TV.
     /// config_json: vendor-specific connection parameters as JSON
     /// managed: whether the TV participates in automation
-    /// Returns: TV object path
+    /// Returns: (object_path, tv_id)
     fn add_tv(
         &self,
         name: &str,
         vendor: &str,
         config_json: &str,
         managed: bool,
-    ) -> zbus::Result<OwnedObjectPath>;
+    ) -> zbus::Result<(OwnedObjectPath, String)>;
 
     /// Remove a TV.
     fn remove_tv(&self, tv_path: &OwnedObjectPath) -> zbus::Result<()>;
@@ -819,19 +819,14 @@ impl DaemonClient {
         managed: bool,
     ) -> Result<String> {
         debug!(name = %name, vendor = %vendor, managed = %managed, "Pairing TV via daemon");
-        let path = self
+        // AddTv returns (object_path, tv_id). We use the canonical TV ID
+        // directly — never derive an ID from the D-Bus path, since the
+        // path sanitizer is lossy (see docs/bugs.md).
+        let (_path, tv_id) = self
             .manager
             .add_tv(name, vendor, config_json, managed)
             .await
             .with_context(|| format!("Failed to pair TV '{}'", name))?;
-
-        // Extract TV ID from path
-        let tv_id = path
-            .as_str()
-            .rsplit('/')
-            .next()
-            .unwrap_or(path.as_str())
-            .to_string();
 
         Ok(tv_id)
     }

@@ -42,18 +42,15 @@ async fn pair_mock_tv_appears_in_tv_list() {
         .await
         .expect("pairing should succeed");
 
-    // The TV ID is derived from the name: "Living Room" → "living-room".
-    // DaemonClient::pair_tv() extracts the ID from the D-Bus object path
-    // (where '-' is sanitized to '_'), so it returns "living_room". The
-    // actual ID stored in TvManager is "living-room", which is what
-    // list_tvs() reports via the Tv1.Id property.
+    // ID is derived from name: "Living Room" → "living_room" (underscores,
+    // not hyphens). AddTv now returns the canonical ID directly, so it
+    // matches the Tv1.Id property from list_tvs().
     assert_eq!(tv_id, "living_room");
 
     // The paired TV should now appear in the list.
     let tvs = client.list_tvs().await.unwrap();
     assert_eq!(tvs.len(), 1);
-    // list_tvs reads the real Tv1.Id property, not the sanitized path.
-    assert_eq!(tvs[0].id, "living-room");
+    assert_eq!(tvs[0].id, "living_room");
     assert_eq!(tvs[0].name, "Living Room");
     assert_eq!(tvs[0].vendor, "mock");
     assert!(tvs[0].managed, "should be managed (we passed managed=true)");
@@ -67,26 +64,26 @@ async fn pair_then_control_screen() {
     daemon.handle().simulate_user_accept("mock://office");
 
     let config_json = r#"{"address": "mock://office"}"#;
-    let _path_id = client
+    let tv_id = client
         .pair_tv("Office TV", "mock", config_json, true)
         .await
         .unwrap();
+    assert_eq!(tv_id, "office_tv");
 
-    // Use the real TV ID from the property (not the path-sanitized one).
+    // Screen should default to on.
     let tvs = client.list_tvs().await.unwrap();
-    assert_eq!(tvs.len(), 1);
-    let tv_id = &tvs[0].id;
-    assert!(tvs[0].is_screen_on, "screen should default to on");
+    let tv = tvs.iter().find(|t| t.id == tv_id).unwrap();
+    assert!(tv.is_screen_on);
 
     // Turn screen off via D-Bus — proves the paired TV's interfaces
     // are registered and functional.
-    client.screen_off(tv_id).await.unwrap();
+    client.screen_off(&tv_id).await.unwrap();
 
     // Brief settle for state forwarder.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let tvs = client.list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == *tv_id).unwrap();
+    let tv = tvs.iter().find(|t| t.id == tv_id).unwrap();
     assert!(!tv.is_screen_on, "screen should be off after screen_off");
 }
 
@@ -113,10 +110,11 @@ async fn pair_unmanaged_tv() {
     daemon.handle().simulate_user_accept("mock://bedroom");
 
     let config_json = r#"{"address": "mock://bedroom"}"#;
-    let _path_id = client
+    let tv_id = client
         .pair_tv("Bedroom", "mock", config_json, false)
         .await
         .unwrap();
+    assert_eq!(tv_id, "bedroom");
 
     let tvs = client.list_tvs().await.unwrap();
     assert_eq!(tvs.len(), 1);

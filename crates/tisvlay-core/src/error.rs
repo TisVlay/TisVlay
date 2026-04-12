@@ -31,6 +31,10 @@ pub enum Error {
     #[error("Config error: {0}")]
     Config(#[from] toml::de::Error),
 
+    /// Configuration validation error (valid TOML but invalid semantics).
+    #[error("Config validation error: {0}")]
+    ConfigValidation(String),
+
     /// TV rejected the registration/pairing request.
     #[error("TV rejected pairing request")]
     PairingRejected,

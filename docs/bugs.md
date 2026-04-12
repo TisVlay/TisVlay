@@ -2,7 +2,7 @@
 
 ## TV ID / D-Bus path inconsistency
 
-**Status**: documented, fix planned  
+**Status**: fixed  
 **Severity**: medium — latent data-integrity risk, no user-facing symptoms yet  
 **Found by**: `pair_round_trip` integration tests (Phase C.3)
 
