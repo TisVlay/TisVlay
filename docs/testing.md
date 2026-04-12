@@ -500,7 +500,7 @@ TV IDs must match `[A-Za-z0-9_]+` — validated at config load time. This ensure
 - Config load rejects invalid IDs with a suggested fix
 - Duplicate IDs rejected at load time
 
-Background: see [docs/bugs.md](bugs.md#tv-id--d-bus-path-inconsistency).
+Background: see [ruffsl/TisVlay#22](https://github.com/ruffsl/TisVlay/issues/22).
 
 ## Known constraints
 
