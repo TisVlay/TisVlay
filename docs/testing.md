@@ -106,6 +106,24 @@ Compare generated output against saved reference files. Workflow:
 
 Snapshots live in `crates/*/tests/snapshots/`.
 
+### CLI snapshot tests (insta-cmd)
+
+`crates/tisvlay-cli/tests/pair_snapshot.rs` snapshots the `tisvlay pair` and `tisvlay list` CLI output. A `TestDaemon` runs in-process on the private bus; the CLI binary is spawned as a subprocess with `DBUS_SESSION_BUS_ADDRESS` pointing at the test bus.
+
+```rust
+assert_cmd_snapshot!(Command::new(cli_bin())
+    .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+    .arg("--user")
+    .arg("pair")
+    .arg("mock://living_room")
+    .arg("--vendor")
+    .arg("mock")
+    .arg("--name")
+    .arg("Living Room"));
+```
+
+These tests use `#[tokio::test(flavor = "multi_thread")]` because `assert_cmd_snapshot!` blocks the current thread with `std::process::Command::output()` — the TestDaemon's D-Bus server tasks need other threads to handle incoming calls from the subprocess.
+
 ## Coverage
 
 Measured with `cargo-llvm-cov`, ratcheted in CI.
