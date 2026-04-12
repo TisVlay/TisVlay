@@ -1,0 +1,24 @@
+---
+source: crates/tisvlay-cli/tests/pair_snapshot.rs
+info:
+  program: tisvlay
+  args:
+    - "--user"
+    - pair
+    - "mock://office"
+    - "--vendor"
+    - mock
+  env:
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/nix-shell.48rDG3/tisvlay-test-bus-2wfWBo/bus.sock,guid=ae3c125c5289e01d66c64ebc69dbde10"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Connecting to TV at mock://office...
+Please accept the pairing request on your TV.
+TV 'TV at mock://office' paired successfully with ID: tv_at_mockoffice
+
+Note: No wake ID (MAC address) provided. Wake-on-LAN will not work.
+You can update the MAC address in the config file.
+
+----- stderr -----

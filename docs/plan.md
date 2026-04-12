@@ -25,24 +25,13 @@
 | B.5 | `tracing-mock` observability regression tests |
 | C.1 | `tisvlay-session` lib+bin refactor, `TestSession` harness, `FakeScreenSaver` |
 | C.2 | Session service integration tests (lock/unlock/idle dispatch, Session1 D-Bus contract) |
+| C.3 | CLI pair snapshot tests via `insta-cmd` (happy path, reject, auto-name, list after pair) |
 
 ## Remaining work
 
 ### Phase 7 — Codecov upload (blocked: repo is private)
 
 Uncomment the upload block in `.github/workflows/ci.yml` once the repo goes public. One-line change; everything else is pre-wired.
-
-### Phase C.3 — CLI pair snapshot test
-
-Snapshot the `tisvlay pair` CLI output via `insta-cmd`.
-
-**Shape:** `TestDaemon` runs in-process on the private bus. The CLI binary is spawned as a subprocess with `DBUS_SESSION_BUS_ADDRESS` set to the test bus address. Output is snapshotted via `insta-cmd`.
-
-**File:** `crates/tisvlay-cli/tests/pair_snapshot.rs`
-
-**Prerequisite:** `insta-cmd` added to workspace dev-deps. TestDaemon already supports pairing round-trips via MockHandle.
-
-**Why deferred:** The CLI subprocess needs the daemon available on a bus address it can reach via env var. This is straightforward with the existing PrivateBus + TestDaemon infrastructure but hasn't been prioritized over higher-coverage items.
 
 ## Out of scope (for now)
 
