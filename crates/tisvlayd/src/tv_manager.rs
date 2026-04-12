@@ -238,7 +238,7 @@ pub struct TvManager {
 /// Used by `logind` and the daemon startup path to dispatch per-TV
 /// actions from each TV's resolved system profile.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum SystemEvent {
+pub enum SystemEvent {
     Startup,
     Shutdown,
     Reboot,

@@ -19,6 +19,12 @@ use tisvlay_core::{
     Capabilities, Credentials, DiscoveredTv, PairingSession, TvConfig, TvConnection, TvConnector,
 };
 
+// Re-export under the mock feature so consumers (e.g., the daemon
+// test harness) can name `MockHandle` without taking a direct dep on
+// the `tisvlay-mock` crate.
+#[cfg(feature = "mock")]
+pub use tisvlay_mock::MockHandle;
+
 /// Type-erased discovery function.
 ///
 /// Since `TvDiscovery` uses native `async fn` (not `#[async_trait]`) and is
