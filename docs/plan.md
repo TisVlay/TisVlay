@@ -215,31 +215,62 @@ These belong in a future plan once the framework is established:
 
 ## Phase A & B design decisions
 
-### 1. Mock discovery fixture format — typed struct, no shared state
+### 1 + 2. Unified `MockHandle` for discovery and pairing state
 
-`MockDiscoveryConfig` struct passed into a `create_test_registry(cfg)` helper. Each test builds its own registry instance, so there is no shared state and tests are fully parallel by construction. The production `create_registry()` stays simple and registers an empty-discovery mock. Rules out env vars, global mutexes, and on-disk fixtures — all of which would become serialization points under parallel execution.
+Both discovery and pairing are test-driven state-machine flows; they share the same architectural shape. Rather than a discovery config struct on one side and a simulate-user-action helper on the other, expose a single **`MockHandle`** that tests use to drive *both*:
 
-### 2. Pairing failure modes — timeline-driven state machine behind a config shorthand
+```rust
+// Test helper, not exported in production builds.
+pub fn create_test_registry() -> (BackendRegistry, MockHandle);
 
-Based on research of Home Assistant, OpenHAB, Matter SDK (connectedhomeip), libp2p, and bluez test harnesses:
+impl MockHandle {
+    // Discovery (Phase A.1)
+    pub fn publish_tv(&self, tv: DiscoveredTv);
+    pub fn clear_discovered(&self);
 
-- **User-facing config** is a simple shorthand in the vendor config:
-  ```toml
-  [tv.mock]
-  address = "mock://living_room"
-  pairing = "accept"   # or "reject" | "timeout" | "delayed_accept:500ms"
-  ```
-  Per-TV, so one test can mix accepting and rejecting TVs in the same flow.
+    // Pairing (Phase A.2/A.3)
+    pub fn simulate_user_accept(&self, tv_id: &str);
+    pub fn simulate_user_reject(&self, tv_id: &str);
+    pub fn simulate_pairing_timeout(&self, tv_id: &str);
+}
+```
 
-- **Under the hood**, pairing is a small explicit state machine (`Idle → Prompted → {Accepted, Rejected, TimedOut}`) driven by a scripted timeline (`Vec<Event>`). The config shorthand expands to a trivial timeline. This matches LG's real two-phase flow (`Response` → `Registered`) and means future scenarios ("accept, then disconnect after 2s, then reject re-pair") don't require new config keywords — they just need richer timeline syntax added later.
+Each test:
 
-- **Out-of-band user-action injection** is the underlying primitive: the mock exposes a test helper method like `simulate_user_accept()` / `simulate_user_reject()`. The config shorthand is sugar that auto-triggers these on a fixed schedule. For tests that want fine control (e.g., "accept the first re-pair, reject the second"), they call the helper directly.
+```rust
+let (registry, mock) = create_test_registry();
+mock.publish_tv(DiscoveredTv::new("lr", "Living Room", "mock://lr", "mock"));
 
-- **Deterministic timing** via `tokio::time::pause()` + `tokio::time::advance()`. No real sleeps in tests. No randomness.
+let tvs = registry.discover_tvs("mock", Duration::from_secs(1)).await?;
+// ... start pairing, then mock.simulate_user_accept("lr") to drive it ...
+```
 
-- **Phase A scope**: implement `"accept"` / `"reject"` / `"timeout"` shorthand + the underlying state machine + the simulate-user-action helper. Defer richer timeline syntax until we need it.
+**Why this shape**:
 
-- **What we skip**: the `fail` crate (overkill for a mock), randomized failures (belong in fuzz/soak, not unit tests), inline TOML timeline tables (nice to have, not needed yet).
+- **Symmetric mental model** — one handle, same idiom for discovery and pairing state. No "config struct here, test method there" split.
+- **Dynamic scenarios** become trivial: "discover, TV appears mid-session, re-discover" is natural with `publish_tv` called between calls; impossible with a static config.
+- **Fully parallel** — each test gets its own `(registry, handle)` pair. The handle holds an `Arc<Mutex<MockState>>` scoped to that registry instance. No global state, no env vars, no serialization points.
+- **Matches the research pattern** — Home Assistant's config_flow tests, bluez's simple-agent, and Matter's chip-tool all use injection at test time, not upfront config. The handle is the idiomatic shape for stateful test doubles in this space.
+
+**Config shorthand** on top of the handle — for tests that don't need fine-grained control, the vendor config accepts a pairing shorthand:
+
+```toml
+[tv.mock]
+address = "mock://living_room"
+pairing = "accept"   # or "reject" | "timeout" | "delayed_accept:500ms"
+```
+
+The shorthand auto-schedules the corresponding `simulate_user_*` call on a fixed timer, so simple tests don't have to touch the handle at all. Tests that need scripted sequences use the handle directly.
+
+**Under the hood**, pairing is modeled as a small explicit state machine (`Idle → Prompted → {Accepted, Rejected, TimedOut}`). This matches LG's real two-phase `Response` → `Registered` flow and makes future scenarios ("accept, then disconnect after 2s, then reject re-pair") a matter of richer timeline syntax rather than new config keywords.
+
+**Deterministic timing** via `tokio::time::pause()` + `tokio::time::advance()`. No real sleeps in tests. No randomness.
+
+**Phase A scope**: `MockHandle` with discovery publish/clear, pairing accept/reject/timeout helpers, and the `"accept"` / `"reject"` / `"timeout"` config shorthand. Defer richer timeline syntax and inline TOML tables until a concrete test needs them.
+
+**What we skip**: the `fail` crate (overkill for a mock), randomized failures (belong in fuzz/soak, not unit tests), static `MockDiscoveryConfig` structs (superseded by the handle), env var fixtures (not parallel-safe).
+
+**Production registry** stays simple: `create_registry()` registers a mock whose handle is never surfaced externally, so production code cannot accidentally drive the mock's test hooks. Only `create_test_registry()` returns a usable `MockHandle`.
 
 ### 3. D-Bus bus strategy — private `dbus-daemon` per test binary (Option A)
 
@@ -278,12 +309,12 @@ Phase A is small, self-contained, and exercises the mock backend in a way that v
 
 ### Phase A — Discovery + pairing
 
-1. **A.1**: `MockDiscovery` + `MockDiscoveryConfig` + `create_test_registry(cfg)` helper
-2. **A.2**: Internal pairing state machine + timeline in `MockConnector`, with the config-shorthand wrapper (`"accept"` / `"reject"` / `"timeout"`)
-3. **A.3**: `simulate_user_action` test helper for out-of-band drive
-4. **A.4**: Integration tests in `tisvlay-backends/tests/mock_discovery.rs` covering all pairing scenarios (accept / reject / timeout / multiple TVs / empty network / mixed-mode multi-TV)
+1. **A.1**: `MockHandle` + shared `Arc<Mutex<MockState>>` backing for discovery and pairing state in `MockConnector`
+2. **A.2**: `MockDiscovery` reads from `MockState`; test helper `create_test_registry()` returns `(BackendRegistry, MockHandle)`
+3. **A.3**: Internal pairing state machine driven by the handle's `simulate_user_*` methods; config shorthand (`"accept"` / `"reject"` / `"timeout"`) wraps the handle for simple tests
+4. **A.4**: Integration tests in `tisvlay-backends/tests/mock_discovery.rs` — happy path, reject, timeout, multiple TVs, empty network, mixed-mode multi-TV, dynamic publish
 5. **A.5**: CLI pair snapshot test in `crates/tisvlay-cli/tests/pair_snapshot.rs` via `insta-cmd`
-6. **A.6**: Document the mock pairing API in `.claude/CLAUDE.md`
+6. **A.6**: Document `MockHandle` and the mock pairing API in `.claude/CLAUDE.md`
 
 ### Phase B — Daemon integration tests
 
