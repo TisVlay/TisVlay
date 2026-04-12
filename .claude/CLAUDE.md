@@ -53,28 +53,42 @@ tisvlay/
 │   │
 │   ├── tisvlay-mock/              # In-memory mock backend (optional, for dev/tests)
 │   │   └── src/
-│   │       ├── lib.rs            # Public exports, VENDOR_ID
+│   │       ├── lib.rs            # Public exports, VENDOR_ID, new_test_parts/new_production_parts
 │   │       ├── backend.rs        # MockBackend (metadata)
-│   │       ├── connector.rs      # MockConnector (factory, pairing stub)
+│   │       ├── connector.rs      # MockConnector (factory, pairing with PairingOutcome)
 │   │       ├── connection.rs     # MockConnection (in-memory state + push subscriptions)
-│   │       └── config.rs         # MockVendorConfig (initial state)
+│   │       ├── config.rs         # MockVendorConfig (initial state + PairingShorthand)
+│   │       ├── discovery.rs      # MockDiscovery (reads from shared MockState)
+│   │       ├── handle.rs         # MockHandle (test-driven discovery + pairing control)
+│   │       ├── pairing.rs        # PairingOutcome, PairingShorthand
+│   │       └── state.rs          # MockState (shared between handle, connector, discovery)
+│   │
+│   ├── tisvlay-test-support/      # Shared test harness (dev-only, never shipped)
+│   │   └── src/
+│   │       ├── lib.rs            # Re-exports: PrivateBus, traced_test, tracing_mock
+│   │       ├── dbus.rs           # PrivateBus (private dbus-daemon per test binary)
+│   │       └── fake_logind.rs    # FakeLogind (login1.Manager stub with PrepareForSleep)
 │   │
 │   ├── tisvlay-backends/          # Backend registry (composition point)
 │   │   └── src/
-│   │       └── lib.rs            # BackendRegistry, vendor registration
+│   │       └── lib.rs            # BackendRegistry, vendor registration, MockHandle re-export
 │   │
 │   ├── tisvlay-cli/               # CLI tool
 │   │   └── src/
 │   │       └── main.rs           # clap-based CLI
 │   │
-│   ├── tisvlayd/                  # System daemon
+│   ├── tisvlayd/                  # System daemon (lib + bin)
 │   │   └── src/
-│   │       ├── main.rs           # Entry point, connection::Builder, state_change_forwarder
+│   │       ├── lib.rs            # Library root (pub modules for test access)
+│   │       ├── main.rs           # Entry point (thin, delegates to lib)
 │   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.* with cached properties)
+│   │       ├── dbus/setup.rs     # BusKind enum + build_dbus_connection helper
+│   │       ├── state_forwarder.rs # Backend state → D-Bus PropertiesChanged pipeline
+│   │       ├── test_harness.rs   # TestDaemon (mock-feature gated, for integration tests)
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
 │   │       ├── netlink.rs        # Kernel netlink: route resolution + carrier/route monitoring
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
-│   │       └── tv_manager.rs     # TV connection pool, disk serialization
+│   │       └── tv_manager.rs     # TV connection pool, profile dispatch, disk serialization
 │   │
 │   ├── tisvlay-session/           # User session service
 │   │   └── src/
@@ -365,6 +379,69 @@ the first explicit outcome on the state machine is authoritative.
 Integration tests demonstrating all flows (discovery, pairing
 happy path, reject, timeout, multiple TVs, mixed-mode) are at
 `crates/tisvlay-backends/tests/mock_discovery.rs`.
+
+### Test Harness (`tisvlay-test-support` + `TestDaemon`)
+
+#### Private D-Bus (`PrivateBus`)
+
+`tisvlay-test-support::PrivateBus::shared()` spawns one private
+`dbus-daemon` per test binary (via `LazyLock`). Every test in the
+binary connects through `bus.connect()` which uses
+`zbus::connection::Builder::address(...)` — bypassing zbus's
+per-process `OnceCell` connection cache. The daemon is killed via
+`PR_SET_PDEATHSIG=SIGKILL` when the test process exits.
+
+#### Fake logind (`FakeLogind`)
+
+`tisvlay_test_support::fake_logind::FakeLogind` is a hand-rolled
+`org.freedesktop.login1.Manager` stub. It has an `Inhibit` method
+(returns a `/dev/null` fd) and a `PrepareForSleep` signal emitter.
+Register it on any `zbus::Connection` and call
+`logind.emit_prepare_for_sleep(true)` to simulate sleep signals.
+
+#### Daemon test harness (`TestDaemon`)
+
+`tisvlayd::test_harness::TestDaemon` builds a fully wired daemon
+(TvManager + D-Bus surface + state-change forwarder) on the shared
+private bus. Gated on the `mock` Cargo feature.
+
+```rust
+use tisvlayd::test_harness::TestDaemon;
+use tisvlay_core::DaemonClient;
+use tisvlay_test_support::PrivateBus;
+
+#[tokio::test]
+async fn my_test() {
+    let daemon = TestDaemon::with_one_mock_tv("my_tv").await.unwrap();
+    let client = DaemonClient::from_connection(
+        PrivateBus::shared().connect().await.unwrap(),
+    ).await.unwrap();
+
+    daemon.manager().reconnect("my_tv").await.unwrap();
+    // ... assert via client.list_tvs(), daemon.handle(), etc.
+}
+```
+
+**Constructors**:
+
+- `TestDaemon::with_one_mock_tv(tv_id)` — one managed mock TV with
+  default profile and vendor config
+- `TestDaemon::with_config(SystemConfig)` — fully custom config for
+  tests that need specific managed/profile/primary_input combinations
+- `mock_tv_config(tv_id, managed, primary_input)` — helper to build
+  a `SystemConfig` with one mock TV
+
+**What it holds**: `MockHandle` (for driving discovery/pairing),
+`Arc<TvManager>` (for direct state inspection), `zbus::Connection`
+(for building `DaemonClient`). The state-change forwarder task is
+aborted on drop.
+
+Integration tests live at:
+- `crates/tisvlayd/tests/test_harness_smoke.rs` — basic wiring verification
+- `crates/tisvlayd/tests/profile_dispatch.rs` — system event dispatch
+- `crates/tisvlayd/tests/automated_gate.rs` — managed × automate_when gate
+- `crates/tisvlayd/tests/concurrent_tvs.rs` — multi-TV independence
+- `crates/tisvlayd/tests/dbus_contract.rs` — D-Bus property round-trips
 
 ### Testing
 
