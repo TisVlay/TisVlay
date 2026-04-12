@@ -67,7 +67,8 @@ tisvlay/
 │   │   └── src/
 │   │       ├── lib.rs            # Re-exports: PrivateBus, traced_test, tracing_mock
 │   │       ├── dbus.rs           # PrivateBus (private dbus-daemon per test binary)
-│   │       └── fake_logind.rs    # FakeLogind (login1.Manager stub with PrepareForSleep)
+│   │       ├── fake_logind.rs    # FakeLogind (login1.Manager stub with PrepareForSleep)
+│   │       └── fake_screensaver.rs # FakeScreenSaver (ScreenSaver stub with ActiveChanged)
 │   │
 │   ├── tisvlay-backends/          # Backend registry (composition point)
 │   │   └── src/
@@ -82,7 +83,7 @@ tisvlay/
 │   │       ├── lib.rs            # Library root (pub modules for test access)
 │   │       ├── main.rs           # Entry point (thin, delegates to lib)
 │   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.* with cached properties)
-│   │       ├── dbus/setup.rs     # BusKind enum + build_dbus_connection helper
+│   │       ├── dbus/setup.rs     # build_dbus_connection helper (BusKind lives in tisvlay-core)
 │   │       ├── state_forwarder.rs # Backend state → D-Bus PropertiesChanged pipeline
 │   │       ├── test_harness.rs   # TestDaemon (mock-feature gated, for integration tests)
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
@@ -90,11 +91,13 @@ tisvlay/
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool, profile dispatch, disk serialization
 │   │
-│   ├── tisvlay-session/           # User session service
+│   ├── tisvlay-session/           # User session service (lib + bin)
 │   │   └── src/
-│   │       ├── main.rs           # Entry point, event handling
+│   │       ├── lib.rs            # Library root (SessionState, event_handler, pub modules)
+│   │       ├── main.rs           # Entry point (thin, delegates to lib)
 │   │       ├── session_dbus.rs   # org.tisvlay.Session1 D-Bus interface
 │   │       ├── session_monitor.rs # Session lock/unlock detection
+│   │       ├── test_harness.rs   # TestSession (mock-feature gated, for integration tests)
 │   │       ├── wayland_idle.rs   # Wayland greeter wake detection
 │   │       └── idle.rs           # Idle timeout detection
 │   │
@@ -292,336 +295,29 @@ cargo workspace-unused-pub
 Not in the `prek` pipeline (requires rust-analyzer, slower than clippy). Run periodically
 after major refactors to catch orphaned public API surface.
 
-### Mock Backend
-
-`tisvlay-mock` implements the full `TvBackend` / `TvConnector` /
-`TvConnection` trait surface with an in-memory state machine. Gated
-behind the `mock` feature on `tisvlay-backends`, default-off in release
-builds (distro packages) and default-on in workspace dev/test builds.
-
-Reasons to use it:
-- Developing UX/UI features (CLI, tray, future GUI) without real hardware
-- Integration testing the daemon against a realistic backend with push
-  subscriptions, pairing, and capability reporting
-- CI runs where no TV is available
-
-The mock reports `Transport::Network` and `survives_source_ip_change()
--> false` so it exercises the same carrier/route event paths and NIC
-failover logic the LG backend does. `subscribe_state()` returns a real
-`mpsc::UnboundedReceiver<TvState>` that pushes cumulative state
-snapshots on every mutation, mirroring LG's SSAP subscription model.
-
-Enable in a local config with `vendor = "mock"` and `[tv.mock]` block:
-
-```toml
-[[tv]]
-id = "dev-mock"
-name = "Mock Living Room"
-vendor = "mock"
-managed = true
-
-[tv.mock]
-address = "mock://living_room"
-initial_volume = 30
-initial_input = "HDMI_1"
-inputs = [["HDMI_1", "HDMI 1"], ["HDMI_2", "HDMI 2"]]
-```
-
-Then run `cargo run --bin tisvlayd --features mock -- --session`.
-
-Integration tests at `crates/tisvlay-backends/tests/mock_backend.rs`
-exercise the full registry → connector → connection → subscription
-flow end-to-end.
-
-#### `MockHandle` — test-driven control surface
-
-Tests that need to drive discovery or pairing state from outside the
-mock (e.g., "publish 3 TVs, then pair the second one") use
-`tisvlay_backends::create_test_registry()`, which returns a
-`(BackendRegistry, MockHandle)` pair sharing a fresh state:
-
-```rust
-use std::time::Duration;
-use tisvlay_backends::create_test_registry;
-use tisvlay_core::DiscoveredTv;
-
-#[tokio::test]
-async fn pair_happy_path() {
-    let (registry, mock) = create_test_registry();
-
-    mock.publish_tv(DiscoveredTv::new(
-        "living_room", "Living Room G4", "mock://living_room", "mock",
-    ));
-    mock.simulate_user_accept("mock://living_room");
-
-    let tvs = registry.discover_tvs("mock", Duration::from_millis(100)).await.unwrap();
-    // ... drive pairing through the connector; it auto-accepts ...
-}
-```
-
-Every test gets its own `(registry, handle)` pair. No shared state
-means tests are parallel by construction.
-
-**`MockHandle` methods**:
-
-- `publish_tv(DiscoveredTv)` — add a TV to the mock "network"
-- `clear_discovered()` — remove all discoverable TVs
-- `simulate_user_accept(tv_id)` — pre-approve the next pairing for this TV
-- `simulate_user_reject(tv_id)` — pre-reject (simulates the user declining)
-- `simulate_pairing_timeout(tv_id)` — simulate a pairing timeout
-
-**Config shorthand**: simple tests that don't need the handle can set
-`[tv.mock] pairing = "accept"|"reject"|"timeout"` and let the connector
-auto-drive the outcome. If a test both sets the shorthand and calls
-`simulate_user_*` before `start_pairing()` runs, **the handle wins** —
-the first explicit outcome on the state machine is authoritative.
-
-Integration tests demonstrating all flows (discovery, pairing
-happy path, reject, timeout, multiple TVs, mixed-mode) are at
-`crates/tisvlay-backends/tests/mock_discovery.rs`.
-
-### Test Harness (`tisvlay-test-support` + `TestDaemon`)
-
-#### Private D-Bus (`PrivateBus`)
-
-`tisvlay-test-support::PrivateBus::shared()` spawns one private
-`dbus-daemon` per test binary (via `LazyLock`). Every test in the
-binary connects through `bus.connect()` which uses
-`zbus::connection::Builder::address(...)` — bypassing zbus's
-per-process `OnceCell` connection cache. The daemon is killed via
-`PR_SET_PDEATHSIG=SIGKILL` when the test process exits.
-
-#### Fake logind (`FakeLogind`)
-
-`tisvlay_test_support::fake_logind::FakeLogind` is a hand-rolled
-`org.freedesktop.login1.Manager` stub. It has an `Inhibit` method
-(returns a `/dev/null` fd) and a `PrepareForSleep` signal emitter.
-Register it on any `zbus::Connection` and call
-`logind.emit_prepare_for_sleep(true)` to simulate sleep signals.
-
-#### Daemon test harness (`TestDaemon`)
-
-`tisvlayd::test_harness::TestDaemon` builds a fully wired daemon
-(TvManager + D-Bus surface + state-change forwarder) on the shared
-private bus. Gated on the `mock` Cargo feature.
-
-```rust
-use tisvlayd::test_harness::TestDaemon;
-use tisvlay_core::DaemonClient;
-use tisvlay_test_support::PrivateBus;
-
-#[tokio::test]
-async fn my_test() {
-    let daemon = TestDaemon::with_one_mock_tv("my_tv").await.unwrap();
-    let client = DaemonClient::from_connection(
-        PrivateBus::shared().connect().await.unwrap(),
-    ).await.unwrap();
-
-    daemon.manager().reconnect("my_tv").await.unwrap();
-    // ... assert via client.list_tvs(), daemon.handle(), etc.
-}
-```
-
-**Constructors**:
-
-- `TestDaemon::with_one_mock_tv(tv_id)` — one managed mock TV with
-  default profile and vendor config
-- `TestDaemon::with_config(SystemConfig)` — fully custom config for
-  tests that need specific managed/profile/primary_input combinations
-- `mock_tv_config(tv_id, managed, primary_input)` — helper to build
-  a `SystemConfig` with one mock TV
-
-**What it holds**: `MockHandle` (for driving discovery/pairing),
-`Arc<TvManager>` (for direct state inspection), `zbus::Connection`
-(for building `DaemonClient`). The state-change forwarder task is
-aborted on drop.
-
-Integration tests live at:
-- `crates/tisvlayd/tests/test_harness_smoke.rs` — basic wiring verification
-- `crates/tisvlayd/tests/profile_dispatch.rs` — system event dispatch
-- `crates/tisvlayd/tests/automated_gate.rs` — managed × automate_when gate
-- `crates/tisvlayd/tests/concurrent_tvs.rs` — multi-TV independence
-- `crates/tisvlayd/tests/dbus_contract.rs` — D-Bus property round-trips
-
 ### Testing
 
-Tests run through [`cargo-nextest`](https://nexte.st/), a parallel test
-runner with process-per-test isolation. It replaces `cargo test` for all
-compiled tests. Doc tests still use `cargo test --doc` because nextest
-doesn't run them yet.
+See [docs/testing.md](docs/testing.md) for the full testing guide
+(mock backend, test harnesses, D-Bus testing, observability, coverage).
+
+Quick reference commands:
 
 ```bash
-just test                   # cargo nextest run (workspace, all features) + doc tests
-just test-ci                # same but with the 'ci' profile + coverage + lcov + ratchet
+just test                   # cargo nextest run + doc tests
+just test-ci                # ci profile + coverage + ratchet
+just cov                    # coverage summary
+just cov-html               # HTML report in browser
+just cov-lcov               # lcov.info for VS Code Coverage Gutters
+just cov-ratchet            # fails if below baseline (CI)
 just test-snapshot-review   # review pending insta snapshot changes
-just test-snapshot-accept   # accept all pending insta snapshot changes
+just test-snapshot-accept   # accept all pending snapshot changes
 ```
-
-Configuration lives in `.config/nextest.toml` with two profiles:
-- `default` — local use, no retries, warn on tests >60s
-- `ci` — CI use, retry once (transient D-Bus flakes), JUnit XML output
-  at `target/nextest/ci/junit.xml` for PR inline test results via
-  `dorny/test-reporter`
-
-Process-per-test isolation matters here because the daemon code uses
-global state (D-Bus, netlink, file paths) — `cargo test`'s shared-process
-model would have tests stepping on each other.
-
-#### Parameterized tests ([`rstest`](https://docs.rs/rstest/))
-
-`rstest` lets you write one test function that runs against many inputs,
-each case reported as a separate test. Use it when you'd otherwise write
-multiple near-identical `#[test]` functions with different inputs.
-
-```rust
-use rstest::rstest;
-
-#[rstest]
-#[case::simple("living_room", "/org/tisvlay/Tv/living_room")]
-#[case::with_dash("living-room", "/org/tisvlay/Tv/living_room")]
-#[case::with_space("living room", "/org/tisvlay/Tv/living_room")]
-fn tv_path_sanitization(#[case] tv_id: &str, #[case] expected: &str) {
-    assert_eq!(tv_path(tv_id), expected);
-}
-```
-
-nextest reports each case individually (`tv_path_sanitization::case_1_simple`,
-`case_2_with_dash`, etc.), so a failure points directly at the failing
-input. The `::label` after `#[case` is optional but makes failures more
-readable; without it you get `case_1`, `case_2`, etc.
-
-See `crates/tisvlay-core/src/dbus_paths.rs` for a working example.
-
-#### Property tests ([`proptest`](https://proptest-rs.github.io/proptest/))
-
-Where `rstest` pins known cases, `proptest` discovers unknown ones. It
-generates random inputs matching a type or regex spec, runs the test,
-shrinks any failing input to a minimal reproduction, and records
-failing seeds so regressions replay on future runs.
-
-```rust
-use proptest::prelude::*;
-
-proptest! {
-    /// The sanitized suffix must only contain valid D-Bus path characters.
-    #[test]
-    fn tv_path_suffix_is_valid(tv_id in ".*") {
-        let path = tv_path(&tv_id);
-        let suffix = path.strip_prefix(&format!("{}/", TV_BASE_PATH)).unwrap();
-        prop_assert!(suffix.chars().all(|c| c.is_alphanumeric() || c == '_'));
-    }
-
-    /// Parse/Display roundtrip: any 6 random bytes → Display → parse → same bytes.
-    #[test]
-    fn mac_parse_display_roundtrip(bytes in any::<[u8; 6]>()) {
-        let original = MacAddress(bytes);
-        let parsed = MacAddress::parse(&original.to_string()).unwrap();
-        prop_assert_eq!(parsed, original);
-    }
-}
-```
-
-Key patterns:
-- **Regex input specs** (`"[A-Za-z0-9_]+"`, `".*"`) for string inputs
-- **`any::<T>()`** for arbitrary values of any type with an `Arbitrary` impl
-- **`prop_assert!` / `prop_assert_eq!`** instead of `assert!` inside `proptest!` blocks — they cooperate with shrinking
-- Each test runs **256 cases by default**; increase with `#[proptest_config(ProptestConfig::with_cases(N))]`
-
-When a proptest fails, proptest writes a `.proptest-regressions` file
-next to the source with the failing seed. **Commit these files** — they
-ensure the same failing input is replayed on future runs, turning the
-discovery into a regression test.
-
-See `crates/tisvlay-core/src/dbus_paths.rs` and `crates/tisvlay-core/src/wol.rs`
-for working examples.
-
-#### Snapshot tests ([`insta`](https://insta.rs/))
-
-Snapshot tests compare generated output against a saved reference file.
-Useful for anything with structured output that would be tedious to
-hand-write and error-prone to maintain (JSON/YAML serialization,
-CLI output, D-Bus message shapes).
-
-Snapshots live in `crates/*/tests/snapshots/` next to their test source.
-Workflow:
-
-1. Write a test using `insta::assert_json_snapshot!(value)` (or
-   `assert_snapshot!`, `assert_yaml_snapshot!`, `assert_debug_snapshot!`)
-2. Run `just test` — new/changed snapshots fail the test and write
-   `.snap.new` files next to the old `.snap`
-3. `just test-snapshot-review` — interactive TUI showing each diff;
-   accept or reject per snapshot
-4. Commit the updated `.snap` files alongside the code change
-
-In CI, snapshots must match exactly (no `.snap.new` files are written).
-A failing snapshot test is a real test failure.
-
-See `crates/tisvlay-core/tests/tv_info_snapshot.rs` for a working example.
-
-#### Test observability ([`tracing-test`](https://docs.rs/tracing-test/) / [`tracing-mock`](https://docs.rs/tracing-mock/))
-
-Integration tests can capture every `tracing` event emitted during a
-test scope and dump them to stderr only when the test fails. This
-turns hard-to-diagnose failures into "show me what the daemon was
-doing" without sprinkling `eprintln!` calls.
-
-The `#[traced_test]` attribute (re-exported from
-`tisvlay-test-support`) installs a per-test subscriber. We pin the
-`no-env-filter` feature so events emitted from *dependency* crates
-(`tisvlay-test-support`, `tisvlay-mock`, the daemon) are captured —
-the upstream default would only capture events from the test binary
-itself. Inside the test function, `logs_contain(substr)` and
-`logs_assert(closure)` are brought into scope by the macro for
-in-test assertions on captured log content.
-
-```rust
-use tisvlay_test_support::{traced_test, PrivateBus, fake_logind::FakeLogind};
-
-#[traced_test]
-#[tokio::test]
-async fn pairing_logs_show_full_state_machine_path() {
-    let bus = PrivateBus::shared();
-    let conn = bus.connect().await.unwrap();
-    let logind = FakeLogind::register(&conn).await.unwrap();
-    logind.emit_prepare_for_sleep(true).await.unwrap();
-
-    // Failure dump shows every captured tracing event automatically.
-    assert!(logs_contain("fake logind emitting PrepareForSleep"));
-}
-```
-
-For *observability regression tests* — asserting that production code
-emits a specific event with the right fields — use `tracing_mock`
-(also re-exported). Build an expected pattern, install the subscriber
-for the duration of the test, and assert the pattern matched. Catches
-refactors that silently drop a log line we depend on for ops.
-
-See `crates/tisvlay-test-support/tests/smoke.rs` for a working
-`#[traced_test]` example.
-
-### Test Coverage
-
-Coverage is measured with `cargo-llvm-cov` and ratcheted in CI — new code should
-not lower the workspace baseline. The Nix dev shell provides `cargo-llvm-cov`,
-`llvm-cov`, and `llvm-profdata` (matching `rustc`'s LLVM 21).
-
-```bash
-just cov          # text summary
-just cov-html     # HTML report, opens in browser
-just cov-lcov     # write lcov.info for VS Code Coverage Gutters
-just cov-ratchet  # fails if below baseline (used by CI)
-```
-
-The baseline lives in the `justfile` as `cov_baseline_lines`. Bump it on PRs
-that improve coverage; never lower it. CI runs `just cov-ratchet` on every PR
-via `.github/workflows/coverage.yml`.
-
-Outside the Nix dev shell, install with `cargo install cargo-llvm-cov` and
-ensure `llvm-tools-preview` is available (rustup component or matching system
-LLVM).
 
 ## Reference Documentation
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
+- [docs/testing.md](docs/testing.md) - Testing guide: mock backend, harnesses, coverage, observability
 - [docs/watchers/network.md](docs/watchers/network.md) - Network monitoring: carrier detection, route resolution, pitfalls
-- [docs/firewall.md](docs/firewall.md) - SSDP discovery firewall configuration
+- [docs/firewall.md](docs/firewall.md) - SSDP firewall configuration
+- [docs/bugs.md](docs/bugs.md) - Known bugs and fix plans
+- [docs/todo.md](docs/todo.md) - Design concerns and technical debt

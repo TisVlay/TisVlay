@@ -1,5 +1,9 @@
 # Plan: Testing & Measurement Framework
 
+> **Note:** This document is the historical implementation plan. For
+> the current state of the testing framework (how to use it, architecture
+> decisions, harness APIs), see [testing.md](testing.md).
+
 ## Goal
 
 Establish an extensible testing and measurement framework for the tisvlay workspace. The framework should:

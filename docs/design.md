@@ -725,6 +725,7 @@ Signals within a 100ms window are coalesced before the watcher emits `DaemonStat
 
 ## References
 
+- [Testing Guide](testing.md) - Mock backend, test harnesses, coverage, observability
 - [Firewall Configuration](firewall.md) - SSDP discovery firewall setup
 - [LG WebOS API](https://github.com/chros73/bscpylgtv/tree/master/docs)
 - [zbus Documentation](https://docs.rs/zbus)
