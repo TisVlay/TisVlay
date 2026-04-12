@@ -7,7 +7,7 @@ or deferred decisions worth revisiting.
 
 ## Session event tests use real-time sleeps
 
-**Priority**: low  
+**Priority**: low
 **Found by**: Phase C.2 session event test development
 
 ### Context
@@ -61,7 +61,7 @@ them.
 
 ## `TestDaemon` / `TestSession` name ownership is bus-global
 
-**Priority**: low  
+**Priority**: low
 **Found by**: Phase B/C harness design
 
 ### Context

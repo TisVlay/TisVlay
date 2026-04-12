@@ -2,8 +2,8 @@
 
 ## TV ID / D-Bus path inconsistency
 
-**Status**: fixed  
-**Severity**: medium — latent data-integrity risk, no user-facing symptoms yet  
+**Status**: fixed
+**Severity**: medium — latent data-integrity risk, no user-facing symptoms yet
 **Found by**: `pair_round_trip` integration tests (Phase C.3)
 
 ### Problem
@@ -33,8 +33,8 @@ All five steps from the original fix plan are implemented:
 
 ## `RemoveTv` still derives TV ID from D-Bus path
 
-**Status**: open  
-**Severity**: low — correct by construction after ID alphabet fix, but fragile  
+**Status**: open
+**Severity**: low — correct by construction after ID alphabet fix, but fragile
 **Found by**: code audit during TV ID fix
 
 ### Problem
@@ -75,8 +75,8 @@ updating:
 
 ## `TvManager::pair_tv` has no timeout on `wait_for_completion`
 
-**Status**: open  
-**Severity**: medium — can hang a D-Bus call indefinitely  
+**Status**: open
+**Severity**: medium — can hang a D-Bus call indefinitely
 **Found by**: mock_discovery test design (the `drain_pairing` helper
 wraps in `tokio::time::timeout` to avoid test hangs)
 
@@ -122,8 +122,8 @@ match tokio::time::timeout(deadline, session.wait_for_completion()).await {
 
 ## Session event handler `last_action` cache survives daemon reconnects
 
-**Status**: open  
-**Severity**: low — can cause a missed action after daemon restart  
+**Status**: open
+**Severity**: low — can cause a missed action after daemon restart
 **Found by**: session event test design review
 
 ### Problem
