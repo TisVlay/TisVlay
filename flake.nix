@@ -40,8 +40,13 @@
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
+            cargo-insta
+            cargo-llvm-cov
+            cargo-nextest
+            just
             linuxConsoleTools
             lldb
+            llvmPackages_21.bintools-unwrapped
             pkg-config
             pkgsMusl.stdenv.cc
             socat
@@ -52,6 +57,12 @@
 
           # Tell cargo where to find the musl linker
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${pkgs.pkgsMusl.stdenv.cc}/bin/cc";
+
+          # Tell cargo-llvm-cov where to find LLVM tools matching rustc's LLVM 21.
+          # rustup's llvm-tools-preview is not available with the Nix-managed
+          # toolchain, so we point at nixpkgs' LLVM 21 bintools instead.
+          LLVM_COV = "${pkgs.llvmPackages_21.bintools-unwrapped}/bin/llvm-cov";
+          LLVM_PROFDATA = "${pkgs.llvmPackages_21.bintools-unwrapped}/bin/llvm-profdata";
         };
       }
     );

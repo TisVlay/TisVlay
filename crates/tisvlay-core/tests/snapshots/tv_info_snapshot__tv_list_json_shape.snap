@@ -1,0 +1,55 @@
+---
+source: crates/tisvlay-core/tests/tv_info_snapshot.rs
+expression: "vec![sample_connected(), sample_disconnected()]"
+---
+[
+  {
+    "id": "living_room",
+    "name": "Living Room G4",
+    "address": "192.168.1.100",
+    "vendor": "lg",
+    "connected": true,
+    "managed": true,
+    "automated": true,
+    "system_profile": "default",
+    "path": "/org/tisvlay/Tv/living_room",
+    "power_state": "active",
+    "is_screen_on": true,
+    "volume": 30,
+    "muted": false,
+    "current_input": "HDMI_1",
+    "backlight": 80,
+    "inputs": [
+      [
+        "HDMI_1",
+        "HDMI 1"
+      ],
+      [
+        "HDMI_2",
+        "HDMI 2"
+      ],
+      [
+        "HDMI_3",
+        "HDMI 3"
+      ]
+    ]
+  },
+  {
+    "id": "guest_room",
+    "name": "Guest Room",
+    "address": "192.168.1.101",
+    "vendor": "lg",
+    "connected": false,
+    "managed": false,
+    "automated": false,
+    "system_profile": "guest",
+    "path": "/org/tisvlay/Tv/guest_room",
+    "power_state": "unknown",
+    "is_screen_on": true,
+    "volume": 0,
+    "muted": false,
+    "current_input": "",
+    "backlight": 0,
+    "inputs": []
+  }
+]

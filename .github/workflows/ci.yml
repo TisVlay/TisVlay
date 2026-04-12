@@ -14,12 +14,26 @@ env:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      checks: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Toolchain
-        run: rustup show
+        run: |
+          rustup component add llvm-tools-preview
+          rustup show
+
+      - name: Setup
+        uses: taiki-e/install-action@v2
+        with:
+          tool: |
+            cargo-llvm-cov
+            cargo-nextest
+            just
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -29,29 +43,46 @@ jobs:
         with:
           extra-args: >-
             --all-files
-            --skip cargo-build
-            --skip cargo-clippy
-            --skip cargo-test
-
-      - name: Build
-        run: >-
-          cargo build
-          --profile test
-          --workspace
-          --all-targets
-          --all-features
+            --skip build
+            --skip clippy
+            --skip test
 
       - name: Clippy
-        run: >-
-          cargo clippy
-          --profile test
-          --workspace
-          --all-targets
-          --all-features
-          -- -D warnings
+        run: just clippy
 
       - name: Test
-        run: >-
-          cargo test
-          --workspace
-          --all-features
+        run: just test-ci
+
+      # TODO: Enable Codecov upload once the repository is public.
+      # Codecov is free for OSS, gives PR diff annotations, and tracks
+      # coverage trends over time.
+      #
+      # - name: Upload to Codecov
+      #   uses: codecov/codecov-action@v6
+      #   with:
+      #     files: lcov.info
+      #     fail_ci_if_error: true
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 14
+
+      # NOTE: When this repo becomes public, fork PRs cannot create check
+      # runs (read-only token). See the "Recommended setup for public
+      # repositories" section of the dorny/test-reporter README — the
+      # workflow_run pattern with two workflows is the workaround.
+      - name: Report
+        uses: dorny/test-reporter@v3
+        if: ${{ !cancelled() }}
+        with:
+          name: Tests
+          path: target/nextest/ci/junit.xml
+          reporter: java-junit
+          fail-on-error: false
+          list-suites: failed
+          list-tests: failed

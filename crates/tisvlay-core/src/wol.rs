@@ -143,6 +143,7 @@ pub fn wake_with_options(mac: &MacAddress, options: WakeOptions) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_parse_mac_colon() {
@@ -193,6 +194,57 @@ mod tests {
         for i in 0..16 {
             let offset = 6 + i * 6;
             assert_eq!(&packet[offset..offset + 6], mac.bytes());
+        }
+    }
+
+    proptest! {
+        /// Parsing any 6 arbitrary bytes via their Display representation
+        /// roundtrips back to the original bytes.
+        #[test]
+        fn mac_parse_display_roundtrip(bytes in any::<[u8; 6]>()) {
+            let original = MacAddress(bytes);
+            let parsed = MacAddress::parse(&original.to_string()).unwrap();
+            prop_assert_eq!(parsed, original);
+        }
+
+        /// MacAddress::parse accepts the three valid separator styles
+        /// (colon, dash, plain) for any 6 bytes — all should yield the
+        /// same MacAddress.
+        #[test]
+        fn mac_parse_all_separator_styles(bytes in any::<[u8; 6]>()) {
+            let colon = format!(
+                "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+            );
+            let dash = colon.replace(':', "-");
+            let plain = colon.replace(':', "");
+
+            let from_colon = MacAddress::parse(&colon).unwrap();
+            let from_dash = MacAddress::parse(&dash).unwrap();
+            let from_plain = MacAddress::parse(&plain).unwrap();
+
+            prop_assert_eq!(from_colon, MacAddress(bytes));
+            prop_assert_eq!(from_dash, MacAddress(bytes));
+            prop_assert_eq!(from_plain, MacAddress(bytes));
+        }
+
+        /// Lowercase hex parses to the same MAC as uppercase.
+        #[test]
+        fn mac_parse_case_insensitive(bytes in any::<[u8; 6]>()) {
+            let upper = MacAddress(bytes).to_string();
+            let lower = upper.to_lowercase();
+            prop_assert_eq!(
+                MacAddress::parse(&upper).unwrap(),
+                MacAddress::parse(&lower).unwrap(),
+            );
+        }
+
+        /// Inputs whose total hex-digit length isn't 12 always fail to parse.
+        #[test]
+        fn mac_parse_rejects_wrong_length(
+            s in "[0-9A-Fa-f]{0,11}|[0-9A-Fa-f]{13,30}"
+        ) {
+            prop_assert!(MacAddress::parse(&s).is_err());
         }
     }
 }

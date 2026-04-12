@@ -51,6 +51,14 @@ tisvlay/
 │   │       ├── config.rs         # LgVendorConfig
 │   │       └── discovery.rs      # SSDP TV discovery (feature-gated)
 │   │
+│   ├── tisvlay-mock/              # In-memory mock backend (optional, for dev/tests)
+│   │   └── src/
+│   │       ├── lib.rs            # Public exports, VENDOR_ID
+│   │       ├── backend.rs        # MockBackend (metadata)
+│   │       ├── connector.rs      # MockConnector (factory, pairing stub)
+│   │       ├── connection.rs     # MockConnection (in-memory state + push subscriptions)
+│   │       └── config.rs         # MockVendorConfig (initial state)
+│   │
 │   ├── tisvlay-backends/          # Backend registry (composition point)
 │   │   └── src/
 │   │       └── lib.rs            # BackendRegistry, vendor registration
@@ -203,14 +211,39 @@ This sets up:
 - `tisvlay-tray` user service (auto-starts on graphical session)
 - D-Bus policy and CLI in `$PATH`
 
+## Tasks & Commands (`just`)
+
+All project commands live in the `justfile` at the repo root — it is the
+single source of truth. prek hooks, VSCode tasks, and CI workflows all
+dispatch through `just` so command strings are defined in exactly one place.
+
+```bash
+just              # list all recipes, grouped by purpose
+just check        # fmt + build + clippy + test (all fast checks)
+just build        # cargo build --profile test --workspace --all-targets --all-features
+just clippy       # cargo clippy ... -- -D warnings
+just test         # cargo nextest run + cargo test --doc
+just test-ci      # nextest with the 'ci' profile (JUnit XML output)
+just daemon-start # start tisvlayd on the session bus (dev mode)
+just cov          # coverage summary
+just cov-ratchet  # coverage ratchet check (CI)
+just package-deb  # build the .deb package
+```
+
+`just` is provided by the Nix dev shell. Outside Nix, install with
+`cargo install just` or your distro package manager.
+
 ## Linting & CI
 
-All checks are defined in `prek.toml` (single source of truth). Hooks are ordered by priority:
+All checks are defined in `prek.toml`, which dispatches to `just` recipes.
+Hook ids match the corresponding `just` recipe names. Hooks are ordered by
+priority:
+
 - **0**: file checks (trailing whitespace, EOF, TOML/YAML validation, merge conflicts, large files)
-- **1**: `cargo fmt`
-- **2**: `cargo build --profile test --workspace --all-targets --all-features`
-- **3**: `cargo clippy --profile test --workspace --all-targets --all-features`
-- **4**: `cargo test --workspace --all-features`
+- **1**: `fmt` → `just fmt`
+- **2**: `build` → `just build` (test profile, all targets, all features)
+- **3**: `clippy` → `just clippy` (warnings denied)
+- **4**: `test` → `just test`
 
 Build and clippy use `--profile test` so `cargo test` reuses all build artifacts with zero recompilation.
 
@@ -219,12 +252,12 @@ Build and clippy use `--profile test` so `cargo test` reuses all build artifacts
 prek run -a
 
 # Run only fast file checks + fmt (skip compilation)
-prek run -a --skip cargo-build --skip cargo-clippy --skip cargo-test
+prek run -a --skip build --skip clippy --skip test
 
 # Run a specific hook
-prek run -a cargo-clippy
+prek run -a clippy
 
-# CI runs file checks via prek, then build/clippy/test directly for live output
+# CI runs file checks via prek, then just build/clippy/test directly for live output
 ```
 
 ### Dead Code Detection
@@ -244,6 +277,183 @@ cargo workspace-unused-pub
 
 Not in the `prek` pipeline (requires rust-analyzer, slower than clippy). Run periodically
 after major refactors to catch orphaned public API surface.
+
+### Mock Backend
+
+`tisvlay-mock` implements the full `TvBackend` / `TvConnector` /
+`TvConnection` trait surface with an in-memory state machine. Gated
+behind the `mock` feature on `tisvlay-backends`, default-off in release
+builds (distro packages) and default-on in workspace dev/test builds.
+
+Reasons to use it:
+- Developing UX/UI features (CLI, tray, future GUI) without real hardware
+- Integration testing the daemon against a realistic backend with push
+  subscriptions, pairing, and capability reporting
+- CI runs where no TV is available
+
+The mock reports `Transport::Network` and `survives_source_ip_change()
+-> false` so it exercises the same carrier/route event paths and NIC
+failover logic the LG backend does. `subscribe_state()` returns a real
+`mpsc::UnboundedReceiver<TvState>` that pushes cumulative state
+snapshots on every mutation, mirroring LG's SSAP subscription model.
+
+Enable in a local config with `vendor = "mock"` and `[tv.mock]` block:
+
+```toml
+[[tv]]
+id = "dev-mock"
+name = "Mock Living Room"
+vendor = "mock"
+managed = true
+
+[tv.mock]
+address = "mock://living_room"
+initial_volume = 30
+initial_input = "HDMI_1"
+inputs = [["HDMI_1", "HDMI 1"], ["HDMI_2", "HDMI 2"]]
+```
+
+Then run `cargo run --bin tisvlayd --features mock -- --session`.
+
+Integration tests at `crates/tisvlay-backends/tests/mock_backend.rs`
+exercise the full registry → connector → connection → subscription
+flow end-to-end.
+
+### Testing
+
+Tests run through [`cargo-nextest`](https://nexte.st/), a parallel test
+runner with process-per-test isolation. It replaces `cargo test` for all
+compiled tests. Doc tests still use `cargo test --doc` because nextest
+doesn't run them yet.
+
+```bash
+just test                   # cargo nextest run (workspace, all features) + doc tests
+just test-ci                # same but with the 'ci' profile + coverage + lcov + ratchet
+just test-snapshot-review   # review pending insta snapshot changes
+just test-snapshot-accept   # accept all pending insta snapshot changes
+```
+
+Configuration lives in `.config/nextest.toml` with two profiles:
+- `default` — local use, no retries, warn on tests >60s
+- `ci` — CI use, retry once (transient D-Bus flakes), JUnit XML output
+  at `target/nextest/ci/junit.xml` for PR inline test results via
+  `dorny/test-reporter`
+
+Process-per-test isolation matters here because the daemon code uses
+global state (D-Bus, netlink, file paths) — `cargo test`'s shared-process
+model would have tests stepping on each other.
+
+#### Parameterized tests ([`rstest`](https://docs.rs/rstest/))
+
+`rstest` lets you write one test function that runs against many inputs,
+each case reported as a separate test. Use it when you'd otherwise write
+multiple near-identical `#[test]` functions with different inputs.
+
+```rust
+use rstest::rstest;
+
+#[rstest]
+#[case::simple("living_room", "/org/tisvlay/Tv/living_room")]
+#[case::with_dash("living-room", "/org/tisvlay/Tv/living_room")]
+#[case::with_space("living room", "/org/tisvlay/Tv/living_room")]
+fn tv_path_sanitization(#[case] tv_id: &str, #[case] expected: &str) {
+    assert_eq!(tv_path(tv_id), expected);
+}
+```
+
+nextest reports each case individually (`tv_path_sanitization::case_1_simple`,
+`case_2_with_dash`, etc.), so a failure points directly at the failing
+input. The `::label` after `#[case` is optional but makes failures more
+readable; without it you get `case_1`, `case_2`, etc.
+
+See `crates/tisvlay-core/src/dbus_paths.rs` for a working example.
+
+#### Property tests ([`proptest`](https://proptest-rs.github.io/proptest/))
+
+Where `rstest` pins known cases, `proptest` discovers unknown ones. It
+generates random inputs matching a type or regex spec, runs the test,
+shrinks any failing input to a minimal reproduction, and records
+failing seeds so regressions replay on future runs.
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    /// The sanitized suffix must only contain valid D-Bus path characters.
+    #[test]
+    fn tv_path_suffix_is_valid(tv_id in ".*") {
+        let path = tv_path(&tv_id);
+        let suffix = path.strip_prefix(&format!("{}/", TV_BASE_PATH)).unwrap();
+        prop_assert!(suffix.chars().all(|c| c.is_alphanumeric() || c == '_'));
+    }
+
+    /// Parse/Display roundtrip: any 6 random bytes → Display → parse → same bytes.
+    #[test]
+    fn mac_parse_display_roundtrip(bytes in any::<[u8; 6]>()) {
+        let original = MacAddress(bytes);
+        let parsed = MacAddress::parse(&original.to_string()).unwrap();
+        prop_assert_eq!(parsed, original);
+    }
+}
+```
+
+Key patterns:
+- **Regex input specs** (`"[A-Za-z0-9_]+"`, `".*"`) for string inputs
+- **`any::<T>()`** for arbitrary values of any type with an `Arbitrary` impl
+- **`prop_assert!` / `prop_assert_eq!`** instead of `assert!` inside `proptest!` blocks — they cooperate with shrinking
+- Each test runs **256 cases by default**; increase with `#[proptest_config(ProptestConfig::with_cases(N))]`
+
+When a proptest fails, proptest writes a `.proptest-regressions` file
+next to the source with the failing seed. **Commit these files** — they
+ensure the same failing input is replayed on future runs, turning the
+discovery into a regression test.
+
+See `crates/tisvlay-core/src/dbus_paths.rs` and `crates/tisvlay-core/src/wol.rs`
+for working examples.
+
+#### Snapshot tests ([`insta`](https://insta.rs/))
+
+Snapshot tests compare generated output against a saved reference file.
+Useful for anything with structured output that would be tedious to
+hand-write and error-prone to maintain (JSON/YAML serialization,
+CLI output, D-Bus message shapes).
+
+Snapshots live in `crates/*/tests/snapshots/` next to their test source.
+Workflow:
+
+1. Write a test using `insta::assert_json_snapshot!(value)` (or
+   `assert_snapshot!`, `assert_yaml_snapshot!`, `assert_debug_snapshot!`)
+2. Run `just test` — new/changed snapshots fail the test and write
+   `.snap.new` files next to the old `.snap`
+3. `just test-snapshot-review` — interactive TUI showing each diff;
+   accept or reject per snapshot
+4. Commit the updated `.snap` files alongside the code change
+
+In CI, snapshots must match exactly (no `.snap.new` files are written).
+A failing snapshot test is a real test failure.
+
+See `crates/tisvlay-core/tests/tv_info_snapshot.rs` for a working example.
+
+### Test Coverage
+
+Coverage is measured with `cargo-llvm-cov` and ratcheted in CI — new code should
+not lower the workspace baseline. The Nix dev shell provides `cargo-llvm-cov`,
+`llvm-cov`, and `llvm-profdata` (matching `rustc`'s LLVM 21).
+
+```bash
+just cov          # text summary
+just cov-html     # HTML report, opens in browser
+just cov-lcov     # write lcov.info for VS Code Coverage Gutters
+just cov-ratchet  # fails if below baseline (used by CI)
+```
+
+The baseline lives in the `justfile` as `cov_baseline_lines`. Bump it on PRs
+that improve coverage; never lower it. CI runs `just cov-ratchet` on every PR
+via `.github/workflows/coverage.yml`.
+
+Outside the Nix dev shell, install with `cargo install cargo-llvm-cov` and
+ensure `llvm-tools-preview` is available (rustup component or matching system
+LLVM).
 
 ## Reference Documentation
 
