@@ -814,39 +814,67 @@ impl TvManager {
 
     /// Force reconnection to a TV.
     ///
-    /// Disconnects (if connected), then reconnects under a single per-TV lock.
+    /// Disconnects (if connected), then reconnects. The per-TV lock is
+    /// released before the `connect_tv()` call so that shutdown
+    /// (`close_all_connections`) and carrier events can proceed without
+    /// blocking on a slow/unreachable backend. Same pattern as
+    /// `power_on()` — see its doc comment for the rationale.
     pub async fn reconnect(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let tv_arc = self.get_tv(tv_id).await?;
-        let mut tv = tv_arc.lock().await;
 
-        // Disconnect if connected
-        if let Some(mut conn) = tv.connection.take() {
-            let _ = conn.close().await;
-        }
+        // Disconnect and read config under per-TV lock, then release.
+        let config = {
+            let mut tv = tv_arc.lock().await;
 
-        if tv.powered_off {
-            return Err(TvManagerError::PoweredOff(tv_id.to_string()));
-        }
-
-        let display_addr = self.registry.display_address(&tv.config);
-        info!(tv_id = %tv_id, address = %display_addr, vendor = %tv.config.vendor, "Reconnecting to TV");
-
-        let connection = self.registry.connect_tv(&tv.config).await.map_err(|e| {
-            TvManagerError::ConnectionFailed {
-                tv_id: tv_id.to_string(),
-                source: e,
+            if tv.powered_off {
+                return Err(TvManagerError::PoweredOff(tv_id.to_string()));
             }
-        })?;
+            if tv.reconnecting {
+                return Err(TvManagerError::ConnectionFailed {
+                    tv_id: tv_id.to_string(),
+                    source: tisvlay_core::Error::backend(
+                        &tv.config.vendor,
+                        "reconnect already in progress",
+                    ),
+                });
+            }
 
-        info!(tv_id = %tv_id, "Connected to TV");
-        tv.connection = Some(connection);
+            tv.reconnecting = true;
+            if let Some(mut conn) = tv.connection.take() {
+                let _ = conn.close().await;
+            }
 
-        // Subscribe to backend state updates if supported
-        if let Some(conn) = tv.connection.as_mut() {
-            self.try_subscribe_state(tv_id, conn.as_mut()).await;
+            tv.config.clone()
+        };
+
+        let display_addr = self.registry.display_address(&config);
+        info!(tv_id = %tv_id, address = %display_addr, vendor = %config.vendor, "Reconnecting to TV");
+
+        // Connect without holding the lock — backends may retry for
+        // seconds (LG: 5 attempts × ~10s each).
+        let result = self.registry.connect_tv(&config).await;
+
+        // Store result under the lock.
+        {
+            let mut tv = tv_arc.lock().await;
+            tv.reconnecting = false;
+            match result {
+                Ok(connection) => {
+                    info!(tv_id = %tv_id, "Connected to TV");
+                    tv.connection = Some(connection);
+                    if let Some(conn) = tv.connection.as_mut() {
+                        self.try_subscribe_state(tv_id, conn.as_mut()).await;
+                    }
+                }
+                Err(e) => {
+                    return Err(TvManagerError::ConnectionFailed {
+                        tv_id: tv_id.to_string(),
+                        source: e,
+                    });
+                }
+            }
         }
 
-        drop(tv);
         self.emit_state_change(StateChangeEvent::ConnectionChanged {
             tv_id: tv_id.to_string(),
             connected: true,

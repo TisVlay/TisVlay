@@ -31,9 +31,7 @@ async fn shutdown_completes_promptly_with_inflight_reconnect() {
 
     // Inject a connect delay long enough that we can observe shutdown
     // blocking if the bug is present.
-    daemon
-        .handle()
-        .set_connect_delay(Duration::from_secs(10));
+    daemon.handle().set_connect_delay(Duration::from_secs(10));
 
     // Simulate what connect_all_on_restart does: spawn a background
     // reconnect that holds the per-TV lock across the slow connect.
