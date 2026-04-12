@@ -55,9 +55,19 @@ Change `RemoveTv` D-Bus method to accept a TV ID string instead of
 an object path. The daemon derives the path internally. This
 eliminates the round-trip and aligns with the `AddTv` fix.
 
+Note: this changes the D-Bus signature from `o` (object path) to `s`
+(string), which changes the introspection XML. No stability guarantees
+exist, so this is acceptable, but the proxy trait definition also needs
+updating:
+
+```rust
+// Before: fn remove_tv(&self, path: ObjectPath<'_>) -> zbus::Result<()>;
+// After:  fn remove_tv(&self, tv_id: &str) -> zbus::Result<()>;
+```
+
 ### Affected files
 
-- `crates/tisvlay-core/src/dbus_client.rs` — `remove_tv()` sends path
+- `crates/tisvlay-core/src/dbus_client.rs` — `remove_tv()` sends path, proxy trait signature changes
 - `crates/tisvlayd/src/dbus/manager.rs` — `RemoveTv` parses path
 - `crates/tisvlay-cli/src/main.rs` — calls `client.remove_tv()`
 
@@ -89,9 +99,24 @@ Wrap `wait_for_completion()` in `tokio::time::timeout()` with a
 configurable deadline (default: 60s for network backends, could be
 longer for Bluetooth). Return `PairingError::Timeout` on expiry.
 
+The timeout must also cancel the `PairingSession` so the TV stops
+showing the pairing prompt. Without cancel, the TV keeps showing
+"Accept?" until its own internal timeout and the user has to dismiss
+it manually:
+
+```rust
+match tokio::time::timeout(deadline, session.wait_for_completion()).await {
+    Ok(result) => result,
+    Err(_) => {
+        let _ = session.cancel(); // dismiss the TV prompt
+        Err(PairingError::timeout())
+    }
+}
+```
+
 ### Affected files
 
-- `crates/tisvlayd/src/tv_manager.rs` — `pair_tv()` needs timeout
+- `crates/tisvlayd/src/tv_manager.rs` — `pair_tv()` needs timeout + cancel
 
 ---
 
@@ -115,10 +140,23 @@ screen is actually on after the restart.
 
 ### Fix plan
 
-Clear the `last_action` map when `StateEvent::DaemonDisappeared` is
-observed, or when the `StateWatcher` reports that a TV's connection
-state changed to `connected` (indicating a fresh connection where
-prior state assumptions are invalid).
+Two options with different granularity:
+
+1. **Coarse (simpler)**: clear the entire `last_action` map on
+   `StateEvent::DaemonDisappeared`. Clears all TVs even if only one
+   reconnected, but daemon restarts are rare and the cost of
+   re-sending one redundant `screen_off` is negligible.
+
+2. **Per-TV (more precise)**: clear a single TV's entry when
+   `PropertiesChanged { tv_id }` indicates `Connected` transitioned
+   to `true` (fresh connection). The session service already
+   subscribes to `StateEvent::DaemonStateChanged` which includes
+   `PropertiesChanged { tv_id }` — it would need to check if the
+   changed property is `Connected`.
+
+Option 1 is sufficient for the current scale. Option 2 is better if
+the project adds many TVs where one reconnects frequently while
+others are stable.
 
 ### Affected files
 

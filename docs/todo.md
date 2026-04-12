@@ -35,7 +35,24 @@ them.
 ### Mitigation options
 
 - Increase `settle()` to 100–200ms (buys headroom, costs test speed)
-- Poll for the expected state with a timeout instead of a fixed sleep
+- **Poll for the expected state with a timeout** instead of a fixed
+  sleep (recommended). Polls at short intervals, succeeds as soon as
+  the condition is met, retries up to a timeout under CI load:
+
+  ```rust
+  async fn wait_for(f: impl Fn() -> bool, timeout: Duration) {
+      let deadline = tokio::time::Instant::now() + timeout;
+      while !f() && tokio::time::Instant::now() < deadline {
+          tokio::time::sleep(Duration::from_millis(5)).await;
+      }
+      assert!(f(), "condition not met within {:?}", timeout);
+  }
+  ```
+
+  This makes tests both faster (succeeds in ~5ms instead of sleeping
+  a fixed 50ms) and more resilient (retries up to the deadline under
+  CI load instead of failing on first miss).
+
 - Factor out D-Bus from the event handler so pure-logic tests can use
   paused time, and reserve D-Bus round-trip tests for a slower
   integration tier
