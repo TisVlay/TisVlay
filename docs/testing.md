@@ -31,6 +31,23 @@ Configuration: `.config/nextest.toml` with two profiles:
 
 **Process-per-test isolation** matters because daemon code uses global state (D-Bus well-known names, netlink sockets, config file paths). `cargo test`'s shared-process model would have tests stepping on each other.
 
+### Test execution pipeline
+
+```mermaid
+flowchart LR
+    JT["just test"] --> NX["cargo nextest run<br/>--workspace --all-features"]
+    JT --> DT["cargo test --doc"]
+    NX --> R{{"154 tests<br/>(process-per-test)"}}
+    DT --> D{{"doc tests"}}
+
+    JTC["just test-ci"] --> COV["cargo llvm-cov<br/>--no-report nextest"]
+    COV --> R
+    COV --> LCOV["lcov.info"]
+    LCOV --> RATCHET{"coverage >= 40%?"}
+    RATCHET -->|yes| JUNIT["junit.xml<br/>(dorny/test-reporter)"]
+    RATCHET -->|no| FAIL["CI fails"]
+```
+
 ## Test types
 
 | Type | Location | Tool | When |
@@ -110,6 +127,51 @@ Key properties:
 - Reports `Transport::Network` and `survives_source_ip_change() -> false` (same paths as LG)
 - `subscribe_state()` returns a real `mpsc::UnboundedReceiver<TvState>` pushing cumulative snapshots on every mutation (mirrors LG's SSAP model)
 - Pairing state machine matches LG's two-phase flow
+
+### Shared state architecture
+
+The mock's three consumers share a single `Arc<Mutex<MockState>>`. The handle is the test's control surface; the connector and discovery are the trait implementations the daemon calls.
+
+```mermaid
+flowchart TD
+    STATE["Arc&lt;Mutex&lt;MockState&gt;&gt;<br/><br/>discovered: Vec&lt;DiscoveredTv&gt;<br/>pairing_outcomes: HashMap&lt;String, PairingOutcome&gt;"]
+
+    HANDLE["MockHandle<br/>(test code)"]
+    CONN["MockConnector<br/>(TvConnector trait)"]
+    DISC["MockDiscovery<br/>(TvDiscovery trait)"]
+
+    HANDLE -- "publish_tv()<br/>clear_discovered()<br/>simulate_user_*()" --> STATE
+    CONN -- "start_pairing()<br/>reads + removes outcome" --> STATE
+    DISC -- "discover()<br/>reads discovered list" --> STATE
+
+    REG["BackendRegistry"] --> CONN
+    REG --> DISC
+
+    subgraph "create_test_registry()"
+        STATE
+        HANDLE
+        CONN
+        DISC
+    end
+```
+
+### Pairing state machine
+
+The mock mirrors LG's two-phase pairing flow. `PairingOutcome` is seeded by the test (via handle or config shorthand) before `start_pairing()` consumes it.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> AwaitingPrompt: start_pairing()
+    AwaitingPrompt --> Accepted : PairingOutcome Accept
+    AwaitingPrompt --> Rejected : PairingOutcome Reject
+    AwaitingPrompt --> TimedOut : PairingOutcome Timeout
+    AwaitingPrompt --> Cancelled : cancel / channel closed
+    Accepted --> [*] : Credentials returned
+    Rejected --> [*] : PairingError Rejected
+    TimedOut --> [*] : PairingError Timeout
+    Cancelled --> [*] : PairingError Cancelled
+```
 
 ### MockHandle — test-driven control surface
 
@@ -199,6 +261,37 @@ ss.emit_active_changed(true).await?;  // simulate lock
 
 `tisvlayd::test_harness::TestDaemon` builds a fully wired daemon on the shared private bus. Feature-gated on `mock`.
 
+### Test harness wiring
+
+```mermaid
+flowchart TD
+    subgraph PROCESS["Test binary process"]
+        subgraph BUS["PrivateBus::shared()"]
+            DBUS["dbus-daemon<br/>unix:path=/tmp/.../bus.sock"]
+        end
+
+        subgraph TD["TestDaemon"]
+            MGR["TvManager<br/>(SystemConfig + MockConnector)"]
+            DBSURF["D-Bus surface<br/>Manager1 + ObjectManager<br/>+ Tv1.* per TV"]
+            FWD["state_change_forwarder<br/>(tokio::spawn)"]
+            MH["MockHandle"]
+        end
+
+        subgraph CLIENT["Test assertions"]
+            DC["DaemonClient<br/>::from_connection()"]
+        end
+
+        LOGIND["FakeLogind"]
+    end
+
+    DBUS <--> DBSURF
+    DBUS <--> DC
+    DBUS <--> LOGIND
+    MGR --> FWD
+    FWD --> DBSURF
+    MH -.->|"shares Arc&lt;Mutex&lt;MockState&gt;&gt;"| MGR
+```
+
 ```rust
 use tisvlayd::test_harness::TestDaemon;
 use tisvlay_core::DaemonClient;
@@ -229,6 +322,36 @@ async fn my_test() {
 - `tests/concurrent_tvs.rs` — multi-TV independence
 - `tests/dbus_contract.rs` — property cache + command round-trips
 - `tests/pair_round_trip.rs` — full pairing flow through D-Bus
+
+### Pairing round-trip flow
+
+This is the full code path exercised by `pair_round_trip.rs` — the test that discovered the TV ID bug.
+
+```mermaid
+sequenceDiagram
+    participant Test
+    participant Handle as MockHandle
+    participant Client as DaemonClient
+    participant DBus as D-Bus (private bus)
+    participant Mgr as TvManager
+    participant Conn as MockConnector
+
+    Test->>Handle: simulate_user_accept("mock://lr")
+    Note over Handle: seeds PairingOutcome::Accept<br/>in shared MockState
+
+    Test->>Client: pair_tv("Living Room", "mock", config, true)
+    Client->>DBus: AddTv(name, vendor, json, managed)
+    DBus->>Mgr: pair_tv(name, vendor, config, None, true)
+    Mgr->>Conn: start_pairing(vendor_config)
+    Note over Conn: removes pre-seeded Accept<br/>from MockState
+    Conn-->>Mgr: PairingSession
+    Mgr->>Mgr: session.wait_for_completion()
+    Mgr-->>Mgr: Credentials returned
+    Mgr->>Mgr: save config + register D-Bus interfaces
+    Mgr-->>DBus: (ObjectPath, tv_id)
+    DBus-->>Client: (ObjectPath, "living_room")
+    Client-->>Test: Ok("living_room")
+```
 
 ### BusKind and from_connection constructors
 
@@ -263,6 +386,39 @@ async fn session_lock_dispatches_screen_off() {
 **Integration tests:**
 - `tests/session_events.rs` — lock/unlock/idle/greeter dispatch
 - `tests/session_dbus_contract.rs` — Session1 interface methods + signals
+
+### Session event dispatch flow
+
+This is the round-trip exercised by `session_events.rs` when a `SessionLocked` event is injected.
+
+```mermaid
+sequenceDiagram
+    participant Test
+    participant EH as event_handler
+    participant Client as DaemonClient
+    participant DBus as D-Bus (private bus)
+    participant Mgr as TvManager
+    participant Mock as MockConnection
+    participant Fwd as state_change_forwarder
+
+    Test->>EH: inject_event(SessionLocked)
+    EH->>Client: list_tvs()
+    Client->>DBus: GetManagedObjects
+    DBus-->>Client: TV list (filter automated)
+    EH->>EH: resolve profile → on_session_lock = ScreenOff
+    EH->>Client: screen_off(tv_id)
+    Client->>DBus: Set IsScreenOn = false
+    DBus->>Mgr: screen_off(tv_id)
+    Mgr->>Mock: screen_off()
+    Mock->>Mock: update TvState, push to subscriber
+    Mock-->>Fwd: TvState snapshot via mpsc
+    Fwd->>DBus: update cached property + PropertiesChanged
+    Note over Test: settle() — wait 50ms for<br/>D-Bus property propagation
+    Test->>Client: list_tvs()
+    Client->>DBus: GetManagedObjects
+    DBus-->>Client: is_screen_on = false
+    Test->>Test: assert!(!tv.is_screen_on)
+```
 
 ## Test observability
 
