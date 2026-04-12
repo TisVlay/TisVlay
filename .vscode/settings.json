@@ -1,0 +1,20 @@
+{
+    "cSpell.words": [
+        "bluez",
+        "dbus",
+        "dbusmock",
+        "insta",
+        "logind",
+        "netlink",
+        "nextest",
+        "nics",
+        "polkit",
+        "proptest",
+        "rstest",
+        "SIGPIPE",
+        "SSAP",
+        "tisvlay",
+        "tisvlayd",
+        "zbus"
+    ]
+}
