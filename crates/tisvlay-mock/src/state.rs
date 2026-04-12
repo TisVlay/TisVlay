@@ -29,6 +29,7 @@
 //!   to some tests (e.g., "pick the first discovered TV").
 
 use std::collections::HashMap;
+use std::time::Duration;
 use tisvlay_core::DiscoveredTv;
 
 use crate::pairing::PairingOutcome;
@@ -46,6 +47,10 @@ pub(crate) struct MockState {
     /// state machine. If no outcome is set, pairing waits for an
     /// explicit `simulate_user_*` call via the handle.
     pub(crate) pairing_outcomes: HashMap<String, PairingOutcome>,
+
+    /// Optional delay injected before `MockConnector::connect()` returns.
+    /// Simulates a slow or unreachable TV for testing shutdown behavior.
+    pub(crate) connect_delay: Option<Duration>,
 }
 
 impl MockState {
