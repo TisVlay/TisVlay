@@ -1,315 +1,301 @@
-# Review: Testing & Measurement Framework (main..HEAD)
+# Review: Phases A, B, C — Discovery/pairing, daemon integration tests, session tests (main..HEAD)
 
-Review of 21 commits implementing Phases 1-6 of the testing framework plan: coverage
-ratchet, nextest runner, insta snapshots, rstest parameterized tests, proptest property
-tests, and the tisvlay-mock backend crate. Phase 7 (Codecov upload) deferred.
+Review of 30 commits implementing Phases A (MockHandle for discovery/pairing), B (daemon
+integration tests with private D-Bus), and C (session service lib extraction + tests).
+Also includes a bug fix for TV ID / D-Bus path inconsistency discovered through testing.
 
-Build: clean. Tests: 94 pass.
+Build: clean. All tests pass (133+ across 12 test suites).
 
----
-
-## Z1. Phase 6 — `tisvlay-mock` crate is well-designed
-
-**File:** [crates/tisvlay-mock/](crates/tisvlay-mock/)
-
-The mock backend is more than a stub — it correctly models LG's behavior so the
-daemon's real code paths (subscription forwarder, D-Bus property cache, reconnect
-logic) all exercise against it:
-
-- `MockConnection::mutate_and_push()` clones state under the lock and pushes to
-  subscribers — same shape as LG's WebSocket update stream
-- `Transport::Network` + `survives_source_ip_change() = false` matches LG, so
-  carrier/route/NIC-failover paths run identically
-- `subscribe_state()` sends an immediate snapshot then pushes on every mutation,
-  matching SSAP subscribe semantics
-- `MockConnection::power_off()` correctly closes the transport (`self.connected = false`)
-  to mirror real backends
-- `switch_input()` validates against the input list and returns a backend error,
-  matching LG's behavior
-- `start_pairing()` spawns a real `tokio::task` with `tokio::select!` between a 10ms
-  timer and the command channel — exercises the same `PairingSession` machinery the
-  real backend uses
-
-**Severity:** Info (high-fidelity mock, well-aligned with the real backend)
+Coverage: 20% → 36% lines (`tv_manager.rs` from 0% → 30%).
 
 ---
 
-## Z2. Mock feature gating is correct
+## AA1. MockHandle — unified test control surface
 
-**Files:** `crates/tisvlay-backends/Cargo.toml`, `crates/tisvlayd/Cargo.toml`
+**Files:** `crates/tisvlay-mock/src/handle.rs`, `state.rs`, `pairing.rs`, `discovery.rs`
 
-`tisvlay-backends` exposes a `mock` feature gated as `dep:tisvlay-mock`. `tisvlayd`
-forwards via its own `mock` feature to `tisvlay-backends/mock`. Both are default-off,
-so distro packages (`cargo build -p tisvlayd`) link zero mock code.
+`MockHandle` exposes a clean symmetric API for discovery and pairing:
+- `publish_tv(DiscoveredTv)` / `clear_discovered()` — populate the "network"
+- `simulate_user_accept(tv_id)` / `simulate_user_reject(tv_id)` / `simulate_pairing_timeout(tv_id)` — drive pairing outcomes
 
-The integration test uses `#![cfg(feature = "mock")]` at the file level so it's
-silently skipped when the feature is off — no test failures, no compile errors.
+Each test gets its own `(BackendRegistry, MockHandle)` pair via `create_test_registry()`.
+No shared state between tests — parallel by construction.
 
-`create_registry()` registers the mock connector behind `#[cfg(feature = "mock")]`
-without affecting LG registration. Clean composition.
+The `PairingShorthand` config (`pairing = "accept"|"reject"|"timeout"`) auto-schedules
+the corresponding `simulate_user_*` call, so simple tests don't touch the handle.
+If both shorthand and handle are set, the handle wins — correct precedence.
+
+`MockState` uses `std::sync::Mutex` (not tokio) — brief critical sections, never held
+across an `.await`. The connector's `start_pairing` spawns a `tokio::task` that polls
+the state machine, matching the real LG backend's async pairing architecture.
+
+**Severity:** Info (well-designed, matches plan's design decisions)
+
+---
+
+## AA2. `create_test_registry` vs `create_registry` — clean separation
+
+**File:** `crates/tisvlay-backends/src/lib.rs`
+
+Production `create_registry()` calls `new_production_parts()` — the handle is dropped
+immediately, so production code can never drive test hooks. `create_test_registry()`
+calls `new_test_parts()` and surfaces the handle.
+
+`BackendRegistry::discover_tvs(vendor, timeout)` is ungated (no `#[cfg(feature = "discovery")]`)
+so mock discovery works in test builds that don't enable the full SSDP discovery feature.
 
 **Severity:** Info (correct feature design)
 
 ---
 
-## Z3. Phase 5 — proptest discovers edge cases at scale
+## AA3. 11 mock discovery/pairing integration tests — thorough coverage
 
-**Files:** `crates/tisvlay-core/src/dbus_paths.rs`, `crates/tisvlay-core/src/wol.rs`
+**File:** `crates/tisvlay-backends/tests/mock_discovery.rs`
 
-7 properties x 256 cases = ~1,800 randomized inputs per run. The properties are
-well-chosen:
+Covers: empty network, ordered publish, dynamic publish-after-discover, clear,
+happy-path pairing, reject, timeout, shorthand variants, handle-overrides-shorthand,
+and mixed-mode multi-TV. Each test uses its own `create_test_registry()` call.
 
-- `tv_path_suffix_is_valid` — invariant: only `[A-Za-z0-9_]`
-- `tv_path_preserves_char_count` — invariant: char count never changes
-- `tv_path_valid_input_unchanged` — passthrough for valid inputs
-- `mac_parse_display_roundtrip` — `parse(mac.to_string()) == mac`
-- `mac_parse_all_separator_styles` — colon/dash/plain equivalence
-- `mac_parse_case_insensitive` — upper/lower equivalence
-- `mac_parse_rejects_wrong_length` — failure mode property
-
-Each uses `prop_assert*` (cooperates with shrinking) instead of `assert*`. Failing
-seeds would be persisted to `.proptest-regressions` and replayed on future runs.
-
-**Severity:** Info (correct property test design)
+**Severity:** Info (comprehensive coverage of the mock API)
 
 ---
 
-## Z4. Phase 4 — rstest converts 3 tests into 7 labelled cases
+## AA4. PrivateBus — robust private dbus-daemon spawner
 
-**File:** `crates/tisvlay-core/src/dbus_paths.rs`
+**File:** `crates/tisvlay-test-support/src/dbus.rs`
 
-The three flat `tv_path` tests are consolidated into one `#[rstest]` with 7 `#[case]`
-entries. New cases (`with_dot`, `multiple_bad`, `numeric`, `all_alphanumeric`) cover
-edge cases that weren't worth writing as separate functions before. Each shows up in
-nextest with the case label, so failures point at the failing input.
+- `LazyLock<PrivateBus>` — one daemon per test binary, shared via `PrivateBus::shared()`
+- `PR_SET_PDEATHSIG = SIGKILL` in `pre_exec` — kernel kills the daemon on test crash
+- Env var scrubbing (`DBUS_SESSION_BUS_ADDRESS`, `DBUS_SYSTEM_BUS_ADDRESS`,
+  `DBUS_STARTER_*`) before spawn — isolates from the user session
+- `connect()` uses `zbus::connection::Builder::address(...)` — bypasses the per-process
+  `OnceCell` cache that would alias all tests to one connection
 
-**Severity:** Info (good demonstration of the pattern)
+This is the correct architecture per the plan's design decision §3 and §4. The zbus
+connection cache issue was the key insight from the research.
 
----
-
-## Z5. Phase 3 — insta snapshots pin TvInfo wire format
-
-**File:** `crates/tisvlay-core/tests/tv_info_snapshot.rs`
-
-`TvInfo` is the externally-visible struct returned by `list_tvs()` and exposed as the
-CLI's `--json` output. Snapshotting it as a stability contract is the right call —
-any accidental field rename or reorder would break Nushell pipelines and downstream
-scripts.
-
-Three snapshots cover connected, disconnected, and list-of-two shapes. Reviewed via
-`just test-snapshot-review`.
-
-**Severity:** Info (correct application of snapshot testing)
+**Severity:** Info (correct implementation of a subtle requirement)
 
 ---
 
-## Z6. Phase 2 — nextest with CI/local profiles
+## AA5. TestDaemon — fully wired daemon on private bus
 
-**File:** `.config/nextest.toml`
+**File:** `crates/tisvlayd/src/test_harness.rs`
 
-Two profiles:
-- `default` — local use, no retries, `slow-timeout = 60s` warning
-- `ci` — `retries = 1` for transient flakes, `fail-fast = false` for full picture, JUnit XML output
+`TestDaemon::with_one_mock_tv(tv_id)` builds a complete daemon: `SystemConfig` in a
+tempdir, `TvManager`, `BackendRegistry` with mock, full D-Bus surface (ObjectManager,
+Manager1, per-TV Tv1.* interfaces), state-change forwarder — all on the shared
+`PrivateBus`. Returns the connection, manager, and `MockHandle`.
 
-Process-per-test isolation matters here because of D-Bus / netlink / file paths
-global state. `just test-ci` uses the `ci` profile and produces JUnit XML for
-`dorny/test-reporter` to publish inline.
+`TestDaemon::with_config(SystemConfig)` for custom setups. The `mock_tv_config()`
+helper builds a standard single-TV config.
 
-**Severity:** Info (correct configuration for the workspace)
+The forwarder task is aborted on drop — correct cleanup. The connection is released
+on drop, unregistering the well-known name.
 
----
-
-## Z7. Phase 1 — coverage ratchet with `cargo-llvm-cov`
-
-**Files:** `justfile`, `.github/workflows/ci.yml`
-
-Coverage measured at 19.59% baseline, 20.24% after the mock crate. The ratchet
-(`just cov-ratchet`, `--fail-under-lines 19`) prevents regression without setting an
-arbitrary high target. The `cov_baseline_lines` variable is in the justfile for easy
-bumping on PRs that improve coverage.
-
-The Phase 7 commit (8ee7656) consolidates coverage into the test step:
-`NEXTEST_PROFILE=ci cargo llvm-cov --no-report nextest` runs tests once under
-instrumentation, then `cargo llvm-cov report --lcov` and `--fail-under-lines` use
-the cached profile data. One test run, both outputs.
-
-**Severity:** Info (correct ratchet design)
+**Severity:** Info (clean harness design)
 
 ---
 
-## Z8. CI consolidation — Build step removed
+## AA6. tisvlayd lib+bin split and BusKind extraction
 
-**File:** `.github/workflows/ci.yml`
+**Commit:** 59ebc95
 
-The Build step was redundant: `cargo llvm-cov nextest` produces a different cargo
-fingerprint than `cargo build` (instrumented vs uninstrumented), so the Build step's
-artifacts couldn't be reused by Test. `cargo clippy --all-targets` already does a
-full uninstrumented compile (verifying the distro build), so it serves as the build
-verification on its own.
+`tisvlayd/src/main.rs` drops from ~440 to ~145 lines. Public modules: `tv_manager`,
+`dbus`, `state_forwarder`, `logind`, `netlink`, `network_watcher`, `test_harness`.
 
-The CI now has two compile stages:
-- **Clippy** — uninstrumented build + lints (verifies distro compile)
-- **Test** — instrumented build + nextest + lcov + ratchet
+`BusKind` enum (`Session | System | Address(String)`) moved to `tisvlay-core` (dbus
+feature-gated) with `builder()` method. Both `tisvlayd` and `tisvlay-session` use it.
+No code path divergence between production and test bus setup.
 
-prek and `just check` still keep all four hooks for local incremental use. This is
-the right tradeoff: CI optimizes for total time (no redundant compile), local
-development optimizes for incremental feedback.
+`state_change_forwarder` moved to `src/state_forwarder.rs` so it stays in the lib
+with access to the private cached fields on `Tv*Service` structs.
 
-**Severity:** Info (correct optimization)
+**Severity:** Info (correct lib+bin pattern, shared BusKind)
 
 ---
 
-## Z9. justfile as single source of truth
+## AA7. Profile dispatch tests — tv_manager.rs 0% → 30%
 
-**File:** `justfile`
+**File:** `crates/tisvlayd/tests/profile_dispatch.rs`
 
-21 recipes organized into `check`, `coverage`, `dev`, `package` groups via
-`[group('...')]` attributes. `set shell := ["bash", "-euo", "pipefail", "-c"]` for
-strict failure handling. The `cov-ratchet` recipe takes an optional `lines` parameter
-defaulting to `cov_baseline_lines` so PRs can test higher targets without editing
-the justfile.
+5 tests exercise `execute_system_event` through the full pipeline:
+- `shutdown_disconnects_connected_tv`
+- `sleep_disconnects_connected_tv`
+- `reboot_does_not_disconnect_tv` (default profile, action=None)
+- `no_session_does_not_disconnect_tv`
+- `reconnect_sets_connected_property_on_dbus`
 
-prek hooks, VS Code tasks, and CI workflows all dispatch through `just`, so command
-strings live in exactly one place. Renames and flag changes happen once.
+Each builds a `TestDaemon`, connects the mock TV, fires a system event, and asserts
+the outcome. The D-Bus Connected property is verified via `DaemonClient::list_tvs()`.
 
-The `package-build-musl` recipe is `[private]` (hidden from `just --list`) since
-it's only a dependency of the `package-*` recipes.
-
-**Severity:** Info (excellent task organization)
+**Severity:** Info (significant coverage gain)
 
 ---
 
-## Z10. `mutate_and_push` `.expect("...lock poisoned")` — acceptable for mock
+## AA8. Automated gate composition tests
 
-**File:** `crates/tisvlay-mock/src/connection.rs`
+**File:** `crates/tisvlayd/tests/automated_gate.rs`
 
-The mock uses `std::sync::Mutex` and panics on poison via `.expect("mock state lock poisoned")`.
-Each method that touches state has this same pattern. Lock poisoning only happens if
-a previous holder panicked while holding the lock — for an in-memory mock with no
-panicking code paths, this is essentially unreachable.
+5 gate tests covering the 4-input composition (managed × automate_when × primary_input
+× current_input):
+- `unmanaged_tv_is_not_automated`
+- `on_primary_fires_when_input_matches`
+- `on_primary_skips_when_input_differs`
+- `off_primary_fires_when_input_differs`
+- `off_primary_skips_when_input_matches`
 
-For a test mock, the current `.expect` is fine — a poisoned lock indicates a bug
-in the mock itself, and panicking is the right response. Not actionable.
+2 multi-TV concurrency tests:
+- `shutdown_only_affects_managed_tvs`
+- `mixed_profiles_dispatch_independently`
 
-**Severity:** Info (acceptable for mock semantics)
-
----
-
-## Z11. `MockConnection` async fns with no `.await`
-
-**File:** `crates/tisvlay-mock/src/connection.rs`
-
-`mutate_and_push` is sync (locks `std::sync::Mutex`, sends through `mpsc::Unbounded`)
-so methods like `power_off`, `screen_on/off`, `set_volume` have no `.await`. This is
-fine — they're forced to be `async` by the trait, and the no-op async overhead is
-negligible.
-
-**Severity:** Info (correct, just noting)
+**Severity:** Info (comprehensive gate coverage)
 
 ---
 
-## Z12. Mock `start_pairing` always succeeds — Phase A.2 will add modes
+## AA9. D-Bus contract tests
 
-**File:** `crates/tisvlay-mock/src/connector.rs`
+**File:** `crates/tisvlayd/tests/dbus_contract.rs`
 
-```rust
-Some(PairingCommand::SubmitInput(_)) => {
-    // Mock doesn't use PIN input; succeed anyway.
-    let _ = state_tx.send(PairingState::complete(...));
-}
-```
+6 tests verify the full zbus pipeline (client → D-Bus → TvManager → MockConnection →
+subscription push → forwarder → property cache → client property read):
+- `connected_tv_reports_initial_mock_state`
+- `set_volume_round_trips_through_dbus`
+- `set_mute_round_trips_through_dbus`
+- `screen_off_updates_power_state_and_screen_flag`
+- `set_backlight_round_trips_through_dbus`
+- `get_supported_vendors_includes_mock`
 
-This is fine for current state but limits failure-mode pairing tests. The plan's
-`MockPairingMode` enum will replace this with explicit Accept/Reject/Timeout/
-DelayedAccept modes — captured as Phase A.2.
-
-**Severity:** Info (acknowledged limitation, planned for Phase A)
+**Severity:** Info (validates the end-to-end property pipeline)
 
 ---
 
-## Z13. Mock crate has no `#[cfg(test)]` unit tests
+## AA10. Pair round-trip tests → discovered TV ID bug → fix
 
-**File:** `crates/tisvlay-mock/src/`
+**File:** `crates/tisvlayd/tests/pair_round_trip.rs`
 
-The mock crate's test coverage comes entirely from
-`crates/tisvlay-backends/tests/mock_backend.rs` (6 integration tests). The mock crate
-itself has no `mod tests` — every method is exercised through the integration tests.
+4 tests exercise the full pairing flow through D-Bus:
+- `pair_happy_path`: pair, verify TV appears in list
+- `pair_then_control`: pair, screen_off, verify interface works
+- `pair_rejected`: simulate_user_reject, verify error, TV not in list
+- `pair_unmanaged`: pair with managed=false, verify flag persists
 
-This is acceptable for a small implementation crate, but the integration tests live
-in a different crate, so coverage tools may not credit them correctly. If
-`crates/tisvlay-mock/` shows as 0% covered in the report, that's why — the call
-sites are in `tisvlay-backends/tests/`.
+These tests **discovered** the TV ID / D-Bus path inconsistency (docs/bugs.md):
+hyphens in TV IDs diverged from underscore-sanitized D-Bus path suffixes. The fix
+(795a611) restricts TV IDs to `[A-Za-z0-9_]`, validates at config load, fixes
+auto-generation, and changes `AddTv` to return the canonical ID.
 
-**Fix direction (low priority):** Verify that llvm-cov credits the mock crate from
-cross-crate test calls. If not, add a brief `mod tests` in
-`crates/tisvlay-mock/src/connection.rs` to verify state mutation locally.
-
-**Severity:** Info (worth verifying coverage attribution)
+**Severity:** Info (tests found a real bug and it was fixed)
 
 ---
 
-## Z14. `subscription_tx` is single-subscriber — matches LG
+## AA11. Session service lib extraction + TestSession harness
 
-**File:** `crates/tisvlay-mock/src/connection.rs`
+**Commit:** cf7a0eb
 
-`MockConnection::subscription_tx: Option<mpsc::UnboundedSender<TvState>>` only
-supports one subscriber at a time — calling `subscribe_state()` twice replaces the
-previous sender. Real backends (LG) also support only one active subscription channel
-since the WebSocket reader has one mpsc tx, so this matches reality.
+`tisvlay-session` split into lib+bin (same pattern as tisvlayd). `SessionState`,
+`event_handler`, action dispatch moved to `lib.rs`. `main.rs` becomes thin entry point.
 
-If multi-subscriber support is ever needed for testing scenarios,
-`tokio::sync::broadcast` would be the right swap.
+`register_session_dbus_on(bus, ...)` accepts `BusKind` for test bus injection.
+`SessionMonitor::start_on(conn)` for the same reason.
 
-**Severity:** Info (matches real backend behavior)
+`FakeScreenSaver` in test-support: hand-rolled `org.freedesktop.ScreenSaver` stub
+with `ActiveChanged` signal emission, matching the `FakeLogind` pattern.
 
----
+`TestSession` harness: wires TestDaemon + DaemonClient + SessionState +
+FakeScreenSaver + event handler on the shared private bus.
 
-## Z15. `--all-features` correctly includes mock
-
-**File:** `justfile`
-
-```just
-test:
-    cargo nextest run --workspace --all-features
-    cargo test --workspace --all-features --doc
-```
-
-`--all-features` is correct — it includes the `mock` feature so `mock_backend.rs`
-runs. Without it, the mock integration tests would be silently skipped. The doc
-tests run separately because nextest doesn't support them. Both invocations include
-`--all-features`, which is consistent.
-
-**Severity:** Info (correct invocation)
+**Severity:** Info (clean extraction, enables session testing)
 
 ---
 
-## Z16. `just check` vs `just test-ci` — correct local/CI split
+## AA12. Session integration tests
 
-**File:** `justfile`
+**Files:** `crates/tisvlay-session/tests/session_events.rs`, `session_dbus_contract.rs`
 
-`just check` runs `fmt build clippy test` for incremental local development. CI uses
-`just clippy` + `just test-ci` instead, which is more efficient (no separate Build
-step). This asymmetry is documented in the test-ci recipe comment.
+6 session event tests: lock→screen_off, unlock→screen_on, idle→screen_off,
+idle_resume→screen_on, greeter_wake→screen_on, duplicate lock idempotent.
 
-**Severity:** Info (correct local/CI split)
+5 session D-Bus contract tests: ListUserProfiles includes "default",
+GetTvUserProfile returns "default", GetEffectiveUserProfile valid JSON,
+SetTvUserProfile emits UserProfileChanged, SetTvUserProfile rejects unknown.
+
+**Severity:** Info (session service now has first-class test coverage)
 
 ---
 
-## Z17. No documented way to run the daemon with mock feature
+## AA13. tracing-test + tracing-mock integration
 
-**Files:** `justfile`, `.claude/CLAUDE.md`
+**Commits:** c706825, 1a7b27a
 
-The `mock` feature exists and forwards correctly, but there's no documentation in
-the daemon's `daemon-start` recipe or CLAUDE.md about how to enable it. The plan
-mentions `cargo run --bin tisvlayd --features mock` but it's not in the `dev` recipes.
+`tracing-test` with `no-env-filter` feature ensures events from dependency crates
+(tisvlay-mock, tisvlay-test-support) are captured. `#[traced_test]` auto-dumps logs
+on failure.
 
-The justfile's `daemon-start` recipe doesn't include `--features mock`, so contributors
-who want to test against mock TVs would need to override it manually.
+`tracing-mock` regression tests assert specific `#[instrument]` span names and event
+fields: `publish_tv` carries `tv_id`, `simulate_user_accept` carries `tv_id` and
+`outcome`. If someone removes an `#[instrument]` or renames a span, the test fails.
 
-**Fix direction:** Add a `daemon-start-mock` recipe to the justfile, or document
-`cargo run --features mock` in the dev section of CLAUDE.md.
+**Severity:** Info (observability regression protection)
 
-**Severity:** Low (DX gap, not a correctness issue)
+---
+
+## AA14. StateWatcher tests on private bus
+
+**File:** `crates/tisvlay-core/tests/state_watcher.rs`
+
+2 tests verify the name-watch lifecycle:
+- `watcher_emits_daemon_appeared_when_name_claimed`
+- `watcher_emits_daemon_disappeared_when_name_released`
+
+Both use `PrivateBus::shared()` and exercise `StateWatcher::from_connections` against
+a real dbus-daemon. The tray and future GUI depend on this for instant daemon availability
+tracking.
+
+**Severity:** Info (validates the StateWatcher on a real bus)
+
+---
+
+## AA15. TV ID restriction — correct fix for a testing-discovered bug
+
+**Commit:** 795a611
+
+The fix restricts TV IDs to `[A-Za-z0-9_]` and validates at config load with a clear
+error message and suggested fix. Auto-generated IDs (from pairing) use `_` instead of
+`-`. `AddTv` returns `(ObjectPath, String)` so the client gets the canonical ID directly.
+
+5 new unit tests for validation and ID generation. All test fixtures and doc examples
+migrated from hyphens to underscores.
+
+This is a good example of testing finding real bugs: the pair_round_trip test failed
+because `DaemonClient::pair_tv` extracted the TV ID from the D-Bus path (lossy) instead
+of receiving it directly from the daemon.
+
+**Severity:** Info (bug found by tests, fix is clean)
+
+---
+
+## AA16. Clock spike validates deterministic time for future tests
+
+**File:** `crates/tisvlay-test-support/tests/clock_spike.rs`
+
+Validates `tokio::time::pause()` + `advance()` with the exact pattern TvManager uses
+(mpsc receiver + sleep loop). Documents caveats: `start_paused = true` already freezes
+time (explicit `pause()` panics), and `tokio::time::Instant` reads virtual time (wall
+clock guard must use `std::time::Instant`).
+
+**Severity:** Info (validates infrastructure for future timeout tests)
+
+---
+
+## AA17. `DaemonClient::from_connection` — correct constructor design
+
+**Commit:** 70c5fbd
+
+General-purpose constructor, not testing-specific. No feature flag, no `doc(hidden)`.
+Bypasses zbus's `OnceCell` cache. Same pattern for `StateWatcher::from_connections`.
+
+**Severity:** Info (correct per plan design decision §6)
 
 ---
 
@@ -317,62 +303,55 @@ who want to test against mock TVs would need to override it manually.
 
 | # | Severity | Item |
 |---|----------|------|
-| Z1 | **Info** | Mock crate has high fidelity to real backend behavior |
-| Z2 | **Info** | Feature gating is correct, distro builds get zero mock code |
-| Z3 | **Info** | Proptest properties are well-chosen and use prop_assert |
-| Z4 | **Info** | rstest demonstrates the pattern with new edge cases |
-| Z5 | **Info** | insta snapshots correctly pin the TvInfo wire format |
-| Z6 | **Info** | nextest CI/local profiles configured correctly |
-| Z7 | **Info** | Coverage ratchet is correctly configured |
-| Z8 | **Info** | Build step removed, clippy serves as build verification |
-| Z9 | **Info** | justfile is excellent task organization |
-| Z10 | **Info** | `.expect` on mutex poisoning is acceptable for mock |
-| Z11 | **Info** | async fns with no .await are forced by trait |
-| Z12 | **Info** | Pairing always succeeds — planned for Phase A.2 |
-| Z13 | **Info** | Mock crate has no unit tests (covered by integration tests) |
-| Z14 | **Info** | Single subscriber matches real backend |
-| Z15 | **Info** | `--all-features` correctly includes mock |
-| Z16 | **Info** | check vs test-ci split is correct |
-| Z17 | **Low** | No documented way to run daemon with mock feature for dev |
+| AA1 | **Info** | MockHandle is well-designed unified test control surface |
+| AA2 | **Info** | Production/test registry separation is clean |
+| AA3 | **Info** | 11 discovery/pairing tests are thorough |
+| AA4 | **Info** | PrivateBus handles zbus cache, pdeathsig, env scrubbing |
+| AA5 | **Info** | TestDaemon is fully wired with correct drop semantics |
+| AA6 | **Info** | lib+bin split and shared BusKind are clean |
+| AA7 | **Info** | Profile dispatch tests significant coverage gain |
+| AA8 | **Info** | Automated gate composition fully covered |
+| AA9 | **Info** | D-Bus contract validates end-to-end property pipeline |
+| AA10 | **Info** | Pair round-trip tests found a real bug |
+| AA11 | **Info** | Session service lib extraction enables testing |
+| AA12 | **Info** | Session event + D-Bus contract tests comprehensive |
+| AA13 | **Info** | tracing-mock regression tests protect observability |
+| AA14 | **Info** | StateWatcher tests validate name-watch lifecycle |
+| AA15 | **Info** | TV ID restriction correctly fixes testing-discovered bug |
+| AA16 | **Info** | Clock spike validates deterministic time infrastructure |
+| AA17 | **Info** | from_connection constructors are general-purpose, no feature flag |
 
 ## Overall Assessment
 
-This branch implements Phases 1-6 of the testing plan thoroughly. The most impactful
-addition is the **mock backend** — it's not a stub, it's a high-fidelity LG emulator
-with the same transport semantics, push subscription model, and `survives_source_ip_change`
-behavior. This means future Phase B tests can exercise the daemon's real code paths
-(state forwarder, D-Bus property cache, NIC failover) without hardware.
+This is the largest testing infrastructure investment in the project — ~4700 lines net,
+going from 20% to 36% coverage. The architecture is well-designed: private dbus-daemon
+per test binary avoids the zbus `OnceCell` cache issue, `MockHandle` provides a clean
+symmetric API, and the `TestDaemon`/`TestSession` harnesses wire the full D-Bus surface
+onto the private bus.
 
-The coverage ratchet, nextest setup, and CI consolidation form a cohesive testing
-infrastructure. The justfile as single source of truth is the right pattern — prek
-hooks, VS Code tasks, and CI all dispatch through it.
+The most valuable outcome is that **testing found a real bug** (AA10/AA15): TV IDs with
+hyphens diverged from their D-Bus path suffixes, causing `pair_tv()` to return wrong IDs.
+The fix restricts the ID alphabet and returns the canonical ID from `AddTv`. This is
+exactly the kind of regression that would have been reported by users had it shipped.
 
-One low-severity item: **Z17** — no documented way to run the daemon with the mock
-feature enabled for interactive development. Adding a `daemon-start-mock` recipe or
-documenting `cargo run --features mock` in CLAUDE.md would close this DX gap.
+No actionable items. All 17 findings are info-level.
 
-No actionable findings beyond Z17. Phase A (discovery + pairing modes) and Phase B
-(daemon integration tests) are the natural follow-ups, and the mock crate's design
-supports both cleanly.
+## Idiomatic Rust observations
 
-## Idiomatic Rust observations (no actionable items)
+- **`MockState` uses `std::sync::Mutex`** (not `tokio::sync::Mutex`) with brief critical
+  sections. This is correct — `tokio::sync::Mutex` is only needed when the lock is held
+  across `.await` points, which `MockState` never does.
 
-A few patterns I considered for refactoring but ruled out:
+- **`PrivateBus::shared()` uses `LazyLock`** (stabilized in Rust 1.80) instead of
+  `once_cell::sync::Lazy`. Good — one fewer dependency.
 
-- **`pub struct MockBackend;` + `new()`** could become `#[derive(Default)]` with no
-  `new()`, but losing the explicit constructor makes the API less discoverable. Style
-  preference; current form is fine.
+- **`pre_exec` for `PR_SET_PDEATHSIG`** uses `unsafe` correctly — the only operation
+  in the hook is the `libc::prctl` call, which is async-signal-safe.
 
-- **`MockConnector::start_pairing` spawned task** uses `tokio::select!` between a
-  10ms timer and the command channel. Could use `tokio::time::timeout` instead, but
-  the current form is more flexible if more branches are added later (Phase A.2).
+- **`TestDaemon` aborts its forwarder on `Drop`** via `self.forwarder.abort()`. This
+  is fine — the forwarder is a pure event loop with no cleanup requirements. The
+  connection drop releases the D-Bus name.
 
-- **`MockConnection::mutate_and_push`** closure-based mutation is the cleanest way
-  to release the lock before sending through the channel. The clone-then-send pattern
-  is correct.
-
-- **`parse_config`** in connector.rs duplicates the pattern from the LG backend.
-  Could be extracted into a shared helper, but with only two backends and slightly
-  different error contexts, the duplication is acceptable.
-
-None of these are worth the refactoring cost for the current state.
+- **`PairingOutcome` enum** (`Accept`, `Reject`, `Timeout`) is a clean state machine
+  input. The `PairingShorthand` config maps to it, and the handle methods set it
+  directly. No ambiguity about precedence (handle wins over shorthand).
