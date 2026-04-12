@@ -4,6 +4,7 @@ members = [
     "crates/tisvlay-core",
     "crates/tisvlay-lg",
     "crates/tisvlay-mock",
+    "crates/tisvlay-test-support",
     "crates/tisvlay-backends",
     "crates/tisvlay-cli",
     "crates/tisvlayd",
@@ -80,6 +81,7 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 tisvlay-core = { path = "crates/tisvlay-core" }
 tisvlay-lg = { path = "crates/tisvlay-lg" }
 tisvlay-mock = { path = "crates/tisvlay-mock" }
+tisvlay-test-support = { path = "crates/tisvlay-test-support" }
 tisvlay-backends = { path = "crates/tisvlay-backends" }
 
 # Testing

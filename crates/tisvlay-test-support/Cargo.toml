@@ -1,0 +1,22 @@
+[package]
+name = "tisvlay-test-support"
+description = "Shared test harness for the tisvlay workspace (private dbus-daemon, fake logind, etc.)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+tokio = { workspace = true }
+zbus = { workspace = true }
+tracing = { workspace = true }
+tempfile = "3"
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+futures-util = { workspace = true }
