@@ -213,28 +213,43 @@ These belong in a future plan once the framework is established:
 3. **Parameterized tests**: `rstest` as its own phase, complementing proptest.
 4. **Coverage baseline**: measured in phase 1, used as the ratchet floor. No arbitrary target.
 
-## Open questions for Phase A & B
+## Phase A & B design decisions
 
-1. **Mock discovery fixture format**: how should `MockDiscovery` know what TVs to return? Options:
-   - **Env var** (simplest): `TISVLAY_MOCK_DISCOVERY_TVS=id1:addr1,id2:addr2`. Easy to set per-test. Downside: flat key-value, no way to configure failure modes per TV.
-   - **Global state** (`once_cell::Lazy<Mutex<...>>` inside the mock crate): tests call a helper to register discoverable TVs. Clean in-process API but order-sensitive if tests run in parallel.
-   - **Test fixture TOML file**: e.g., `tests/fixtures/discovery/<scenario>.toml` loaded from an env var pointing at the path. Most flexible but most files.
-   - **`MockDiscoveryConfig` struct** in `MockConnector::new_with_config(...)`: clean API but requires each test to construct its own registry rather than using `create_registry()`.
+1. **Mock discovery fixture format**: `MockDiscoveryConfig` struct, each test builds its own registry via a `create_test_registry(cfg)` helper. No shared state means no serialization point, tests are fully parallel by construction. `create_registry()` (production) stays simple and registers an empty-discovery mock. This rules out env vars, global mutexes, and on-disk fixtures.
 
-2. **Pairing failure modes** — should the mode be set per-connector (test-wide) or per-connection (per-TV)? Per-TV is more realistic but more complex. I'd lean per-TV by reading it from the vendor config (`mock.pairing_mode = "reject"`), which gives each test fixture fine control.
+2. **Pairing failure modes**: per-TV, read from the vendor config as `[tv.mock] pairing_mode = "accept" | "reject" | "timeout" | "delayed_accept:500ms"`. One test can set up two TVs with different modes and exercise both in one flow.
 
-3. **D-Bus contract tests** — do we register the daemon's interfaces on a **session bus** or the **system bus**? Session bus is easier (no root, no polkit), but the production daemon uses the system bus. I'd lean **session bus** for tests (matches what `--session` dev mode does) and accept the small divergence from prod.
+3. **D-Bus bus strategy**: use **private D-Bus instances** via `DBUS_SYSTEM_BUS_ADDRESS` and `DBUS_SESSION_BUS_ADDRESS` environment variables, launched per test binary via a test helper.
 
-4. **Test isolation for D-Bus contract tests** — running multiple D-Bus tests in parallel risks name collisions on the session bus. We can either:
-   - Mark them `#[serial]` via the `serial_test` crate
-   - Use unique service names per test (`org.tisvlay.test.<uuid>.Daemon`)
-   - Configure nextest to run D-Bus tests in their own test group with `test-threads = 1`
-   - The last option is cleanest (nextest supports per-test-group concurrency limits)
+   Key insight: `zbus::Connection::system()` and `::session()` respect these env vars. If we launch a private `dbus-daemon` at a unique socket path and set the env var before the daemon connects, the daemon's "system bus" connection transparently lands on our test bus. It runs the *exact same code path* as production — no mocking of the zbus connection, no divergence.
 
-5. **Phase A first or Phase B first?** Phase A is small and self-contained. Phase B is larger and more valuable (it's where the coverage numbers actually improve). I'd lean **Phase A first** because:
-   - It's a small wins that validates the mock is extensible
-   - Phase B's D-Bus contract tests need pairing to work anyway
-   - The `MockPairingMode` affordances it adds are reusable by Phase B's tests
+   This lets us test system-event-driven flows (logind `PrepareForSleep`, NM `StateChanged`) by registering a fake logind/NM on our private system bus and emitting signals at it. No root, no polkit, no real hardware.
+
+4. **Parallelism for D-Bus tests**: **private bus per test binary, unique service names per test within the binary.**
+
+   - Each integration test file (`tests/dbus_contract.rs`, `tests/session_events.rs`, etc.) is its own binary
+   - Each binary has a lazy static `TEST_BUS` that spawns one `dbus-daemon` at first use (~100ms, amortized across all tests in the binary)
+   - Each test uses a unique service name (`org.tisvlay.test.<test_name>.Daemon`) so tests within the binary run parallel
+   - Nextest parallelizes across binaries automatically
+   - Tests that truly need isolation (watcher tests, daemon-crash-during-signal-watch tests) spawn their own dedicated bus and run in a serial nextest group
+
+   **Required API additions**: `DaemonClient` and the daemon's `connection::Builder` need to accept a custom service name as an optional parameter. Production code uses the default `DAEMON_SERVICE` constant; test helpers override it. `StateWatcher`'s `NameOwnerChanged` watches also need the custom name.
+
+5. **Phase order**: Phase A first, then Phase B. Phase A is small and self-contained; Phase B's D-Bus tests build on the pairing work.
+
+## Implementation order for A & B
+
+1. **Phase A.1**: `MockDiscovery` + `MockDiscoveryConfig` + `create_test_registry(cfg)` helper
+2. **Phase A.2**: `MockPairingMode` per-TV via vendor config
+3. **Phase A.3**: Integration tests in `tisvlay-backends/tests/mock_discovery.rs` covering all pairing scenarios
+4. **Phase A.4**: CLI pair snapshot test (`insta-cmd`) in `tisvlay-cli/tests/`
+5. **Phase B.1**: Private D-Bus test harness helper (`crates/tisvlayd/tests/common/dbus.rs`)
+6. **Phase B.2**: API additions for custom service names on `DaemonClient`, daemon `connection::Builder`, and `StateWatcher`
+7. **Phase B.3**: `TvManager` harness + profile dispatch tests (biggest coverage win for `tv_manager.rs`)
+8. **Phase B.4**: `Automated` gate composition tests
+9. **Phase B.5**: D-Bus contract tests (Tv1.* interface surface, `PropertiesChanged` signal emission)
+10. **Phase B.6**: Session service tests with fake logind on the private system bus
+11. **Phase B.7**: `StateWatcher` tests (tray layer) against a daemon backed by mocks
 
 ## Implementation order for A & B
 
