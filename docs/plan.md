@@ -18,7 +18,7 @@ Establish an extensible testing and measurement framework for the tisvlay worksp
 - 94 tests pass in <1s via nextest; JUnit XML published via dorny/test-reporter
 - insta snapshots pin the `TvInfo` wire format
 - rstest converts three flat test functions into 7 labelled cases
-- proptest runs ~1,800 randomised inputs across 7 properties
+- proptest runs ~1,800 randomized inputs across 7 properties
 - tisvlay-mock crate implements the full `TvBackend` / `TvConnector` / `TvConnection` surface with push-state subscriptions
 
 **Phase 7 deferred** until the repo becomes public (the only remaining work is uncommenting the Codecov upload block). Phases **A** and **B** below are the natural follow-ups now that the mock backend exists.
@@ -215,48 +215,82 @@ These belong in a future plan once the framework is established:
 
 ## Phase A & B design decisions
 
-1. **Mock discovery fixture format**: `MockDiscoveryConfig` struct, each test builds its own registry via a `create_test_registry(cfg)` helper. No shared state means no serialization point, tests are fully parallel by construction. `create_registry()` (production) stays simple and registers an empty-discovery mock. This rules out env vars, global mutexes, and on-disk fixtures.
+### 1. Mock discovery fixture format — typed struct, no shared state
 
-2. **Pairing failure modes**: per-TV, read from the vendor config as `[tv.mock] pairing_mode = "accept" | "reject" | "timeout" | "delayed_accept:500ms"`. One test can set up two TVs with different modes and exercise both in one flow.
+`MockDiscoveryConfig` struct passed into a `create_test_registry(cfg)` helper. Each test builds its own registry instance, so there is no shared state and tests are fully parallel by construction. The production `create_registry()` stays simple and registers an empty-discovery mock. Rules out env vars, global mutexes, and on-disk fixtures — all of which would become serialization points under parallel execution.
 
-3. **D-Bus bus strategy**: use **private D-Bus instances** via `DBUS_SYSTEM_BUS_ADDRESS` and `DBUS_SESSION_BUS_ADDRESS` environment variables, launched per test binary via a test helper.
+### 2. Pairing failure modes — timeline-driven state machine behind a config shorthand
 
-   Key insight: `zbus::Connection::system()` and `::session()` respect these env vars. If we launch a private `dbus-daemon` at a unique socket path and set the env var before the daemon connects, the daemon's "system bus" connection transparently lands on our test bus. It runs the *exact same code path* as production — no mocking of the zbus connection, no divergence.
+Based on research of Home Assistant, OpenHAB, Matter SDK (connectedhomeip), libp2p, and bluez test harnesses:
 
-   This lets us test system-event-driven flows (logind `PrepareForSleep`, NM `StateChanged`) by registering a fake logind/NM on our private system bus and emitting signals at it. No root, no polkit, no real hardware.
+- **User-facing config** is a simple shorthand in the vendor config:
+  ```toml
+  [tv.mock]
+  address = "mock://living_room"
+  pairing = "accept"   # or "reject" | "timeout" | "delayed_accept:500ms"
+  ```
+  Per-TV, so one test can mix accepting and rejecting TVs in the same flow.
 
-4. **Parallelism for D-Bus tests**: **private bus per test binary, unique service names per test within the binary.**
+- **Under the hood**, pairing is a small explicit state machine (`Idle → Prompted → {Accepted, Rejected, TimedOut}`) driven by a scripted timeline (`Vec<Event>`). The config shorthand expands to a trivial timeline. This matches LG's real two-phase flow (`Response` → `Registered`) and means future scenarios ("accept, then disconnect after 2s, then reject re-pair") don't require new config keywords — they just need richer timeline syntax added later.
 
-   - Each integration test file (`tests/dbus_contract.rs`, `tests/session_events.rs`, etc.) is its own binary
-   - Each binary has a lazy static `TEST_BUS` that spawns one `dbus-daemon` at first use (~100ms, amortized across all tests in the binary)
-   - Each test uses a unique service name (`org.tisvlay.test.<test_name>.Daemon`) so tests within the binary run parallel
-   - Nextest parallelizes across binaries automatically
-   - Tests that truly need isolation (watcher tests, daemon-crash-during-signal-watch tests) spawn their own dedicated bus and run in a serial nextest group
+- **Out-of-band user-action injection** is the underlying primitive: the mock exposes a test helper method like `simulate_user_accept()` / `simulate_user_reject()`. The config shorthand is sugar that auto-triggers these on a fixed schedule. For tests that want fine control (e.g., "accept the first re-pair, reject the second"), they call the helper directly.
 
-   **Required API additions**: `DaemonClient` and the daemon's `connection::Builder` need to accept a custom service name as an optional parameter. Production code uses the default `DAEMON_SERVICE` constant; test helpers override it. `StateWatcher`'s `NameOwnerChanged` watches also need the custom name.
+- **Deterministic timing** via `tokio::time::pause()` + `tokio::time::advance()`. No real sleeps in tests. No randomness.
 
-5. **Phase order**: Phase A first, then Phase B. Phase A is small and self-contained; Phase B's D-Bus tests build on the pairing work.
+- **Phase A scope**: implement `"accept"` / `"reject"` / `"timeout"` shorthand + the underlying state machine + the simulate-user-action helper. Defer richer timeline syntax until we need it.
+
+- **What we skip**: the `fail` crate (overkill for a mock), randomized failures (belong in fuzz/soak, not unit tests), inline TOML timeline tables (nice to have, not needed yet).
+
+### 3. D-Bus bus strategy — private `dbus-daemon` per test binary (Option A)
+
+Based on research of upower, iwd, power-profiles-daemon, switcheroo-control, and the zbus test suite:
+
+- **Private `dbus-daemon` per test binary**, amortizing the ~15-40ms spawn cost across all tests in the binary via a `once_cell::sync::Lazy` with a `Drop` guard.
+- Spawn with `dbus-daemon --session --print-address`, parse the Unix socket path off stdout, store in env vars (`DBUS_SESSION_BUS_ADDRESS`, `DBUS_SYSTEM_BUS_ADDRESS`) before any test code connects.
+- **Each bus hosts both "system" and "session" roles** — the test binary tells the daemon "this is your system bus" by setting `DBUS_SYSTEM_BUS_ADDRESS` to the same address. The daemon code is unchanged; it still calls `zbus::Connection::system()` but lands on the private bus. Fake logind/NM are registered on the same bus and emit signals at it.
+- **Rust-native fakes**, not Python `dbusmock`. The zbus `ObjectServer::at()` API is enough to hand-roll fake `org.freedesktop.login1.Manager` and `org.freedesktop.NetworkManager` objects that emit the signals we care about. Keeps the test toolchain Rust-only.
+
+This lets us test system-event-driven flows (logind `PrepareForSleep`, NM `StateChanged`) end-to-end — the daemon runs the exact same code path as production, no zbus mocking, no divergence. No root, no polkit, no real hardware.
+
+### 4. Parallelism — binary-level isolation, avoid zbus's connection cache
+
+Critical gotcha from the research: **`zbus` caches `Connection::session()` and `::system()` per-process via `OnceCell`**. Two tests in the same binary that try to point at different buses will silently reuse the first one's connection. This breaks the "one shared bus, unique service names" approach.
+
+The fix has two parts:
+
+1. **One `dbus-daemon` per test binary** (not per test). Tests within a binary share the bus. Parallelism *across* binaries is handled by nextest's process-per-binary model.
+2. **Production code must use `connection::Builder::address(...)` explicitly** in test contexts instead of `::session()` / `::system()`. The `Builder::address` path bypasses the cache. This means adding test-friendly connection constructors to our production code or gating the cache-bypassing path behind a `#[cfg(test)]` helper.
+
+**Within a binary**, tests run serialized by default (nextest still uses one thread per test binary when tests share state like a bus). For tests that do not touch the bus or use unique object paths under a shared service name, we can run them in parallel.
+
+**Decisive argument**: name ownership is process-global on a bus. Two tests in parallel that both want to own `org.tisvlay.Daemon` cannot coexist on one bus — one blocks the other. Binary-level isolation sidesteps this entirely by giving each binary its own bus. Unique service names within a shared bus also work, but they don't fix the zbus caching issue, so they're not the primary mechanism.
+
+**Additional safety rails**:
+- Scrub `DBUS_STARTER_*` env vars before spawning the test `dbus-daemon` (they leak from the user session and confuse service activation)
+- Use `Command::new("dbus-daemon").process_group(0)` to isolate the daemon from `cargo test`'s signal handling (SIGPIPE under the thread pool can silently kill it)
+- `Drop` guard on the bus wrapper kills the daemon cleanly on test-binary exit
+
+### 5. Phase order — A first, then B
+
+Phase A is small, self-contained, and exercises the mock backend in a way that validates its API before Phase B leans on it harder. Phase B's D-Bus contract tests need pairing to work, so the `MockPairingMode` work is a prerequisite.
 
 ## Implementation order for A & B
 
-1. **Phase A.1**: `MockDiscovery` + `MockDiscoveryConfig` + `create_test_registry(cfg)` helper
-2. **Phase A.2**: `MockPairingMode` per-TV via vendor config
-3. **Phase A.3**: Integration tests in `tisvlay-backends/tests/mock_discovery.rs` covering all pairing scenarios
-4. **Phase A.4**: CLI pair snapshot test (`insta-cmd`) in `tisvlay-cli/tests/`
-5. **Phase B.1**: Private D-Bus test harness helper (`crates/tisvlayd/tests/common/dbus.rs`)
-6. **Phase B.2**: API additions for custom service names on `DaemonClient`, daemon `connection::Builder`, and `StateWatcher`
-7. **Phase B.3**: `TvManager` harness + profile dispatch tests (biggest coverage win for `tv_manager.rs`)
-8. **Phase B.4**: `Automated` gate composition tests
-9. **Phase B.5**: D-Bus contract tests (Tv1.* interface surface, `PropertiesChanged` signal emission)
-10. **Phase B.6**: Session service tests with fake logind on the private system bus
-11. **Phase B.7**: `StateWatcher` tests (tray layer) against a daemon backed by mocks
+### Phase A — Discovery + pairing
 
-## Implementation order for A & B
+1. **A.1**: `MockDiscovery` + `MockDiscoveryConfig` + `create_test_registry(cfg)` helper
+2. **A.2**: Internal pairing state machine + timeline in `MockConnector`, with the config-shorthand wrapper (`"accept"` / `"reject"` / `"timeout"`)
+3. **A.3**: `simulate_user_action` test helper for out-of-band drive
+4. **A.4**: Integration tests in `tisvlay-backends/tests/mock_discovery.rs` covering all pairing scenarios (accept / reject / timeout / multiple TVs / empty network / mixed-mode multi-TV)
+5. **A.5**: CLI pair snapshot test in `crates/tisvlay-cli/tests/pair_snapshot.rs` via `insta-cmd`
+6. **A.6**: Document the mock pairing API in `.claude/CLAUDE.md`
 
-1. **Phase A.1**: `MockDiscovery` + `create_registry` wiring (smallest increment)
-2. **Phase A.2**: `MockPairingMode` + per-mode tests
-3. **Phase A.3**: CLI pair snapshot test (`insta-cmd`)
-4. **Phase B.1**: `TvManager` harness + profile dispatch tests (biggest coverage win)
-5. **Phase B.2**: `Automated` gate composition tests
-6. **Phase B.3**: D-Bus contract tests (most complex, most valuable for refactoring safety)
-7. **Phase B.4**: Session service + tray integration tests
+### Phase B — Daemon integration tests
+
+1. **B.1**: Private `dbus-daemon` test harness helper at `crates/tisvlayd/tests/common/dbus.rs` — spawns via `Lazy`, parses address, sets env vars, drops cleanly
+2. **B.2**: Add `connection::Builder::address(...)`-based constructors to `DaemonClient`, the daemon's D-Bus setup, and `StateWatcher` so test code can bypass zbus's connection cache
+3. **B.3**: `TvManager` in-process harness + profile dispatch tests (`on_startup` / `on_shutdown` / `on_sleep` / `on_wake` / `on_session_lock` / `on_session_unlock` / `on_idle_timeout` / `on_idle_resume` / `on_no_session`). Biggest single coverage jump — `tv_manager.rs` is 0% today.
+4. **B.4**: `Automated` gate composition tests (managed × automate_when × primary_input × current_input)
+5. **B.5**: D-Bus contract tests — spawn the full daemon D-Bus surface on the test bus, drive it via `DaemonClient`, assert `PropertiesChanged` emission and `InterfaceRef::get_mut()` cache behavior
+6. **B.6**: Session service tests with a hand-rolled fake `org.freedesktop.login1.Manager` on the test bus, emitting `PrepareForSleep` and asserting session action dispatch
+7. **B.7**: `StateWatcher` tests in the tray crate against a daemon backed by mocks on the test bus
