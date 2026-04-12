@@ -11,20 +11,21 @@
 //!   `DaemonClient::from_connection` (or any custom proxy work)
 //!
 //! Gated on the `mock` Cargo feature; production builds never
-//! include this module. Each test calls [`TestDaemon::with_tv`] (or
-//! similar) and gets a fully wired daemon with no shared state — the
-//! shared `tisvlay-test-support::PrivateBus` provides binary-level
-//! isolation, and unique TV IDs prevent in-binary collisions.
+//! include this module. Each test calls [`TestDaemon::with_one_mock_tv`]
+//! (or [`TestDaemon::with_config`] for custom setups) and gets a
+//! fully wired daemon with no shared state — the shared
+//! `tisvlay-test-support::PrivateBus` provides binary-level isolation,
+//! and unique TV IDs prevent in-binary collisions.
 //!
 //! # Example
 //!
 //! ```ignore
 //! use tisvlayd::test_harness::TestDaemon;
-//! use tisvlay_core::dbus_client::DaemonClient;
+//! use tisvlay_core::DaemonClient;
 //!
 //! #[tokio::test]
 //! async fn screen_off_propagates_to_dbus() {
-//!     let daemon = TestDaemon::with_one_mock_tv("living_room").await;
+//!     let daemon = TestDaemon::with_one_mock_tv("living_room").await.unwrap();
 //!     let client = DaemonClient::from_connection(daemon.connection().clone())
 //!         .await
 //!         .unwrap();
@@ -44,6 +45,28 @@ use crate::dbus::{build_dbus_connection, BusKind, ManagerService};
 use crate::state_forwarder::state_change_forwarder;
 use crate::tv_manager::TvManager;
 
+/// Build a minimal `TvConfig` for a mock TV with standard vendor
+/// config. Use this in tests that construct a `SystemConfig` by hand.
+pub fn mock_tv_config(tv_id: &str, managed: bool, primary_input: Option<&str>) -> SystemConfig {
+    let mut tv = TvConfig::new(tv_id, tv_id, "mock", managed);
+    if let Some(input) = primary_input {
+        tv = tv.with_primary_input(input);
+    }
+    let mut vendor_table = HashMap::new();
+    vendor_table.insert(
+        "address".to_string(),
+        toml::Value::String(format!("mock://{}", tv_id)),
+    );
+    tv.vendor_config.insert(
+        "mock".to_string(),
+        toml::Value::Table(vendor_table.into_iter().collect()),
+    );
+
+    let mut config = SystemConfig::default();
+    config.tv.push(tv);
+    config
+}
+
 /// A fully wired daemon instance running on the shared private bus.
 ///
 /// Holds the connection, the TV manager, and the mock handle so
@@ -59,35 +82,17 @@ pub struct TestDaemon {
 }
 
 impl TestDaemon {
-    /// Build a daemon with a single mock TV registered under `tv_id`.
+    /// Build a daemon from a fully custom `SystemConfig`.
     ///
-    /// The TV is `managed`, has no `primary_input` set, and uses the
-    /// default mock vendor config (`mock://{tv_id}`). The mock backend
-    /// is wired through `create_test_registry` so the returned
-    /// `MockHandle` shares state with the daemon's connector.
-    #[instrument]
-    pub async fn with_one_mock_tv(tv_id: &str) -> anyhow::Result<Self> {
+    /// The registry and mock handle come from `create_test_registry()`,
+    /// so the mock connector inside the daemon and the returned handle
+    /// share state. Callers can pre-configure any combination of TVs,
+    /// profiles, managed flags, primary_input, etc. in the config.
+    pub async fn with_config(config: SystemConfig) -> anyhow::Result<Self> {
         let (registry, handle) = create_test_registry();
         let registry = Arc::new(registry);
         let registry_for_service = registry.clone();
 
-        // Build a SystemConfig with one mock TV. The vendor_config
-        // entry uses the mock://{tv_id} address so it matches the
-        // address tests would use to drive pairing via the handle.
-        let mut tv = TvConfig::new(tv_id, tv_id, "mock", true);
-        let mut vendor_config = HashMap::new();
-        let address = format!("mock://{}", tv_id);
-        vendor_config.insert("address".to_string(), toml::Value::String(address.clone()));
-        tv.vendor_config.insert(
-            "mock".to_string(),
-            toml::Value::Table(vendor_config.into_iter().collect()),
-        );
-
-        let mut config = SystemConfig::default();
-        config.tv.push(tv);
-
-        // Persist the config in a per-test tempdir so reload_config
-        // calls don't try to write to /var/lib/tisvlay.
         let config_dir = tempfile::Builder::new()
             .prefix("tisvlay-test-daemon-")
             .tempdir()?;
@@ -122,6 +127,17 @@ impl TestDaemon {
             forwarder,
             _config_dir: config_dir,
         })
+    }
+
+    /// Build a daemon with a single mock TV registered under `tv_id`.
+    ///
+    /// The TV is `managed`, has no `primary_input` set, and uses the
+    /// default mock vendor config (`mock://{tv_id}`). The mock backend
+    /// is wired through `create_test_registry` so the returned
+    /// `MockHandle` shares state with the daemon's connector.
+    #[instrument]
+    pub async fn with_one_mock_tv(tv_id: &str) -> anyhow::Result<Self> {
+        Self::with_config(mock_tv_config(tv_id, true, None)).await
     }
 
     /// The zbus connection bound to the private test bus.
