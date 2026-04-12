@@ -77,6 +77,17 @@ impl TvConnector for MockConnector {
     #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
+
+        // Honour any test-injected connect delay (simulates slow/unreachable TV).
+        let delay = {
+            let state = self.state.lock().expect("mock state lock poisoned");
+            state.connect_delay
+        };
+        if let Some(delay) = delay {
+            tracing::debug!(address = %config.address, ?delay, "delaying mock connect");
+            tokio::time::sleep(delay).await;
+        }
+
         tracing::debug!(address = %config.address, "connecting to mock TV");
         Ok(Box::new(MockConnection::new(&config)))
     }

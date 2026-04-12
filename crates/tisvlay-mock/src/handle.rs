@@ -123,6 +123,28 @@ impl MockHandle {
     }
 
     // ------------------------------------------------------------------
+    // Connection behavior
+    // ------------------------------------------------------------------
+
+    /// Inject a delay before `MockConnector::connect()` returns.
+    ///
+    /// Simulates a slow or unreachable TV. Useful for testing that
+    /// shutdown signals are respected during in-flight connection
+    /// attempts.
+    #[instrument(skip(self))]
+    pub fn set_connect_delay(&self, delay: std::time::Duration) {
+        let mut state = self.state.lock().expect("mock state lock poisoned");
+        tracing::debug!(?delay, "setting connect delay");
+        state.connect_delay = Some(delay);
+    }
+
+    /// Remove any previously set connect delay.
+    pub fn clear_connect_delay(&self) {
+        let mut state = self.state.lock().expect("mock state lock poisoned");
+        state.connect_delay = None;
+    }
+
+    // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------
 
