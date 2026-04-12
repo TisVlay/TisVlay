@@ -34,6 +34,7 @@
 
 pub mod dbus;
 pub mod fake_logind;
+pub mod fake_screensaver;
 
 pub use dbus::PrivateBus;
 

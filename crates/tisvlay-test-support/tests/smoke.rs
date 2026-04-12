@@ -6,7 +6,9 @@
 //! receives.
 
 use std::time::Duration;
-use tisvlay_test_support::{fake_logind::FakeLogind, traced_test, PrivateBus};
+use tisvlay_test_support::{
+    fake_logind::FakeLogind, fake_screensaver::FakeScreenSaver, traced_test, PrivateBus,
+};
 use zbus::MatchRule;
 
 #[tokio::test]
@@ -102,4 +104,44 @@ async fn traced_test_captures_instrumented_calls() {
         logs_contain("fake logind emitting PrepareForSleep"),
         "expected the instrumented event to appear in captured logs",
     );
+}
+
+#[tokio::test]
+async fn fake_screensaver_emits_active_changed() {
+    let bus = PrivateBus::shared();
+
+    // Subscriber
+    let sub_conn = bus.connect().await.expect("sub conn");
+    let rule = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.ScreenSaver")
+        .expect("iface")
+        .member("ActiveChanged")
+        .expect("member")
+        .build();
+    let mut stream = zbus::MessageStream::for_match_rule(rule, &sub_conn, None)
+        .await
+        .expect("match rule");
+
+    // Publisher
+    let pub_conn = bus.connect().await.expect("pub conn");
+    let ss = FakeScreenSaver::register(&pub_conn)
+        .await
+        .expect("register");
+    ss.emit_active_changed(true).await.expect("emit locked");
+
+    use futures_util::StreamExt;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let msg = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .expect("signal did not arrive within 2s")
+            .expect("stream ended")
+            .expect("message");
+
+        let body: bool = msg.body().deserialize().expect("deserialize body");
+        if body {
+            break;
+        }
+    }
 }

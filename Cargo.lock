@@ -1696,6 +1696,8 @@ dependencies = [
  "futures-util",
  "serde_json",
  "tisvlay-core",
+ "tisvlay-test-support",
+ "tisvlayd",
  "tokio",
  "tracing",
  "wayland-client",

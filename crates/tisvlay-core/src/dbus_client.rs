@@ -42,6 +42,33 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH};
 
 // =============================================================================
+// Bus Selection
+// =============================================================================
+
+/// Which bus to build a D-Bus connection on.
+///
+/// `Session` and `System` use `zbus::connection::Builder::session()` /
+/// `system()` respectively. `Address` takes an arbitrary `unix:path=...`
+/// string (typically a private `dbus-daemon` launched by the test
+/// harness) and bypasses `zbus`'s per-process `OnceCell` cache.
+pub enum BusKind<'a> {
+    Session,
+    System,
+    Address(&'a str),
+}
+
+impl BusKind<'_> {
+    /// Create a `zbus::connection::Builder` for this bus kind.
+    pub fn builder(&self) -> zbus::Result<zbus::connection::Builder<'_>> {
+        match self {
+            BusKind::Session => zbus::connection::Builder::session(),
+            BusKind::System => zbus::connection::Builder::system(),
+            BusKind::Address(addr) => zbus::connection::Builder::address(*addr),
+        }
+    }
+}
+
+// =============================================================================
 // Manager Interface Proxy
 // =============================================================================
 

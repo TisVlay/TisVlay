@@ -8,25 +8,12 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use tisvlay_core::BusKind;
 
 use crate::dbus::{
     register_tv_interfaces, tv_path, ManagerService, DBUS_NAME, MANAGER_PATH, OBJECT_MANAGER_PATH,
 };
 use crate::tv_manager::TvManager;
-
-/// Which bus to build the daemon connection on.
-///
-/// `Session` and `System` use `zbus::connection::Builder::session()` /
-/// `system()` — fine in production because we never read connections
-/// back through `Connection::session()` / `system()` (which is what
-/// the per-process `OnceCell` cache guards). `Address` takes an
-/// arbitrary `unix:path=...` string and is the path used by tests
-/// driving a private `dbus-daemon`.
-pub enum BusKind<'a> {
-    Session,
-    System,
-    Address(&'a str),
-}
 
 /// Build the daemon's D-Bus connection: claim the well-known name,
 /// register `ObjectManager` and `Manager1` at their static paths,
@@ -40,15 +27,7 @@ pub async fn build_dbus_connection(
     tv_ids: &[String],
     tv_manager: Arc<TvManager>,
 ) -> Result<zbus::Connection> {
-    let builder =
-        match bus {
-            BusKind::Session => zbus::connection::Builder::session()
-                .context("Failed to create session bus builder")?,
-            BusKind::System => zbus::connection::Builder::system()
-                .context("Failed to create system bus builder")?,
-            BusKind::Address(addr) => zbus::connection::Builder::address(addr)
-                .context("Failed to create bus builder for address")?,
-        };
+    let builder = bus.builder().context("Failed to create bus builder")?;
 
     let connection = builder
         .name(DBUS_NAME)

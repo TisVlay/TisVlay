@@ -9,7 +9,8 @@ mod setup;
 mod tv;
 
 pub use manager::ManagerService;
-pub use setup::{build_dbus_connection, BusKind};
+pub use setup::build_dbus_connection;
+pub use tisvlay_core::BusKind;
 pub use tv::{
     register_tv_interfaces, unregister_tv_interfaces, TvBacklightService, TvInputService,
     TvPowerService, TvScreenService, TvService, TvVolumeService,
