@@ -1,9 +1,6 @@
 # Testing
 
-This is the single source of truth for how testing works in tisvlay.
-For quick-reference commands, see the `Tasks & Commands` section in
-[CLAUDE.md](../.claude/CLAUDE.md). For architecture and D-Bus interface
-specs, see [design.md](design.md).
+This is the single source of truth for how testing works in tisvlay. For quick-reference commands, see the `Tasks & Commands` section in [CLAUDE.md](../.claude/CLAUDE.md). For architecture and D-Bus interface specs, see [design.md](design.md).
 
 ## Overview
 
@@ -18,8 +15,7 @@ The testing framework is designed around six principles:
 
 ## Test runner: cargo-nextest
 
-All compiled tests run through [cargo-nextest](https://nexte.st/).
-Doc tests use `cargo test --doc` (nextest doesn't support them yet).
+All compiled tests run through [cargo-nextest](https://nexte.st/). Doc tests use `cargo test --doc` (nextest doesn't support them yet).
 
 ```bash
 just test         # nextest + doc tests
@@ -33,10 +29,7 @@ Configuration: `.config/nextest.toml` with two profiles:
 | `default` | 0 | 60s | terminal |
 | `ci` | 1 | 30s | JUnit XML at `target/nextest/ci/junit.xml` |
 
-**Process-per-test isolation** matters because daemon code uses global
-state (D-Bus well-known names, netlink sockets, config file paths).
-`cargo test`'s shared-process model would have tests stepping on each
-other.
+**Process-per-test isolation** matters because daemon code uses global state (D-Bus well-known names, netlink sockets, config file paths). `cargo test`'s shared-process model would have tests stepping on each other.
 
 ## Test types
 
@@ -83,8 +76,7 @@ proptest! {
 }
 ```
 
-When a proptest fails, it writes a `.proptest-regressions` file.
-**Commit these files** — they replay the failing seed on future runs.
+When a proptest fails, it writes a `.proptest-regressions` file. **Commit these files** — they replay the failing seed on future runs.
 
 ### Snapshot tests (insta)
 
@@ -108,21 +100,15 @@ just cov-lcov     # lcov.info for VS Code Coverage Gutters
 just cov-ratchet  # fails if below baseline (CI uses this)
 ```
 
-The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on
-PRs that improve coverage; never lower it. Current: **40%** lines.
+The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on PRs that improve coverage; never lower it. Current: **40%** lines.
 
 ## Mock backend (tisvlay-mock)
 
-Implements the full `TvBackend` / `TvConnector` / `TvConnection` /
-`TvDiscovery` trait surface with an in-memory state machine. Feature-gated
-behind `mock` on `tisvlay-backends` (default-off in release, default-on
-in workspace dev/test builds).
+Implements the full `TvBackend` / `TvConnector` / `TvConnection` / `TvDiscovery` trait surface with an in-memory state machine. Feature-gated behind `mock` on `tisvlay-backends` (default-off in release, default-on in workspace dev/test builds).
 
 Key properties:
-- Reports `Transport::Network` and `survives_source_ip_change() -> false`
-  (same paths as LG)
-- `subscribe_state()` returns a real `mpsc::UnboundedReceiver<TvState>`
-  pushing cumulative snapshots on every mutation (mirrors LG's SSAP model)
+- Reports `Transport::Network` and `survives_source_ip_change() -> false` (same paths as LG)
+- `subscribe_state()` returns a real `mpsc::UnboundedReceiver<TvState>` pushing cumulative snapshots on every mutation (mirrors LG's SSAP model)
 - Pairing state machine matches LG's two-phase flow
 
 ### MockHandle — test-driven control surface
@@ -143,9 +129,7 @@ let tvs = registry.discover_tvs("mock", Duration::from_secs(1)).await?;
 - `publish_tv(DiscoveredTv)` / `clear_discovered()` — populate/clear the "network"
 - `simulate_user_accept(tv_id)` / `simulate_user_reject(tv_id)` / `simulate_pairing_timeout(tv_id)` — drive pairing
 
-**Config shorthand:** tests that don't need fine-grained control can
-set `[tv.mock] pairing = "accept"|"reject"|"timeout"`. If both
-shorthand and handle are set, **the handle wins**.
+**Config shorthand:** tests that don't need fine-grained control can set `[tv.mock] pairing = "accept"|"reject"|"timeout"`. If both shorthand and handle are set, **the handle wins**.
 
 Each test gets its own `(registry, handle)` pair — parallel by construction.
 
@@ -184,8 +168,7 @@ let conn = bus.connect().await?;
 
 Key design:
 - `PR_SET_PDEATHSIG = SIGKILL` — kernel kills daemon on test crash
-- Env scrubbing (`DBUS_SESSION_BUS_ADDRESS`, `DBUS_SYSTEM_BUS_ADDRESS`,
-  `DBUS_STARTER_*`) — isolates from user session
+- Env scrubbing (`DBUS_SESSION_BUS_ADDRESS`, `DBUS_SYSTEM_BUS_ADDRESS`, `DBUS_STARTER_*`) — isolates from user session
 - `Builder::address(...)` — bypasses zbus's `OnceCell` connection cache
 - Binary-level isolation via nextest's process-per-binary model
 
@@ -210,13 +193,11 @@ ss.emit_active_changed(true).await?;  // simulate lock
 
 ### Tracing re-exports
 
-`tisvlay-test-support` re-exports `tracing_test::traced_test` and
-`tracing_mock` so consumers don't need separate dep entries.
+`tisvlay-test-support` re-exports `tracing_test::traced_test` and `tracing_mock` so consumers don't need separate dep entries.
 
 ## Daemon testing (TestDaemon)
 
-`tisvlayd::test_harness::TestDaemon` builds a fully wired daemon on
-the shared private bus. Feature-gated on `mock`.
+`tisvlayd::test_harness::TestDaemon` builds a fully wired daemon on the shared private bus. Feature-gated on `mock`.
 
 ```rust
 use tisvlayd::test_harness::TestDaemon;
@@ -239,8 +220,7 @@ async fn my_test() {
 - `with_config(SystemConfig)` — fully custom config
 - `mock_tv_config(tv_id, managed, primary_input)` — helper for SystemConfig
 
-**Holds:** `MockHandle`, `Arc<TvManager>`, `zbus::Connection`.
-Forwarder task aborted on drop; connection release unregisters the name.
+**Holds:** `MockHandle`, `Arc<TvManager>`, `zbus::Connection`. Forwarder task aborted on drop; connection release unregisters the name.
 
 **Integration tests:**
 - `tests/test_harness_smoke.rs` — basic wiring
@@ -252,19 +232,13 @@ Forwarder task aborted on drop; connection release unregisters the name.
 
 ### BusKind and from_connection constructors
 
-`tisvlay_core::BusKind` enum (`Session | System | Address(&str)`)
-is shared by both services. Tests use `BusKind::Address(bus.address())`
-to point at the private bus.
+`tisvlay_core::BusKind` enum (`Session | System | Address(&str)`) is shared by both services. Tests use `BusKind::Address(bus.address())` to point at the private bus.
 
-`DaemonClient::from_connection(conn)` and
-`StateWatcher::from_connections(daemon_conn, session_conn, config)`
-bypass the zbus `OnceCell` cache so each test gets an isolated connection.
+`DaemonClient::from_connection(conn)` and `StateWatcher::from_connections(daemon_conn, session_conn, config)` bypass the zbus `OnceCell` cache so each test gets an isolated connection.
 
 ## Session testing (TestSession)
 
-`tisvlay_session::test_harness::TestSession` wires a `TestDaemon` +
-`DaemonClient` + `SessionState` + `FakeScreenSaver` + event handler
-on the shared private bus. Feature-gated on `mock`.
+`tisvlay_session::test_harness::TestSession` wires a `TestDaemon` + `DaemonClient` + `SessionState` + `FakeScreenSaver` + event handler on the shared private bus. Feature-gated on `mock`.
 
 ```rust
 use tisvlay_session::test_harness::TestSession;
@@ -294,8 +268,7 @@ async fn session_lock_dispatches_screen_off() {
 
 ### #[traced_test] — per-test log capture
 
-Installs a subscriber that captures all `tracing` events. On failure,
-dumps them to stderr. On success, discards.
+Installs a subscriber that captures all `tracing` events. On failure, dumps them to stderr. On success, discards.
 
 ```rust
 use tisvlay_test_support::traced_test;
@@ -308,14 +281,11 @@ async fn my_test() {
 }
 ```
 
-The `no-env-filter` feature is pinned so events from dependency crates
-(tisvlay-mock, tisvlay-test-support, the daemon) are captured — the
-upstream default only captures the test binary's own crate.
+The `no-env-filter` feature is pinned so events from dependency crates (tisvlay-mock, tisvlay-test-support, the daemon) are captured — the upstream default only captures the test binary's own crate.
 
 ### tracing-mock — observability regression tests
 
-Assert that production code emits specific spans/events with the right
-fields. Catches refactors that silently remove instrumentation.
+Assert that production code emits specific spans/events with the right fields. Catches refactors that silently remove instrumentation.
 
 ```rust
 use tisvlay_test_support::tracing_mock::{expect, subscriber};
@@ -341,22 +311,15 @@ fn publish_tv_emits_instrumented_debug_event() {
 
 ## Deterministic time
 
-`tokio::time::pause()` + `advance()` enables tests to control the
-clock without real sleeps. Validated by the clock spike test
-(`tisvlay-test-support/tests/clock_spike.rs`).
+`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps. Validated by the clock spike test (`tisvlay-test-support/tests/clock_spike.rs`).
 
 Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 
-**Caveat:** zbus uses internal timers that don't cooperate with Tokio's
-paused clock. Tests involving real D-Bus round-trips (e.g., session
-event tests) must use real-time sleeps. See
-[docs/todo.md](todo.md#session-event-tests-use-real-time-sleeps).
+**Caveat:** zbus uses internal timers that don't cooperate with Tokio's paused clock. Tests involving real D-Bus round-trips (e.g., session event tests) must use real-time sleeps. See [docs/todo.md](todo.md#session-event-tests-use-real-time-sleeps).
 
 ## TV ID rules
 
-TV IDs must match `[A-Za-z0-9_]+` — validated at config load time.
-This ensures the ID can be used directly as a D-Bus object path
-component without lossy sanitization.
+TV IDs must match `[A-Za-z0-9_]+` — validated at config load time. This ensures the ID can be used directly as a D-Bus object path component without lossy sanitization.
 
 - `is_valid_tv_id(id)` — validation
 - `tv_id_from_name(name)` — generation (lowercases, `_` for spaces, strips rest)
@@ -369,17 +332,11 @@ Background: see [docs/bugs.md](bugs.md#tv-id--d-bus-path-inconsistency).
 
 ### Name ownership is bus-global
 
-`TestDaemon` and `TestSession` each register a well-known D-Bus name.
-Only one can exist per bus. Nextest's process-per-test model means
-this works today, but tests within a single binary that both create a
-`TestDaemon` would collide.
+`TestDaemon` and `TestSession` each register a well-known D-Bus name. Only one can exist per bus. Nextest's process-per-test model means this works today, but tests within a single binary that both create a `TestDaemon` would collide.
 
 ### Real-time sleeps in D-Bus tests
 
-Session event tests use `sleep(50ms)` after injecting events. This is
-a pragmatic trade-off — deterministic time doesn't work with zbus.
-See [docs/todo.md](todo.md) for mitigation options (poll-with-timeout
-recommended for future improvement).
+Session event tests use `sleep(50ms)` after injecting events. This is a pragmatic trade-off — deterministic time doesn't work with zbus. See [docs/todo.md](todo.md) for mitigation options (poll-with-timeout recommended for future improvement).
 
 ## Architecture decisions
 
@@ -403,14 +360,8 @@ These document **why** the framework is shaped this way:
 
 Deferred until the framework matures or a specific need arises:
 
-- **Codecov upload** — pre-written in `.github/workflows/ci.yml`,
-  commented out. Uncomment when the repo goes public (one-line change).
-- **Mutation testing** (`cargo-mutants`) — worth running now that
-  coverage is at 40%; would surface tests that pass but don't actually
-  assert meaningful properties.
-- **Fuzzing** (`cargo-fuzz`) — needs clear input-parsing entry points;
-  defer until something obvious emerges (e.g., SSAP message parsing).
-- **Benchmark infrastructure** (`criterion`, `bencher`) — performance
-  is not a current concern for tisvlay.
-- **`cargo-deny` / `cargo-audit`** — supply chain security; separate
-  concern from testing, tracked elsewhere.
+- **Codecov upload** — pre-written in `.github/workflows/ci.yml`, commented out. Uncomment when the repo goes public (one-line change).
+- **Mutation testing** (`cargo-mutants`) — worth running now that coverage is at 40%; would surface tests that pass but don't actually assert meaningful properties.
+- **Fuzzing** (`cargo-fuzz`) — needs clear input-parsing entry points; defer until something obvious emerges (e.g., SSAP message parsing).
+- **Benchmark infrastructure** (`criterion`, `bencher`) — performance is not a current concern for tisvlay.
+- **`cargo-deny` / `cargo-audit`** — supply chain security; separate concern from testing, tracked elsewhere.
