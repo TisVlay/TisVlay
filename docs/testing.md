@@ -37,13 +37,13 @@ Configuration: `.config/nextest.toml` with two profiles:
 flowchart LR
     JT["just test"] --> NX["cargo nextest run<br/>--workspace --all-features"]
     JT --> DT["cargo test --doc"]
-    NX --> R{{"154 tests<br/>(process-per-test)"}}
+    NX --> R{{"tests<br/>(process-per-test)"}}
     DT --> D{{"doc tests"}}
 
     JTC["just test-ci"] --> COV["cargo llvm-cov<br/>--no-report nextest"]
     COV --> R
     COV --> LCOV["lcov.info"]
-    LCOV --> RATCHET{"coverage >= 40%?"}
+    LCOV --> RATCHET{"coverage >= baseline?"}
     RATCHET -->|yes| JUNIT["junit.xml<br/>(dorny/test-reporter)"]
     RATCHET -->|no| FAIL["CI fails"]
 ```
@@ -117,7 +117,7 @@ just cov-lcov     # lcov.info for VS Code Coverage Gutters
 just cov-ratchet  # fails if below baseline (CI uses this)
 ```
 
-The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on PRs that improve coverage; never lower it. Current: **40%** lines.
+The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on PRs that improve coverage; never lower it. Run `just cov` to see the current number.
 
 ## Mock backend (tisvlay-mock)
 
@@ -517,7 +517,7 @@ These document **why** the framework is shaped this way:
 Deferred until the framework matures or a specific need arises:
 
 - **Codecov upload** — pre-written in `.github/workflows/ci.yml`, commented out. Uncomment when the repo goes public (one-line change).
-- **Mutation testing** (`cargo-mutants`) — worth running now that coverage is at 40%; would surface tests that pass but don't actually assert meaningful properties.
+- **Mutation testing** (`cargo-mutants`) — worth running once coverage stabilizes; would surface tests that pass but don't actually assert meaningful properties.
 - **Fuzzing** (`cargo-fuzz`) — needs clear input-parsing entry points; defer until something obvious emerges (e.g., SSAP message parsing).
 - **Benchmark infrastructure** (`criterion`, `bencher`) — performance is not a current concern for tisvlay.
 - **`cargo-deny` / `cargo-audit`** — supply chain security; separate concern from testing, tracked elsewhere.
