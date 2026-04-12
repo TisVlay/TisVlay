@@ -272,6 +272,11 @@ The shorthand auto-schedules the corresponding `simulate_user_*` call on a fixed
 
 **Production registry** stays simple: `create_registry()` registers a mock whose handle is never surfaced externally, so production code cannot accidentally drive the mock's test hooks. Only `create_test_registry()` returns a usable `MockHandle`.
 
+**Implementation notes**:
+
+- `MockState` is a struct wrapped in `std::sync::Mutex` (not `tokio::sync::Mutex`), held behind an `Arc` shared between `MockConnector` and `MockHandle`. The connector must never hold the lock across an `.await` — brief critical sections only. Tests call handle methods synchronously between awaits, so deadlock is structurally avoided.
+- **Handle vs shorthand precedence**: if a test both sets `pairing = "accept"` in the TOML and calls `mock.simulate_user_reject(...)` before the shorthand's auto-timer fires, the handle wins — the first explicit transition on the pairing state machine locks in the outcome. The shorthand is sugar on top of the handle, not an independent path.
+
 ### 3. D-Bus bus strategy — private `dbus-daemon` per test binary (Option A)
 
 Based on research of upower, iwd, power-profiles-daemon, switcheroo-control, and the zbus test suite:
@@ -307,21 +312,41 @@ Phase A is small, self-contained, and exercises the mock backend in a way that v
 
 ## Implementation order for A & B
 
-### Phase A — Discovery + pairing
+### Phase A — Discovery + pairing (mock-level, no D-Bus)
 
-1. **A.1**: `MockHandle` + shared `Arc<Mutex<MockState>>` backing for discovery and pairing state in `MockConnector`
-2. **A.2**: `MockDiscovery` reads from `MockState`; test helper `create_test_registry()` returns `(BackendRegistry, MockHandle)`
-3. **A.3**: Internal pairing state machine driven by the handle's `simulate_user_*` methods; config shorthand (`"accept"` / `"reject"` / `"timeout"`) wraps the handle for simple tests
-4. **A.4**: Integration tests in `tisvlay-backends/tests/mock_discovery.rs` — happy path, reject, timeout, multiple TVs, empty network, mixed-mode multi-TV, dynamic publish
-5. **A.5**: CLI pair snapshot test in `crates/tisvlay-cli/tests/pair_snapshot.rs` via `insta-cmd`
-6. **A.6**: Document `MockHandle` and the mock pairing API in `.claude/CLAUDE.md`
+1. **A.1**: `MockState` struct + `MockHandle` + `Arc<Mutex<MockState>>` wiring between `MockConnector` and the handle. Lock is `std::sync::Mutex`; connector never holds it across an `.await`.
+2. **A.2**: `MockDiscovery` reads from `MockState`; test helper `create_test_registry()` returns `(BackendRegistry, MockHandle)`.
+3. **A.3**: Internal pairing state machine driven by `simulate_user_*` methods; config shorthand (`"accept"` / `"reject"` / `"timeout"`) wraps the handle on a fixed timer for simple tests.
+4. **A.4**: Integration tests in `tisvlay-backends/tests/mock_discovery.rs` — happy path, reject, timeout, multiple TVs, empty network, mixed-mode multi-TV, dynamic publish-after-discover.
+5. **A.5**: Document `MockHandle` and the mock pairing API in `.claude/CLAUDE.md`.
+
+The CLI pair snapshot test is deferred to Phase B because it needs a daemon on a test bus (dependency on B.1 + B.2).
 
 ### Phase B — Daemon integration tests
 
-1. **B.1**: Private `dbus-daemon` test harness helper at `crates/tisvlayd/tests/common/dbus.rs` — spawns via `Lazy`, parses address, sets env vars, drops cleanly
-2. **B.2**: Add `connection::Builder::address(...)`-based constructors to `DaemonClient`, the daemon's D-Bus setup, and `StateWatcher` so test code can bypass zbus's connection cache
-3. **B.3**: `TvManager` in-process harness + profile dispatch tests (`on_startup` / `on_shutdown` / `on_sleep` / `on_wake` / `on_session_lock` / `on_session_unlock` / `on_idle_timeout` / `on_idle_resume` / `on_no_session`). Biggest single coverage jump — `tv_manager.rs` is 0% today.
-4. **B.4**: `Automated` gate composition tests (managed × automate_when × primary_input × current_input)
-5. **B.5**: D-Bus contract tests — spawn the full daemon D-Bus surface on the test bus, drive it via `DaemonClient`, assert `PropertiesChanged` emission and `InterfaceRef::get_mut()` cache behavior
-6. **B.6**: Session service tests with a hand-rolled fake `org.freedesktop.login1.Manager` on the test bus, emitting `PrepareForSleep` and asserting session action dispatch
-7. **B.7**: `StateWatcher` tests in the tray crate against a daemon backed by mocks on the test bus
+**B.0 — Shared test harness infrastructure** (prerequisites for everything else)
+
+1. **B.0.1**: Extend `tisvlay-mock` with an optional `testing` feature adding a D-Bus harness module: private `dbus-daemon` spawner, env-var redirection for both system and session, scrubbing of `DBUS_STARTER_*`, `process_group(0)` for signal isolation, `Lazy` + `Drop` guard lifecycle, helpers for hand-rolled fake logind (`org.freedesktop.login1.Manager` with `PrepareForSleep` signal emission).
+2. **B.0.2**: Add `DaemonClient::builder()` to `tisvlay-core` that accepts `.address(...)` / `.service_name(...)`. Existing `new_session()` / `new_system()` stay as convenience methods. Same builder pattern for the daemon's own `connection::Builder` setup in `tisvlayd/src/main.rs` and for `StateWatcher::new()`.
+3. **B.0.3**: Enable `tokio/test-util` in `tisvlayd` dev-dependencies so tests can use `tokio::time::pause()` / `advance()` for deterministic timing.
+
+**B.1 — `TvManager` unit integration** (biggest coverage win)
+
+4. **B.1.1**: `TvManager` in-process harness (builds `TvManager` from a fixture config, no D-Bus registration needed for these tests).
+5. **B.1.2**: Profile dispatch tests (`on_startup` / `on_shutdown` / `on_sleep` / `on_wake` / `on_session_lock` / `on_session_unlock` / `on_idle_timeout` / `on_idle_resume` / `on_no_session`). `tv_manager.rs` is 0% covered today; this is the biggest single jump.
+6. **B.1.3**: `Automated` gate composition tests (managed × automate_when × primary_input × current_input).
+7. **B.1.4**: Multi-TV concurrency tests (mocks with different profiles respond independently).
+
+**B.2 — D-Bus contract tests**
+
+8. **B.2.1**: Spawn the daemon's full D-Bus surface on the test bus via `connection::Builder::address(...)`, drive it via `DaemonClient::builder().address(...)`, assert `PropertiesChanged` emission and `InterfaceRef::get_mut()` cache behavior.
+9. **B.2.2**: CLI pair snapshot test in `crates/tisvlay-cli/tests/pair_snapshot.rs` using `insta-cmd` — spawns the daemon in-process against the test bus, runs `tisvlay pair` as a subprocess pointed at the same bus, snapshots the output. (Formerly Phase A.5.)
+
+**B.3 — System-event tests**
+
+10. **B.3.1**: Session service tests with the hand-rolled fake `login1.Manager` on the test bus, emitting `PrepareForSleep(true)` and asserting `SessionAction` dispatch.
+11. **B.3.2**: NM watcher tests with a hand-rolled fake `org.freedesktop.NetworkManager` emitting `StateChanged` — wait, we removed the NM watcher in the networking branch. Skip this item. Carrier/route events come from netlink, which we won't be faking (already tested via `bouncing_routes.py` telemetry).
+
+**B.4 — `StateWatcher` tests**
+
+12. **B.4.1**: `StateWatcher` tests in `crates/tisvlay-core/tests/state_watcher.rs` against a daemon backed by mocks on the test bus. (`StateWatcher` lives in `tisvlay-core`, not the tray — correcting an earlier mis-location.)
