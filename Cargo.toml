@@ -4,6 +4,7 @@ members = [
     "crates/tisvlay-core",
     "crates/tisvlay-lg",
     "crates/tisvlay-mock",
+    "crates/tisvlay-test-support",
     "crates/tisvlay-backends",
     "crates/tisvlay-cli",
     "crates/tisvlayd",
@@ -80,12 +81,16 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 tisvlay-core = { path = "crates/tisvlay-core" }
 tisvlay-lg = { path = "crates/tisvlay-lg" }
 tisvlay-mock = { path = "crates/tisvlay-mock" }
+tisvlay-test-support = { path = "crates/tisvlay-test-support" }
 tisvlay-backends = { path = "crates/tisvlay-backends" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml"] }
+insta-cmd = "0.6"
 proptest = "1"
 rstest = "0.26"
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
+tracing-mock = "0.1.0-beta.3"
 
 [workspace.metadata.deb]
 section = "utils"

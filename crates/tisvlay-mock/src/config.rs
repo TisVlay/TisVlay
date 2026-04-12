@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::pairing::PairingShorthand;
+
 /// Mock TV configuration, stored under `[tv.mock]` in the daemon config.
 ///
 /// Only `address` is required — everything else has sensible defaults.
@@ -33,6 +35,20 @@ pub struct MockVendorConfig {
     /// Available inputs as `(id, label)` pairs.
     #[serde(default = "default_inputs")]
     pub inputs: Vec<(String, String)>,
+
+    /// Pairing behavior shorthand.
+    ///
+    /// - `"manual"` (default): pairing waits for an explicit
+    ///   `MockHandle::simulate_user_*` call from test code
+    /// - `"accept"`: auto-accept on `start_pairing()`
+    /// - `"reject"`: auto-reject on `start_pairing()`
+    /// - `"timeout"`: simulate a timeout on `start_pairing()`
+    ///
+    /// Tests that set an outcome via the handle take precedence over
+    /// this shorthand: the handle's value is consumed first, and the
+    /// shorthand is only applied if no handle outcome is present.
+    #[serde(default)]
+    pub pairing: PairingShorthand,
 }
 
 fn default_address() -> String {
@@ -72,6 +88,7 @@ impl Default for MockVendorConfig {
             initial_input: default_input(),
             initial_backlight: default_backlight(),
             inputs: default_inputs(),
+            pairing: PairingShorthand::default(),
         }
     }
 }

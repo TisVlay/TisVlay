@@ -61,29 +61,38 @@ test-snapshot-accept:
 # --- Coverage -----------------------------------------------------------
 
 # Baseline line-coverage percentage. Bump on PRs that improve coverage.
-cov_baseline_lines := "19"
+cov_baseline_lines := "40"
 
-# Text summary of workspace coverage
+# Text summary of workspace coverage (uses nextest for process-per-test
+# isolation — some tests share a private dbus-daemon and are flaky under
+# cargo test's shared-process model)
 [group('coverage')]
 cov:
-    cargo llvm-cov --workspace --all-features --summary-only
+    cargo llvm-cov --no-report nextest --workspace --all-features
+    cargo test --workspace --all-features --doc
+    cargo llvm-cov report --summary-only
 
 # HTML coverage report (opens in browser)
 [group('coverage')]
 cov-html:
-    cargo llvm-cov --workspace --all-features --html --open
+    cargo llvm-cov --no-report nextest --workspace --all-features
+    cargo test --workspace --all-features --doc
+    cargo llvm-cov report --html --open
 
 # Generate lcov.info for VS Code Coverage Gutters
 [group('coverage')]
 cov-lcov:
-    cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+    cargo llvm-cov --no-report nextest --workspace --all-features
+    cargo test --workspace --all-features --doc
+    cargo llvm-cov report --lcov --output-path lcov.info
     @echo "Wrote lcov.info — point VS Code Coverage Gutters at it."
 
 # Ratchet check — fails if below `lines` percent (default: cov_baseline_lines)
 [group('coverage')]
 cov-ratchet lines=cov_baseline_lines:
-    cargo llvm-cov --workspace --all-features \
-        --fail-under-lines {{ lines }} --summary-only
+    cargo llvm-cov --no-report nextest --workspace --all-features
+    cargo test --workspace --all-features --doc
+    cargo llvm-cov report --fail-under-lines {{ lines }} --summary-only
 
 # --- Dev run targets ----------------------------------------------------
 

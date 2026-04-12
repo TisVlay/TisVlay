@@ -215,14 +215,31 @@ impl SessionService {
     }
 }
 
-/// Register the session D-Bus service.
+/// Register the session D-Bus service on the session bus.
+///
+/// For production use. Tests should use [`register_session_dbus_on`]
+/// with a [`BusKind::Address`] pointing at a private bus.
 pub async fn register_session_dbus(
     state: Arc<RwLock<SessionState>>,
     daemon: Arc<DaemonClient>,
     config_path: Option<std::path::PathBuf>,
 ) -> anyhow::Result<zbus::Connection> {
-    let connection = zbus::connection::Builder::session()
-        .context("Failed to connect to session D-Bus")?
+    register_session_dbus_on(tisvlay_core::BusKind::Session, state, daemon, config_path).await
+}
+
+/// Register the session D-Bus service on the given bus.
+///
+/// Accepts a [`BusKind`] so tests can point at a private
+/// `dbus-daemon` via [`BusKind::Address`].
+pub async fn register_session_dbus_on(
+    bus: tisvlay_core::BusKind<'_>,
+    state: Arc<RwLock<SessionState>>,
+    daemon: Arc<DaemonClient>,
+    config_path: Option<std::path::PathBuf>,
+) -> anyhow::Result<zbus::Connection> {
+    let connection = bus
+        .builder()
+        .context("Failed to create session D-Bus builder")?
         .name(SESSION_DBUS_NAME)
         .context("Failed to request session D-Bus name")?
         .build()

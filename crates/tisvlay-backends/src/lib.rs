@@ -19,6 +19,12 @@ use tisvlay_core::{
     Capabilities, Credentials, DiscoveredTv, PairingSession, TvConfig, TvConnection, TvConnector,
 };
 
+// Re-export under the mock feature so consumers (e.g., the daemon
+// test harness) can name `MockHandle` without taking a direct dep on
+// the `tisvlay-mock` crate.
+#[cfg(feature = "mock")]
+pub use tisvlay_mock::MockHandle;
+
 /// Type-erased discovery function.
 ///
 /// Since `TvDiscovery` uses native `async fn` (not `#[async_trait]`) and is
@@ -225,6 +231,27 @@ impl BackendRegistry {
         connector.build_config_from_pairing(pairing_params, credentials)
     }
 
+    /// Discover TVs for a specific vendor.
+    ///
+    /// Returns an empty list if the vendor has no discovery implementation
+    /// registered. Unlike [`discover_all`](Self::discover_all), this method
+    /// is available unconditionally — it's used by tests that target a
+    /// single vendor (e.g., the mock) regardless of whether real-network
+    /// discovery is compiled in.
+    pub async fn discover_tvs(
+        &self,
+        vendor: &str,
+        timeout: std::time::Duration,
+    ) -> tisvlay_core::Result<Vec<tisvlay_core::DiscoveredTv>> {
+        let backend = self
+            .get(vendor)
+            .ok_or_else(|| tisvlay_core::Error::UnknownVendor(vendor.to_string()))?;
+        match &backend.discover_fn {
+            Some(discover_fn) => discover_fn(timeout).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Discover TVs using all backends that support discovery.
     #[cfg(feature = "discovery")]
     pub async fn discover_all(
@@ -258,16 +285,12 @@ impl Default for BackendRegistry {
     }
 }
 
-/// Create a registry with all supported backends registered.
+/// Register the LG WebOS backend on an existing registry.
 ///
-/// This is the main entry point for creating a backend registry.
-/// All vendor backends are registered here.
-pub fn create_registry() -> BackendRegistry {
-    let mut registry = BackendRegistry::new();
-
-    // =========================================================================
-    // Register LG WebOS backend
-    // =========================================================================
+/// Factored out so both `create_registry()` and `create_test_registry()`
+/// register LG the same way — there's only one way to register LG and
+/// no reason to duplicate the wiring.
+fn register_lg(registry: &mut BackendRegistry) {
     let lg_connector = Arc::new(tisvlay_lg::LgConnector::new());
 
     #[cfg(feature = "discovery")]
@@ -290,21 +313,41 @@ pub fn create_registry() -> BackendRegistry {
         lg_connector,
         lg_discover_fn,
     );
+}
 
-    // =========================================================================
-    // Register mock backend (optional, gated behind the `mock` feature)
-    // =========================================================================
+/// Register the mock backend (for production use) on an existing
+/// registry. The mock's state is private and inaccessible, so
+/// discovery returns an empty list.
+#[cfg(feature = "mock")]
+fn register_mock_production(registry: &mut BackendRegistry) {
+    use tisvlay_core::TvDiscovery;
+    let (connector, discovery) = tisvlay_mock::new_production_parts();
+    let connector = Arc::new(connector);
+    let discovery = Arc::new(discovery);
+    let discover_fn: Arc<DiscoverFn> = Arc::new(move |timeout| {
+        let discovery = Arc::clone(&discovery);
+        Box::pin(async move { discovery.discover(timeout).await })
+    });
+    registry.register(
+        tisvlay_mock::VENDOR_ID,
+        tisvlay_mock::VENDOR_NAME,
+        Capabilities::ALL,
+        connector,
+        Some(discover_fn),
+    );
+}
+
+/// Create a registry with all supported backends registered.
+///
+/// This is the main entry point for creating a backend registry in
+/// production code. All vendor backends are registered here.
+pub fn create_registry() -> BackendRegistry {
+    let mut registry = BackendRegistry::new();
+
+    register_lg(&mut registry);
+
     #[cfg(feature = "mock")]
-    {
-        let mock_connector = Arc::new(tisvlay_mock::MockConnector::new());
-        registry.register(
-            tisvlay_mock::VENDOR_ID,
-            tisvlay_mock::VENDOR_NAME,
-            Capabilities::ALL,
-            mock_connector,
-            None,
-        );
-    }
+    register_mock_production(&mut registry);
 
     // =========================================================================
     // Future: Register Samsung backend
@@ -319,6 +362,44 @@ pub fn create_registry() -> BackendRegistry {
     // );
 
     registry
+}
+
+/// Create a registry wired up for tests, returning a
+/// [`tisvlay_mock::MockHandle`] alongside the registry.
+///
+/// The returned handle shares state with the mock backend in the
+/// registry, so tests can drive discovery and pairing outcomes
+/// out-of-band. Each call constructs a fresh state; tests never
+/// share state with each other.
+///
+/// LG is registered as well so tests that exercise multi-vendor
+/// lookup paths work correctly. The LG connector is not wired to
+/// any real TVs — calling it will fail, which is the intended
+/// behavior for tests.
+#[cfg(feature = "mock")]
+pub fn create_test_registry() -> (BackendRegistry, tisvlay_mock::MockHandle) {
+    use tisvlay_core::TvDiscovery;
+
+    let mut registry = BackendRegistry::new();
+
+    register_lg(&mut registry);
+
+    let (connector, discovery, handle) = tisvlay_mock::new_test_parts();
+    let connector = Arc::new(connector);
+    let discovery = Arc::new(discovery);
+    let discover_fn: Arc<DiscoverFn> = Arc::new(move |timeout| {
+        let discovery = Arc::clone(&discovery);
+        Box::pin(async move { discovery.discover(timeout).await })
+    });
+    registry.register(
+        tisvlay_mock::VENDOR_ID,
+        tisvlay_mock::VENDOR_NAME,
+        Capabilities::ALL,
+        connector,
+        Some(discover_fn),
+    );
+
+    (registry, handle)
 }
 
 #[cfg(test)]

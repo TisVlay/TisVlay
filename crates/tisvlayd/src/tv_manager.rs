@@ -238,7 +238,7 @@ pub struct TvManager {
 /// Used by `logind` and the daemon startup path to dispatch per-TV
 /// actions from each TV's resolved system profile.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum SystemEvent {
+pub enum SystemEvent {
     Startup,
     Shutdown,
     Reboot,
@@ -1224,14 +1224,11 @@ impl TvManager {
             .build_config_from_pairing(vendor, &vendor_config, &credentials)
             .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
-        // Generate ID from name if not provided
-        let tv_id = id.map(String::from).unwrap_or_else(|| {
-            name.to_lowercase()
-                .replace(' ', "-")
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '-')
-                .collect()
-        });
+        // Generate ID from name if not provided. Uses tv_id_from_name()
+        // which produces D-Bus-safe IDs (alphanumeric + underscore only).
+        let tv_id = id
+            .map(String::from)
+            .unwrap_or_else(|| tisvlay_core::tv_id_from_name(name));
 
         // Create TV config with vendor-specific connection parameters
         let mut tv_config = TvConfig::new(&tv_id, name, vendor, managed);

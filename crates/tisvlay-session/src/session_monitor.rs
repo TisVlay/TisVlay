@@ -67,17 +67,24 @@ impl SessionMonitor {
         Self { event_tx }
     }
 
-    /// Start monitoring session events.
+    /// Start monitoring session events on the session bus.
     ///
     /// This spawns background tasks to listen for D-Bus signals.
     /// Returns an `Arc<AtomicBool>` that tracks whether the screen is currently locked.
     /// This can be shared with the Wayland idle monitor for greeter wake detection.
     pub async fn start(&self) -> Result<Arc<AtomicBool>> {
-        // Connect to session bus for ScreenSaver signals
         let session_conn = zbus::Connection::session()
             .await
             .context("Failed to connect to session D-Bus")?;
+        self.start_on(session_conn).await
+    }
 
+    /// Start monitoring session events on an explicit connection.
+    ///
+    /// Tests use this with a private bus connection so they can inject
+    /// a [`FakeScreenSaver`](tisvlay_test_support::fake_screensaver)
+    /// on the same bus.
+    pub async fn start_on(&self, conn: zbus::Connection) -> Result<Arc<AtomicBool>> {
         // Shared state for tracking if screen is locked
         let is_locked = Arc::new(AtomicBool::new(false));
 
@@ -85,7 +92,7 @@ impl SessionMonitor {
         let tx1 = self.event_tx.clone();
         let is_locked_clone = is_locked.clone();
         tokio::spawn(async move {
-            if let Err(e) = monitor_screen_saver(session_conn, tx1, is_locked_clone).await {
+            if let Err(e) = monitor_screen_saver(conn, tx1, is_locked_clone).await {
                 error!("ScreenSaver monitor failed: {}", e);
             }
         });

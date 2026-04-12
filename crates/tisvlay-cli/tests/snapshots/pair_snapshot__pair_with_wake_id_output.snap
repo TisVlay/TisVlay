@@ -1,0 +1,25 @@
+---
+source: crates/tisvlay-cli/tests/pair_snapshot.rs
+info:
+  program: tisvlay
+  args:
+    - "--user"
+    - pair
+    - "mock://living_room"
+    - "--vendor"
+    - mock
+    - "--name"
+    - Living Room
+    - "--wake-id"
+    - "AA:BB:CC:DD:EE:FF"
+  env:
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/nix-shell.3WsadU/tisvlay-test-bus-OgW6OZ/bus.sock,guid=43595f25ba97f259e85ec51e69dbdefb"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Connecting to TV at mock://living_room...
+Please accept the pairing request on your TV.
+TV 'Living Room' paired successfully with ID: living_room
+
+----- stderr -----

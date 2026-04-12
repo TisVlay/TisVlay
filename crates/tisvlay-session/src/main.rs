@@ -10,21 +10,15 @@
 //! The session service queries the daemon for the TV list and system default profile,
 //! then merges with the user config to produce resolved profiles for each TV.
 
-mod idle;
-mod session_dbus;
-mod session_monitor;
-mod wayland_idle;
-
 use anyhow::{Context, Result};
 use clap::Parser;
-use idle::IdleMonitor;
-use session_monitor::{SessionEvent, SessionMonitor};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{
-    DaemonClient, ResolvedUserProfile, SessionAction, UserConfig, UserProfileConfig,
-};
+use tisvlay_core::{DaemonClient, UserConfig, UserProfileConfig};
+use tisvlay_session::idle::IdleMonitor;
+use tisvlay_session::session_monitor::{SessionEvent, SessionMonitor};
+use tisvlay_session::SessionState;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -45,160 +39,6 @@ struct Args {
     /// If the file doesn't exist, the system default profile is used.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
-}
-
-/// Session state: resolved profiles per TV, kept in sync with config reloads.
-pub(crate) struct SessionState {
-    /// Resolved user profiles per TV ID.
-    pub profiles: HashMap<String, ResolvedUserProfile>,
-    /// User config (used by Session D-Bus interface for profile management).
-    pub user_config: UserConfig,
-    /// Admin baseline for user profiles (from the daemon).
-    pub admin_user_default: UserProfileConfig,
-    /// All admin user profiles from the daemon (for listing available profiles).
-    pub admin_user_profiles: HashMap<String, UserProfileConfig>,
-    /// TV IDs from the daemon (ordered).
-    pub tv_ids: Vec<String>,
-}
-
-impl SessionState {
-    /// Build session state by querying daemon and loading user config.
-    async fn load(daemon: &DaemonClient, user_config_path: Option<&PathBuf>) -> Result<Self> {
-        // Query daemon for TV list
-        let tv_infos = daemon
-            .list_tvs()
-            .await
-            .context("Failed to get TV list from daemon")?;
-        let tv_ids: Vec<String> = tv_infos.iter().map(|t| t.id.clone()).collect();
-
-        // Query daemon for admin baseline user profile
-        let admin_user_default = match daemon.get_user_profile_default().await {
-            Ok(profile) => {
-                debug!("Loaded admin user default profile from daemon");
-                profile
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to get admin user profile default, using hard-coded defaults");
-                UserProfileConfig::full_default()
-            }
-        };
-
-        // Query daemon for all admin user profiles
-        let admin_user_profiles: HashMap<String, UserProfileConfig> = match daemon
-            .list_user_profiles()
-            .await
-        {
-            Ok(profiles) => {
-                debug!(
-                    count = profiles.len(),
-                    "Loaded admin user profiles from daemon"
-                );
-                profiles
-                    .into_iter()
-                    .filter_map(|(name, json)| serde_json::from_str(&json).ok().map(|p| (name, p)))
-                    .collect()
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to get admin user profiles");
-                HashMap::new()
-            }
-        };
-
-        // Load user config (optional)
-        let user_config = match user_config_path {
-            Some(path) => match UserConfig::load_from(path) {
-                Ok(Some(config)) => {
-                    info!(
-                        profiles = config.user.profiles.len(),
-                        tv_assignments = config.tv.len(),
-                        path = %path.display(),
-                        "Loaded user configuration"
-                    );
-                    config
-                }
-                Ok(None) => {
-                    debug!(path = %path.display(), "No user config file, using system defaults");
-                    UserConfig::default()
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to load user config, using system defaults");
-                    UserConfig::default()
-                }
-            },
-            None => match UserConfig::load() {
-                Ok(Some(config)) => {
-                    info!(
-                        profiles = config.user.profiles.len(),
-                        tv_assignments = config.tv.len(),
-                        "Loaded user configuration"
-                    );
-                    config
-                }
-                Ok(None) => {
-                    debug!("No user config file, using system defaults");
-                    UserConfig::default()
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to load user config, using system defaults");
-                    UserConfig::default()
-                }
-            },
-        };
-
-        // Validate TV references in user config
-        for tv_entry in &user_config.tv {
-            if !tv_ids.contains(&tv_entry.id) {
-                warn!(
-                    tv_id = %tv_entry.id,
-                    "User config references unknown TV (not in daemon's TV list)"
-                );
-            }
-        }
-
-        // Resolve user profiles for each TV.
-        let mut profiles = HashMap::new();
-        for tv_info in &tv_infos {
-            let tv_id = &tv_info.id;
-
-            let resolved = user_config.resolve_user_profile(tv_id, &admin_user_default);
-            debug!(
-                tv_id = %tv_id,
-                profile = user_config.get_tv_user_profile_name(tv_id),
-                idle_timeout = resolved.idle_timeout_seconds,
-                "Resolved user profile"
-            );
-            profiles.insert(tv_id.clone(), resolved);
-        }
-
-        info!(tvs = tv_ids.len(), "Session state loaded");
-
-        Ok(Self {
-            profiles,
-            user_config,
-            admin_user_default,
-            admin_user_profiles,
-            tv_ids,
-        })
-    }
-
-    /// Get the effective idle timeout (minimum non-zero across all TV profiles).
-    ///
-    /// # Design tradeoff: single shared timer
-    ///
-    /// A single `IdleMonitor` fires at the minimum non-zero timeout across all TVs.
-    /// When `IdleTimeout` fires, `get_action_for_event` applies *each TV's own*
-    /// `on_idle_timeout` action — so a TV with a 30-minute timeout won't do anything
-    /// extra, but it *will* receive the event at 5 minutes if another TV has a shorter
-    /// timeout. Per-TV timers (multiple `IdleMonitor` instances) would be more precise
-    /// but add significant complexity for a marginal gain in the common single-TV case.
-    fn effective_idle_timeout(&self) -> u64 {
-        self.profiles
-            .values()
-            .map(|p| p.idle_timeout_seconds)
-            .filter(|&t| t > 0)
-            .min()
-            .unwrap_or(0)
-    }
 }
 
 #[tokio::main]
@@ -314,7 +154,7 @@ async fn main() -> Result<()> {
 
     // Register Session D-Bus interface for tray/GUI to query profiles.
     // The connection must be held alive for the lifetime of the process.
-    let _session_dbus_connection = match session_dbus::register_session_dbus(
+    let _session_dbus_connection = match tisvlay_session::session_dbus::register_session_dbus(
         state.clone(),
         daemon.clone(),
         args.config.clone(),
@@ -332,7 +172,7 @@ async fn main() -> Result<()> {
     };
 
     // Start Wayland idle monitor for greeter wake detection
-    match wayland_idle::start_wayland_idle_monitor(event_tx.clone(), is_locked) {
+    match tisvlay_session::wayland_idle::start_wayland_idle_monitor(event_tx.clone(), is_locked) {
         Ok(()) => {
             info!("Wayland greeter wake detection enabled");
         }
@@ -362,7 +202,7 @@ async fn main() -> Result<()> {
     let handler_state = state.clone();
     let handler_daemon = daemon.clone();
     let handler_task = tokio::spawn(async move {
-        event_handler(event_rx, handler_state, handler_daemon).await;
+        tisvlay_session::event_handler(event_rx, handler_state, handler_daemon).await;
     });
 
     // Wait for shutdown signals
@@ -374,116 +214,6 @@ async fn main() -> Result<()> {
     handler_task.abort();
 
     Ok(())
-}
-
-/// Handle session events by executing configured actions.
-///
-/// For each event, we iterate through all TVs and apply the action
-/// defined in each TV's resolved profile. Different TVs can respond
-/// differently to the same event (e.g., gaming TV ignores session lock).
-///
-/// Tracks the last action sent to each TV to avoid redundant commands.
-async fn event_handler(
-    mut event_rx: mpsc::UnboundedReceiver<SessionEvent>,
-    state: Arc<RwLock<SessionState>>,
-    daemon: Arc<DaemonClient>,
-) {
-    info!("Event handler started");
-
-    // Track last successful action per TV to skip redundant commands
-    let mut last_action: HashMap<String, SessionAction> = HashMap::new();
-
-    while let Some(event) = event_rx.recv().await {
-        info!(event = %event, "Processing session event");
-
-        // Query current automated set from daemon (live, not cached).
-        // Uses the Automated property which composes managed + automate_when +
-        // input state. Falls back to an empty set if the daemon is unreachable.
-        let automated_ids: HashSet<String> = match daemon.list_tvs().await {
-            Ok(tvs) => tvs
-                .into_iter()
-                .filter(|t| t.automated)
-                .map(|t| t.id)
-                .collect(),
-            Err(e) => {
-                warn!(error = %e, "Failed to query automated TVs; skipping event dispatch");
-                HashSet::new()
-            }
-        };
-
-        // Get TV actions from resolved profiles, filtered to currently managed TVs
-        let tv_actions: Vec<(String, SessionAction)> = {
-            let s = state.read().await;
-            s.tv_ids
-                .iter()
-                .filter(|tv_id| automated_ids.contains(*tv_id))
-                .filter_map(|tv_id| {
-                    let profile = s.profiles.get(tv_id)?;
-                    let action = get_action_for_event(&event, profile);
-                    Some((tv_id.clone(), action))
-                })
-                .collect()
-        };
-
-        // Execute action for each TV
-        let mut success_count = 0;
-        for (tv_id, action) in tv_actions {
-            if action == SessionAction::None {
-                debug!(tv_id = %tv_id, "Action is None, skipping");
-                continue;
-            }
-
-            // Skip redundant commands
-            if let Some(&prev) = last_action.get(&tv_id) {
-                if prev == action {
-                    debug!(tv_id = %tv_id, action = ?action, "Skipping redundant action");
-                    success_count += 1;
-                    continue;
-                }
-            }
-
-            debug!(tv_id = %tv_id, action = ?action, "Executing action");
-            if let Err(e) = execute_action_for_tv(&daemon, &tv_id, action).await {
-                warn!(tv_id = %tv_id, error = %e, "Action failed");
-                last_action.remove(&tv_id);
-            } else {
-                last_action.insert(tv_id, action);
-                success_count += 1;
-            }
-        }
-
-        if success_count > 0 {
-            info!(event = %event, count = success_count, "Event processed");
-        }
-    }
-
-    info!("Event handler stopped");
-}
-
-/// Get the action for a session event from a resolved user profile.
-fn get_action_for_event(event: &SessionEvent, profile: &ResolvedUserProfile) -> SessionAction {
-    match event {
-        SessionEvent::SessionLocked => profile.on_session_lock,
-        SessionEvent::SessionUnlocked => profile.on_session_unlock,
-        SessionEvent::GreeterWake => profile.on_greeter_wake,
-        SessionEvent::IdleTimeout => profile.on_idle_timeout,
-        SessionEvent::IdleResume => profile.on_idle_resume,
-    }
-}
-
-/// Execute an action on a specific TV.
-async fn execute_action_for_tv(
-    daemon: &DaemonClient,
-    tv_id: &str,
-    action: SessionAction,
-) -> anyhow::Result<()> {
-    match action {
-        SessionAction::ScreenOff => daemon.screen_off(tv_id).await,
-        SessionAction::ScreenOn => daemon.screen_on(tv_id).await,
-        SessionAction::PowerOff => daemon.power_off(tv_id).await,
-        SessionAction::PowerOn => daemon.power_on(tv_id).await,
-        SessionAction::None => Ok(()),
-    }
 }
 
 /// Wait for SIGTERM, SIGINT (shutdown) or SIGHUP (reload).

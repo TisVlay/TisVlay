@@ -771,6 +771,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "insta-cmd"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffeeefa927925cced49ccb01bf3e57c9d4cd132df21e576eb9415baeab2d3de6"
+dependencies = [
+ "insta",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1623,8 +1634,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "insta",
+ "insta-cmd",
  "serde_json",
+ "tisvlay-backends",
  "tisvlay-core",
+ "tisvlay-test-support",
+ "tisvlayd",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1646,6 +1662,7 @@ dependencies = [
  "serde_json",
  "socket2",
  "thiserror 2.0.18",
+ "tisvlay-test-support",
  "tokio",
  "toml",
  "tracing",
@@ -1695,10 +1712,28 @@ dependencies = [
  "futures-util",
  "serde_json",
  "tisvlay-core",
+ "tisvlay-test-support",
+ "tisvlayd",
  "tokio",
  "tracing",
  "wayland-client",
  "wayland-protocols",
+ "zbus",
+]
+
+[[package]]
+name = "tisvlay-test-support"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "libc",
+ "tempfile",
+ "tisvlay-core",
+ "tisvlay-mock",
+ "tokio",
+ "tracing",
+ "tracing-mock",
+ "tracing-test",
  "zbus",
 ]
 
@@ -1727,9 +1762,11 @@ dependencies = [
  "rtnetlink",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tisvlay-backends",
  "tisvlay-core",
+ "tisvlay-test-support",
  "tokio",
  "toml",
  "tracing",
@@ -1885,6 +1922,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-mock"
+version = "0.1.0-beta.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98a31739d4ff16a8634c5463c75d5bf9e500596958a245d1ee5b6b98ac37658d"
+dependencies = [
+ "tracing",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1895,9 +1953,32 @@ dependencies = [
  "once_cell",
  "regex-automata",
  "sharded-slab",
+ "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
+ "tracing-log",
+]
+
+[[package]]
+name = "tracing-test"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19a4c448db514d4f24c5ddb9f73f2ee71bfb24c526cf0c570ba142d1119e0051"
+dependencies = [
+ "tracing-core",
+ "tracing-subscriber",
+ "tracing-test-macro",
+]
+
+[[package]]
+name = "tracing-test-macro"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad06847b7afb65c7866a36664b75c40b895e318cea4f71299f013fb22965329d"
+dependencies = [
+ "quote",
+ "syn",
 ]
 
 [[package]]

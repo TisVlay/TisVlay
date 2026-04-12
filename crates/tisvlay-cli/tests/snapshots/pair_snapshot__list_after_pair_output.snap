@@ -1,0 +1,17 @@
+---
+source: crates/tisvlay-cli/tests/pair_snapshot.rs
+info:
+  program: tisvlay
+  args:
+    - "--user"
+    - list
+  env:
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/nix-shell.rmf30I/tisvlay-test-bus-a06xcv/bus.sock,guid=d0f12c5f6211c57ed8fbfdb069dbde26"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Configured TVs:
+  bedroom - Bedroom (mock://bedroom) [connected] <mock> (default)
+
+----- stderr -----

@@ -20,7 +20,14 @@ default = ["discovery"]
 discovery = ["tisvlay-backends/discovery"]
 # Include the in-memory mock backend. Off by default in release/distro
 # builds; enabled by dev/test workflows that need the mock vendor.
-mock = ["tisvlay-backends/mock"]
+# Activates the test_harness module and its supporting dev deps too,
+# so integration tests under crates/tisvlayd/tests/ can build a
+# daemon end-to-end against a private bus.
+mock = [
+    "tisvlay-backends/mock",
+    "dep:tempfile",
+    "dep:tisvlay-test-support",
+]
 
 [dependencies]
 tisvlay-core = { workspace = true, features = ["logging"] }
@@ -39,6 +46,20 @@ indexmap = { workspace = true }
 rtnetlink = "0.20"
 netlink-packet-core = "0.8"
 netlink-packet-route = "0.28"
+# Optional deps activated by the `mock` feature. Pulled in for the
+# integration test harness (`crate::test_harness`) but not by the
+# default release build.
+tempfile = { version = "3", optional = true }
+tisvlay-test-support = { workspace = true, optional = true }
+
+[dev-dependencies]
+# test-util enables tokio::time::pause/advance for deterministic clock
+# control in the TvManager integration tests (B.1.x).
+tokio = { workspace = true, features = ["test-util"] }
+# Tests use DaemonClient (under the `dbus` feature) to drive the
+# in-process daemon over a private bus. Production tisvlayd doesn't
+# need the client.
+tisvlay-core = { workspace = true, features = ["dbus"] }
 
 
 # =============================================================================

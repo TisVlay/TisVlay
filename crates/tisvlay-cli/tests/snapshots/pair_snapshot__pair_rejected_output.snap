@@ -1,0 +1,26 @@
+---
+source: crates/tisvlay-cli/tests/pair_snapshot.rs
+info:
+  program: tisvlay
+  args:
+    - "--user"
+    - pair
+    - "mock://denied"
+    - "--vendor"
+    - mock
+    - "--name"
+    - Denied TV
+  env:
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/nix-shell.rmf30I/tisvlay-test-bus-BXX3HF/bus.sock,guid=e5f5a4b023228f1ad96f56ec69dbde26"
+---
+success: false
+exit_code: 1
+----- stdout -----
+Connecting to TV at mock://denied...
+Please accept the pairing request on your TV.
+
+----- stderr -----
+Error: Failed to pair TV 'Denied TV'
+
+Caused by:
+    org.tisvlay.Error.PairingFailed: Pairing was rejected on the TV

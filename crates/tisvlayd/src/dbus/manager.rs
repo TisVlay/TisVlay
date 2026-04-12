@@ -78,7 +78,8 @@ impl ManagerService {
     /// The config_json should contain vendor-specific connection parameters
     /// (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG).
     ///
-    /// Returns: Object path for the new TV.
+    /// Returns: (object_path, tv_id) — the TV ID is the canonical
+    /// identifier from TvManager, not derived from the D-Bus path.
     async fn add_tv(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
@@ -86,7 +87,7 @@ impl ManagerService {
         vendor: &str,
         config_json: &str,
         managed: bool,
-    ) -> Result<ObjectPath<'static>, DaemonError> {
+    ) -> Result<(ObjectPath<'static>, String), DaemonError> {
         info!(name = %name, vendor = %vendor, managed = %managed, "D-Bus: AddTv");
 
         // Verify vendor is supported
@@ -116,7 +117,7 @@ impl ManagerService {
             warn!(tv_id = %tv_id, error = %e, "Failed to register D-Bus interfaces for new TV");
         }
 
-        Ok(ObjectPath::try_from(path).unwrap())
+        Ok((ObjectPath::try_from(path).unwrap(), tv_id))
     }
 
     /// Remove a TV.

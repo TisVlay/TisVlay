@@ -23,3 +23,15 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
+
+[features]
+default = []
+mock = ["tisvlayd/mock"]
+
+[dev-dependencies]
+tisvlayd = { path = "../tisvlayd", features = ["mock"] }
+tisvlay-test-support = { workspace = true }
+tisvlay-backends = { workspace = true, features = ["mock"] }
+tokio = { workspace = true, features = ["test-util"] }
+insta = { workspace = true }
+insta-cmd = { workspace = true }
