@@ -42,9 +42,16 @@ pub async fn build_dbus_connection(
 
     for tv_id in tv_ids {
         let path = tv_path(tv_id);
-        register_tv_interfaces(&connection, &path, tv_id.clone(), tv_manager.clone())
-            .await
-            .with_context(|| format!("Failed to serve TV interface at {}", path))?;
+        let state = tv_manager.get_current_state(tv_id).await;
+        register_tv_interfaces(
+            &connection,
+            &path,
+            tv_id.clone(),
+            tv_manager.clone(),
+            state.as_ref(),
+        )
+        .await
+        .with_context(|| format!("Failed to serve TV interface at {}", path))?;
     }
 
     Ok(connection)

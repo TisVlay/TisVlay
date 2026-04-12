@@ -792,6 +792,19 @@ impl TvManager {
         }
     }
 
+    /// Fetch the current `TvState` from a connected TV's live backend.
+    ///
+    /// Returns `None` if the TV is not connected or the backend
+    /// `get_state()` call fails. Used by the D-Bus registration path
+    /// to populate interface properties with real values instead of
+    /// hardcoded defaults.
+    pub async fn get_current_state(&self, tv_id: &str) -> Option<TvState> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let mut tv = tv_arc.lock().await;
+        let conn = tv.connection.as_mut()?;
+        conn.get_state().await.ok()
+    }
+
     /// Get TV capabilities.
     pub async fn get_capabilities(&self, tv_id: &str) -> Option<Capabilities> {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
