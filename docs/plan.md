@@ -310,6 +310,98 @@ The fix has two parts:
 
 Phase A is small, self-contained, and exercises the mock backend in a way that validates its API before Phase B leans on it harder. Phase B's D-Bus contract tests need pairing to work, so the `MockPairingMode` work is a prerequisite.
 
+### 6. `DaemonClient` / `StateWatcher` / daemon setup — `from_connection` constructor
+
+Rather than adding a testing-specific feature flag or a `doc(hidden)` escape hatch, expose an idiomatic general-purpose constructor:
+
+```rust
+impl DaemonClient {
+    pub fn new_session() -> Result<Self> { /* existing */ }
+    pub fn new_system()  -> Result<Self> { /* existing */ }
+
+    /// Build a `DaemonClient` from a pre-configured `zbus::Connection`
+    /// and a custom service name. Useful for tests (which spawn a private
+    /// `dbus-daemon` and connect via `zbus::connection::Builder::address`)
+    /// and for custom deployments with alternate service names.
+    pub fn from_connection(conn: zbus::Connection, service_name: &str) -> Result<Self> { /* new */ }
+}
+```
+
+Why this shape:
+- **No dead code risk** — the constructor is legitimately useful outside tests (alternate deployments)
+- **No feature flag** — `tisvlay-core` stays simple
+- **Idiomatic Rust** — delegates connection construction to zbus's own builder, we just accept what it returns
+- **Side-steps zbus's `OnceCell` cache** — `zbus::connection::Builder::address(...)` doesn't go through the cached `session()` / `system()` helpers
+
+Same pattern for `StateWatcher::from_connection(conn, daemon_service_name)` and for the daemon's D-Bus registration in `tisvlayd/src/main.rs`.
+
+### 7. Shared test helpers live in a dedicated `tisvlay-test-support` crate
+
+Rather than extending `tisvlay-mock` with an optional `testing` feature and later refactoring it out, create `crates/tisvlay-test-support/` up front.
+
+Responsibilities:
+- Private `dbus-daemon` spawner with `Lazy` + `Drop` guard
+- Hand-rolled fake `org.freedesktop.login1.Manager` (`PrepareForSleep` signal emission)
+- Hand-rolled fake `org.freedesktop.NetworkManager` — actually, **skip this**. We removed the NM watcher in the networking branch; carrier/route events come from netlink and we don't fake those in tests (validated via `bouncing_routes.py` telemetry).
+- Test-binary-scoped environment scrubbing (`DBUS_STARTER_*`)
+- `tokio::process::Command` wrapper with `process_group(0)` for signal isolation
+- Integration with `tracing-test` for per-test log capture (see §8)
+
+Dependencies (dev-only throughout the workspace, never shipped in release):
+- `tempfile` for unique socket paths
+- `tokio::process` + `tokio::io` for the dbus-daemon child
+- `zbus` for registering the fake services
+- `tracing`, `tracing-subscriber`, `tracing-test`, `tracing-mock` for observability
+
+Why this shape:
+- **Clean separation of concerns** — `tisvlay-mock` remains "mock backend implementation"; test-support remains "test harness for the whole workspace"
+- **Avoids the "extract from mock" refactor later** — honors the user's requirement not to refactor test infrastructure
+- **Honest dependency graph** — each consumer (`tisvlayd/tests`, `tisvlay-session/tests`, `tisvlay-core/tests`) dev-depends on `tisvlay-test-support`; no hidden coupling through `tisvlay-mock`
+
+### 8. `tracing` integration for test observability
+
+When integration tests fail, bare `assert_eq!` messages are rarely enough to diagnose what went wrong. The `tracing` ecosystem has two crates built for this:
+
+- **`tracing-test`** — the `#[traced_test]` attribute macro installs a per-test subscriber that captures `tracing::info!` / `debug!` / etc. calls. On failure, captured logs are dumped to stderr alongside the assertion error. On success, discarded. Zero config.
+- **`tracing-mock`** — build an expected-event / expected-span pattern, run code under it, assert the pattern matched. Lets us test that production code is instrumented correctly (regression protection for observability).
+
+**Concrete uses**:
+
+1. **Test-infra self-observability**: `MockHandle` methods, the D-Bus harness, the state-machine transitions — all get `#[instrument]` attributes. When a test fails, the captured log shows every step of "the test published 2 TVs, started pairing on the wrong ID, got a not-found error".
+
+2. **Production code coverage**: the daemon and session service already emit tracing events throughout (that's what we've been using for debugging). Tests automatically get those for free via `tracing-test`.
+
+3. **Observability regression tests**: a small set of `tracing-mock`-based tests assert that key events (e.g., `"Route changed: reconnecting"` in `tv_manager.rs`) are emitted with the right fields. Catches regressions where someone refactors and silently removes a log line.
+
+**Pattern** (every Phase B test uses this):
+
+```rust
+#[traced_test]
+#[tokio::test]
+async fn on_session_lock_dispatches_screen_off() {
+    let harness = TestHarness::new().await;
+    harness.add_tv(mock_config_with_profile("default")).await;
+
+    harness.emit_session_lock().await;
+    harness.wait_for_action_dispatch().await;
+
+    // Assertions on state
+    assert_eq!(harness.tv_state("lr").await.is_screen_on, false);
+    // tracing-test captured logs are automatically dumped if this fails,
+    // showing the full event dispatch chain.
+}
+```
+
+**Dependencies** (workspace dev-deps, dev-only throughout):
+
+```toml
+[workspace.dependencies]
+tracing-test = "0.2"
+tracing-mock = "0.1"  # currently pre-1.0 but stable enough
+```
+
+**Documentation**: `.claude/CLAUDE.md` gets a "Testing with tracing" subsection explaining the `#[traced_test]` pattern and when to use `tracing-mock` for assertions.
+
 ## Implementation order for A & B
 
 ### Phase A — Discovery + pairing (mock-level, no D-Bus)
@@ -324,29 +416,40 @@ The CLI pair snapshot test is deferred to Phase B because it needs a daemon on a
 
 ### Phase B — Daemon integration tests
 
-**B.0 — Shared test harness infrastructure** (prerequisites for everything else)
+**B.0 — Shared test infrastructure** (prerequisites for everything else)
 
-1. **B.0.1**: Extend `tisvlay-mock` with an optional `testing` feature adding a D-Bus harness module: private `dbus-daemon` spawner, env-var redirection for both system and session, scrubbing of `DBUS_STARTER_*`, `process_group(0)` for signal isolation, `Lazy` + `Drop` guard lifecycle, helpers for hand-rolled fake logind (`org.freedesktop.login1.Manager` with `PrepareForSleep` signal emission).
-2. **B.0.2**: Add `DaemonClient::builder()` to `tisvlay-core` that accepts `.address(...)` / `.service_name(...)`. Existing `new_session()` / `new_system()` stay as convenience methods. Same builder pattern for the daemon's own `connection::Builder` setup in `tisvlayd/src/main.rs` and for `StateWatcher::new()`.
-3. **B.0.3**: Enable `tokio/test-util` in `tisvlayd` dev-dependencies so tests can use `tokio::time::pause()` / `advance()` for deterministic timing.
+1. **B.0.1** — Create `crates/tisvlay-test-support/` crate with:
+   - Private `dbus-daemon` spawner (`Lazy` + `Drop` guard, `process_group(0)`, env scrubbing)
+   - Hand-rolled fake `org.freedesktop.login1.Manager` with `PrepareForSleep` signal emission
+   - `tempfile`-backed unique socket paths
+   - Re-exports of `tracing-test` / `tracing-mock` attributes and types for convenience
+2. **B.0.2** — Add `DaemonClient::from_connection(conn, service_name)` to `tisvlay-core`. Same shape for `StateWatcher::from_connection(conn, daemon_service_name)` and the daemon's D-Bus registration in `tisvlayd/src/main.rs` so test code can supply a pre-built zbus connection and bypass zbus's per-process `OnceCell` connection cache.
+3. **B.0.3** — Add `tracing-test`, `tracing-mock` to workspace dev-dependencies. Instrument `MockHandle`, the D-Bus harness, and pairing state machine transitions with `#[instrument]` so failing tests produce useful captured output. Document the `#[traced_test]` pattern in `.claude/CLAUDE.md`.
+4. **B.0.4** — Enable `tokio/test-util` feature in `tisvlayd` dev-deps.
+5. **B.0.5 — Clock spike** — Write a 20-line test that mimics `TvManager`'s background-task pattern (mpsc receiver loop + scheduled work) under `#[tokio::test(start_paused = true)]`. Verify that paused time advances correctly when `tokio::time::advance()` is called. Commit the spike as `tisvlay-test-support/tests/clock_spike.rs`. If paused time works, we use it throughout B.1/B.2. If it doesn't, document the constraint and use `tokio::time::timeout` wrappers around real-time sleeps as the fallback.
 
-**B.1 — `TvManager` unit integration** (biggest coverage win)
+**B.1 — `TvManager` integration** (biggest coverage win)
 
-4. **B.1.1**: `TvManager` in-process harness (builds `TvManager` from a fixture config, no D-Bus registration needed for these tests).
-5. **B.1.2**: Profile dispatch tests (`on_startup` / `on_shutdown` / `on_sleep` / `on_wake` / `on_session_lock` / `on_session_unlock` / `on_idle_timeout` / `on_idle_resume` / `on_no_session`). `tv_manager.rs` is 0% covered today; this is the biggest single jump.
-6. **B.1.3**: `Automated` gate composition tests (managed × automate_when × primary_input × current_input).
-7. **B.1.4**: Multi-TV concurrency tests (mocks with different profiles respond independently).
+6. **B.1.1** — `TvManager` test harness in `tisvlay-test-support` that builds a `TvManager` instance pointed at mock TVs, with the D-Bus surface registered on the private test bus (so `PropertiesChanged` signal emission is exercised even in unit-level tests).
+7. **B.1.2** — Profile dispatch tests (`on_startup` / `on_shutdown` / `on_sleep` / `on_wake` / `on_session_lock` / `on_session_unlock` / `on_idle_timeout` / `on_idle_resume` / `on_no_session`). `tv_manager.rs` is 0% covered today; this is the biggest single jump.
+8. **B.1.3** — `Automated` gate composition tests (managed × automate_when × primary_input × current_input).
+9. **B.1.4** — Multi-TV concurrency tests (mocks with different profiles respond independently).
 
 **B.2 — D-Bus contract tests**
 
-8. **B.2.1**: Spawn the daemon's full D-Bus surface on the test bus via `connection::Builder::address(...)`, drive it via `DaemonClient::builder().address(...)`, assert `PropertiesChanged` emission and `InterfaceRef::get_mut()` cache behavior.
-9. **B.2.2**: CLI pair snapshot test in `crates/tisvlay-cli/tests/pair_snapshot.rs` using `insta-cmd` — spawns the daemon in-process against the test bus, runs `tisvlay pair` as a subprocess pointed at the same bus, snapshots the output. (Formerly Phase A.5.)
+10. **B.2.1** — Full daemon D-Bus surface on the test bus, driven via `DaemonClient::from_connection(...)`. Assert `PropertiesChanged` emission and `InterfaceRef::get_mut()` cache behavior across the full `Tv1.*` interface surface.
+11. **B.2.2** — CLI pair snapshot test in `crates/tisvlay-cli/tests/pair_snapshot.rs` using `insta-cmd`. The daemon runs in-process on the test bus; the CLI is spawned as a subprocess with `DBUS_SESSION_BUS_ADDRESS` set to the test bus. Output is snapshotted via `insta-cmd`. (Formerly Phase A.5, relocated because it needs the harness.)
 
 **B.3 — System-event tests**
 
-10. **B.3.1**: Session service tests with the hand-rolled fake `login1.Manager` on the test bus, emitting `PrepareForSleep(true)` and asserting `SessionAction` dispatch.
-11. **B.3.2**: NM watcher tests with a hand-rolled fake `org.freedesktop.NetworkManager` emitting `StateChanged` — wait, we removed the NM watcher in the networking branch. Skip this item. Carrier/route events come from netlink, which we won't be faking (already tested via `bouncing_routes.py` telemetry).
+12. **B.3.1** — Session service tests with the hand-rolled fake `login1.Manager` on the test bus, emitting `PrepareForSleep(true)` and asserting `SessionAction` dispatch on the mock TVs.
+
+(No NM watcher tests — the watcher was removed in the networking branch. Carrier/route events come from kernel netlink and are validated via `scripts/bouncing_routes.py`.)
 
 **B.4 — `StateWatcher` tests**
 
-12. **B.4.1**: `StateWatcher` tests in `crates/tisvlay-core/tests/state_watcher.rs` against a daemon backed by mocks on the test bus. (`StateWatcher` lives in `tisvlay-core`, not the tray — correcting an earlier mis-location.)
+13. **B.4.1** — `StateWatcher` tests in `crates/tisvlay-core/tests/state_watcher.rs` against a daemon backed by mocks on the test bus. (`StateWatcher` lives in `tisvlay-core`, not the tray — correcting an earlier mis-location.)
+
+**B.5 — `tracing-mock` observability regressions**
+
+14. **B.5.1** — A small set of tests that use `tracing-mock` to assert on specific production events: the daemon logs a `"Route changed"` event with the right fields, `"Monitored interface updated"` fires with `tv_id` and `previous`/`current`, etc. Catches refactors that silently remove observability.
