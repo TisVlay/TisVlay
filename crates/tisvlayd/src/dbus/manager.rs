@@ -109,10 +109,20 @@ impl ManagerService {
             .await
             .map_err(DaemonError::from)?;
 
-        // Register D-Bus interfaces for the newly added TV.
+        // Fetch live state from the connection established during pairing
+        // so D-Bus interfaces are registered with real values, not zeroed
+        // defaults. Without this, the InterfacesAdded signal and the first
+        // GetManagedObjects call would show volume=0, backlight=0, etc.
+        let state = manager.get_current_state(&tv_id).await;
         let path = tv_path(&tv_id);
-        if let Err(e) =
-            register_tv_interfaces(connection, &path, tv_id.clone(), manager.clone()).await
+        if let Err(e) = register_tv_interfaces(
+            connection,
+            &path,
+            tv_id.clone(),
+            manager.clone(),
+            state.as_ref(),
+        )
+        .await
         {
             warn!(tv_id = %tv_id, error = %e, "Failed to register D-Bus interfaces for new TV");
         }

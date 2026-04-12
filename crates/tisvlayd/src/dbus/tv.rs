@@ -11,6 +11,7 @@
 use crate::dbus::DaemonError;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
+use tisvlay_core::TvState;
 use tracing::info;
 use zbus::interface;
 
@@ -438,6 +439,7 @@ pub async fn register_tv_interfaces(
     path: &str,
     tv_id: String,
     manager: Arc<TvManager>,
+    initial_state: Option<&TvState>,
 ) -> zbus::Result<()> {
     // Fetch config-based properties for initial cache
     let (name, vendor, address, managed) = manager
@@ -459,6 +461,36 @@ pub async fn register_tv_interfaces(
         .unwrap_or_default();
     let connected = manager.is_connected(&tv_id).await;
 
+    // Use live backend state if available, otherwise fall back to
+    // safe defaults. This avoids the race where subscription updates
+    // from try_subscribe_state() arrive before D-Bus interfaces are
+    // registered and are silently dropped by the forwarder.
+    let power_state = initial_state
+        .map(|s| {
+            match (s.is_on, s.is_screen_on) {
+                (false, _) => "standby",
+                (true, false) => "screen_off",
+                (true, true) => "active",
+            }
+            .to_string()
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let is_screen_on = initial_state.map(|s| s.is_screen_on).unwrap_or(true);
+    let volume = initial_state.and_then(|s| s.volume).unwrap_or(0);
+    let muted = initial_state.and_then(|s| s.muted).unwrap_or(false);
+    let current_input = initial_state
+        .and_then(|s| s.current_input.clone())
+        .unwrap_or_default();
+    let available_inputs: Vec<(String, String)> = initial_state
+        .map(|s| {
+            s.inputs
+                .iter()
+                .map(|i| (i.id.clone(), i.label.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let backlight = initial_state.and_then(|s| s.backlight).unwrap_or(0);
+
     let object_server = connection.object_server();
 
     object_server
@@ -475,7 +507,7 @@ pub async fn register_tv_interfaces(
                 primary_input,
                 automate_when,
                 connected,
-                current_input: String::new(),
+                current_input: current_input.clone(),
             },
         )
         .await?;
@@ -486,7 +518,7 @@ pub async fn register_tv_interfaces(
             TvPowerService {
                 tv_id: tv_id.clone(),
                 manager: manager.clone(),
-                power_state: "unknown".to_string(),
+                power_state,
             },
         )
         .await?;
@@ -497,7 +529,7 @@ pub async fn register_tv_interfaces(
             TvScreenService {
                 tv_id: tv_id.clone(),
                 manager: manager.clone(),
-                is_screen_on: true,
+                is_screen_on,
             },
         )
         .await?;
@@ -508,8 +540,8 @@ pub async fn register_tv_interfaces(
             TvVolumeService {
                 tv_id: tv_id.clone(),
                 manager: manager.clone(),
-                volume: 0,
-                muted: false,
+                volume,
+                muted,
             },
         )
         .await?;
@@ -520,8 +552,8 @@ pub async fn register_tv_interfaces(
             TvInputService {
                 tv_id: tv_id.clone(),
                 manager: manager.clone(),
-                current_input: String::new(),
-                available_inputs: Vec::new(),
+                current_input,
+                available_inputs,
             },
         )
         .await?;
@@ -532,7 +564,7 @@ pub async fn register_tv_interfaces(
             TvBacklightService {
                 tv_id: tv_id.clone(),
                 manager: manager.clone(),
-                backlight: 0,
+                backlight,
             },
         )
         .await?;
