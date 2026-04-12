@@ -36,3 +36,19 @@ pub mod dbus;
 pub mod fake_logind;
 
 pub use dbus::PrivateBus;
+
+// Re-export tracing test utilities so consumers don't need to track
+// these crates in their own Cargo.toml.
+//
+// `#[traced_test]` installs a per-test subscriber that captures every
+// `tracing` event in the test scope. On failure the captured logs are
+// dumped to stderr alongside the assertion error; on success they're
+// discarded. Inside a `#[traced_test]` function, the macro also brings
+// `logs_contain(substr)` and `logs_assert(closure)` into scope for
+// in-test assertions on captured log content.
+//
+// `tracing_mock` exposes the full `expect`/`subscriber` API for tests
+// that want to assert on specific spans/events emitted by production
+// code (observability regression tests).
+pub use tracing_mock;
+pub use tracing_test::traced_test;

@@ -6,7 +6,7 @@
 //! receives.
 
 use std::time::Duration;
-use tisvlay_test_support::{fake_logind::FakeLogind, PrivateBus};
+use tisvlay_test_support::{fake_logind::FakeLogind, traced_test, PrivateBus};
 use zbus::MatchRule;
 
 #[tokio::test]
@@ -74,4 +74,25 @@ async fn fake_logind_emits_prepare_for_sleep() {
 
     let body: bool = msg.body().deserialize().expect("deserialize body");
     assert!(body, "PrepareForSleep start=true expected");
+}
+
+#[traced_test]
+#[tokio::test]
+async fn traced_test_captures_instrumented_calls() {
+    // Drives FakeLogind so the #[instrument] spans on register() and
+    // emit_prepare_for_sleep() emit events into the per-test capture
+    // buffer that #[traced_test] installs.
+    let bus = PrivateBus::shared();
+    let conn = bus.connect().await.expect("conn");
+    let logind = FakeLogind::register(&conn).await.expect("register");
+    logind
+        .emit_prepare_for_sleep(false)
+        .await
+        .expect("emit signal");
+
+    // logs_contain is brought into scope by the #[traced_test] macro.
+    assert!(
+        logs_contain("fake logind emitting PrepareForSleep"),
+        "expected the instrumented event to appear in captured logs",
+    );
 }

@@ -481,6 +481,47 @@ A failing snapshot test is a real test failure.
 
 See `crates/tisvlay-core/tests/tv_info_snapshot.rs` for a working example.
 
+#### Test observability ([`tracing-test`](https://docs.rs/tracing-test/) / [`tracing-mock`](https://docs.rs/tracing-mock/))
+
+Integration tests can capture every `tracing` event emitted during a
+test scope and dump them to stderr only when the test fails. This
+turns hard-to-diagnose failures into "show me what the daemon was
+doing" without sprinkling `eprintln!` calls.
+
+The `#[traced_test]` attribute (re-exported from
+`tisvlay-test-support`) installs a per-test subscriber. We pin the
+`no-env-filter` feature so events emitted from *dependency* crates
+(`tisvlay-test-support`, `tisvlay-mock`, the daemon) are captured —
+the upstream default would only capture events from the test binary
+itself. Inside the test function, `logs_contain(substr)` and
+`logs_assert(closure)` are brought into scope by the macro for
+in-test assertions on captured log content.
+
+```rust
+use tisvlay_test_support::{traced_test, PrivateBus, fake_logind::FakeLogind};
+
+#[traced_test]
+#[tokio::test]
+async fn pairing_logs_show_full_state_machine_path() {
+    let bus = PrivateBus::shared();
+    let conn = bus.connect().await.unwrap();
+    let logind = FakeLogind::register(&conn).await.unwrap();
+    logind.emit_prepare_for_sleep(true).await.unwrap();
+
+    // Failure dump shows every captured tracing event automatically.
+    assert!(logs_contain("fake logind emitting PrepareForSleep"));
+}
+```
+
+For *observability regression tests* — asserting that production code
+emits a specific event with the right fields — use `tracing_mock`
+(also re-exported). Build an expected pattern, install the subscriber
+for the duration of the test, and assert the pattern matched. Catches
+refactors that silently drop a log line we depend on for ops.
+
+See `crates/tisvlay-test-support/tests/smoke.rs` for a working
+`#[traced_test]` example.
+
 ### Test Coverage
 
 Coverage is measured with `cargo-llvm-cov` and ratcheted in CI — new code should

@@ -20,7 +20,7 @@
 //! # Ok(()) }
 //! ```
 
-use tracing::instrument;
+use tracing::{debug, instrument};
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 
 const SERVICE_NAME: &str = "org.freedesktop.login1";
@@ -54,6 +54,7 @@ impl FakeLogind {
     /// Emit `PrepareForSleep(start)` on the bus.
     #[instrument(skip(self))]
     pub async fn emit_prepare_for_sleep(&self, start: bool) -> zbus::Result<()> {
+        debug!(start, "fake logind emitting PrepareForSleep");
         ManagerIface::prepare_for_sleep(self.iface.signal_emitter(), start).await
     }
 }

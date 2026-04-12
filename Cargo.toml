@@ -88,6 +88,8 @@ tisvlay-backends = { path = "crates/tisvlay-backends" }
 insta = { version = "1", features = ["json", "yaml"] }
 proptest = "1"
 rstest = "0.26"
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
+tracing-mock = "0.1.0-beta.3"
 
 [workspace.metadata.deb]
 section = "utils"
