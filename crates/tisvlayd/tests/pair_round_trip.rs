@@ -103,6 +103,58 @@ async fn pair_with_rejected_pairing_returns_error() {
     assert!(tvs.is_empty(), "rejected TV should not be in list");
 }
 
+/// Regression test for https://github.com/ruffsl/tisvlay/issues/XXX
+///
+/// After pairing, the D-Bus properties should reflect the mock's actual
+/// state (volume=30, backlight=80, input=HDMI_1, power=active), not
+/// zeroed defaults (volume=0, backlight=0, input="", power="unknown").
+///
+/// The bug: `register_tv_interfaces()` creates D-Bus interface structs
+/// with hardcoded defaults, and the initial subscription updates from
+/// `subscribe_state()` arrive before the interfaces are registered, so
+/// the state-change forwarder silently drops them.
+#[tokio::test]
+async fn pair_state_reflects_mock_defaults_not_zeroed() {
+    let (daemon, client) = empty_daemon().await;
+
+    daemon.handle().simulate_user_accept("mock://living_room");
+
+    let config_json = r#"{"address": "mock://living_room"}"#;
+    let tv_id = client
+        .pair_tv("Living Room", "mock", config_json, true)
+        .await
+        .expect("pairing should succeed");
+
+    // Brief settle for state forwarder to process any queued updates.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let tvs = client.list_tvs().await.unwrap();
+    let tv = tvs.iter().find(|t| t.id == tv_id).unwrap();
+
+    // Mock defaults: volume=30, backlight=80, input=HDMI_1, power=active.
+    // If the bug is present, these will be 0/"unknown"/"" instead.
+    assert_eq!(
+        tv.volume, 30,
+        "volume should be mock default (30), not zeroed"
+    );
+    assert_eq!(
+        tv.backlight, 80,
+        "backlight should be mock default (80), not zeroed"
+    );
+    assert_eq!(
+        tv.current_input, "HDMI_1",
+        "input should be mock default (HDMI_1), not empty"
+    );
+    assert_eq!(
+        tv.power_state, "active",
+        "power should be mock default (active), not unknown"
+    );
+    assert!(
+        tv.is_screen_on,
+        "screen should be on (mock default), not off"
+    );
+}
+
 #[tokio::test]
 async fn pair_unmanaged_tv() {
     let (daemon, client) = empty_daemon().await;
