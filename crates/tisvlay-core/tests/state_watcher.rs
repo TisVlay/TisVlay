@@ -96,13 +96,18 @@ async fn watcher_emits_daemon_disappeared_when_name_released() {
     drop(daemon_conn);
     settle().await;
 
-    let event = tokio::time::timeout(Duration::from_secs(2), watcher.next())
-        .await
-        .expect("event within 2s")
-        .expect("stream not closed");
+    // Drain events until we see DaemonDisappeared. On a shared bus
+    // other tests' daemons may trigger DaemonAppeared first.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let event = tokio::time::timeout_at(deadline, watcher.next())
+            .await
+            .expect("DaemonDisappeared not received within 2s")
+            .expect("stream not closed");
 
-    match event {
-        StateEvent::DaemonDisappeared => {}
-        other => panic!("expected DaemonDisappeared, got {other:?}"),
+        match event {
+            StateEvent::DaemonDisappeared => break,
+            _ => continue,
+        }
     }
 }

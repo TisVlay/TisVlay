@@ -13,15 +13,25 @@ Establish an extensible testing and measurement framework for the tisvlay worksp
 
 ## Status
 
-**Phases 1–6 complete.** The framework is in place:
-- Ratchet coverage at 20.24% lines (baseline 19%)
-- 94 tests pass in <1s via nextest; JUnit XML published via dorny/test-reporter
+**Phases 1–6, A, and B complete.** The framework is in place:
+- Ratchet coverage at **36.47% lines** (baseline bumped from 19% → 36%), up from 20% pre-Phase A
+- 133 tests pass in <1s via nextest; JUnit XML published via dorny/test-reporter
 - insta snapshots pin the `TvInfo` wire format
 - rstest converts three flat test functions into 7 labelled cases
 - proptest runs ~1,800 randomized inputs across 7 properties
-- tisvlay-mock crate implements the full `TvBackend` / `TvConnector` / `TvConnection` surface with push-state subscriptions
+- tisvlay-mock crate implements the full `TvBackend` / `TvConnector` / `TvConnection` surface with push-state subscriptions, plus `MockHandle` for test-driven discovery/pairing
+- tisvlay-test-support crate provides private `dbus-daemon` per test binary, fake logind, `#[traced_test]` / `tracing-mock` re-exports
+- tisvlayd refactored to lib+bin with `TestDaemon` harness, `BusKind::Address` for private bus tests
+- `tv_manager.rs` went from 0% → 30% coverage via profile dispatch, automated gate, and multi-TV concurrency tests
+- D-Bus contract tests verify property cache, command round-trips, and `PropertiesChanged` emission
+- StateWatcher tests verify daemon name-watch lifecycle on a private bus
+- tracing-mock observability regression tests pin `#[instrument]` span names and event fields
 
-**Phase 7 deferred** until the repo becomes public (the only remaining work is uncommenting the Codecov upload block). Phases **A** and **B** below are the natural follow-ups now that the mock backend exists.
+**Phase 7 deferred** until the repo becomes public (the only remaining work is uncommenting the Codecov upload block).
+
+**Deferred items** from Phase B:
+- **B.2.2** (CLI pair snapshot): needs daemon-as-subprocess harness
+- **B.3.1** (session service tests): needs `tisvlay-session` lib extraction (same pattern as tisvlayd)
 
 ## Design principles
 
@@ -102,7 +112,7 @@ Gated behind the `mock` Cargo feature on `tisvlay-backends` (default-off in rele
 
 **Deferred until the repo becomes public.** The only remaining work is uncommenting the Codecov upload block in `.github/workflows/ci.yml` (one-line change). Test workflow already publishes JUnit XML; coverage workflow already enforces the ratchet; permissions and action versions are up to date.
 
-### Phase A — Discovery + pairing user story (next)
+### Phase A — Discovery + pairing user story ✅ complete
 
 **Goal**: extend the mock backend to support device discovery and failure-mode pairing so the entire "new user pairs their first TV" flow can be tested end-to-end.
 
@@ -139,7 +149,7 @@ Gated behind the `mock` Cargo feature on `tisvlay-backends` (default-off in rele
 
 **Estimated effort**: ~1-2 focused sessions.
 
-### Phase B — Daemon integration tests (larger)
+### Phase B — Daemon integration tests ✅ complete (B.2.2, B.3.1 deferred)
 
 **Goal**: test the daemon's core flows (profile dispatch, multi-TV orchestration, D-Bus contract) against mock TVs, in-process, without needing a real D-Bus session.
 

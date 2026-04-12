@@ -64,16 +64,23 @@ async fn fake_logind_emits_prepare_for_sleep() {
         .await
         .expect("emit signal");
 
-    // Receive the signal (bounded so a regression can't hang the test).
+    // Drain messages until we find our start=true signal. On a shared
+    // bus (cargo test, cargo llvm-cov), other tests in this binary may
+    // emit PrepareForSleep(false) concurrently.
     use futures_util::StreamExt;
-    let msg = tokio::time::timeout(Duration::from_secs(2), stream.next())
-        .await
-        .expect("signal did not arrive within 2s")
-        .expect("stream ended")
-        .expect("message");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let msg = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .expect("signal did not arrive within 2s")
+            .expect("stream ended")
+            .expect("message");
 
-    let body: bool = msg.body().deserialize().expect("deserialize body");
-    assert!(body, "PrepareForSleep start=true expected");
+        let body: bool = msg.body().deserialize().expect("deserialize body");
+        if body {
+            break;
+        }
+    }
 }
 
 #[traced_test]
