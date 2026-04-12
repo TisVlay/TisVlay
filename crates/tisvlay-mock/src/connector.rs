@@ -1,21 +1,46 @@
 //! `MockConnector` — factory for [`MockConnection`] instances.
+//!
+//! The connector shares a `MockState` with [`MockHandle`](crate::MockHandle)
+//! so test code can drive discovery and pairing outcomes out-of-band.
+//! Production builds use [`MockConnector::new()`], which creates a
+//! fresh state with no handle; the mock is registered but has an
+//! empty network and no pre-seeded pairing outcomes.
 
 use async_trait::async_trait;
+use std::sync::{Arc, Mutex};
 use tisvlay_core::{
-    Credentials, Error, PairingCommand, PairingSession, PairingState, Result, Transport,
-    TvConnection, TvConnector,
+    Credentials, Error, PairingCommand, PairingError, PairingSession, PairingState, Result,
+    Transport, TvConnection, TvConnector,
 };
+use tracing::instrument;
 
 use crate::config::MockVendorConfig;
 use crate::connection::MockConnection;
+use crate::pairing::PairingOutcome;
+use crate::state::MockState;
 
 /// Factory for mock TV connections.
-pub struct MockConnector;
+///
+/// Holds a shared [`MockState`] used for discovery and pairing
+/// outcome lookup.
+pub struct MockConnector {
+    pub(crate) state: Arc<Mutex<MockState>>,
+}
 
 impl MockConnector {
-    /// Create a new mock connector.
+    /// Create a new mock connector with a fresh, empty state.
+    ///
+    /// Used by production `create_registry()` — the handle is
+    /// implicitly dropped, so test hooks are inaccessible.
     pub fn new() -> Self {
-        Self
+        Self::from_state(Arc::new(Mutex::new(MockState::new())))
+    }
+
+    /// Wrap an existing shared state. Used by
+    /// [`create_test_registry`](crate::create_test_registry) so
+    /// the connector and handle share state.
+    pub(crate) fn from_state(state: Arc<Mutex<MockState>>) -> Self {
+        Self { state }
     }
 }
 
@@ -49,9 +74,10 @@ impl TvConnector for MockConnector {
         false
     }
 
+    #[instrument(skip(self, vendor_config))]
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
-        tracing::debug!(address = %config.address, "Mock: connecting");
+        tracing::debug!(address = %config.address, "connecting to mock TV");
         Ok(Box::new(MockConnection::new(&config)))
     }
 
@@ -67,9 +93,10 @@ impl TvConnector for MockConnector {
         true
     }
 
+    #[instrument(skip(self, vendor_config))]
     async fn wake(&self, vendor_config: &toml::Value) -> Result<()> {
         let config = parse_config(vendor_config)?;
-        tracing::debug!(address = %config.address, "Mock: wake (no-op)");
+        tracing::debug!(address = %config.address, "mock wake (no-op)");
         Ok(())
     }
 
@@ -78,39 +105,83 @@ impl TvConnector for MockConnector {
         self.connect(vendor_config).await
     }
 
+    #[instrument(skip(self, vendor_config))]
     fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
-        // Validate the config early so bad input surfaces before the
-        // session starts.
-        let _config = parse_config(vendor_config)?;
+        // Parse the config to validate it and extract the pairing-mode
+        // shorthand. Pairing outcomes can come from two places:
+        //
+        //   1. The config shorthand (`pairing = "accept"` etc.), applied
+        //      here by seeding the state before dispatch.
+        //   2. A prior call to `MockHandle::simulate_user_*`, which set
+        //      an outcome on the state directly.
+        //
+        // If both are set, the handle wins: it's stored directly and the
+        // shorthand's would-be-seeded value is overwritten only if no
+        // outcome is already present.
+        let config = parse_config(vendor_config)?;
+        let address = config.address.clone();
+
+        // Tv ID is derived from the address for mock TVs. In production
+        // configs this mapping is one-to-one.
+        let tv_id = config.address.clone();
+
+        // Look up any pre-seeded outcome.
+        let outcome = {
+            let mut state = self.state.lock().expect("mock state lock poisoned");
+            // If the handle already set an outcome for this TV, take it.
+            // Otherwise, fall back to the config shorthand (if any).
+            state
+                .pairing_outcomes
+                .remove(&tv_id)
+                .or_else(|| config.pairing.to_outcome())
+        };
+
+        tracing::debug!(?outcome, %address, "starting mock pairing");
 
         let (session, mut command_rx, state_tx) = PairingSession::create();
 
-        // Spawn a tiny task that completes pairing instantly unless
-        // the caller cancels. Matches the shape of LG's pairing flow
-        // without needing a real handshake.
         tokio::spawn(async move {
-            tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
-                    let _ = state_tx.send(PairingState::complete(
-                        Credentials::with_type("mock-key", "client_key"),
-                    ));
+            // Announce that the prompt is up — matches LG's behavior.
+            let _ = state_tx.send(PairingState::awaiting_tv_prompt(
+                "(mock) Please accept the pairing prompt",
+            ));
+
+            // Drive the outcome after a tiny yield so the session state
+            // channel has time to deliver the "prompt up" event first.
+            // Real backends take much longer here; the mock uses zero
+            // actual delay so tests run deterministically.
+            tokio::task::yield_now().await;
+
+            let final_state = match outcome {
+                Some(PairingOutcome::Accept) => {
+                    PairingState::complete(Credentials::with_type("mock-key", "client_key"))
                 }
-                cmd = command_rx.recv() => {
-                    match cmd {
-                        Some(PairingCommand::Cancel) | None => {
-                            let _ = state_tx.send(PairingState::failed(
-                                tisvlay_core::PairingError::cancelled(),
-                            ));
-                        }
-                        Some(PairingCommand::SubmitInput(_)) => {
-                            // Mock doesn't use PIN input; succeed anyway.
-                            let _ = state_tx.send(PairingState::complete(
-                                Credentials::with_type("mock-key", "client_key"),
-                            ));
+                Some(PairingOutcome::Reject) => PairingState::failed(PairingError::rejected()),
+                Some(PairingOutcome::Timeout) => PairingState::failed(PairingError::timeout()),
+                None => {
+                    // No outcome pre-seeded. Wait for a cancel command;
+                    // tests that want manual control should set an outcome
+                    // before the pairing session starts.
+                    tokio::select! {
+                        cmd = command_rx.recv() => {
+                            match cmd {
+                                Some(PairingCommand::Cancel) | None => {
+                                    PairingState::failed(PairingError::cancelled())
+                                }
+                                Some(PairingCommand::SubmitInput(_)) => {
+                                    // Mock doesn't use PIN input; succeed.
+                                    PairingState::complete(Credentials::with_type(
+                                        "mock-key",
+                                        "client_key",
+                                    ))
+                                }
+                            }
                         }
                     }
                 }
-            }
+            };
+
+            let _ = state_tx.send(final_state);
         });
 
         Ok(session)

@@ -319,6 +319,53 @@ Integration tests at `crates/tisvlay-backends/tests/mock_backend.rs`
 exercise the full registry → connector → connection → subscription
 flow end-to-end.
 
+#### `MockHandle` — test-driven control surface
+
+Tests that need to drive discovery or pairing state from outside the
+mock (e.g., "publish 3 TVs, then pair the second one") use
+`tisvlay_backends::create_test_registry()`, which returns a
+`(BackendRegistry, MockHandle)` pair sharing a fresh state:
+
+```rust
+use std::time::Duration;
+use tisvlay_backends::create_test_registry;
+use tisvlay_core::DiscoveredTv;
+
+#[tokio::test]
+async fn pair_happy_path() {
+    let (registry, mock) = create_test_registry();
+
+    mock.publish_tv(DiscoveredTv::new(
+        "living_room", "Living Room G4", "mock://living_room", "mock",
+    ));
+    mock.simulate_user_accept("mock://living_room");
+
+    let tvs = registry.discover_tvs("mock", Duration::from_millis(100)).await.unwrap();
+    // ... drive pairing through the connector; it auto-accepts ...
+}
+```
+
+Every test gets its own `(registry, handle)` pair. No shared state
+means tests are parallel by construction.
+
+**`MockHandle` methods**:
+
+- `publish_tv(DiscoveredTv)` — add a TV to the mock "network"
+- `clear_discovered()` — remove all discoverable TVs
+- `simulate_user_accept(tv_id)` — pre-approve the next pairing for this TV
+- `simulate_user_reject(tv_id)` — pre-reject (simulates the user declining)
+- `simulate_pairing_timeout(tv_id)` — simulate a pairing timeout
+
+**Config shorthand**: simple tests that don't need the handle can set
+`[tv.mock] pairing = "accept"|"reject"|"timeout"` and let the connector
+auto-drive the outcome. If a test both sets the shorthand and calls
+`simulate_user_*` before `start_pairing()` runs, **the handle wins** —
+the first explicit outcome on the state machine is authoritative.
+
+Integration tests demonstrating all flows (discovery, pairing
+happy path, reject, timeout, multiple TVs, mixed-mode) are at
+`crates/tisvlay-backends/tests/mock_discovery.rs`.
+
 ### Testing
 
 Tests run through [`cargo-nextest`](https://nexte.st/), a parallel test
