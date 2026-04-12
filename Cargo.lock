@@ -1744,6 +1744,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tisvlay-backends",
  "tisvlay-core",
+ "tisvlay-test-support",
  "tokio",
  "toml",
  "tracing",
