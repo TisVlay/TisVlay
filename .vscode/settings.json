@@ -10,6 +10,7 @@
         "nics",
         "polkit",
         "proptest",
+        "rsplit",
         "rstest",
         "SIGPIPE",
         "SSAP",
