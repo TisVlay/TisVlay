@@ -5,6 +5,8 @@
         "dbusmock",
         "insta",
         "logind",
+        "millis",
+        "mpsc",
         "netlink",
         "nextest",
         "nics",
