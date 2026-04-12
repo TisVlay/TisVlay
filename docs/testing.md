@@ -398,3 +398,19 @@ These document **why** the framework is shaped this way:
 6. **Handle wins over shorthand.** When both `MockHandle::simulate_user_*` and the config `pairing = "..."` shorthand are set, the handle takes precedence — it's the authoritative state machine input.
 
 7. **`no-env-filter` on tracing-test.** Without it, events from dependency crates are invisible in test output. This is a non-obvious default that caused a test failure before being pinned.
+
+## Future work
+
+Deferred until the framework matures or a specific need arises:
+
+- **Codecov upload** — pre-written in `.github/workflows/ci.yml`,
+  commented out. Uncomment when the repo goes public (one-line change).
+- **Mutation testing** (`cargo-mutants`) — worth running now that
+  coverage is at 40%; would surface tests that pass but don't actually
+  assert meaningful properties.
+- **Fuzzing** (`cargo-fuzz`) — needs clear input-parsing entry points;
+  defer until something obvious emerges (e.g., SSAP message parsing).
+- **Benchmark infrastructure** (`criterion`, `bencher`) — performance
+  is not a current concern for tisvlay.
+- **`cargo-deny` / `cargo-audit`** — supply chain security; separate
+  concern from testing, tracked elsewhere.
