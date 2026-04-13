@@ -1,0 +1,6 @@
+{
+  "id": "cmd_1",
+  "type": "error",
+  "error": "401 insufficient permissions",
+  "payload": {}
+}

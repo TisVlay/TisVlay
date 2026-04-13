@@ -179,7 +179,11 @@ impl Connection {
         Ok(Self::from_stream(stream))
     }
 
-    async fn connect_url_plain(url: &str, connect_timeout: Duration) -> Result<Self> {
+    /// Connect using a plain WebSocket URL (e.g., `ws://127.0.0.1:12345`).
+    ///
+    /// Exposed for tests that need to connect to a fake SSAP server on a
+    /// non-standard port.
+    pub(crate) async fn connect_url_plain(url: &str, connect_timeout: Duration) -> Result<Self> {
         let connect_fut = tokio_tungstenite::connect_async(url);
 
         let (stream, response) = timeout(connect_timeout, connect_fut)

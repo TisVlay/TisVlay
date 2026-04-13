@@ -1,0 +1,10 @@
+{
+  "id": "status_6",
+  "type": "response",
+  "payload": {
+    "returnValue": true,
+    "appId": "com.webos.app.hdmi1",
+    "processId": "1001",
+    "windowId": ""
+  }
+}

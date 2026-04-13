@@ -46,6 +46,28 @@ impl WebOsClient {
         Ok(client)
     }
 
+    /// Connect to a fake SSAP server at the given URL and register.
+    ///
+    /// Used by tests that run a [`FakeSsapServer`](crate::test_server::FakeSsapServer)
+    /// on localhost. Bypasses the wss→ws fallback and connects directly.
+    #[cfg(test)]
+    pub(crate) async fn connect_url(url: &str, client_key: Option<String>) -> Result<Self> {
+        let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
+        let conn = Connection::connect_url_plain(url, connect_timeout).await?;
+
+        let mut client = Self {
+            conn: Some(conn),
+            client_key: client_key.clone(),
+            request_id: 1,
+            timeout: Duration::from_millis(timeouts::REQUEST_MS),
+        };
+
+        let new_key = client.register(client_key).await?;
+        client.client_key = Some(new_key);
+
+        Ok(client)
+    }
+
     /// Check if the connection is still active.
     pub fn is_connected(&self) -> bool {
         self.conn.as_ref().is_some_and(|c| c.is_alive())
@@ -530,5 +552,219 @@ impl WebOsClient {
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_server::{FakeSsapServer, RegistrationOutcome};
+
+    #[tokio::test]
+    async fn connect_and_register_two_phase() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .expect("should connect and register");
+
+        assert!(client.is_connected());
+        assert_eq!(client.client_key(), Some("test-client-key"));
+        client.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_with_existing_key_single_phase() {
+        let server = FakeSsapServer::start().await;
+        server.set_registration_outcome(RegistrationOutcome::AcceptImmediate {
+            client_key: "returning-key".to_string(),
+        });
+
+        let mut client =
+            WebOsClient::connect_url(&server.ws_url(), Some("returning-key".to_string()))
+                .await
+                .expect("should register immediately");
+
+        assert_eq!(client.client_key(), Some("returning-key"));
+        client.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn registration_rejection_returns_error() {
+        let server = FakeSsapServer::start().await;
+        server.set_registration_outcome(RegistrationOutcome::Reject);
+
+        let result = WebOsClient::connect_url(&server.ws_url(), None).await;
+        assert!(result.is_err(), "should fail with rejected registration");
+    }
+
+    #[tokio::test]
+    async fn get_power_state() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        let state = client.get_power_state().await.unwrap();
+        assert_eq!(state, PowerState::Active);
+    }
+
+    #[tokio::test]
+    async fn set_and_get_volume() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        // set_volume should succeed (server echoes success).
+        client.set_volume(50).await.unwrap();
+
+        // get_volume returns the server's canned response.
+        let info = client.get_volume().await.unwrap();
+        assert_eq!(info.volume, 30); // canned from fake server
+        assert!(!info.muted);
+    }
+
+    #[tokio::test]
+    async fn get_inputs() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        let inputs = client.get_inputs().await.unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].id, "HDMI_1");
+        assert_eq!(inputs[1].id, "HDMI_2");
+    }
+
+    #[tokio::test]
+    async fn switch_input() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        client.switch_input("HDMI_2").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn screen_off_and_on() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        client.screen_off().await.unwrap();
+        client.screen_on().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn power_off() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        client.power_off().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_backlight() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        let backlight = client.get_backlight().await.unwrap();
+        assert_eq!(backlight, 80); // canned from fake server
+    }
+
+    #[tokio::test]
+    async fn set_backlight_via_luna_workaround() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        // set_backlight uses createAlert + closeAlert workaround.
+        client.set_backlight(60).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_state_aggregates_all_endpoints() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        let state = client.get_state().await.unwrap();
+        assert!(state.is_on);
+        assert!(state.is_screen_on);
+        assert_eq!(state.volume, Some(30));
+        assert_eq!(state.muted, Some(false));
+        assert_eq!(state.backlight, Some(80));
+        assert!(!state.inputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn subscribe_state_updates() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        let (id_to_uri, initial_responses) = client.subscribe_state_updates().await.unwrap();
+
+        // Should have subscriptions for power, volume, mute, inputs,
+        // current input, and backlight (6 total).
+        assert_eq!(id_to_uri.len(), 6, "id_to_uri: {id_to_uri:?}");
+        assert_eq!(initial_responses.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn subscription_push_arrives_on_channel() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        let (id_to_uri, _) = client.subscribe_state_updates().await.unwrap();
+        let mut sub_rx = client.take_subscription_rx().expect("should have rx");
+
+        // Find the request ID for the volume subscription.
+        let vol_req_id = id_to_uri
+            .iter()
+            .find(|(_, uri)| uri.contains("getVolume"))
+            .map(|(id, _)| id.clone())
+            .expect("should have volume subscription");
+
+        // Push a volume update from the server.
+        server.push_subscription_update(
+            &vol_req_id,
+            serde_json::json!({
+                "returnValue": true,
+                "volumeStatus": { "volume": 75, "muted": true }
+            }),
+        );
+
+        // The update should arrive on the subscription channel.
+        let update = tokio::time::timeout(std::time::Duration::from_secs(2), sub_rx.recv())
+            .await
+            .expect("should receive within 2s")
+            .expect("channel should not be closed");
+
+        assert_eq!(update.id.as_deref(), Some(vol_req_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn mute_control() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        client.set_mute(true).await.unwrap();
+        let muted = client.get_mute().await.unwrap();
+        assert!(!muted); // canned response from fake server
     }
 }

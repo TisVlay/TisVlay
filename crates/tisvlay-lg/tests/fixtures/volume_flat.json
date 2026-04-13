@@ -1,0 +1,9 @@
+{
+  "id": "status_4",
+  "type": "response",
+  "payload": {
+    "returnValue": true,
+    "volume": 42,
+    "muted": true
+  }
+}

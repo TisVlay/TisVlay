@@ -88,3 +88,83 @@ impl LgVendorConfig {
 
 /// Type alias for backwards compatibility within this crate.
 pub type LgConfig = LgVendorConfig;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_full_config() {
+        let toml_str = r#"
+            ip = "192.168.1.100"
+            mac = "AA:BB:CC:DD:EE:FF"
+            client_key = "abc123"
+            default_input = "HDMI_1"
+        "#;
+        let config: LgVendorConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.ip, "192.168.1.100");
+        assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(config.client_key.as_deref(), Some("abc123"));
+        assert_eq!(config.default_input.as_deref(), Some("HDMI_1"));
+    }
+
+    #[test]
+    fn parse_minimal_config() {
+        let toml_str = r#"ip = "192.168.1.100""#;
+        let config: LgVendorConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.ip, "192.168.1.100");
+        assert!(config.mac.is_none());
+        assert!(config.client_key.is_none());
+        assert!(config.default_input.is_none());
+    }
+
+    #[test]
+    fn address_alias_maps_to_ip() {
+        let toml_str = r#"address = "192.168.1.200""#;
+        let config: LgVendorConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.ip, "192.168.1.200");
+    }
+
+    #[test]
+    fn wake_id_alias_maps_to_mac() {
+        let toml_str = r#"
+            ip = "10.0.0.1"
+            wake_id = "11:22:33:44:55:66"
+        "#;
+        let config: LgVendorConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.mac.as_deref(), Some("11:22:33:44:55:66"));
+    }
+
+    #[test]
+    fn serialize_round_trip() {
+        let config = LgVendorConfig {
+            ip: "10.0.0.1".to_string(),
+            mac: Some("AA:BB:CC:DD:EE:FF".to_string()),
+            client_key: Some("key123".to_string()),
+            default_input: Some("HDMI_2".to_string()),
+        };
+        let toml_str = toml::to_string(&config).unwrap();
+        let parsed: LgVendorConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(config, parsed);
+    }
+
+    #[test]
+    fn serialize_omits_none_fields() {
+        let config = LgVendorConfig::new("10.0.0.1");
+        let toml_str = toml::to_string(&config).unwrap();
+        assert!(!toml_str.contains("mac"));
+        assert!(!toml_str.contains("client_key"));
+        assert!(!toml_str.contains("default_input"));
+    }
+
+    #[test]
+    fn builder_methods() {
+        let mut config = LgVendorConfig::with_mac("10.0.0.1", "AA:BB:CC:DD:EE:FF");
+        config.set_client_key("key");
+        config.set_default_input("HDMI_3");
+        assert_eq!(config.ip, "10.0.0.1");
+        assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(config.client_key.as_deref(), Some("key"));
+        assert_eq!(config.default_input.as_deref(), Some("HDMI_3"));
+    }
+}
