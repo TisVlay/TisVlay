@@ -49,6 +49,9 @@ pub mod protocol;
 #[cfg(feature = "discovery")]
 mod discovery;
 
+#[cfg(test)]
+pub(crate) mod test_server;
+
 // Public re-exports
 #[cfg(feature = "discovery")]
 pub use backend::LgDiscovery;

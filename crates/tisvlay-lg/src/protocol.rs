@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Outgoing message to the TV.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     /// Unique request ID for correlating responses.
     pub id: String,
@@ -23,7 +23,7 @@ pub struct Request {
 }
 
 /// Request message types.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RequestType {
     /// Registration/pairing request.
