@@ -124,6 +124,10 @@ assert_cmd_snapshot!(Command::new(cli_bin())
 
 These tests use `#[tokio::test(flavor = "multi_thread")]` because `assert_cmd_snapshot!` blocks the current thread with `std::process::Command::output()` — the TestDaemon's D-Bus server tasks need other threads to handle incoming calls from the subprocess.
 
+## LG backend testing
+
+The `tisvlay-lg` crate has its own fake SSAP server for testing without a real TV. See [docs/lg/testing.md](lg/testing.md) for details.
+
 ## Coverage
 
 Measured with `cargo-llvm-cov`, ratcheted in CI.
