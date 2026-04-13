@@ -2,6 +2,7 @@
   lib,
   rustPlatform,
   pkg-config,
+  cargo-nextest,
   dbus,
 }:
 
@@ -18,8 +19,13 @@ rustPlatform.buildRustPackage {
   ];
 
   nativeCheckInputs = [
+    cargo-nextest
     dbus
   ];
+
+  checkPhase = ''
+    cargo nextest run --workspace --all-features
+  '';
 
   meta = {
     description = "TV Display control for Linux";
