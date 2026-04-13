@@ -601,6 +601,287 @@ impl TvConnector for LgConnector {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // update_state_from_subscription
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn subscription_power_active() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.service.tvpower/power/getPowerState",
+            &json!({"state": "Active", "processing": "None"}),
+        );
+        assert!(changed);
+        assert!(state.is_on);
+        assert!(state.is_screen_on);
+    }
+
+    #[test]
+    fn subscription_power_screen_off() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.service.tvpower/power/getPowerState",
+            &json!({"state": "Screen Off"}),
+        );
+        assert!(changed);
+        assert!(state.is_on);
+        assert!(!state.is_screen_on);
+    }
+
+    #[test]
+    fn subscription_power_standby() {
+        let mut state = TvState::new();
+        state.is_on = true;
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.service.tvpower/power/getPowerState",
+            &json!({"state": "Standby"}),
+        );
+        assert!(changed);
+        assert!(!state.is_on);
+    }
+
+    #[test]
+    fn subscription_volume_nested() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://audio/getVolume",
+            &json!({"volumeStatus": {"volume": 42, "muteStatus": true}}),
+        );
+        assert!(changed);
+        assert_eq!(state.volume, Some(42));
+        assert_eq!(state.muted, Some(true));
+    }
+
+    #[test]
+    fn subscription_volume_flat() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://audio/getVolume",
+            &json!({"volume": 75, "mute": false}),
+        );
+        assert!(changed);
+        assert_eq!(state.volume, Some(75));
+        assert_eq!(state.muted, Some(false));
+    }
+
+    #[test]
+    fn subscription_mute() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://audio/getMute",
+            &json!({"mute": true}),
+        );
+        assert!(changed);
+        assert_eq!(state.muted, Some(true));
+    }
+
+    #[test]
+    fn subscription_input_list() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://tv/getExternalInputList",
+            &json!({
+                "devices": [
+                    {"id": "HDMI_1", "label": "PC", "connected": true, "appId": "com.webos.app.hdmi1"},
+                    {"id": "HDMI_2", "label": "Console", "connected": false, "appId": "com.webos.app.hdmi2"},
+                ]
+            }),
+        );
+        assert!(changed);
+        assert_eq!(state.inputs.len(), 2);
+        assert_eq!(state.inputs[0].id, "HDMI_1");
+        assert!(state.inputs[0].connected);
+        // App ID map should be built for foreground app normalization.
+        assert_eq!(
+            state.input_app_id_map.get("com.webos.app.hdmi1"),
+            Some(&"HDMI_1".to_string())
+        );
+    }
+
+    #[test]
+    fn subscription_foreground_app_normalizes_to_input_id() {
+        let mut state = TvState::new();
+        // First, build the app ID → input ID mapping.
+        update_state_from_subscription(
+            &mut state,
+            "ssap://tv/getExternalInputList",
+            &json!({
+                "devices": [
+                    {"id": "HDMI_1", "label": "PC", "connected": true, "appId": "com.webos.app.hdmi1"},
+                ]
+            }),
+        );
+        // Then, foreground app update should map app ID to physical input.
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.applicationManager/getForegroundAppInfo",
+            &json!({"appId": "com.webos.app.hdmi1"}),
+        );
+        assert!(changed);
+        assert_eq!(state.current_input.as_deref(), Some("HDMI_1"));
+        assert_eq!(state.current_app.as_deref(), Some("com.webos.app.hdmi1"));
+    }
+
+    #[test]
+    fn subscription_foreground_app_unknown_app_passes_through() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.applicationManager/getForegroundAppInfo",
+            &json!({"appId": "com.webos.app.netflix"}),
+        );
+        assert!(changed);
+        // No mapping exists, so the raw app ID is used as current_input.
+        assert_eq!(state.current_input.as_deref(), Some("com.webos.app.netflix"));
+    }
+
+    #[test]
+    fn subscription_backlight() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://settings/getSystemSettings#picture/backlight",
+            &json!({"settings": {"backlight": 65}}),
+        );
+        assert!(changed);
+        assert_eq!(state.backlight, Some(65));
+    }
+
+    #[test]
+    fn subscription_unknown_uri_returns_false() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://unknown/endpoint",
+            &json!({"something": true}),
+        );
+        assert!(!changed);
+    }
+
+    #[test]
+    fn subscription_volume_clamps_to_100() {
+        let mut state = TvState::new();
+        update_state_from_subscription(
+            &mut state,
+            "ssap://audio/getVolume",
+            &json!({"volume": 200}),
+        );
+        assert_eq!(state.volume, Some(100));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_config_from_pairing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_config_from_pairing_stores_key() {
+        let connector = LgConnector::new();
+        let params = toml::Value::try_from(LgVendorConfig::new("192.168.1.100")).unwrap();
+        let creds = Credentials::with_type("my-client-key", "client_key");
+        let result = connector.build_config_from_pairing(&params, &creds).unwrap();
+        let config: LgVendorConfig = result.try_into().unwrap();
+        assert_eq!(config.ip, "192.168.1.100");
+        assert_eq!(config.client_key.as_deref(), Some("my-client-key"));
+    }
+
+    #[test]
+    fn build_config_preserves_mac() {
+        let connector = LgConnector::new();
+        let params =
+            toml::Value::try_from(LgVendorConfig::with_mac("10.0.0.1", "AA:BB:CC:DD:EE:FF"))
+                .unwrap();
+        let creds = Credentials::with_type("key", "client_key");
+        let result = connector.build_config_from_pairing(&params, &creds).unwrap();
+        let config: LgVendorConfig = result.try_into().unwrap();
+        assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(config.client_key.as_deref(), Some("key"));
+    }
+
+    // -----------------------------------------------------------------------
+    // LgConnection via fake server
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn lg_connection_get_state() {
+        let server = crate::test_server::FakeSsapServer::start().await;
+        let client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+        let config = LgVendorConfig::new("127.0.0.1");
+        let mut conn = LgConnection::new(client, config);
+
+        let state = conn.get_state().await.unwrap();
+        assert!(state.is_on);
+        assert_eq!(state.volume, Some(30));
+        assert_eq!(state.backlight, Some(80));
+    }
+
+    #[tokio::test]
+    async fn lg_connection_subscribe_state_produces_initial_snapshot() {
+        let server = crate::test_server::FakeSsapServer::start().await;
+        let client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+        let config = LgVendorConfig::new("127.0.0.1");
+        let mut conn = LgConnection::new(client, config);
+
+        let mut rx = conn.subscribe_state().await.unwrap();
+
+        // The initial snapshot should arrive immediately.
+        let state = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("should receive within 2s")
+            .expect("channel open");
+
+        assert!(state.is_on);
+        assert_eq!(state.volume, Some(30));
+        assert!(!state.inputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lg_connection_trait_methods() {
+        let server = crate::test_server::FakeSsapServer::start().await;
+        let client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+        let config = LgVendorConfig::new("127.0.0.1");
+        let mut conn = LgConnection::new(client, config);
+
+        // Exercise each TvConnection method.
+        assert_eq!(conn.vendor_id(), "lg");
+        assert!(conn.is_connected());
+        assert_eq!(conn.capabilities(), Capabilities::ALL);
+
+        conn.screen_off().await.unwrap();
+        conn.screen_on().await.unwrap();
+        conn.set_volume(50).await.unwrap();
+        assert_eq!(conn.get_volume().await.unwrap(), 30); // canned
+        conn.set_mute(true).await.unwrap();
+        conn.switch_input("HDMI_2").await.unwrap();
+        conn.set_backlight(60).await.unwrap();
+        assert_eq!(conn.get_backlight().await.unwrap(), 80); // canned
+
+        let inputs = conn.list_inputs().await.unwrap();
+        assert_eq!(inputs.len(), 2);
+
+        conn.close().await.unwrap();
+        assert!(!conn.is_connected());
+    }
+}
+
 /// LG-specific network discovery.
 #[cfg(feature = "discovery")]
 pub struct LgDiscovery;
