@@ -69,6 +69,7 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
+      documentation = [ "https://github.com/ruffsl/tisvlay" ];
       serviceConfig = {
         ExecStart = lib.getExe' cfg.package "tisvlayd";
         ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
@@ -96,6 +97,7 @@ in
       wantedBy = [ "graphical-session.target" ];
       after = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
+      documentation = [ "https://github.com/ruffsl/tisvlay" ];
       serviceConfig = {
         ExecStart = lib.getExe' cfg.package "tisvlay-session";
         ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
@@ -111,6 +113,7 @@ in
       wantedBy = [ "graphical-session.target" ];
       after = [ "graphical-session.target" "tisvlay-session.service" ];
       partOf = [ "graphical-session.target" ];
+      documentation = [ "https://github.com/ruffsl/tisvlay" ];
       serviceConfig = {
         ExecStart = lib.getExe' cfg.package "tisvlay-tray";
         Restart = "on-failure";
@@ -118,4 +121,11 @@ in
       };
     };
   };
+
+  meta.maintainers = [
+    {
+      name = "ruffsl";
+      github = "ruffsl";
+    }
+  ];
 }
