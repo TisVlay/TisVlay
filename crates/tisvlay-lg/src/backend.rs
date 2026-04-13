@@ -745,7 +745,10 @@ mod tests {
         );
         assert!(changed);
         // No mapping exists, so the raw app ID is used as current_input.
-        assert_eq!(state.current_input.as_deref(), Some("com.webos.app.netflix"));
+        assert_eq!(
+            state.current_input.as_deref(),
+            Some("com.webos.app.netflix")
+        );
     }
 
     #[test]
@@ -791,7 +794,9 @@ mod tests {
         let connector = LgConnector::new();
         let params = toml::Value::try_from(LgVendorConfig::new("192.168.1.100")).unwrap();
         let creds = Credentials::with_type("my-client-key", "client_key");
-        let result = connector.build_config_from_pairing(&params, &creds).unwrap();
+        let result = connector
+            .build_config_from_pairing(&params, &creds)
+            .unwrap();
         let config: LgVendorConfig = result.try_into().unwrap();
         assert_eq!(config.ip, "192.168.1.100");
         assert_eq!(config.client_key.as_deref(), Some("my-client-key"));
@@ -804,7 +809,9 @@ mod tests {
             toml::Value::try_from(LgVendorConfig::with_mac("10.0.0.1", "AA:BB:CC:DD:EE:FF"))
                 .unwrap();
         let creds = Credentials::with_type("key", "client_key");
-        let result = connector.build_config_from_pairing(&params, &creds).unwrap();
+        let result = connector
+            .build_config_from_pairing(&params, &creds)
+            .unwrap();
         let config: LgVendorConfig = result.try_into().unwrap();
         assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
         assert_eq!(config.client_key.as_deref(), Some("key"));

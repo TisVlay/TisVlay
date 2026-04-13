@@ -95,9 +95,10 @@ impl FakeSsapHandle {
     /// The `request_id` must match the ID the client sent when subscribing.
     /// The `payload` is the SSAP response payload.
     pub(crate) fn push_subscription_update(&self, request_id: &str, payload: Value) {
-        let _ = self
-            .cmd_tx
-            .send(ServerCommand::SubscriptionUpdate(request_id.to_string(), payload));
+        let _ = self.cmd_tx.send(ServerCommand::SubscriptionUpdate(
+            request_id.to_string(),
+            payload,
+        ));
     }
 
     /// Send a raw text message to the active connection (for malformed JSON testing).
