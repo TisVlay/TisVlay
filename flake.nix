@@ -44,6 +44,7 @@
             cargo-llvm-cov
             cargo-nextest
             just
+            just-lsp
             linuxConsoleTools
             lldb
             llvmPackages_21.bintools-unwrapped
