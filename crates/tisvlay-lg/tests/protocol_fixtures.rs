@@ -7,8 +7,8 @@
 
 use rstest::rstest;
 use tisvlay_lg::protocol::{
-    ExternalInputList, PowerState, RegisterPayload, RegisteredPayload, Request, RequestType,
-    Response, ResponseType, VolumeResponse,
+    ExternalInputList, PowerState, RegisterPayload, RegisteredPayload, Request, Response,
+    ResponseType, VolumeResponse,
 };
 
 // ---------------------------------------------------------------------------
@@ -102,9 +102,7 @@ fn power_state_extraction(
     #[case] expected_state: &str,
     #[case] expected_processing: Option<&str>,
 ) {
-    let json = include_str!("fixtures/power_state_active.json");
-    // We need the right fixture for each case — use a match instead of
-    // include_str with a variable (which must be a literal).
+    // include_str! requires a literal, so match on the fixture path.
     let json = match fixture {
         "fixtures/power_state_active.json" => {
             include_str!("fixtures/power_state_active.json")
@@ -114,7 +112,6 @@ fn power_state_extraction(
         }
         _ => unreachable!(),
     };
-    let _ = json; // suppress unused warning from first binding
     let response: Response = serde_json::from_str(json).unwrap();
     let power: PowerState = serde_json::from_value(response.payload).unwrap();
     assert_eq!(power.state, expected_state);

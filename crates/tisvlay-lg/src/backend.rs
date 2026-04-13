@@ -601,6 +601,32 @@ impl TvConnector for LgConnector {
     }
 }
 
+/// LG-specific network discovery.
+#[cfg(feature = "discovery")]
+pub struct LgDiscovery;
+
+#[cfg(feature = "discovery")]
+impl LgDiscovery {
+    /// Create a new LG discovery instance.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(feature = "discovery")]
+impl Default for LgDiscovery {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "discovery")]
+impl TvDiscovery for LgDiscovery {
+    async fn discover(&self, timeout: std::time::Duration) -> Result<Vec<DiscoveredTv>> {
+        crate::discovery::discover_lg_tvs(timeout).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,31 +1000,5 @@ mod tests {
 
         conn.close().await.unwrap();
         assert!(!conn.is_connected());
-    }
-}
-
-/// LG-specific network discovery.
-#[cfg(feature = "discovery")]
-pub struct LgDiscovery;
-
-#[cfg(feature = "discovery")]
-impl LgDiscovery {
-    /// Create a new LG discovery instance.
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[cfg(feature = "discovery")]
-impl Default for LgDiscovery {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(feature = "discovery")]
-impl TvDiscovery for LgDiscovery {
-    async fn discover(&self, timeout: std::time::Duration) -> Result<Vec<DiscoveredTv>> {
-        crate::discovery::discover_lg_tvs(timeout).await
     }
 }

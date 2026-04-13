@@ -17,7 +17,7 @@
 //! Tests drive the server through [`FakeSsapHandle`], which controls
 //! registration outcomes and injects subscription pushes.
 
-use crate::protocol::{Request, RequestType, Response, ResponseType};
+use crate::protocol::{Request, RequestType};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -73,11 +73,6 @@ impl FakeSsapHandle {
     /// The address the server is listening on (`127.0.0.1:{port}`).
     pub(crate) fn addr(&self) -> &SocketAddr {
         &self.addr
-    }
-
-    /// The port the server is listening on.
-    pub(crate) fn port(&self) -> u16 {
-        self.addr.port()
     }
 
     /// WebSocket URL for the LG client to connect to.
