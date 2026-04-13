@@ -44,7 +44,7 @@ mod client;
 mod config;
 mod connection;
 mod endpoints;
-mod protocol;
+pub mod protocol;
 
 #[cfg(feature = "discovery")]
 mod discovery;

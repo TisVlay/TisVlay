@@ -38,6 +38,10 @@ ssdp-client = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 
+[dev-dependencies]
+rstest = { workspace = true }
+insta = { workspace = true }
+
 [features]
 default = []
 discovery = ["dep:ssdp-client", "dep:urlencoding", "dep:url"]

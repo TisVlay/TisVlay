@@ -1,0 +1,8 @@
+{
+  "id": "register_0",
+  "type": "response",
+  "payload": {
+    "pairingType": "PROMPT",
+    "returnValue": true
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "id": "status_5",
+  "type": "response",
+  "payload": {
+    "returnValue": true,
+    "devices": [
+      { "id": "HDMI_1", "label": "HDMI 1", "connected": true, "appId": "com.webos.app.hdmi1" },
+      { "id": "HDMI_2", "label": "HDMI 2", "connected": false, "appId": "com.webos.app.hdmi2" },
+      { "id": "HDMI_3", "label": "HDMI 3", "connected": true, "appId": "com.webos.app.hdmi3" },
+      { "id": "HDMI_4", "label": "HDMI 4", "connected": false, "appId": "com.webos.app.hdmi4" }
+    ]
+  }
+}

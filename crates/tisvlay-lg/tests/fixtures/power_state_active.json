@@ -1,0 +1,9 @@
+{
+  "id": "status_1",
+  "type": "response",
+  "payload": {
+    "returnValue": true,
+    "state": "Active",
+    "processing": "None"
+  }
+}

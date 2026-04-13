@@ -1,0 +1,11 @@
+{
+  "id": "status_3",
+  "type": "response",
+  "payload": {
+    "returnValue": true,
+    "volumeStatus": {
+      "volume": 25,
+      "muted": false
+    }
+  }
+}

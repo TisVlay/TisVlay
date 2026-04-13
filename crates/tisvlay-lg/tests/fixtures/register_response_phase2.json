@@ -1,0 +1,7 @@
+{
+  "id": "register_0",
+  "type": "registered",
+  "payload": {
+    "client-key": "abc123def456"
+  }
+}

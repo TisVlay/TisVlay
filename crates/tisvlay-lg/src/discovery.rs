@@ -158,6 +158,25 @@ mod tests {
     }
 
     #[test]
+    fn test_has_dlna_name() {
+        let with_dlna = DiscoveredTv {
+            id: "uuid".to_string(),
+            name: "[LG] webOS TV OLED65G4SUB".to_string(),
+            address: "192.168.1.170".to_string(),
+            hardware_id: String::new(),
+            vendor: "lg".to_string(),
+            location: String::new(),
+        };
+        assert!(has_dlna_name(&with_dlna));
+
+        let fallback = DiscoveredTv {
+            name: "LG TV (192.168.1.170)".to_string(),
+            ..with_dlna
+        };
+        assert!(!has_dlna_name(&fallback));
+    }
+
+    #[test]
     fn test_parse_ip_from_url() {
         assert_eq!(
             parse_ip_from_url("http://192.168.1.100:1925/"),

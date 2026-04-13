@@ -1,0 +1,11 @@
+{
+  "id": "status_7",
+  "type": "response",
+  "payload": {
+    "returnValue": true,
+    "category": "picture",
+    "settings": {
+      "backlight": "80"
+    }
+  }
+}

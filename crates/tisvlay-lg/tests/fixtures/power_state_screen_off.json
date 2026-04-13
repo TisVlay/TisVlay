@@ -1,0 +1,8 @@
+{
+  "id": "status_2",
+  "type": "response",
+  "payload": {
+    "returnValue": true,
+    "state": "Screen Off"
+  }
+}

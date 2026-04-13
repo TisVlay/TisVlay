@@ -1,0 +1,7 @@
+{
+  "id": "cmd_2",
+  "type": "response",
+  "payload": {
+    "returnValue": true
+  }
+}
