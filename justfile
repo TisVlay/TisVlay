@@ -1,7 +1,7 @@
 # tisvlay project tasks
 #
 # Run `just` (or `just --list`) to see all recipes, grouped by purpose.
-# This justfile is the canonical source of truth for project commands —
+# This justfile is the canonical source of truth for project commands -
 # prek hooks, VSCode tasks, and CI workflows all dispatch through here.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
@@ -35,7 +35,7 @@ test:
 
 # Run tests under coverage instrumentation (CI): produces JUnit XML via
 # the 'ci' nextest profile, coverage data, then generates lcov.info and
-# checks the ratchet — all from one test run. Doc tests run separately
+# checks the ratchet - all from one test run. Doc tests run separately
 # without coverage (stable rustc doesn't support doctest coverage).
 [group('check')]
 test-ci:
@@ -63,7 +63,7 @@ test-snapshot-accept:
 # Baseline line-coverage percentage. Bump on PRs that improve coverage.
 cov_baseline_lines := "49"
 
-# Exclude test infrastructure from coverage reports — measure production
+# Exclude test infrastructure from coverage reports - measure production
 # code only. Matches crate names and test-only modules.
 cov_exclude := "--ignore-filename-regex '(tisvlay-test-support|tisvlay-mock|test_server|test_harness)'"
 
@@ -87,9 +87,9 @@ cov-html: _cov-collect
 [group('coverage')]
 cov-lcov: _cov-collect
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
-    @echo "Wrote lcov.info — point VS Code Coverage Gutters at it."
+    @echo "Wrote lcov.info - point VS Code Coverage Gutters at it."
 
-# Ratchet check — fails if below `lines` percent (default: cov_baseline_lines)
+# Ratchet check - fails if below `lines` percent (default: cov_baseline_lines)
 [group('coverage')]
 cov-ratchet lines=cov_baseline_lines: _cov-collect
     cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ lines }} --summary-only
