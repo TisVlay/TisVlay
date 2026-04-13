@@ -41,8 +41,8 @@ test:
 test-ci:
     NEXTEST_PROFILE=ci cargo llvm-cov --no-report nextest --workspace --all-features
     cargo test --workspace --all-features --doc
-    cargo llvm-cov report --lcov --output-path lcov.info
-    cargo llvm-cov report --fail-under-lines {{ cov_baseline_lines }} --summary-only
+    cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
+    cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ cov_baseline_lines }} --summary-only
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
@@ -61,38 +61,38 @@ test-snapshot-accept:
 # --- Coverage -----------------------------------------------------------
 
 # Baseline line-coverage percentage. Bump on PRs that improve coverage.
-cov_baseline_lines := "51"
+cov_baseline_lines := "49"
 
-# Text summary of workspace coverage (uses nextest for process-per-test
-# isolation — some tests share a private dbus-daemon and are flaky under
-# cargo test's shared-process model)
-[group('coverage')]
-cov:
+# Exclude test infrastructure from coverage reports — measure production
+# code only. Matches crate names and test-only modules.
+cov_exclude := "--ignore-filename-regex '(tisvlay-test-support|tisvlay-mock|test_server|test_harness)'"
+
+# Run tests under coverage instrumentation (shared by all cov-* recipes).
+[private]
+_cov-collect:
     cargo llvm-cov --no-report nextest --workspace --all-features
     cargo test --workspace --all-features --doc
-    cargo llvm-cov report --summary-only
+
+# Text summary of workspace coverage
+[group('coverage')]
+cov: _cov-collect
+    cargo llvm-cov report {{ cov_exclude }} --summary-only
 
 # HTML coverage report (opens in browser)
 [group('coverage')]
-cov-html:
-    cargo llvm-cov --no-report nextest --workspace --all-features
-    cargo test --workspace --all-features --doc
-    cargo llvm-cov report --html --open
+cov-html: _cov-collect
+    cargo llvm-cov report {{ cov_exclude }} --html --open
 
 # Generate lcov.info for VS Code Coverage Gutters
 [group('coverage')]
-cov-lcov:
-    cargo llvm-cov --no-report nextest --workspace --all-features
-    cargo test --workspace --all-features --doc
-    cargo llvm-cov report --lcov --output-path lcov.info
+cov-lcov: _cov-collect
+    cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
     @echo "Wrote lcov.info — point VS Code Coverage Gutters at it."
 
 # Ratchet check — fails if below `lines` percent (default: cov_baseline_lines)
 [group('coverage')]
-cov-ratchet lines=cov_baseline_lines:
-    cargo llvm-cov --no-report nextest --workspace --all-features
-    cargo test --workspace --all-features --doc
-    cargo llvm-cov report --fail-under-lines {{ lines }} --summary-only
+cov-ratchet lines=cov_baseline_lines: _cov-collect
+    cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ lines }} --summary-only
 
 # --- Dev run targets ----------------------------------------------------
 
