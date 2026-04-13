@@ -2,6 +2,7 @@
   lib,
   rustPlatform,
   pkg-config,
+  dbus,
 }:
 
 rustPlatform.buildRustPackage {
@@ -14,6 +15,10 @@ rustPlatform.buildRustPackage {
 
   nativeBuildInputs = [
     pkg-config
+  ];
+
+  nativeCheckInputs = [
+    dbus
   ];
 
   meta = {
