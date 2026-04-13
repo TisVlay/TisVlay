@@ -45,20 +45,27 @@ impl Default for RegistrationOutcome {
     }
 }
 
+/// Commands sent from the test handle to the server's active connection.
+enum ServerCommand {
+    /// Push a subscription update with the given request ID and payload.
+    SubscriptionUpdate(String, Value),
+    /// Send a raw text message (for malformed JSON testing).
+    RawText(String),
+    /// Drop the active WebSocket connection.
+    DropConnection,
+}
+
 /// Shared state between the server task and the test handle.
 struct ServerState {
     registration: RegistrationOutcome,
-    /// Subscription push messages queued by the test, keyed by request ID.
-    /// The server task drains these after sending the initial subscribe response.
-    push_queue: Vec<(String, Value)>,
 }
 
 /// Test control surface for the fake SSAP server.
 pub(crate) struct FakeSsapHandle {
     addr: SocketAddr,
     state: Arc<Mutex<ServerState>>,
-    /// Channel to push subscription updates into active connections.
-    push_tx: mpsc::UnboundedSender<(String, Value)>,
+    /// Channel for sending commands to the server's active connection.
+    cmd_tx: mpsc::UnboundedSender<ServerCommand>,
     _server_task: tokio::task::JoinHandle<()>,
 }
 
@@ -88,7 +95,19 @@ impl FakeSsapHandle {
     /// The `request_id` must match the ID the client sent when subscribing.
     /// The `payload` is the SSAP response payload.
     pub(crate) fn push_subscription_update(&self, request_id: &str, payload: Value) {
-        let _ = self.push_tx.send((request_id.to_string(), payload));
+        let _ = self
+            .cmd_tx
+            .send(ServerCommand::SubscriptionUpdate(request_id.to_string(), payload));
+    }
+
+    /// Send a raw text message to the active connection (for malformed JSON testing).
+    pub(crate) fn send_raw_text(&self, text: impl Into<String>) {
+        let _ = self.cmd_tx.send(ServerCommand::RawText(text.into()));
+    }
+
+    /// Drop the active WebSocket connection (for reconnection testing).
+    pub(crate) fn drop_connection(&self) {
+        let _ = self.cmd_tx.send(ServerCommand::DropConnection);
     }
 }
 
@@ -105,20 +124,19 @@ impl FakeSsapServer {
 
         let state = Arc::new(Mutex::new(ServerState {
             registration: RegistrationOutcome::default(),
-            push_queue: Vec::new(),
         }));
 
-        let (push_tx, push_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let server_state = Arc::clone(&state);
 
         let server_task = tokio::spawn(async move {
-            Self::accept_loop(listener, server_state, push_rx).await;
+            Self::accept_loop(listener, server_state, cmd_rx).await;
         });
 
         FakeSsapHandle {
             addr,
             state,
-            push_tx,
+            cmd_tx,
             _server_task: server_task,
         }
     }
@@ -126,7 +144,7 @@ impl FakeSsapServer {
     async fn accept_loop(
         listener: TcpListener,
         state: Arc<Mutex<ServerState>>,
-        mut push_rx: mpsc::UnboundedReceiver<(String, Value)>,
+        mut cmd_rx: mpsc::UnboundedReceiver<ServerCommand>,
     ) {
         // Accept connections in a loop to support reconnection tests.
         loop {
@@ -170,16 +188,29 @@ impl FakeSsapServer {
                         }
                     }
 
-                    // Handle push subscription updates from the test.
-                    Some((req_id, payload)) = push_rx.recv() => {
-                        let resp = json!({
-                            "id": req_id,
-                            "type": "response",
-                            "payload": payload,
-                        });
-                        let json = serde_json::to_string(&resp).unwrap();
-                        if sink.send(Message::Text(json.into())).await.is_err() {
-                            break;
+                    // Handle commands from the test handle.
+                    Some(cmd) = cmd_rx.recv() => {
+                        match cmd {
+                            ServerCommand::SubscriptionUpdate(req_id, payload) => {
+                                let resp = json!({
+                                    "id": req_id,
+                                    "type": "response",
+                                    "payload": payload,
+                                });
+                                let json = serde_json::to_string(&resp).unwrap();
+                                if sink.send(Message::Text(json.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            ServerCommand::RawText(text) => {
+                                if sink.send(Message::Text(text.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            ServerCommand::DropConnection => {
+                                let _ = sink.send(Message::Close(None)).await;
+                                break;
+                            }
                         }
                     }
                 }
