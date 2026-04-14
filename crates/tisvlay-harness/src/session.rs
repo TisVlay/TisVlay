@@ -22,10 +22,10 @@ use std::sync::Arc;
 
 use tisvlay_core::DaemonClient;
 use tisvlay_session::__internals::{
-    event_handler, register_session_dbus_on, SessionEvent, SessionState,
+    SessionEvent, SessionState, event_handler, register_session_dbus_on,
 };
 use tisvlay_test::fake_screensaver::FakeScreenSaver;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use crate::daemon::TestDaemon;
 

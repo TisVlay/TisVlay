@@ -679,17 +679,19 @@ fn build_input_submenu(
     SubMenu {
         label: "Input".into(),
         icon_name: "input-tvremote-symbolic".into(),
-        submenu: vec![RadioGroup {
-            selected,
-            options,
-            select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
-                if let Some(input_id) = inputs.get(idx) {
-                    debug!(tv_id = %tv_id, input = %input_id, "Switching input");
-                    let _ = tx.send(TrayCommand::SwitchInput(tv_id.clone(), input_id.clone()));
-                }
-            }),
-        }
-        .into()],
+        submenu: vec![
+            RadioGroup {
+                selected,
+                options,
+                select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
+                    if let Some(input_id) = inputs.get(idx) {
+                        debug!(tv_id = %tv_id, input = %input_id, "Switching input");
+                        let _ = tx.send(TrayCommand::SwitchInput(tv_id.clone(), input_id.clone()));
+                    }
+                }),
+            }
+            .into(),
+        ],
         ..Default::default()
     }
     .into()

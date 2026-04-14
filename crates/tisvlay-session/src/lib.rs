@@ -11,10 +11,10 @@ pub mod wayland_idle;
 /// Re-exports for the integration-test harness crate. Not public API.
 #[doc(hidden)]
 pub mod __internals {
+    pub use crate::SessionState;
     pub use crate::event_handler;
     pub use crate::session_dbus::register_session_dbus_on;
     pub use crate::session_monitor::SessionEvent;
-    pub use crate::SessionState;
 }
 
 use anyhow::{Context, Result};
@@ -24,7 +24,7 @@ use std::sync::Arc;
 use tisvlay_core::{
     DaemonClient, ResolvedUserProfile, SessionAction, UserConfig, UserProfileConfig,
 };
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 /// Session state: resolved profiles per TV, kept in sync with config reloads.

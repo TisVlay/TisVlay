@@ -35,10 +35,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tisvlay_backends::{create_test_registry, MockHandle};
+use tisvlay_backends::{MockHandle, create_test_registry};
 use tisvlay_core::{SystemConfig, TvConfig};
 use tisvlayd::__internals::{
-    build_dbus_connection, state_change_forwarder, BusKind, ManagerService, TvManager,
+    BusKind, ManagerService, TvManager, build_dbus_connection, state_change_forwarder,
 };
 use tokio::task::JoinHandle;
 use tracing::instrument;

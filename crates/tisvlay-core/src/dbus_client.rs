@@ -39,7 +39,7 @@ use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH};
+use crate::dbus_paths::{DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH, tv_path};
 
 // =============================================================================
 // Bus Selection
@@ -360,7 +360,7 @@ pub enum ServiceEvent {
 pub async fn watch_service(
     connection: &zbus::Connection,
     name: &str,
-) -> Result<impl futures_util::Stream<Item = ServiceEvent>> {
+) -> Result<impl futures_util::Stream<Item = ServiceEvent> + use<>> {
     use futures_util::StreamExt;
 
     let proxy = zbus::fdo::DBusProxy::new(connection)

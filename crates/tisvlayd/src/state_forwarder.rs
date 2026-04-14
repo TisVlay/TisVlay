@@ -13,8 +13,8 @@ use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
-    tv_path, ManagerService, TvBacklightService, TvInputService, TvPowerService, TvScreenService,
-    TvService, TvVolumeService, MANAGER_PATH,
+    MANAGER_PATH, ManagerService, TvBacklightService, TvInputService, TvPowerService,
+    TvScreenService, TvService, TvVolumeService, tv_path,
 };
 use crate::tv_manager::{StateChangeEvent, TvManager};
 

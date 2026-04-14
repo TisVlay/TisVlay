@@ -30,7 +30,7 @@ pub mod tv_manager;
 /// Re-exports for the integration-test harness crate. Not public API.
 #[doc(hidden)]
 pub mod __internals {
-    pub use crate::dbus::{build_dbus_connection, BusKind, ManagerService};
+    pub use crate::dbus::{BusKind, ManagerService, build_dbus_connection};
     pub use crate::state_forwarder::state_change_forwarder;
     pub use crate::tv_manager::TvManager;
 }

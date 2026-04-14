@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use tisvlay_core::BusKind;
 
 use crate::dbus::{
-    register_tv_interfaces, tv_path, ManagerService, DBUS_NAME, MANAGER_PATH, OBJECT_MANAGER_PATH,
+    DBUS_NAME, MANAGER_PATH, ManagerService, OBJECT_MANAGER_PATH, register_tv_interfaces, tv_path,
 };
 use crate::tv_manager::TvManager;
 

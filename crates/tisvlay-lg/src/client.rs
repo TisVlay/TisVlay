@@ -6,7 +6,7 @@ use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
     VolumeInfo, VolumeResponse,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
 use tokio::sync::mpsc;

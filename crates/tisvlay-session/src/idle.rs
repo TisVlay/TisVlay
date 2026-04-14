@@ -3,7 +3,7 @@
 //! Polls the D-Bus ScreenSaver interface to detect when the user has been idle
 //! for a configured duration.
 
-use crate::session_monitor::{get_session_idle_time, SessionEvent};
+use crate::session_monitor::{SessionEvent, get_session_idle_time};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};

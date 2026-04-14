@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tisvlay_core::{SystemConfig, UserConfig};
 use tracing::{info, warn};
 
-use tisvlayd::dbus::{build_dbus_connection, BusKind, ManagerService, DBUS_NAME};
+use tisvlayd::dbus::{BusKind, DBUS_NAME, ManagerService, build_dbus_connection};
 use tisvlayd::registry::create_registry;
 use tisvlayd::state_forwarder::state_change_forwarder;
 use tisvlayd::tv_manager::TvManager;
@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
 
 /// Wait for SIGTERM, SIGINT (shutdown) or SIGHUP (reload).
 async fn wait_for_signals(manager: Arc<TvManager>) {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
     let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");

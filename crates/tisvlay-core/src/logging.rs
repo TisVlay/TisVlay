@@ -5,7 +5,7 @@
 //! - Formatted stderr with timestamps for interactive/development use
 //! - Formatted stderr without timestamps as a non-TTY fallback
 
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 /// Initialize tracing with journald support and the given filter directives.
 ///
