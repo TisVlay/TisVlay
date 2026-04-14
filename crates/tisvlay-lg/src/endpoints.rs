@@ -77,14 +77,14 @@ pub mod picture {
 }
 
 /// Notification endpoints.
-pub mod notification {
+pub(crate) mod notification {
     /// Create an alert with buttons/actions.
     /// Used as a workaround to call Luna services that require elevated permissions.
-    pub const CREATE_ALERT: &str = "ssap://system.notifications/createAlert";
+    pub(crate) const CREATE_ALERT: &str = "ssap://system.notifications/createAlert";
 
     /// Close an alert by ID.
     /// Payload: `{"alertId": "com.webos.service.apiadapter-12345"}`
-    pub const CLOSE_ALERT: &str = "ssap://system.notifications/closeAlert";
+    pub(crate) const CLOSE_ALERT: &str = "ssap://system.notifications/closeAlert";
 }
 
 /// Luna service URIs (used via createAlert workaround).
@@ -115,10 +115,11 @@ pub mod notification {
 /// - Re-pairing with TV
 /// - Using `ssap://settings/setSystemSettings` directly
 /// - Or the calibration API: `ssap://externalpq/setExternalPqData` (used by bscpylgtv)
-pub mod luna {
+pub(crate) mod luna {
     /// Set system settings via Luna service.
     /// Payload: `{"category": "picture", "settings": {"backlight": 50}}`
-    pub const SET_SYSTEM_SETTINGS: &str = "luna://com.webos.settingsservice/setSystemSettings";
+    pub(crate) const SET_SYSTEM_SETTINGS: &str =
+        "luna://com.webos.settingsservice/setSystemSettings";
 }
 
 /// Button names for remote input socket.

@@ -7,6 +7,7 @@
 use tisvlay_core::{Capabilities, TvBackend};
 
 /// Mock backend metadata.
+#[derive(Debug)]
 pub struct MockBackend;
 
 impl MockBackend {

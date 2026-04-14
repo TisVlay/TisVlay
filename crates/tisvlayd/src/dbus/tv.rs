@@ -19,6 +19,7 @@ use zbus::interface;
 ///
 /// Holds cached state that is updated by the subscription forwarding task
 /// via `InterfaceRef::get_mut()`. Property reads are instant (no lock, no I/O).
+#[derive(Debug)]
 pub struct TvService {
     pub(crate) tv_id: String,
     pub(crate) manager: Arc<TvManager>,
@@ -194,6 +195,7 @@ impl TvService {
 // =============================================================================
 
 /// Power control interface.
+#[derive(Debug)]
 pub struct TvPowerService {
     pub(crate) tv_id: String,
     pub(crate) manager: Arc<TvManager>,
@@ -237,6 +239,7 @@ impl TvPowerService {
 ///
 /// The screen state is exposed as a writable boolean property `IsScreenOn`.
 /// Setting `true` unblanks the screen, setting `false` blanks it.
+#[derive(Debug)]
 pub struct TvScreenService {
     pub(crate) tv_id: String,
     pub(crate) manager: Arc<TvManager>,
@@ -278,6 +281,7 @@ impl TvScreenService {
 ///
 /// Volume and mute are writable properties. Setting them sends the command
 /// to the TV backend and updates the cache on success.
+#[derive(Debug)]
 pub struct TvVolumeService {
     pub(crate) tv_id: String,
     pub(crate) manager: Arc<TvManager>,
@@ -334,6 +338,7 @@ impl TvVolumeService {
 // =============================================================================
 
 /// Input switching interface.
+#[derive(Debug)]
 pub struct TvInputService {
     pub(crate) tv_id: String,
     pub(crate) manager: Arc<TvManager>,
@@ -375,6 +380,7 @@ impl TvInputService {
 ///
 /// Backlight is a writable property. Setting it sends the command to the
 /// TV backend and updates the cache on success.
+#[derive(Debug)]
 pub struct TvBacklightService {
     pub(crate) tv_id: String,
     pub(crate) manager: Arc<TvManager>,

@@ -8,7 +8,7 @@ use tracing::debug;
 
 /// Snapshot of a single TV's state, cached locally for menu rendering.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CachedTvState {
+pub(crate) struct CachedTvState {
     pub id: String,
     pub name: String,
     pub connected: bool,
@@ -41,7 +41,7 @@ pub struct CachedTvState {
 /// round-trips or connection attempts are made.
 ///
 /// Optionally queries the session service for user profile info.
-pub async fn fetch_all_state(
+pub(crate) async fn fetch_all_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
 ) -> anyhow::Result<Vec<CachedTvState>> {

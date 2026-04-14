@@ -16,6 +16,7 @@ use zbus::zvariant::ObjectPath;
 /// D-Bus Manager service.
 ///
 /// Provides TV management operations at `/org/tisvlay/Manager`.
+#[derive(Debug)]
 pub struct ManagerService {
     manager: Arc<TvManager>,
     registry: Arc<BackendRegistry>,

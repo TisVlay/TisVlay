@@ -22,7 +22,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 /// Type alias for the WebSocket stream.
-pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+pub(crate) type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Type alias for the write half of the WebSocket.
 type WsSink = SplitSink<WsStream, Message>;
@@ -36,7 +36,7 @@ type PendingMap = Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Response>
 /// task. Request/response correlation uses oneshot channels keyed by
 /// request ID. Subscription updates (messages with no pending waiter)
 /// are forwarded to `subscription_rx`.
-pub struct Connection {
+pub(crate) struct Connection {
     /// Shared writer — used by both the caller (requests) and the reader
     /// task (Pong responses).
     writer: Arc<Mutex<WsSink>>,
@@ -102,7 +102,7 @@ impl rustls::client::danger::ServerCertVerifier for InsecureCertVerifier {
 
 impl Connection {
     /// Connect to a TV, trying wss:// first, then ws://.
-    pub async fn connect(host: &str, connect_timeout: Duration) -> Result<Self> {
+    pub(crate) async fn connect(host: &str, connect_timeout: Duration) -> Result<Self> {
         // Try secure connection first (port 3001)
         match Self::connect_wss(host, connect_timeout).await {
             Ok(conn) => {
@@ -119,13 +119,13 @@ impl Connection {
     }
 
     /// Connect using secure WebSocket (wss://).
-    pub async fn connect_wss(host: &str, connect_timeout: Duration) -> Result<Self> {
+    pub(crate) async fn connect_wss(host: &str, connect_timeout: Duration) -> Result<Self> {
         let url = format!("wss://{}:{}", host, WSS_PORT);
         Self::connect_url_tls(&url, connect_timeout).await
     }
 
     /// Connect using insecure WebSocket (ws://).
-    pub async fn connect_ws(host: &str, connect_timeout: Duration) -> Result<Self> {
+    pub(crate) async fn connect_ws(host: &str, connect_timeout: Duration) -> Result<Self> {
         let url = format!("ws://{}:{}", host, WS_PORT);
         Self::connect_url_plain(&url, connect_timeout).await
     }
@@ -282,7 +282,7 @@ impl Connection {
     }
 
     /// Send a raw request to the TV.
-    pub async fn send(&self, request: &Request) -> Result<()> {
+    pub(crate) async fn send(&self, request: &Request) -> Result<()> {
         let json = serde_json::to_string(request)?;
         tracing::trace!(id = %request.id, msg_type = ?request.msg_type, "Sending request");
 
@@ -299,7 +299,11 @@ impl Connection {
     /// the request ID, sends the request, and awaits the oneshot receiver
     /// with a timeout. The background reader task delivers the matching
     /// response.
-    pub async fn request(&self, request: &Request, timeout_dur: Duration) -> Result<Response> {
+    pub(crate) async fn request(
+        &self,
+        request: &Request,
+        timeout_dur: Duration,
+    ) -> Result<Response> {
         let (tx, rx) = oneshot::channel();
 
         // Register the waiter before sending to avoid race conditions.
@@ -331,7 +335,7 @@ impl Connection {
     /// re-sending the request. Used for multi-phase protocols (e.g., LG
     /// pairing sends a `Response` acknowledgment first, then `Registered`
     /// with the client key after the user accepts the TV prompt).
-    pub async fn request_wait(&self, id: &str, timeout_dur: Duration) -> Result<Response> {
+    pub(crate) async fn request_wait(&self, id: &str, timeout_dur: Duration) -> Result<Response> {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id.to_string(), tx);
 
@@ -349,17 +353,17 @@ impl Connection {
     ///
     /// Returns `Some` on the first call, `None` on subsequent calls.
     /// The caller owns the receiver and reads subscription updates from it.
-    pub fn take_subscription_rx(&mut self) -> Option<mpsc::UnboundedReceiver<Response>> {
+    pub(crate) fn take_subscription_rx(&mut self) -> Option<mpsc::UnboundedReceiver<Response>> {
         self.subscription_rx.take()
     }
 
     /// Check whether the reader task is still running.
-    pub fn is_alive(&self) -> bool {
+    pub(crate) fn is_alive(&self) -> bool {
         !self.reader_handle.is_finished()
     }
 
     /// Close the connection.
-    pub async fn close(&mut self) -> Result<()> {
+    pub(crate) async fn close(&mut self) -> Result<()> {
         // Send a close frame via the writer.
         let mut w = self.writer.lock().await;
         let _ = w.close().await;

@@ -36,6 +36,7 @@ use crate::daemon::TestDaemon;
 /// round-trip signal tests. For simpler tests, use
 /// [`TestSession::inject_event`] to push directly into the event
 /// channel.
+#[derive(Debug)]
 pub struct TestSession {
     daemon: TestDaemon,
     daemon_client: Arc<DaemonClient>,

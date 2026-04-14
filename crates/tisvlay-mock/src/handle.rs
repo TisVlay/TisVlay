@@ -47,7 +47,7 @@ use crate::state::MockState;
 /// Test-driven control surface for the mock backend.
 ///
 /// See [the module documentation](crate::handle) for an overview.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MockHandle {
     state: Arc<Mutex<MockState>>,
 }

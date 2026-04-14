@@ -34,6 +34,12 @@ pub struct FakeLogind {
     iface: InterfaceRef<ManagerIface>,
 }
 
+impl std::fmt::Debug for FakeLogind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeLogind").finish_non_exhaustive()
+    }
+}
+
 impl FakeLogind {
     /// Register the fake on the given connection, acquiring
     /// `org.freedesktop.login1` as a well-known name.

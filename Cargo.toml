@@ -107,6 +107,15 @@ tracing-mock = "0.1.0-beta.3"
 [workspace.metadata.deb]
 section = "utils"
 
+# Centralized lint policy. Each crate opts in with `[lints] workspace =
+# true`. Adjust here, not per-crate.
+[workspace.lints.rust]
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
 # Tuning for shipped binaries (Nix, musl release, .deb/.rpm/.archlinux).
 [profile.release]
 lto = "thin"

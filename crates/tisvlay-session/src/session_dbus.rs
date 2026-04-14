@@ -32,6 +32,7 @@ pub enum SessionError {
 }
 
 /// D-Bus service for session profile management.
+#[derive(Debug)]
 pub struct SessionService {
     state: Arc<RwLock<SessionState>>,
     daemon: Arc<DaemonClient>,

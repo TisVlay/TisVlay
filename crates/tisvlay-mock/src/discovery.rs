@@ -21,6 +21,7 @@ use crate::state::MockState;
 /// Discovery implementation backed by [`MockState::discovered`].
 ///
 /// [`MockState::discovered`]: crate::state::MockState::discovered
+#[derive(Debug)]
 pub struct MockDiscovery {
     state: Arc<Mutex<MockState>>,
 }

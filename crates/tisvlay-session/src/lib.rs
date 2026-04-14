@@ -28,6 +28,7 @@ use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 /// Session state: resolved profiles per TV, kept in sync with config reloads.
+#[derive(Debug)]
 pub struct SessionState {
     /// Resolved user profiles per TV ID.
     pub profiles: HashMap<String, ResolvedUserProfile>,

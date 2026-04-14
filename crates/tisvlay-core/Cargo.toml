@@ -47,3 +47,6 @@ tisvlay-test = { workspace = true }
 default = []
 dbus = ["dep:zbus", "dep:anyhow", "dep:futures-util"]
 logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:anyhow"]
+
+[lints]
+workspace = true

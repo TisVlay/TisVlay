@@ -57,6 +57,7 @@ trait ScreenSaver {
 }
 
 /// Monitors D-Bus session events.
+#[derive(Debug)]
 pub struct SessionMonitor {
     event_tx: mpsc::UnboundedSender<SessionEvent>,
 }

@@ -30,6 +30,7 @@ use tempfile::TempDir;
 use tracing::{debug, instrument};
 
 /// Handle to a private `dbus-daemon` spawned for a single test binary.
+#[derive(Debug)]
 pub struct PrivateBus {
     address: String,
     /// Config file + socket dir live here; dropped when the bus is dropped.

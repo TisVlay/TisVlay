@@ -71,6 +71,7 @@ pub fn mock_tv_config(tv_id: &str, managed: bool, primary_input: Option<&str>) -
 /// tests can drive any of the three. Drop semantics: the spawned
 /// state-change-forwarder task is aborted on drop and the connection
 /// is released, which unregisters the well-known name from the bus.
+#[derive(Debug)]
 pub struct TestDaemon {
     connection: zbus::Connection,
     manager: Arc<TvManager>,
