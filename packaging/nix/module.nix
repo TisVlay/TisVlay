@@ -198,11 +198,54 @@ in
         RuntimeDirectoryPreserve = "restart";
         Restart = "on-failure";
         RestartSec = 5;
-        # Security hardening
+
+        # --- Security hardening -----------------------------------------
+        # Baseline filesystem / privilege confinement.
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateTmp = true;
+        PrivateDevices = true;
         NoNewPrivileges = true;
+
+        # Network: UNIX (D-Bus), INET{4,6} (WebSocket to TVs, WoL), NETLINK
+        # (carrier / route monitoring for NIC failover). No PACKET/BLUETOOTH.
+        RestrictAddressFamilies = [
+          "AF_UNIX"
+          "AF_INET"
+          "AF_INET6"
+          "AF_NETLINK"
+        ];
+
+        # No child processes, no mmap+x, no realtime scheduling, no setuid.
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        RestrictNamespaces = true;
+
+        # Kernel surface: deny /proc/sys writes, module load, kmsg reads,
+        # cgroup edits, and hostname/clock mutation.
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectControlGroups = true;
+        ProtectHostname = true;
+        ProtectClock = true;
+        ProtectProc = "invisible";
+        ProcSubset = "pid";
+
+        # Daemon needs no capabilities — runs as an unprivileged system user.
+        CapabilityBoundingSet = [ "" ];
+        AmbientCapabilities = [ "" ];
+
+        # System-call allowlist: block @privileged/@obsolete/etc. The
+        # @system-service set is designed for long-running daemons.
+        SystemCallArchitectures = "native";
+        SystemCallFilter = [
+          "@system-service"
+          "~@privileged"
+          "~@resources"
+        ];
       };
     };
 

@@ -178,25 +178,39 @@ CONTRIBUTING.md §"Tested via one or more NixOS test(s)".
 
 ---
 
-## Phase 5 — Security hardening (nice-to-have)
+## Phase 5 — Security hardening ✅
 
-Not required for conformance, but worth doing before advertising the
-module to external users.
+Applied a baseline suitable for a long-running daemon that only talks
+D-Bus, TCP/UDP (WebSocket + WoL), and netlink.
 
-- [ ] **module.nix**: tighten `systemd.services.tisvlayd.serviceConfig`:
+- [x] **module.nix**: tightened
+      `systemd.services.tisvlayd.serviceConfig`. Added:
   - `RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ]`
-    (netlink is required for the carrier/route watcher)
-  - `SystemCallFilter = [ "@system-service" ]`
-  - `SystemCallArchitectures = "native"`
-  - `CapabilityBoundingSet = [ "" ]` (empty — daemon needs no caps)
-  - `LockPersonality = true`
-  - `MemoryDenyWriteExecute = true`
-  - `RestrictRealtime = true`
-  - `RestrictSUIDSGID = true`
-- [ ] Validate with `systemd-analyze security tisvlayd.service` — aim for
-      exposure level ≤ 2.0.
+    — netlink kept for carrier/route watching; no PACKET / BLUETOOTH.
+  - `SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ]`
+    and `SystemCallArchitectures = "native"`.
+  - `CapabilityBoundingSet = [ "" ]` and `AmbientCapabilities = [ "" ]`.
+  - `LockPersonality`, `MemoryDenyWriteExecute`, `RestrictRealtime`,
+    `RestrictSUIDSGID`, `RestrictNamespaces`.
+  - Kernel surface lockdown: `ProtectKernelTunables`,
+    `ProtectKernelModules`, `ProtectKernelLogs`,
+    `ProtectControlGroups`, `ProtectHostname`, `ProtectClock`,
+    `ProtectProc = "invisible"`, `ProcSubset = "pid"`.
+  - `PrivateDevices = true` (daemon talks network, not /dev nodes).
+- [x] Validated via the VM test. Added an assertion in
+      [test.nix](../packaging/nix/test.nix) that parses
+      `systemd-analyze security tisvlayd.service` and fails the test
+      if the overall exposure level exceeds `2.0`. Current run
+      passes → regression guard against accidental hardening loss in
+      future edits.
 
-**Commit**: `packaging/nix: tighten tisvlayd systemd sandboxing`
+**Out of scope / deferred**:
+- Matching hardening on `tisvlay-session` / `tisvlay-tray`. User
+  services need broader access (Wayland socket, ksni tray backend,
+  etc.). Apply when/if there's a concrete threat model for user-bus
+  attacks — not required for the system-daemon hardening goal.
+
+**Commit**: `packaging/nix: tighten tisvlayd systemd sandboxing + VM assertion`
 
 ---
 

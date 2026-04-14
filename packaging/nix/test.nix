@@ -93,5 +93,18 @@ pkgs.testers.runNixOSTest {
     # Stable UID/GID from the module option (default 979).
     uid = machine.succeed("id -u tisvlay").strip()
     assert uid == "979", f"expected uid 979, got {uid!r}"
+
+    # systemd-analyze security: exposure level must be `OK` or better.
+    # A fully-hardened long-running daemon should land at exposure ≤ 2.0
+    # ("OK" band). This guards against accidental regressions in
+    # module.nix hardening directives.
+    sec = machine.succeed("systemd-analyze security tisvlayd.service")
+    # The summary line looks like:
+    #   → Overall exposure level for tisvlayd.service: 1.6 OK 🙂
+    last = [line for line in sec.splitlines() if "Overall exposure level" in line]
+    assert last, f"no exposure line in:\n{sec}"
+    fields = last[0].split()
+    score = float(fields[-3])  # "... 1.6 OK 🙂"
+    assert score <= 2.0, f"tisvlayd exposure {score} exceeds 2.0 budget\n{sec}"
   '';
 }
