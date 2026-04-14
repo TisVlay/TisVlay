@@ -10,60 +10,107 @@ This plan is ordered by priority — each phase is independently landable.
 
 ---
 
-## Phase 1 — Low-risk cleanups (no behavior change)
+## Phase 1 — Low-risk cleanups (no behavior change) ✅
 
 Goal: correct obvious issues, small diff, easy review.
 
-- [ ] **package.nix**: remove `longDescription = "TODO"`. `description`
+- [x] **package.nix**: remove `longDescription = "TODO"`. `description`
       alone is sufficient; placeholder text should not ship.
-- [ ] **package.nix**: add `meta.maintainers = [ lib.maintainers.ruffsl ]`
-      (or a literal attrset `[{ name = "ruffsl"; github = "ruffsl"; ... }]`
-      while out-of-tree). Required by README-modular-services.md §"Minimum
+- [x] **package.nix**: add `meta.maintainers` (literal attrset while
+      out-of-tree). Required by README-modular-services.md §"Minimum
       Standard" for anything that exposes a NixOS module.
-- [ ] **package.nix**: add `meta.changelog = "https://github.com/ruffsl/tisvlay/releases"`
+- [x] **package.nix**: add `meta.changelog = "https://github.com/ruffsl/tisvlay/releases"`
       (or a per-version anchor once tags exist).
-- [ ] **module.nix**: add `meta.maintainers = [ lib.maintainers.ruffsl ];`
-      at the top level of the module.
-- [ ] **module.nix**: add `documentation = [ "https://github.com/ruffsl/tisvlay" ];`
-      to each of the three `serviceConfig` blocks (system daemon + user
-      services).
+- [x] **module.nix**: add top-level `meta.maintainers`.
+- [x] **module.nix**: add `documentation = [ "https://github.com/ruffsl/tisvlay" ];`
+      to each of the three systemd units (system daemon + user services).
 
 **Commit**: `packaging/nix: meta cleanup (maintainers, changelog, drop TODO)`
 
 ---
 
-## Phase 2 — Rust packaging idioms
+## Phase 2 — Rust packaging idioms ✅ (with follow-up in 2.5)
 
 Goal: follow rust.section.md guidance for in-tree projects; eliminate
 `cargoHash` churn and the custom `checkPhase`.
 
-- [ ] **package.nix**: replace
-      ```nix
-      cargoHash = "sha256-...";
-      ```
-      with
-      ```nix
-      cargoLock.lockFile = ../../Cargo.lock;
-      ```
+- [x] **package.nix**: replace `cargoHash` with
+      `cargoLock.lockFile = ../../Cargo.lock`.
       Rationale (rust.section.md §"Importing a Cargo.lock file"):
       `cargoHash` forces a re-hash after every `Cargo.lock` change; for an
       in-tree build the lockfile import is the documented alternative.
-- [ ] **package.nix**: drop the custom `checkPhase`; set
-      ```nix
-      useNextest = true;
-      ```
-      instead. Per rust.section.md §"Using `cargo-nextest`", this is the
-      supported path — inherits parallel tests, `--no-fail-fast`, feature
-      plumbing (`cargoCheckFeatures`, `checkFlags`). Keep `cargo-nextest`
-      and `dbus` in `nativeCheckInputs`.
-- [ ] **package.nix**: consider `cargoCheckFeatures` / `checkFeatures` if
-      there's a feature subset we actually want to exercise under Nix
-      sandbox (e.g. excluding network-bound SSDP discovery tests).
-- [ ] Verify sandboxed build locally: `nix build .#tisvlay -L`
-      (CONTRIBUTING.md §"Tested using sandboxing" — sandboxed builds are
-      the expected baseline on Linux).
+- [x] **package.nix**: drop the custom `checkPhase` in favor of
+      `useNextest = true`. Per rust.section.md §"Using `cargo-nextest`",
+      the `cargoNextestHook` pulls in `cargo-nextest` automatically, so
+      it was removed from `nativeCheckInputs` (`dbus` stays — it is
+      needed for integration tests that spawn a private `dbus-daemon`).
+- [x] Verified sandboxed build: `nix build .` succeeds end-to-end on
+      Linux (`/nix/store/...-tisvlay-0.1.0.drv` builds clean).
 
 **Commit**: `packaging/nix: use cargoLock.lockFile and useNextest`
+
+---
+
+## Phase 2.5 — Align Nix features with distro packages (bug fix + workspace tuning)
+
+Goal: fix a feature-flag bug introduced in Phase 2, and align the
+workspace `Cargo.toml` with distribution best practices so all packaging
+targets (Nix, musl release build, .deb/.rpm/.archlinux) ship the same
+artifact.
+
+### Context
+
+The justfile's `package-build-musl` recipe
+([justfile:153-154](../justfile#L153-L154)) uses
+`cargo build --release --workspace` with **no `--all-features` flag** —
+so the .deb/.rpm/.archlinux packages built by
+[.github/workflows/release.yml](../.github/workflows/release.yml) ship
+with default features only: `tisvlayd/discovery` on, `mock` off. The
+in-tree comments in [crates/tisvlayd/Cargo.toml:21-25](../crates/tisvlayd/Cargo.toml#L21-L25)
+are explicit: *"Off by default in release/distro builds."* The `mock`
+feature pulls `tisvlay-test-support`, `tempfile`, and the `test_harness`
+module into the binary — it must not ship to end users.
+
+Phase 2 inadvertently set `cargoBuildFlags = [ "--all-features" ]` in
+`package.nix`, which would make the Nix package include `mock` and
+diverge from every other packaging target.
+
+### Part A — Fix Nix feature flags
+
+- [ ] **package.nix**: remove `cargoBuildFlags = [ "--all-features" ]`.
+      Keep `cargoTestFlags = [ "--all-features" ]` only — tests need the
+      mock backend, the production binary does not.
+- [ ] Verify the built binary no longer contains mock symbols, e.g.
+      `nm -D result/bin/tisvlayd | grep -i mock` returns nothing
+      related to the mock vendor.
+
+### Part B — Workspace `Cargo.toml` tuning
+
+Applies equally to Nix, musl release, and distro packages. Touches the
+root [Cargo.toml](../Cargo.toml).
+
+- [ ] Add `[profile.release]` tuning for shipped binaries:
+      ```toml
+      [profile.release]
+      lto = "thin"          # ~10-20% smaller/faster; modest build-time cost
+      codegen-units = 1     # better optimization across CGUs
+      strip = "symbols"     # smaller distributed binaries
+      ```
+      (Skip `panic = "abort"` — it complicates test ergonomics and the
+      size win is marginal.)
+- [ ] Mark internal crates `publish = false` in their `[package]` blocks
+      to prevent accidental `cargo publish --workspace`. Candidates:
+      `tisvlay-core`, `tisvlay-lg`, `tisvlay-mock`, `tisvlay-test-support`,
+      `tisvlay-backends`, `tisvlayd`, `tisvlay-session`, `tisvlay-tray`,
+      `tisvlay-cli` — i.e. everything unless/until a specific crate is
+      intentionally published to crates.io.
+- [ ] (Optional) Centralize lints with `[workspace.lints]` so each crate
+      just writes `lints.workspace = true`. Not strictly packaging but
+      reduces drift. Defer if it's a big churn.
+
+**Commits**:
+- `packaging/nix: drop --all-features from build, match distro features`
+- `cargo: tune [profile.release] and mark internal crates publish = false`
 
 ---
 
