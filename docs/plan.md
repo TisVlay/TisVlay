@@ -211,6 +211,13 @@ D-Bus, TCP/UDP (WebSocket + WoL), and netlink.
       network-talking long-running daemon and not worth contorting
       the module for.
 
+**Also backported** to [packaging/systemd/tisvlayd.service](../packaging/systemd/tisvlayd.service)
+so .deb / .rpm / .archlinux installs get the same hardening as the
+NixOS module. UID/GID pinning stays NixOS-module-only (distros
+assign system UIDs via their own postinstall conventions). Verified
+with `systemd-analyze security --offline=true` against the distro
+unit file — same **1.3 ("OK")** score.
+
 **Out of scope / deferred**:
 - Matching hardening on `tisvlay-session` / `tisvlay-tray`. User
   services need broader access (Wayland socket, ksni tray backend,
