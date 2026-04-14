@@ -25,6 +25,7 @@ tisvlay-backends = { workspace = true, features = ["mock"] }
 # Binary crates whose fixtures live here. Each exposes a
 # `#[doc(hidden)] pub mod __internals` surface for the harness to reach.
 tisvlayd = { workspace = true }
+tisvlay-session = { workspace = true }
 
 # Async runtime + D-Bus + misc for harness helpers.
 tokio = { workspace = true }

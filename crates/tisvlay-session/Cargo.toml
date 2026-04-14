@@ -33,20 +33,7 @@ clap = { workspace = true }
 wayland-client = { workspace = true }
 wayland-protocols = { workspace = true }
 
-[features]
-default = []
-# Enables the in-crate integration-test harness module
-# (`src/test_harness.rs`) which composes a TestDaemon from
-# tisvlay-harness.
-mock = ["dep:tisvlay-harness", "dep:tisvlay-test"]
-
-[dependencies.tisvlay-harness]
-workspace = true
-optional = true
-
-[dependencies.tisvlay-test]
-workspace = true
-optional = true
-
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+tisvlay-harness = { workspace = true }
+tisvlay-test = { workspace = true }

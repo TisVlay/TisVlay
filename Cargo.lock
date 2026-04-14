@@ -1680,6 +1680,7 @@ dependencies = [
  "tisvlay-backends",
  "tisvlay-core",
  "tisvlay-mock",
+ "tisvlay-session",
  "tisvlay-test",
  "tisvlayd",
  "tokio",

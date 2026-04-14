@@ -3,10 +3,8 @@
 //! Drive the `org.tisvlay.Session1` interface from a client on the
 //! private test bus and verify method results and signal emission.
 
-#![cfg(feature = "mock")]
-
 use std::time::Duration;
-use tisvlay_session::test_harness::TestSession;
+use tisvlay_harness::session::TestSession;
 use zbus::MatchRule;
 
 /// Build a zbus proxy for `org.tisvlay.Session1` on the test bus.

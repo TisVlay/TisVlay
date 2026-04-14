@@ -8,8 +8,14 @@ pub mod session_dbus;
 pub mod session_monitor;
 pub mod wayland_idle;
 
-#[cfg(feature = "mock")]
-pub mod test_harness;
+/// Re-exports for the integration-test harness crate. Not public API.
+#[doc(hidden)]
+pub mod __internals {
+    pub use crate::event_handler;
+    pub use crate::session_dbus::register_session_dbus_on;
+    pub use crate::session_monitor::SessionEvent;
+    pub use crate::SessionState;
+}
 
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
