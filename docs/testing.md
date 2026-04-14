@@ -247,10 +247,37 @@ Test-related crates are `publish = false` and split by what they fake:
 | `tisvlay-mock` | TV protocol peer (fake vendor backend) | `MockConnector`, `MockHandle` |
 | `tisvlay-harness` | Binary lifecycle (orchestrates the whole daemon/session process) | `TestDaemon`, `TestSession`, `TestTray` |
 
-`tisvlay-harness` reaches into `tisvlayd` and `tisvlay-session` internals
-through each binary crate's `#[doc(hidden)] pub mod __internals`
-re-export surface (same idiom `serde::__private` uses). Those items are
-explicitly not part of any published API.
+`tisvlay-harness` reaches into `tisvlayd` and `tisvlay-session` internals through each binary crate's `#[doc(hidden)] pub mod __internals` re-export surface (same idiom `serde::__private` uses). Those items are explicitly not part of any published API.
+
+### How the three crates relate
+
+Each crate fakes a different *direction* relative to the code under test. The harness sits above (orchestrates a binary), the mock sits across (the TV on the other side of the protocol), and the test crate sits below (the OS environment the daemon runs inside).
+
+```mermaid
+flowchart TD
+    H["<b>tisvlay-harness</b><br/>caller / orchestrator<br/><i>TestDaemon · TestSession · TestTray</i>"]
+    D["<b>tisvlayd / tisvlay-session</b><br/>the daemon under test"]
+    M["<b>tisvlay-mock</b><br/>fake TV (peer side)<br/><i>MockConnector · MockHandle</i>"]
+    T["<b>tisvlay-test</b><br/>fake OS (env side)<br/><i>PrivateBus · FakeLogind · FakeScreenSaver</i>"]
+
+    H -->|"boots binary<br/>via __internals"| D
+    D -->|"TvBackend / TvConnection traits"| M
+    D -->|"D-Bus / logind / screensaver"| T
+    H -.->|"composes"| M
+    H -.->|"composes"| T
+```
+
+### Three rules for deciding where new test code lives
+
+1. **Does it implement a `tisvlay-core` trait?** → `tisvlay-mock`. It's a backend, just a fake one — same tier as `tisvlay-lg`, not a harness.
+2. **Does it fake a system service we don't own (dbus-daemon, logind, ScreenSaver, etc.)?** → `tisvlay-test`.
+3. **Does it orchestrate a binary (`tisvlayd`, `tisvlay-session`, `tisvlay-tray`) and reach into its `__internals`?** → `tisvlay-harness`.
+
+### Why these boundaries, not fewer
+
+**`tisvlay-mock` is separate from `tisvlay-harness`** because mock is library-level and reusable from any test that needs a fake backend — `tisvlay-core` unit tests, `tisvlay-cli` snapshot tests, or a hypothetical downstream consumer's integration tests. Folding it into the harness would tie a useful library-level tool to "spin up the whole daemon" ceremony.
+
+**`tisvlay-test` is separate from `tisvlay-mock`** because they answer different questions. A backend-trait-contract test needs `tisvlay-mock` but no `dbus-daemon`; a service-lifecycle test needs `PrivateBus` + `FakeLogind` but no TV protocol stack. Split crates let each test pull in only what it needs.
 
 ## Test utilities: tisvlay-test
 
