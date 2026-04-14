@@ -1,0 +1,27 @@
+[package]
+name = "tisvlay-harness"
+description = "Integration-test harness: TestDaemon, TestSession, TestTray fixtures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+# Shared primitives from the workspace test layer.
+tisvlay-test = { workspace = true }
+tisvlay-mock = { workspace = true }
+
+# Async runtime + D-Bus for harness helpers.
+tokio = { workspace = true }
+zbus = { workspace = true }
+tracing = { workspace = true }
+tempfile = "3"
+
+# Binary-crate dependencies are added as each module lands:
+# - tisvlayd      (Phase C, for TestDaemon)
+# - tisvlay-session (Phase D, for TestSession)
+# - tisvlay-tray  (Phase E, for TestTray)

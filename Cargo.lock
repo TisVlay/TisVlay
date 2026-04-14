@@ -1672,6 +1672,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tisvlay-harness"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "tisvlay-mock",
+ "tisvlay-test",
+ "tokio",
+ "tracing",
+ "zbus",
+]
+
+[[package]]
 name = "tisvlay-lg"
 version = "0.1.0"
 dependencies = [

@@ -10,6 +10,7 @@ members = [
     "crates/tisvlayd",
     "crates/tisvlay-session",
     "crates/tisvlay-tray",
+    "crates/tisvlay-harness",
 ]
 
 [workspace.package]
@@ -83,6 +84,7 @@ tisvlay-lg = { path = "crates/tisvlay-lg" }
 tisvlay-mock = { path = "crates/tisvlay-mock" }
 tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-backends = { path = "crates/tisvlay-backends" }
+tisvlay-harness = { path = "crates/tisvlay-harness" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml"] }
