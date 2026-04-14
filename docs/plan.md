@@ -51,66 +51,42 @@ Goal: follow rust.section.md guidance for in-tree projects; eliminate
 
 ---
 
-## Phase 2.5 — Align Nix features with distro packages (bug fix + workspace tuning)
+## Phase 2.5 — Align Nix features with distro packages (bug fix + workspace tuning) ✅
 
-Goal: fix a feature-flag bug introduced in Phase 2, and align the
-workspace `Cargo.toml` with distribution best practices so all packaging
-targets (Nix, musl release build, .deb/.rpm/.archlinux) ship the same
-artifact.
+Landed via Plan 2 Phase F (commit `998cd6e`, PR #28) and the greenfield
+hygiene PR (#29). All three packaging targets (Nix, musl release,
+.deb/.rpm/.archlinux) now produce the same artifact from default
+features.
 
-### Context
+### Part A — Fix Nix feature flags ✅
 
-The justfile's `package-build-musl` recipe
-([justfile:153-154](../justfile#L153-L154)) uses
-`cargo build --release --workspace` with **no `--all-features` flag** —
-so the .deb/.rpm/.archlinux packages built by
-[.github/workflows/release.yml](../.github/workflows/release.yml) ship
-with default features only: `tisvlayd/discovery` on, `mock` off. The
-in-tree comments in [crates/tisvlayd/Cargo.toml:21-25](../crates/tisvlayd/Cargo.toml#L21-L25)
-are explicit: *"Off by default in release/distro builds."* The `mock`
-feature pulls `tisvlay-test-support`, `tempfile`, and the `test_harness`
-module into the binary — it must not ship to end users.
+- [x] **package.nix**: removed `cargoBuildFlags = [ "--all-features" ]`;
+      kept `cargoTestFlags = [ "--all-features" ]`. Production binary
+      no longer ships the mock vendor.
 
-Phase 2 inadvertently set `cargoBuildFlags = [ "--all-features" ]` in
-`package.nix`, which would make the Nix package include `mock` and
-diverge from every other packaging target.
+### Part B — Workspace `Cargo.toml` tuning ✅
 
-### Part A — Fix Nix feature flags
+- [x] `[profile.release]` added: `lto = "thin"`, `codegen-units = 1`,
+      `strip = "symbols"`.
+- [x] `[workspace.package] publish = false` default; every crate
+      inherits via `publish.workspace = true`. `cargo metadata` reports
+      `"publish":[]` uniformly.
 
-- [ ] **package.nix**: remove `cargoBuildFlags = [ "--all-features" ]`.
-      Keep `cargoTestFlags = [ "--all-features" ]` only — tests need the
-      mock backend, the production binary does not.
-- [ ] Verify the built binary no longer contains mock symbols, e.g.
-      `nm -D result/bin/tisvlayd | grep -i mock` returns nothing
-      related to the mock vendor.
+### Bonus (PR #29) — Edition / resolver / MSRV + internal dep versions
 
-### Part B — Workspace `Cargo.toml` tuning
+Out of scope for the original phase but landed in the same period:
 
-Applies equally to Nix, musl release, and distro packages. Touches the
-root [Cargo.toml](../Cargo.toml).
+- [x] `edition = "2024"`, `resolver = "3"`, `rust-version = "1.85"`
+      (floor for edition 2024 + resolver 3).
+- [x] `[workspace.dependencies]` internal path entries gained
+      `version = "0.1.0"` alongside `path = "..."` — prerequisite for
+      `cargo package` / `cargo publish`.
 
-- [ ] Add `[profile.release]` tuning for shipped binaries:
-      ```toml
-      [profile.release]
-      lto = "thin"          # ~10-20% smaller/faster; modest build-time cost
-      codegen-units = 1     # better optimization across CGUs
-      strip = "symbols"     # smaller distributed binaries
-      ```
-      (Skip `panic = "abort"` — it complicates test ergonomics and the
-      size win is marginal.)
-- [ ] Mark internal crates `publish = false` in their `[package]` blocks
-      to prevent accidental `cargo publish --workspace`. Candidates:
-      `tisvlay-core`, `tisvlay-lg`, `tisvlay-mock`, `tisvlay-test-support`,
-      `tisvlay-backends`, `tisvlayd`, `tisvlay-session`, `tisvlay-tray`,
-      `tisvlay-cli` — i.e. everything unless/until a specific crate is
-      intentionally published to crates.io.
+### Still open (follow-up)
+
 - [ ] (Optional) Centralize lints with `[workspace.lints]` so each crate
-      just writes `lints.workspace = true`. Not strictly packaging but
-      reduces drift. Defer if it's a big churn.
-
-**Commits**:
-- `packaging/nix: drop --all-features from build, match distro features`
-- `cargo: tune [profile.release] and mark internal crates publish = false`
+      writes `lints.workspace = true`. Not strictly packaging — reduces
+      drift. Small standalone PR.
 
 ---
 
