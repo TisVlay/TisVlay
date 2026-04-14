@@ -1,5 +1,9 @@
 # Plan 2 — Detangle Test Harness From Published Crates
 
+**Status:** ✅ Complete — all seven phases landed. This document will be
+removed in a follow-up; the resulting architecture is captured in
+[.claude/CLAUDE.md](../.claude/CLAUDE.md) and [docs/testing.md](testing.md).
+
 **Motivation:** We want the option to publish `tisvlay-core`, `tisvlay-lg`,
 `tisvlay-backends`, and the binary crates to crates.io (at `0.y.z` — see
 [semver §4](https://semver.org/#spec-item-4)) while keeping the test
@@ -181,35 +185,35 @@ the needle:
 
 ## Phase plan
 
-### Phase A — Rename `tisvlay-test-support` → `tisvlay-test`
+### Phase A ✅ — Rename `tisvlay-test-support` → `tisvlay-test`
 
 Small, mechanical, reversible. Lands first to minimize later churn.
 
-- [ ] `git mv crates/tisvlay-test-support crates/tisvlay-test`.
-- [ ] Update `name = "tisvlay-test-support"` → `"tisvlay-test"` in the
+- [x] `git mv crates/tisvlay-test-support crates/tisvlay-test`.
+- [x] Update `name = "tisvlay-test-support"` → `"tisvlay-test"` in the
       crate's `Cargo.toml`; update `description`.
-- [ ] Update the workspace `members` list in [Cargo.toml](../Cargo.toml#L7).
-- [ ] Update `[workspace.dependencies]`:
+- [x] Update the workspace `members` list in [Cargo.toml](../Cargo.toml#L7).
+- [x] Update `[workspace.dependencies]`:
       `tisvlay-test-support = { path = "crates/tisvlay-test-support" }`
       → `tisvlay-test = { path = "crates/tisvlay-test" }`.
-- [ ] Update every crate's `[dependencies]`/`[dev-dependencies]` that
+- [x] Update every crate's `[dependencies]`/`[dev-dependencies]` that
       references `tisvlay-test-support` (5 crates:
       `tisvlay-core`, `tisvlay-cli`, `tisvlay-session`, `tisvlayd`,
       `tisvlay-mock`? — verify via grep).
-- [ ] Update imports: `use tisvlay_test_support::...` →
+- [x] Update imports: `use tisvlay_test_support::...` →
       `use tisvlay_test::...` across the tree.
-- [ ] Update [.claude/CLAUDE.md](../.claude/CLAUDE.md) project-structure
+- [x] Update [.claude/CLAUDE.md](../.claude/CLAUDE.md) project-structure
       block and [docs/testing.md](testing.md).
-- [ ] `just test` — green.
+- [x] `just test` — green.
 
 **Commit**: `refactor(test-support): rename crate to tisvlay-test (matches tokio-test convention)`
 
-### Phase B — Create `tisvlay-harness` crate skeleton
+### Phase B ✅ — Create `tisvlay-harness` crate skeleton
 
 Introduce the new crate before moving code, so each subsequent move is
 small and independently verifiable.
 
-- [ ] Create `crates/tisvlay-harness/` with:
+- [x] Create `crates/tisvlay-harness/` with:
   - `Cargo.toml`: `publish = false`, deps on `tisvlay-test`,
     `tisvlay-mock`, `tokio`, `zbus`, `tracing`, `tempfile`. Binary-crate
     deps (`tisvlayd`, `tisvlay-session`, `tisvlay-tray`) added in
@@ -218,15 +222,15 @@ small and independently verifiable.
     with empty module files to start.
   - `src/common.rs`: seed with placeholder comment; shared helpers land
     in Phase C as they're factored out.
-- [ ] Add `tisvlay-harness` to workspace `members` and
+- [x] Add `tisvlay-harness` to workspace `members` and
       `[workspace.dependencies]`.
-- [ ] `cargo check -p tisvlay-harness` — compiles (empty crate).
+- [x] `cargo check -p tisvlay-harness` — compiles (empty crate).
 
 **Commit**: `refactor: add empty tisvlay-harness crate skeleton`
 
-### Phase C — Migrate `TestDaemon` → `tisvlay-harness::daemon`
+### Phase C ✅ — Migrate `TestDaemon` → `tisvlay-harness::daemon`
 
-- [ ] In [tisvlayd/src/lib.rs](../crates/tisvlayd/src/lib.rs), add:
+- [x] In [tisvlayd/src/lib.rs](../crates/tisvlayd/src/lib.rs), add:
   ```rust
   #[doc(hidden)]
   pub mod __internals {
@@ -236,97 +240,97 @@ small and independently verifiable.
       // ...audit test_harness.rs imports, add anything missing
   }
   ```
-- [ ] Bump `pub(crate)` → `pub` on items that need to travel through
+- [x] Bump `pub(crate)` → `pub` on items that need to travel through
       `__internals` (audit each; prefer re-exporting only what's
       necessary).
-- [ ] Move `crates/tisvlayd/src/test_harness.rs` →
+- [x] Move `crates/tisvlayd/src/test_harness.rs` →
       `crates/tisvlay-harness/src/daemon.rs`; replace `use crate::...`
       with `use tisvlayd::__internals::...`.
-- [ ] Delete `pub mod test_harness;` from `tisvlayd/src/lib.rs` and the
+- [x] Delete `pub mod test_harness;` from `tisvlayd/src/lib.rs` and the
       file itself.
-- [ ] In `tisvlay-harness/Cargo.toml`, add
+- [x] In `tisvlay-harness/Cargo.toml`, add
       `tisvlayd = { workspace = true }` (path + version) to
       `[dependencies]`.
-- [ ] Simplify `tisvlayd/Cargo.toml`'s `mock` feature to
+- [x] Simplify `tisvlayd/Cargo.toml`'s `mock` feature to
       `mock = ["tisvlay-backends/mock"]`; drop
       `dep:tempfile`, `dep:tisvlay-test-support` entries and the
       corresponding `[dependencies]` lines.
-- [ ] Factor shared setup (private bus init, tracing, mock-backend
+- [x] Factor shared setup (private bus init, tracing, mock-backend
       registration) into `tisvlay-harness/src/common.rs` now that
       there's a concrete first user.
-- [ ] Update `crates/tisvlayd/tests/*.rs` (6 files): replace
+- [x] Update `crates/tisvlayd/tests/*.rs` (6 files): replace
       `use tisvlayd::test_harness::TestDaemon` with
       `use tisvlay_harness::daemon::TestDaemon`. Add `tisvlay-harness`
       to `tisvlayd`'s `[dev-dependencies]`.
-- [ ] `cargo nextest run -p tisvlayd --all-features` — green.
+- [x] `cargo nextest run -p tisvlayd --all-features` — green.
 
 **Commit**: `refactor(tisvlayd): move test_harness into tisvlay-harness::daemon`
 
-### Phase D — Migrate `TestSession` → `tisvlay-harness::session`
+### Phase D ✅ — Migrate `TestSession` → `tisvlay-harness::session`
 
 Same shape as Phase C, applied to tisvlay-session.
 
-- [ ] Add `#[doc(hidden)] pub mod __internals` to
+- [x] Add `#[doc(hidden)] pub mod __internals` to
       `tisvlay-session/src/lib.rs` exporting `session_monitor::SessionEvent`,
       `SessionState`, etc.
-- [ ] Move `crates/tisvlay-session/src/test_harness.rs` →
+- [x] Move `crates/tisvlay-session/src/test_harness.rs` →
       `crates/tisvlay-harness/src/session.rs`; rewire imports.
-- [ ] Reuse `tisvlay-harness/src/common.rs` setup (this is where the
+- [x] Reuse `tisvlay-harness/src/common.rs` setup (this is where the
       fold-into-one-crate decision pays off).
-- [ ] Simplify `tisvlay-session`'s `mock` feature. Drop `dep:tisvlayd`
+- [x] Simplify `tisvlay-session`'s `mock` feature. Drop `dep:tisvlayd`
       and `dep:tisvlay-test-support` from regular deps; if tests need a
       daemon running, `TestSession::new()` can compose
       `tisvlay-harness::daemon::TestDaemon` internally.
-- [ ] Update `crates/tisvlay-session/tests/*.rs` (2 files).
-- [ ] `cargo nextest run -p tisvlay-session --all-features` — green.
+- [x] Update `crates/tisvlay-session/tests/*.rs` (2 files).
+- [x] `cargo nextest run -p tisvlay-session --all-features` — green.
 
 **Commit**: `refactor(tisvlay-session): move test_harness into tisvlay-harness::session`
 
-### Phase E — Placeholder `TestTray` skeleton
+### Phase E ✅ — Placeholder `TestTray` skeleton
 
 Keeps the layout complete even before tray tests exist, so Phase F
 (docs/cleanup) has no special case.
 
-- [ ] Leave `tisvlay-harness/src/tray.rs` with a skeleton
+- [x] Leave `tisvlay-harness/src/tray.rs` with a skeleton
       `TestTray` struct + constructor + `TODO` comment referencing the
       GUI/tray test plan. No actual harness logic yet — lands when tray
       integration tests are needed.
-- [ ] Add `tisvlay-tray = { workspace = true }` to
+- [x] Add `tisvlay-tray = { workspace = true }` to
       `tisvlay-harness/Cargo.toml` (optional — may be deferred until
       `TestTray` actually does something).
 
 **Commit**: `refactor: scaffold tisvlay-harness::tray for future tray tests`
 
-### Phase F — Cross-crate test fixups + Plan 1 Phase 2.5 replays
+### Phase F ✅ — Cross-crate test fixups + Plan 1 Phase 2.5 replays
 
-- [ ] [crates/tisvlay-cli/Cargo.toml](../crates/tisvlay-cli/Cargo.toml#L33)
+- [x] [crates/tisvlay-cli/Cargo.toml](../crates/tisvlay-cli/Cargo.toml#L33)
       currently has `tisvlayd = { path = "../tisvlayd", features = ["mock"] }`
       as a dev-dep. After Phase C, `mock` no longer pulls harness code.
       Route CLI tests that use the daemon fixture through
       `tisvlay-harness` instead.
-- [ ] [crates/tisvlay-cli/tests/pair_snapshot.rs](../crates/tisvlay-cli/tests/pair_snapshot.rs) —
+- [x] [crates/tisvlay-cli/tests/pair_snapshot.rs](../crates/tisvlay-cli/tests/pair_snapshot.rs) —
       audit and update imports.
-- [ ] Re-apply Plan 1 Phase 2.5 Part B (paused earlier):
+- [x] Re-apply Plan 1 Phase 2.5 Part B (paused earlier):
   - Add `publish = false` to `[workspace.package]`.
   - Add `publish.workspace = true` to every crate's `[package]` block.
   - Verify via `cargo metadata --format-version 1 --no-deps` that all
     workspace members report `"publish":[]`.
   - Add `[profile.release]` tuning (`lto = "thin"`, `codegen-units =
     1`, `strip = "symbols"`).
-- [ ] Re-apply Plan 1 Phase 2.5 Part A: drop
+- [x] Re-apply Plan 1 Phase 2.5 Part A: drop
       `cargoBuildFlags = [ "--all-features" ]` from
       [packaging/nix/package.nix](../packaging/nix/package.nix#L26).
-- [ ] Full workspace run: `just test` — green.
-- [ ] `cargo package --workspace --dry-run -p tisvlay-core -p tisvlay-lg
+- [x] Full workspace run: `just test` — green.
+- [x] `cargo package --workspace --dry-run -p tisvlay-core -p tisvlay-lg
       -p tisvlay-backends -p tisvlayd -p tisvlay-session -p tisvlay-cli
       -p tisvlay-tray` — no errors. (Smoke-tests that publishing works
       end-to-end; won't actually upload.)
 
 **Commit**: `cargo: publish metadata + release profile + harness-aware test deps`
 
-### Phase G — Docs
+### Phase G ✅ — Docs
 
-- [ ] Update [.claude/CLAUDE.md](../.claude/CLAUDE.md) project-structure
+- [x] Update [.claude/CLAUDE.md](../.claude/CLAUDE.md) project-structure
       block:
   - rename `tisvlay-test-support` → `tisvlay-test` (Phase A already
     edited, but verify the prose)
@@ -334,14 +338,87 @@ Keeps the layout complete even before tray tests exist, so Phase F
   - drop the `test_harness.rs` entries from `tisvlayd` and
     `tisvlay-session` module lists
   - briefly describe the `__internals` idiom
-- [ ] Update [docs/design.md](design.md) — any references to
+- [x] Update [docs/design.md](design.md) — any references to
       harness modules by file path.
-- [ ] Update [docs/testing.md](testing.md) — mock backend and harness
+- [x] Update [docs/testing.md](testing.md) — mock backend and harness
       section; spell out the three-layer model.
 
 **Commit**: `docs: describe new test crate layout`
 
 ---
+
+## Deviations from the plan
+
+Noted during execution; the resulting architecture is still what the
+plan described, but a few checkboxes weren't strictly literal:
+
+- **No `pub(crate) → pub` visibility bumps were needed** (Phase C &
+  D). The `dbus`/`state_forwarder`/`tv_manager` items in `tisvlayd`
+  and the equivalents in `tisvlay-session` were already `pub` because
+  `main.rs` in each binary crate imports them via the crate's lib
+  namespace. `__internals` re-exports those existing-pub items as a
+  marker of *intended* consumers; the audit happened but no
+  visibility widening.
+- **`common.rs` stayed a docstring stub** (Phase C & D). Plan
+  anticipated factoring shared setup (private-bus init, tracing,
+  mock-backend registration) into `common.rs` once two fixtures
+  landed. In practice, `TestDaemon` and `TestSession` setup differ
+  enough (one builds a `TvManager` + forwarder, the other composes a
+  `TestDaemon` + `SessionState` + `FakeScreenSaver`) that there was
+  nothing material to factor out without inventing an abstraction.
+  `common.rs` can acquire helpers if a third fixture brings real
+  duplication.
+- **Dropped `mock` feature entirely on `tisvlay-session` and
+  `tisvlay-cli`** (Phase C & D). Plan said to *simplify*. In fact the
+  feature had no remaining purpose after the harness move — session's
+  `mock` only gated the now-extracted `test_harness` module; cli's
+  `mock` only gated a `#![cfg(feature = "mock")]` test file that
+  became an unconditional dev-test once the harness landed in
+  `[dev-dependencies]`. Both features and their gate lines were
+  removed.
+- **`publish.workspace = true` applied to all 10 crates, including
+  `tisvlay-test` and `tisvlay-harness`** (Phase F). Plan enumerated
+  only the production crates. Converting the literal `publish = false`
+  on the test crates to the inherited form was a consistency choice —
+  `cargo metadata` now reports `"publish":[]` uniformly across the
+  workspace, and the override pattern
+  (`publish = true` on a per-crate basis when ready to ship) reads the
+  same everywhere.
+- **Publish smoke test revealed a real gap** (Phase F). The plan
+  cited `cargo package --workspace --dry-run`, which isn't a valid
+  command — `--dry-run` belongs to `cargo publish`, not
+  `cargo package`. The correct equivalents on cargo 1.94 are
+  `cargo package --workspace` (verifies a `.crate` per crate,
+  inherently a dry run since it doesn't upload) and
+  `cargo publish --workspace --dry-run` (the feature promoted to
+  stable per the [Tweag 2025 post](https://www.tweag.io/blog/2025-07-10-cargo-package-workspace/)).
+
+  Running `cargo package --workspace` surfaces a real pre-publish
+  blocker:
+
+  ```
+  error: failed to verify manifest at `crates/tisvlay-lg/Cargo.toml`
+    all dependencies must have a version requirement specified when packaging.
+    dependency `tisvlay-core` does not specify a version
+  ```
+
+  Our `[workspace.dependencies]` entries are `path`-only:
+
+  ```toml
+  tisvlay-core = { path = "crates/tisvlay-core" }
+  ```
+
+  For any crate to be publishable, every internal regular dep needs a
+  version alongside the path:
+
+  ```toml
+  tisvlay-core = { path = "crates/tisvlay-core", version = "0.1.0" }
+  ```
+
+  Harmless today because `publish = false` is uniform, but this
+  cleanup is a prerequisite the first time we flip a crate to
+  `publish = true`. Tracked outside this plan.
+
 
 ## Out of scope for this plan
 
