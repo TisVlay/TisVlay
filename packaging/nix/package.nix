@@ -23,7 +23,8 @@ rustPlatform.buildRustPackage {
 
   useNextest = true;
 
-  cargoBuildFlags = [ "--all-features" ];
+  # Tests need the `mock` feature (and other test-only features) across
+  # the workspace; the build itself ships default features only.
   cargoTestFlags = [ "--all-features" ];
 
   meta = {
