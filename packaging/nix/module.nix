@@ -12,8 +12,8 @@ let
     <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
      "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
     <busconfig>
-      <!-- Allow the tisvlay system user (or root) to own the service -->
-      <policy user="tisvlay">
+      <!-- Allow the configured tisvlay user (or root) to own the service -->
+      <policy user="${cfg.user}">
         <allow own="org.tisvlay.Daemon"/>
       </policy>
       <policy user="root">
@@ -35,17 +35,84 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.callPackage ./package.nix { };
-      defaultText = lib.literalExpression "pkgs.tisvlay";
-      description = "The tisvlay package to use.";
+      defaultText = lib.literalExpression "pkgs.callPackage ./package.nix { }";
+      description = ''
+        The tisvlay package to use. Defaults to building from this
+        module's sibling `package.nix`. Override when the module is
+        imported via a flake that exposes the package elsewhere.
+      '';
+    };
+
+    user = lib.mkOption {
+      type = lib.types.str;
+      default = "tisvlay";
+      description = "User account under which tisvlayd runs.";
+    };
+
+    group = lib.mkOption {
+      type = lib.types.str;
+      default = "tisvlay";
+      description = "Group under which tisvlayd runs.";
+    };
+
+    uid = lib.mkOption {
+      type = lib.types.int;
+      default = 979;
+      description = ''
+        Stable system UID for the tisvlay user. Fixed to keep
+        `StateDirectory` ownership deterministic across rebuilds.
+        Override if 979 collides with another service on your system.
+        If this module is ever upstreamed to nixpkgs, the UID will be
+        reassigned via `nixos/modules/misc/ids.nix`.
+      '';
+    };
+
+    gid = lib.mkOption {
+      type = lib.types.int;
+      default = 979;
+      description = ''
+        Stable system GID for the tisvlay group. Same caveats as `uid`.
+      '';
+    };
+
+    logLevel = lib.mkOption {
+      type = lib.types.enum [
+        "trace"
+        "debug"
+        "info"
+        "warn"
+        "error"
+      ];
+      default = "info";
+      description = ''
+        Log level for tisvlayd (and its user services), applied via the
+        `RUST_LOG` environment variable. Use per-module overrides (e.g.
+        `"debug,zbus=warn"`) through `extraArgs` or by setting
+        `RUST_LOG` in a drop-in if you need finer control.
+      '';
+    };
+
+    extraArgs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "--config" "/etc/tisvlay/custom.toml" ];
+      description = ''
+        Extra command-line arguments appended to `tisvlayd`'s
+        `ExecStart`. Use for one-off overrides the module does not
+        expose directly.
+      '';
     };
   };
 
   config = lib.mkIf cfg.enable {
     # Dedicated system user and group for tisvlayd.
-    users.groups.tisvlay = { };
-    users.users.tisvlay = {
+    users.groups.${cfg.group} = {
+      gid = cfg.gid;
+    };
+    users.users.${cfg.user} = {
       description = "tisvlay daemon user";
-      group = "tisvlay";
+      group = cfg.group;
+      uid = cfg.uid;
       isSystemUser = true;
     };
 
@@ -70,11 +137,16 @@ in
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       documentation = [ "https://github.com/ruffsl/tisvlay" ];
+      environment = {
+        RUST_LOG = cfg.logLevel;
+      };
       serviceConfig = {
-        ExecStart = lib.getExe' cfg.package "tisvlayd";
+        ExecStart = lib.escapeShellArgs (
+          [ (lib.getExe' cfg.package "tisvlayd") ] ++ cfg.extraArgs
+        );
         ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
-        User = "tisvlay";
-        Group = "tisvlay";
+        User = cfg.user;
+        Group = cfg.group;
         StateDirectory = "tisvlay";
         StateDirectoryMode = "0750";
         RuntimeDirectory = "tisvlay";
@@ -98,6 +170,9 @@ in
       after = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
       documentation = [ "https://github.com/ruffsl/tisvlay" ];
+      environment = {
+        RUST_LOG = cfg.logLevel;
+      };
       serviceConfig = {
         ExecStart = lib.getExe' cfg.package "tisvlay-session";
         ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
@@ -114,6 +189,9 @@ in
       after = [ "graphical-session.target" "tisvlay-session.service" ];
       partOf = [ "graphical-session.target" ];
       documentation = [ "https://github.com/ruffsl/tisvlay" ];
+      environment = {
+        RUST_LOG = cfg.logLevel;
+      };
       serviceConfig = {
         ExecStart = lib.getExe' cfg.package "tisvlay-tray";
         Restart = "on-failure";
