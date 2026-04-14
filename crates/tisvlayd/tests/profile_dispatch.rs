@@ -21,8 +21,8 @@
 
 use std::time::Duration;
 use tisvlay_core::DaemonClient;
+use tisvlay_harness::daemon::TestDaemon;
 use tisvlay_test::PrivateBus;
-use tisvlayd::test_harness::TestDaemon;
 use tisvlayd::tv_manager::SystemEvent;
 
 /// Yield to the tokio executor repeatedly so the async pipeline

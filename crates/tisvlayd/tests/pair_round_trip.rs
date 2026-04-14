@@ -14,7 +14,7 @@
 #![cfg(feature = "mock")]
 
 use tisvlay_core::DaemonClient;
-use tisvlayd::test_harness::TestDaemon;
+use tisvlay_harness::daemon::TestDaemon;
 
 /// Build a TestDaemon with no pre-configured TVs — a clean slate for
 /// pairing. Uses the same `create_test_registry` so the mock connector

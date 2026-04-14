@@ -24,8 +24,8 @@
 use std::sync::Arc;
 
 use tisvlay_core::DaemonClient;
+use tisvlay_harness::daemon::TestDaemon;
 use tisvlay_test::fake_screensaver::FakeScreenSaver;
-use tisvlayd::test_harness::TestDaemon;
 use tokio::sync::{mpsc, RwLock};
 
 use crate::session_monitor::SessionEvent;

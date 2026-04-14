@@ -5,13 +5,11 @@
 //! pointing at the test bus. The stdout/stderr output is snapshotted
 //! via `insta-cmd` so regressions in user-facing messages are caught.
 
-#![cfg(feature = "mock")]
-
 use insta_cmd::assert_cmd_snapshot;
 use std::process::Command;
 use tisvlay_core::DaemonClient;
+use tisvlay_harness::daemon::TestDaemon;
 use tisvlay_test::PrivateBus;
-use tisvlayd::test_harness::TestDaemon;
 
 /// Path to the compiled `tisvlay` binary under the test profile.
 fn cli_bin() -> std::path::PathBuf {

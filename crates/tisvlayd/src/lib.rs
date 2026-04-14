@@ -15,9 +15,10 @@
 //!   by the daemon at startup.
 //! - [`logind`] — logind monitoring (shutdown inhibitor, sleep events).
 //! - [`netlink`] — kernel netlink monitoring (carrier, route changes).
-//! - [`test_harness`] (mock feature) — `TestDaemon`, a one-line
-//!   constructor that wires `TvManager` + the full D-Bus surface onto
-//!   a private bus for integration tests.
+//!
+//! The `__internals` module is a `#[doc(hidden)]` re-export surface for
+//! the out-of-crate test harness ([`tisvlay_harness`](../tisvlay_harness)).
+//! Do not depend on it from published code.
 
 pub mod dbus;
 pub mod logind;
@@ -26,5 +27,10 @@ pub mod registry;
 pub mod state_forwarder;
 pub mod tv_manager;
 
-#[cfg(feature = "mock")]
-pub mod test_harness;
+/// Re-exports for the integration-test harness crate. Not public API.
+#[doc(hidden)]
+pub mod __internals {
+    pub use crate::dbus::{build_dbus_connection, BusKind, ManagerService};
+    pub use crate::state_forwarder::state_change_forwarder;
+    pub use crate::tv_manager::TvManager;
+}

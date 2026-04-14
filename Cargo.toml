@@ -85,6 +85,10 @@ tisvlay-mock = { path = "crates/tisvlay-mock" }
 tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-backends = { path = "crates/tisvlay-backends" }
 tisvlay-harness = { path = "crates/tisvlay-harness" }
+# Binary crates exposed as libs for the harness. `tisvlay-tray` is
+# currently bin-only; add here when its lib surface is exposed.
+tisvlayd = { path = "crates/tisvlayd" }
+tisvlay-session = { path = "crates/tisvlay-session" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml"] }

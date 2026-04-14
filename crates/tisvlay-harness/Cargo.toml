@@ -15,13 +15,21 @@ publish = false
 tisvlay-test = { workspace = true }
 tisvlay-mock = { workspace = true }
 
-# Async runtime + D-Bus for harness helpers.
+# Core types referenced by the fixtures (SystemConfig, TvConfig).
+tisvlay-core = { workspace = true }
+
+# Backend registry — TestDaemon wires a mock registry, which needs the
+# `mock` feature on this crate.
+tisvlay-backends = { workspace = true, features = ["mock"] }
+
+# Binary crates whose fixtures live here. Each exposes a
+# `#[doc(hidden)] pub mod __internals` surface for the harness to reach.
+tisvlayd = { workspace = true }
+
+# Async runtime + D-Bus + misc for harness helpers.
 tokio = { workspace = true }
 zbus = { workspace = true }
 tracing = { workspace = true }
+anyhow = { workspace = true }
+toml = { workspace = true }
 tempfile = "3"
-
-# Binary-crate dependencies are added as each module lands:
-# - tisvlayd      (Phase C, for TestDaemon)
-# - tisvlay-session (Phase D, for TestSession)
-# - tisvlay-tray  (Phase E, for TestTray)

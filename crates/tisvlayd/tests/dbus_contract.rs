@@ -14,8 +14,8 @@
 
 use std::time::Duration;
 use tisvlay_core::DaemonClient;
+use tisvlay_harness::daemon::TestDaemon;
 use tisvlay_test::PrivateBus;
-use tisvlayd::test_harness::TestDaemon;
 
 async fn settle() {
     for _ in 0..20 {
