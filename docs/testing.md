@@ -237,7 +237,22 @@ inputs = [["HDMI_1", "HDMI 1"], ["HDMI_2", "HDMI 2"]]
 cargo run --bin tisvlayd --features mock -- --session
 ```
 
-## Test harness: tisvlay-test
+## Test infrastructure: three layers
+
+Test-related crates are `publish = false` and split by what they fake:
+
+| Crate | Fakes | Example |
+|---|---|---|
+| `tisvlay-test` | OS environment (the system tisvlay runs on) | `PrivateBus`, `FakeLogind`, `FakeScreenSaver` |
+| `tisvlay-mock` | TV protocol peer (fake vendor backend) | `MockConnector`, `MockHandle` |
+| `tisvlay-harness` | Binary lifecycle (orchestrates the whole daemon/session process) | `TestDaemon`, `TestSession`, `TestTray` |
+
+`tisvlay-harness` reaches into `tisvlayd` and `tisvlay-session` internals
+through each binary crate's `#[doc(hidden)] pub mod __internals`
+re-export surface (same idiom `serde::__private` uses). Those items are
+explicitly not part of any published API.
+
+## Test utilities: tisvlay-test
 
 Dev-only crate providing shared infrastructure. Never shipped in release.
 
@@ -281,7 +296,7 @@ ss.emit_active_changed(true).await?;  // simulate lock
 
 ## Daemon testing (TestDaemon)
 
-`tisvlayd::test_harness::TestDaemon` builds a fully wired daemon on the shared private bus. Feature-gated on `mock`.
+`tisvlay_harness::daemon::TestDaemon` builds a fully wired daemon on the shared private bus. Lives in the `tisvlay-harness` crate; pulled into the daemon crate's `[dev-dependencies]`.
 
 ### Test harness wiring
 
@@ -315,7 +330,7 @@ flowchart TD
 ```
 
 ```rust
-use tisvlayd::test_harness::TestDaemon;
+use tisvlay_harness::daemon::TestDaemon;
 use tisvlay_core::DaemonClient;
 
 #[tokio::test]
@@ -383,10 +398,10 @@ sequenceDiagram
 
 ## Session testing (TestSession)
 
-`tisvlay_session::test_harness::TestSession` wires a `TestDaemon` + `DaemonClient` + `SessionState` + `FakeScreenSaver` + event handler on the shared private bus. Feature-gated on `mock`.
+`tisvlay_harness::session::TestSession` wires a `TestDaemon` + `DaemonClient` + `SessionState` + `FakeScreenSaver` + event handler on the shared private bus. Lives in the `tisvlay-harness` crate.
 
 ```rust
-use tisvlay_session::test_harness::TestSession;
+use tisvlay_harness::session::TestSession;
 use tisvlay_session::session_monitor::SessionEvent;
 
 #[tokio::test]
