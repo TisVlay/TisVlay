@@ -90,9 +90,11 @@ pkgs.testers.runNixOSTest {
     owner = machine.succeed("stat -c '%U:%G' /var/lib/tisvlay").strip()
     assert owner == "tisvlay:tisvlay", f"unexpected owner {owner!r}"
 
-    # Stable UID/GID from the module option (default 979).
-    uid = machine.succeed("id -u tisvlay").strip()
-    assert uid == "979", f"expected uid 979, got {uid!r}"
+    # The tisvlay user exists and has a system-range UID (< 1000).
+    # The specific number is NixOS-allocated unless services.tisvlay.uid
+    # is set explicitly — which the default module config does not.
+    uid = int(machine.succeed("id -u tisvlay").strip())
+    assert 0 < uid < 1000, f"expected system UID (<1000) for tisvlay, got {uid}"
 
     # systemd-analyze security: exposure level must be `OK` or better.
     # A fully-hardened long-running daemon should land at exposure ≤ 2.0

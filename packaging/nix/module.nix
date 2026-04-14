@@ -62,22 +62,28 @@ in
     };
 
     uid = lib.mkOption {
-      type = lib.types.int;
-      default = 979;
+      type = lib.types.nullOr lib.types.int;
+      default = null;
       description = ''
-        Stable system UID for the tisvlay user. Fixed to keep
-        `StateDirectory` ownership deterministic across rebuilds.
-        Override if 979 collides with another service on your system.
-        If this module is ever upstreamed to nixpkgs, the UID will be
-        reassigned via `nixos/modules/misc/ids.nix`.
+        Optional fixed system UID for the tisvlay user. Leave `null`
+        (the default) to let NixOS allocate a system UID dynamically
+        and persist it via `/var/lib/nixos/uid-map` — this keeps the
+        UID stable across rebuilds on a given host.
+
+        Set a specific number if you need the UID to match across
+        multiple hosts (e.g. shared state over network filesystems).
+        If this module is ever upstreamed to nixpkgs, a fixed UID
+        will be reserved in `nixos/modules/misc/ids.nix`; until then,
+        out-of-tree assignments risk colliding with other services.
       '';
     };
 
     gid = lib.mkOption {
-      type = lib.types.int;
-      default = 979;
+      type = lib.types.nullOr lib.types.int;
+      default = null;
       description = ''
-        Stable system GID for the tisvlay group. Same caveats as `uid`.
+        Optional fixed system GID for the tisvlay group. Same caveats
+        as `uid`.
       '';
     };
 
@@ -148,15 +154,18 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # Dedicated system user and group for tisvlayd.
-    users.groups.${cfg.group} = {
+    # Dedicated system user and group for tisvlayd. uid/gid stay
+    # unset by default — NixOS allocates from the system range and
+    # pins the assignment via /var/lib/nixos/uid-map.
+    users.groups.${cfg.group} = lib.optionalAttrs (cfg.gid != null) {
       gid = cfg.gid;
     };
     users.users.${cfg.user} = {
       description = "tisvlay daemon user";
       group = cfg.group;
-      uid = cfg.uid;
       isSystemUser = true;
+    } // lib.optionalAttrs (cfg.uid != null) {
+      uid = cfg.uid;
     };
 
     # D-Bus policy: allow the tisvlay user to own the service name.

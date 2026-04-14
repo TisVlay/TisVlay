@@ -40,7 +40,7 @@ Authoritative option reference: read [`module.nix`](module.nix) directly — eve
 - `services.tisvlay.logLevel` — maps to `RUST_LOG` on all three systemd units.
 - `services.tisvlay.extraArgs` — appended to the daemon's `ExecStart`.
 - `services.tisvlay.settings` — declarative TOML config, rendered to the Nix store and passed as `--config <path>`. When set, the daemon cannot persist pairing changes; leave `null` to keep `StateDirectory` mutable.
-- `services.tisvlay.user` / `group` / `uid` / `gid` — defaults `"tisvlay"` / `979` / `979`.
+- `services.tisvlay.user` / `group` — defaults `"tisvlay"` / `"tisvlay"`. `uid` / `gid` default to `null`, letting NixOS pick a system UID and pin it via `/var/lib/nixos/uid-map`. Override only if you need the UID fixed across multiple hosts.
 
 ## How the package builds
 
@@ -96,7 +96,7 @@ The test boots a minimal NixOS VM with `services.tisvlay.enable = true` and asse
 5. `ObjectManager.GetManagedObjects` is empty on a fresh install.
 6. `tisvlay-session.service` and `tisvlay-tray.service` user unit files are loaded.
 7. `/var/lib/tisvlay/` exists with owner `tisvlay:tisvlay`.
-8. `id -u tisvlay == 979` (stable UID).
+8. `tisvlay` user exists with a system-range UID (< 1000). Exact value is NixOS-allocated unless pinned via `services.tisvlay.uid`.
 9. `systemd-analyze security tisvlayd.service` score ≤ 2.0. The full breakdown is logged via `machine.log()` so the VM build log preserves which settings pass / fail without a manual re-run.
 
 **Deliberately not covered**: `tisvlay-session` / `tisvlay-tray` auto-start via `graphical-session.target`. Exercising that path needs a real display manager in the VM. The units are verified to load (they are reachable via `systemctl --global`) but not executed.
