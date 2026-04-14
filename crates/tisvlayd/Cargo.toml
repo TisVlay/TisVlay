@@ -102,3 +102,6 @@ depends = ["libc6"]
 
 [package.metadata.nfpm.rpm]
 depends = ["glibc"]
+
+[lints]
+workspace = true

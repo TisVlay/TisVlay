@@ -46,3 +46,6 @@ insta = { workspace = true }
 [features]
 default = []
 discovery = ["dep:ssdp-client", "dep:urlencoding", "dep:url"]
+
+[lints]
+workspace = true
