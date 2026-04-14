@@ -384,7 +384,7 @@ plan described, but a few checkboxes weren't strictly literal:
   workspace, and the override pattern
   (`publish = true` on a per-crate basis when ready to ship) reads the
   same everywhere.
-- **Publish smoke test revealed a real gap** (Phase F). The plan
+- **Publish smoke test surfaced two real gaps** (Phase F). The plan
   cited `cargo package --workspace --dry-run`, which isn't a valid
   command — `--dry-run` belongs to `cargo publish`, not
   `cargo package`. The correct equivalents on cargo 1.94 are
@@ -393,8 +393,8 @@ plan described, but a few checkboxes weren't strictly literal:
   `cargo publish --workspace --dry-run` (the feature promoted to
   stable per the [Tweag 2025 post](https://www.tweag.io/blog/2025-07-10-cargo-package-workspace/)).
 
-  Running `cargo package --workspace` surfaces a real pre-publish
-  blocker:
+  **Gap 1 (fixed in follow-up PR)**: `cargo package --workspace`
+  surfaced the missing-`version` error:
 
   ```
   error: failed to verify manifest at `crates/tisvlay-lg/Cargo.toml`
@@ -402,22 +402,34 @@ plan described, but a few checkboxes weren't strictly literal:
     dependency `tisvlay-core` does not specify a version
   ```
 
-  Our `[workspace.dependencies]` entries are `path`-only:
+  The fix landed alongside the edition 2024 / resolver 3 / MSRV 1.85
+  bump — `[workspace.dependencies]` now carries `version = "0.1.0"`
+  alongside `path = "..."` on every internal entry, so cargo has
+  something to resolve against when the `path` is stripped during
+  packaging.
 
-  ```toml
-  tisvlay-core = { path = "crates/tisvlay-core" }
-  ```
+  **Gap 2 (inherent, not worth fixing yet)**: Even with versions in
+  place, no meaningful workspace dry-run is possible while every
+  crate is `publish = false`:
 
-  For any crate to be publishable, every internal regular dep needs a
-  version alongside the path:
+  - `cargo publish --workspace --dry-run` short-circuits with
+    *"nothing to publish, but found 10 unpublishable packages"*.
+  - `cargo package --workspace` tries to resolve each member's
+    non-workspace deps against crates.io and fails because nothing
+    is published yet (`no matching package named tisvlay-core
+    found ...`).
+  - Flipping one leaf (e.g. `tisvlay-core`) to `publish = true` and
+    running `cargo publish -p tisvlay-core --dry-run --allow-dirty`
+    *works*, but only if the crate's dev-deps don't inherit
+    `version` from workspace deps pointing at `publish = false`
+    crates — otherwise cargo tries to resolve `tisvlay-test = "0.1.0"`
+    against crates.io and fails. Workaround: override per-crate with
+    a path-only literal (`tisvlay-test = { path = "../tisvlay-test" }`).
 
-  ```toml
-  tisvlay-core = { path = "crates/tisvlay-core", version = "0.1.0" }
-  ```
-
-  Harmless today because `publish = false` is uniform, but this
-  cleanup is a prerequisite the first time we flip a crate to
-  `publish = true`. Tracked outside this plan.
+  Practical conclusion: real first-publish flow is topological
+  (leaves first, then tiers 2+), and `cargo-release` /
+  `cargo-workspaces` tools handle the ordering. Genuine chicken-and-egg,
+  not something to solve via config.
 
 
 ## Out of scope for this plan
