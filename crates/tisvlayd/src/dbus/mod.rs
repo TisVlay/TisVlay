@@ -12,13 +12,13 @@ pub use manager::ManagerService;
 pub use setup::build_dbus_connection;
 pub use tisvlay_core::BusKind;
 pub use tv::{
-    register_tv_interfaces, unregister_tv_interfaces, TvBacklightService, TvInputService,
-    TvPowerService, TvScreenService, TvService, TvVolumeService,
+    TvBacklightService, TvInputService, TvPowerService, TvScreenService, TvService,
+    TvVolumeService, register_tv_interfaces, unregister_tv_interfaces,
 };
 
 // Re-export D-Bus path constants and helpers from tisvlay-core.
 pub use tisvlay_core::dbus_paths::{
-    tv_path, DAEMON_SERVICE as DBUS_NAME, MANAGER_PATH, OBJECT_MANAGER_PATH,
+    DAEMON_SERVICE as DBUS_NAME, MANAGER_PATH, OBJECT_MANAGER_PATH, tv_path,
 };
 
 use crate::tv_manager::TvManagerError;

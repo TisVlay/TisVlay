@@ -16,10 +16,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{DaemonClient, UserConfig, UserProfileConfig};
+use tisvlay_session::SessionState;
 use tisvlay_session::idle::IdleMonitor;
 use tisvlay_session::session_monitor::{SessionEvent, SessionMonitor};
-use tisvlay_session::SessionState;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 /// tisvlay session service - monitors desktop events and controls TVs.
@@ -222,7 +222,7 @@ async fn wait_for_signals(
     daemon: Arc<DaemonClient>,
     config_path: Option<PathBuf>,
 ) {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
     let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");

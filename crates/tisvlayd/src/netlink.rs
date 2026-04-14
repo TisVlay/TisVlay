@@ -12,7 +12,7 @@
 use futures_util::TryStreamExt;
 use netlink_packet_route::link::LinkAttribute;
 use netlink_packet_route::route::RouteAttribute;
-use rtnetlink::{new_connection, RouteMessageBuilder};
+use rtnetlink::{RouteMessageBuilder, new_connection};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::{debug, info, trace, warn};
 
@@ -152,9 +152,9 @@ async fn watch_link_carrier(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use futures_util::StreamExt;
     use netlink_packet_core::NetlinkPayload;
-    use netlink_packet_route::link::LinkFlags;
     use netlink_packet_route::RouteNetlinkMessage;
-    use rtnetlink::{new_multicast_connection, MulticastGroup};
+    use netlink_packet_route::link::LinkFlags;
+    use rtnetlink::{MulticastGroup, new_multicast_connection};
     use std::collections::HashMap;
 
     let (conn, _handle, mut messages) = new_multicast_connection(&[

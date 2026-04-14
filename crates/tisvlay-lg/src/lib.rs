@@ -59,8 +59,8 @@ pub use backend::{LgBackend, LgConnection, LgConnector};
 pub use client::WebOsClient;
 pub use config::{LgConfig, LgVendorConfig};
 pub use endpoints::{
-    audio as audio_endpoints, buttons, input as input_endpoints, picture as picture_endpoints,
-    power as power_endpoints, timeouts, WSS_PORT, WS_PORT,
+    WS_PORT, WSS_PORT, audio as audio_endpoints, buttons, input as input_endpoints,
+    picture as picture_endpoints, power as power_endpoints, timeouts,
 };
 pub use protocol::{ExternalInput, PowerState as ProtocolPowerState, VolumeInfo};
 

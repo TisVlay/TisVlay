@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 use tisvlay_core::{AutomateWhen, SessionAction, SystemConfig, SystemProfileConfig};
-use tisvlay_harness::daemon::{mock_tv_config, TestDaemon};
+use tisvlay_harness::daemon::{TestDaemon, mock_tv_config};
 use tisvlayd::tv_manager::SystemEvent;
 
 async fn settle() {

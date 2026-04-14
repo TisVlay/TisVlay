@@ -39,7 +39,7 @@ use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use crate::dbus_paths::{tv_path, DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH};
+use crate::dbus_paths::{DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH, tv_path};
 
 // =============================================================================
 // Bus Selection

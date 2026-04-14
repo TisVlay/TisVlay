@@ -33,15 +33,17 @@ async fn pair_happy_path_output() {
     let (daemon, bus_addr) = empty_daemon_on_bus().await;
     daemon.handle().simulate_user_accept("mock://living_room");
 
-    assert_cmd_snapshot!(Command::new(cli_bin())
-        .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-        .arg("--user")
-        .arg("pair")
-        .arg("mock://living_room")
-        .arg("--vendor")
-        .arg("mock")
-        .arg("--name")
-        .arg("Living Room"));
+    assert_cmd_snapshot!(
+        Command::new(cli_bin())
+            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+            .arg("--user")
+            .arg("pair")
+            .arg("mock://living_room")
+            .arg("--vendor")
+            .arg("mock")
+            .arg("--name")
+            .arg("Living Room")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -49,17 +51,19 @@ async fn pair_with_wake_id_output() {
     let (daemon, bus_addr) = empty_daemon_on_bus().await;
     daemon.handle().simulate_user_accept("mock://living_room");
 
-    assert_cmd_snapshot!(Command::new(cli_bin())
-        .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-        .arg("--user")
-        .arg("pair")
-        .arg("mock://living_room")
-        .arg("--vendor")
-        .arg("mock")
-        .arg("--name")
-        .arg("Living Room")
-        .arg("--wake-id")
-        .arg("AA:BB:CC:DD:EE:FF"));
+    assert_cmd_snapshot!(
+        Command::new(cli_bin())
+            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+            .arg("--user")
+            .arg("pair")
+            .arg("mock://living_room")
+            .arg("--vendor")
+            .arg("mock")
+            .arg("--name")
+            .arg("Living Room")
+            .arg("--wake-id")
+            .arg("AA:BB:CC:DD:EE:FF")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -67,15 +71,17 @@ async fn pair_rejected_output() {
     let (daemon, bus_addr) = empty_daemon_on_bus().await;
     daemon.handle().simulate_user_reject("mock://denied");
 
-    assert_cmd_snapshot!(Command::new(cli_bin())
-        .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-        .arg("--user")
-        .arg("pair")
-        .arg("mock://denied")
-        .arg("--vendor")
-        .arg("mock")
-        .arg("--name")
-        .arg("Denied TV"));
+    assert_cmd_snapshot!(
+        Command::new(cli_bin())
+            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+            .arg("--user")
+            .arg("pair")
+            .arg("mock://denied")
+            .arg("--vendor")
+            .arg("mock")
+            .arg("--name")
+            .arg("Denied TV")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -83,13 +89,15 @@ async fn pair_without_name_uses_address() {
     let (daemon, bus_addr) = empty_daemon_on_bus().await;
     daemon.handle().simulate_user_accept("mock://office");
 
-    assert_cmd_snapshot!(Command::new(cli_bin())
-        .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-        .arg("--user")
-        .arg("pair")
-        .arg("mock://office")
-        .arg("--vendor")
-        .arg("mock"));
+    assert_cmd_snapshot!(
+        Command::new(cli_bin())
+            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+            .arg("--user")
+            .arg("pair")
+            .arg("mock://office")
+            .arg("--vendor")
+            .arg("mock")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -107,8 +115,10 @@ async fn list_after_pair_output() {
         .await
         .unwrap();
 
-    assert_cmd_snapshot!(Command::new(cli_bin())
-        .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-        .arg("--user")
-        .arg("list"));
+    assert_cmd_snapshot!(
+        Command::new(cli_bin())
+            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+            .arg("--user")
+            .arg("list")
+    );
 }

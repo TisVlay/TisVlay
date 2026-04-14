@@ -131,7 +131,7 @@ async fn main() -> Result<()> {
 
 /// Wait for SIGTERM or SIGINT.
 async fn wait_for_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM");
     let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT");

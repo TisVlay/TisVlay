@@ -4,8 +4,8 @@
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use zbus::proxy;

@@ -76,9 +76,10 @@ pub use pairing::{
 
 // Configuration
 pub use config::{
-    is_valid_tv_id, tv_id_from_name, AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile,
-    SessionAction, SystemConfig, SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment,
-    UserConfig, UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment,
+    AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
+    SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
+    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, is_valid_tv_id,
+    tv_id_from_name,
 };
 
 // State
@@ -88,7 +89,7 @@ pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
 pub use error::{Error, Result};
 
 // Wake-on-LAN
-pub use wol::{wake, wake_with_options, MacAddress, WakeOptions};
+pub use wol::{MacAddress, WakeOptions, wake, wake_with_options};
 
 // =============================================================================
 // Public re-exports: Optional features
@@ -96,12 +97,12 @@ pub use wol::{wake, wake_with_options, MacAddress, WakeOptions};
 
 // D-Bus path constants (always available, no feature gate)
 pub use dbus_paths::{
-    tv_path, DAEMON_SERVICE, MANAGER_PATH, SESSION_INTERFACE, SESSION_PATH, SESSION_SERVICE,
-    TV_BASE_PATH,
+    DAEMON_SERVICE, MANAGER_PATH, SESSION_INTERFACE, SESSION_PATH, SESSION_SERVICE, TV_BASE_PATH,
+    tv_path,
 };
 
 #[cfg(feature = "dbus")]
 pub use dbus_client::{
-    add_signal_match, subscribe_signals, watch_service, BusKind, DaemonClient, ServiceEvent,
-    SessionClient, StateEvent, StateWatcher, StateWatcherConfig, TvInfo, TvStateChange,
+    BusKind, DaemonClient, ServiceEvent, SessionClient, StateEvent, StateWatcher,
+    StateWatcherConfig, TvInfo, TvStateChange, add_signal_match, subscribe_signals, watch_service,
 };

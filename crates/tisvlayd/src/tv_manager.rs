@@ -14,7 +14,7 @@ use tisvlay_core::{
     Capabilities, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection, TvConfig,
     TvConnection, TvState, UserProfileConfig, UserSection,
 };
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 /// Error type for TV manager operations.

@@ -235,18 +235,24 @@ fn subscribe_with_payload_serializes() {
 fn default_manifest_has_expected_permissions() {
     let payload = RegisterPayload::new(None);
     // Spot-check key permissions
-    assert!(payload
-        .manifest
-        .permissions
-        .contains(&"CONTROL_POWER".to_string()));
-    assert!(payload
-        .manifest
-        .permissions
-        .contains(&"CONTROL_AUDIO".to_string()));
-    assert!(payload
-        .manifest
-        .permissions
-        .contains(&"READ_SETTINGS".to_string()));
+    assert!(
+        payload
+            .manifest
+            .permissions
+            .contains(&"CONTROL_POWER".to_string())
+    );
+    assert!(
+        payload
+            .manifest
+            .permissions
+            .contains(&"CONTROL_AUDIO".to_string())
+    );
+    assert!(
+        payload
+            .manifest
+            .permissions
+            .contains(&"READ_SETTINGS".to_string())
+    );
     // Signed section should exist
     let signed = payload
         .manifest

@@ -6,16 +6,16 @@
 //! Unlike the D-Bus GetSessionIdleTime approach (which doesn't work on KDE Plasma Wayland),
 //! this directly connects to the Wayland compositor to receive idle/resumed events.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::{
-    globals::{registry_queue_init, GlobalList, GlobalListContents},
-    protocol::wl_registry,
     Connection, Dispatch, EventQueue, QueueHandle,
+    globals::{GlobalList, GlobalListContents, registry_queue_init},
+    protocol::wl_registry,
 };
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1::{self, ExtIdleNotificationV1},

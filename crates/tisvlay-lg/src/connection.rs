@@ -6,7 +6,7 @@
 //! while subscription updates and unsolicited messages are forwarded to
 //! a shared `mpsc` channel.
 
-use crate::endpoints::{WSS_PORT, WS_PORT};
+use crate::endpoints::{WS_PORT, WSS_PORT};
 use crate::protocol::{Request, Response};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tisvlay_core::{Error, Result};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};

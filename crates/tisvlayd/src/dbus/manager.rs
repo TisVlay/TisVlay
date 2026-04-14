@@ -2,7 +2,7 @@
 //!
 //! Implements `org.tisvlay.Manager1` for TV discovery and management.
 
-use crate::dbus::{register_tv_interfaces, unregister_tv_interfaces, DaemonError};
+use crate::dbus::{DaemonError, register_tv_interfaces, unregister_tv_interfaces};
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
@@ -233,7 +233,7 @@ impl ManagerService {
     /// Signal emitted when a TV is added.
     #[zbus(signal)]
     pub async fn tv_added(emitter: &SignalEmitter<'_>, tv_path: ObjectPath<'_>)
-        -> zbus::Result<()>;
+    -> zbus::Result<()>;
 
     /// Signal emitted when a TV is removed.
     #[zbus(signal)]

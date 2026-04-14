@@ -7,4 +7,4 @@
 //! All vendor access goes through the registry from `tisvlay-backends`.
 
 // Re-export from tisvlay-backends
-pub use tisvlay_backends::{create_registry, BackendRegistry};
+pub use tisvlay_backends::{BackendRegistry, create_registry};
