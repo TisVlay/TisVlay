@@ -1,82 +1,99 @@
 # Desktop ↔ TV Sync Plan (Brightness & Volume)
 
-Goal: when the user adjusts KDE Plasma's native brightness or volume control for the display/sink that represents an LG TV, drive the TV's backlight / audio over SSAP. Reuse existing KDE sliders — do not ship new ones.
+Goal: when the user adjusts KDE Plasma's native brightness or volume control for the display/sink representing a TV, drive the corresponding TV via `tisvlayd`'s existing vendor-agnostic D-Bus surface. Reuse existing desktop sliders — do not ship new ones.
+
+## Vendor & Transport Scoping
+
+This feature lives entirely above the vendor abstraction. It talks to TVs through the existing `org.tisvlay.Tv1.Backlight` / `org.tisvlay.Tv1.Volume` interfaces ([design.md § Feature Interfaces](design.md#feature-interfaces)); no backend-specific calls (SSAP, Tizen, CEC, etc.) appear in this plan or in the new code. Any vendor implementing the relevant `Capabilities` bits (`BACKLIGHT`, `VOLUME`, `MUTE`) gets desktop sync for free.
+
+Scoped by transport, not vendor: desktop sync only makes sense for TVs carrying an AV signal from the host. We gate activation on the TV being reachable **and** having a resolved display/sink association (see Phase 1). This naturally covers HDMI-carrying backends (LG WebOS, hypothetical Samsung Tizen, Sony Bravia, or even a future CEC backend) and naturally excludes backends that wouldn't have a desktop display/sink (e.g. a serial-only projector in another room).
 
 ## Architecture Summary
 
-| Concern      | Primary path (KDE)                                | Portable fallback / notes                                  |
-|--------------|----------------------------------------------------|------------------------------------------------------------|
-| Brightness   | `kde-external-brightness-v1` Wayland protocol      | Observe `org.kde.ScreenBrightness.BrightnessChanged` (read-only). Kernel `ddcci-backlight` pattern deferred. |
-| Volume       | PipeWire virtual sink per TV (`pipewire-rs`)       | Freedesktop-portable; works on any PW system               |
-| Identity     | EDID via `libdisplay-info` ↔ SSAP `systemInfo`     | User override in config for unusual setups                 |
-| Greeter      | Not supported (powerdevil is user-session)         | Document as known limitation                               |
+| Concern      | Primary path (KDE)                                     | Portable fallback / notes                                  |
+|--------------|--------------------------------------------------------|------------------------------------------------------------|
+| Brightness   | `kde-external-brightness-v1` Wayland protocol client   | `org.kde.ScreenBrightness.BrightnessChanged` observer      |
+| Volume       | PipeWire virtual sink per TV (`pipewire-rs`)           | Freedesktop-portable; works on any PW system               |
+| Identity     | EDID (via `libdisplay-info`) ↔ `Tv1.HardwareId`        | User override in config for unusual setups                 |
+| Greeter      | Not supported (desktop-sync services are user-session) | Documented limitation                                      |
 
-All work lives in `tisvlay-session` (or a new `tisvlay-desktop-sync` sub-crate if it grows). `tisvlayd` remains the system service owning TV connections; the session service drives it via the existing D-Bus API.
+Code lives in `tisvlay-session` initially; factor into a `tisvlay-desktop-sync` crate if it grows beyond ~one module per concern. `tisvlayd` stays transport/vendor-neutral and gains only a small identity-exposure addition (below).
 
-## Phase 1 — Display & sink identity
+## Phase 0 — Vendor-agnostic identity surface
 
-Prerequisite for both brightness and volume: stable matching between a TV's profile and the desktop object representing it.
+Prerequisite for mapping a KDE display or PipeWire sink to a TV in a vendor-neutral way.
 
-- Add `libdisplay-info` bindings (or a small `edid-rs` wrapper) to `tisvlay-core`.
-- Extend `UserProfileConfig` (per-TV) with:
-  - `display_edid_hash: Option<String>` — auto-populated at pair time, overridable.
+- Add `fn hardware_id(&self) -> Option<HardwareId>` to `TvConnection` (default: `None`). `HardwareId` is a core type with fields `{ manufacturer: Option<String>, model: Option<String>, serial: Option<String> }`. Backends fill what they know (LG via `getSystemInfo`, Samsung via its equivalent, CEC via OSD name + vendor ID, etc.).
+- Expose on D-Bus as a read-only `HardwareId` property on `org.tisvlay.Tv1` (struct `(sss)` with empty strings for unknown fields). Already partially paralleled by `DiscoverTvs`'s `hardware_id` tuple field — unify naming.
+- Add a new capability bit `HAS_HARDWARE_ID` or simply return `None` when unsupported.
+- Mock backend gets a configurable `HardwareId` for tests.
+
+No desktop-sync code yet — this is a standalone daemon-side change that any future feature (GUI pairing wizard, multi-TV disambiguation) will also benefit from.
+
+## Phase 1 — Display & sink identity matching
+
+Still vendor-agnostic; pure session-service logic.
+
+- Add `libdisplay-info` bindings (or an `edid-rs` wrapper) to `tisvlay-session` only.
+- Extend `UserProfileConfig` (or a new `[desktop_sync]` table per TV) with:
+  - `display_edid_hash: Option<String>` — auto-populated, overridable.
   - `audio_sink_name: Option<String>` — PipeWire node name; auto-populated, overridable.
-- At session-service startup, enumerate `/sys/class/drm/*/edid`, hash, cross-reference against each configured TV's `systemInfo` (modelName + serialNumber from SSAP). Log matches and any unresolved TVs.
-- Expose a `ListDesktopMappings` method on the session D-Bus interface for a future pairing wizard / GUI.
+- At session start, enumerate `/sys/class/drm/*/edid`, hash each, and match against every managed TV's `Tv1.HardwareId` (manufacturer PNPID + model + serial). Log matches and unresolved TVs.
+- Session D-Bus: add `ListDesktopMappings() -> a(ssss)` returning `(tv_id, display_name, sink_name, match_source)` for a future pairing wizard / tray UI.
 
 ## Phase 2 — Volume sync (PipeWire virtual sink)
 
-PipeWire-only design; no PulseAudio legacy path.
+PipeWire-only; no PulseAudio-legacy path.
 
-- Add `pipewire-rs` dependency (session service only).
-- On session start, for each configured TV:
-  - Create a virtual sink named `tisvlay_<tv_id>` with `device.description = <TV friendly name>`, `media.class = Audio/Sink`.
-  - Subscribe to `Props` param changes on that node: `channelVolumes`, `mute`, `channelMap`.
-  - On change, call the daemon's existing `Tv1.Volume` / `Tv1.Volume.Muted` property setters (no new D-Bus surface needed).
-- On TV-side push events (SSAP volume subscription — already wired in `tisvlay-lg`), update the virtual sink's Props so the Plasma slider reflects the TV.
-- Tear down the sink on clean session exit; leave it up if the daemon crashes (user can recover by re-logging in).
-- Config knob: `volume_sync.enabled: bool` per TV, default `false` until the feature stabilises.
-- **Out of scope for Phase 2:** routing audio *through* the virtual sink (loopback to HDMI). Users can pair it with `module-loopback` themselves; we document the recipe.
+- Add `pipewire-rs` to `tisvlay-session`.
+- For each managed TV advertising `Capabilities::VOLUME` via D-Bus:
+  - Create a virtual sink `tisvlay_<tv_id>` (`device.description = <Tv1.Name>`, `media.class = Audio/Sink`).
+  - Subscribe to its `Props` events: `channelVolumes`, `mute`.
+  - On change, drive `Tv1.Volume.Volume` / `Tv1.Volume.Muted` via the existing property setters. No vendor-specific code path.
+- On `PropertiesChanged` from `Tv1.Volume`, update the virtual sink's Props so the Plasma slider reflects TV-initiated changes (remote control, etc.).
+- Tear down virtual sinks on clean session exit.
+- Per-TV config: `desktop_sync.volume = "off" | "virtual_sink"` (default `off` until stable).
+- **Out of scope:** loopback routing from the virtual sink to the real HDMI sink. Documented recipe; user adds `module-loopback` if they want it.
 
 ## Phase 3 — Brightness sync (Wayland external-brightness)
 
-- Add `wayland-client` + the `kde-external-brightness-v1` protocol XML to `tisvlay-session` (codegen via `wayland-scanner`).
-- On session start, connect to the user's Wayland display, bind `kde_external_brightness_manager_v1`. If absent (non-KDE or older Plasma), log once and skip.
-- For each configured TV with a resolved EDID:
-  - Register an `external_brightness_device_v1` with EDID blob, max brightness (e.g. `100` mapped from TV's 0–100 backlight range), and `internal=false`.
-  - Handle `requested_brightness` events → call existing `Tv1.Backlight.Backlight` setter.
-  - On TV push updates to backlight, call `set_observed_brightness` to keep KDE's slider in sync.
-- Config knob: `brightness_sync.enabled: bool` per TV, default `false`.
-- **Out of scope for Phase 3:** non-KDE compositors, greeter support, `ddcci-backlight` kernel shim.
+- Add `wayland-client` and generate bindings for `kde-external-brightness-v1` in `tisvlay-session`.
+- On session start, bind `kde_external_brightness_manager_v1`. If absent (non-KDE or pre-6.3), log once and skip brightness sync; volume still works.
+- For each managed TV advertising `Capabilities::BACKLIGHT` with a resolved EDID:
+  - Register an `external_brightness_device_v1` with the EDID blob, `max_brightness = 100`, `internal = false`.
+  - On `requested_brightness`, call `Tv1.Backlight.Backlight` property setter.
+  - On `PropertiesChanged` from `Tv1.Backlight`, call `set_observed_brightness` to keep KDE's slider in sync with TV-initiated changes.
+- Per-TV config: `desktop_sync.brightness = "off" | "wayland" | "dbus_observer"` (default `off`).
 
-## Phase 4 — D-Bus observer fallback (read-only)
+## Phase 4 — D-Bus observer fallback (read-only brightness)
 
-For users not running the Wayland client (e.g. remote `tisvlay-cli` driving an unattended setup), offer a best-effort observer-only mode:
+For users who can't or don't want to bind the Wayland protocol client:
 
-- Subscribe to `org.kde.ScreenBrightness.BrightnessChanged` on the session bus.
-- Match `display_dbus_name` → TV via `Label` property and the Phase 1 mapping.
-- Forward to `Tv1.Backlight`. No write-back to KDE (the Wayland protocol is the only registration path).
+- Subscribe to `org.kde.ScreenBrightness.BrightnessChanged`, resolve `display_dbus_name` via the `Label` property and the Phase 1 map, forward to `Tv1.Backlight`.
+- Read-only relative to KDE: no back-pressure, no slider update on TV-initiated change. Best-effort.
 
-Gated behind `brightness_sync.mode = "wayland" | "dbus-observer" | "off"`.
+## Phase 5 — Docs, tests, UX
 
-## Phase 5 — Docs, tests, config UX
+- New doc `docs/desktop-sync.md`: architecture, vendor-neutrality guarantees, KDE version requirements, greeter gap, enabling/configuring per TV.
+- `tisvlay-mock` gains a configurable `HardwareId`, a fake Wayland brightness event source, and a fake PipeWire node so harness tests can exercise both paths without real hardware.
+- `tisvlay-harness` integration tests (all vendor-neutral, using mock backend):
+  - KDE brightness event → `Tv1.Backlight` D-Bus set → mock-backend state update.
+  - PW sink volume change → `Tv1.Volume` set → mock-backend state update.
+  - Mock-backend push → `PropertiesChanged` → KDE/PW observed state updated.
+- CLI: `tisvlay desktop-sync status` prints the Phase 1 mapping table and active sync modes per TV.
 
-- New doc `docs/desktop-sync.md` covering the architecture, config examples, KDE version requirements, known limitations (greeter, non-KDE).
-- `tisvlay-mock` gains a fake Wayland brightness event source and a fake PipeWire node for harness tests.
-- `tisvlay-harness` integration tests: brightness event → SSAP call; PW volume change → SSAP call; SSAP push → slider update.
-- `tisvlayctl`/CLI: `tisvlay desktop-sync status` to report what's bound and what's not.
+## Explicit Non-Goals
 
-## Explicit Non-Goals (for now)
-
-- Replacing `wayland-idle` with powerdevil signals. Orthogonal; revisit after Phase 3 lands.
-- Pre-login / greeter sync. Powerdevil is user-session; SDDM runs separately.
-- Userspace-registered `/sys/class/backlight` devices. Not possible without a kernel module.
-- GNOME / Sway / Hyprland support. Revisit once `kde-external-brightness-v1` sees cross-compositor adoption, or via a separate DDC/CI backend.
-- Shipping a kernel module (`ddcci-backlight`-style) ourselves.
+- Any vendor- or protocol-specific branch in desktop-sync code. If a feature needs one, it belongs in the vendor crate behind the existing `TvConnection` trait, not here.
+- Replacing `wayland-idle` with KDE power events. Orthogonal; revisit after Phase 3.
+- Pre-login / greeter sync. Desktop-sync services are user-session; SDDM is separate.
+- Shipping a kernel module (`ddcci-backlight`-style) for non-KDE brightness. Revisit if another compositor adopts a comparable external-brightness protocol.
+- GNOME / Sway / Hyprland brightness paths. Volume (PipeWire) already works there.
+- Non-HDMI transports. A future CEC backend implementing `Capabilities::BACKLIGHT` + `HardwareId` would Just Work through this feature without any changes here.
 
 ## Open Questions
 
-- Brightness range: SSAP backlight is 0–100 integer. Expose to KDE as `max_brightness=100` (linear), or a higher resolution with interpolation? Pick 100 for Phase 3.
-- Virtual-sink volume scale: PipeWire cubic vs linear. Default to cubic to match Plasma's slider curve; verify empirically.
-- Debounce: scrolling the KDE slider emits a burst of events. Rate-limit SSAP writes (~20 Hz) with a trailing-edge flush.
-- Multi-TV on one HDMI input (matrix switcher): deferred.
+- Brightness range: most backends expose 0–100. Fix `max_brightness = 100` in Phase 3; revisit if a vendor lands with finer granularity.
+- PipeWire volume curve: cubic vs linear. Default cubic to match Plasma's slider; verify.
+- Debounce policy for slider scroll bursts: trailing-edge flush at ~20 Hz to the D-Bus property setter. Applies uniformly across vendors.
+- `HardwareId` serial field: some backends can't read it (CEC). Match falls back to manufacturer + model + user override.
