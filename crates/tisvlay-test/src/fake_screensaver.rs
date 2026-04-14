@@ -8,7 +8,7 @@
 //!
 //! ```no_run
 //! # async fn run() -> zbus::Result<()> {
-//! use tisvlay_test_support::{fake_screensaver::FakeScreenSaver, PrivateBus};
+//! use tisvlay_test::{fake_screensaver::FakeScreenSaver, PrivateBus};
 //!
 //! let bus = PrivateBus::shared();
 //! let conn = bus.connect().await?;

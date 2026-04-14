@@ -14,7 +14,7 @@
 //! include this module. Each test calls [`TestDaemon::with_one_mock_tv`]
 //! (or [`TestDaemon::with_config`] for custom setups) and gets a
 //! fully wired daemon with no shared state — the shared
-//! `tisvlay-test-support::PrivateBus` provides binary-level isolation,
+//! `tisvlay-test::PrivateBus` provides binary-level isolation,
 //! and unique TV IDs prevent in-binary collisions.
 //!
 //! # Example
@@ -105,7 +105,7 @@ impl TestDaemon {
 
         let manager_service = ManagerService::new(manager.clone(), registry_for_service);
 
-        let bus = tisvlay_test_support::PrivateBus::shared();
+        let bus = tisvlay_test::PrivateBus::shared();
         let connection = build_dbus_connection(
             BusKind::Address(bus.address()),
             manager_service,

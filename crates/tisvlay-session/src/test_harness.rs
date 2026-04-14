@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use tisvlay_core::DaemonClient;
-use tisvlay_test_support::fake_screensaver::FakeScreenSaver;
+use tisvlay_test::fake_screensaver::FakeScreenSaver;
 use tisvlayd::test_harness::TestDaemon;
 use tokio::sync::{mpsc, RwLock};
 
@@ -61,7 +61,7 @@ impl TestSession {
         // Connect the daemon and reconnect so the TV is online.
         daemon.manager().reconnect(tv_id).await?;
 
-        let bus = tisvlay_test_support::PrivateBus::shared();
+        let bus = tisvlay_test::PrivateBus::shared();
 
         // Build a DaemonClient on the same private bus.
         let client_conn = bus.connect().await?;

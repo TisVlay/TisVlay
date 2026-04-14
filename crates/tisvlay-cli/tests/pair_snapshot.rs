@@ -10,7 +10,7 @@
 use insta_cmd::assert_cmd_snapshot;
 use std::process::Command;
 use tisvlay_core::DaemonClient;
-use tisvlay_test_support::PrivateBus;
+use tisvlay_test::PrivateBus;
 use tisvlayd::test_harness::TestDaemon;
 
 /// Path to the compiled `tisvlay` binary under the test profile.

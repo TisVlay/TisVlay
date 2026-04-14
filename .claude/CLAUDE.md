@@ -63,7 +63,7 @@ tisvlay/
 │   │       ├── pairing.rs        # PairingOutcome, PairingShorthand
 │   │       └── state.rs          # MockState (shared between handle, connector, discovery)
 │   │
-│   ├── tisvlay-test-support/      # Shared test harness (dev-only, never shipped)
+│   ├── tisvlay-test/             # Shared test harness (dev-only, never shipped)
 │   │   └── src/
 │   │       ├── lib.rs            # Re-exports: PrivateBus, traced_test, tracing_mock
 │   │       ├── dbus.rs           # PrivateBus (private dbus-daemon per test binary)

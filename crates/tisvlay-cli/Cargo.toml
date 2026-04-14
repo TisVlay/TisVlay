@@ -30,7 +30,7 @@ mock = ["tisvlayd/mock"]
 
 [dev-dependencies]
 tisvlayd = { path = "../tisvlayd", features = ["mock"] }
-tisvlay-test-support = { workspace = true }
+tisvlay-test = { workspace = true }
 tisvlay-backends = { workspace = true, features = ["mock"] }
 tokio = { workspace = true, features = ["test-util"] }
 insta = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
-name = "tisvlay-test-support"
-description = "Shared test harness for the tisvlay workspace (private dbus-daemon, fake logind, etc.)"
+name = "tisvlay-test"
+description = "Shared test utilities for the tisvlay workspace (private dbus-daemon, fake logind, fake screensaver)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

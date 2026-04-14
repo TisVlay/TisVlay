@@ -65,7 +65,7 @@ cov_baseline_lines := "49"
 
 # Exclude test infrastructure from coverage reports - measure production
 # code only. Matches crate names and test-only modules.
-cov_exclude := "--ignore-filename-regex '(tisvlay-test-support|tisvlay-mock|test_server|test_harness)'"
+cov_exclude := "--ignore-filename-regex '(tisvlay-test/|tisvlay-mock|test_server|test_harness)'"
 
 # Run tests under coverage instrumentation (shared by all cov-* recipes).
 [private]

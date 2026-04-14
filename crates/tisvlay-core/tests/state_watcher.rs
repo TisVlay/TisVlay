@@ -4,7 +4,7 @@
 //! state signals when the daemon's state-change forwarder emits
 //! `PropertiesChanged` on per-TV D-Bus objects.
 //!
-//! Depends on `tisvlay-test-support` for PrivateBus and on
+//! Depends on `tisvlay-test` for PrivateBus and on
 //! `tisvlayd` (with mock feature) for the TestDaemon harness.
 
 // These tests need both the `dbus` feature on tisvlay-core AND
@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 use tisvlay_core::{DaemonClient, StateEvent, StateWatcher, StateWatcherConfig};
-use tisvlay_test_support::PrivateBus;
+use tisvlay_test::PrivateBus;
 
 async fn settle() {
     for _ in 0..20 {

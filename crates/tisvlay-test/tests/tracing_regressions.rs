@@ -9,7 +9,7 @@
 //! span lifecycle (new → enter → event → exit → drop) which makes
 //! them also a regression test for the `#[instrument]` attributes.
 
-use tisvlay_test_support::tracing_mock::{expect, subscriber};
+use tisvlay_test::tracing_mock::{expect, subscriber};
 use tracing::subscriber::set_default;
 
 #[test]

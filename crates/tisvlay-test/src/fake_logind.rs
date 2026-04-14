@@ -8,7 +8,7 @@
 //!
 //! ```no_run
 //! # async fn run() -> zbus::Result<()> {
-//! use tisvlay_test_support::{fake_logind::FakeLogind, PrivateBus};
+//! use tisvlay_test::{fake_logind::FakeLogind, PrivateBus};
 //!
 //! let bus = PrivateBus::shared();
 //! let conn = bus.connect().await?;

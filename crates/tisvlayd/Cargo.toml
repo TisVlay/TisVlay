@@ -26,7 +26,7 @@ discovery = ["tisvlay-backends/discovery"]
 mock = [
     "tisvlay-backends/mock",
     "dep:tempfile",
-    "dep:tisvlay-test-support",
+    "dep:tisvlay-test",
 ]
 
 [dependencies]
@@ -50,7 +50,7 @@ netlink-packet-route = "0.28"
 # integration test harness (`crate::test_harness`) but not by the
 # default release build.
 tempfile = { version = "3", optional = true }
-tisvlay-test-support = { workspace = true, optional = true }
+tisvlay-test = { workspace = true, optional = true }
 
 [dev-dependencies]
 # test-util enables tokio::time::pause/advance for deterministic clock

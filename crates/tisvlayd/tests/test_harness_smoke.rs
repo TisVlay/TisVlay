@@ -14,7 +14,7 @@
 #![cfg(feature = "mock")]
 
 use tisvlay_core::DaemonClient;
-use tisvlay_test_support::PrivateBus;
+use tisvlay_test::PrivateBus;
 use tisvlayd::test_harness::TestDaemon;
 
 #[tokio::test]

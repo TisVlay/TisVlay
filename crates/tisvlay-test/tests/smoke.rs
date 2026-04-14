@@ -6,7 +6,7 @@
 //! receives.
 
 use std::time::Duration;
-use tisvlay_test_support::{
+use tisvlay_test::{
     fake_logind::FakeLogind, fake_screensaver::FakeScreenSaver, traced_test, PrivateBus,
 };
 use zbus::MatchRule;

@@ -36,13 +36,13 @@ wayland-protocols = { workspace = true }
 [features]
 default = []
 # Include the in-memory mock backend for integration tests.
-mock = ["dep:tisvlayd", "dep:tisvlay-test-support", "tisvlayd/mock"]
+mock = ["dep:tisvlayd", "dep:tisvlay-test", "tisvlayd/mock"]
 
 [dependencies.tisvlayd]
 path = "../tisvlayd"
 optional = true
 
-[dependencies.tisvlay-test-support]
+[dependencies.tisvlay-test]
 workspace = true
 optional = true
 

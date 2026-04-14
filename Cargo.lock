@@ -1639,7 +1639,7 @@ dependencies = [
  "serde_json",
  "tisvlay-backends",
  "tisvlay-core",
- "tisvlay-test-support",
+ "tisvlay-test",
  "tisvlayd",
  "tokio",
  "tracing",
@@ -1662,7 +1662,7 @@ dependencies = [
  "serde_json",
  "socket2",
  "thiserror 2.0.18",
- "tisvlay-test-support",
+ "tisvlay-test",
  "tokio",
  "toml",
  "tracing",
@@ -1714,7 +1714,7 @@ dependencies = [
  "futures-util",
  "serde_json",
  "tisvlay-core",
- "tisvlay-test-support",
+ "tisvlay-test",
  "tisvlayd",
  "tokio",
  "tracing",
@@ -1724,7 +1724,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tisvlay-test-support"
+name = "tisvlay-test"
 version = "0.1.0"
 dependencies = [
  "futures-util",
@@ -1768,7 +1768,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tisvlay-backends",
  "tisvlay-core",
- "tisvlay-test-support",
+ "tisvlay-test",
  "tokio",
  "toml",
  "tracing",
