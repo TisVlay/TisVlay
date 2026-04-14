@@ -197,12 +197,19 @@ D-Bus, TCP/UDP (WebSocket + WoL), and netlink.
     `ProtectControlGroups`, `ProtectHostname`, `ProtectClock`,
     `ProtectProc = "invisible"`, `ProcSubset = "pid"`.
   - `PrivateDevices = true` (daemon talks network, not /dev nodes).
-- [x] Validated via the VM test. Added an assertion in
-      [test.nix](../packaging/nix/test.nix) that parses
-      `systemd-analyze security tisvlayd.service` and fails the test
-      if the overall exposure level exceeds `2.0`. Current run
-      passes → regression guard against accidental hardening loss in
-      future edits.
+  - `UMask = "0077"` (credentials files not world-readable even via
+    errant file mode) and `RemoveIPC = true` (SysV IPC cleanup on
+    user removal).
+- [x] Validated via the VM test. The assertion in
+      [test.nix](../packaging/nix/test.nix) parses
+      `systemd-analyze security tisvlayd.service` and fails if the
+      overall exposure level exceeds `2.0`; also `machine.log()`s
+      the full analyzer output so future runs preserve the
+      per-setting breakdown. Current score: **1.3 ("OK")**. The
+      remaining deductions (~0.5 `PrivateNetwork`, ~0.3 `AF_INET*`,
+      ~0.2 `IPAddressDeny`, ~0.2 `PrivateUsers`) are intrinsic to a
+      network-talking long-running daemon and not worth contorting
+      the module for.
 
 **Out of scope / deferred**:
 - Matching hardening on `tisvlay-session` / `tisvlay-tray`. User

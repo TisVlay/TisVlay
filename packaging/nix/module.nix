@@ -246,6 +246,16 @@ in
           "~@privileged"
           "~@resources"
         ];
+
+        # Files created by the daemon (pairing credentials, config
+        # rewrites) should not be world-readable. `StateDirectoryMode`
+        # already enforces 0750 on the directory; UMask takes care of
+        # the files within.
+        UMask = "0077";
+
+        # Clean up any SysV IPC the daemon (or its future children)
+        # might leak at shutdown.
+        RemoveIPC = true;
       };
     };
 

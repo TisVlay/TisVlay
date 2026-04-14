@@ -99,12 +99,22 @@ pkgs.testers.runNixOSTest {
     # ("OK" band). This guards against accidental regressions in
     # module.nix hardening directives.
     sec = machine.succeed("systemd-analyze security tisvlayd.service")
-    # The summary line looks like:
-    #   → Overall exposure level for tisvlayd.service: 1.6 OK 🙂
-    last = [line for line in sec.splitlines() if "Overall exposure level" in line]
-    assert last, f"no exposure line in:\n{sec}"
-    fields = last[0].split()
-    score = float(fields[-3])  # "... 1.6 OK 🙂"
-    assert score <= 2.0, f"tisvlayd exposure {score} exceeds 2.0 budget\n{sec}"
+
+    # Dump the full analyzer output to the test log — future runs
+    # (and anyone reading the build log) can see which settings the
+    # daemon earns vs. loses on without re-running the VM.
+    machine.log("systemd-analyze security tisvlayd.service:\n" + sec)
+
+    # Parse the overall exposure line. Format (systemd 257+):
+    #   → Overall exposure level for tisvlayd.service: 1.3 OK 🙂
+    import re
+    match = re.search(
+        r"Overall exposure level for [^:]+:\s+([\d.]+)",
+        sec,
+    )
+    assert match, f"no exposure score in output:\n{sec}"
+    score = float(match.group(1))
+    machine.log(f"tisvlayd systemd-analyze score: {score}")
+    assert score <= 2.0, f"tisvlayd exposure {score} exceeds 2.0 budget"
   '';
 }
