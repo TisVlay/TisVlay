@@ -2,7 +2,6 @@
   lib,
   rustPlatform,
   pkg-config,
-  cargo-nextest,
   dbus,
 }:
 
@@ -12,20 +11,20 @@ rustPlatform.buildRustPackage {
 
   src = lib.cleanSource ../../.;
 
-  cargoHash = "sha256-n/neNRUdxB33b/FyQLtAjiAbyuKHhjxcTlUCApvcuBo=";
+  cargoLock.lockFile = ../../Cargo.lock;
 
   nativeBuildInputs = [
     pkg-config
   ];
 
   nativeCheckInputs = [
-    cargo-nextest
     dbus
   ];
 
-  checkPhase = ''
-    cargo nextest run --workspace --all-features
-  '';
+  useNextest = true;
+
+  cargoBuildFlags = [ "--all-features" ];
+  cargoTestFlags = [ "--all-features" ];
 
   meta = {
     description = "TV Display control for Linux";
