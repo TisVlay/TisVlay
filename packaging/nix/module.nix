@@ -8,6 +8,12 @@
 let
   cfg = config.services.tisvlay;
 
+  tomlFormat = pkgs.formats.toml { };
+  configFile =
+    if cfg.settings == null
+    then null
+    else tomlFormat.generate "tisvlay-config.toml" cfg.settings;
+
   dbusPolicy = ''
     <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
      "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
@@ -102,6 +108,43 @@ in
         expose directly.
       '';
     };
+
+    settings = lib.mkOption {
+      type = lib.types.nullOr tomlFormat.type;
+      default = null;
+      example = lib.literalExpression ''
+        {
+          profile.system = {
+            shutdown = "power_off";
+            sleep = "screen_off";
+          };
+          tv = [
+            {
+              id = "living_room";
+              name = "Living Room";
+              vendor = "lg";
+              managed = true;
+            }
+          ];
+        }
+      '';
+      description = ''
+        Declarative system configuration for tisvlayd, rendered to a
+        TOML file in the Nix store and passed via `--config`.
+
+        When set (non-null), the config file is read-only (Nix store
+        path). This means:
+
+        - Pairing TVs via `tisvlay pair` or the D-Bus `AddTv` method
+          will fail to persist (the daemon cannot write to the file).
+        - Changes only take effect after `nixos-rebuild switch`.
+
+        Leave unset (`null`, the default) to preserve the normal
+        behavior: tisvlayd reads and writes
+        `/var/lib/tisvlay/config.toml` (via `StateDirectory`), which
+        the pairing wizard can modify.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -142,7 +185,9 @@ in
       };
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
-          [ (lib.getExe' cfg.package "tisvlayd") ] ++ cfg.extraArgs
+          [ (lib.getExe' cfg.package "tisvlayd") ]
+          ++ lib.optionals (configFile != null) [ "--config" "${configFile}" ]
+          ++ cfg.extraArgs
         );
         ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
         User = cfg.user;

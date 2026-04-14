@@ -101,33 +101,42 @@ Out of scope for the original phase but landed in the same period:
 
 ---
 
-## Phase 3 — Module configurability
+## Phase 3 — Module configurability ✅
 
 Goal: stop hardcoding everything; give downstream users the knobs a
 typical nixpkgs module exposes.
 
-- [ ] **module.nix**: expose options
-  - `services.tisvlay.logLevel` (enum: trace/debug/info/warn/error)
-  - `services.tisvlay.extraArgs` (list of strings, appended to `ExecStart`)
-  - `services.tisvlay.settings` (using `(pkgs.formats.toml { }).generate`)
-    so users can manage `config.toml` declaratively instead of relying
-    solely on `StateDirectory` mutability.
-  - `services.tisvlay.user` / `services.tisvlay.group` (default `tisvlay`)
-    for sites that need to override.
-- [ ] **module.nix**: allocate a stable system UID/GID. While out-of-tree,
-      pick one in the documented user-assigned range (e.g. in the
-      `services` block, set `users.users.tisvlay.uid = <N>` and
-      `users.groups.tisvlay.gid = <N>`). If this ever goes upstream, the
-      UID must be assigned in `nixos/modules/misc/ids.nix`.
-- [ ] **module.nix**: if `settings` is set, wire it into `ExecStart` via a
-      `--config` flag (or drop a file into `/etc/tisvlay/config.toml`) so
-      the daemon reads declarative config rather than the
-      `StateDirectory` copy.
-- [ ] **module.nix**: `defaultText` on the `package` option should remain
-      accurate — document that this module is out-of-tree until (if) it
-      lands in nixpkgs.
+- [x] **module.nix**: expose options
+  - [x] `services.tisvlay.logLevel` (enum: trace/debug/info/warn/error)
+        — maps to `RUST_LOG` on all three systemd units.
+  - [x] `services.tisvlay.extraArgs` (list of strings, appended to
+        `tisvlayd`'s `ExecStart`).
+  - [x] `services.tisvlay.settings` (using `pkgs.formats.toml { }`)
+        for declarative TOML config, rendered to the Nix store and
+        passed via `--config`. Default `null` keeps the
+        `StateDirectory`-backed mutable path (so `tisvlay pair`
+        continues to work). Docstring explicitly calls out the
+        pairing-persistence tradeoff when settings is non-null.
+  - [x] `services.tisvlay.user` / `services.tisvlay.group` (default
+        `"tisvlay"`) for sites that need to override.
+- [x] **module.nix**: stable UID/GID `979` on `users.users.tisvlay`
+      and `users.groups.tisvlay`. Configurable via
+      `services.tisvlay.uid` / `gid` options. Docstring notes upstream
+      nixpkgs would reassign via `nixos/modules/misc/ids.nix`.
+- [x] **module.nix**: `settings` wires into `ExecStart` as
+      `--config <nix-store-path>` when non-null. `extraArgs` still
+      appends after, so users can override.
+- [x] **module.nix**: `defaultText` on the `package` option now reads
+      `literalExpression "pkgs.callPackage ./package.nix { }"` — the
+      actual default, not the fictional `pkgs.tisvlay`.
 
-**Commit**: `packaging/nix: expose logLevel, extraArgs, settings options`
+**Verified via** `pkgs.nixos` eval: default / settings-only /
+settings + extraArgs all produce the expected `ExecStart` strings;
+`RUST_LOG` propagates; `users.users.tisvlay.uid = 979`.
+
+**Commits**:
+- `packaging/nix: add logLevel, extraArgs, user/group options + stable UID`
+- `packaging/nix: add declarative settings option`
 
 ---
 
