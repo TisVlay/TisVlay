@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+publish.workspace = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
@@ -40,7 +41,7 @@ zbus = { workspace = true }
 insta = { workspace = true }
 proptest = { workspace = true }
 rstest = { workspace = true }
-tisvlay-test-support = { workspace = true }
+tisvlay-test = { workspace = true }
 
 [features]
 default = []

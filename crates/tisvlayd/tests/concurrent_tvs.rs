@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 use tisvlay_core::{SessionAction, SystemConfig, SystemProfileConfig};
-use tisvlayd::test_harness::{mock_tv_config, TestDaemon};
+use tisvlay_harness::daemon::{mock_tv_config, TestDaemon};
 use tisvlayd::tv_manager::SystemEvent;
 
 async fn settle() {

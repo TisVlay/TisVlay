@@ -81,7 +81,7 @@ its own process. If we ever switch to a runner that shares processes
 
 ### Mitigation options
 
-- Document the constraint (done — in `tisvlay-test-support/src/lib.rs`)
+- Document the constraint (done — in `tisvlay-test/src/lib.rs`)
 - Use nextest's `test-groups` to explicitly serialize bus-dependent
   tests within a binary if needed
 - Generate unique service names per test (e.g., `org.tisvlay.Daemon.{uuid}`)

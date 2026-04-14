@@ -1639,8 +1639,8 @@ dependencies = [
  "serde_json",
  "tisvlay-backends",
  "tisvlay-core",
- "tisvlay-test-support",
- "tisvlayd",
+ "tisvlay-harness",
+ "tisvlay-test",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1662,12 +1662,30 @@ dependencies = [
  "serde_json",
  "socket2",
  "thiserror 2.0.18",
- "tisvlay-test-support",
+ "tisvlay-test",
  "tokio",
  "toml",
  "tracing",
  "tracing-journald",
  "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "tisvlay-harness"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tempfile",
+ "tisvlay-backends",
+ "tisvlay-core",
+ "tisvlay-mock",
+ "tisvlay-session",
+ "tisvlay-test",
+ "tisvlayd",
+ "tokio",
+ "toml",
+ "tracing",
  "zbus",
 ]
 
@@ -1714,8 +1732,8 @@ dependencies = [
  "futures-util",
  "serde_json",
  "tisvlay-core",
- "tisvlay-test-support",
- "tisvlayd",
+ "tisvlay-harness",
+ "tisvlay-test",
  "tokio",
  "tracing",
  "wayland-client",
@@ -1724,7 +1742,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tisvlay-test-support"
+name = "tisvlay-test"
 version = "0.1.0"
 dependencies = [
  "futures-util",
@@ -1764,11 +1782,11 @@ dependencies = [
  "rtnetlink",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
  "tisvlay-backends",
  "tisvlay-core",
- "tisvlay-test-support",
+ "tisvlay-harness",
+ "tisvlay-test",
  "tokio",
  "toml",
  "tracing",

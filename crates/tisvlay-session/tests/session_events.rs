@@ -5,11 +5,9 @@
 //! correct actions are dispatched to the daemon (verified via D-Bus
 //! property reads).
 
-#![cfg(feature = "mock")]
-
 use std::time::Duration;
+use tisvlay_harness::session::TestSession;
 use tisvlay_session::session_monitor::SessionEvent;
-use tisvlay_session::test_harness::TestSession;
 
 /// Brief yield so the event handler and state-change forwarder have
 /// time to process the injected event and push the D-Bus property

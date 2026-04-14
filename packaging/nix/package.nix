@@ -2,6 +2,7 @@
   lib,
   rustPlatform,
   pkg-config,
+  dbus,
 }:
 
 rustPlatform.buildRustPackage {
@@ -10,20 +11,33 @@ rustPlatform.buildRustPackage {
 
   src = lib.cleanSource ../../.;
 
-  cargoHash = "sha256-n/neNRUdxB33b/FyQLtAjiAbyuKHhjxcTlUCApvcuBo=";
+  cargoLock.lockFile = ../../Cargo.lock;
 
   nativeBuildInputs = [
     pkg-config
   ];
 
+  nativeCheckInputs = [
+    dbus
+  ];
+
+  useNextest = true;
+
+  # Tests need the `mock` feature (and other test-only features) across
+  # the workspace; the build itself ships default features only.
+  cargoTestFlags = [ "--all-features" ];
+
   meta = {
     description = "TV Display control for Linux";
-    longDescription = ''
-      TODO
-    '';
     homepage = "https://github.com/ruffsl/tisvlay";
+    changelog = "https://github.com/ruffsl/tisvlay/releases";
     license = lib.licenses.asl20;
-    maintainers = [ ];
+    maintainers = [
+      {
+        name = "ruffsl";
+        github = "ruffsl";
+      }
+    ];
     platforms = lib.platforms.linux;
     mainProgram = "tisvlay";
   };

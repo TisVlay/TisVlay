@@ -14,8 +14,8 @@
 #![cfg(feature = "mock")]
 
 use tisvlay_core::DaemonClient;
-use tisvlay_test_support::PrivateBus;
-use tisvlayd::test_harness::TestDaemon;
+use tisvlay_harness::daemon::TestDaemon;
+use tisvlay_test::PrivateBus;
 
 #[tokio::test]
 async fn harness_registers_full_dbus_surface_for_one_mock_tv() {

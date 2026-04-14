@@ -19,7 +19,7 @@
 #![cfg(feature = "mock")]
 
 use std::time::Duration;
-use tisvlayd::test_harness::TestDaemon;
+use tisvlay_harness::daemon::TestDaemon;
 
 /// Simulates the daemon's shutdown sequence (same as main.rs after
 /// SIGINT) and asserts it completes within a bounded time, even when

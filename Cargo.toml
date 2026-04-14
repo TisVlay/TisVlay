@@ -4,12 +4,13 @@ members = [
     "crates/tisvlay-core",
     "crates/tisvlay-lg",
     "crates/tisvlay-mock",
-    "crates/tisvlay-test-support",
+    "crates/tisvlay-test",
     "crates/tisvlay-backends",
     "crates/tisvlay-cli",
     "crates/tisvlayd",
     "crates/tisvlay-session",
     "crates/tisvlay-tray",
+    "crates/tisvlay-harness",
 ]
 
 [workspace.package]
@@ -22,6 +23,9 @@ homepage = "https://github.com/ruffsl/tisvlay"
 repository = "https://github.com/ruffsl/tisvlay"
 keywords = ["remote", "lg", "tv", "linux", "webos"]
 categories = ["command-line-utilities", "hardware-support"]
+# All crates are unpublished by default; individual crates override with
+# `publish = true` when ready for crates.io.
+publish = false
 
 [workspace.dependencies]
 # Async runtime
@@ -81,8 +85,13 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 tisvlay-core = { path = "crates/tisvlay-core" }
 tisvlay-lg = { path = "crates/tisvlay-lg" }
 tisvlay-mock = { path = "crates/tisvlay-mock" }
-tisvlay-test-support = { path = "crates/tisvlay-test-support" }
+tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-backends = { path = "crates/tisvlay-backends" }
+tisvlay-harness = { path = "crates/tisvlay-harness" }
+# Binary crates exposed as libs for the harness. `tisvlay-tray` is
+# currently bin-only; add here when its lib surface is exposed.
+tisvlayd = { path = "crates/tisvlayd" }
+tisvlay-session = { path = "crates/tisvlay-session" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml"] }
@@ -94,3 +103,9 @@ tracing-mock = "0.1.0-beta.3"
 
 [workspace.metadata.deb]
 section = "utils"
+
+# Tuning for shipped binaries (Nix, musl release, .deb/.rpm/.archlinux).
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

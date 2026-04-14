@@ -3,10 +3,8 @@
 //! Drive the `org.tisvlay.Session1` interface from a client on the
 //! private test bus and verify method results and signal emission.
 
-#![cfg(feature = "mock")]
-
 use std::time::Duration;
-use tisvlay_session::test_harness::TestSession;
+use tisvlay_harness::session::TestSession;
 use zbus::MatchRule;
 
 /// Build a zbus proxy for `org.tisvlay.Session1` on the test bus.
@@ -22,7 +20,7 @@ async fn session_proxy(conn: &zbus::Connection) -> zbus::Result<zbus::Proxy<'sta
 #[tokio::test]
 async fn list_user_profiles_includes_default() {
     let _session = TestSession::new("prof_tv").await.unwrap();
-    let bus = tisvlay_test_support::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::shared();
     let conn = bus.connect().await.unwrap();
     let proxy = session_proxy(&conn).await.unwrap();
 
@@ -39,7 +37,7 @@ async fn list_user_profiles_includes_default() {
 #[tokio::test]
 async fn get_tv_user_profile_returns_default_when_unset() {
     let _session = TestSession::new("get_prof_tv").await.unwrap();
-    let bus = tisvlay_test_support::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::shared();
     let conn = bus.connect().await.unwrap();
     let proxy = session_proxy(&conn).await.unwrap();
 
@@ -54,7 +52,7 @@ async fn get_tv_user_profile_returns_default_when_unset() {
 #[tokio::test]
 async fn get_effective_user_profile_returns_json() {
     let _session = TestSession::new("eff_tv").await.unwrap();
-    let bus = tisvlay_test_support::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::shared();
     let conn = bus.connect().await.unwrap();
     let proxy = session_proxy(&conn).await.unwrap();
 
@@ -73,7 +71,7 @@ async fn get_effective_user_profile_returns_json() {
 #[tokio::test]
 async fn set_tv_user_profile_emits_signal() {
     let _session = TestSession::new("sig_tv").await.unwrap();
-    let bus = tisvlay_test_support::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::shared();
 
     // Subscribe to UserProfileChanged before making the call.
     let sub_conn = bus.connect().await.unwrap();
@@ -114,7 +112,7 @@ async fn set_tv_user_profile_emits_signal() {
 #[tokio::test]
 async fn set_unknown_profile_returns_error() {
     let _session = TestSession::new("err_tv").await.unwrap();
-    let bus = tisvlay_test_support::PrivateBus::shared();
+    let bus = tisvlay_test::PrivateBus::shared();
     let conn = bus.connect().await.unwrap();
     let proxy = session_proxy(&conn).await.unwrap();
 

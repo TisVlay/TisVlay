@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+publish.workspace = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
@@ -18,16 +19,11 @@ path = "src/main.rs"
 [features]
 default = ["discovery"]
 discovery = ["tisvlay-backends/discovery"]
-# Include the in-memory mock backend. Off by default in release/distro
-# builds; enabled by dev/test workflows that need the mock vendor.
-# Activates the test_harness module and its supporting dev deps too,
-# so integration tests under crates/tisvlayd/tests/ can build a
-# daemon end-to-end against a private bus.
-mock = [
-    "tisvlay-backends/mock",
-    "dep:tempfile",
-    "dep:tisvlay-test-support",
-]
+# Enable the in-memory mock backend in the built binary. Off by default
+# in release/distro builds. Integration tests pull their harness from
+# the separate `tisvlay-harness` crate (see [dev-dependencies]) rather
+# than gating test code inside this crate.
+mock = ["tisvlay-backends/mock"]
 
 [dependencies]
 tisvlay-core = { workspace = true, features = ["logging"] }
@@ -46,11 +42,6 @@ indexmap = { workspace = true }
 rtnetlink = "0.20"
 netlink-packet-core = "0.8"
 netlink-packet-route = "0.28"
-# Optional deps activated by the `mock` feature. Pulled in for the
-# integration test harness (`crate::test_harness`) but not by the
-# default release build.
-tempfile = { version = "3", optional = true }
-tisvlay-test-support = { workspace = true, optional = true }
 
 [dev-dependencies]
 # test-util enables tokio::time::pause/advance for deterministic clock
@@ -60,6 +51,14 @@ tokio = { workspace = true, features = ["test-util"] }
 # in-process daemon over a private bus. Production tisvlayd doesn't
 # need the client.
 tisvlay-core = { workspace = true, features = ["dbus"] }
+# TestDaemon fixture lives in the out-of-crate harness.
+tisvlay-harness = { workspace = true }
+# Tests that construct `PrivateBus` / `DaemonClient` directly (without
+# going through TestDaemon) need this directly.
+tisvlay-test = { workspace = true }
+# `mock` feature on tisvlay-backends is what TestDaemon needs to wire up
+# the in-memory backend; enabled here for integration tests only.
+tisvlay-backends = { workspace = true, features = ["mock"] }
 
 
 # =============================================================================

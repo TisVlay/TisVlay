@@ -237,7 +237,22 @@ inputs = [["HDMI_1", "HDMI 1"], ["HDMI_2", "HDMI 2"]]
 cargo run --bin tisvlayd --features mock -- --session
 ```
 
-## Test harness: tisvlay-test-support
+## Test infrastructure: three layers
+
+Test-related crates are `publish = false` and split by what they fake:
+
+| Crate | Fakes | Example |
+|---|---|---|
+| `tisvlay-test` | OS environment (the system tisvlay runs on) | `PrivateBus`, `FakeLogind`, `FakeScreenSaver` |
+| `tisvlay-mock` | TV protocol peer (fake vendor backend) | `MockConnector`, `MockHandle` |
+| `tisvlay-harness` | Binary lifecycle (orchestrates the whole daemon/session process) | `TestDaemon`, `TestSession`, `TestTray` |
+
+`tisvlay-harness` reaches into `tisvlayd` and `tisvlay-session` internals
+through each binary crate's `#[doc(hidden)] pub mod __internals`
+re-export surface (same idiom `serde::__private` uses). Those items are
+explicitly not part of any published API.
+
+## Test utilities: tisvlay-test
 
 Dev-only crate providing shared infrastructure. Never shipped in release.
 
@@ -277,11 +292,11 @@ ss.emit_active_changed(true).await?;  // simulate lock
 
 ### Tracing re-exports
 
-`tisvlay-test-support` re-exports `tracing_test::traced_test` and `tracing_mock` so consumers don't need separate dep entries.
+`tisvlay-test` re-exports `tracing_test::traced_test` and `tracing_mock` so consumers don't need separate dep entries.
 
 ## Daemon testing (TestDaemon)
 
-`tisvlayd::test_harness::TestDaemon` builds a fully wired daemon on the shared private bus. Feature-gated on `mock`.
+`tisvlay_harness::daemon::TestDaemon` builds a fully wired daemon on the shared private bus. Lives in the `tisvlay-harness` crate; pulled into the daemon crate's `[dev-dependencies]`.
 
 ### Test harness wiring
 
@@ -315,14 +330,14 @@ flowchart TD
 ```
 
 ```rust
-use tisvlayd::test_harness::TestDaemon;
+use tisvlay_harness::daemon::TestDaemon;
 use tisvlay_core::DaemonClient;
 
 #[tokio::test]
 async fn my_test() {
     let daemon = TestDaemon::with_one_mock_tv("my_tv").await.unwrap();
     let client = DaemonClient::from_connection(
-        tisvlay_test_support::PrivateBus::shared().connect().await.unwrap(),
+        tisvlay_test::PrivateBus::shared().connect().await.unwrap(),
     ).await.unwrap();
 
     daemon.manager().reconnect("my_tv").await.unwrap();
@@ -383,10 +398,10 @@ sequenceDiagram
 
 ## Session testing (TestSession)
 
-`tisvlay_session::test_harness::TestSession` wires a `TestDaemon` + `DaemonClient` + `SessionState` + `FakeScreenSaver` + event handler on the shared private bus. Feature-gated on `mock`.
+`tisvlay_harness::session::TestSession` wires a `TestDaemon` + `DaemonClient` + `SessionState` + `FakeScreenSaver` + event handler on the shared private bus. Lives in the `tisvlay-harness` crate.
 
 ```rust
-use tisvlay_session::test_harness::TestSession;
+use tisvlay_harness::session::TestSession;
 use tisvlay_session::session_monitor::SessionEvent;
 
 #[tokio::test]
@@ -449,7 +464,7 @@ sequenceDiagram
 Installs a subscriber that captures all `tracing` events. On failure, dumps them to stderr. On success, discards.
 
 ```rust
-use tisvlay_test_support::traced_test;
+use tisvlay_test::traced_test;
 
 #[traced_test]
 #[tokio::test]
@@ -459,14 +474,14 @@ async fn my_test() {
 }
 ```
 
-The `no-env-filter` feature is pinned so events from dependency crates (tisvlay-mock, tisvlay-test-support, the daemon) are captured — the upstream default only captures the test binary's own crate.
+The `no-env-filter` feature is pinned so events from dependency crates (tisvlay-mock, tisvlay-test, the daemon) are captured — the upstream default only captures the test binary's own crate.
 
 ### tracing-mock — observability regression tests
 
 Assert that production code emits specific spans/events with the right fields. Catches refactors that silently remove instrumentation.
 
 ```rust
-use tisvlay_test_support::tracing_mock::{expect, subscriber};
+use tisvlay_test::tracing_mock::{expect, subscriber};
 use tracing::subscriber::set_default;
 
 #[test]
@@ -489,7 +504,7 @@ fn publish_tv_emits_instrumented_debug_event() {
 
 ## Deterministic time
 
-`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps. Validated by the clock spike test (`tisvlay-test-support/tests/clock_spike.rs`).
+`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps. Validated by the clock spike test (`tisvlay-test/tests/clock_spike.rs`).
 
 Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 

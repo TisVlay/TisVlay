@@ -82,7 +82,7 @@ impl SessionMonitor {
     /// Start monitoring session events on an explicit connection.
     ///
     /// Tests use this with a private bus connection so they can inject
-    /// a [`FakeScreenSaver`](tisvlay_test_support::fake_screensaver)
+    /// a [`FakeScreenSaver`](tisvlay_test::fake_screensaver)
     /// on the same bus.
     pub async fn start_on(&self, conn: zbus::Connection) -> Result<Arc<AtomicBool>> {
         // Shared state for tracking if screen is locked

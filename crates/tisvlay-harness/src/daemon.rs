@@ -10,17 +10,16 @@
 //! - a `zbus::Connection` to the same private bus, for building a
 //!   `DaemonClient::from_connection` (or any custom proxy work)
 //!
-//! Gated on the `mock` Cargo feature; production builds never
-//! include this module. Each test calls [`TestDaemon::with_one_mock_tv`]
-//! (or [`TestDaemon::with_config`] for custom setups) and gets a
-//! fully wired daemon with no shared state — the shared
-//! `tisvlay-test-support::PrivateBus` provides binary-level isolation,
-//! and unique TV IDs prevent in-binary collisions.
+//! Each test calls [`TestDaemon::with_one_mock_tv`] (or
+//! [`TestDaemon::with_config`] for custom setups) and gets a fully
+//! wired daemon with no shared state — the shared
+//! [`tisvlay_test::PrivateBus`] provides binary-level isolation, and
+//! unique TV IDs prevent in-binary collisions.
 //!
 //! # Example
 //!
 //! ```ignore
-//! use tisvlayd::test_harness::TestDaemon;
+//! use tisvlay_harness::daemon::TestDaemon;
 //! use tisvlay_core::DaemonClient;
 //!
 //! #[tokio::test]
@@ -38,12 +37,11 @@ use std::sync::Arc;
 
 use tisvlay_backends::{create_test_registry, MockHandle};
 use tisvlay_core::{SystemConfig, TvConfig};
+use tisvlayd::__internals::{
+    build_dbus_connection, state_change_forwarder, BusKind, ManagerService, TvManager,
+};
 use tokio::task::JoinHandle;
 use tracing::instrument;
-
-use crate::dbus::{build_dbus_connection, BusKind, ManagerService};
-use crate::state_forwarder::state_change_forwarder;
-use crate::tv_manager::TvManager;
 
 /// Build a minimal `TvConfig` for a mock TV with standard vendor
 /// config. Use this in tests that construct a `SystemConfig` by hand.
@@ -105,7 +103,7 @@ impl TestDaemon {
 
         let manager_service = ManagerService::new(manager.clone(), registry_for_service);
 
-        let bus = tisvlay_test_support::PrivateBus::shared();
+        let bus = tisvlay_test::PrivateBus::shared();
         let connection = build_dbus_connection(
             BusKind::Address(bus.address()),
             manager_service,

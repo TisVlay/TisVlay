@@ -63,12 +63,20 @@ tisvlay/
 │   │       ├── pairing.rs        # PairingOutcome, PairingShorthand
 │   │       └── state.rs          # MockState (shared between handle, connector, discovery)
 │   │
-│   ├── tisvlay-test-support/      # Shared test harness (dev-only, never shipped)
+│   ├── tisvlay-test/              # OS-environment fakes (dev-only, never shipped)
 │   │   └── src/
 │   │       ├── lib.rs            # Re-exports: PrivateBus, traced_test, tracing_mock
 │   │       ├── dbus.rs           # PrivateBus (private dbus-daemon per test binary)
 │   │       ├── fake_logind.rs    # FakeLogind (login1.Manager stub with PrepareForSleep)
 │   │       └── fake_screensaver.rs # FakeScreenSaver (ScreenSaver stub with ActiveChanged)
+│   │
+│   ├── tisvlay-harness/           # Binary-lifecycle test fixtures (dev-only)
+│   │   └── src/
+│   │       ├── lib.rs            # Module index
+│   │       ├── common.rs         # Shared setup (private-bus, tracing, mock registration)
+│   │       ├── daemon.rs         # TestDaemon — boots tisvlayd on a private bus
+│   │       ├── session.rs        # TestSession — boots tisvlay-session + composed TestDaemon
+│   │       └── tray.rs           # TestTray — placeholder for tray integration tests
 │   │
 │   ├── tisvlay-backends/          # Backend registry (composition point)
 │   │   └── src/
@@ -80,12 +88,11 @@ tisvlay/
 │   │
 │   ├── tisvlayd/                  # System daemon (lib + bin)
 │   │   └── src/
-│   │       ├── lib.rs            # Library root (pub modules for test access)
+│   │       ├── lib.rs            # Library root (pub modules + __internals re-exports for tisvlay-harness)
 │   │       ├── main.rs           # Entry point (thin, delegates to lib)
 │   │       ├── dbus/             # D-Bus interfaces (Manager1, Tv1.* with cached properties)
 │   │       ├── dbus/setup.rs     # build_dbus_connection helper (BusKind lives in tisvlay-core)
 │   │       ├── state_forwarder.rs # Backend state → D-Bus PropertiesChanged pipeline
-│   │       ├── test_harness.rs   # TestDaemon (mock-feature gated, for integration tests)
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
 │   │       ├── netlink.rs        # Kernel netlink: route resolution + carrier/route monitoring
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
@@ -93,11 +100,10 @@ tisvlay/
 │   │
 │   ├── tisvlay-session/           # User session service (lib + bin)
 │   │   └── src/
-│   │       ├── lib.rs            # Library root (SessionState, event_handler, pub modules)
+│   │       ├── lib.rs            # Library root (SessionState, event_handler, __internals)
 │   │       ├── main.rs           # Entry point (thin, delegates to lib)
 │   │       ├── session_dbus.rs   # org.tisvlay.Session1 D-Bus interface
 │   │       ├── session_monitor.rs # Session lock/unlock detection
-│   │       ├── test_harness.rs   # TestSession (mock-feature gated, for integration tests)
 │   │       ├── wayland_idle.rs   # Wayland greeter wake detection
 │   │       └── idle.rs           # Idle timeout detection
 │   │
@@ -299,6 +305,17 @@ after major refactors to catch orphaned public API surface.
 
 See [docs/testing.md](docs/testing.md) for the full testing guide
 (mock backend, test harnesses, D-Bus testing, observability, coverage).
+
+Three test crates, three layers:
+
+- `tisvlay-test` — OS-environment fakes (private `dbus-daemon`, fake
+  logind, fake screensaver). Low-level primitives.
+- `tisvlay-mock` — fake vendor backend (implements `tisvlay-core`
+  traits). Peer-side substitute for a real TV.
+- `tisvlay-harness` — binary-lifecycle fixtures (`TestDaemon`,
+  `TestSession`, `TestTray`). Composes the other two and reaches into
+  the daemon/session internals via each crate's `#[doc(hidden)] pub
+  mod __internals` re-export surface. All three are `publish = false`.
 
 Quick reference commands:
 

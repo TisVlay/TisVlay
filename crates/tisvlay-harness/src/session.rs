@@ -4,14 +4,11 @@
 //! shared private bus, with a [`FakeScreenSaver`] for injecting
 //! lock/unlock events.
 //!
-//! Gated on the `mock` Cargo feature; production builds never include
-//! this module.
-//!
 //! # Example
 //!
 //! ```ignore
-//! use tisvlay_session::test_harness::TestSession;
-//! use tisvlay_session::session_monitor::SessionEvent;
+//! use tisvlay_harness::session::TestSession;
+//! use tisvlay_session::__internals::SessionEvent;
 //!
 //! #[tokio::test]
 //! async fn session_lock_dispatches_screen_off() {
@@ -24,21 +21,21 @@
 use std::sync::Arc;
 
 use tisvlay_core::DaemonClient;
-use tisvlay_test_support::fake_screensaver::FakeScreenSaver;
-use tisvlayd::test_harness::TestDaemon;
+use tisvlay_session::__internals::{
+    event_handler, register_session_dbus_on, SessionEvent, SessionState,
+};
+use tisvlay_test::fake_screensaver::FakeScreenSaver;
 use tokio::sync::{mpsc, RwLock};
 
-use crate::session_monitor::SessionEvent;
-use crate::SessionState;
+use crate::daemon::TestDaemon;
 
 /// A fully wired session service instance on the shared private bus.
 ///
 /// Backed by a [`TestDaemon`] so there's a real daemon to talk to.
 /// The [`FakeScreenSaver`] is registered on the same bus for
-/// round-trip signal tests. For simpler tests, use [`inject_event`]
-/// to push directly into the event channel.
-///
-/// [`inject_event`]: TestSession::inject_event
+/// round-trip signal tests. For simpler tests, use
+/// [`TestSession::inject_event`] to push directly into the event
+/// channel.
 pub struct TestSession {
     daemon: TestDaemon,
     daemon_client: Arc<DaemonClient>,
@@ -61,7 +58,7 @@ impl TestSession {
         // Connect the daemon and reconnect so the TV is online.
         daemon.manager().reconnect(tv_id).await?;
 
-        let bus = tisvlay_test_support::PrivateBus::shared();
+        let bus = tisvlay_test::PrivateBus::shared();
 
         // Build a DaemonClient on the same private bus.
         let client_conn = bus.connect().await?;
@@ -72,7 +69,7 @@ impl TestSession {
         let state = Arc::new(RwLock::new(session_state));
 
         // Register session D-Bus interface on the private bus.
-        let session_dbus_conn = crate::session_dbus::register_session_dbus_on(
+        let session_dbus_conn = register_session_dbus_on(
             tisvlay_core::BusKind::Address(bus.address()),
             state.clone(),
             daemon_client.clone(),
@@ -90,7 +87,7 @@ impl TestSession {
         let handler_state = state.clone();
         let handler_daemon = daemon_client.clone();
         let handler_task = tokio::spawn(async move {
-            crate::event_handler(event_rx, handler_state, handler_daemon).await;
+            event_handler(event_rx, handler_state, handler_daemon).await;
         });
 
         Ok(Self {

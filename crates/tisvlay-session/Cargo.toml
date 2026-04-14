@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+publish.workspace = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
@@ -33,18 +34,7 @@ clap = { workspace = true }
 wayland-client = { workspace = true }
 wayland-protocols = { workspace = true }
 
-[features]
-default = []
-# Include the in-memory mock backend for integration tests.
-mock = ["dep:tisvlayd", "dep:tisvlay-test-support", "tisvlayd/mock"]
-
-[dependencies.tisvlayd]
-path = "../tisvlayd"
-optional = true
-
-[dependencies.tisvlay-test-support]
-workspace = true
-optional = true
-
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+tisvlay-harness = { workspace = true }
+tisvlay-test = { workspace = true }
