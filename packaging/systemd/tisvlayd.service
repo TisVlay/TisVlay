@@ -23,11 +23,55 @@ StateDirectoryMode=0750
 RuntimeDirectory=tisvlay
 RuntimeDirectoryPreserve=restart
 
-# Security hardening
+# --- Security hardening ---
+# Kept in sync with packaging/nix/module.nix.
+# Baseline filesystem / privilege confinement.
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
 NoNewPrivileges=true
+
+# Network: UNIX (D-Bus), INET{4,6} (WebSocket to TVs, WoL), NETLINK
+# (carrier / route monitoring for NIC failover). No PACKET/BLUETOOTH.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+# No mmap+x, no realtime scheduling, no setuid, no namespace creation.
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+
+# Kernel surface: deny /proc/sys writes, module load, kmsg reads,
+# cgroup edits, and hostname/clock mutation.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+ProtectProc=invisible
+ProcSubset=pid
+
+# Daemon needs no capabilities — runs as an unprivileged system user.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# System-call allowlist: @system-service set is designed for
+# long-running daemons; strip the riskier subsets.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallFilter=~@resources
+
+# Files the daemon creates (pairing credentials, config rewrites)
+# should not be world-readable. StateDirectoryMode already enforces
+# 0750 on the directory; UMask takes care of files within.
+UMask=0077
+
+# Clean up any SysV IPC left by the service user at shutdown.
+RemoveIPC=true
 
 [Install]
 WantedBy=multi-user.target
