@@ -51,6 +51,7 @@ use crate::dbus_paths::{DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BA
 /// `system()` respectively. `Address` takes an arbitrary `unix:path=...`
 /// string (typically a private `dbus-daemon` launched by the test
 /// harness) and bypasses `zbus`'s per-process `OnceCell` cache.
+#[derive(Debug, Clone, Copy)]
 pub enum BusKind<'a> {
     Session,
     System,
@@ -516,6 +517,12 @@ pub struct DaemonClient {
     manager: TisvlayManagerProxy<'static>,
     object_manager: ObjectManagerProxy<'static>,
     tv_proxies: Arc<RwLock<HashMap<String, Arc<TvProxies>>>>,
+}
+
+impl std::fmt::Debug for DaemonClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaemonClient").finish_non_exhaustive()
+    }
 }
 
 impl DaemonClient {
@@ -1074,7 +1081,7 @@ trait TisvlaySession {
 ///
 /// This client provides a high-level interface for profile management
 /// from the tray app or GUI.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SessionClient {
     proxy: TisvlaySessionProxy<'static>,
 }
@@ -1179,6 +1186,7 @@ pub enum StateEvent {
 }
 
 /// Configuration for [`StateWatcher`].
+#[derive(Debug, Clone)]
 pub struct StateWatcherConfig {
     /// Duration to debounce daemon state signals (default: 100ms).
     pub signal_debounce: std::time::Duration,
@@ -1240,6 +1248,14 @@ pub struct StateWatcher {
     session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>>,
     /// Configuration.
     config: StateWatcherConfig,
+}
+
+impl std::fmt::Debug for StateWatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateWatcher")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl StateWatcher {

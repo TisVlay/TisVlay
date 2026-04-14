@@ -94,6 +94,7 @@ trait Login1Session {
 // =============================================================================
 
 /// Monitors logind for system lifecycle events and session changes.
+#[derive(Debug)]
 pub struct LogindMonitor {
     manager: Arc<TvManager>,
     /// Whether to use session bus (development mode) instead of system bus.

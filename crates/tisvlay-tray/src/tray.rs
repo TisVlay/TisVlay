@@ -90,7 +90,7 @@ const SCROLL_NOTCH: i32 = 120;
 
 /// What the scroll wheel adjusts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ScrollTarget {
+pub(crate) enum ScrollTarget {
     Volume,
     #[default]
     Backlight,
@@ -98,7 +98,7 @@ pub enum ScrollTarget {
 
 /// Commands sent from tray menu callbacks to the async command processor.
 #[derive(Debug)]
-pub enum TrayCommand {
+pub(crate) enum TrayCommand {
     PowerOn(String),
     PowerOff(String),
     ScreenOn(String),
@@ -120,7 +120,7 @@ pub enum TrayCommand {
 ///
 /// Holds cached TV state for menu rendering and a channel sender for
 /// dispatching async commands from synchronous menu callbacks.
-pub struct TisvlayTray {
+pub(crate) struct TisvlayTray {
     /// Cached state for all configured TVs.
     pub tvs: Vec<CachedTvState>,
     /// Whether the daemon is reachable.

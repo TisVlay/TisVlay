@@ -7,6 +7,7 @@
 
 /// Placeholder for the forthcoming tray test fixture. Construction is
 /// unimplemented; the type exists to pin the public API shape.
+#[derive(Debug)]
 pub struct TestTray {
     _private: (),
 }

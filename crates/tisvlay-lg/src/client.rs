@@ -23,6 +23,17 @@ pub struct WebOsClient {
     timeout: Duration,
 }
 
+impl std::fmt::Debug for WebOsClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebOsClient")
+            .field("connected", &self.conn.is_some())
+            .field("has_client_key", &self.client_key.is_some())
+            .field("request_id", &self.request_id)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
 impl WebOsClient {
     /// Connect to a TV and register.
     ///

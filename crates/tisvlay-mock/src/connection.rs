@@ -16,6 +16,7 @@ use crate::config::MockVendorConfig;
 /// All state lives in an `Arc<Mutex<TvState>>` so a background task can
 /// push updates through the subscription channel without borrowing
 /// conflicts against the caller's `&mut self` during method calls.
+#[derive(Debug)]
 pub struct MockConnection {
     state: Arc<Mutex<TvState>>,
     connected: bool,

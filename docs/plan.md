@@ -84,9 +84,20 @@ Out of scope for the original phase but landed in the same period:
 
 ### Still open (follow-up)
 
-- [ ] (Optional) Centralize lints with `[workspace.lints]` so each crate
-      writes `lints.workspace = true`. Not strictly packaging — reduces
-      drift. Small standalone PR.
+- [x] Centralize lints with `[workspace.lints]`. Policy:
+      `clippy::undocumented_unsafe_blocks`,
+      `rust::missing_debug_implementations`,
+      `rust::unreachable_pub` — all at warn level, promoted to deny
+      via `cargo clippy -- -D warnings` in the justfile.
+- [x] Fix `missing_debug_implementations` warnings (36 sites). Most
+      via `#[derive(Debug)]`; 6 via manual impl (types holding
+      `dyn Trait` / opaque zbus / WebSocket internals use
+      `finish_non_exhaustive()`).
+- [x] Fix `unreachable_pub` warnings (21 sites). All resolved by
+      `cargo fix` (pub → pub(crate) on internal-only items in
+      `tisvlay-lg/connection.rs`, `endpoints.rs`, and
+      `tisvlay-tray/state.rs`, `tray.rs`). No items turned out to be
+      intentionally pub-for-external-use.
 
 ---
 

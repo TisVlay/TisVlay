@@ -54,11 +54,23 @@ pub struct RegisteredBackend {
     pub(crate) discover_fn: Option<Arc<DiscoverFn>>,
 }
 
+impl std::fmt::Debug for RegisteredBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisteredBackend")
+            .field("vendor_id", &self.vendor_id)
+            .field("vendor_name", &self.vendor_name)
+            .field("capabilities", &self.capabilities)
+            .field("has_discover_fn", &self.discover_fn.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Registry of vendor backends.
 ///
 /// This registry holds all available vendor backends and provides methods
 /// to create connections based on vendor ID. All transport details are
 /// handled by the connectors — the registry is fully transport-agnostic.
+#[derive(Debug)]
 pub struct BackendRegistry {
     backends: HashMap<&'static str, RegisteredBackend>,
 }

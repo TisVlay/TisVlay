@@ -63,6 +63,7 @@ impl TvBackend for LgBackend {
 ///
 /// Wraps a `WebOsClient` and implements the tisvlay-core connection traits.
 /// Handles auto-reconnection transparently when the WebSocket connection drops.
+#[derive(Debug)]
 pub struct LgConnection {
     client: Option<WebOsClient>,
     config: LgVendorConfig,
@@ -394,6 +395,7 @@ fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Valu
 }
 
 /// Factory for creating LG WebOS connections.
+#[derive(Debug)]
 pub struct LgConnector;
 
 impl LgConnector {
@@ -603,6 +605,7 @@ impl TvConnector for LgConnector {
 
 /// LG-specific network discovery.
 #[cfg(feature = "discovery")]
+#[derive(Debug)]
 pub struct LgDiscovery;
 
 #[cfg(feature = "discovery")]

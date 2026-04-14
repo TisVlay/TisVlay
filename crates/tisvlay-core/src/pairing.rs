@@ -365,6 +365,7 @@ pub enum PairingCommand {
 /// // Or cancel if needed
 /// session.cancel().await?;
 /// ```
+#[derive(Debug)]
 pub struct PairingSession {
     /// Channel for sending commands to the backend.
     command_tx: mpsc::Sender<PairingCommand>,

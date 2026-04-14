@@ -233,6 +233,14 @@ pub struct TvManager {
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
 }
 
+impl std::fmt::Debug for TvManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TvManager")
+            .field("config_path", &self.config_path)
+            .finish_non_exhaustive()
+    }
+}
+
 /// System lifecycle event type.
 ///
 /// Used by `logind` and the daemon startup path to dispatch per-TV

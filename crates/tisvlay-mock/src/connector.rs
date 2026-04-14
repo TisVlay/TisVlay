@@ -23,6 +23,7 @@ use crate::state::MockState;
 ///
 /// Holds a shared [`MockState`] used for discovery and pairing
 /// outcome lookup.
+#[derive(Debug)]
 pub struct MockConnector {
     pub(crate) state: Arc<Mutex<MockState>>,
 }

@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 /// Monitors user idle time and emits events.
+#[derive(Debug)]
 pub struct IdleMonitor {
     timeout_seconds: u64,
     event_tx: mpsc::UnboundedSender<SessionEvent>,

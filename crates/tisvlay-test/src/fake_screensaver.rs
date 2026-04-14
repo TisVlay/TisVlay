@@ -32,6 +32,12 @@ pub struct FakeScreenSaver {
     iface: InterfaceRef<ScreenSaverIface>,
 }
 
+impl std::fmt::Debug for FakeScreenSaver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeScreenSaver").finish_non_exhaustive()
+    }
+}
+
 impl FakeScreenSaver {
     /// Register the fake on the given connection, acquiring
     /// `org.freedesktop.ScreenSaver` as a well-known name.
