@@ -360,7 +360,7 @@ pub enum ServiceEvent {
 pub async fn watch_service(
     connection: &zbus::Connection,
     name: &str,
-) -> Result<impl futures_util::Stream<Item = ServiceEvent>> {
+) -> Result<impl futures_util::Stream<Item = ServiceEvent> + use<>> {
     use futures_util::StreamExt;
 
     let proxy = zbus::fdo::DBusProxy::new(connection)

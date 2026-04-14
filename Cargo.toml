@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/tisvlay-core",
     "crates/tisvlay-lg",
@@ -15,8 +15,8 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.93"
+edition = "2024"
+rust-version = "1.85"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"
 homepage = "https://github.com/ruffsl/tisvlay"
@@ -81,17 +81,20 @@ url = "2"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
-# Internal crates
-tisvlay-core = { path = "crates/tisvlay-core" }
-tisvlay-lg = { path = "crates/tisvlay-lg" }
-tisvlay-mock = { path = "crates/tisvlay-mock" }
-tisvlay-test = { path = "crates/tisvlay-test" }
-tisvlay-backends = { path = "crates/tisvlay-backends" }
-tisvlay-harness = { path = "crates/tisvlay-harness" }
+# Internal crates. Both `path` and `version` are required so the same
+# entries work for local development (path wins) and for `cargo package`
+# / publish (version is used when path is stripped from the published
+# manifest).
+tisvlay-core = { path = "crates/tisvlay-core", version = "0.1.0" }
+tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.1.0" }
+tisvlay-mock = { path = "crates/tisvlay-mock", version = "0.1.0" }
+tisvlay-test = { path = "crates/tisvlay-test", version = "0.1.0" }
+tisvlay-backends = { path = "crates/tisvlay-backends", version = "0.1.0" }
+tisvlay-harness = { path = "crates/tisvlay-harness", version = "0.1.0" }
 # Binary crates exposed as libs for the harness. `tisvlay-tray` is
 # currently bin-only; add here when its lib surface is exposed.
-tisvlayd = { path = "crates/tisvlayd" }
-tisvlay-session = { path = "crates/tisvlay-session" }
+tisvlayd = { path = "crates/tisvlayd", version = "0.1.0" }
+tisvlay-session = { path = "crates/tisvlay-session", version = "0.1.0" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml"] }
