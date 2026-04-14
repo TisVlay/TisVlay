@@ -140,29 +140,41 @@ settings + extraArgs all produce the expected `ExecStart` strings;
 
 ---
 
-## Phase 4 — NixOS VM test
+## Phase 4 — NixOS VM test ✅
 
 Goal: meet README-modular-services.md §"Minimum Standard" ("Modular
 services MUST be accompanied by a NixOS VM test"). Even for a classic
 module, a VM test is the strongest evidence of correctness per
 CONTRIBUTING.md §"Tested via one or more NixOS test(s)".
 
-- [ ] Add `packaging/nix/test.nix` using `nixosTest { ... }` (or
-      `pkgs.testers.runNixOSTest`) that:
-  - imports the module
-  - sets `services.tisvlay.enable = true`
-  - asserts `tisvlayd.service` reaches `active (running)`
-  - asserts the D-Bus name `org.tisvlay.Daemon` is owned
-  - calls `busctl --system call ... Manager1 GetSupportedVendors` and
-    checks the expected `mock`/`lg` vendors are returned
-  - spins up a user session, starts `tisvlay-session` and `tisvlay-tray`
-    under that user, asserts both are active
-- [ ] Expose the test as `passthru.tests.vm` on the package so
-      `nix build .#tisvlay.tests.vm` runs it.
-- [ ] Wire the test into `flake.nix` checks (`checks.x86_64-linux.vm =
-      ...`) so `nix flake check` exercises it.
+- [x] Added [packaging/nix/test.nix](../packaging/nix/test.nix) using
+      `pkgs.testers.runNixOSTest`. It:
+  - imports the module, sets `services.tisvlay.enable = true`
+  - waits for `multi-user.target` and `tisvlayd.service`
+  - verifies `systemctl is-active tisvlayd.service`
+  - verifies the D-Bus name `org.tisvlay.Daemon` is owned
+  - introspects `Manager1` at `/org/tisvlay/Manager`
+  - calls `GetSupportedVendors` and asserts `"lg"` is returned
+  - calls `ObjectManager.GetManagedObjects` and asserts zero TVs on a
+    fresh install
+  - verifies `tisvlay-session.service` and `tisvlay-tray.service`
+    user unit files are loaded
+  - verifies `/var/lib/tisvlay/` exists with owner `tisvlay:tisvlay`
+  - verifies the configured stable UID (979) is applied
+- [x] Wired into `flake.nix` as `checks.${system}.vm`. Running
+      `nix flake check` or `nix build .#checks.x86_64-linux.vm`
+      boots the VM and runs the test.
 
-**Commit**: `packaging/nix: add NixOS VM test covering daemon + user services`
+**Not covered** (intentional, out of scope here):
+- Auto-start of user services via `graphical-session.target` — needs
+  a real display manager in the VM. Unit files are loaded and
+  explicitly startable via `systemctl --user`; the full graphical
+  boot path is left for a follow-up once a tray integration test is
+  authored (see Plan 2 Phase E placeholder).
+- `passthru.tests.vm` on the package — deferred; `checks.vm` covers
+  `nix flake check` usage which is the primary CI entry.
+
+**Commit**: `packaging/nix: add NixOS VM test covering daemon startup`
 
 ---
 

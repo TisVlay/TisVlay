@@ -38,6 +38,11 @@
       {
         packages.default = pkgs.callPackage ./packaging/nix/package.nix { };
 
+        # NixOS VM test: boots a VM with services.tisvlay.enable = true
+        # and asserts the module's end-to-end behavior. Run via
+        # `nix build .#checks.${system}.vm` or `nix flake check`.
+        checks.vm = pkgs.callPackage ./packaging/nix/test.nix { };
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             cargo-insta
