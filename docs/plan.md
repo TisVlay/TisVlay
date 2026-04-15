@@ -84,9 +84,11 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
   - On `requested_brightness`, call `TisvlayTvBacklightProxy::set_backlight`.
   - Subscribe to `PropertiesChanged` on `org.tisvlay.Tv1.Backlight`; on TV-side updates call `set_observed_brightness`.
 
-## Phase 4 — D-Bus observer fallback (read-only brightness)
+## Phase 4 — D-Bus observer fallback (read-only brightness) — DEFERRED
 
-For users on KDE without the Wayland external-brightness protocol (or who prefer read-only integration):
+**Do not start, scaffold, or stub any of this until Phases 2 and 3 are merged and verified working end-to-end on real hardware.** The Wayland path is the primary integration; adding a fallback before the primary is proven risks building to a design that doesn't match what we learn from Phase 3. The `"dbus_observer"` enum variant in the `desktop_sync.brightness` config should also stay out of the Phase 1 schema until this phase is unblocked — ship only `"off" | "wayland"` initially.
+
+When revisited:
 
 - `desktop_sync.brightness = "dbus_observer"`.
 - Subscribe to `org.kde.ScreenBrightness.BrightnessChanged`, resolve `display_dbus_name` via the `Label` property + Phase 1 map, forward to `TisvlayTvBacklightProxy::set_backlight`.
