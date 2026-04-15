@@ -12,6 +12,8 @@ Everything below builds on code that already exists. Relevant anchors:
 - **State forwarder** — [state_forwarder.rs:157-211](../crates/tisvlayd/src/state_forwarder.rs): backend push → `iface_ref.get_mut()` → mutate cache → call `iface.volume_changed(emitter).await`. Observers subscribe via standard `org.freedesktop.DBus.Properties.PropertiesChanged`.
 - **Daemon client / proxies** — [dbus_client.rs](../crates/tisvlay-core/src/dbus_client.rs): `TisvlayTvVolumeProxy`, `TisvlayTvBacklightProxy`, cached in `DaemonClient.tv_proxies` (Arc<RwLock<HashMap>>). Already consumed by the session service.
 - **Session service scaffold** — [tisvlay-session/src/main.rs:95-194](../crates/tisvlay-session/src/main.rs): retry-loop + `tokio::spawn` event-handler pattern, channel-based coordination. `Cargo.toml` already pulls in `wayland-client` + `wayland-protocols` (used by `wayland_idle.rs`).
+- **Tray drain-loop coalescing** — [tisvlay-tray/src/main.rs:304-351](../crates/tisvlay-tray/src/main.rs): mpsc `try_recv()` loop summing `ScrollBy` deltas per (tv_id, target), flushing one D-Bus call per drain. Exact pattern to reuse for KDE-scroll → TV in Phases 2 / 3.
+- **Active-session tracking** — [tisvlayd/src/logind.rs:270-377](../crates/tisvlayd/src/logind.rs) tracks logind `Active` + `class == "user"` for `on_no_session` automation. D-Bus setters are **not** caller-gated; today non-active sessions don't issue commands only because the session service runs per-user-session. Desktop-sync needs its own explicit `Session.Active` gate (Phase 2 / 3).
 - **Vendor config flatten** — [config.rs:560-628](../crates/tisvlay-core/src/config.rs): `TvConfig { #[serde(flatten)] vendor_config: HashMap<String, toml::Value> }`. User-owned per-TV state already lives in `ResolvedUserProfile`.
 - **`hardware_id` today** — a `String` field on `DiscoveredTv` (dbus_client.rs) populated as `""` by [tisvlay-lg/src/discovery.rs:110-117](../crates/tisvlay-lg/src/discovery.rs). Unused downstream. Consolidating into a first-class identity surface replaces dead code; it doesn't duplicate anything.
 - **Mock backend** — [tisvlay-mock/src/state.rs](../crates/tisvlay-mock/src/state.rs) + [handle.rs](../crates/tisvlay-mock/src/handle.rs): no backlight/volume state today; `publish_tv` / `simulate_user_accept` are the pattern to mirror.
@@ -29,10 +31,14 @@ Scoped by transport, not vendor: sync only makes sense for TVs carrying an AV si
 |--------------|--------------------------------------------------------|------------------------------------------------------------|
 | Brightness   | `kde-external-brightness-v1` Wayland protocol client   | `org.kde.ScreenBrightness.BrightnessChanged` observer      |
 | Volume       | PipeWire virtual sink per TV (`pipewire-native`)       | Freedesktop-portable; works on any PW system               |
-| Identity     | EDID (via `edidkit`) ↔ `Tv1.HardwareId`        | User override in user config                               |
+| Identity     | EDID (via `edidkit`) ↔ `Tv1.HardwareId`                | `connector` tiebreaker for same-model dual-TV setups       |
 | Greeter      | Not supported (desktop-sync runs in the user session)  | Documented limitation                                      |
 
 New code lives in `tisvlay-session` (add a `desktop_sync` module). Split into a `tisvlay-desktop-sync` sub-crate only if the module set grows beyond ~3 files. `tisvlayd` stays transport/vendor-neutral; its only additions are Phase 0.
+
+### D-Bus Idiom for New Methods & Interfaces
+
+All new D-Bus surfaces defined by this plan use `#[derive(zvariant::Type)]` structs rather than the tuple-of-strings + embedded-JSON pattern used by some existing methods (e.g. [`ListUserProfiles`](../crates/tisvlay-session/src/session_dbus.rs) returning `a(ss)` with JSON-encoded profiles). JSON tunnels skip D-Bus type enforcement, break client autocomplete, and are awkward to evolve. Typed structs are standard zbus usage and cost nothing extra. Existing JSON-tunneled methods are retrofit candidates — out of scope for desktop-sync, flagged in [docs/todo.md](todo.md) for later.
 
 ## Phase 0 — Vendor-agnostic identity surface (`tisvlayd` + `tisvlay-core`)
 
@@ -68,24 +74,27 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
   profile.user = "gaming"
   [tv.desktop]
   edid = "abc123…"                 # EDID hash of the matching monitor; auto, overridable
+  connector = "HDMI-A-2"           # optional DRM connector tiebreaker; consulted only on ambiguous EDID match
   sink = "alsa_output.…"           # PipeWire sink node name; auto, overridable
   ```
   Rationale:
   - `sync_backlight` / `sync_volume` are session-scope behavior (the sync logic runs in `tisvlay-session`, not `tisvlayd`), matching the existing `UserProfileConfig` knobs like `on_session_lock` / `idle_timeout_seconds`. Adding them to [`UserProfileConfig`](../crates/tisvlay-core/src/config.rs) (and `ResolvedUserProfile`) gives users profile-switching UX for free: `"default"` with sync on, `"gaming"` with backlight off, `"movie"` with backlight off but volume on. Admin baseline via `user.profiles.default` in system config still sets the defaults.
   - `[tv.desktop]` stays per-TV because `edid` / `sink` are matching identifiers that can't be shared across TVs. One-word section name matches `profile`/`vendor` style; identity fields sit at the section root so future non-sync consumers (tray readout, pairing wizard, input-switch automation) can reuse them.
   - Naming follows project conventions: `snake_case`, enum variants mirror `SessionAction::None`'s `"none"` rather than `"off"`, and `sync_backlight` uses the `Tv1.Backlight` interface name rather than the KDE-side term "brightness".
-- At session start, enumerate `/sys/class/drm/*/edid`, parse via `edidkit`, and match against every managed TV's `Tv1.HardwareId` (manufacturer PNPID + model + serial with fallback to manufacturer+model when serial is unavailable, e.g. CEC).
-- Session D-Bus (`org.tisvlay.Session1`, [session_dbus.rs](../crates/tisvlay-session/src/session_dbus.rs)): add `ListDesktopMappings() -> a(ssss)` returning `(tv_id, display_name, sink_name, match_source)` for a future tray/GUI surface.
+- At session start, enumerate `/sys/class/drm/*/edid`, parse via `edidkit`, and match against every managed TV's `Tv1.HardwareId` (manufacturer PNPID + model + serial with fallback to manufacturer+model when serial is unavailable, e.g. CEC). **Same-model dual-TV setups:** when EDID matching returns ≥ 2 candidates (common: two of the same TV bought together, sharing manufacturer/model/serial), fall back to `[tv.desktop] connector` for disambiguation. Auto-populated at pair time from the connector the user is driving the TV on; user-overridable.
+- Expose the resolved mapping and sync state as a new **`org.tisvlay.Tv1.Desktop`** feature interface on each TV object (matches the existing per-feature-interface convention: [`Tv1.Volume`](../crates/tisvlayd/src/dbus/tv.rs), `Tv1.Backlight`, etc.). Read-only properties: `Edid`, `Connector`, `Sink`, `SyncBacklight`, `SyncVolume`. Tray / GUI / CLI consume via the existing `GetManagedObjects` plumbing and get `PropertiesChanged` for free when mapping or sync state changes at runtime. No new `List*` method on `Session1`.
 
 ## Phase 2 — Volume sync (PipeWire virtual sink)
 
-- Use [`pipewire-native`](https://crates.io/crates/pipewire-native) (pure-Rust, no libpipewire FFI, KDE-aligned — checkout at `/home/ruffsl/ws/kde/libs/pipewire-native-rs`). Our needs — virtual sink creation + `Props` subscribe/set, no audio streaming — fall within what the crate supports today. Greenfield + Rust-only: no libpipewire FFI dependency, no adapter layer, just pin a commit and move with upstream until it hits 1.0.
+- Use [`pipewire-native`](https://crates.io/crates/pipewire-native) from crates.io (pure-Rust, no libpipewire FFI, KDE-aligned — checkout at `/home/ruffsl/ws/kde/libs/pipewire-native-rs`). Start with the published release; only switch to a git dep with a pinned rev if we hit a blocker or need an unreleased feature. Our needs — virtual sink creation + `Props` subscribe/set, no audio streaming — fall within what the crate supports today.
 - New module `desktop_sync::volume`. For each managed TV where `Capabilities::VOLUME` is set on the `TisvlayTvProxy` and the effective user profile has `sync_volume = "virtual_sink"`:
   - Create a virtual sink `tisvlay_<tv_id>` (`device.description = <Tv1.Name>`, `media.class = Audio/Sink`).
   - Subscribe to `Props` (`channelVolumes`, `mute`) on the node.
-  - On change, call `TisvlayTvVolumeProxy::set_volume` / `set_muted` (already defined in [dbus_client.rs](../crates/tisvlay-core/src/dbus_client.rs)).
-- Subscribe to `PropertiesChanged` on `org.tisvlay.Tv1.Volume` (reuse the existing `StateWatcher` pattern in `dbus_client.rs`). On TV-initiated change, update the virtual-sink Props so the Plasma slider moves.
+  - On change, enqueue a `Set{Volume,Muted}` event to an mpsc channel; a drain-loop task coalesces per-TV bursts (mirror the tray pattern at [tisvlay-tray/src/main.rs:304-351](../crates/tisvlay-tray/src/main.rs)) and flushes one `TisvlayTvVolumeProxy::set_volume` / `set_muted` call per drain. Mute goes through the same channel but doesn't sum — last-write-wins.
+- Subscribe to `PropertiesChanged` on `org.tisvlay.Tv1.Volume` (reuse the existing `StateWatcher` pattern in `dbus_client.rs`). On TV-initiated change, update the virtual-sink Props directly — no coalescing needed, TV pushes are sparse (remote presses, app-driven changes).
 - Spawn via `tokio::spawn` in [tisvlay-session/src/main.rs](../crates/tisvlay-session/src/main.rs) following the existing event-handler retry-loop pattern.
+- **Active-session gate:** subscribe to the session's own logind `Session.Active` property. When `Active = false`, stop flushing desktop → TV events (protects against fast-user-switch races where two session services briefly coexist). Leave the virtual sink registered so audio routing stays stable; we just pause the bridge.
+- **Profile-flip teardown:** when the resolved user profile's `sync_volume` transitions to `"none"`, **tear down the virtual sink** so KDE's volume widget falls back to the user's default HDMI sink natively — mimicking the no-tisvlay UX. Re-create on transition back to `"virtual_sink"`.
 - Tear down virtual sinks on clean session exit.
 - **Out of scope:** loopback routing from the virtual sink into the real HDMI sink. Documented recipe; user adds `module-loopback` themselves.
 
@@ -95,8 +104,10 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
 - New module `desktop_sync::brightness`. On session start, bind `kde_external_brightness_manager_v1`. If absent, log once and skip — volume still works.
 - For each managed TV where `Capabilities::BACKLIGHT` is set, an EDID is resolved, and the effective user profile has `sync_backlight = "wayland"`:
   - Register an `external_brightness_device_v1` with EDID blob, `max_brightness = 100`, `internal = false`.
-  - On `requested_brightness`, call `TisvlayTvBacklightProxy::set_backlight`.
-  - Subscribe to `PropertiesChanged` on `org.tisvlay.Tv1.Backlight`; on TV-side updates call `set_observed_brightness`.
+  - On `requested_brightness`, enqueue to an mpsc channel; drain-loop coalesces bursts (same tray pattern) and flushes one `TisvlayTvBacklightProxy::set_backlight` per drain.
+  - Subscribe to `PropertiesChanged` on `org.tisvlay.Tv1.Backlight`; on TV-side updates call `set_observed_brightness` directly (no coalescing — TV pushes are sparse).
+- **Active-session gate:** same `Session.Active` check as Phase 2 — pause desktop → TV flushes when inactive; leave the Wayland device registered so KDE's slider state is preserved.
+- **Profile-flip teardown:** when `sync_backlight` transitions to `"none"`, **unregister the `external_brightness_device_v1`** so KDE's brightness widget reverts to its software-brightness path for that display — mimicking the no-tisvlay UX. Re-register on transition back to `"wayland"`.
 
 ## Phase 4 — D-Bus observer fallback (read-only brightness) — DEFERRED
 
@@ -111,13 +122,10 @@ When revisited:
 ## Phase 5 — Tests, docs, UX
 
 - `tisvlay-mock`: extend `MockState` with `volume`, `muted`, `backlight`, `hardware_id` fields and `MockHandle` setters; mirror the existing `publish_tv` / `simulate_user_accept` style.
-- `tisvlay-harness` integration tests (all vendor-neutral, mock-backed):
-  - KDE brightness event → `Tv1.Backlight` property set → `MockState` updated.
-  - PW sink volume change → `Tv1.Volume` property set → `MockState` updated.
-  - `MockState` push → `PropertiesChanged` → KDE observed-brightness / PW sink Props updated.
-- New doc `docs/desktop-sync.md`: architecture, vendor-neutrality guarantees, KDE version requirements, greeter gap, per-TV config reference.
-- CLI: `tisvlay desktop-sync status` prints the Phase 1 mapping table and active sync modes per TV.
-- Tray: extend the per-TV submenu with a "Desktop sync" readout (mode + matched display/sink).
+- Unit-level mocks only for now — no headless PipeWire daemon / fake KDE external-brightness server in CI. Bulk of verification happens via live iteration on the dev machine to confirm the approach works at all; wire integration tests to `tisvlay-harness` once the feature is proven on hardware.
+- Extend [docs/configs/daemon.toml](configs/daemon.toml) and [docs/configs/session.toml](configs/session.toml) with example profiles that toggle `sync_backlight` / `sync_volume` (e.g. a `"gaming"` profile with backlight off + volume on, a `"movie"` profile with both off). Reuse the existing CLI profile subcommands (`tisvlay profile ...`) and tray profile selector for switching during development — no new CLI surface needed.
+- New doc `docs/desktop-sync.md`: architecture, vendor-neutrality guarantees, KDE version requirements, greeter gap, per-TV config reference, same-model-dual-TV `connector` tiebreaker.
+- Tray: append `(sync)` to the brightness and volume readouts when the respective sync is enabled for that TV (tri-state icon variants deferred — iterate once live).
 
 ## Explicit Non-Goals
 
@@ -138,6 +146,5 @@ When revisited:
 
 ## Open Questions
 
-- Debounce policy: trailing-edge flush at ~20 Hz to the D-Bus property setter (Plasma's scroll emits bursts). Apply uniformly across vendors. Coalesce only the intermediate values — always flush the final resting value so 100 % means 100 %.
-- `HardwareId` serial field: CEC and some discovery paths can't read it — matching falls back to manufacturer + model + user override.
 - Should Phase 0's `HardwareId` and the existing `DiscoveredTv.hardware_id` ship as one migration or two? Leaning one — the existing field is empty in every backend today, so there are no in-flight consumers to break.
+- Where does `org.tisvlay.Tv1.Desktop` live — on `tisvlayd`'s per-TV object path (identity is daemon-observable via EDID → HardwareId match, sync state is session-configured), or on a parallel `org.tisvlay.Session1` per-TV path? The interface shape is the same; the publishing service is the open question. Leaning daemon-side for identity + session-side for sync state as two sub-interfaces, but worth a round of review once Phase 1 starts.
