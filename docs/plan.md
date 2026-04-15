@@ -28,7 +28,7 @@ Scoped by transport, not vendor: sync only makes sense for TVs carrying an AV si
 | Concern      | Primary path (KDE)                                     | Portable fallback / notes                                  |
 |--------------|--------------------------------------------------------|------------------------------------------------------------|
 | Brightness   | `kde-external-brightness-v1` Wayland protocol client   | `org.kde.ScreenBrightness.BrightnessChanged` observer      |
-| Volume       | PipeWire virtual sink per TV (`pipewire-rs`)           | Freedesktop-portable; works on any PW system               |
+| Volume       | PipeWire virtual sink per TV (`pipewire-native`)       | Freedesktop-portable; works on any PW system               |
 | Identity     | EDID (via `libdisplay-info`) ↔ `Tv1.HardwareId`        | User override in user config                               |
 | Greeter      | Not supported (desktop-sync runs in the user session)  | Documented limitation                                      |
 
@@ -65,7 +65,7 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
 
 ## Phase 2 — Volume sync (PipeWire virtual sink)
 
-- Add `pipewire-rs` to `tisvlay-session/Cargo.toml`.
+- Use [`pipewire-native`](https://crates.io/crates/pipewire-native) (pure-Rust, no libpipewire FFI, KDE-aligned — checkout at `/home/ruffsl/ws/kde/libs/pipewire-native-rs`). Our needs — virtual sink creation + `Props` subscribe/set, no audio streaming — fall within what the crate supports today. Greenfield + Rust-only: no libpipewire FFI dependency, no adapter layer, just pin a commit and move with upstream until it hits 1.0.
 - New module `desktop_sync::volume`. For each managed TV where `Capabilities::VOLUME` is set on the `TisvlayTvProxy` and `desktop_sync.volume = "virtual_sink"`:
   - Create a virtual sink `tisvlay_<tv_id>` (`device.description = <Tv1.Name>`, `media.class = Audio/Sink`).
   - Subscribe to `Props` (`channelVolumes`, `mute`) on the node.
