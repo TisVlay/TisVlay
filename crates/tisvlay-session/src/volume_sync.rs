@@ -12,14 +12,24 @@
 //!
 //! Each ALSA HDMI PCM has an ELD file under `/proc/asound/card$N/eld#*`
 //! that carries the connected display's EDID-like data (PNPID,
-//! product code, monitor name). The PCM's PipeWire node advertises
-//! its ALSA card and device indices in its properties, so we read
-//! the ELD inline and derive the same [`HardwareId`] that the
-//! `desktop_probe` module uses on the DRM side. Matching reuses the
-//! [`crate::desktop_probe::identity_matches`] /
-//! [`crate::desktop_probe::match_score`] helpers so EDID-matching
-//! quirks (generic LG monitor_name, etc.) behave consistently with
-//! display matching.
+//! monitor name). The filename uses HDA-internal codec / pin indices
+//! rather than the ALSA PCM `device` number PipeWire reports, so
+//! there's no direct mapping from a sink's props to its ELD file —
+//! instead we scan every ELD on the sink's ALSA card, keep the ones
+//! with `monitor_present=1`, and pick the one whose `monitor_name`
+//! matches the sink's `node.nick` (PipeWire populates `node.nick`
+//! from the same ELD string). The resulting [`HardwareId`] is the
+//! same shape used by the `desktop_probe` module on the DRM side,
+//! so [`crate::desktop_probe::identity_matches`] /
+//! [`crate::desktop_probe::match_score`] carry over for matching —
+//! including the EDID quirks we already tolerate (generic LG
+//! `monitor_name`, empty serial field).
+//!
+//! Registry globals only expose a minimal prop subset (no `alsa.*`
+//! keys), so the full prop set required for ELD lookup only arrives
+//! via the Node's `info` event. We therefore `Registry::bind` every
+//! Audio/Sink on discovery to trigger `info`, and keep the Node
+//! proxy for later `set_param` / Props-listener use.
 //!
 //! # Runtime model
 //!
@@ -118,14 +128,10 @@ struct Inner {
     event_tx: mpsc::UnboundedSender<SinkEvent>,
 }
 
-/// A PipeWire Audio/Sink we've bound to. Registry globals carry only
-/// a minimal prop subset (no `alsa.*` keys); the full props arrive
-/// via each Node's `info` event, so we bind every Audio/Sink on
-/// discovery and hold the proxy for two reasons: (1) to receive the
-/// `info` event that lets us derive a `HardwareId`, and (2) to call
-/// `set_param` later when a TV binding wants to push its volume.
+/// A PipeWire Audio/Sink we've bound to. Held in
+/// [`Inner::candidates`] keyed by the server's global id; see the
+/// module docs for why we bind on discovery rather than lazily.
 struct SinkCandidate {
-    global_id: u32,
     /// Refcounted Node proxy. Dropped when the global is removed.
     node: Node,
     /// Populated after the Node's first `info` event. `None` for
@@ -223,8 +229,8 @@ impl VolumeSync {
             .candidates
             .lock()
             .expect("candidates lock poisoned")
-            .values()
-            .filter_map(|c| c.hardware_id.clone().map(|hw| (c.global_id, hw)))
+            .iter()
+            .filter_map(|(id, c)| c.hardware_id.clone().map(|hw| (*id, hw)))
             .collect()
     }
 
@@ -259,7 +265,11 @@ impl VolumeSync {
         // Clone the already-bound Node from the candidate map so we
         // don't hold the outer lock across the PipeWire call.
         let node = {
-            let candidates = self.inner.candidates.lock().expect("candidates lock poisoned");
+            let candidates = self
+                .inner
+                .candidates
+                .lock()
+                .expect("candidates lock poisoned");
             let Some(c) = candidates.get(&global_id) else {
                 return Err(anyhow!("no candidate sink for global_id {global_id}"));
             };
@@ -275,7 +285,6 @@ impl VolumeSync {
             let tv_id_for_cb = tv_id.to_string();
             let inner_for_cb = Arc::clone(&self.inner);
             node.add_listener(NodeEvents {
-                info: None,
                 param: Some(Box::new(
                     move |_seq, param_id, _index, _next, pod: &spa::pod::RawPodOwned| {
                         if param_id != ParamType::Props {
@@ -284,6 +293,7 @@ impl VolumeSync {
                         handle_props_change(&inner_for_cb, &tv_id_for_cb, &event_tx, pod);
                     },
                 )),
+                ..Default::default()
             })
         };
 
@@ -327,7 +337,11 @@ impl VolumeSync {
             // context. Hook removal is cheap and safe if the
             // candidate has since disappeared from the map.
             let node = {
-                let candidates = self.inner.candidates.lock().expect("candidates lock poisoned");
+                let candidates = self
+                    .inner
+                    .candidates
+                    .lock()
+                    .expect("candidates lock poisoned");
                 candidates.get(&prior.global_id).map(|c| c.node.clone())
             };
             if let Some(node) = node {
@@ -348,7 +362,11 @@ impl VolumeSync {
             let Some(b) = bindings.get(tv_id) else {
                 return Err(anyhow!("no binding for {tv_id}"));
             };
-            let candidates = self.inner.candidates.lock().expect("candidates lock poisoned");
+            let candidates = self
+                .inner
+                .candidates
+                .lock()
+                .expect("candidates lock poisoned");
             let Some(c) = candidates.get(&b.global_id) else {
                 return Err(anyhow!(
                     "candidate sink for binding (global_id {}) disappeared",
@@ -410,12 +428,8 @@ impl std::fmt::Debug for VolumeSync {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        // Drop all bindings explicitly so listeners are detached
-        // before we tear down the thread loop.
-        self.bindings
-            .lock()
-            .expect("bindings lock poisoned")
-            .clear();
+        // Candidate Nodes (and their listeners / hooks) drop with
+        // the field, so we only need to stop the PipeWire thread.
         self.thread_loop.quit();
         info!("PipeWire volume sync shut down");
     }
@@ -486,7 +500,7 @@ fn handle_global_added(inner: &Arc<Inner>, id: u32, props: &Properties) {
                 );
             }
         })),
-        param: None,
+        ..Default::default()
     });
 
     inner
@@ -496,7 +510,6 @@ fn handle_global_added(inner: &Arc<Inner>, id: u32, props: &Properties) {
         .insert(
             id,
             SinkCandidate {
-                global_id: id,
                 node,
                 hardware_id: None,
                 nick: None,
@@ -513,19 +526,13 @@ fn handle_global_removed(inner: &Arc<Inner>, id: u32) {
         .lock()
         .expect("candidates lock poisoned")
         .remove(&id);
-    let tv_to_drop = {
-        let bindings = inner.bindings.lock().expect("bindings lock poisoned");
-        bindings
-            .iter()
-            .find(|(_, b)| b.global_id == id)
-            .map(|(k, _)| k.clone())
-    };
-    if let Some(tv_id) = tv_to_drop {
-        inner
-            .bindings
-            .lock()
-            .expect("bindings lock poisoned")
-            .remove(&tv_id);
+    let mut bindings = inner.bindings.lock().expect("bindings lock poisoned");
+    if let Some(tv_id) = bindings
+        .iter()
+        .find(|(_, b)| b.global_id == id)
+        .map(|(k, _)| k.clone())
+    {
+        bindings.remove(&tv_id);
         trace!(tv_id, global_id = id, "sink disappeared; binding dropped");
     }
 }
@@ -814,10 +821,8 @@ pub async fn run(
     let mut watcher = match StateWatcher::new(&daemon, StateWatcherConfig::default()).await {
         Ok(w) => w,
         Err(e) => {
-            warn!(error = %e, "StateWatcher setup failed; running with periodic reconcile only");
-            polling_loop(&volume_sync, &daemon, &state, &mut shutdown).await;
+            warn!(error = %e, "StateWatcher setup failed — exiting volume sync");
             forward_handle.abort();
-            drop(volume_sync);
             return;
         }
     };
@@ -859,24 +864,6 @@ pub async fn run(
 
     forward_handle.abort();
     drop(volume_sync);
-}
-
-async fn polling_loop(
-    volume_sync: &VolumeSync,
-    daemon: &DaemonClient,
-    state: &Arc<RwLock<SessionState>>,
-    shutdown: &mut tokio::sync::watch::Receiver<bool>,
-) {
-    let mut tick = tokio::time::interval(Duration::from_secs(10));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            _ = shutdown.changed() => break,
-            _ = tick.tick() => {
-                reconcile(volume_sync, daemon, state).await;
-            }
-        }
-    }
 }
 
 /// Push the TV's current volume / mute into the bound sink.
@@ -1026,18 +1013,11 @@ struct DesiredBinding {
 }
 
 fn best_candidate(candidates: &[(u32, HardwareId)], tv_hw: &HardwareId) -> Option<u32> {
-    let mut matches: Vec<(u32, u32)> = candidates
+    candidates
         .iter()
-        .filter_map(|(id, hw)| {
-            if identity_matches(tv_hw, hw) {
-                Some((*id, match_score(tv_hw, hw)))
-            } else {
-                None
-            }
-        })
-        .collect();
-    matches.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
-    matches.first().map(|(id, _)| *id)
+        .filter(|(_, hw)| identity_matches(tv_hw, hw))
+        .max_by_key(|(_, hw)| match_score(tv_hw, hw))
+        .map(|(id, _)| *id)
 }
 
 #[cfg(test)]
