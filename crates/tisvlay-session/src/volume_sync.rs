@@ -59,10 +59,12 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use crate::SessionState;
 
-/// `channelVolumes` value that corresponds to full (0 dB) gain.
-/// PipeWire uses a cubic scale in `channelVolumes` where `1.0` is
-/// unity; we treat the host-side `u8` Volume (0-100) as a linear
-/// percentage of that unity.
+/// PipeWire's `channelVolumes` is a *cubic* scale: the stored value
+/// `cv` corresponds to actual gain `cv^3`, and Plasma's volume
+/// widget displays percent as `cbrt(cv) * 100`. Our host-side `u8`
+/// Volume (0-100) is a *linear* percent, so we cube on write and
+/// cube-root on read to keep the displayed % in sync with the TV.
+/// `cv = 1.0` is 0 dB (unity) — same as a native HDMI sink.
 const PW_UNITY_VOLUME: f32 = 1.0;
 
 /// Events emitted from the PipeWire thread into the coordinator —
@@ -86,6 +88,11 @@ pub struct VolumeSync {
 
 struct Inner {
     thread_loop: ThreadLoop,
+    /// Context has to outlive [`Core`] — `Core` internally holds only
+    /// a `Weak<Context>`, and any PipeWire-thread callback that needs
+    /// to reach back to the context (e.g. to destroy a source during
+    /// error handling) panics if the upgrade fails. Keep one here.
+    _pw_context: PwContext,
     core: Core,
     sinks: Mutex<HashMap<String, SinkEntry>>,
     event_tx: mpsc::UnboundedSender<SinkEvent>,
@@ -142,6 +149,7 @@ impl VolumeSync {
         let this = Self {
             inner: Arc::new(Inner {
                 thread_loop,
+                _pw_context: pw_context,
                 core,
                 sinks: Mutex::new(HashMap::new()),
                 event_tx,
@@ -464,12 +472,18 @@ fn autodetect_pipewire_prefix() -> Option<std::path::PathBuf> {
 }
 
 fn u8_to_pw_volume(v: u8) -> f32 {
-    (v.min(100) as f32 / 100.0) * PW_UNITY_VOLUME
+    let linear = v.min(100) as f32 / 100.0;
+    // Plasma displays percent as cbrt(channelVolumes) * 100, so to
+    // have the slider show our linear percent we need to cube first.
+    linear * linear * linear * PW_UNITY_VOLUME
 }
 
 fn pw_to_u8_volume(v: f32) -> u8 {
-    let scaled = (v.max(0.0) / PW_UNITY_VOLUME) * 100.0;
-    scaled.round().clamp(0.0, 100.0) as u8
+    let unity = (v.max(0.0) / PW_UNITY_VOLUME).min(1.0);
+    // Inverse of `u8_to_pw_volume` — cube root back into the linear
+    // 0-100 percent space.
+    let linear = unity.cbrt();
+    (linear * 100.0).round().clamp(0.0, 100.0) as u8
 }
 
 // ---------------------------------------------------------------------------
@@ -721,7 +735,7 @@ mod tests {
     #[test]
     fn u8_to_pw_volume_bounds() {
         assert_eq!(u8_to_pw_volume(0), 0.0);
-        assert_eq!(u8_to_pw_volume(50), 0.5);
+        assert!((u8_to_pw_volume(50) - 0.125).abs() < 1e-6, "50% cubic = 0.125");
         assert_eq!(u8_to_pw_volume(100), 1.0);
         assert_eq!(u8_to_pw_volume(200), 1.0);
     }
