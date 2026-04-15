@@ -87,6 +87,59 @@ pub enum SessionAction {
 ///
 /// Combined with the per-TV `primary_input` and the global `managed` flag
 /// to produce the `Automated` D-Bus property.
+/// Backlight sync mode between the desktop and a TV.
+///
+/// Controls the `desktop_sync::brightness` module in `tisvlay-session`.
+/// Per-profile so the user can flip it on an activity basis (e.g. sync
+/// on by default, off in a `"gaming"` profile).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncBacklight {
+    /// Sync disabled. No Wayland brightness device registered — the KDE
+    /// brightness widget falls back to its software-brightness path for
+    /// the matching display, mimicking a no-tisvlay install. Default.
+    #[default]
+    None,
+    /// Register a `kde_external_brightness_device_v1` so KDE's slider
+    /// drives `Tv1.Backlight` and TV-side changes push back to KDE.
+    Wayland,
+}
+
+impl std::fmt::Display for SyncBacklight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::Wayland => f.write_str("wayland"),
+        }
+    }
+}
+
+/// Volume sync mode between the desktop and a TV.
+///
+/// Controls the `desktop_sync::volume` module in `tisvlay-session`.
+/// Per-profile so the user can flip it on an activity basis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncVolume {
+    /// Sync disabled. No virtual sink created — KDE's volume widget
+    /// controls whichever default sink the user picked, matching a
+    /// no-tisvlay install. Default.
+    #[default]
+    None,
+    /// Create a PipeWire virtual sink per TV so KDE's slider drives
+    /// `Tv1.Volume` and TV-side changes push back.
+    VirtualSink,
+}
+
+impl std::fmt::Display for SyncVolume {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::VirtualSink => f.write_str("virtual_sink"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AutomateWhen {
@@ -300,6 +353,14 @@ pub struct UserProfileConfig {
     /// Action when activity resumes after idle timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_idle_resume: Option<SessionAction>,
+
+    /// Desktop → TV backlight sync mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_backlight: Option<SyncBacklight>,
+
+    /// Desktop → TV volume sync mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_volume: Option<SyncVolume>,
 }
 
 impl UserProfileConfig {
@@ -316,6 +377,8 @@ impl UserProfileConfig {
             idle_timeout_seconds: Some(d.idle_timeout_seconds),
             on_idle_timeout: Some(d.on_idle_timeout),
             on_idle_resume: Some(d.on_idle_resume),
+            sync_backlight: Some(d.sync_backlight),
+            sync_volume: Some(d.sync_volume),
         }
     }
 
@@ -331,6 +394,8 @@ impl UserProfileConfig {
             idle_timeout_seconds: self.idle_timeout_seconds.or(base.idle_timeout_seconds),
             on_idle_timeout: self.on_idle_timeout.or(base.on_idle_timeout),
             on_idle_resume: self.on_idle_resume.or(base.on_idle_resume),
+            sync_backlight: self.sync_backlight.or(base.sync_backlight),
+            sync_volume: self.sync_volume.or(base.sync_volume),
         }
     }
 
@@ -347,6 +412,8 @@ impl UserProfileConfig {
             idle_timeout_seconds: self.idle_timeout_seconds.unwrap_or(d.idle_timeout_seconds),
             on_idle_timeout: self.on_idle_timeout.unwrap_or(d.on_idle_timeout),
             on_idle_resume: self.on_idle_resume.unwrap_or(d.on_idle_resume),
+            sync_backlight: self.sync_backlight.unwrap_or(d.sync_backlight),
+            sync_volume: self.sync_volume.unwrap_or(d.sync_volume),
         }
     }
 }
@@ -374,6 +441,10 @@ pub struct ResolvedUserProfile {
     pub on_idle_timeout: SessionAction,
     /// Action when activity resumes after idle timeout.
     pub on_idle_resume: SessionAction,
+    /// Desktop → TV backlight sync mode.
+    pub sync_backlight: SyncBacklight,
+    /// Desktop → TV volume sync mode.
+    pub sync_volume: SyncVolume,
 }
 
 impl Default for ResolvedUserProfile {
@@ -385,6 +456,8 @@ impl Default for ResolvedUserProfile {
             idle_timeout_seconds: 0,
             on_idle_timeout: SessionAction::ScreenOff,
             on_idle_resume: SessionAction::ScreenOn,
+            sync_backlight: SyncBacklight::None,
+            sync_volume: SyncVolume::None,
         }
     }
 }
@@ -804,6 +877,40 @@ pub struct UserTvConfig {
     /// Profile assignment for this TV.
     #[serde(default)]
     pub profile: UserTvProfileAssignment,
+
+    /// Desktop-side identity mapping (monitor + audio sink).
+    ///
+    /// Populated by the session service's auto-detection probe on first
+    /// run and persisted back via `Manager1.SetDesktopMapping`. Users
+    /// can override any field manually — manual entries are preserved
+    /// across re-runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop: Option<UserTvDesktopConfig>,
+}
+
+/// Desktop identity mapping for a TV.
+///
+/// Stored under `[[tv]]` → `[tv.desktop]` in the user config. All fields
+/// optional; the session service fills in whatever it can probe and
+/// leaves anything the user has hand-set alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserTvDesktopConfig {
+    /// EDID hash of the matching monitor. Implementation-defined format
+    /// — currently a hex string, but opaque to consumers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edid: Option<String>,
+
+    /// DRM connector name (e.g. `HDMI-A-2`). Only consulted when EDID
+    /// matching is ambiguous — e.g. two of the same TV connected to the
+    /// same host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connector: Option<String>,
+
+    /// PipeWire sink identifier. The exact field stored here (node name,
+    /// device description, etc.) is chosen by the session-side probe
+    /// based on which identifier is most stable for the matching device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sink: Option<String>,
 }
 
 impl UserConfig {
@@ -941,6 +1048,7 @@ impl UserConfig {
             self.tv.push(UserTvConfig {
                 id: tv_id,
                 profile: UserTvProfileAssignment { user: profile },
+                desktop: None,
             });
         }
     }
@@ -1493,6 +1601,8 @@ ip = "192.168.1.1"
             idle_timeout_seconds: Some(999),
             on_idle_timeout: Some(SessionAction::PowerOff),
             on_idle_resume: Some(SessionAction::None),
+            sync_backlight: Some(SyncBacklight::Wayland),
+            sync_volume: Some(SyncVolume::VirtualSink),
         };
 
         let merged = full_override.merge_with_base(&base);

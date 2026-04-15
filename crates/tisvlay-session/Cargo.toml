@@ -34,6 +34,14 @@ clap = { workspace = true }
 wayland-client = { workspace = true }
 wayland-protocols = { workspace = true }
 
+# EDID parsing for desktop-sync identity matching
+edidkit = "0.1"
+toml = { workspace = true }
+# SHA-256 for stable EDID hashing
+sha2 = { workspace = true }
+# Hex encoding for the EDID hash string we store in user config
+hex = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tisvlay-harness = { workspace = true }

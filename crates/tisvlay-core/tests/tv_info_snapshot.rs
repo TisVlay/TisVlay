@@ -17,7 +17,7 @@
 
 #![cfg(feature = "dbus")]
 
-use tisvlay_core::{HardwareId, TvInfo};
+use tisvlay_core::{DesktopMapping, HardwareId, TvInfo};
 
 /// A minimal TvInfo for a connected, managed TV with a few inputs.
 fn sample_connected() -> TvInfo {
@@ -31,6 +31,13 @@ fn sample_connected() -> TvInfo {
         automated: true,
         system_profile: "default".to_string(),
         hardware_id: HardwareId::new(Some("GSM"), Some("OLED65G4SUB"), Some("serial-1")),
+        desktop: DesktopMapping {
+            edid: "abc123".to_string(),
+            connector: "HDMI-A-2".to_string(),
+            sink: "alsa_output.hdmi".to_string(),
+            sync_backlight: "wayland".to_string(),
+            sync_volume: "virtual_sink".to_string(),
+        },
         path: "/org/tisvlay/Tv/living_room".to_string(),
         power_state: "active".to_string(),
         is_screen_on: true,
@@ -58,6 +65,7 @@ fn sample_disconnected() -> TvInfo {
         automated: false,
         system_profile: "guest".to_string(),
         hardware_id: HardwareId::default(),
+        desktop: DesktopMapping::default(),
         path: "/org/tisvlay/Tv/guest_room".to_string(),
         power_state: "unknown".to_string(),
         is_screen_on: true,

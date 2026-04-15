@@ -16,6 +16,13 @@ expression: sample_disconnected()
     "model": null,
     "serial": null
   },
+  "desktop": {
+    "edid": "",
+    "connector": "",
+    "sink": "",
+    "sync_backlight": "",
+    "sync_volume": ""
+  },
   "path": "/org/tisvlay/Tv/guest_room",
   "power_state": "unknown",
   "is_screen_on": true,

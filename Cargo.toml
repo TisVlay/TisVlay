@@ -81,6 +81,10 @@ url = "2"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
+# Hashing / hex (for stable EDID hashes in desktop-sync)
+sha2 = "0.11"
+hex = "0.4"
+
 # Internal crates. Both `path` and `version` are required so the same
 # entries work for local development (path wins) and for `cargo package`
 # / publish (version is used when path is stripped from the published
