@@ -50,24 +50,37 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
 ## Phase 1 — Display & sink identity matching (`tisvlay-session`)
 
 - Add `edidkit` to `tisvlay-session`.
-- Add a `desktop` section to `UserConfig` (not system config — this is a per-user preference, parallel to `ResolvedUserProfile`):
+- Split the config between **identity** (per-TV, static) and **behavior** (profile-driven, activity-specific):
   ```toml
+  # System config — admin baseline for sync behavior
+  [user.profiles.default]
+  sync_backlight = "wayland"       # none | wayland   (dbus_observer added in Phase 4)
+  sync_volume    = "virtual_sink"  # none | virtual_sink
+
+  # User config — per-activity profiles flip the toggles
+  [user.profiles.gaming]
+  sync_backlight = "none"          # don't let KDE dim the TV mid-game
+  sync_volume    = "virtual_sink"
+
+  # Per-TV identity — cannot live in a shared profile
   [[tv]]
   id = "living-room"
+  profile.user = "gaming"
   [tv.desktop]
-  edid = "abc123…"           # identity — EDID hash of the matching monitor; auto, overridable
-  sink = "alsa_output.…"     # identity — PipeWire sink node name; auto, overridable
-  sync.backlight = "none"    # behavior — none | wayland   (dbus_observer added in Phase 4)
-  sync.volume    = "none"    # behavior — none | virtual_sink
+  edid = "abc123…"                 # EDID hash of the matching monitor; auto, overridable
+  sink = "alsa_output.…"           # PipeWire sink node name; auto, overridable
   ```
-  Field naming matches existing project conventions: one-word section name (`desktop` alongside `profile`/`vendor`), `snake_case` throughout, enum variants mirror `SessionAction::None`'s `"none"` rather than `"off"`, and `sync.backlight` uses the `Tv1.Backlight` interface name rather than the KDE-side term "brightness". Identity fields (`edid`, `sink`) sit at the section root so future non-sync consumers (tray readout, pairing wizard, input-switch automation) can reuse them without going through the sync subsystem.
+  Rationale:
+  - `sync_backlight` / `sync_volume` are session-scope behavior (the sync logic runs in `tisvlay-session`, not `tisvlayd`), matching the existing `UserProfileConfig` knobs like `on_session_lock` / `idle_timeout_seconds`. Adding them to [`UserProfileConfig`](../crates/tisvlay-core/src/config.rs) (and `ResolvedUserProfile`) gives users profile-switching UX for free: `"default"` with sync on, `"gaming"` with backlight off, `"movie"` with backlight off but volume on. Admin baseline via `user.profiles.default` in system config still sets the defaults.
+  - `[tv.desktop]` stays per-TV because `edid` / `sink` are matching identifiers that can't be shared across TVs. One-word section name matches `profile`/`vendor` style; identity fields sit at the section root so future non-sync consumers (tray readout, pairing wizard, input-switch automation) can reuse them.
+  - Naming follows project conventions: `snake_case`, enum variants mirror `SessionAction::None`'s `"none"` rather than `"off"`, and `sync_backlight` uses the `Tv1.Backlight` interface name rather than the KDE-side term "brightness".
 - At session start, enumerate `/sys/class/drm/*/edid`, parse via `edidkit`, and match against every managed TV's `Tv1.HardwareId` (manufacturer PNPID + model + serial with fallback to manufacturer+model when serial is unavailable, e.g. CEC).
 - Session D-Bus (`org.tisvlay.Session1`, [session_dbus.rs](../crates/tisvlay-session/src/session_dbus.rs)): add `ListDesktopMappings() -> a(ssss)` returning `(tv_id, display_name, sink_name, match_source)` for a future tray/GUI surface.
 
 ## Phase 2 — Volume sync (PipeWire virtual sink)
 
 - Use [`pipewire-native`](https://crates.io/crates/pipewire-native) (pure-Rust, no libpipewire FFI, KDE-aligned — checkout at `/home/ruffsl/ws/kde/libs/pipewire-native-rs`). Our needs — virtual sink creation + `Props` subscribe/set, no audio streaming — fall within what the crate supports today. Greenfield + Rust-only: no libpipewire FFI dependency, no adapter layer, just pin a commit and move with upstream until it hits 1.0.
-- New module `desktop_sync::volume`. For each managed TV where `Capabilities::VOLUME` is set on the `TisvlayTvProxy` and `desktop_sync.volume = "virtual_sink"`:
+- New module `desktop_sync::volume`. For each managed TV where `Capabilities::VOLUME` is set on the `TisvlayTvProxy` and the effective user profile has `sync_volume = "virtual_sink"`:
   - Create a virtual sink `tisvlay_<tv_id>` (`device.description = <Tv1.Name>`, `media.class = Audio/Sink`).
   - Subscribe to `Props` (`channelVolumes`, `mute`) on the node.
   - On change, call `TisvlayTvVolumeProxy::set_volume` / `set_muted` (already defined in [dbus_client.rs](../crates/tisvlay-core/src/dbus_client.rs)).
@@ -80,18 +93,18 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
 
 - `wayland-client` / `wayland-protocols` are already in [tisvlay-session/Cargo.toml:34-35](../crates/tisvlay-session/Cargo.toml) for `wayland_idle.rs` — reuse them and add the `kde-external-brightness-v1` XML under `protocols/` with `wayland-scanner` codegen.
 - New module `desktop_sync::brightness`. On session start, bind `kde_external_brightness_manager_v1`. If absent, log once and skip — volume still works.
-- For each managed TV where `Capabilities::BACKLIGHT` is set and an EDID is resolved:
+- For each managed TV where `Capabilities::BACKLIGHT` is set, an EDID is resolved, and the effective user profile has `sync_backlight = "wayland"`:
   - Register an `external_brightness_device_v1` with EDID blob, `max_brightness = 100`, `internal = false`.
   - On `requested_brightness`, call `TisvlayTvBacklightProxy::set_backlight`.
   - Subscribe to `PropertiesChanged` on `org.tisvlay.Tv1.Backlight`; on TV-side updates call `set_observed_brightness`.
 
 ## Phase 4 — D-Bus observer fallback (read-only brightness) — DEFERRED
 
-**Do not start, scaffold, or stub any of this until Phases 2 and 3 are merged and verified working end-to-end on real hardware.** The Wayland path is the primary integration; adding a fallback before the primary is proven risks building to a design that doesn't match what we learn from Phase 3. The `"dbus_observer"` enum variant in the `desktop_sync.brightness` config should also stay out of the Phase 1 schema until this phase is unblocked — ship only `"off" | "wayland"` initially.
+**Do not start, scaffold, or stub any of this until Phases 2 and 3 are merged and verified working end-to-end on real hardware.** The Wayland path is the primary integration; adding a fallback before the primary is proven risks building to a design that doesn't match what we learn from Phase 3. The `"dbus_observer"` enum variant for `sync_backlight` should also stay out of the Phase 1 schema until this phase is unblocked — ship only `"none" | "wayland"` initially.
 
 When revisited:
 
-- `desktop_sync.brightness = "dbus_observer"`.
+- `sync_backlight = "dbus_observer"` in the user profile.
 - Subscribe to `org.kde.ScreenBrightness.BrightnessChanged`, resolve `display_dbus_name` via the `Label` property + Phase 1 map, forward to `TisvlayTvBacklightProxy::set_backlight`.
 - Best-effort: no back-pressure path to KDE, so TV-initiated changes won't move the slider.
 
