@@ -820,6 +820,18 @@ impl TvManager {
         Some(tv.capabilities())
     }
 
+    /// Get the TV's vendor-reported hardware identity, if known.
+    ///
+    /// Returns `None` when the TV isn't currently connected or the
+    /// backend doesn't report identity. The backend's own `hardware_id`
+    /// method is synchronous — it reads a cached value — so this
+    /// doesn't hold the connection lock across any I/O.
+    pub async fn get_hardware_id(&self, tv_id: &str) -> Option<tisvlay_core::HardwareId> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        tv.connection.as_ref().and_then(|c| c.hardware_id())
+    }
+
     /// Force reconnection to a TV.
     ///
     /// Disconnects (if connected), then reconnects. The per-TV lock is

@@ -1,5 +1,6 @@
 //! TV state model.
 
+use crate::HardwareId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -114,9 +115,11 @@ pub struct DiscoveredTv {
     pub name: String,
     /// Transport address for display (e.g., IP address, serial port, CEC address).
     pub address: String,
-    /// Hardware identifier (e.g., MAC address, serial number).
-    /// May be empty if not available from the discovery protocol.
-    pub hardware_id: String,
+    /// Hardware identity (manufacturer / model / serial) as reported by
+    /// the discovery protocol. Backends fill what they can read; may be
+    /// `None` if the discovery channel exposes no identity data.
+    #[serde(default)]
+    pub hardware_id: Option<HardwareId>,
     /// Vendor identifier (e.g., "lg", "samsung").
     pub vendor: String,
     /// Location URL for device description (vendor-specific).
@@ -136,15 +139,15 @@ impl DiscoveredTv {
             id: id.into(),
             name: name.into(),
             address: address.into(),
-            hardware_id: String::new(),
+            hardware_id: None,
             vendor: vendor.into(),
             location: String::new(),
         }
     }
 
-    /// Set the hardware identifier (e.g., MAC address).
-    pub fn with_hardware_id(mut self, hardware_id: impl Into<String>) -> Self {
-        self.hardware_id = hardware_id.into();
+    /// Attach a hardware identity to this discovery entry.
+    pub fn with_hardware_id(mut self, hardware_id: HardwareId) -> Self {
+        self.hardware_id = Some(hardware_id);
         self
     }
 

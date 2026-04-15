@@ -11,6 +11,11 @@ expression: sample_connected()
   "managed": true,
   "automated": true,
   "system_profile": "default",
+  "hardware_id": {
+    "manufacturer": "GSM",
+    "model": "OLED65G4SUB",
+    "serial": "serial-1"
+  },
   "path": "/org/tisvlay/Tv/living_room",
   "power_state": "active",
   "is_screen_on": true,
