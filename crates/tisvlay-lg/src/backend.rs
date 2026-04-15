@@ -68,21 +68,30 @@ pub struct LgConnection {
     client: Option<WebOsClient>,
     config: LgVendorConfig,
     capabilities: Capabilities,
-    /// Cached hardware identity. Populated on first successful
-    /// `getSystemInfo` fetch and returned from [`hardware_id`](Self::hardware_id)
-    /// without blocking. `None` until the first fetch succeeds; survives
-    /// reconnects so sync consumers don't see transient gaps.
+    /// Cached hardware identity. Seeded by the connector at construction
+    /// time (after the initial `getSystemInfo` call) and refreshed on
+    /// each fresh reconnect. Returned from [`hardware_id`](Self::hardware_id)
+    /// without blocking.
     hardware_id: std::sync::Arc<std::sync::RwLock<Option<tisvlay_core::HardwareId>>>,
 }
 
 impl LgConnection {
     /// Create a new LG connection from a WebOsClient and its config.
-    pub fn new(client: WebOsClient, config: LgVendorConfig) -> Self {
+    ///
+    /// `hardware_id` is the identity read during the connect flow (or
+    /// `None` if the TV didn't respond to `getSystemInfo` — rare on
+    /// supported firmware). Exposed via
+    /// [`hardware_id`](Self::hardware_id) without blocking on I/O.
+    pub fn new(
+        client: WebOsClient,
+        config: LgVendorConfig,
+        hardware_id: Option<tisvlay_core::HardwareId>,
+    ) -> Self {
         Self {
             client: Some(client),
             config,
             capabilities: Capabilities::ALL,
-            hardware_id: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            hardware_id: std::sync::Arc::new(std::sync::RwLock::new(hardware_id)),
         }
     }
 
@@ -466,7 +475,22 @@ impl TvConnector for LgConnector {
         let mut last_err = None;
         for attempt in 1..=5u32 {
             match WebOsClient::connect(&config.ip, config.client_key.clone()).await {
-                Ok(client) => return Ok(Box::new(LgConnection::new(client, config))),
+                Ok(mut client) => {
+                    // Best-effort identity fetch right after connect. Lets the
+                    // daemon's `Tv1.HardwareId` property be populated on the
+                    // first registration, before any user interaction.
+                    let hardware_id = match client.get_hardware_id().await {
+                        Ok(id) => {
+                            debug!(ip = %config.ip, ?id, "fetched LG hardware identity");
+                            Some(id)
+                        }
+                        Err(e) => {
+                            debug!(ip = %config.ip, error = %e, "getSystemInfo failed");
+                            None
+                        }
+                    };
+                    return Ok(Box::new(LgConnection::new(client, config, hardware_id)));
+                }
                 Err(e) => {
                     debug!(ip = %config.ip, attempt, error = %e, "LG TV not ready, retrying");
                     last_err = Some(e);
@@ -894,7 +918,7 @@ mod tests {
             .await
             .unwrap();
         let config = LgVendorConfig::new("127.0.0.1");
-        let mut conn = LgConnection::new(client, config);
+        let mut conn = LgConnection::new(client, config, None);
 
         let state = conn.get_state().await.unwrap();
         assert!(state.is_on);
@@ -909,7 +933,7 @@ mod tests {
             .await
             .unwrap();
         let config = LgVendorConfig::new("127.0.0.1");
-        let mut conn = LgConnection::new(client, config);
+        let mut conn = LgConnection::new(client, config, None);
 
         let mut rx = conn.subscribe_state().await.unwrap();
 
@@ -974,7 +998,7 @@ mod tests {
         // ensure_connected() reconnects there.
         let mut config = LgVendorConfig::new(server.addr().ip().to_string());
         config.client_key = Some("test-client-key".to_string());
-        let mut conn = LgConnection::new(client, config);
+        let mut conn = LgConnection::new(client, config, None);
 
         // First call succeeds.
         let state = conn.get_state().await.unwrap();
@@ -1019,7 +1043,7 @@ mod tests {
             .await
             .unwrap();
         let config = LgVendorConfig::new("127.0.0.1");
-        let mut conn = LgConnection::new(client, config);
+        let mut conn = LgConnection::new(client, config, None);
 
         // Exercise each TvConnection method.
         assert_eq!(conn.vendor_id(), "lg");
