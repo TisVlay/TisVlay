@@ -11,6 +11,11 @@ expression: sample_disconnected()
   "managed": false,
   "automated": false,
   "system_profile": "guest",
+  "hardware_id": {
+    "manufacturer": null,
+    "model": null,
+    "serial": null
+  },
   "path": "/org/tisvlay/Tv/guest_room",
   "power_state": "unknown",
   "is_screen_on": true,

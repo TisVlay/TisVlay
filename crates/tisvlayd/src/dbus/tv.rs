@@ -11,7 +11,7 @@
 use crate::dbus::DaemonError;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
-use tisvlay_core::TvState;
+use tisvlay_core::{HardwareId, TvState};
 use tracing::info;
 use zbus::interface;
 
@@ -32,6 +32,10 @@ pub struct TvService {
     pub(crate) system_profile: String,
     pub(crate) primary_input: String,
     pub(crate) automate_when: tisvlay_core::AutomateWhen,
+
+    /// Hardware identity reported by the backend. Empty tuple when
+    /// unknown / before the backend connects for the first time.
+    pub(crate) hardware_id: HardwareId,
 
     // Cached runtime state (updated by subscription pushes)
     pub(crate) connected: bool,
@@ -162,6 +166,16 @@ impl TvService {
         let primary = (!self.primary_input.is_empty()).then_some(self.primary_input.as_str());
         let current = (!self.current_input.is_empty()).then_some(self.current_input.as_str());
         self.automate_when.should_automate(primary, current)
+    }
+
+    /// Vendor-reported hardware identity: `(manufacturer, model, serial)`.
+    ///
+    /// Empty strings represent unknown fields. Populated from the backend
+    /// on first connection; falls back to the discovery-time identity
+    /// (e.g. SSDP headers) until then.
+    #[zbus(property(emits_changed_signal = "invalidates"))]
+    fn hardware_id(&self) -> (String, String, String) {
+        self.hardware_id.to_dbus_tuple()
     }
 
     /// Capabilities supported by this TV.
@@ -466,6 +480,7 @@ pub async fn register_tv_interfaces(
         .await
         .unwrap_or_default();
     let connected = manager.is_connected(&tv_id).await;
+    let hardware_id = manager.get_hardware_id(&tv_id).await.unwrap_or_default();
 
     // Use live backend state if available, otherwise fall back to
     // safe defaults. This avoids the race where subscription updates
@@ -512,6 +527,7 @@ pub async fn register_tv_interfaces(
                 system_profile,
                 primary_input,
                 automate_when,
+                hardware_id,
                 connected,
                 current_input: current_input.clone(),
             },

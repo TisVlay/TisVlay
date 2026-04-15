@@ -68,6 +68,11 @@ pub struct LgConnection {
     client: Option<WebOsClient>,
     config: LgVendorConfig,
     capabilities: Capabilities,
+    /// Cached hardware identity. Populated on first successful
+    /// `getSystemInfo` fetch and returned from [`hardware_id`](Self::hardware_id)
+    /// without blocking. `None` until the first fetch succeeds; survives
+    /// reconnects so sync consumers don't see transient gaps.
+    hardware_id: std::sync::Arc<std::sync::RwLock<Option<tisvlay_core::HardwareId>>>,
 }
 
 impl LgConnection {
@@ -77,6 +82,28 @@ impl LgConnection {
             client: Some(client),
             config,
             capabilities: Capabilities::ALL,
+            hardware_id: std::sync::Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    /// Ask the TV for its hardware identity and cache the result.
+    ///
+    /// Silently swallows errors (e.g. legacy firmware without
+    /// `getSystemInfo`) so a failed lookup doesn't stall reconnect.
+    async fn refresh_hardware_id(&mut self) {
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
+        match client.get_hardware_id().await {
+            Ok(id) => {
+                tracing::debug!(ip = %self.config.ip, ?id, "fetched LG hardware identity");
+                if let Ok(mut guard) = self.hardware_id.write() {
+                    *guard = Some(id);
+                }
+            }
+            Err(e) => {
+                tracing::debug!(ip = %self.config.ip, error = %e, "getSystemInfo failed, skipping hardware_id cache");
+            }
         }
     }
 
@@ -92,6 +119,12 @@ impl LgConnection {
             let client =
                 WebOsClient::connect(&self.config.ip, self.config.client_key.clone()).await?;
             self.client = Some(client);
+
+            // Best-effort identity refresh on fresh connect. Runs once
+            // per reconnect (the values don't change for a given TV).
+            if self.hardware_id.read().map(|g| g.is_none()).unwrap_or(true) {
+                self.refresh_hardware_id().await;
+            }
         }
 
         self.client.as_mut().ok_or(Error::ConnectionClosed)
@@ -161,6 +194,10 @@ impl TvConnection for LgConnection {
 
     fn capabilities(&self) -> Capabilities {
         self.capabilities
+    }
+
+    fn hardware_id(&self) -> Option<tisvlay_core::HardwareId> {
+        self.hardware_id.read().ok().and_then(|g| g.clone())
     }
 
     // =========================================================================

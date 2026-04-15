@@ -12,6 +12,11 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     "managed": true,
     "automated": true,
     "system_profile": "default",
+    "hardware_id": {
+      "manufacturer": "GSM",
+      "model": "OLED65G4SUB",
+      "serial": "serial-1"
+    },
     "path": "/org/tisvlay/Tv/living_room",
     "power_state": "active",
     "is_screen_on": true,
@@ -43,6 +48,11 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     "managed": false,
     "automated": false,
     "system_profile": "guest",
+    "hardware_id": {
+      "manufacturer": null,
+      "model": null,
+      "serial": null
+    },
     "path": "/org/tisvlay/Tv/guest_room",
     "power_state": "unknown",
     "is_screen_on": true,

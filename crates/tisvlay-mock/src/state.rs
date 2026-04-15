@@ -30,7 +30,7 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
-use tisvlay_core::DiscoveredTv;
+use tisvlay_core::{DiscoveredTv, HardwareId};
 
 use crate::pairing::PairingOutcome;
 
@@ -47,6 +47,13 @@ pub(crate) struct MockState {
     /// state machine. If no outcome is set, pairing waits for an
     /// explicit `simulate_user_*` call via the handle.
     pub(crate) pairing_outcomes: HashMap<String, PairingOutcome>,
+
+    /// Hardware identities pre-seeded by tests, keyed by the mock TV
+    /// address (which doubles as the TV ID for mock TVs — see
+    /// `MockConnector::start_pairing`). Returned from
+    /// [`TvConnection::hardware_id`](tisvlay_core::TvConnection::hardware_id)
+    /// on any connection opened to that address.
+    pub(crate) hardware_ids: HashMap<String, HardwareId>,
 
     /// Optional delay injected before `MockConnector::connect()` returns.
     /// Simulates a slow or unreachable TV for testing shutdown behavior.

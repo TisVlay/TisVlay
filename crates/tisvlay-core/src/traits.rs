@@ -29,7 +29,8 @@
 //! interpret. The daemon and CLI never see transport-specific types.
 
 use crate::{
-    Capabilities, DiscoveredTv, Error, InputInfo, PairingSession, PowerState, Result, TvState,
+    Capabilities, DiscoveredTv, Error, HardwareId, InputInfo, PairingSession, PowerState, Result,
+    TvState,
 };
 use async_trait::async_trait;
 
@@ -139,6 +140,21 @@ pub trait TvConnection: Send + Sync {
 
     /// Get capabilities supported by this connection.
     fn capabilities(&self) -> Capabilities;
+
+    /// Vendor-reported hardware identity (manufacturer / model / serial).
+    ///
+    /// Returns `None` for backends that can't read identity from the
+    /// device. Returning `Some` does not require every field to be
+    /// populated — backends fill what they know, and matching falls
+    /// back from `(manufacturer, model, serial)` → `(manufacturer,
+    /// model)` when a serial isn't available.
+    ///
+    /// This is a read from cached state (populated at connect time),
+    /// not an I/O call — synchronous by design so the daemon can read
+    /// it while holding the connection lock without awaiting.
+    fn hardware_id(&self) -> Option<HardwareId> {
+        None
+    }
 
     // =========================================================================
     // Power control (default: not supported)

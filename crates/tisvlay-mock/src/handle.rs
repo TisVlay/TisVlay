@@ -38,7 +38,7 @@
 //! ```
 
 use std::sync::{Arc, Mutex};
-use tisvlay_core::DiscoveredTv;
+use tisvlay_core::{DiscoveredTv, HardwareId};
 use tracing::instrument;
 
 use crate::pairing::PairingOutcome;
@@ -120,6 +120,27 @@ impl MockHandle {
     #[instrument(skip(self), fields(tv_id = %tv_id))]
     pub fn simulate_pairing_timeout(&self, tv_id: &str) {
         self.set_pairing_outcome(tv_id, PairingOutcome::Timeout);
+    }
+
+    // ------------------------------------------------------------------
+    // Hardware identity
+    // ------------------------------------------------------------------
+
+    /// Seed the hardware identity returned by a mock connection opened
+    /// to `tv_id` (the mock address, which doubles as the TV ID for mock
+    /// TVs). Applied on every connect, not consumed, so tests can query
+    /// hardware identity across reconnects without re-seeding.
+    #[instrument(skip(self), fields(tv_id = %tv_id))]
+    pub fn set_hardware_id(&self, tv_id: &str, id: HardwareId) {
+        let mut state = self.state.lock().expect("mock state lock poisoned");
+        tracing::debug!(?id, "seeding hardware identity");
+        state.hardware_ids.insert(tv_id.to_string(), id);
+    }
+
+    /// Remove a previously seeded hardware identity.
+    pub fn clear_hardware_id(&self, tv_id: &str) {
+        let mut state = self.state.lock().expect("mock state lock poisoned");
+        state.hardware_ids.remove(tv_id);
     }
 
     // ------------------------------------------------------------------
