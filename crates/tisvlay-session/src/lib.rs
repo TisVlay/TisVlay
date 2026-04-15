@@ -7,6 +7,7 @@ pub mod desktop_probe;
 pub mod idle;
 pub mod session_dbus;
 pub mod session_monitor;
+pub mod volume_sync;
 pub mod wayland_idle;
 
 /// Re-exports for the integration-test harness crate. Not public API.

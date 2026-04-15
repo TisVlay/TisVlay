@@ -205,10 +205,45 @@ async fn main() -> Result<()> {
         tisvlay_session::event_handler(event_rx, handler_state, handler_daemon).await;
     });
 
+    // Spawn the volume-sync coordinator. Holds a PipeWire connection
+    // for the lifetime of the session, creating / destroying virtual
+    // sinks per TV based on the effective user profile.
+    //
+    // Gated on `TISVLAY_VOLUME_SYNC=1` for now: pipewire-native 0.1.4
+    // aborts inside an FFI callback when talking to PipeWire 1.4.10
+    // (upstream issue, signal 6 from `source_io_trampoline`
+    // → `panic_cannot_unwind`). Leaving the integration opt-in keeps
+    // the session service alive by default while we iterate on the
+    // crash in follow-up commits.
+    let (volume_sync_shutdown_tx, volume_sync_shutdown_rx) = tokio::sync::watch::channel(false);
+    let volume_sync_task = if std::env::var_os("TISVLAY_VOLUME_SYNC").is_some() {
+        let volume_sync_state = state.clone();
+        let volume_sync_daemon = daemon.clone();
+        Some(tokio::spawn(async move {
+            tisvlay_session::volume_sync::run(
+                volume_sync_daemon,
+                volume_sync_state,
+                volume_sync_shutdown_rx,
+            )
+            .await;
+        }))
+    } else {
+        debug!("Volume sync disabled (set TISVLAY_VOLUME_SYNC=1 to enable)");
+        None
+    };
+
     // Wait for shutdown signals
     wait_for_signals(state, daemon, args.config).await;
 
     info!("Shutting down...");
+
+    // Signal the volume-sync coordinator to tear down virtual sinks
+    // cleanly. `send` fails only if the receiver was already dropped —
+    // ignore because the task's exit-on-drop path handles it too.
+    let _ = volume_sync_shutdown_tx.send(true);
+    if let Some(task) = volume_sync_task {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
+    }
 
     // Abort the handler task
     handler_task.abort();
