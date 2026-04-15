@@ -123,6 +123,12 @@ trait TisvlayManager {
 
     /// Set a system-level TV option.
     fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> zbus::Result<()>;
+
+    /// Push a desktop identity + sync state mapping for a TV.
+    ///
+    /// Called by `tisvlay-session`; the daemon caches the value and
+    /// republishes it on `org.tisvlay.Tv1.Desktop`.
+    fn set_desktop_mapping(&self, tv_id: &str, mapping: crate::DesktopMapping) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -260,6 +266,32 @@ trait TisvlayTvInput {
     /// Available inputs as (id, label) tuples.
     #[zbus(property)]
     fn available_inputs(&self) -> zbus::Result<Vec<(String, String)>>;
+}
+
+/// D-Bus proxy for desktop identity + sync state.
+///
+/// All properties are read-only — writes go through
+/// [`TisvlayManagerProxy::set_desktop_mapping`] on the manager, not
+/// per-TV. Empty strings mean unknown / unset.
+#[proxy(
+    interface = "org.tisvlay.Tv1.Desktop",
+    default_service = "org.tisvlay.Daemon"
+)]
+trait TisvlayTvDesktop {
+    #[zbus(property)]
+    fn edid(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn connector(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn sink(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn sync_backlight(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn sync_volume(&self) -> zbus::Result<String>;
 }
 
 /// D-Bus proxy for TV backlight control.
@@ -424,6 +456,10 @@ pub struct TvInfo {
     pub system_profile: String,
     /// Vendor-reported hardware identity (manufacturer / model / serial).
     pub hardware_id: crate::HardwareId,
+    /// Desktop-side identity and sync state pushed by `tisvlay-session`.
+    /// Fields are empty strings until the session service pushes a
+    /// mapping for this TV.
+    pub desktop: crate::DesktopMapping,
     /// D-Bus object path.
     pub path: String,
 
@@ -456,6 +492,11 @@ struct TvProxies {
     volume: TisvlayTvVolumeProxy<'static>,
     input: TisvlayTvInputProxy<'static>,
     backlight: TisvlayTvBacklightProxy<'static>,
+    // Future: direct proxy access for tray/GUI readouts. Not consumed
+    // yet — SetDesktopMapping writes go through TisvlayManagerProxy
+    // and reads are served via GetManagedObjects.
+    #[allow(dead_code)]
+    desktop: TisvlayTvDesktopProxy<'static>,
 }
 
 impl TvProxies {
@@ -497,10 +538,17 @@ impl TvProxies {
 
         let backlight = TisvlayTvBacklightProxy::builder(&connection)
             .destination(DAEMON_SERVICE)?
-            .path(path)?
+            .path(path.clone())?
             .build()
             .await
             .context("Failed to create TV backlight proxy")?;
+
+        let desktop = TisvlayTvDesktopProxy::builder(&connection)
+            .destination(DAEMON_SERVICE)?
+            .path(path)?
+            .build()
+            .await
+            .context("Failed to create TV desktop proxy")?;
 
         Ok(Self {
             base,
@@ -509,6 +557,7 @@ impl TvProxies {
             volume,
             input,
             backlight,
+            desktop,
         })
     }
 }
@@ -764,6 +813,13 @@ impl DaemonClient {
                 .and_then(|p| p.get("AvailableInputs"))
                 .and_then(|v| <Vec<(String, String)>>::try_from(v.clone()).ok())
                 .unwrap_or_default();
+            let desktop = crate::DesktopMapping {
+                edid: get_sub_str("org.tisvlay.Tv1.Desktop", "Edid", ""),
+                connector: get_sub_str("org.tisvlay.Tv1.Desktop", "Connector", ""),
+                sink: get_sub_str("org.tisvlay.Tv1.Desktop", "Sink", ""),
+                sync_backlight: get_sub_str("org.tisvlay.Tv1.Desktop", "SyncBacklight", "none"),
+                sync_volume: get_sub_str("org.tisvlay.Tv1.Desktop", "SyncVolume", "none"),
+            };
 
             let fallbacks = fallbacks.into_inner();
             if !fallbacks.is_empty() {
@@ -789,6 +845,7 @@ impl DaemonClient {
                 automated,
                 system_profile,
                 hardware_id,
+                desktop,
                 path: path.as_str().to_string(),
                 power_state,
                 is_screen_on,
@@ -1077,6 +1134,19 @@ impl DaemonClient {
             .set_tv_option(tv_id, key, value)
             .await
             .with_context(|| format!("Failed to set TV option: {} {}={}", tv_id, key, value))
+    }
+
+    /// Push a desktop identity + sync state mapping for a TV.
+    pub async fn set_desktop_mapping(
+        &self,
+        tv_id: &str,
+        mapping: crate::DesktopMapping,
+    ) -> Result<()> {
+        debug!(tv_id = %tv_id, ?mapping, "Calling SetDesktopMapping on daemon");
+        self.manager
+            .set_desktop_mapping(tv_id, mapping)
+            .await
+            .with_context(|| format!("Failed to set desktop mapping for TV {}", tv_id))
     }
 }
 

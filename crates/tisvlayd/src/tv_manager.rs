@@ -112,6 +112,12 @@ pub enum StateChangeEvent {
     /// for all connected network TVs in case their route shifted to a
     /// different NIC (failover, DHCP renewal, VPN up/down).
     RouteChanged,
+    /// Session service pushed a new desktop mapping for a TV.
+    ///
+    /// The forwarder invalidates the `org.tisvlay.Tv1.Desktop` cached
+    /// properties so the next read returns the updated identity and
+    /// sync-mode values.
+    DesktopMappingChanged { tv_id: String },
 }
 
 /// Basic TV information for D-Bus properties.
@@ -231,6 +237,14 @@ pub struct TvManager {
     disk_write_lock: Mutex<()>,
     /// Channel to send state change events.
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
+    /// In-memory cache of desktop mappings pushed by `tisvlay-session`
+    /// via `Manager1.SetDesktopMapping`. The session service owns the
+    /// authoritative file storage (under `~/.config/tisvlay/`); the
+    /// daemon holds this cache only to back the `org.tisvlay.Tv1.Desktop`
+    /// D-Bus surface so tray / GUI / CLI consumers can read from a
+    /// single place. Empty on startup — session service re-pushes on
+    /// connect.
+    desktop_mappings: RwLock<std::collections::HashMap<String, tisvlay_core::DesktopMapping>>,
 }
 
 impl std::fmt::Debug for TvManager {
@@ -328,6 +342,7 @@ impl TvManager {
             user_section,
             disk_write_lock: Mutex::new(()),
             state_change_tx,
+            desktop_mappings: RwLock::new(std::collections::HashMap::new()),
         };
 
         (manager, state_change_rx)
@@ -830,6 +845,35 @@ impl TvManager {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
         let tv = tv_arc.lock().await;
         tv.connection.as_ref().and_then(|c| c.hardware_id())
+    }
+
+    /// Get the current desktop mapping pushed by `tisvlay-session`.
+    ///
+    /// Returns `None` when the session service hasn't pushed a mapping
+    /// for this TV yet (e.g. session not started, or TV not visible
+    /// to the session's auto-detection probe).
+    pub async fn get_desktop_mapping(&self, tv_id: &str) -> Option<tisvlay_core::DesktopMapping> {
+        let mappings = self.desktop_mappings.read().await;
+        mappings.get(tv_id).cloned()
+    }
+
+    /// Record a desktop mapping pushed by `tisvlay-session`.
+    ///
+    /// Overwrites any existing entry for this TV. Emits
+    /// `StateChangeEvent::DesktopMappingChanged` so the D-Bus forwarder
+    /// invalidates the `Tv1.Desktop` property cache. The caller is
+    /// expected to validate `tv_id` — the daemon does not check that
+    /// the ID corresponds to a configured TV, because the session
+    /// service may legitimately push mappings for TVs it knows about
+    /// that the daemon doesn't yet.
+    pub async fn set_desktop_mapping(&self, tv_id: &str, mapping: tisvlay_core::DesktopMapping) {
+        {
+            let mut mappings = self.desktop_mappings.write().await;
+            mappings.insert(tv_id.to_string(), mapping);
+        }
+        self.emit_state_change(StateChangeEvent::DesktopMappingChanged {
+            tv_id: tv_id.to_string(),
+        });
     }
 
     /// Force reconnection to a TV.

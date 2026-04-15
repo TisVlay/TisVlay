@@ -17,6 +17,13 @@ expression: "vec![sample_connected(), sample_disconnected()]"
       "model": "OLED65G4SUB",
       "serial": "serial-1"
     },
+    "desktop": {
+      "edid": "abc123",
+      "connector": "HDMI-A-2",
+      "sink": "alsa_output.hdmi",
+      "sync_backlight": "wayland",
+      "sync_volume": "virtual_sink"
+    },
     "path": "/org/tisvlay/Tv/living_room",
     "power_state": "active",
     "is_screen_on": true,
@@ -52,6 +59,13 @@ expression: "vec![sample_connected(), sample_disconnected()]"
       "manufacturer": null,
       "model": null,
       "serial": null
+    },
+    "desktop": {
+      "edid": "",
+      "connector": "",
+      "sink": "",
+      "sync_backlight": "",
+      "sync_volume": ""
     },
     "path": "/org/tisvlay/Tv/guest_room",
     "power_state": "unknown",

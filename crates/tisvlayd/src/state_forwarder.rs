@@ -13,8 +13,8 @@ use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
-    MANAGER_PATH, ManagerService, TvBacklightService, TvInputService, TvPowerService,
-    TvScreenService, TvService, TvVolumeService, tv_path,
+    MANAGER_PATH, ManagerService, TvBacklightService, TvDesktopService, TvInputService,
+    TvPowerService, TvScreenService, TvService, TvVolumeService, tv_path,
 };
 use crate::tv_manager::{StateChangeEvent, TvManager};
 
@@ -98,6 +98,21 @@ pub async fn state_change_forwarder(
                         }
                         _ => {}
                     }
+                }
+            }
+            StateChangeEvent::DesktopMappingChanged { ref tv_id } => {
+                let path = tv_path(tv_id);
+                debug!(tv_id = %tv_id, "Forwarding desktop mapping change to D-Bus");
+                if let Ok(iface_ref) = object_server.interface::<_, TvDesktopService>(&*path).await
+                {
+                    let emitter = iface_ref.signal_emitter();
+                    let iface = iface_ref.get_mut().await;
+                    // `invalidates` properties — clients re-read on next access.
+                    iface.edid_changed(emitter).await.ok();
+                    iface.connector_changed(emitter).await.ok();
+                    iface.sink_changed(emitter).await.ok();
+                    iface.sync_backlight_changed(emitter).await.ok();
+                    iface.sync_volume_changed(emitter).await.ok();
                 }
             }
             StateChangeEvent::ConfigReloaded => {

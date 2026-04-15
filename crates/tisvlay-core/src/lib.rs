@@ -46,6 +46,7 @@
 mod capabilities;
 mod config;
 pub mod dbus_paths;
+mod desktop;
 mod error;
 mod hardware_id;
 mod pairing;
@@ -72,6 +73,9 @@ pub use capabilities::Capabilities;
 // Hardware identity
 pub use hardware_id::HardwareId;
 
+// Desktop mapping (identity + sync state)
+pub use desktop::DesktopMapping;
+
 // Pairing
 pub use pairing::{
     Credentials, InputType, PairingCommand, PairingError, PairingErrorCode, PairingSession,
@@ -80,10 +84,10 @@ pub use pairing::{
 
 // Configuration
 pub use config::{
-    AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
-    SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, is_valid_tv_id,
-    tv_id_from_name,
+    AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SyncBacklight,
+    SyncVolume, SystemConfig, SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment,
+    UserConfig, UserProfileConfig, UserSection, UserTvConfig, UserTvDesktopConfig,
+    UserTvProfileAssignment, is_valid_tv_id, tv_id_from_name,
 };
 
 // State

@@ -431,6 +431,75 @@ impl TvBacklightService {
 }
 
 // =============================================================================
+// Desktop mapping interface
+// =============================================================================
+
+/// Desktop identity + sync state for a TV.
+///
+/// All properties are live-read from the manager's in-memory mapping
+/// cache, which is populated by `tisvlay-session` via
+/// `Manager1.SetDesktopMapping`. Empty strings mean unknown / unset.
+/// Emits `invalidates` on change so clients re-read on next access.
+#[derive(Debug)]
+pub struct TvDesktopService {
+    pub(crate) tv_id: String,
+    pub(crate) manager: Arc<TvManager>,
+}
+
+#[interface(name = "org.tisvlay.Tv1.Desktop")]
+impl TvDesktopService {
+    /// EDID hash of the matching monitor (empty when unknown).
+    #[zbus(property)]
+    async fn edid(&self) -> String {
+        self.manager
+            .get_desktop_mapping(&self.tv_id)
+            .await
+            .map(|m| m.edid)
+            .unwrap_or_default()
+    }
+
+    /// DRM connector name (empty when unknown / not needed).
+    #[zbus(property)]
+    async fn connector(&self) -> String {
+        self.manager
+            .get_desktop_mapping(&self.tv_id)
+            .await
+            .map(|m| m.connector)
+            .unwrap_or_default()
+    }
+
+    /// PipeWire sink identifier (empty when unknown).
+    #[zbus(property)]
+    async fn sink(&self) -> String {
+        self.manager
+            .get_desktop_mapping(&self.tv_id)
+            .await
+            .map(|m| m.sink)
+            .unwrap_or_default()
+    }
+
+    /// Resolved backlight sync mode (`"none"` or `"wayland"`).
+    #[zbus(property)]
+    async fn sync_backlight(&self) -> String {
+        self.manager
+            .get_desktop_mapping(&self.tv_id)
+            .await
+            .map(|m| m.sync_backlight)
+            .unwrap_or_else(|| "none".to_string())
+    }
+
+    /// Resolved volume sync mode (`"none"` or `"virtual_sink"`).
+    #[zbus(property)]
+    async fn sync_volume(&self) -> String {
+        self.manager
+            .get_desktop_mapping(&self.tv_id)
+            .await
+            .map(|m| m.sync_volume)
+            .unwrap_or_else(|| "none".to_string())
+    }
+}
+
+// =============================================================================
 // Helper to register all interfaces
 // =============================================================================
 
@@ -441,6 +510,7 @@ pub async fn unregister_tv_interfaces(
 ) -> zbus::Result<()> {
     let object_server = connection.object_server();
     // Ignore errors -- the interface may not be registered (e.g., added but never connected).
+    let _ = object_server.remove::<TvDesktopService, _>(path).await;
     let _ = object_server.remove::<TvBacklightService, _>(path).await;
     let _ = object_server.remove::<TvInputService, _>(path).await;
     let _ = object_server.remove::<TvVolumeService, _>(path).await;
@@ -586,6 +656,16 @@ pub async fn register_tv_interfaces(
                 tv_id: tv_id.clone(),
                 manager: manager.clone(),
                 backlight,
+            },
+        )
+        .await?;
+
+    object_server
+        .at(
+            path,
+            TvDesktopService {
+                tv_id: tv_id.clone(),
+                manager: manager.clone(),
             },
         )
         .await?;
