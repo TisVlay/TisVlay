@@ -34,7 +34,7 @@ pub struct DesktopMapping {
     pub sink: String,
     /// Resolved backlight sync mode (`"none"`, `"wayland"`).
     pub sync_backlight: String,
-    /// Resolved volume sync mode (`"none"`, `"virtual_sink"`).
+    /// Resolved volume sync mode (`"none"`, `"mirror_hdmi"`).
     pub sync_volume: String,
 }
 
@@ -78,13 +78,13 @@ mod tests {
         let m = DesktopMapping::from_parts(
             Some(&identity),
             SyncBacklight::Wayland,
-            SyncVolume::VirtualSink,
+            SyncVolume::MirrorHdmi,
         );
         assert_eq!(m.edid, "abc123");
         assert_eq!(m.connector, "HDMI-A-2");
         assert_eq!(m.sink, "alsa_output.hdmi");
         assert_eq!(m.sync_backlight, "wayland");
-        assert_eq!(m.sync_volume, "virtual_sink");
+        assert_eq!(m.sync_volume, "mirror_hdmi");
     }
 
     #[test]

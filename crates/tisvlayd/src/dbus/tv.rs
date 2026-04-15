@@ -488,7 +488,7 @@ impl TvDesktopService {
             .unwrap_or_else(|| "none".to_string())
     }
 
-    /// Resolved volume sync mode (`"none"` or `"virtual_sink"`).
+    /// Resolved volume sync mode (`"none"` or `"mirror_hdmi"`).
     #[zbus(property)]
     async fn sync_volume(&self) -> String {
         self.manager

@@ -191,7 +191,7 @@ pub fn match_displays_to_tvs(
 /// serial reported by SSAP. So we accept manufacturer-only matches
 /// and rely on [`match_score`] + the connector tiebreaker to
 /// disambiguate multi-TV setups.
-fn identity_matches(tv: &HardwareId, edid: &HardwareId) -> bool {
+pub(crate) fn identity_matches(tv: &HardwareId, edid: &HardwareId) -> bool {
     if tv.is_empty() || edid.is_empty() {
         return false;
     }
@@ -209,7 +209,7 @@ fn identity_matches(tv: &HardwareId, edid: &HardwareId) -> bool {
 /// single TV could plausibly map to several displays. Model and
 /// serial agreement each add a point; disagreements cost nothing
 /// (they're expected in practice — see [`identity_matches`]).
-fn match_score(tv: &HardwareId, edid: &HardwareId) -> u32 {
+pub(crate) fn match_score(tv: &HardwareId, edid: &HardwareId) -> u32 {
     let mut score = 0;
     if let (Some(a), Some(b)) = (&tv.model, &edid.model) {
         if a == b {
