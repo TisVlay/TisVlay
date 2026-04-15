@@ -116,26 +116,27 @@ impl std::fmt::Display for SyncBacklight {
 
 /// Volume sync mode between the desktop and a TV.
 ///
-/// Controls the `desktop_sync::volume` module in `tisvlay-session`.
+/// Controls the `volume_sync` module in `tisvlay-session`.
 /// Per-profile so the user can flip it on an activity basis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncVolume {
-    /// Sync disabled. No virtual sink created — KDE's volume widget
-    /// controls whichever default sink the user picked, matching a
-    /// no-tisvlay install. Default.
+    /// Sync disabled. KDE's volume widget controls whichever sink the
+    /// user picked, matching a no-tisvlay install. Default.
     #[default]
     None,
-    /// Create a PipeWire virtual sink per TV so KDE's slider drives
-    /// `Tv1.Volume` and TV-side changes push back.
-    VirtualSink,
+    /// Bind to the existing PipeWire HDMI sink matching the TV and
+    /// bridge its volume / mute with `Tv1.Volume`. The TV's native
+    /// row in KDE's audio widget becomes the slider that drives the
+    /// TV — no extra sink appears.
+    MirrorHdmi,
 }
 
 impl std::fmt::Display for SyncVolume {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => f.write_str("none"),
-            Self::VirtualSink => f.write_str("virtual_sink"),
+            Self::MirrorHdmi => f.write_str("mirror_hdmi"),
         }
     }
 }
@@ -1602,7 +1603,7 @@ ip = "192.168.1.1"
             on_idle_timeout: Some(SessionAction::PowerOff),
             on_idle_resume: Some(SessionAction::None),
             sync_backlight: Some(SyncBacklight::Wayland),
-            sync_volume: Some(SyncVolume::VirtualSink),
+            sync_volume: Some(SyncVolume::MirrorHdmi),
         };
 
         let merged = full_override.merge_with_base(&base);

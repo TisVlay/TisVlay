@@ -36,7 +36,7 @@ fn sample_connected() -> TvInfo {
             connector: "HDMI-A-2".to_string(),
             sink: "alsa_output.hdmi".to_string(),
             sync_backlight: "wayland".to_string(),
-            sync_volume: "virtual_sink".to_string(),
+            sync_volume: "mirror_hdmi".to_string(),
         },
         path: "/org/tisvlay/Tv/living_room".to_string(),
         power_state: "active".to_string(),

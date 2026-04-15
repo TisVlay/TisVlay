@@ -30,7 +30,7 @@ Scoped by transport, not vendor: sync only makes sense for TVs carrying an AV si
 | Concern      | Primary path (KDE)                                     | Portable fallback / notes                                  |
 |--------------|--------------------------------------------------------|------------------------------------------------------------|
 | Brightness   | `kde-external-brightness-v1` Wayland protocol client   | `org.kde.ScreenBrightness.BrightnessChanged` observer      |
-| Volume       | PipeWire virtual sink per TV (`pipewire-native`)       | Freedesktop-portable; works on any PW system               |
+| Volume       | Bind to existing HDMI sink per TV via `pipewire-native` | ELD → `HardwareId` matching reuses Phase 1 identity logic  |
 | Identity     | EDID (via `edidkit`) ↔ `Tv1.HardwareId`                | `connector` tiebreaker for same-model dual-TV setups       |
 | Greeter      | Not supported (desktop-sync runs in the user session)  | Documented limitation                                      |
 
@@ -67,12 +67,12 @@ The display side (DRM enumeration, EDID matching, `[tv.desktop]` persistence, `T
   # System config — admin baseline for sync behavior
   [user.profiles.default]
   sync_backlight = "wayland"       # none | wayland   (dbus_observer added in Phase 4)
-  sync_volume    = "virtual_sink"  # none | virtual_sink
+  sync_volume    = "mirror_hdmi"   # none | mirror_hdmi
 
   # User config — per-activity profiles flip the toggles
   [user.profiles.gaming]
   sync_backlight = "none"          # don't let KDE dim the TV mid-game
-  sync_volume    = "virtual_sink"
+  sync_volume    = "mirror_hdmi"
 
   # Per-TV identity — cannot live in a shared profile
   [[tv]]
@@ -81,7 +81,7 @@ The display side (DRM enumeration, EDID matching, `[tv.desktop]` persistence, `T
   [tv.desktop]
   edid = "abc123…"                 # EDID hash of the matching monitor; auto, overridable
   connector = "HDMI-A-2"           # optional DRM connector tiebreaker; consulted only on ambiguous EDID match
-  sink = "alsa_output.…"           # PipeWire sink node name; auto, overridable
+  sink = "alsa_output.…"           # PipeWire sink node name; auto-resolved each session from ELD; overridable
   ```
   Rationale:
   - `sync_backlight` / `sync_volume` are session-scope behavior (the sync logic runs in `tisvlay-session`, not `tisvlayd`), matching the existing `UserProfileConfig` knobs like `on_session_lock` / `idle_timeout_seconds`. Adding them to [`UserProfileConfig`](../crates/tisvlay-core/src/config.rs) (and `ResolvedUserProfile`) gives users profile-switching UX for free: `"default"` with sync on, `"gaming"` with backlight off, `"movie"` with backlight off but volume on. Admin baseline via `user.profiles.default` in system config still sets the defaults.
@@ -97,22 +97,24 @@ The display side (DRM enumeration, EDID matching, `[tv.desktop]` persistence, `T
   - **Data flow — landed:** the session service owns both file storage under `~/.config/tisvlay/` (or the `--config` path) *and* probing; it writes `[tv.desktop]` to disk and pushes the resolved `DesktopMapping` to the daemon via the new `Manager1.SetDesktopMapping(tv_id, DesktopMapping)` RPC. The daemon holds the mapping **in-memory only** (no file I/O — the root daemon has no write access to user home directories) and republishes on `Tv1.Desktop`. Clients still read from one place. Daemon-side persistence was considered but dropped once the ownership mismatch surfaced.
   - **Persistence delta:** the probe re-runs on every session start but only rewrites the config when the resolved mapping differs from what's on disk. Idempotent restarts don't churn the file.
 
-## Phase 2 — Volume sync (PipeWire virtual sink) — NEXT
+## Phase 2 — Volume sync (mirror HDMI sink) — DONE
 
-- Use [`pipewire-native`](https://crates.io/crates/pipewire-native) from crates.io (pure-Rust, no libpipewire FFI, KDE-aligned — checkout at `/home/ruffsl/ws/kde/libs/pipewire-native-rs`). Start with the published release; only switch to a git dep with a pinned rev if we hit a blocker or need an unreleased feature. Our needs — virtual sink creation + `Props` subscribe/set, no audio streaming — fall within what the crate supports today.
-- **Sink identifier stability — decide during implementation.** `node.name` is fragile (it encodes PCI paths and can change across kernel upgrades, hardware re-enumeration, or ALSA card reordering). More durable options: `device.description` + connector for HDMI outputs, `device.serial` for USB DACs, or a compound `(card_name, connector)` key. Pick whichever most-stable identifier `pipewire-native` exposes cleanly when we get there, and store the chosen field in `[tv.desktop] sink` along with a small discriminator so the session service knows what to match against on the next run. Do **not** hard-code `node.name` in the auto-detection probe without revisiting this.
-- New module `desktop_sync::volume`. For each managed TV where `Capabilities::VOLUME` is set on the `TisvlayTvProxy` and the effective user profile has `sync_volume = "virtual_sink"`:
-  - Create a virtual sink `tisvlay_<tv_id>` (`device.description = <Tv1.Name>`, `media.class = Audio/Sink`).
-  - Subscribe to `Props` (`channelVolumes`, `mute`) on the node.
-  - On change, enqueue a `Set{Volume,Muted}` event to an mpsc channel; a drain-loop task coalesces per-TV bursts (mirror the tray pattern at [tisvlay-tray/src/main.rs:304-351](../crates/tisvlay-tray/src/main.rs)) and flushes one `TisvlayTvVolumeProxy::set_volume` / `set_muted` call per drain. Mute goes through the same channel but doesn't sum — last-write-wins.
-- Subscribe to `PropertiesChanged` on `org.tisvlay.Tv1.Volume` (reuse the existing `StateWatcher` pattern in `dbus_client.rs`). On TV-initiated change, update the virtual-sink Props directly — no coalescing needed, TV pushes are sparse (remote presses, app-driven changes).
-- Spawn via `tokio::spawn` in [tisvlay-session/src/main.rs](../crates/tisvlay-session/src/main.rs) following the existing event-handler retry-loop pattern.
-- **Active-session gate:** subscribe to the session's own logind `Session.Active` property. When `Active = false`, stop flushing desktop → TV events (protects against fast-user-switch races where two session services briefly coexist). Leave the virtual sink registered so audio routing stays stable; we just pause the bridge.
-- **Profile-flip teardown:** when the resolved user profile's `sync_volume` transitions to `"none"`, **tear down the virtual sink** so KDE's volume widget falls back to the user's default HDMI sink natively — mimicking the no-tisvlay UX. Re-create on transition back to `"virtual_sink"`.
-- **Disconnect teardown:** when `Tv1.Connected` transitions to `false`, tear down the virtual sink too. Rationale: the user opted into sync to route volume at the TV, so silently falling back to software-level sink control would hide the disconnection; the TV's own on-screen volume indicator also stops echoing, which is the expected feedback on most devices. Re-create on reconnect. `Tv1.Connected` is already debounced upstream by the daemon's reconnect logic, so no additional hysteresis needed here.
-- **Initial-state direction at session start:** desktop-wins. On first registration, read the last-known virtual-sink volume from PipeWire / KDE memory and push it to the TV via `set_volume`. Covers transitions like "someone watched a movie last night at 80 %; I sit down at the PC this morning and expect my desktop's saved levels, not last night's." Same rationale as the time-of-day brightness profile common on Linux desktops.
-- Tear down virtual sinks on clean session exit.
-- **Out of scope:** loopback routing from the virtual sink into the real HDMI sink. Documented recipe; user adds `module-loopback` themselves.
+Ships the `mirror_hdmi` mode only; no virtual sink created. The existing PipeWire HDMI sink that corresponds to the TV becomes the slider the user already knows, and we bridge its `Props.channelVolumes` / `Props.mute` with `Tv1.Volume`. Early prototyping with a separate `virtual_sink` mode was dropped — it added an extra row in KDE's audio widget that the user had to manually route to, and audio continued flowing through the real HDMI sink anyway. Mirror mode keeps the native output row and sidesteps that friction.
+
+- Use [`pipewire-native`](https://crates.io/crates/pipewire-native) pinned to upstream git rev `0a2cff2e73ba79f63568fb892073b264266714a2`. The 0.1.4 crates.io release aborts inside an FFI callback when the PipeWire 1.4.x protocol hits a decode error (fixed upstream but not yet in a release tag). Revert to a crates.io pin when 0.1.5+ ships.
+- `tisvlay-session/src/volume_sync.rs` owns a `ThreadLoop`, `Core`, and `Registry`. The Context is held alongside Core in the same `Inner` struct — `Core` holds only a `Weak<Context>` internally, and letting Context drop crashes later callbacks.
+- **Sink discovery.** On connect we install a `RegistryEvents::global` listener that filters to `media.class = "Audio/Sink"` globals. For each we parse `api.alsa.card` + `api.alsa.pcm.device`, read `/proc/asound/card$N/eld#$N.$M`, and derive a [`HardwareId`] from the ELD (manufacture_id → PNPID, monitor_name → model; ELD doesn't carry a serial so we use `None`). Cached in an `Inner.candidates: HashMap<global_id, SinkCandidate>`. The `global_remove` callback keeps the cache current.
+- **Matching** reuses `desktop_probe::identity_matches` + `match_score` so the manufacturer-anchored EDID matcher behavior is identical across display and audio probes. When multiple candidates tie on score, first wins — same-model-dual-HDMI-port disambiguation relies on `[tv.desktop].connector` today (the ELD reported by each PCM is usually identical across ports of the same model).
+- **Binding.** Per TV: `Registry::bind(global_id, NODE, 3)` returns a typed `Node`. We `subscribe_params(&[ParamType::Props])`, attach a param listener, and track the binding in `Inner.bindings: HashMap<tv_id, Binding>`. Unbind drops the proxy — we do **not** call `Core::destroy` (the sink isn't ours).
+- **Forward path** (user scrolls KDE slider): the listener callback parses `Props.channelVolumes` / `Props.mute`, suppresses values equal to the last-pushed cache entry, and sends `SinkEvent`s to a `tokio::sync::mpsc::UnboundedSender`. A tokio drain-loop coalesces bursts per TV and calls `DaemonClient::set_volume` / `set_mute` once per drain. Mute is last-write-wins, not coalesced further.
+- **Reverse path** (TV remote changes volume): the coordinator subscribes to `StateWatcher`. On `PropertiesChanged` for a TV we `push_tv_state(tv_id, volume, muted)` which calls `Node::set_param(Props)` with the new `channelVolumes` + `mute`.
+- **Volume scale.** PipeWire's `channelVolumes` is cubic (`cv^3` is the real gain) and Plasma displays percent as `cbrt(cv) * 100`. Our host-side `u8 Volume` is linear 0-100, so we cube on write and cube-root on read. 50 KDE ↔ 50 TV, 100 ↔ 100.
+- **Coordinator** reconciles every 10 s and on every `StateWatcher` event. For each managed TV with `sync_volume = "mirror_hdmi"` + `Connected = true` + non-empty `HardwareId`, it picks the best candidate sink from the registry cache and binds. TVs that lose connection, flip to `sync_volume = "none"`, or whose candidate sink disappeared get unbound in the same pass.
+- **Opt-in via `TISVLAY_VOLUME_SYNC=1`** until real-hardware verification is stable. The pipewire-native git pin works against PipeWire 1.4.10 in practice but the crate is pre-1.0 with acknowledged API churn; keeping the env gate avoids surprising users if a protocol-decode regression re-lands upstream.
+- **Known follow-ups** (out of scope for the first-landing Phase 2 commit):
+  - Active-session gate against logind `Session.Active` (pause forward flushes on inactive sessions without unbinding). Not wired yet; in practice the session service only runs per-user-session so the race window is small.
+  - Same-model duals on different HDMI ports when the ELD reports the same manufacturer + monitor name. Today the first candidate wins; a follow-up should correlate `api.alsa.pcm.device` with `[tv.desktop].connector` for disambiguation.
+  - Flip the opt-in default once the pipewire-native pin lands in a 0.1.5+ crates.io release.
 
 ## Phase 3 — Brightness sync (Wayland external-brightness)
 
@@ -159,11 +161,11 @@ When revisited:
 1:1 linear, no curve adjustment, no clamping beyond the endpoints. `Capabilities::{BACKLIGHT, VOLUME}` already imply a 0–100 integer scale on the `Tv1.*` D-Bus surface, and any backend implementing those bits is required to conform to it.
 
 - **Brightness:** KDE slider 0 % / 50 % / 100 % ↔ `Tv1.Backlight.Backlight` 0 / 50 / 100. `kde-external-brightness-v1` device advertises `max_brightness = 100`; requested values pass through untouched.
-- **Volume:** PipeWire virtual-sink volume 0 % / 50 % / 100 % ↔ `Tv1.Volume.Volume` 0 / 50 / 100. Configure the sink as linear (`PW_KEY_NODE_VOLUME`-style cubic disabled) so the slider → D-Bus value is the identity, and Plasma's own cubic curve — if any — is the only curve in the chain, matching what the user sees on a native sink.
+- **Volume:** bound HDMI sink slider 0 % / 50 % / 100 % ↔ `Tv1.Volume.Volume` 0 / 50 / 100. PipeWire's `channelVolumes` is cubic and Plasma displays percent as `cbrt(cv) * 100`; we cube on write and cube-root on read so the linear 0-100 value on the `Tv1.Volume` D-Bus surface matches what Plasma shows.
 - **Mute:** boolean passthrough.
 
 ## Open Questions
 
-- **Sink identifier stability** (for Phase 2): `node.name` encodes PCI paths and changes across kernel upgrades or hardware re-enumeration. More durable candidates: `device.description` + connector for HDMI sinks, `device.serial` for USB DACs, or a compound `(card_name, connector)` key. Pick the most-stable identifier `pipewire-native` exposes cleanly when implementing the probe, and record which field was chosen so the next-run matcher knows what to compare against. Do **not** hard-code `node.name` in the probe without revisiting this.
+- **Sink identifier stability** (resolved in Phase 2): the registry-driven approach sidesteps this entirely. We don't persist a sink identifier across sessions — every session start re-enumerates PipeWire Audio/Sink globals via the `Registry` listener, matches each to a TV by ELD-derived `HardwareId`, and binds fresh. `node.name` changes across kernel upgrades are invisible to us because we never store them. `[tv.desktop].sink` still exists in the config schema for manual overrides and tray-readout consumers, but the matcher doesn't need it.
 - **Live DRM hotplug detection** (deferred from Phase 1): today the probe only re-runs at session start, so HDMI port swaps surface only after a session restart. A udev DRM subsystem watcher would pick this up live. Skip until a concrete user request surfaces or until we're building the GUI pairing wizard that would benefit from live feedback.
 - **Same-model dual-TV swap** (Phase 1 corner case): two identical LG TVs on the same host can't be disambiguated by identity alone — both EDIDs report the same generic `monitor_name` and a boilerplate serial. If the user physically swaps ports between the two, the matcher will keep the old connector hints and silently assign the mappings to the wrong TVs. Documented workaround: user hand-edits `[tv.desktop].connector` in the user config, or powers one TV off during a probe pass. Fancier fix (require the user to confirm via an interactive pairing wizard) stays out of scope for now.

@@ -22,7 +22,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
       "connector": "HDMI-A-2",
       "sink": "alsa_output.hdmi",
       "sync_backlight": "wayland",
-      "sync_volume": "virtual_sink"
+      "sync_volume": "mirror_hdmi"
     },
     "path": "/org/tisvlay/Tv/living_room",
     "power_state": "active",
