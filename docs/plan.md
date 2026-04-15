@@ -29,7 +29,7 @@ Scoped by transport, not vendor: sync only makes sense for TVs carrying an AV si
 |--------------|--------------------------------------------------------|------------------------------------------------------------|
 | Brightness   | `kde-external-brightness-v1` Wayland protocol client   | `org.kde.ScreenBrightness.BrightnessChanged` observer      |
 | Volume       | PipeWire virtual sink per TV (`pipewire-native`)       | Freedesktop-portable; works on any PW system               |
-| Identity     | EDID (via `libdisplay-info`) ↔ `Tv1.HardwareId`        | User override in user config                               |
+| Identity     | EDID (via `edidkit`) ↔ `Tv1.HardwareId`        | User override in user config                               |
 | Greeter      | Not supported (desktop-sync runs in the user session)  | Documented limitation                                      |
 
 New code lives in `tisvlay-session` (add a `desktop_sync` module). Split into a `tisvlay-desktop-sync` sub-crate only if the module set grows beyond ~3 files. `tisvlayd` stays transport/vendor-neutral; its only additions are Phase 0.
@@ -49,7 +49,7 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
 
 ## Phase 1 — Display & sink identity matching (`tisvlay-session`)
 
-- Add `libdisplay-info` bindings (or `edid-rs`) to `tisvlay-session`.
+- Add `edidkit` to `tisvlay-session`.
 - Add a `desktop_sync` section to `UserConfig` (not system config — this is a per-user preference, parallel to `ResolvedUserProfile`):
   ```toml
   [[tv]]
@@ -60,7 +60,7 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
   brightness       = "off"    # off | wayland | dbus_observer
   volume           = "off"    # off | virtual_sink
   ```
-- At session start, enumerate `/sys/class/drm/*/edid`, parse via `libdisplay-info`, and match against every managed TV's `Tv1.HardwareId` (manufacturer PNPID + model + serial with fallback to manufacturer+model when serial is unavailable, e.g. CEC).
+- At session start, enumerate `/sys/class/drm/*/edid`, parse via `edidkit`, and match against every managed TV's `Tv1.HardwareId` (manufacturer PNPID + model + serial with fallback to manufacturer+model when serial is unavailable, e.g. CEC).
 - Session D-Bus (`org.tisvlay.Session1`, [session_dbus.rs](../crates/tisvlay-session/src/session_dbus.rs)): add `ListDesktopMappings() -> a(ssss)` returning `(tv_id, display_name, sink_name, match_source)` for a future tray/GUI surface.
 
 ## Phase 2 — Volume sync (PipeWire virtual sink)
