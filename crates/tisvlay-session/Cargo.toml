@@ -36,6 +36,9 @@ wayland-protocols = { workspace = true }
 
 # EDID parsing for desktop-sync identity matching
 edidkit = "0.1"
+# PipeWire client (pure-Rust) for virtual sink creation + volume sync
+pipewire-native = "0.1"
+pipewire-native-spa = "0.1"
 toml = { workspace = true }
 # SHA-256 for stable EDID hashing
 sha2 = { workspace = true }
