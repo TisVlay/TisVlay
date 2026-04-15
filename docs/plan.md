@@ -50,16 +50,17 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
 ## Phase 1 — Display & sink identity matching (`tisvlay-session`)
 
 - Add `edidkit` to `tisvlay-session`.
-- Add a `desktop_sync` section to `UserConfig` (not system config — this is a per-user preference, parallel to `ResolvedUserProfile`):
+- Add a `desktop` section to `UserConfig` (not system config — this is a per-user preference, parallel to `ResolvedUserProfile`):
   ```toml
   [[tv]]
   id = "living-room"
-  [tv.desktop_sync]
-  display_edid_hash = "..."   # auto, overridable
-  audio_sink_name  = "..."    # auto, overridable
-  brightness       = "off"    # off | wayland | dbus_observer
-  volume           = "off"    # off | virtual_sink
+  [tv.desktop]
+  edid = "abc123…"           # identity — EDID hash of the matching monitor; auto, overridable
+  sink = "alsa_output.…"     # identity — PipeWire sink node name; auto, overridable
+  sync.backlight = "none"    # behavior — none | wayland   (dbus_observer added in Phase 4)
+  sync.volume    = "none"    # behavior — none | virtual_sink
   ```
+  Field naming matches existing project conventions: one-word section name (`desktop` alongside `profile`/`vendor`), `snake_case` throughout, enum variants mirror `SessionAction::None`'s `"none"` rather than `"off"`, and `sync.backlight` uses the `Tv1.Backlight` interface name rather than the KDE-side term "brightness". Identity fields (`edid`, `sink`) sit at the section root so future non-sync consumers (tray readout, pairing wizard, input-switch automation) can reuse them without going through the sync subsystem.
 - At session start, enumerate `/sys/class/drm/*/edid`, parse via `edidkit`, and match against every managed TV's `Tv1.HardwareId` (manufacturer PNPID + model + serial with fallback to manufacturer+model when serial is unavailable, e.g. CEC).
 - Session D-Bus (`org.tisvlay.Session1`, [session_dbus.rs](../crates/tisvlay-session/src/session_dbus.rs)): add `ListDesktopMappings() -> a(ssss)` returning `(tv_id, display_name, sink_name, match_source)` for a future tray/GUI surface.
 
