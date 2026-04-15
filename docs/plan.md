@@ -53,6 +53,8 @@ Prerequisite for mapping KDE displays / PipeWire sinks to TVs without caring whi
 
 Standalone value: a future pairing wizard / GUI also wants this, independently of desktop sync.
 
+All four changes ship in a single PR. The old `DiscoveredTv.hardware_id: String` field is empty in every backend today and has no downstream consumer, so there's no safety benefit to staging the removal behind a deprecation window.
+
 ## Phase 1 — Display & sink identity matching (`tisvlay-session`)
 
 - Add `edidkit` to `tisvlay-session`.
@@ -85,11 +87,13 @@ Standalone value: a future pairing wizard / GUI also wants this, independently o
 - Use `edidkit` from crates.io. Match the `pipewire-native` policy: published release first, switch to a git-pinned rev only if blocked.
 - **Auto-population flow.** The daemon has no DRM / PipeWire visibility (runs as system user outside a graphical session), so the session service owns auto-detection. On session service startup, scan `UserConfig` for managed TVs missing any of `edid` / `connector` / `sink`, probe the relevant system surfaces, and write back to `UserConfig` (the canonical location for `[tv.desktop]`). Client `Manager1.AddTv` takes the fields explicitly when the caller provides them; when left blank it persists the TV as usual and the session service fills `[tv.desktop]` on next run. No daemon-side probing, no new daemon D-Bus method.
 - At session start, enumerate `/sys/class/drm/*/edid`, parse via `edidkit`, and match against every managed TV's `Tv1.HardwareId` (manufacturer PNPID + model + serial with fallback to manufacturer+model when serial is unavailable, e.g. CEC). **Same-model dual-TV setups:** when EDID matching returns ≥ 2 candidates (common: two of the same TV bought together, sharing manufacturer/model/serial), fall back to `[tv.desktop] connector` for disambiguation. Auto-populated at pair time from the connector the user is driving the TV on; user-overridable.
-- Expose the resolved mapping and sync state as a new **`org.tisvlay.Tv1.Desktop`** feature interface on each TV object (matches the existing per-feature-interface convention: [`Tv1.Volume`](../crates/tisvlayd/src/dbus/tv.rs), `Tv1.Backlight`, etc.). Read-only properties: `Edid`, `Connector`, `Sink`, `SyncBacklight`, `SyncVolume`. Tray / GUI / CLI consume via the existing `GetManagedObjects` plumbing and get `PropertiesChanged` for free when mapping or sync state changes at runtime. No new `List*` method on `Session1`.
+- Expose the resolved mapping and sync state as a new **`org.tisvlay.Tv1.Desktop`** feature interface on each TV object, published by `tisvlayd` at `/org/tisvlay/Tv/{id}` alongside the existing per-feature interfaces ([`Tv1.Volume`](../crates/tisvlayd/src/dbus/tv.rs), `Tv1.Backlight`, etc.). Read-only properties: `Edid`, `Connector`, `Sink`, `SyncBacklight`, `SyncVolume`. Tray / GUI / CLI consume via the existing `GetManagedObjects` plumbing and get `PropertiesChanged` for free when mapping or sync state changes at runtime. No new `List*` method on `Session1`.
+  - **Data flow:** the session service owns probing (only it has DRM + PipeWire + profile visibility) and writes the resolved values back to the daemon via a new `Manager1.SetDesktopMapping(tv_id, DesktopMapping)` method. The daemon persists them to `UserConfig` — same storage path used for the other user-config-sourced per-TV state — and republishes on the `Tv1.Desktop` interface. Clients always read from one place.
 
 ## Phase 2 — Volume sync (PipeWire virtual sink)
 
 - Use [`pipewire-native`](https://crates.io/crates/pipewire-native) from crates.io (pure-Rust, no libpipewire FFI, KDE-aligned — checkout at `/home/ruffsl/ws/kde/libs/pipewire-native-rs`). Start with the published release; only switch to a git dep with a pinned rev if we hit a blocker or need an unreleased feature. Our needs — virtual sink creation + `Props` subscribe/set, no audio streaming — fall within what the crate supports today.
+- **Sink identifier stability — decide during implementation.** `node.name` is fragile (it encodes PCI paths and can change across kernel upgrades, hardware re-enumeration, or ALSA card reordering). More durable options: `device.description` + connector for HDMI outputs, `device.serial` for USB DACs, or a compound `(card_name, connector)` key. Pick whichever most-stable identifier `pipewire-native` exposes cleanly when we get there, and store the chosen field in `[tv.desktop] sink` along with a small discriminator so the session service knows what to match against on the next run. Do **not** hard-code `node.name` in the auto-detection probe without revisiting this.
 - New module `desktop_sync::volume`. For each managed TV where `Capabilities::VOLUME` is set on the `TisvlayTvProxy` and the effective user profile has `sync_volume = "virtual_sink"`:
   - Create a virtual sink `tisvlay_<tv_id>` (`device.description = <Tv1.Name>`, `media.class = Audio/Sink`).
   - Subscribe to `Props` (`channelVolumes`, `mute`) on the node.
@@ -153,6 +157,4 @@ When revisited:
 
 ## Open Questions
 
-- Should Phase 0's `HardwareId` and the existing `DiscoveredTv.hardware_id` ship as one migration or two? Leaning one — the existing field is empty in every backend today, so there are no in-flight consumers to break.
-- Where does `org.tisvlay.Tv1.Desktop` live — on `tisvlayd`'s per-TV object path (identity is daemon-observable via EDID → HardwareId match, sync state is session-configured), or on a parallel `org.tisvlay.Session1` per-TV path? The interface shape is the same; the publishing service is the open question. Leaning daemon-side for identity + session-side for sync state as two sub-interfaces, but worth a round of review once Phase 1 starts.
-- **Sink identifier stability.** PipeWire node names like `alsa_output.pci-0000_00_1f.3.hdmi-stereo` change across kernel upgrades and hardware re-enumeration. Should `[tv.desktop] sink` match on `node.name` (current proposal — fragile) or on something more durable like `device.description`, ALSA card persistent ID, or USB serial for USB DACs? Probably the latter; the auto-population probe in Phase 1 should pick the most stable available identifier. Settle the choice before Phase 2 starts.
+_None at this time — revisit after Phase 1 lands and we have live data from the identity surface._
