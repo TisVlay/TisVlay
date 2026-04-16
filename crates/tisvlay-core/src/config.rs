@@ -362,6 +362,15 @@ pub struct UserProfileConfig {
     /// Desktop → TV volume sync mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_volume: Option<SyncVolume>,
+
+    /// Fraction of the slider's dB attenuation handled by KDE; the
+    /// remaining `1 - α` is applied by the TV. Only consulted when
+    /// `sync_volume = "mirror_hdmi"`. Range `[0.5, 1.0]` clamped at
+    /// runtime; default `0.85` (KDE owns ~85 % of the stroke, TV
+    /// moves through a smaller range so the on-screen indicator
+    /// still tracks). `1.0` pins the TV at 100 (KDE-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_volume_split: Option<f32>,
 }
 
 impl UserProfileConfig {
@@ -380,6 +389,7 @@ impl UserProfileConfig {
             on_idle_resume: Some(d.on_idle_resume),
             sync_backlight: Some(d.sync_backlight),
             sync_volume: Some(d.sync_volume),
+            sync_volume_split: Some(d.sync_volume_split),
         }
     }
 
@@ -397,6 +407,7 @@ impl UserProfileConfig {
             on_idle_resume: self.on_idle_resume.or(base.on_idle_resume),
             sync_backlight: self.sync_backlight.or(base.sync_backlight),
             sync_volume: self.sync_volume.or(base.sync_volume),
+            sync_volume_split: self.sync_volume_split.or(base.sync_volume_split),
         }
     }
 
@@ -415,6 +426,10 @@ impl UserProfileConfig {
             on_idle_resume: self.on_idle_resume.unwrap_or(d.on_idle_resume),
             sync_backlight: self.sync_backlight.unwrap_or(d.sync_backlight),
             sync_volume: self.sync_volume.unwrap_or(d.sync_volume),
+            sync_volume_split: self
+                .sync_volume_split
+                .unwrap_or(d.sync_volume_split)
+                .clamp(0.5, 1.0),
         }
     }
 }
@@ -428,7 +443,7 @@ impl UserProfileConfig {
 /// This is the result of merging a [`UserProfileConfig`] chain
 /// (user profile -> system default -> hard-coded defaults).
 /// Consumers (session monitor, idle detector) use this type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedUserProfile {
     /// Action on session lock event.
     pub on_session_lock: SessionAction,
@@ -446,6 +461,10 @@ pub struct ResolvedUserProfile {
     pub sync_backlight: SyncBacklight,
     /// Desktop → TV volume sync mode.
     pub sync_volume: SyncVolume,
+    /// KDE's share of the slider's dB attenuation when
+    /// `sync_volume = MirrorHdmi`. Range `[0.5, 1.0]`; default `0.85`.
+    /// See [`UserProfileConfig::sync_volume_split`].
+    pub sync_volume_split: f32,
 }
 
 impl Default for ResolvedUserProfile {
@@ -459,6 +478,7 @@ impl Default for ResolvedUserProfile {
             on_idle_resume: SessionAction::ScreenOn,
             sync_backlight: SyncBacklight::None,
             sync_volume: SyncVolume::None,
+            sync_volume_split: 0.85,
         }
     }
 }
@@ -1604,6 +1624,7 @@ ip = "192.168.1.1"
             on_idle_resume: Some(SessionAction::None),
             sync_backlight: Some(SyncBacklight::Wayland),
             sync_volume: Some(SyncVolume::MirrorHdmi),
+            sync_volume_split: Some(0.7),
         };
 
         let merged = full_override.merge_with_base(&base);
