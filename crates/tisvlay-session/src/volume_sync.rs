@@ -29,7 +29,10 @@
 //! keys), so the full prop set required for ELD lookup only arrives
 //! via the Node's `info` event. We therefore `Registry::bind` every
 //! Audio/Sink on discovery to trigger `info`, and keep the Node
-//! proxy for later `set_param` / Props-listener use.
+//! proxy for the forward-path Props listener. The Node's `info`
+//! event also provides `device.id` and `card.profile.device`, used
+//! to bind the owning Device and resolve the Route index for
+//! reverse-path volume writes.
 //!
 //! # Runtime model
 //!
@@ -42,11 +45,11 @@
 //!
 //! # Feedback-loop suppression
 //!
-//! When the TV reports a new volume, we push it to the sink via
-//! `Node::set_param(Props)`. The sink's `param` listener then fires,
-//! which would otherwise cause us to immediately write it back to
-//! the TV. A last-pushed cache per TV discards listener events whose
-//! values match.
+//! When the TV reports a new volume, we push it to the sink via the
+//! owning Device's Route param (`Device::set_param(Route)`). The
+//! sink's `param` listener then fires, which would otherwise cause
+//! us to immediately write it back to the TV. A last-pushed cache
+//! per TV discards listener events whose values match.
 //!
 //! # Volume scale
 //!
@@ -424,7 +427,7 @@ impl VolumeSync {
         let volume_pw = u8_to_pw_volume(volume);
         let channel_volumes = vec![volume_pw, volume_pw];
 
-        debug!(
+        trace!(
             tv_id,
             volume,
             muted,
@@ -1061,7 +1064,7 @@ pub async fn run(
             evt = watcher.next() => {
                 match evt {
                     Some(StateEvent::DaemonStateChanged(TvStateChange::PropertiesChanged { tv_id })) => {
-                        debug!(tv_id = %tv_id, "StateWatcher: PropertiesChanged");
+                        trace!(tv_id = %tv_id, "StateWatcher: PropertiesChanged");
                         let _ = forward_tv_state(&volume_sync, &daemon, &tv_id).await;
                         reconcile(&volume_sync, &daemon, &state).await;
                     }
@@ -1103,7 +1106,7 @@ async fn forward_tv_state(volume_sync: &VolumeSync, daemon: &DaemonClient, tv_id
         debug!(tv_id, "forward_tv_state: tv not connected");
         return false;
     }
-    debug!(
+    trace!(
         tv_id,
         tv.volume, tv.muted, "forward_tv_state: pushing to sink"
     );
