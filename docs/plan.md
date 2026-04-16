@@ -29,7 +29,7 @@ Scoped by transport, not vendor: sync only makes sense for TVs carrying an AV si
 
 | Concern      | Primary path (KDE)                                     | Portable fallback / notes                                  |
 |--------------|--------------------------------------------------------|------------------------------------------------------------|
-| Brightness   | `kde-external-brightness-v1` Wayland protocol client   | `org.kde.ScreenBrightness.BrightnessChanged` observer      |
+| Brightness   | Virtual backlight kernel module (`/sys/class/backlight/tisvlay-*`) | `org.kde.ScreenBrightness` D-Bus observer (no hardware control) |
 | Volume       | Bind to existing HDMI sink per TV via `pipewire-native` | ELD → `HardwareId` matching reuses Phase 1 identity logic  |
 | Identity     | EDID (via `edidkit`) ↔ `Tv1.HardwareId`                | `connector` tiebreaker for same-model dual-TV setups       |
 | Greeter      | Not supported (desktop-sync runs in the user session)  | Documented limitation                                      |
@@ -116,30 +116,15 @@ Ships the `mirror_hdmi` mode only; no virtual sink created. The existing PipeWir
   - Same-model duals on different HDMI ports when the ELD reports the same manufacturer + monitor name. Today the first candidate wins; a follow-up should correlate `api.alsa.pcm.device` with `[tv.desktop].connector` for disambiguation.
   - Flip the opt-in default once the pipewire-native pin lands in a 0.1.5+ crates.io release.
 
-## Phase 3 — Brightness sync (Wayland external-brightness)
+## Phase 3 — Brightness sync (virtual backlight kernel module) — PLANNING
 
-- `wayland-client` / `wayland-protocols` are already in [tisvlay-session/Cargo.toml:34-35](../crates/tisvlay-session/Cargo.toml) for `wayland_idle.rs` — reuse them and add the `kde-external-brightness-v1` XML under `protocols/` with `wayland-scanner` codegen.
-- New module `desktop_sync::brightness`. On session start, bind `kde_external_brightness_manager_v1`. If absent, log once and skip — volume still works.
-- For each managed TV where `Capabilities::BACKLIGHT` is set, an EDID is resolved, and the effective user profile has `sync_backlight = "wayland"`:
-  - Register an `external_brightness_device_v1` with EDID blob, `max_brightness = 100`, `internal = false`.
-  - On `requested_brightness`, enqueue to an mpsc channel; drain-loop coalesces bursts (same tray pattern) and flushes one `TisvlayTvBacklightProxy::set_backlight` per drain.
-  - Subscribe to `PropertiesChanged` on `org.tisvlay.Tv1.Backlight`; on TV-side updates call `set_observed_brightness` directly (no coalescing — TV pushes are sparse).
-- **Active-session gate:** same `Session.Active` check as Phase 2 — pause desktop → TV flushes when inactive; leave the Wayland device registered so KDE's slider state is preserved.
-- **Profile-flip teardown:** when `sync_backlight` transitions to `"none"`, **unregister the `external_brightness_device_v1`** so KDE's brightness widget reverts to its software-brightness path for that display — mimicking the no-tisvlay UX. Re-register on transition back to `"wayland"`.
-- **Disconnect teardown:** when `Tv1.Connected` transitions to `false`, unregister the Wayland device too. The slider going unresponsive is the intended signal — with sync enabled, the user expects hardware backlight control, and silently falling back to software brightness would mask the disconnection. Re-register on reconnect.
-- **Initial-state direction at session start:** desktop-wins. On first registration, call `set_observed_brightness` to the KDE slider's last-known value, then immediately forward it to the TV via `set_backlight`. Handles the "movie last night → monitor this morning" transition and respects the desktop's time-of-day brightness profiles.
+The Wayland `kde-external-brightness-v1` approach was implemented and reverted (commits d0f9a8c / a072773). The protocol only intercepts displays claimed by `BacklightDetector` (sysfs) or `DDCutilDetector` (DDC/CI) — it explicitly skips displays where KWin provides software brightness (`KWinDisplayDetector`). The LG TV has no sysfs backlight and DDC/CI is unresponsive (`ddcutil` confirms "I2C slave address x37 is unresponsive"), so KWin claims it with software brightness (MaxBrightness=10000) and the external protocol is locked out.
 
-## Phase 4 — D-Bus observer fallback (read-only brightness) — DEFERRED
+The correct approach: a virtual backlight kernel module that creates `/sys/class/backlight/tisvlay-*` entries per managed TV — the same pattern `ddcci-backlight` uses for DDC/CI monitors. With a real sysfs backlight device, `BacklightDetector` claims the TV, KWin stops applying software brightness, and the user gets hardware-only backlight control (no wasted energy driving the OLED panel at full brightness while software dims the alpha channel). The daemon translates sysfs writes to `Tv1.Backlight` commands over the network.
 
-**Do not start, scaffold, or stub any of this until Phases 2 and 3 are merged and verified working end-to-end on real hardware.** The Wayland path is the primary integration; adding a fallback before the primary is proven risks building to a design that doesn't match what we learn from Phase 3. The `"dbus_observer"` enum variant for `sync_backlight` should also stay out of the Phase 1 schema until this phase is unblocked — ship only `"none" | "wayland"` initially.
+See [docs/plan2.md](plan2.md) for the full virtual backlight sub-plan.
 
-When revisited:
-
-- `sync_backlight = "dbus_observer"` in the user profile.
-- Subscribe to `org.kde.ScreenBrightness.BrightnessChanged`, resolve `display_dbus_name` via the `Label` property + Phase 1 map, forward to `TisvlayTvBacklightProxy::set_backlight`.
-- Best-effort: no back-pressure path to KDE, so TV-initiated changes won't move the slider.
-
-## Phase 5 — Tests, docs, UX
+## Phase 4 — Tests, docs, UX (renumbered from Phase 5)
 
 - `tisvlay-mock`: `hardware_id` + setter already landed in Phase 0. Extend `MockState` with `volume`, `muted`, `backlight` fields and `MockHandle` setters the same way; mirror the existing `publish_tv` / `simulate_user_accept` style.
 - Unit-level mocks only for now — no headless PipeWire daemon / fake KDE external-brightness server in CI. Bulk of verification happens via live iteration on the dev machine to confirm the approach works at all; wire integration tests to `tisvlay-harness` once the feature is proven on hardware.
@@ -152,7 +137,7 @@ When revisited:
 - Any vendor- or protocol-specific branch in desktop-sync code. If a feature needs one, it belongs in the vendor crate behind the existing `TvConnection` trait.
 - Replacing `wayland_idle.rs` with KDE power events. Orthogonal; revisit after Phase 3 lands.
 - Pre-login / greeter sync. Desktop-sync is user-session only.
-- Shipping a kernel module (`ddcci-backlight`-style) for non-KDE brightness.
+- ~~Shipping a kernel module (`ddcci-backlight`-style) for non-KDE brightness.~~ Revisited: a virtual backlight kernel module is now the Phase 3 approach — see [plan2.md](plan2.md).
 - GNOME / Sway / Hyprland brightness paths. Volume (PipeWire) already works there.
 - Non-AV transports. A future CEC backend advertising `Capabilities::BACKLIGHT` + `HardwareId` would work through this feature without changes here.
 
@@ -160,7 +145,7 @@ When revisited:
 
 1:1 linear, no curve adjustment, no clamping beyond the endpoints. `Capabilities::{BACKLIGHT, VOLUME}` already imply a 0–100 integer scale on the `Tv1.*` D-Bus surface, and any backend implementing those bits is required to conform to it.
 
-- **Brightness:** KDE slider 0 % / 50 % / 100 % ↔ `Tv1.Backlight.Backlight` 0 / 50 / 100. `kde-external-brightness-v1` device advertises `max_brightness = 100`; requested values pass through untouched.
+- **Brightness:** KDE slider 0 % / 50 % / 100 % ↔ `Tv1.Backlight.Backlight` 0 / 50 / 100. The virtual backlight kernel module advertises `max_brightness = 100`; sysfs writes pass through to the daemon untouched.
 - **Volume:** bound HDMI sink slider 0 % / 50 % / 100 % ↔ `Tv1.Volume.Volume` 0 / 50 / 100. PipeWire's `channelVolumes` is cubic and Plasma displays percent as `cbrt(cv) * 100`; we cube on write and cube-root on read so the linear 0-100 value on the `Tv1.Volume` D-Bus surface matches what Plasma shows.
 - **Mute:** boolean passthrough.
 
