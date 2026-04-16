@@ -72,6 +72,7 @@ use pipewire_native::{
     context::Context as PwContext,
     core::Core,
     properties::Properties,
+    proxy::device::{Device, DeviceEvents},
     proxy::node::{Node, NodeEvents},
     proxy::registry::{Registry, RegistryEvents},
     thread_loop::ThreadLoop,
@@ -80,6 +81,7 @@ use pipewire_native::{
 use pipewire_native_spa as spa;
 use spa::param::ParamType;
 use spa::param::props::Prop;
+use spa::param::route::Route;
 use spa::pod::types::{ObjectType, PropertyFlags};
 use tisvlay_core::{
     DaemonClient, HardwareId, StateEvent, StateWatcher, StateWatcherConfig, TvStateChange,
@@ -123,9 +125,21 @@ struct Inner {
     /// Every Audio/Sink global we've seen, keyed by global id.
     /// Populated from the registry listener.
     candidates: Mutex<HashMap<u32, SinkCandidate>>,
+    /// Bound Device proxies, keyed by device global id. Used for
+    /// the reverse path (TV → sink) via `Device::set_param(Route)`.
+    devices: Mutex<HashMap<u32, DeviceState>>,
     /// Bindings indexed by `tv_id`.
     bindings: Mutex<HashMap<String, Binding>>,
     event_tx: mpsc::UnboundedSender<SinkEvent>,
+}
+
+/// A PipeWire Device we've bound to for route-level volume control.
+struct DeviceState {
+    device: Device,
+    /// Active routes keyed by the route's `device` index (the
+    /// internal index within the Device, NOT the global id). Each
+    /// entry records the `Route::Index` needed for `set_param`.
+    routes: HashMap<u32, u32>,
 }
 
 /// A PipeWire Audio/Sink we've bound to. Held in
@@ -142,6 +156,13 @@ struct SinkCandidate {
     /// status output / tray readouts.
     #[allow(dead_code)]
     nick: Option<String>,
+    /// PipeWire Device global id that owns this node (`device.id`
+    /// from the node's info props). Needed to look up the Device
+    /// proxy for route-level volume writes.
+    device_global_id: Option<u32>,
+    /// The `card.profile.device` index — identifies which route on
+    /// the Device corresponds to this node.
+    route_device_index: Option<u32>,
 }
 
 struct Binding {
@@ -193,6 +214,7 @@ impl VolumeSync {
                 _core: core,
                 registry,
                 candidates: Mutex::new(HashMap::new()),
+                devices: Mutex::new(HashMap::new()),
                 bindings: Mutex::new(HashMap::new()),
                 event_tx,
             });
@@ -357,7 +379,7 @@ impl VolumeSync {
     /// for feedback-loop suppression.
     #[instrument(skip(self))]
     pub fn push_tv_state(&self, tv_id: &str, volume: u8, muted: bool) -> Result<()> {
-        let node = {
+        let (device_global_id, route_device_index) = {
             let bindings = self.inner.bindings.lock().expect("bindings lock poisoned");
             let Some(b) = bindings.get(tv_id) else {
                 return Err(anyhow!("no binding for {tv_id}"));
@@ -373,29 +395,75 @@ impl VolumeSync {
                     b.global_id
                 ));
             };
-            c.node.clone()
+            let dev_gid = c
+                .device_global_id
+                .ok_or_else(|| anyhow!("node has no device.id yet"))?;
+            let route_dev = c
+                .route_device_index
+                .ok_or_else(|| anyhow!("node has no card.profile.device yet"))?;
+            (dev_gid, route_dev)
+        };
+
+        let (device, route_index) = {
+            let devices = self.inner.devices.lock().expect("devices lock poisoned");
+            let ds = devices
+                .get(&device_global_id)
+                .ok_or_else(|| anyhow!("Device {device_global_id} not bound"))?;
+            let ri = ds
+                .routes
+                .get(&route_device_index)
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "no route for device_index {route_device_index} on Device {device_global_id}"
+                    )
+                })?;
+            (ds.device.clone(), ri)
         };
 
         let volume_pw = u8_to_pw_volume(volume);
         let channel_volumes = vec![volume_pw, volume_pw];
 
+        debug!(
+            tv_id,
+            volume,
+            muted,
+            volume_pw,
+            device_global_id,
+            route_index,
+            route_device_index,
+            "push_tv_state: writing Device Route"
+        );
+
+        // Build the nested Props object as a standalone pod. The
+        // ObjectBuilder API doesn't support nesting objects inside
+        // properties, so we pre-serialise and push as a RawPodOwned.
+        let props_pod = build_props_pod(channel_volumes, muted)?;
+
         {
             let _g = self.inner.thread_loop.lock();
-            node.set_param(
-                ParamType::Props,
-                ObjectType::Props,
-                0,
-                Box::new(move |builder| {
-                    builder
-                        .push_property(Prop::Mute, PropertyFlags::empty(), muted)
-                        .push_property(
-                            Prop::ChannelVolumes,
-                            PropertyFlags::empty(),
-                            channel_volumes,
-                        )
-                }),
-            )
-            .context("Node::set_param(Props)")?;
+            device
+                .set_param(
+                    ParamType::Route,
+                    ObjectType::ParamRoute,
+                    0,
+                    Box::new(move |builder| {
+                        builder
+                            .push_property(
+                                Route::Index,
+                                PropertyFlags::empty(),
+                                route_index as i32,
+                            )
+                            .push_property(
+                                Route::Device,
+                                PropertyFlags::empty(),
+                                route_device_index as i32,
+                            )
+                            .push_property(Route::Props, PropertyFlags::empty(), props_pod)
+                            .push_property(Route::Save, PropertyFlags::empty(), true)
+                    }),
+                )
+                .context("Device::set_param(Route)")?;
         }
 
         let mut bindings = self.inner.bindings.lock().expect("bindings lock poisoned");
@@ -483,6 +551,15 @@ fn handle_global_added(inner: &Arc<Inner>, id: u32, props: &Properties) {
             // actually resolves something.
             let hw = alsa_props_to_hardware_id(info.props);
             let nick = info.props.get("node.nick").map(str::to_string);
+            let dev_id = info
+                .props
+                .get("device.id")
+                .and_then(|v| v.parse::<u32>().ok());
+            let route_dev = info
+                .props
+                .get("card.profile.device")
+                .and_then(|v| v.parse::<u32>().ok());
+
             let mut candidates = inner_for_info
                 .candidates
                 .lock()
@@ -494,10 +571,23 @@ fn handle_global_added(inner: &Arc<Inner>, id: u32, props: &Properties) {
                 if nick.is_some() {
                     c.nick = nick;
                 }
+                if dev_id.is_some() {
+                    c.device_global_id = dev_id;
+                }
+                if route_dev.is_some() {
+                    c.route_device_index = route_dev;
+                }
                 debug!(
                     "Audio/Sink info: id={id} nick={:?} hardware_id={:?}",
                     c.nick, c.hardware_id
                 );
+            }
+            drop(candidates);
+
+            // Bind the owning Device (if not already bound) so we
+            // can use Device::set_param(Route) for the reverse path.
+            if let Some(dev_id) = dev_id {
+                bind_device_if_needed(&inner_for_info, dev_id);
             }
         })),
         ..Default::default()
@@ -513,6 +603,8 @@ fn handle_global_added(inner: &Arc<Inner>, id: u32, props: &Properties) {
                 node,
                 hardware_id: None,
                 nick: None,
+                device_global_id: None,
+                route_device_index: None,
             },
         );
 }
@@ -534,6 +626,111 @@ fn handle_global_removed(inner: &Arc<Inner>, id: u32) {
     {
         bindings.remove(&tv_id);
         trace!(tv_id, global_id = id, "sink disappeared; binding dropped");
+    }
+}
+
+/// Bind a PipeWire Device proxy if we haven't already, and subscribe
+/// to its Route params so we learn the route index for each output.
+/// Called from the PW thread (inside a Node info callback).
+fn bind_device_if_needed(inner: &Arc<Inner>, device_global_id: u32) {
+    {
+        let devices = inner.devices.lock().expect("devices lock poisoned");
+        if devices.contains_key(&device_global_id) {
+            return;
+        }
+    }
+
+    let object = match inner
+        .registry
+        .bind(device_global_id, types::interface::DEVICE, 3)
+    {
+        Ok(o) => o,
+        Err(e) => {
+            warn!(device_global_id, error = %e, "Registry::bind(Device) failed");
+            return;
+        }
+    };
+    let Some(device) = object.downcast::<Device>() else {
+        warn!(device_global_id, "Device downcast failed");
+        return;
+    };
+
+    if let Err(e) = device.subscribe_params(&[ParamType::Route]) {
+        warn!(device_global_id, error = %e, "Device::subscribe_params(Route) failed");
+        return;
+    }
+
+    let inner_for_param = Arc::clone(inner);
+    let dev_gid = device_global_id;
+    device.add_listener(DeviceEvents {
+        param: Some(Box::new(
+            move |_seq, param_id, _index, _next, pod| {
+                if param_id != ParamType::Route {
+                    return;
+                }
+                handle_device_route(&inner_for_param, dev_gid, pod);
+            },
+        )),
+        ..Default::default()
+    });
+
+    inner
+        .devices
+        .lock()
+        .expect("devices lock poisoned")
+        .insert(
+            device_global_id,
+            DeviceState {
+                device,
+                routes: HashMap::new(),
+            },
+        );
+    debug!(device_global_id, "bound Device for route-level volume control");
+}
+
+/// Parse a Route param from a Device and store the route index keyed
+/// by the route's internal device index. This lets `push_tv_state`
+/// look up: Node → `card.profile.device` → route index → set_param.
+fn handle_device_route(inner: &Arc<Inner>, device_global_id: u32, pod: &spa::pod::RawPodOwned) {
+    use spa::pod::parser::Parser;
+
+    let mut parser = Parser::new(pod.data());
+    let mut route_index: Option<u32> = None;
+    let mut route_device: Option<u32> = None;
+
+    let _ = parser.pop_object_raw::<u32, _>(|obj, _obj_type, _id| {
+        for (key_id, _flags, prop_pod) in obj {
+            let Ok(key) = Route::try_from(key_id) else {
+                continue;
+            };
+            match key {
+                Route::Index => {
+                    if let Ok(v) = <i32 as spa::pod::Pod>::decode(prop_pod.data()) {
+                        route_index = Some(v.0 as u32);
+                    }
+                }
+                Route::Device => {
+                    if let Ok(v) = <i32 as spa::pod::Pod>::decode(prop_pod.data()) {
+                        route_device = Some(v.0 as u32);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    });
+
+    if let (Some(ri), Some(rd)) = (route_index, route_device) {
+        let mut devices = inner.devices.lock().expect("devices lock poisoned");
+        if let Some(ds) = devices.get_mut(&device_global_id) {
+            ds.routes.insert(rd, ri);
+            trace!(
+                device_global_id,
+                route_index = ri,
+                route_device = rd,
+                "Device route learned"
+            );
+        }
     }
 }
 
@@ -732,6 +929,28 @@ fn average(values: &[f32]) -> Option<f32> {
     }
 }
 
+/// Build a Props object pod containing `channelVolumes` and `mute`,
+/// serialised as raw bytes so it can be embedded inside a Route
+/// property via `push_property(Route::Props, ..., raw_pod)`.
+fn build_props_pod(channel_volumes: Vec<f32>, muted: bool) -> Result<spa::pod::RawPodOwned> {
+    use spa::pod::builder::Builder;
+
+    let mut buf = [0u8; 1024];
+    let bytes = Builder::new(&mut buf)
+        .push_object(ObjectType::Props, 0u32, |b| {
+            b.push_property(Prop::Mute, PropertyFlags::empty(), muted)
+                .push_property(
+                    Prop::ChannelVolumes,
+                    PropertyFlags::empty(),
+                    channel_volumes,
+                )
+        })
+        .build()
+        .map_err(|e| anyhow!("failed to build Props pod: {e:?}"))?;
+    spa::pod::RawPodOwned::wrap(bytes.to_vec())
+        .map_err(|e| anyhow!("failed to wrap Props pod: {e:?}"))
+}
+
 fn u8_to_pw_volume(v: u8) -> f32 {
     let linear = v.min(100) as f32 / 100.0;
     // PipeWire's channelVolumes is cubic; Plasma displays percent as
@@ -842,6 +1061,7 @@ pub async fn run(
             evt = watcher.next() => {
                 match evt {
                     Some(StateEvent::DaemonStateChanged(TvStateChange::PropertiesChanged { tv_id })) => {
+                        debug!(tv_id = %tv_id, "StateWatcher: PropertiesChanged");
                         let _ = forward_tv_state(&volume_sync, &daemon, &tv_id).await;
                         reconcile(&volume_sync, &daemon, &state).await;
                     }
@@ -870,17 +1090,30 @@ pub async fn run(
 async fn forward_tv_state(volume_sync: &VolumeSync, daemon: &DaemonClient, tv_id: &str) -> bool {
     let tvs = match daemon.list_tvs().await {
         Ok(v) => v,
-        Err(_) => return false,
+        Err(e) => {
+            debug!(tv_id, error = %e, "forward_tv_state: list_tvs failed");
+            return false;
+        }
     };
     let Some(tv) = tvs.into_iter().find(|t| t.id == tv_id) else {
+        debug!(tv_id, "forward_tv_state: tv not found in list");
         return false;
     };
     if !tv.connected {
+        debug!(tv_id, "forward_tv_state: tv not connected");
         return false;
     }
-    volume_sync
-        .push_tv_state(tv_id, tv.volume, tv.muted)
-        .is_ok()
+    debug!(
+        tv_id,
+        tv.volume, tv.muted, "forward_tv_state: pushing to sink"
+    );
+    match volume_sync.push_tv_state(tv_id, tv.volume, tv.muted) {
+        Ok(()) => true,
+        Err(e) => {
+            warn!(tv_id, error = %e, "forward_tv_state: push failed");
+            false
+        }
+    }
 }
 
 async fn forward_sink_events(
