@@ -95,21 +95,22 @@ pub enum SessionAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncBacklight {
-    /// Sync disabled. No Wayland brightness device registered — the KDE
-    /// brightness widget falls back to its software-brightness path for
-    /// the matching display, mimicking a no-tisvlay install. Default.
+    /// Sync disabled. KDE uses software brightness for the display
+    /// (no virtual backlight device created). Default.
     #[default]
     None,
-    /// Register a `kde_external_brightness_device_v1` so KDE's slider
-    /// drives `Tv1.Backlight` and TV-side changes push back to KDE.
-    Wayland,
+    /// Create a virtual `/sys/class/backlight/tisvlay-*` device so
+    /// KDE's brightness slider drives `Tv1.Backlight` directly —
+    /// no software dimming. Requires the `tisvlay_backlight` kernel
+    /// module.
+    Backlight,
 }
 
 impl std::fmt::Display for SyncBacklight {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => f.write_str("none"),
-            Self::Wayland => f.write_str("wayland"),
+            Self::Backlight => f.write_str("backlight"),
         }
     }
 }
@@ -1602,7 +1603,7 @@ ip = "192.168.1.1"
             idle_timeout_seconds: Some(999),
             on_idle_timeout: Some(SessionAction::PowerOff),
             on_idle_resume: Some(SessionAction::None),
-            sync_backlight: Some(SyncBacklight::Wayland),
+            sync_backlight: Some(SyncBacklight::Backlight),
             sync_volume: Some(SyncVolume::MirrorHdmi),
         };
 
