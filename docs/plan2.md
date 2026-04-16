@@ -4,9 +4,13 @@ Sub-plan for Phase 3 of [plan.md](plan.md). Goal: KDE's native brightness slider
 
 ## Status
 
-**Brightness sync is working** via the `kde-external-brightness-v1` Wayland protocol. The forward path (KDE slider → TV backlight) is verified on hardware: moving the KDE brightness slider for "LG TV SSCR2" triggers `requested_brightness` events from KWin, which our session service forwards to the daemon as `set_backlight` calls, and the TV's OLED backlight changes.
+**Brightness sync forward path is working** in both SDR and HDR modes. Verified on hardware (LG OLED42C3PUA, Nvidia GPU, KDE Plasma 6.6.3, KWin 6.6.3, HDR enabled):
+- **SDR mode**: KWin routes slider changes through our `kde_external_brightness_device_v1` via `requested_brightness` Wayland events
+- **HDR mode**: KWin bypasses the brightness device for tone-mapping, but the `org.kde.ScreenBrightness.Display.Brightness` D-Bus property still changes — a D-Bus `PropertiesChanged` observer catches these and forwards to `Tv1.Backlight`, scaled from 0-10000 to 0-100
 
-**Remaining work**: reverse path (TV remote → KDE slider), feedback-loop suppression, shutdown cleanup, and determining the role of the kernel module vs. pure Wayland approach.
+Both paths feed into the same drain-loop for coalescing.
+
+**Remaining work**: reverse path (TV remote → KDE slider), feedback-loop suppression, shutdown cleanup.
 
 ## KDE brightness architecture (learned from source + hardware testing)
 
@@ -50,30 +54,29 @@ changeset->allowSdrSoftwareBrightness = false;
 changeset->brightness = device->observedBrightness();
 ```
 
-### HDR blocker (discovered during testing)
+### HDR mode behavior
 
-With `highDynamicRange: true` in KWin's output config (`~/.config/kwinoutputconfig.json`), brightness is routed through the HDR tone-mapping path regardless of brightness device assignment:
+With `highDynamicRange: true`, KWin uses the brightness slider for tone-mapping reference luminance and does NOT call `setBrightness` on external brightness devices (`drm_output.cpp:630`):
 ```cpp
-if ((!next.brightnessDevice && next.allowSdrSoftwareBrightness) || effectiveHdr) {
-    // software brightness / HDR path — bypasses brightness device
+if (m_state.brightnessDevice && !m_state.highDynamicRange) {
+    m_state.brightnessDevice->setBrightness(effectiveBrightness);
 }
 ```
 
-**Fix**: disable HDR in KDE's display settings for the TV output. Once HDR is off, KWin uses the brightness device for all brightness control. The `requested_brightness` events then flow correctly.
+So the Wayland `requested_brightness` event never fires in HDR mode. However, the `org.kde.ScreenBrightness.Display.Brightness` D-Bus property still changes (PowerDevil's `KWinDisplayDetector` tracks it). The D-Bus observer in `brightness_sync.rs` subscribes to `PropertiesChanged` on this interface and forwards brightness changes to the TV, scaled from KWin's 0-10000 range to our 0-100 `Tv1.Backlight` range.
 
-This is acceptable for now: OLED TV backlight control and HDR tone-mapping are fundamentally different operations. A future improvement could handle HDR mode by integrating with KWin's `sdrBrightness` path instead.
+Both the Wayland and D-Bus paths feed into the same `BrightnessEvent` channel and drain-loop, so in SDR mode (where both fire) the drain-loop deduplicates naturally.
 
 ## What works today (no kernel module)
 
-The Wayland `kde-external-brightness-v1` protocol alone provides brightness sync when:
-1. HDR is disabled for the TV output in KDE settings
-2. The session service registers a device with matching EDID and `set_internal(0)`
-3. KWin matches the device to the HDMI output and assigns it
+Two forward paths, no kernel module required:
 
-This was verified on hardware (LG OLED42C3PUA, Nvidia GPU, KDE Plasma 6.6.3, KWin 6.6.3):
-- `busctl --user call ... SetBrightness iu 3000 0` → daemon log shows `D-Bus: set Backlight` → TV backlight changes
-- PowerDevil shows the display as `display2` (renumbered from KWin device reassignment)
-- MaxBrightness=10000 in PowerDevil's D-Bus (PowerDevil still uses KWinDisplayDetector), but KWin internally routes brightness through our device
+1. **Wayland path (SDR)**: session service registers a `kde_external_brightness_device_v1` with matching EDID and `set_internal(0)`. KWin matches it to the HDMI output and sends `requested_brightness` events when the slider moves.
+2. **D-Bus observer path (HDR)**: subscribes to `PropertiesChanged` on `org.kde.ScreenBrightness.Display` interfaces. When the `Brightness` property changes, resolves the display label to a TV ID via a cached EDID monitor-name → tv_id map (rebuilt on each reconcile), scales 0-10000 → 0-100, and forwards to the drain-loop.
+
+Both paths feed into the same `BrightnessEvent` channel → drain-loop → `DaemonClient::set_backlight`.
+
+The D-Bus observer caches display object path → label lookups to avoid repeated D-Bus round-trips. The label → tv_id map is maintained by reconcile from the EDID monitor name read at binding time.
 
 ## What the kernel module adds (future value)
 
@@ -183,20 +186,16 @@ pub enum SyncBacklight {
 
 Config value: `sync_backlight = "backlight"`.
 
-**Prerequisite**: HDR must be disabled for the TV output in KDE display settings. Document this in the user-facing setup guide.
-
 ## Remaining work
 
-1. **Reverse path** (TV remote changes backlight → KDE slider updates): subscribe to `Tv1.Backlight` PropertiesChanged, call `set_observed_brightness` + `commit` on the Wayland device
-2. **Feedback-loop suppression**: last-sent cache to prevent echo (same pattern as volume sync)
-3. **Shutdown cleanup**: destroy Wayland devices on exit, fix the blocking dispatch loop for clean Ctrl+C
-4. **Scale mapping**: verify `requested_brightness` values map 1:1 to Tv1.Backlight 0-100 (KWin uses our `max_brightness=100`)
-5. **HDR documentation**: explain the HDR disable requirement in user docs
-6. **Remove WAYLAND_DEBUG**: was temporarily added to tasks.json for protocol tracing (already reverted by user)
+1. **Reverse path** (TV remote changes backlight → KDE slider updates): subscribe to `Tv1.Backlight` PropertiesChanged, call `set_observed_brightness` + `commit` on the Wayland device. The `push_observed_brightness` function exists but needs hardware verification.
+2. **Feedback-loop suppression**: last-sent cache to prevent echo when the D-Bus observer sees its own forward-path writes reflected back. Same pattern as volume sync (`last_pushed_volume` / `last_pushed_muted`).
+3. **Shutdown cleanup**: destroy Wayland devices on exit. The non-blocking dispatch loop (50ms sleep) already allows clean Ctrl+C.
+4. **SDR scale mapping**: in SDR mode, KWin uses our `max_brightness=100` so `requested_brightness` values map 1:1 to `Tv1.Backlight`. Verify on hardware.
+5. **HDR scale accuracy**: the D-Bus observer hardcodes `max_brightness=10000` (KWin's default for software brightness). Should read `MaxBrightness` from the display's D-Bus property for correctness.
 
 ## Future scope
 
-- **HDR compatibility**: investigate KWin's `sdrBrightness` path for controlling backlight alongside HDR tone-mapping
-- **Virtual DRM connector**: DPMS power management for session-independent TV control
-- **Kernel module for software-dimming prevention**: when HDR is enabled, the Wayland protocol alone can't prevent software dimming — the kernel module + upstream KWin changes would be needed
-- **PowerDevil BacklightDetector fix**: upstream contribution to make `isInternal()` configurable or EDID-aware for external sysfs backlights
+- **Software dimming prevention**: in HDR mode, KWin still applies software brightness alongside our hardware backlight control. The kernel module + upstream KWin changes would be needed to fully eliminate software dimming in HDR.
+- **Virtual DRM connector**: DPMS power management for session-independent TV control.
+- **PowerDevil BacklightDetector fix**: upstream contribution to make `isInternal()` configurable or EDID-aware for external sysfs backlights.
