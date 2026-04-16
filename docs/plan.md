@@ -66,7 +66,7 @@ The display side (DRM enumeration, EDID matching, `[tv.desktop]` persistence, `T
   ```toml
   # System config — admin baseline for sync behavior
   [user.profiles.default]
-  sync_backlight = "wayland"       # none | wayland   (dbus_observer added in Phase 4)
+  sync_backlight = "backlight"     # none | backlight  (virtual sysfs backlight via kernel module)
   sync_volume    = "mirror_hdmi"   # none | mirror_hdmi
 
   # User config — per-activity profiles flip the toggles

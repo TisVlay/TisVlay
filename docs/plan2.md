@@ -116,28 +116,47 @@ The module builds against the running kernel via `pkgs.linuxPackages.callPackage
 
 ## Config surface
 
-The existing `sync_backlight` enum gains a new variant:
+The `SyncBacklight` enum is updated (Wayland variant removed, no backward compat):
 
 ```rust
 pub enum SyncBacklight {
-    None,
-    Wayland,     // dead end — kept for config compat, logs a warning
-    Backlight,   // virtual backlight kernel module (new)
+    None,       // sync disabled, KDE uses software brightness
+    Backlight,  // virtual sysfs backlight via kernel module
 }
 ```
 
-Or rename `Wayland` → `Backlight` since the Wayland path is defunct. The config value in user profiles would be `sync_backlight = "backlight"`.
+Config value: `sync_backlight = "backlight"`.
+
+## Implementation language: Rust
+
+The module will be written in Rust, not C. Linux 6.18+ has stable `CONFIG_RUST` support (Rust-for-Linux graduated from experimental in 2025). Key considerations:
+
+- **No upstream Rust backlight bindings yet** — we build thin unsafe wrappers around the C backlight API (`backlight_device_register`, `backlight_ops`). This is ~50 lines of unsafe glue; the rest of the module is safe Rust.
+- **NixOS support**: out-of-tree Rust kernel modules are well-supported. The `kernel-module-flake` template and `linuxPackages.callPackage` handle the build. Requires `CONFIG_RUST=y` in the kernel config.
+- **Trade-off**: For a ~200-line module, Rust's compile-time lock and error-path safety outweighs the abstraction-building cost. Kernel code handles concurrent access from sysfs writes + ioctl calls; Rust prevents the common lock-ordering and use-after-free bugs that plague small C drivers.
 
 ## Scope and ordering
 
-1. **Kernel module** (`crates/tisvlay-backlight/` or `module/`): C code, Makefile, NixOS package derivation. ~200 lines of C.
-2. **Daemon chardev integration** (`tisvlayd`): Rust, new module `backlight_driver.rs`. ~300 lines.
+1. **Kernel module** (`module/tisvlay-backlight/`): Rust, Makefile, NixOS package derivation. ~200 lines of Rust + ~50 lines unsafe C FFI glue.
+2. **Daemon chardev integration** (`tisvlayd`): new module `backlight_driver.rs`. ~300 lines.
 3. **Session service**: no new code — the decision to enable sync is already pushed via `DesktopMapping`. The daemon handles everything.
-4. **NixOS module**: `extraModulePackages` + udev rule. ~10 lines of Nix.
+4. **NixOS module**: `extraModulePackages` + udev rule + `CONFIG_RUST=y` kernel config. ~15 lines of Nix.
 
-## Open questions
+## Future scope: power management via virtual DRM connector
 
-- **Connector path at create time**: the daemon needs the DRM connector sysfs path to create the symlink. The session service already knows this (Phase 1 desktop probe → `[tv.desktop].connector`). The daemon receives it via `DesktopMapping`. Need to verify the sysfs path is derivable from the connector name (e.g., `HDMI-A-1` → `/sys/class/drm/card1-HDMI-A-1`).
-- **Multi-GPU**: if the user has multiple GPUs, the `card` number in the DRM path varies. The desktop probe already handles this (it walks `/sys/class/drm/`), so the full sysfs path should be passed rather than derived from a card number assumption.
-- **Module signing**: NixOS doesn't enforce module signing by default, but Secure Boot setups do. Flag for later if users report issues.
-- **Backlight device naming**: `tisvlay-<tv_id>` may need sanitization (tv_id can contain arbitrary characters from user config). Restrict to `[a-z0-9_-]` in the ioctl handler.
+A backlight device only controls brightness. A future extension — a virtual DRM connector (VKMS-style) — could expose the TV as a first-class DRM output with DPMS power management, letting KDE control TV power natively (screen off/on via DPMS properties) without the session service's Wayland idle/D-Bus event pipeline. This would:
+
+- Let the DE manage TV power even when `tisvlay-session` isn't running (pre-login, crashed session, SSH-only)
+- Unify power management with how laptop panels and real monitors work
+- Potentially simplify the session service (less event-driven automation, more DE-native behavior)
+
+However, a virtual DRM connector is significantly more complex than a backlight device (full DRM driver vs. simple sysfs class device). Defer until the backlight module is proven.
+
+Audio sync stays in PipeWire — a kernel module can't improve the slider experience. The cubic gain issue was a PipeWire/KDE volume scale concern, and the current 1:1 mirror approach with Device Route writes is the correct solution.
+
+## Implementation notes
+
+- **Connector path at create time**: the daemon needs the full DRM connector sysfs path to create the symlink for KDE output matching. The session service already knows this (Phase 1 desktop probe → `[tv.desktop].connector`). The daemon receives it via `DesktopMapping`. The full sysfs path (e.g., `/sys/class/drm/card1-HDMI-A-1`) must be passed rather than derived, because multi-GPU setups have varying `card` numbers. The desktop probe already walks `/sys/class/drm/` and can resolve the full path.
+- **Module signing**: NixOS doesn't enforce module signing by default, but Secure Boot setups do. Document as a known limitation; flag for later if users report issues.
+- **Backlight device naming**: `tisvlay-<tv_id>` requires sanitization — tv_id can contain arbitrary characters from user config. The ioctl handler should restrict to `[a-z0-9_-]` and reject or sanitize invalid names.
+- **`CONFIG_RUST` availability**: the NixOS module should check at build time whether the kernel has `CONFIG_RUST=y` and emit a clear error if not, rather than failing with opaque build errors.
