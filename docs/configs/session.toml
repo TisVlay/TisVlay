@@ -5,6 +5,7 @@ on_greeter_wake = "screen_on"
 idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
 sync_volume = "mirror_hdmi"
+sync_backlight = "backlight"
 
 [[tv]]
 id = "office"
