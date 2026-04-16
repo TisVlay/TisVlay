@@ -3,8 +3,10 @@
 //! The binary entry point lives in `main.rs`; this library exposes the
 //! modules that integration tests need to drive.
 
+pub mod brightness_sync;
 pub mod desktop_probe;
 pub mod idle;
+mod kde_external_brightness;
 pub mod session_dbus;
 pub mod session_monitor;
 pub mod volume_sync;
