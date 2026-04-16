@@ -46,7 +46,6 @@ async fn main() -> Result<()> {
     tisvlay_core::logging::init(&[
         "tisvlay_session=info",
         "tisvlay_session::volume_sync=debug",
-        "tisvlay_session::brightness_sync=debug",
         "zbus=warn",
     ])?;
 
@@ -237,37 +236,16 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Spawn the brightness-sync coordinator. Registers
-    // kde_external_brightness_device_v1 per TV so KDE's brightness
-    // slider drives Tv1.Backlight. Non-fatal if the Wayland protocol
-    // is unavailable (KDE < 6.1, non-KDE compositors, X11).
-    let (brightness_sync_shutdown_tx, brightness_sync_shutdown_rx) =
-        tokio::sync::watch::channel(false);
-    let brightness_sync_task = {
-        let bs_state = state.clone();
-        let bs_daemon = daemon.clone();
-        Some(tokio::spawn(async move {
-            tisvlay_session::brightness_sync::run(
-                bs_daemon,
-                bs_state,
-                brightness_sync_shutdown_rx,
-            )
-            .await;
-        }))
-    };
-
     // Wait for shutdown signals
     wait_for_signals(state, daemon, args.config).await;
 
     info!("Shutting down...");
 
-    // Signal coordinators to tear down cleanly.
+    // Signal the volume-sync coordinator to tear down virtual sinks
+    // cleanly. `send` fails only if the receiver was already dropped —
+    // ignore because the task's exit-on-drop path handles it too.
     let _ = volume_sync_shutdown_tx.send(true);
-    let _ = brightness_sync_shutdown_tx.send(true);
     if let Some(task) = volume_sync_task {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
-    }
-    if let Some(task) = brightness_sync_task {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
     }
 

@@ -30,12 +30,9 @@ anyhow = { workspace = true }
 futures-util = { workspace = true }
 clap = { workspace = true }
 
-# Wayland idle detection (greeter wake) + brightness sync (kde-external-brightness-v1)
+# Wayland idle detection (greeter wake on Wayland compositors)
 wayland-client = { workspace = true }
 wayland-protocols = { workspace = true }
-wayland-scanner = { workspace = true }
-# Base64 encoding for EDID blob in the brightness protocol
-base64 = "0.22"
 
 # EDID parsing for desktop-sync identity matching
 edidkit = "0.1"
