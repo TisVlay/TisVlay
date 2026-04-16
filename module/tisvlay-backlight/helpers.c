@@ -1,43 +1,139 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /*
- * C helpers for backlight subsystem access from Rust.
+ * C helpers for the tisvlay virtual backlight kernel module.
  *
- * The kernel's backlight API has no Rust abstractions yet, so we
- * provide thin wrappers callable from the Rust side of the module.
+ * Provides:
+ * 1. Backlight device registration/unregistration (the kernel backlight
+ *    subsystem has no Rust abstractions yet).
+ * 2. An event queue for forward-path brightness changes (KDE writes to
+ *    sysfs → daemon reads from /dev/tisvlay-bl). Uses a wait queue for
+ *    blocking reads since that primitive also lacks Rust bindings.
  */
 
 #include <linux/backlight.h>
 #include <linux/device.h>
-#include <linux/export.h>
+#include <linux/list.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/string.h>
+#include <linux/wait.h>
 
-struct tisvlay_bl_device;
+/* Maximum TV ID length (must match the Rust side). */
+#define TISVLAY_ID_MAX 64
 
-/* Callback signature the Rust side implements. */
-typedef int (*tisvlay_bl_update_fn)(struct tisvlay_bl_device *dev);
-typedef int (*tisvlay_bl_get_fn)(struct tisvlay_bl_device *dev);
+/* Maximum number of backlight devices. */
+#define TISVLAY_MAX_DEVICES 16
+
+/* ── Event queue (forward path: KDE → daemon) ───────────────────── */
+
+struct tisvlay_event {
+	struct list_head list;
+	char tv_id[TISVLAY_ID_MAX];
+	int brightness;
+};
+
+static DEFINE_SPINLOCK(event_lock);
+static LIST_HEAD(event_list);
+static DECLARE_WAIT_QUEUE_HEAD(event_waitq);
+/* Set to true when the module is unloading so blocked readers wake. */
+static bool shutting_down;
+
+/* Push a brightness-changed event. Called from backlight update_status. */
+static void push_event(const char *tv_id, int brightness)
+{
+	struct tisvlay_event *evt;
+
+	evt = kzalloc(sizeof(*evt), GFP_ATOMIC);
+	if (!evt)
+		return;
+
+	strscpy(evt->tv_id, tv_id, TISVLAY_ID_MAX);
+	evt->brightness = brightness;
+
+	spin_lock(&event_lock);
+	list_add_tail(&evt->list, &event_list);
+	spin_unlock(&event_lock);
+
+	wake_up_interruptible(&event_waitq);
+}
+
+/*
+ * Pop one event. Returns 0 on success, -EAGAIN if empty, or
+ * -ERESTARTSYS if interrupted. If `block` is true, waits for
+ * an event or shutdown.
+ */
+int tisvlay_pop_event(char *tv_id, int *brightness, bool block)
+{
+	struct tisvlay_event *evt;
+	int ret;
+
+	if (block) {
+		ret = wait_event_interruptible(event_waitq,
+			shutting_down || !list_empty(&event_list));
+		if (ret)
+			return ret;
+		if (shutting_down)
+			return -ENODEV;
+	}
+
+	spin_lock(&event_lock);
+	if (list_empty(&event_list)) {
+		spin_unlock(&event_lock);
+		return -EAGAIN;
+	}
+	evt = list_first_entry(&event_list, struct tisvlay_event, list);
+	list_del(&evt->list);
+	spin_unlock(&event_lock);
+
+	strscpy(tv_id, evt->tv_id, TISVLAY_ID_MAX);
+	*brightness = evt->brightness;
+	kfree(evt);
+	return 0;
+}
+
+void tisvlay_events_shutdown(void)
+{
+	struct tisvlay_event *evt, *tmp;
+
+	shutting_down = true;
+	wake_up_interruptible(&event_waitq);
+
+	spin_lock(&event_lock);
+	list_for_each_entry_safe(evt, tmp, &event_list, list) {
+		list_del(&evt->list);
+		kfree(evt);
+	}
+	spin_unlock(&event_lock);
+}
+
+void tisvlay_events_init(void)
+{
+	shutting_down = false;
+}
+
+/* ── Backlight devices ──────────────────────────────────────────── */
 
 struct tisvlay_bl_device {
 	struct backlight_device *bd;
-	tisvlay_bl_update_fn update_fn;
-	tisvlay_bl_get_fn get_fn;
-	void *rust_data;
+	char tv_id[TISVLAY_ID_MAX];
+	bool in_use;
 };
+
+static struct tisvlay_bl_device devices[TISVLAY_MAX_DEVICES];
+static DEFINE_MUTEX(devices_lock);
 
 static int tisvlay_bl_update_status(struct backlight_device *bd)
 {
 	struct tisvlay_bl_device *dev = bl_get_data(bd);
-	if (dev && dev->update_fn)
-		return dev->update_fn(dev);
+
+	if (dev)
+		push_event(dev->tv_id, bd->props.brightness);
 	return 0;
 }
 
 static int tisvlay_bl_get_brightness(struct backlight_device *bd)
 {
-	struct tisvlay_bl_device *dev = bl_get_data(bd);
-	if (dev && dev->get_fn)
-		return dev->get_fn(dev);
 	return bd->props.brightness;
 }
 
@@ -46,66 +142,119 @@ static const struct backlight_ops tisvlay_bl_ops = {
 	.get_brightness = tisvlay_bl_get_brightness,
 };
 
-struct tisvlay_bl_device *tisvlay_bl_register(
-	struct device *parent,
-	const char *name,
-	int max_brightness,
-	int initial_brightness,
-	void *rust_data,
-	tisvlay_bl_update_fn update_fn,
-	tisvlay_bl_get_fn get_fn)
+int tisvlay_bl_create(const char *tv_id, int max_brightness,
+		      int initial_brightness)
 {
 	struct backlight_properties props;
 	struct backlight_device *bd;
-	struct tisvlay_bl_device *dev;
+	struct tisvlay_bl_device *dev = NULL;
+	char name[TISVLAY_ID_MAX + 8];
+	int i, ret = -ENOMEM;
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (!dev)
-		return ERR_PTR(-ENOMEM);
+	if (!tv_id || !tv_id[0] || max_brightness <= 0)
+		return -EINVAL;
 
-	dev->update_fn = update_fn;
-	dev->get_fn = get_fn;
-	dev->rust_data = rust_data;
+	mutex_lock(&devices_lock);
+
+	/* Check for duplicates. */
+	for (i = 0; i < TISVLAY_MAX_DEVICES; i++) {
+		if (devices[i].in_use &&
+		    strncmp(devices[i].tv_id, tv_id, TISVLAY_ID_MAX) == 0) {
+			ret = -EEXIST;
+			goto out;
+		}
+	}
+
+	/* Find a free slot. */
+	for (i = 0; i < TISVLAY_MAX_DEVICES; i++) {
+		if (!devices[i].in_use) {
+			dev = &devices[i];
+			break;
+		}
+	}
+	if (!dev) {
+		ret = -ENOSPC;
+		goto out;
+	}
+
+	snprintf(name, sizeof(name), "tisvlay-%s", tv_id);
 
 	memset(&props, 0, sizeof(props));
 	props.type = BACKLIGHT_PLATFORM;
 	props.max_brightness = max_brightness;
 	props.brightness = initial_brightness;
 
-	bd = backlight_device_register(name, parent, dev, &tisvlay_bl_ops, &props);
+	strscpy(dev->tv_id, tv_id, TISVLAY_ID_MAX);
+
+	bd = backlight_device_register(name, NULL, dev,
+				       &tisvlay_bl_ops, &props);
 	if (IS_ERR(bd)) {
-		kfree(dev);
-		return ERR_CAST(bd);
+		ret = PTR_ERR(bd);
+		memset(dev, 0, sizeof(*dev));
+		goto out;
 	}
 
 	dev->bd = bd;
-	return dev;
+	dev->in_use = true;
+	ret = 0;
+
+out:
+	mutex_unlock(&devices_lock);
+	return ret;
 }
 
-void tisvlay_bl_unregister(struct tisvlay_bl_device *dev)
+int tisvlay_bl_destroy(const char *tv_id)
 {
-	if (!dev)
-		return;
-	backlight_device_unregister(dev->bd);
-	kfree(dev);
+	int i, ret = -ENOENT;
+
+	if (!tv_id)
+		return -EINVAL;
+
+	mutex_lock(&devices_lock);
+	for (i = 0; i < TISVLAY_MAX_DEVICES; i++) {
+		if (devices[i].in_use &&
+		    strncmp(devices[i].tv_id, tv_id, TISVLAY_ID_MAX) == 0) {
+			backlight_device_unregister(devices[i].bd);
+			memset(&devices[i], 0, sizeof(devices[i]));
+			ret = 0;
+			break;
+		}
+	}
+	mutex_unlock(&devices_lock);
+	return ret;
 }
 
-void tisvlay_bl_set_brightness(struct tisvlay_bl_device *dev, int brightness)
+int tisvlay_bl_set(const char *tv_id, int brightness)
 {
-	if (!dev || !dev->bd)
-		return;
-	dev->bd->props.brightness = brightness;
-	backlight_update_status(dev->bd);
+	int i, ret = -ENOENT;
+
+	if (!tv_id)
+		return -EINVAL;
+
+	mutex_lock(&devices_lock);
+	for (i = 0; i < TISVLAY_MAX_DEVICES; i++) {
+		if (devices[i].in_use &&
+		    strncmp(devices[i].tv_id, tv_id, TISVLAY_ID_MAX) == 0) {
+			devices[i].bd->props.brightness = brightness;
+			backlight_update_status(devices[i].bd);
+			ret = 0;
+			break;
+		}
+	}
+	mutex_unlock(&devices_lock);
+	return ret;
 }
 
-int tisvlay_bl_get_current(struct tisvlay_bl_device *dev)
+void tisvlay_bl_destroy_all(void)
 {
-	if (!dev || !dev->bd)
-		return 0;
-	return dev->bd->props.brightness;
-}
+	int i;
 
-void *tisvlay_bl_get_rust_data(struct tisvlay_bl_device *dev)
-{
-	return dev ? dev->rust_data : NULL;
+	mutex_lock(&devices_lock);
+	for (i = 0; i < TISVLAY_MAX_DEVICES; i++) {
+		if (devices[i].in_use) {
+			backlight_device_unregister(devices[i].bd);
+			memset(&devices[i], 0, sizeof(devices[i]));
+		}
+	}
+	mutex_unlock(&devices_lock);
 }
