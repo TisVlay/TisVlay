@@ -1,36 +1,40 @@
 //! Brightness sync — KDE's brightness slider drives `Tv1.Backlight`.
 //!
 //! For every managed TV whose effective user profile selects
-//! `sync_backlight = "wayland"` and whose backend advertises
+//! `sync_backlight = "backlight"` and whose backend advertises
 //! `Capabilities::BACKLIGHT`, the session service registers a
-//! `kde_external_brightness_device_v1` with KDE's compositor so the
-//! desktop brightness slider controls the TV's OLED pixel brightness.
+//! `kde_external_brightness_device_v1` with KWin so the desktop
+//! brightness slider controls the TV's OLED pixel brightness.
 //!
-//! # Wayland protocol
+//! # Two forward paths
 //!
-//! Uses the `kde-external-brightness-v1` protocol (KDE Plasma 6.1+).
-//! The compositor provides a global `kde_external_brightness_v1`;
-//! we create one device per TV, identify it with the TV's EDID blob,
-//! set `max_brightness = 100`, and `commit`. KDE then routes slider
-//! events as `requested_brightness` callbacks.
+//! KWin has two brightness modes depending on HDR state:
 //!
-//! # Forward path (KDE slider → TV)
+//! **SDR mode** (HDR disabled): KWin routes slider changes through
+//! the brightness device. Our Wayland client receives
+//! `requested_brightness` events and forwards to `Tv1.Backlight`.
 //!
-//! `requested_brightness` events post into an mpsc channel. A tokio
-//! drain-loop coalesces bursts and flushes one
-//! `DaemonClient::set_backlight` per TV per drain.
+//! **HDR mode** (HDR enabled): KWin uses the slider to control
+//! tone-mapping reference luminance and does NOT call
+//! `setBrightness` on the device (`drm_output.cpp:630`). However,
+//! the `org.kde.ScreenBrightness.Display.Brightness` D-Bus property
+//! still changes. A D-Bus observer catches these changes and
+//! forwards them to `Tv1.Backlight`, scaled from KWin's 0-10000
+//! range to our 0-100 range.
+//!
+//! Both paths feed into the same drain-loop and coalesce bursts.
 //!
 //! # Reverse path (TV → KDE slider)
 //!
 //! `StateWatcher` delivers `PropertiesChanged` from `Tv1.Backlight`.
-//! We call `set_observed_brightness` on the device to update KDE's
-//! displayed value (requires protocol version ≥ 2).
+//! We call `set_observed_brightness` on the Wayland device to update
+//! KDE's displayed value (requires protocol version ≥ 2).
 //!
 //! # Lifecycle
 //!
 //! Devices are created/destroyed by the coordinator on every
 //! reconcile pass (10 s tick + every `StateWatcher` event): TV
-//! connected + profile says `"wayland"` + EDID available → create;
+//! connected + profile says `"backlight"` + EDID available → create;
 //! TV disconnected / profile flips to `"none"` / no EDID → destroy.
 
 use std::collections::HashMap;
@@ -42,6 +46,7 @@ use anyhow::{Result, anyhow};
 use tisvlay_core::{DaemonClient, StateEvent, StateWatcher, StateWatcherConfig, TvStateChange};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, trace, warn};
+use zbus;
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
@@ -191,6 +196,14 @@ pub async fn run(
 
     let forward_handle = tokio::spawn(forward_brightness_events(event_rx, daemon.clone()));
 
+    // D-Bus observer for HDR mode: subscribe to
+    // org.kde.ScreenBrightness.BrightnessChanged which fires even
+    // when KWin doesn't route through the brightness device.
+    let dbus_observer_handle = tokio::spawn(observe_kde_brightness_dbus(
+        shared.event_tx.clone(),
+        state.clone(),
+    ));
+
     let mut sync = BrightnessSync {
         ops_tx,
         version,
@@ -253,6 +266,7 @@ pub async fn run(
     sync.bindings.clear();
     let _ = sync.ops_tx.send(DeviceOp::Shutdown);
     forward_handle.abort();
+    dbus_observer_handle.abort();
     let _ = wayland_thread.join();
 }
 
@@ -448,6 +462,211 @@ async fn forward_brightness_events(
             }
         }
     }
+}
+
+/// Observe `org.kde.ScreenBrightness.BrightnessChanged` on the session
+/// D-Bus. This signal fires in both SDR and HDR modes — when the
+/// Wayland `requested_brightness` path is active (SDR), both fire and
+/// the drain-loop deduplicates; when only D-Bus fires (HDR), this is
+/// the sole forward path.
+///
+/// The signal signature is `(siss)`: display_name, brightness,
+/// max_brightness, source_client_name.
+async fn observe_kde_brightness_dbus(
+    event_tx: mpsc::UnboundedSender<BrightnessEvent>,
+    state: Arc<RwLock<SessionState>>,
+) {
+    use futures_util::StreamExt;
+
+    let Ok(conn) = zbus::Connection::session().await else {
+        warn!("D-Bus brightness observer: session bus unavailable");
+        return;
+    };
+
+    // Subscribe to PropertiesChanged on every ScreenBrightness display.
+    // This is more reliable than matching the custom BrightnessChanged
+    // signal and works with zbus's standard proxy machinery.
+    // Subscribe to BrightnessChanged via zbus proxy for
+    // org.freedesktop.DBus.Properties.PropertiesChanged on each display.
+    // We use a simpler approach: monitor PropertiesChanged on
+    // org.kde.ScreenBrightness.Display and extract the Brightness value.
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.kde.ScreenBrightness")
+        .unwrap()
+        .interface("org.freedesktop.DBus.Properties")
+        .unwrap()
+        .member("PropertiesChanged")
+        .unwrap()
+        .build();
+
+    let Ok(mut stream) = zbus::MessageStream::for_match_rule(rule, &conn, None).await else {
+        warn!("D-Bus brightness observer: failed to subscribe");
+        return;
+    };
+
+    debug!("D-Bus brightness observer started");
+
+    while let Some(msg) = stream.next().await {
+        let Ok(msg) = msg else { continue };
+        debug!(
+            "D-Bus observer: signal from {:?} {:?}.{:?}",
+            msg.header().path(),
+            msg.header().interface(),
+            msg.header().member(),
+        );
+        let body = msg.body();
+
+        // PropertiesChanged(interface: s, changed: a{sv}, invalidated: as)
+        let Ok((iface, changed, _invalidated)): Result<(
+            String,
+            HashMap<String, zbus::zvariant::OwnedValue>,
+            Vec<String>,
+        ), _> = body.deserialize() else {
+            debug!("D-Bus observer: failed to deserialize PropertiesChanged");
+            continue;
+        };
+
+        if iface != "org.kde.ScreenBrightness.Display" {
+            debug!("D-Bus observer: ignoring interface {iface}");
+            continue;
+        }
+
+        let Some(brightness_val) = changed.get("Brightness") else {
+            debug!("D-Bus observer: no Brightness in changed props, keys={:?}", changed.keys().collect::<Vec<_>>());
+            continue;
+        };
+        let Ok(brightness) = <i32>::try_from(brightness_val) else {
+            debug!("D-Bus observer: Brightness value not i32: {:?}", brightness_val);
+            continue;
+        };
+        debug!("D-Bus observer: brightness={brightness} from PropertiesChanged");
+
+        // Get the display label to map to a TV ID. Read it from the
+        // same object path the signal came from.
+        let display_path = msg.header().path().map(|p| p.to_string());
+        let display_label = if let Some(ref path) = display_path {
+            let proxy = zbus::fdo::PropertiesProxy::builder(&conn)
+                .destination("org.kde.ScreenBrightness")
+                .unwrap()
+                .path(path.as_str())
+                .unwrap()
+                .build()
+                .await
+                .ok();
+            if let Some(proxy) = proxy {
+                let iface_name = zbus::names::InterfaceName::from_static_str_unchecked(
+                    "org.kde.ScreenBrightness.Display",
+                );
+                let prop_name =
+                    zbus::names::PropertyName::from_static_str_unchecked("Label");
+                proxy
+                    .get(iface_name, &prop_name)
+                    .await
+                    .ok()
+                    .and_then(|v| <String>::try_from(v).ok())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let Some(display_name) = display_label else {
+            debug!("D-Bus observer: label lookup failed for {:?}", display_path);
+            continue;
+        };
+        debug!("D-Bus observer: label={display_name}");
+
+        // KWin uses 0-10000 for software brightness. Scale to 0-100.
+        // TODO: read MaxBrightness from the display's D-Bus property
+        // for exactness; 10000 is KWin's hardcoded default.
+        let max_brightness = 10000i32;
+        let level = ((brightness as f64 / max_brightness as f64) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u32;
+
+        // Map the KDE display label to a TV ID.
+        let tv_id = {
+            let s = state.read().await;
+            find_tv_for_display_label(&display_name, &s)
+        };
+
+        if let Some(tv_id) = tv_id {
+            trace!(
+                tv_id,
+                display_name,
+                brightness,
+                level,
+                "D-Bus brightness change (HDR path)"
+            );
+            let _ = event_tx.send(BrightnessEvent::Requested {
+                tv_id,
+                value: level,
+            });
+        }
+    }
+}
+
+/// Match a KDE display label to a TV ID. The label comes from KWin's
+/// KScreen output name, which is typically the EDID monitor name
+/// (e.g. "LG TV SSCR2"). We compare against the TV's HardwareId
+/// model field, which is populated from the same EDID source.
+fn find_tv_for_display_label(label: &str, state: &SessionState) -> Option<String> {
+    // Check each TV that has brightness sync enabled.
+    for (tv_id, profile) in &state.profiles {
+        if !matches!(
+            profile.sync_backlight,
+            tisvlay_core::SyncBacklight::Backlight
+        ) {
+            continue;
+        }
+        // Look up the TV's desktop config for the connector, then
+        // read the ELD monitor name from sysfs to match against the
+        // KDE label. For simplicity, match against the desktop mapping's
+        // label if available, or fall back to a substring match on
+        // the TV's hardware_id model.
+        if let Some(tv_entry) = state.user_config.tv.iter().find(|e| e.id == *tv_id) {
+            if let Some(desktop) = &tv_entry.desktop {
+                if let Some(connector) = &desktop.connector {
+                    // Read the EDID monitor name from the DRM connector
+                    let monitor_name = read_monitor_name(connector);
+                    if let Some(name) = monitor_name {
+                        if label == name {
+                            return Some(tv_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Read the monitor name from a DRM connector's EDID status file.
+fn read_monitor_name(connector: &str) -> Option<String> {
+    let drm_root = std::path::Path::new("/sys/class/drm");
+    for entry in std::fs::read_dir(drm_root).ok()?.flatten() {
+        let dir_name = entry.file_name();
+        let dir_name = dir_name.to_string_lossy();
+        let Some(entry_connector) = dir_name.split_once('-').map(|(_, rest)| rest) else {
+            continue;
+        };
+        if entry_connector != connector {
+            continue;
+        }
+        let edid_path = entry.path().join("edid");
+        let edid_bytes = std::fs::read(&edid_path).ok()?;
+        if edid_bytes.len() < 128 {
+            return None;
+        }
+        // Parse EDID to extract monitor name from descriptor blocks
+        if let Ok(edid) = edidkit::Edid::parse(&edid_bytes) {
+            let name = edid.product().monitor_name.clone();
+            return name.filter(|n| !n.is_empty());
+        }
+    }
+    None
 }
 
 /// Reconcile desired brightness devices with current state.
