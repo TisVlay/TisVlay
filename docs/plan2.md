@@ -4,21 +4,53 @@ Sub-plan for Phase 3 of [plan.md](plan.md). Creates `/sys/class/backlight/tisvla
 
 ## Why a kernel module?
 
-KDE Plasma's PowerDevil selects a brightness controller per display in priority order:
+KDE Plasma's brightness system has three layers. Understanding how they interact — and where they fail for HDMI TVs — explains why a kernel module is needed.
 
-1. **KWinDisplayDetector** — software brightness via compositor (MaxBrightness=10000)
-2. **BacklightDetector** — hardware backlight via `/sys/class/backlight/`
-3. **DDCutilDetector** — hardware DDC/CI
+### KDE brightness architecture (learned from hardware testing)
 
-When `BacklightDetector` or `DDCutilDetector` claims a display, KWin stops advertising `BrightnessControl` for it — no software dimming is applied. The `kde-external-brightness-v1` Wayland protocol can then intercept those displays for external control.
+**PowerDevil** (the power management daemon) detects brightness-capable displays via three detectors, in priority order:
 
-Our TV has neither:
+1. **KWinDisplayDetector** — software brightness via compositor (MaxBrightness=10000, always available for any KScreen output with `BrightnessControl` capability)
+2. **BacklightDetector** — hardware backlight via `/sys/class/backlight/`, using a privileged KAuth helper (`org.kde.powerdevil.backlighthelper`) for sysfs access
+3. **DDCutilDetector** — hardware DDC/CI via libddcutil
+
+**PowerDevil is a Wayland client** of KWin's `kde-external-brightness-v1` protocol. When the `ExternalBrightnessController` is active (connected to KWin's Wayland global), non-KWin displays are diverted: instead of PowerDevil controlling them directly, it registers them with KWin as `kde_external_brightness_device_v1` objects. KWin then sends `requested_brightness` events back to PowerDevil when the user moves the slider.
+
+The critical routing decision (`screenbrightnesscontroller.cpp:143`):
+```cpp
+const bool shouldUseExternalControl = m_externalBrightnessController->isActive()
+    && !dynamic_cast<KWinDisplayDetector *>(detectorInfo.detector);
+```
+KWinDisplayDetector displays are **never** sent to external control.
+
+### Why the TV gets software brightness
+
+Our TV has no hardware brightness path:
 - No `/sys/class/backlight/` entry (not a laptop panel)
 - No DDC/CI (`ddcutil` confirms "I2C slave address x37 is unresponsive" on the LG OLED42C3PUA)
 
-So KWin claims it with software brightness. The Wayland protocol explicitly skips KWin-claimed displays. A virtual backlight device breaks this deadlock: `BacklightDetector` claims the TV, software brightness disappears, and KDE drives the OLED backlight directly.
+So KWinDisplayDetector claims it with software brightness (MaxBrightness=10000). Neither the `kde-external-brightness-v1` Wayland protocol nor any BacklightDetector path can reach it.
 
-This is the same pattern used by `ddcci-backlight` (creates `/sys/class/backlight/ddcci*` for DDC/CI monitors) and is how laptop panels have always worked (ACPI/sysfs backlight → no software dimming).
+### What a virtual backlight device provides
+
+Creating `/sys/class/backlight/tisvlay-*` gives BacklightDetector a device to find. However, **two additional blockers** were discovered during implementation:
+
+1. **`isInternal` mismatch**: `BacklightBrightness::isInternal()` is hardcoded to `true` (`backlightbrightness.cpp:274`). When PowerDevil tries to match the display to a KScreen output, the `DisplayFilter` requires `isInternal` to match the output type. Our HDMI TV is `External`, not `Panel` — the match fails silently.
+
+2. **No EDID data**: `BacklightBrightness` doesn't provide EDID data. Even if the `isInternal` filter passed, KWin couldn't correlate the device to a specific output without EDID.
+
+3. **KWin priority**: Even with a sysfs backlight present, KWin may still advertise `BrightnessControl` for the HDMI output. KWinDisplayDetector runs first and claims it, making BacklightDetector's finding moot.
+
+### The real fix: KWin integration
+
+The correct solution is for **KWin itself** to use our sysfs backlight for the HDMI output — the same way it uses sysfs backlights for laptop panels. When KWin owns the association, it sets `BrightnessControl` with the real max_brightness (100), applies no software dimming, and routes slider writes directly to sysfs. PowerDevil then sees a KWin-managed display with hardware brightness, not software brightness.
+
+This requires understanding how KWin discovers and associates sysfs backlights with DRM outputs — research ongoing in the KWin source.
+
+### Prior art
+
+- **`ddcci-backlight`** — out-of-tree kernel module, creates sysfs backlight devices for DDC/CI monitors. Well-maintained, packaged in NixOS (`linuxPackages.ddcci-driver`). Our module follows the same registration pattern but with a userspace control channel instead of I2C.
+- **Laptop backlight drivers** (`acpi_video`, `apple_bl`, `nvidia_bl`) — each registers a `backlight_device` with the kernel's backlight class; KWin discovers them via sysfs topology and associates them with the internal panel's DRM connector.
 
 ## Prior art
 
@@ -27,28 +59,39 @@ This is the same pattern used by `ddcci-backlight` (creates `/sys/class/backligh
 
 ## Architecture
 
+The goal is for KWin to use our sysfs backlight as the hardware brightness backend for the HDMI output — the same way it uses sysfs backlights for laptop panels. The architecture has two layers:
+
+**Kernel layer**: the `tisvlay_backlight` module creates sysfs backlight devices and a miscdevice chardev for daemon communication.
+
+**Userspace layer**: `tisvlayd` manages device lifecycle via the chardev; KWin (ideally) or PowerDevil writes to sysfs when the user moves the brightness slider.
+
 ```
-┌─────────────────────┐     sysfs write      ┌──────────────────────┐
-│  KDE PowerDevil     │ ──────────────────>   │  /sys/class/backlight│
-│  (BacklightDetector)│ <──────────────────   │  /tisvlay-<tv_id>/   │
-│                     │     sysfs read        │  brightness          │
-└─────────────────────┘                       └──────────┬───────────┘
-                                                         │ kernel
-                                              ┌──────────┴───────────┐
-                                              │  tisvlay_backlight   │
-                                              │  kernel module       │
-                                              │                      │
-                                              │  /dev/tisvlay-bl     │
-                                              │  (misc chardev)      │
-                                              └──────────┬───────────┘
-                                                         │ uevent / ioctl / chardev
-                                              ┌──────────┴───────────┐
-                                              │  tisvlayd            │
-                                              │  (system daemon)     │
-                                              │                      │
-                                              │  Tv1.Backlight       │
-                                              └──────────────────────┘
+┌──────────┐  brightness  ┌──────────────────────┐
+│  KWin    │  slider      │  /sys/class/backlight │
+│  (ideal) │ ──────────>  │  /tisvlay-<tv_id>/    │
+│  or      │ <──────────  │  brightness           │
+│ PowerDevil  sysfs read  │                       │
+└──────────┘              └──────────┬────────────┘
+                                     │ kernel
+                          ┌──────────┴────────────┐
+                          │  tisvlay_backlight     │
+                          │  kernel module         │
+                          │                        │
+                          │  /dev/tisvlay-bl       │
+                          │  (misc chardev)        │
+                          └──────────┬────────────┘
+                                     │ ioctl / read
+                          ┌──────────┴────────────┐
+                          │  tisvlayd              │
+                          │  (system daemon)       │
+                          │                        │
+                          │  Tv1.Backlight → TV    │
+                          └───────────────────────┘
 ```
+
+**Open question**: how does KWin discover and associate sysfs backlights with DRM outputs? Laptop panels work because the backlight device sits in the same sysfs device tree as the DRM connector. Our platform device has no such parent — we need to understand KWin's association logic (research ongoing) and either:
+- Create the correct sysfs topology so KWin finds it naturally
+- Or extend KWin's matching (upstream contribution)
 
 ## Kernel module: `tisvlay_backlight`
 
@@ -79,14 +122,16 @@ static const struct backlight_ops tisvlay_bl_ops = {
 
 `update_status` queues the new value for the daemon to read from the chardev. `get_brightness` returns the last value set by either KDE or the daemon.
 
-### EDID association
+### Output association
 
-KDE's `BacklightDetector` matches backlight devices to KScreen outputs by sysfs topology (looking for the DRM connector in the device tree). For out-of-tree platform devices this doesn't work automatically. Two options:
+Laptop backlights work because the sysfs backlight device sits in the same device tree as the DRM connector — KWin walks the parent chain and finds the GPU/connector that owns the backlight. Our platform device has no such parent, so KWin can't associate it automatically.
 
-1. **Name convention**: create the backlight device with a name that KDE can match heuristically. `ddcci-backlight` uses `ddcci<bus>` and KDE falls back to EDID matching.
-2. **Explicit sysfs link**: the module creates a `device` symlink pointing at the DRM connector's sysfs path (e.g., `/sys/class/drm/card1-HDMI-A-1`). KDE follows this link for output matching.
+Additionally, PowerDevil's `BacklightDetector` hardcodes `isInternal() = true` for all sysfs backlights and doesn't provide EDID data. Even when the external brightness protocol diverts the device, KWin can't match it to the HDMI output.
 
-Option 2 is more robust. The daemon passes the DRM connector path at device creation time (already known from the Phase 1 desktop probe).
+**Resolution depends on KWin research** (see "Architecture" open question above). Possible approaches:
+1. **Sysfs topology**: register the backlight device as a child of the DRM connector's device node, so KWin's parent-walk finds it naturally. Requires the kernel module to receive the connector's `struct device *` at creation time.
+2. **KWin backlight matching**: if KWin supports additional matching heuristics (device symlink, EDID attribute, naming convention), use those.
+3. **Upstream contribution**: if no existing mechanism works, contribute a KWin patch that checks for a `drm_connector` sysfs attribute on backlight devices — similar to how `ddcci-backlight` works with PowerDevil today.
 
 ## Daemon integration (`tisvlayd`)
 
