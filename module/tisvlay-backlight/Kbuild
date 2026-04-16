@@ -1,3 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 
-obj-m := tisvlay_backlight.o
+# Composite module: Rust main + C helpers for backlight subsystem.
+# The module name must differ from any source file name when using
+# composite objects, so we use tisvlay_bl as the module name.
+obj-m := tisvlay_bl.o
+tisvlay_bl-y := tisvlay_backlight.o helpers.o
