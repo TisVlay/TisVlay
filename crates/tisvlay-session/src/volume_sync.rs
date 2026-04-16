@@ -50,34 +50,10 @@
 //!
 //! # Volume scale
 //!
-//! Both stages are cubic in amplitude (PipeWire's `channelVolumes`
-//! and the TV's volume-to-gain curve both follow `gain = pos^3`).
-//! Mirroring the slider 1:1 puts them in series and gives a sextic
-//! compound curve — 120 dB/decade, perceptually unusable below the
-//! upper third of the slider.
-//!
-//! Instead we treat the slider position `s ∈ [0, 1]` as the user's
-//! desired total attenuation in dB (`60·log₁₀(s)`, the standard
-//! 60-dB AES fader stroke) and split that attenuation between the
-//! two stages by a configurable factor `α ∈ [0.5, 1.0]`
-//! ([`UserProfileConfig::sync_volume_split`], default `0.85`):
-//!
-//! ```text
-//! kde_db = α · 60·log₁₀(s)         → cv = s^(3·α)
-//! tv_db  = (1-α) · 60·log₁₀(s)     → tv_value = round(100 · s^(1-α))
-//! ```
-//!
-//! Compound: `cv · (tv/100)³ = s³ · 1 = s³`, identical to a native
-//! cubic sink — the slider feels like it would without tisvlay.
-//!
-//! Side effects of the split:
-//! 1. KDE's slider snaps after each user input — the position the
-//!    user releases at maps to a slightly higher visual cv (since
-//!    `s^α > s` for `α < 1`, `s ∈ (0, 1)`). At `α = 0.85` this is
-//!    a few percent at most.
-//! 2. The TV's on-screen indicator moves through a smaller stroke
-//!    than the slider — necessary to keep the compound from
-//!    over-attenuating. `α = 1.0` pins the TV at 100 (KDE-only).
+//! PipeWire's `channelVolumes` is cubic (`cv^3` is the actual gain),
+//! and Plasma displays percent as `cbrt(cv) * 100`. Our host-side
+//! `u8` Volume (0-100) is a *linear* percent; we cube on write and
+//! cube-root on read so the displayed percentage matches the TV.
 //!
 //! # Lifecycle
 //!
@@ -170,27 +146,12 @@ struct SinkCandidate {
 
 struct Binding {
     /// Which candidate we bound against. The proxy lives in
-    /// [`SinkCandidate`]; the binding records the dB-split parameter
-    /// for this TV's profile, the listener hook so we can detach on
-    /// unbind, and two suppression caches:
-    ///
-    /// 1. `last_written_cv` / `last_written_muted` — what we last
-    ///    wrote to KDE's sink Props. The PipeWire param listener
-    ///    skips events whose values match (echoes of our own writes).
-    /// 2. `last_sent_tv_value` / `last_sent_tv_muted` — what we last
-    ///    sent to the TV via the daemon. [`push_tv_state`] skips
-    ///    incoming `PropertiesChanged` echoes that match. Without
-    ///    this, the round-trip through `u8` quantization drifts the
-    ///    cv slightly each time and the forward / reverse paths
-    ///    feed each other into a runaway loop toward the slider
-    ///    bounds.
+    /// [`SinkCandidate`]; the binding records suppression state and
+    /// the listener hook so we can detach on unbind.
     global_id: u32,
     hook_id: pipewire_native::HookId,
-    alpha: f32,
-    last_written_cv: Option<f32>,
-    last_written_muted: Option<bool>,
-    last_sent_tv_value: Option<u8>,
-    last_sent_tv_muted: Option<bool>,
+    last_pushed_volume: Option<u8>,
+    last_pushed_muted: Option<bool>,
 }
 
 impl VolumeSync {
@@ -275,18 +236,24 @@ impl VolumeSync {
 
     /// Bind to the PipeWire sink with the given `global_id` and
     /// attach a Props listener for the forward path. Idempotent: if
-    /// we're already bound to this `(global_id, alpha)` pair we
-    /// reuse the binding; if either differs (different sink, or the
-    /// resolved profile's `sync_volume_split` changed), the previous
+    /// we're already bound to this id we reuse the binding; if we
+    /// were bound to a different id for this TV, the previous
     /// binding is dropped first.
     #[instrument(skip(self))]
-    pub fn bind_tv(&self, tv_id: &str, global_id: u32, alpha: f32) -> Result<()> {
+    pub fn bind_tv(
+        &self,
+        tv_id: &str,
+        global_id: u32,
+        initial_volume: u8,
+        initial_muted: bool,
+    ) -> Result<()> {
         let needs_rebind = {
             let bindings = self.inner.bindings.lock().expect("bindings lock poisoned");
-            !matches!(
-                bindings.get(tv_id),
-                Some(b) if b.global_id == global_id && b.alpha == alpha
-            )
+            match bindings.get(tv_id) {
+                Some(b) if b.global_id == global_id => false,
+                Some(_) => true, // different sink — rebind
+                None => true,
+            }
         };
         if !needs_rebind {
             return Ok(());
@@ -339,21 +306,17 @@ impl VolumeSync {
                 Binding {
                     global_id,
                     hook_id,
-                    alpha,
-                    last_written_cv: None,
-                    last_written_muted: None,
-                    last_sent_tv_value: None,
-                    last_sent_tv_muted: None,
+                    last_pushed_volume: Some(initial_volume),
+                    last_pushed_muted: Some(initial_muted),
                 },
             );
 
-        // No initial push — we don't know whether the TV's current
-        // value was set under our split or by the user directly, so
-        // back-deriving a slider position would be nonsense (at
-        // α=0.85, TV=30 implies a slider near silence). The first
-        // listener event seeds `last_written_cv` as baseline (see
-        // `handle_props_change`); the first real user input is what
-        // establishes the split going forward.
+        // Seed the sink with the TV's current state so the desktop
+        // slider starts where the TV actually is. Errors here are
+        // non-fatal — next reconcile will retry.
+        if let Err(e) = self.push_tv_state(tv_id, initial_volume, initial_muted) {
+            warn!(tv_id, error = %e, "failed to seed initial volume");
+        }
 
         info!(tv_id, global_id, "bound TV volume to HDMI sink");
         Ok(())
@@ -389,47 +352,16 @@ impl VolumeSync {
         }
     }
 
-    /// Push TV-side state to the bound sink (reverse path).
-    ///
-    /// `volume` is the TV's reported value (0-100). When the value
-    /// matches what we ourselves last sent to the TV we treat it as
-    /// an echo from the daemon's `PropertiesChanged` and skip the
-    /// write entirely — re-deriving `cv` from `volume` round-trips
-    /// through u8 quantization with a tiny drift, and a non-suppressed
-    /// echo would feed the listener which would feed another forward,
-    /// which would feed another reverse, drifting toward the bounds.
-    /// Otherwise we back-derive the slider position from the TV's
-    /// share of the split and write the corresponding `cv` to KDE.
+    /// Push TV-side state to the bound sink (reverse path). Updates
+    /// `Props.channelVolumes` + `Props.mute` and records the values
+    /// for feedback-loop suppression.
     #[instrument(skip(self))]
     pub fn push_tv_state(&self, tv_id: &str, volume: u8, muted: bool) -> Result<()> {
-        let (node, alpha) = {
+        let node = {
             let bindings = self.inner.bindings.lock().expect("bindings lock poisoned");
             let Some(b) = bindings.get(tv_id) else {
                 return Err(anyhow!("no binding for {tv_id}"));
             };
-            // Echo of our own send — skip without rewriting the
-            // sink. The forward path tracks pending echoes per field
-            // (volume vs mute), so a `None` slot means "we didn't
-            // send this field, accept whatever the TV reports for
-            // it". Mismatch on a `Some` slot means a real TV-remote
-            // change; pass through.
-            let suppressed = match (b.last_sent_tv_value, b.last_sent_tv_muted) {
-                (None, None) => false,
-                (Some(v), None) => v == volume,
-                (None, Some(m)) => m == muted,
-                (Some(v), Some(m)) => v == volume && m == muted,
-            };
-            if suppressed {
-                trace!(tv_id, volume, muted, "TV state matches our last send; suppressing reverse echo");
-                drop(bindings);
-                let mut bindings = self.inner.bindings.lock().expect("bindings lock poisoned");
-                if let Some(b) = bindings.get_mut(tv_id) {
-                    b.last_sent_tv_value = None;
-                    b.last_sent_tv_muted = None;
-                }
-                return Ok(());
-            }
-            let alpha = b.alpha;
             let candidates = self
                 .inner
                 .candidates
@@ -441,21 +373,35 @@ impl VolumeSync {
                     b.global_id
                 ));
             };
-            (c.node.clone(), alpha)
+            c.node.clone()
         };
 
-        let s = tv_value_to_slider(volume, alpha);
-        let cv = slider_to_pw_cv(s, alpha);
-        // Tokio side: take the loop lock around the write.
+        let volume_pw = u8_to_pw_volume(volume);
+        let channel_volumes = vec![volume_pw, volume_pw];
+
         {
             let _g = self.inner.thread_loop.lock();
-            write_sink_props(&node, cv, muted)?;
+            node.set_param(
+                ParamType::Props,
+                ObjectType::Props,
+                0,
+                Box::new(move |builder| {
+                    builder
+                        .push_property(Prop::Mute, PropertyFlags::empty(), muted)
+                        .push_property(
+                            Prop::ChannelVolumes,
+                            PropertyFlags::empty(),
+                            channel_volumes,
+                        )
+                }),
+            )
+            .context("Node::set_param(Props)")?;
         }
 
         let mut bindings = self.inner.bindings.lock().expect("bindings lock poisoned");
         if let Some(b) = bindings.get_mut(tv_id) {
-            b.last_written_cv = Some(cv);
-            b.last_written_muted = Some(muted);
+            b.last_pushed_volume = Some(volume);
+            b.last_pushed_muted = Some(muted);
         }
         Ok(())
     }
@@ -725,8 +671,8 @@ fn handle_props_change(
     use spa::pod::parser::Parser;
 
     let mut parser = Parser::new(pod.data());
-    let mut new_cv: Option<f32> = None;
-    let mut new_muted: Option<bool> = None;
+    let mut volume: Option<u8> = None;
+    let mut muted: Option<bool> = None;
 
     let _ = parser.pop_object_raw::<u32, _>(|obj, _obj_type, _id| {
         for (key_id, _flags, prop_pod) in obj {
@@ -736,13 +682,13 @@ fn handle_props_change(
             match prop {
                 Prop::Mute => {
                     if let Ok(v) = <bool as spa::pod::Pod>::decode(prop_pod.data()) {
-                        new_muted = Some(v.0);
+                        muted = Some(v.0);
                     }
                 }
                 Prop::ChannelVolumes => {
                     if let Ok((vs, _)) = <&[f32] as spa::pod::Pod>::decode(prop_pod.data()) {
-                        if let Some(avg) = average(&vs) {
-                            new_cv = Some(avg);
+                        if let Some(v) = average(&vs) {
+                            volume = Some(pw_to_u8_volume(v));
                         }
                     }
                 }
@@ -752,113 +698,31 @@ fn handle_props_change(
         Ok(())
     });
 
-    // Snapshot the binding state we need (alpha + suppression cache +
-    // node) under one lock acquisition. We mutate the cache below
-    // after we've decided what to write.
-    let (alpha, last_cv, last_muted, node) = {
-        let bindings = inner.bindings.lock().expect("bindings lock poisoned");
-        let Some(b) = bindings.get(tv_id) else {
-            return;
-        };
-        let candidates = inner.candidates.lock().expect("candidates lock poisoned");
-        let node = candidates.get(&b.global_id).map(|c| c.node.clone());
-        (b.alpha, b.last_written_cv, b.last_written_muted, node)
-    };
-
-    let cv_changed = match (new_cv, last_cv) {
-        (Some(cv), Some(prev)) => (cv - prev).abs() > CV_EPS,
-        _ => false,
-    };
-    let mute_changed = match (new_muted, last_muted) {
-        (Some(m), Some(prev)) => m != prev,
-        _ => false,
-    };
-    debug!(
-        "Props event: tv_id={tv_id} new_cv={new_cv:?} new_muted={new_muted:?} \
-         last_cv={last_cv:?} last_muted={last_muted:?} \
-         cv_changed={cv_changed} mute_changed={mute_changed}"
-    );
-    if !cv_changed && !mute_changed {
-        // Either an echo of our own write (values match cached
-        // `last_written_*`) or the first event after bind, before
-        // we've written anything — in that case there's no user
-        // input yet, just the sink's current state. Record as the
-        // baseline and move on.
-        let mut bindings = inner.bindings.lock().expect("bindings lock poisoned");
-        if let Some(b) = bindings.get_mut(tv_id) {
-            if b.last_written_cv.is_none() {
-                b.last_written_cv = new_cv;
-            }
-            if b.last_written_muted.is_none() {
-                b.last_written_muted = new_muted;
-            }
-        }
+    let mut bindings = inner.bindings.lock().expect("bindings lock poisoned");
+    let Some(b) = bindings.get_mut(tv_id) else {
         return;
+    };
+    if let Some(v) = volume {
+        if b.last_pushed_volume != Some(v) {
+            trace!(tv_id, volume = v, "sink volume change from user");
+            b.last_pushed_volume = Some(v);
+            let _ = event_tx.send(SinkEvent::VolumeChanged {
+                tv_id: tv_id.to_string(),
+                volume: v,
+            });
+        }
     }
-
-    // Split the forward path by what the user actually changed. A
-    // mute toggle must NOT recompute cv — re-applying `cv^α` on every
-    // toggle amplifies the cv on each pass and runs the slider away
-    // to a rail. Cv changes do override KDE's cv to the rebalanced
-    // value (`cv_corrected`) so the slider lands where the dB split
-    // says it should.
-
-    if cv_changed {
-        let s = pw_cv_to_slider(new_cv.expect("cv_changed implies new_cv is Some"));
-        let cv_corrected = slider_to_pw_cv(s, alpha);
-        let tv_value = slider_to_tv_value(s, alpha);
-        // `write_sink_props` rewrites both cv and mute atomically;
-        // pass the current mute state so we don't toggle it as a side
-        // effect of a volume change.
-        let muted_out = new_muted.or(last_muted).unwrap_or(false);
-
-        if let Some(node) = &node {
-            // On the PipeWire thread inside a callback: the before
-            // hook already holds the loop mutex, so do NOT relock.
-            if let Err(e) = write_sink_props(node, cv_corrected, muted_out) {
-                warn!(tv_id, error = %e, "failed to override sink cv after user input");
-            }
+    if let Some(m) = muted {
+        if b.last_pushed_muted != Some(m) {
+            trace!(tv_id, muted = m, "sink mute change from user");
+            b.last_pushed_muted = Some(m);
+            let _ = event_tx.send(SinkEvent::MuteChanged {
+                tv_id: tv_id.to_string(),
+                muted: m,
+            });
         }
-
-        let mut bindings = inner.bindings.lock().expect("bindings lock poisoned");
-        if let Some(b) = bindings.get_mut(tv_id) {
-            b.last_written_cv = Some(cv_corrected);
-            b.last_written_muted = Some(muted_out);
-            b.last_sent_tv_value = Some(tv_value);
-        }
-        drop(bindings);
-
-        debug!("forward to TV: tv_id={tv_id} slider={s} tv_value={tv_value} cv_corrected={cv_corrected}");
-        let _ = event_tx.send(SinkEvent::VolumeChanged {
-            tv_id: tv_id.to_string(),
-            volume: tv_value,
-        });
-    }
-
-    if mute_changed {
-        let muted_out = new_muted.expect("mute_changed implies new_muted is Some");
-        // KDE already reflects the user's mute toggle correctly — no
-        // need to override the sink. Just record the new state and
-        // forward to the TV.
-        let mut bindings = inner.bindings.lock().expect("bindings lock poisoned");
-        if let Some(b) = bindings.get_mut(tv_id) {
-            b.last_written_muted = Some(muted_out);
-            b.last_sent_tv_muted = Some(muted_out);
-        }
-        drop(bindings);
-
-        debug!("forward to TV: tv_id={tv_id} muted={muted_out}");
-        let _ = event_tx.send(SinkEvent::MuteChanged {
-            tv_id: tv_id.to_string(),
-            muted: muted_out,
-        });
     }
 }
-
-/// Float epsilon used for `channelVolumes` echo suppression. KDE
-/// scrolls in fixed-precision steps so any genuine change is
-/// well above this.
-const CV_EPS: f32 = 1e-4;
 
 fn average(values: &[f32]) -> Option<f32> {
     if values.is_empty() {
@@ -868,66 +732,19 @@ fn average(values: &[f32]) -> Option<f32> {
     }
 }
 
-/// Slider position (`s ∈ [0, 1]`) → KDE `channelVolumes`.
-/// Inverts to `pw_cv_to_slider`.
-fn slider_to_pw_cv(s: f32, alpha: f32) -> f32 {
-    s.clamp(0.0, 1.0).powf(3.0 * alpha) * PW_UNITY_VOLUME
+fn u8_to_pw_volume(v: u8) -> f32 {
+    let linear = v.min(100) as f32 / 100.0;
+    // PipeWire's channelVolumes is cubic; Plasma displays percent as
+    // `cbrt(cv) * 100`. Cube on write so the displayed slider equals
+    // our linear percent.
+    linear * linear * linear * PW_UNITY_VOLUME
 }
 
-/// KDE `channelVolumes` → slider position (the user-visible percent
-/// Plasma's cubic taper would display). Note this uses *KDE's* fixed
-/// cubic (`p = cbrt(cv)`), not the α-weighted inverse — α only
-/// applies to how we rebalance around the user's intent, not to how
-/// KDE natively interprets the slider.
-fn pw_cv_to_slider(cv: f32) -> f32 {
-    (cv.max(0.0) / PW_UNITY_VOLUME).min(1.0).cbrt()
-}
-
-/// Slider position → TV volume (0-100 u8).
-fn slider_to_tv_value(s: f32, alpha: f32) -> u8 {
-    let f_t = s.clamp(0.0, 1.0).powf(1.0 - alpha);
-    (f_t * 100.0).round().clamp(0.0, 100.0) as u8
-}
-
-/// TV volume → slider position. When `alpha = 1.0` the TV is pinned
-/// at 100 in the forward direction, so any reverse-path read with a
-/// different value is treated as the user nudging the TV up/down
-/// through its own remote — interpreted as a linear slider hint.
-fn tv_value_to_slider(v: u8, alpha: f32) -> f32 {
-    let f_t = (v.min(100) as f32) / 100.0;
-    let one_minus_alpha = 1.0 - alpha;
-    if one_minus_alpha < f32::EPSILON {
-        return f_t;
-    }
-    f_t.powf(1.0 / one_minus_alpha)
-}
-
-/// Write `channelVolumes` + `mute` to the bound sink.
-///
-/// **Caller must either be on the PipeWire thread (i.e. inside a
-/// callback) or hold `thread_loop.lock()`.** `Node::set_param`
-/// requires the loop mutex, but acquiring it from within a callback
-/// self-deadlocks because the PW thread's `before` hook already
-/// holds it. The call sites that need locking handle it themselves.
-fn write_sink_props(node: &Node, cv: f32, muted: bool) -> Result<()> {
-    let cv_clamped = cv.clamp(0.0, PW_UNITY_VOLUME);
-    let channel_volumes = vec![cv_clamped, cv_clamped];
-    node.set_param(
-        ParamType::Props,
-        ObjectType::Props,
-        0,
-        Box::new(move |builder| {
-            builder
-                .push_property(Prop::Mute, PropertyFlags::empty(), muted)
-                .push_property(
-                    Prop::ChannelVolumes,
-                    PropertyFlags::empty(),
-                    channel_volumes,
-                )
-        }),
-    )
-    .context("Node::set_param(Props)")?;
-    Ok(())
+fn pw_to_u8_volume(v: f32) -> u8 {
+    let unity = (v.max(0.0) / PW_UNITY_VOLUME).min(1.0);
+    // Inverse of `u8_to_pw_volume`.
+    let linear = unity.cbrt();
+    (linear * 100.0).round().clamp(0.0, 100.0) as u8
 }
 
 /// Ensure `SPA_PLUGIN_DIR` and `PIPEWIRE_CONFIG_DIR` point at the
@@ -1129,17 +946,22 @@ async fn reconcile(
         let s = state.read().await;
         tvs.iter()
             .filter_map(|tv| {
-                let profile = s.profiles.get(&tv.id)?;
-                if !matches!(profile.sync_volume, tisvlay_core::SyncVolume::MirrorHdmi) {
+                let profile_says_mirror = s
+                    .profiles
+                    .get(&tv.id)
+                    .map(|p| matches!(p.sync_volume, tisvlay_core::SyncVolume::MirrorHdmi))
+                    .unwrap_or(false);
+                if !(tv.connected && profile_says_mirror) {
                     return None;
                 }
-                if !tv.connected || tv.hardware_id.is_empty() {
+                if tv.hardware_id.is_empty() {
                     return None;
                 }
                 Some(DesiredBinding {
                     tv_id: tv.id.clone(),
                     tv_hw: tv.hardware_id.clone(),
-                    alpha: profile.sync_volume_split,
+                    volume: tv.volume,
+                    muted: tv.muted,
                 })
             })
             .collect()
@@ -1166,7 +988,7 @@ async fn reconcile(
         let pick = best_candidate(&candidates, &d.tv_hw);
         match pick {
             Some(global_id) => {
-                if let Err(e) = volume_sync.bind_tv(&d.tv_id, global_id, d.alpha) {
+                if let Err(e) = volume_sync.bind_tv(&d.tv_id, global_id, d.volume, d.muted) {
                     warn!(tv_id = %d.tv_id, error = %e, "bind_tv failed");
                 }
             }
@@ -1186,7 +1008,8 @@ async fn reconcile(
 struct DesiredBinding {
     tv_id: String,
     tv_hw: HardwareId,
-    alpha: f32,
+    volume: u8,
+    muted: bool,
 }
 
 fn best_candidate(candidates: &[(u32, HardwareId)], tv_hw: &HardwareId) -> Option<u32> {
@@ -1201,100 +1024,28 @@ fn best_candidate(candidates: &[(u32, HardwareId)], tv_hw: &HardwareId) -> Optio
 mod tests {
     use super::*;
 
-    /// Compound gain (dB) from slider position `s` for the given α
-    /// split, assuming a cubic TV. Used by the tests below to assert
-    /// the "single cubic compound" property.
-    fn compound_db(s: f32, alpha: f32) -> f32 {
-        let cv = slider_to_pw_cv(s, alpha);
-        let tv = slider_to_tv_value(s, alpha) as f32 / 100.0;
-        let amp = cv * tv * tv * tv;
-        20.0 * amp.log10()
+    #[test]
+    fn u8_to_pw_volume_bounds() {
+        assert_eq!(u8_to_pw_volume(0), 0.0);
+        assert!(
+            (u8_to_pw_volume(50) - 0.125).abs() < 1e-6,
+            "50% cubic = 0.125"
+        );
+        assert_eq!(u8_to_pw_volume(100), 1.0);
+        assert_eq!(u8_to_pw_volume(200), 1.0);
     }
 
     #[test]
-    fn slider_endpoints_round_trip() {
-        for alpha in [0.5_f32, 0.85, 1.0] {
-            assert_eq!(slider_to_pw_cv(0.0, alpha), 0.0);
-            assert!((slider_to_pw_cv(1.0, alpha) - 1.0).abs() < 1e-6);
-            assert_eq!(slider_to_tv_value(1.0, alpha), 100);
-        }
-        // At α < 1 both stages converge to zero. At α = 1 the TV is
-        // pinned at 100 even when the slider is at zero — silence
-        // comes from KDE's `cv = 0`.
-        assert_eq!(slider_to_tv_value(0.0, 0.5), 0);
-        assert_eq!(slider_to_tv_value(0.0, 0.85), 0);
-        assert_eq!(slider_to_tv_value(0.0, 1.0), 100);
-    }
-
-    #[test]
-    fn pw_cv_to_slider_is_kde_cubic_inverse() {
-        // `pw_cv_to_slider` decodes KDE's native cubic: writing
-        // `cv = p^3` and reading it back should round-trip to `p`.
-        for p in [0.0_f32, 0.05, 0.25, 0.5, 0.75, 1.0] {
-            let cv = p * p * p;
-            let p_back = pw_cv_to_slider(cv);
-            assert!((p - p_back).abs() < 1e-4, "p={p} cv={cv} back={p_back}");
+    fn pw_to_u8_volume_roundtrip() {
+        for v in [0u8, 1, 25, 50, 75, 99, 100] {
+            assert_eq!(pw_to_u8_volume(u8_to_pw_volume(v)), v, "round-trip for {v}");
         }
     }
 
     #[test]
-    fn override_visibly_snaps_slider_by_alpha() {
-        // When we override KDE's `cv = p^3` with `cv_target = p^(3α)`,
-        // Plasma's slider redraws to `cbrt(cv_target) = p^α`. The
-        // snap is small for α close to 1 and larger for smaller α.
-        for &(alpha, p, expected_visible) in &[
-            (1.0_f32, 0.5, 0.5),
-            (0.85, 0.5, 0.5_f32.powf(0.85)),
-            (0.5, 0.5, 0.5_f32.sqrt()),
-        ] {
-            let cv_target = slider_to_pw_cv(p, alpha);
-            let visible = pw_cv_to_slider(cv_target);
-            assert!(
-                (visible - expected_visible).abs() < 1e-4,
-                "α={alpha} p={p} visible={visible} expected={expected_visible}"
-            );
-        }
-    }
-
-    #[test]
-    fn compound_matches_native_cubic() {
-        // The whole point of the dB split: compound gain at slider s
-        // matches a single-cubic native sink (60 · log10(s) dB) within
-        // the rounding floor introduced by quantising tv_value to u8.
-        for alpha in [0.5_f32, 0.7, 0.85, 1.0] {
-            for s in [0.1_f32, 0.25, 0.5, 0.75, 1.0] {
-                let target = 60.0 * s.log10();
-                let actual = compound_db(s, alpha);
-                let diff = (actual - target).abs();
-                // 1 dB tolerance covers tv u8 quantisation across the
-                // tested split values; tighter only at α=1.0 where TV
-                // is pinned at exactly 100.
-                assert!(
-                    diff < 1.0,
-                    "α={alpha} s={s} target={target:.2} dB actual={actual:.2} dB"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn alpha_one_pins_tv_at_max() {
-        for s in [0.0_f32, 0.25, 0.5, 1.0] {
-            assert_eq!(slider_to_tv_value(s, 1.0), 100);
-        }
-    }
-
-    #[test]
-    fn tv_value_to_slider_round_trip() {
-        let alpha = 0.85;
-        // Going TV → slider → TV at integer TV values rounds within
-        // 1 unit of u8 quantisation.
-        for v in [50_u8, 70, 80, 90, 100] {
-            let s = tv_value_to_slider(v, alpha);
-            let v_back = slider_to_tv_value(s, alpha);
-            let diff = (v as i32 - v_back as i32).abs();
-            assert!(diff <= 1, "v={v} s={s} back={v_back}");
-        }
+    fn pw_to_u8_volume_clamps() {
+        assert_eq!(pw_to_u8_volume(-0.5), 0);
+        assert_eq!(pw_to_u8_volume(2.0), 100);
     }
 
     #[test]
