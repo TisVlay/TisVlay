@@ -116,8 +116,6 @@ enum DeviceOp {
 
 /// Per-TV state tracked by the coordinator.
 struct Binding {
-    /// Last brightness we pushed to KDE (reverse echo suppression).
-    last_observed: Option<u8>,
     /// EDID monitor name for D-Bus label matching.
     monitor_name: Option<String>,
 }
@@ -209,16 +207,26 @@ pub async fn run(
                 reconcile(&mut bindings, &ops_tx, version, &shared, &daemon, &state).await;
             }
             Action::Props(tv_id) => {
-                // Reverse path: spawn to avoid zbus deadlock.
-                if let Some(b) = bindings.get(&tv_id) {
-                    let d = daemon.clone();
-                    let ops = ops_tx.clone();
-                    let fwd = shared.clone();
-                    let last_obs = b.last_observed;
-                    let tv = tv_id.clone();
-                    tokio::spawn(async move {
-                        push_observed(&d, &tv, version, last_obs, &ops, &fwd.last_forward_sent).await;
-                    });
+                // Reverse path: read the backlight from reconcile's
+                // list_tvs result (which uses the primary connection
+                // and doesn't deadlock because the select! arm already
+                // completed). Push to KDE via the Wayland device.
+                let tvs = daemon.list_tvs().await.ok();
+                if let Some(tvs) = &tvs {
+                    if let Some(tv) = tvs.iter().find(|t| t.id == tv_id) {
+                        let backlight = tv.backlight;
+                        let mut sent = shared.last_forward_sent.lock().expect("poisoned");
+                        if sent.get(&tv_id) == Some(&backlight) {
+                            sent.remove(&tv_id);
+                        } else {
+                            drop(sent);
+                            let _ = ops_tx.send(DeviceOp::SetObservedBrightness {
+                                tv_id: tv_id.clone(),
+                                value: backlight,
+                            });
+                            trace!(tv_id, backlight, "pushed observed brightness to KWin");
+                        }
+                    }
                 }
                 reconcile(&mut bindings, &ops_tx, version, &shared, &daemon, &state).await;
             }
@@ -338,41 +346,6 @@ fn wayland_loop(
     }
 }
 
-// ── Reverse path ───────────────────────────────────────────────
-
-/// Push TV-side brightness to KDE. Spawned as a separate task to
-/// avoid deadlocking the shared zbus connection.
-async fn push_observed(
-    daemon: &DaemonClient,
-    tv_id: &str,
-    version: u32,
-    last_observed: Option<u8>,
-    ops_tx: &std::sync::mpsc::Sender<DeviceOp>,
-    last_forward_sent: &Mutex<HashMap<String, u8>>,
-) {
-    if version < 2 { return; }
-
-    let backlight = match daemon.get_backlight(tv_id).await {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
-    // Suppress echo from our own forward writes.
-    {
-        let mut sent = last_forward_sent.lock().expect("poisoned");
-        if sent.get(tv_id) == Some(&backlight) {
-            sent.remove(tv_id);
-            return;
-        }
-    }
-    if last_observed == Some(backlight) { return; }
-
-    let _ = ops_tx.send(DeviceOp::SetObservedBrightness {
-        tv_id: tv_id.to_string(),
-        value: backlight,
-    });
-    trace!(tv_id, backlight, "pushed observed brightness to KWin");
-}
 
 // ── Forward drain-loop ─────────────────────────────────────────
 
@@ -535,7 +508,6 @@ async fn reconcile(
             initial_brightness: d.backlight,
         });
         bindings.insert(tv_id.clone(), Binding {
-            last_observed: Some(d.backlight),
             monitor_name: d.monitor_name.clone(),
         });
         debug!(tv_id, "registered brightness device");
@@ -594,3 +566,4 @@ fn read_edid_for_tv(tv: &tisvlay_core::TvInfo, state: &SessionState) -> Option<C
     }
     None
 }
+
