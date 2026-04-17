@@ -62,9 +62,16 @@ struct Shared {
     /// Display label → tv_id (routing D-Bus `PropertiesChanged`).
     /// Rebuilt on every reconcile from EDID monitor names.
     label_to_tv: Mutex<HashMap<String, String>>,
+    /// tv_id → (display D-Bus path, max_brightness). Set by the D-Bus
+    /// observer when it first resolves a label; used by the reverse
+    /// path to call `SetBrightness` on the correct display.
+    tv_display_info: Mutex<HashMap<String, (String, i32)>>,
     /// Last brightness each forward path sent to the TV. The reverse
     /// path checks this to suppress its own echoes.
     last_forward_sent: Mutex<HashMap<String, u8>>,
+    /// Last brightness the reverse path sent to PowerDevil. The D-Bus
+    /// observer checks this to suppress its own echoes.
+    last_reverse_sent: Mutex<HashMap<String, i32>>,
 }
 
 // ── Wayland dispatch boilerplate ───────────────────────────────
@@ -110,7 +117,6 @@ impl Dispatch<KdeExternalBrightnessDeviceV1, u32> for WaylandState {
 enum DeviceOp {
     Create { tv_id: String, edid_base64: String, initial_brightness: u8 },
     Destroy { tv_id: String },
-    SetObservedBrightness { tv_id: String, value: u8 },
     Shutdown,
 }
 
@@ -133,10 +139,22 @@ pub async fn run(
         event_tx,
         device_tv_map: Mutex::new(HashMap::new()),
         label_to_tv: Mutex::new(HashMap::new()),
+        tv_display_info: Mutex::new(HashMap::new()),
         last_forward_sent: Mutex::new(HashMap::new()),
+        last_reverse_sent: Mutex::new(HashMap::new()),
     });
 
     let (ops_tx, ops_rx) = std::sync::mpsc::channel();
+
+    // Session bus connection for the D-Bus observer and reverse path.
+    // Separate from the daemon connection (which may be system bus).
+    let session_conn = match zbus::Connection::session().await {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            warn!("Session D-Bus unavailable, brightness sync disabled: {e}");
+            return;
+        }
+    };
 
     // Wayland thread for kde-external-brightness-v1.
     let (version, wayland_thread) = match start_wayland_thread(shared.clone(), ops_rx) {
@@ -156,7 +174,10 @@ pub async fn run(
     ));
 
     // D-Bus observer for HDR mode.
-    let dbus_handle = tokio::spawn(observe_kde_brightness_dbus(shared.clone()));
+    let dbus_handle = tokio::spawn(observe_kde_brightness_dbus(
+        shared.clone(),
+        session_conn.clone(),
+    ));
 
     let mut bindings: HashMap<String, Binding> = HashMap::new();
 
@@ -207,24 +228,24 @@ pub async fn run(
                 reconcile(&mut bindings, &ops_tx, version, &shared, &daemon, &state).await;
             }
             Action::Props(tv_id) => {
-                // Reverse path: read the backlight from reconcile's
-                // list_tvs result (which uses the primary connection
-                // and doesn't deadlock because the select! arm already
-                // completed). Push to KDE via the Wayland device.
-                let tvs = daemon.list_tvs().await.ok();
-                if let Some(tvs) = &tvs {
+                // Reverse path: read backlight from the daemon, then
+                // push to PowerDevil via D-Bus SetBrightness (not the
+                // Wayland set_observed_brightness, which is one-shot).
+                if let Ok(tvs) = daemon.list_tvs().await {
                     if let Some(tv) = tvs.iter().find(|t| t.id == tv_id) {
                         let backlight = tv.backlight;
-                        let mut sent = shared.last_forward_sent.lock().expect("poisoned");
-                        if sent.get(&tv_id) == Some(&backlight) {
-                            sent.remove(&tv_id);
-                        } else {
-                            drop(sent);
-                            let _ = ops_tx.send(DeviceOp::SetObservedBrightness {
-                                tv_id: tv_id.clone(),
-                                value: backlight,
-                            });
-                            trace!(tv_id, backlight, "pushed observed brightness to KWin");
+                        // Suppress echo from our own forward writes.
+                        let is_echo = {
+                            let mut sent = shared.last_forward_sent.lock().expect("poisoned");
+                            if sent.get(&tv_id) == Some(&backlight) {
+                                sent.remove(&tv_id);
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if !is_echo {
+                            push_brightness_to_kde(&shared, &session_conn, &tv_id, backlight).await;
                         }
                     }
                 }
@@ -318,14 +339,6 @@ fn wayland_loop(
                         device.destroy();
                     }
                 }
-                Ok(DeviceOp::SetObservedBrightness { tv_id, value }) => {
-                    if version >= 2 {
-                        if let Some(device) = devices.get(&tv_id) {
-                            device.set_observed_brightness(value as u32);
-                            device.commit();
-                        }
-                    }
-                }
                 Ok(DeviceOp::Shutdown) => {
                     for (_, d) in devices.drain() { d.destroy(); }
                     return;
@@ -378,13 +391,8 @@ async fn forward_brightness_events(
 /// Subscribe to `PropertiesChanged` on `org.kde.ScreenBrightness`
 /// displays. Fires in both SDR and HDR modes; in SDR the Wayland
 /// path also fires and the drain-loop deduplicates.
-async fn observe_kde_brightness_dbus(shared: Arc<Shared>) {
+async fn observe_kde_brightness_dbus(shared: Arc<Shared>, conn: Arc<zbus::Connection>) {
     use futures_util::StreamExt;
-
-    let Ok(conn) = zbus::Connection::session().await else {
-        warn!("D-Bus brightness observer: session bus unavailable");
-        return;
-    };
 
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
@@ -436,11 +444,62 @@ async fn observe_kde_brightness_dbus(shared: Arc<Shared>) {
 
         let tv_id = shared.label_to_tv.lock().expect("poisoned").get(&label).cloned();
         if let Some(tv_id) = tv_id {
+            // Store display info for the reverse path.
+            shared.tv_display_info.lock().expect("poisoned")
+                .insert(tv_id.clone(), (path.clone(), max));
+
+            // Suppress echo from our own reverse-path writes.
+            {
+                let mut sent = shared.last_reverse_sent.lock().expect("poisoned");
+                if sent.get(&tv_id) == Some(&brightness) {
+                    sent.remove(&tv_id);
+                    continue;
+                }
+            }
+
             let level = ((brightness as f64 / max as f64) * 100.0)
                 .round().clamp(0.0, 100.0) as u32;
             trace!(tv_id, brightness, max, level, "D-Bus brightness change");
             let _ = shared.event_tx.send(BrightnessEvent::Requested { tv_id, value: level });
         }
+    }
+}
+
+/// Push a TV backlight value to PowerDevil's D-Bus display via
+/// `SetBrightness`. Scales from 0-100 to the display's max range.
+async fn push_brightness_to_kde(
+    shared: &Shared,
+    conn: &zbus::Connection,
+    tv_id: &str,
+    backlight: u8,
+) {
+    let (path, max) = {
+        let info = shared.tv_display_info.lock().expect("poisoned");
+        match info.get(tv_id) {
+            Some((p, m)) => (p.clone(), *m),
+            None => return, // D-Bus observer hasn't resolved this TV yet
+        }
+    };
+
+    // Scale 0-100 → 0-max.
+    let kde_value = ((backlight as f64 / 100.0) * max as f64)
+        .round().clamp(0.0, max as f64) as i32;
+
+    // Record for echo suppression before sending.
+    shared.last_reverse_sent.lock().expect("poisoned")
+        .insert(tv_id.to_string(), kde_value);
+
+    let result = conn.call_method(
+        Some("org.kde.ScreenBrightness"),
+        &*path,
+        Some("org.kde.ScreenBrightness.Display"),
+        "SetBrightness",
+        &(kde_value, 0u32),
+    ).await;
+
+    match result {
+        Ok(_) => trace!(tv_id, backlight, kde_value, "reverse: pushed brightness to PowerDevil"),
+        Err(e) => warn!(tv_id, error = %e, "reverse: SetBrightness failed"),
     }
 }
 
