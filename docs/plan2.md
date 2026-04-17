@@ -10,9 +10,9 @@ Sub-plan for Phase 3 of [plan.md](plan.md). Goal: KDE's native brightness slider
 
 Both paths feed into the same drain-loop for coalescing.
 
-**Reverse path** (TV remote → KDE slider) is **not working**. The Wayland `set_observed_brightness` protocol request only sets initial state — KWin's `commit()` handler is a one-shot (`m_done` guard), so subsequent commits are no-ops and KWin never re-reads the observed brightness. This is a protocol design limitation, not a bug. A working reverse path would need to call PowerDevil's `SetBrightness` via D-Bus directly, with feedback-loop suppression to avoid echoing our own forward writes.
+**Reverse path** (TV → KDE slider) is **working** via PowerDevil's D-Bus `SetBrightness`. When `Tv1.Backlight` changes (e.g. TV remote), the coordinator reads the new value via `list_tvs`, scales 0-100 → 0-MaxBrightness, and calls `SetBrightness` on the matching `org.kde.ScreenBrightness.Display` object. The D-Bus observer caches `tv_id → (display_path, max_brightness)` for routing. The earlier Wayland `set_observed_brightness` approach was removed — it only sets initial state (KWin's `commit()` is a one-shot).
 
-**Feedback-loop suppression** implemented for the forward path: the drain-loop records `last_forward_sent` per TV, and the reverse path checks it to suppress echoes from the daemon reflecting our own writes.
+**Bidirectional feedback-loop suppression**: `last_forward_sent` per TV suppresses reverse echoes from our own forward writes; `last_reverse_sent` per TV suppresses the D-Bus observer from echoing our own reverse writes back as forward events.
 
 ## KDE brightness architecture (learned from source + hardware testing)
 
@@ -99,14 +99,15 @@ The module is built and verified:
 ```
                   SDR: requested_brightness
 ┌──────────┐  ───────────────────────────>  ┌───────────────────┐
-│  KWin    │  <───────────────────────────  │  tisvlay-session  │
-│  (comp.) │  SDR: set_observed_brightness  │                   │
+│  KWin    │                                │  tisvlay-session  │
+│  (comp.) │                                │                   │
 └────┬─────┘                                │  Wayland client + │
      │ KScreen                              │  D-Bus observer   │
-┌────┴─────┐  HDR: PropertiesChanged        │                   │
+┌────┴─────┐  PropertiesChanged (fwd)       │                   │
 │PowerDevil│  ───────────────────────────>  │                   │
-│  (D-Bus) │                                └─────────┬─────────┘
-└──────────┘                                          │ D-Bus
+│  (D-Bus) │  <───────────────────────────  │                   │
+└──────────┘  SetBrightness (reverse)       └─────────┬─────────┘
+                                                      │ D-Bus
                                             ┌─────────┴─────────┐
                                             │  tisvlayd          │
                                             │  Tv1.Backlight→TV  │
@@ -152,7 +153,13 @@ Created `/sys/class/backlight/tisvlay-office/` (verified: sysfs attributes corre
 - `DisplayFilter::includes()` rejects `isInternal=true` for an `External` type output (`displaymatch.h:51`)
 - `BacklightBrightness` provides no EDID data, so EDID matching can't rescue the failed internal check
 
-### Attempt 3: dB-split volume sync (commit 36dcc50, reverted 2f737f7)
+### Attempt 3: Wayland set_observed_brightness for reverse path
+
+Sent `set_observed_brightness` + `commit` on the Wayland device when the TV's backlight changed. KWin received the value and normalized it correctly via `(value - min) / (max - min)`, but the `commit()` handler is a one-shot (`m_done` guard) — subsequent commits are no-ops, so KWin never re-reads the observed brightness after initial device assignment. PowerDevil's slider never moved.
+
+**Fix**: call PowerDevil's `SetBrightness` via D-Bus directly instead. This works because PowerDevil owns the slider state and propagates changes to KWin.
+
+### Attempt 4: dB-split volume sync (commit 36dcc50, reverted 2f737f7)
 
 Separate from brightness — attempted to split audio volume between KDE and TV using an α-weighted 60 dB fader. The floating-point rebalancing + u8 quantization on the TV side caused round-trip drift that the suppression cache couldn't absorb, leading to runaway feedback loops. Reverted in favor of 1:1 linear mapping with Device Route writes.
 
@@ -196,11 +203,11 @@ Verified: KWin still reports MaxBrightness=10000 in SDR mode (PowerDevil's KWinD
 
 Forward path works: `SetBrightness iu 5000 0` → D-Bus observer scales 5000/10000 → TV backlight=50. Both the Wayland `requested_brightness` and D-Bus observer fire in SDR mode; the drain-loop deduplicates.
 
-Reverse path: `set_observed_brightness` reaches KWin but the slider never updates. Root cause: KWin's `commit()` is a one-shot — `m_done` prevents `addDevice` from re-firing, so KWin never re-reads the observed brightness after initial assignment.
+Reverse path works: TV → 80 → KDE 8000, TV → 30 → KDE 3000. The reverse path calls PowerDevil's `SetBrightness` via D-Bus (not the Wayland `set_observed_brightness`, which is one-shot). The D-Bus observer's `last_reverse_sent` suppression prevents the echo from feeding back as a forward event.
 
 ## Remaining work
 
-1. **Reverse path via D-Bus**: call PowerDevil's `SetBrightness` on `org.kde.ScreenBrightness.Display` directly instead of going through the Wayland `set_observed_brightness` (which is initial-state only). Needs feedback-loop suppression to avoid the D-Bus observer echoing our own writes back. The `last_forward_sent` pattern can be extended: record what the reverse path sends, and have the D-Bus observer skip matching values.
+No blocking items. Phase 3 brightness sync is functionally complete for both SDR and HDR modes, bidirectionally.
 
 ## Future scope
 
