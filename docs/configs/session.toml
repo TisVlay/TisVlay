@@ -11,7 +11,7 @@ sync_volume = "mirror_hdmi"
 id = "office"
 
 [tv.profile]
-user = "default"
+user = "foo"
 
 [tv.desktop]
 edid = "76a5e66f2326bab8dd8703c78462e724b554515e47dc08dd679535020bb5ba92"
