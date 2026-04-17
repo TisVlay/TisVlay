@@ -213,15 +213,8 @@ async fn main() -> Result<()> {
     // Spawn the volume-sync coordinator. Holds a PipeWire connection
     // for the lifetime of the session, creating / destroying virtual
     // sinks per TV based on the effective user profile.
-    //
-    // Gated on `TISVLAY_VOLUME_SYNC=1` for now: pipewire-native 0.1.4
-    // aborts inside an FFI callback when talking to PipeWire 1.4.10
-    // (upstream issue, signal 6 from `source_io_trampoline`
-    // → `panic_cannot_unwind`). Leaving the integration opt-in keeps
-    // the session service alive by default while we iterate on the
-    // crash in follow-up commits.
     let (volume_sync_shutdown_tx, volume_sync_shutdown_rx) = tokio::sync::watch::channel(false);
-    let volume_sync_task = if std::env::var_os("TISVLAY_VOLUME_SYNC").is_some() {
+    let volume_sync_task = {
         let volume_sync_state = state.clone();
         let volume_sync_daemon = daemon.clone();
         Some(tokio::spawn(async move {
@@ -232,9 +225,6 @@ async fn main() -> Result<()> {
             )
             .await;
         }))
-    } else {
-        debug!("Volume sync disabled (set TISVLAY_VOLUME_SYNC=1 to enable)");
-        None
     };
 
     // Spawn the brightness-sync coordinator. Registers
