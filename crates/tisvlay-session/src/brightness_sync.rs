@@ -1,41 +1,27 @@
 //! Brightness sync — KDE's brightness slider drives `Tv1.Backlight`.
 //!
 //! For every managed TV whose effective user profile selects
-//! `sync_backlight = "backlight"` and whose backend advertises
-//! `Capabilities::BACKLIGHT`, the session service registers a
+//! `sync_backlight = "backlight"`, the session service registers a
 //! `kde_external_brightness_device_v1` with KWin so the desktop
 //! brightness slider controls the TV's OLED pixel brightness.
 //!
 //! # Two forward paths
 //!
-//! KWin has two brightness modes depending on HDR state:
+//! **SDR mode**: KWin routes slider changes through the brightness
+//! device. Our Wayland client receives `requested_brightness` events.
 //!
-//! **SDR mode** (HDR disabled): KWin routes slider changes through
-//! the brightness device. Our Wayland client receives
-//! `requested_brightness` events and forwards to `Tv1.Backlight`.
+//! **HDR mode**: KWin uses the slider for tone-mapping and does not
+//! call `setBrightness` on the device. A D-Bus observer on
+//! `org.kde.ScreenBrightness` catches `PropertiesChanged` signals
+//! instead, scaling from KWin's 0–max range to 0–100.
 //!
-//! **HDR mode** (HDR enabled): KWin uses the slider to control
-//! tone-mapping reference luminance and does NOT call
-//! `setBrightness` on the device (`drm_output.cpp:630`). However,
-//! the `org.kde.ScreenBrightness.Display.Brightness` D-Bus property
-//! still changes. A D-Bus observer catches these changes and
-//! forwards them to `Tv1.Backlight`, scaled from KWin's 0-10000
-//! range to our 0-100 range.
-//!
-//! Both paths feed into the same drain-loop and coalesce bursts.
+//! Both paths feed into the same drain-loop.
 //!
 //! # Reverse path (TV → KDE slider)
 //!
 //! `StateWatcher` delivers `PropertiesChanged` from `Tv1.Backlight`.
-//! We call `set_observed_brightness` on the Wayland device to update
-//! KDE's displayed value (requires protocol version ≥ 2).
-//!
-//! # Lifecycle
-//!
-//! Devices are created/destroyed by the coordinator on every
-//! reconcile pass (10 s tick + every `StateWatcher` event): TV
-//! connected + profile says `"backlight"` + EDID available → create;
-//! TV disconnected / profile flips to `"none"` / no EDID → destroy.
+//! We call `set_observed_brightness` on the Wayland device. In HDR
+//! mode KWin ignores this (known limitation).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -53,35 +39,35 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use crate::SessionState;
 use crate::kde_external_brightness::client::{
     kde_external_brightness_device_v1::{self, KdeExternalBrightnessDeviceV1},
-    kde_external_brightness_v1::KdeExternalBrightnessV1,
+    kde_external_brightness_v1::{self, KdeExternalBrightnessV1},
 };
 
 const KDE_EXTERNAL_BRIGHTNESS_VERSION: u32 = 3;
 
-/// Events from the Wayland thread into the tokio coordinator.
+// ── Events & shared state ──────────────────────────────────────
+
+/// A brightness value the drain-loop should forward to the TV.
 #[derive(Debug, Clone)]
 pub enum BrightnessEvent {
     Requested { tv_id: String, value: u32 },
 }
 
-/// Shared state accessible from both the Wayland thread and tokio.
-/// The Wayland thread writes `requested_brightness` events; the tokio
-/// side reads them and manages device lifecycle.
+/// State shared between the Wayland thread, the D-Bus observer, and
+/// the coordinator. Interior-mutable behind `Arc`.
 struct Shared {
+    /// Brightness events from any forward path → drain-loop.
     event_tx: mpsc::UnboundedSender<BrightnessEvent>,
-    /// Map from Wayland object id to tv_id for routing callbacks.
+    /// Wayland object id → tv_id (routing `requested_brightness`).
     device_tv_map: Mutex<HashMap<u32, String>>,
+    /// Display label → tv_id (routing D-Bus `PropertiesChanged`).
+    /// Rebuilt on every reconcile from EDID monitor names.
+    label_to_tv: Mutex<HashMap<String, String>>,
+    /// Last brightness each forward path sent to the TV. The reverse
+    /// path checks this to suppress its own echoes.
+    last_forward_sent: Mutex<HashMap<String, u8>>,
 }
 
-/// Per-TV metadata tracked on the tokio side. The actual Wayland device
-/// proxy lives on the Wayland thread; we route all Wayland calls through
-/// the ops channel.
-struct BindingMeta {
-    /// Last brightness we pushed to KDE (reverse path echo suppression).
-    last_observed: Option<u8>,
-    /// EDID monitor name for D-Bus label matching (e.g. "LG TV SSCR2").
-    monitor_name: Option<String>,
-}
+// ── Wayland dispatch boilerplate ───────────────────────────────
 
 struct WaylandState {
     shared: Arc<Shared>,
@@ -89,88 +75,51 @@ struct WaylandState {
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandState {
     fn event(
-        _state: &mut Self,
-        _proxy: &wl_registry::WlRegistry,
-        _event: wl_registry::Event,
-        _data: &GlobalListContents,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-    }
+        _: &mut Self, _: &wl_registry::WlRegistry, _: wl_registry::Event,
+        _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>,
+    ) {}
 }
 
 impl Dispatch<KdeExternalBrightnessV1, u32> for WaylandState {
     fn event(
-        _state: &mut Self,
-        _proxy: &KdeExternalBrightnessV1,
-        _event: kde_external_brightness_v1::Event,
-        _data: &u32,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-    }
+        _: &mut Self, _: &KdeExternalBrightnessV1, _: kde_external_brightness_v1::Event,
+        _: &u32, _: &Connection, _: &QueueHandle<Self>,
+    ) {}
 }
 
 impl Dispatch<KdeExternalBrightnessDeviceV1, u32> for WaylandState {
     fn event(
-        state: &mut Self,
-        proxy: &KdeExternalBrightnessDeviceV1,
+        state: &mut Self, proxy: &KdeExternalBrightnessDeviceV1,
         event: kde_external_brightness_device_v1::Event,
-        _data: &u32,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
+        _: &u32, _: &Connection, _: &QueueHandle<Self>,
     ) {
-        match event {
-            kde_external_brightness_device_v1::Event::RequestedBrightness { value } => {
-                let map = state.shared.device_tv_map.lock().expect("lock poisoned");
-                if let Some(tv_id) = map.get(&proxy.id().protocol_id()) {
-                    trace!(tv_id, value, "requested_brightness from compositor");
-                    let _ = state
-                        .shared
-                        .event_tx
-                        .send(BrightnessEvent::Requested {
-                            tv_id: tv_id.clone(),
-                            value,
-                        });
-                }
-            }
+        let kde_external_brightness_device_v1::Event::RequestedBrightness { value } = event;
+        let map = state.shared.device_tv_map.lock().expect("poisoned");
+        if let Some(tv_id) = map.get(&proxy.id().protocol_id()) {
+            trace!(tv_id, value, "requested_brightness from KWin");
+            let _ = state.shared.event_tx.send(BrightnessEvent::Requested {
+                tv_id: tv_id.clone(),
+                value,
+            });
         }
     }
 }
 
-use crate::kde_external_brightness::client::kde_external_brightness_v1;
-
-/// Coordinator state on the tokio side.
-struct BrightnessSync {
-    /// Pending device operations queued from tokio, consumed by the
-    /// Wayland thread on its next dispatch cycle.
-    ops_tx: std::sync::mpsc::Sender<DeviceOp>,
-    /// Negotiated protocol version.
-    version: u32,
-    /// Tracks which TVs have active devices.
-    bindings: HashMap<String, BindingMeta>,
-    /// KDE display label → tv_id for the D-Bus observer. Rebuilt on
-    /// every reconcile from the bindings' `monitor_name` fields.
-    label_to_tv: Arc<Mutex<HashMap<String, String>>>,
-    /// Last brightness value sent to each TV by the forward path.
-    /// Used by `push_observed_brightness` to suppress echoes.
-    last_forward_sent: Arc<Mutex<HashMap<String, u8>>>,
-}
+// ── Coordinator ────────────────────────────────────────────────
 
 enum DeviceOp {
-    Create {
-        tv_id: String,
-        edid_base64: String,
-        initial_brightness: u8,
-    },
-    Destroy {
-        tv_id: String,
-    },
-    SetObservedBrightness {
-        tv_id: String,
-        value: u8,
-    },
+    Create { tv_id: String, edid_base64: String, initial_brightness: u8 },
+    Destroy { tv_id: String },
+    SetObservedBrightness { tv_id: String, value: u8 },
     Shutdown,
+}
+
+/// Per-TV state tracked by the coordinator.
+struct Binding {
+    /// Last brightness we pushed to KDE (reverse echo suppression).
+    last_observed: Option<u8>,
+    /// EDID monitor name for D-Bus label matching.
+    monitor_name: Option<String>,
 }
 
 /// Run the brightness sync coordinator until shutdown.
@@ -185,13 +134,14 @@ pub async fn run(
     let shared = Arc::new(Shared {
         event_tx,
         device_tv_map: Mutex::new(HashMap::new()),
+        label_to_tv: Mutex::new(HashMap::new()),
+        last_forward_sent: Mutex::new(HashMap::new()),
     });
 
     let (ops_tx, ops_rx) = std::sync::mpsc::channel();
 
-    // Start the Wayland event loop on a dedicated thread.
-    let wayland_shared = shared.clone();
-    let (version, wayland_thread) = match start_wayland_thread(wayland_shared, ops_rx) {
+    // Wayland thread for kde-external-brightness-v1.
+    let (version, wayland_thread) = match start_wayland_thread(shared.clone(), ops_rx) {
         Ok(pair) => pair,
         Err(e) => {
             warn!("Wayland brightness sync unavailable: {e}");
@@ -199,39 +149,28 @@ pub async fn run(
         }
     };
 
-    let label_to_tv = Arc::new(Mutex::new(HashMap::new()));
-    let last_forward_sent = Arc::new(Mutex::new(HashMap::new()));
-
+    // Forward drain-loop (events → set_backlight).
+    let fwd_shared = shared.clone();
     let forward_handle = tokio::spawn(forward_brightness_events(
         event_rx,
         daemon.clone(),
-        last_forward_sent.clone(),
+        fwd_shared,
     ));
 
-    // D-Bus observer for HDR mode: subscribes to PropertiesChanged
-    // on org.kde.ScreenBrightness displays. Uses label_to_tv for
-    // mapping display labels to TV IDs (rebuilt on every reconcile).
-    let dbus_observer_handle = tokio::spawn(observe_kde_brightness_dbus(
-        shared.event_tx.clone(),
-        label_to_tv.clone(),
-    ));
+    // D-Bus observer for HDR mode.
+    let dbus_handle = tokio::spawn(observe_kde_brightness_dbus(shared.clone()));
 
-    let mut sync = BrightnessSync {
-        ops_tx,
-        version,
-        bindings: HashMap::new(),
-        label_to_tv,
-        last_forward_sent,
-    };
+    let mut bindings: HashMap<String, Binding> = HashMap::new();
 
-    reconcile(&mut sync, &daemon, &state).await;
+    // Initial reconcile.
+    reconcile(&mut bindings, &ops_tx, version, &shared, &daemon, &state).await;
 
     let mut watcher = match StateWatcher::new(&daemon, StateWatcherConfig::default()).await {
         Ok(w) => w,
         Err(e) => {
             warn!(error = %e, "StateWatcher setup failed — exiting brightness sync");
             forward_handle.abort();
-            let _ = sync.ops_tx.send(DeviceOp::Shutdown);
+            let _ = ops_tx.send(DeviceOp::Shutdown);
             return;
         }
     };
@@ -240,33 +179,25 @@ pub async fn run(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        // Collect the action from select!, then process outside.
-        // D-Bus calls from inside the watcher.next() arm deadlock
-        // because the zbus connection's message stream is borrowed.
-        enum Action {
-            Shutdown,
-            Reconcile,
-            PropertiesChanged(String),
-            StreamClosed,
-        }
+        // Collect the action, then process. D-Bus calls from inside
+        // the watcher arm can deadlock the shared zbus connection.
+        enum Action { Shutdown, Tick, Props(String), StreamClosed }
 
         let action = tokio::select! {
             _ = shutdown.changed() => Action::Shutdown,
-            _ = tick.tick() => Action::Reconcile,
-            evt = watcher.next() => {
-                match evt {
-                    Some(StateEvent::DaemonStateChanged(TvStateChange::PropertiesChanged { tv_id })) => {
-                        Action::PropertiesChanged(tv_id)
-                    }
-                    Some(StateEvent::DaemonStateChanged(_))
-                    | Some(StateEvent::FallbackPoll)
-                    | Some(StateEvent::DaemonAppeared)
-                    | Some(StateEvent::DaemonDisappeared)
-                    | Some(StateEvent::SessionProfileChanged) => Action::Reconcile,
-                    Some(StateEvent::SessionAppeared | StateEvent::SessionDisappeared) => continue,
-                    None => Action::StreamClosed,
-                }
-            }
+            _ = tick.tick() => Action::Tick,
+            evt = watcher.next() => match evt {
+                Some(StateEvent::DaemonStateChanged(
+                    TvStateChange::PropertiesChanged { tv_id },
+                )) => Action::Props(tv_id),
+                Some(StateEvent::DaemonStateChanged(_)
+                    | StateEvent::FallbackPoll
+                    | StateEvent::DaemonAppeared
+                    | StateEvent::DaemonDisappeared
+                    | StateEvent::SessionProfileChanged) => Action::Tick,
+                Some(StateEvent::SessionAppeared | StateEvent::SessionDisappeared) => continue,
+                None => Action::StreamClosed,
+            },
         };
 
         match action {
@@ -274,28 +205,22 @@ pub async fn run(
                 info!("Brightness sync shutdown signalled");
                 break;
             }
-            Action::Reconcile => {
-                reconcile(&mut sync, &daemon, &state).await;
+            Action::Tick => {
+                reconcile(&mut bindings, &ops_tx, version, &shared, &daemon, &state).await;
             }
-            Action::PropertiesChanged(tv_id) => {
-                // Spawn on a separate task to avoid deadlocking the
-                // zbus connection — the StateWatcher's internal stream
-                // state can block same-connection D-Bus calls even
-                // after the select! arm completes.
-                let d = daemon.clone();
-                let ops = sync.ops_tx.clone();
-                let fwd = sync.last_forward_sent.clone();
-                let version = sync.version;
-                if let Some(meta) = sync.bindings.get(&tv_id) {
-                    let last_obs = meta.last_observed;
+            Action::Props(tv_id) => {
+                // Reverse path: spawn to avoid zbus deadlock.
+                if let Some(b) = bindings.get(&tv_id) {
+                    let d = daemon.clone();
+                    let ops = ops_tx.clone();
+                    let fwd = shared.clone();
+                    let last_obs = b.last_observed;
                     let tv = tv_id.clone();
                     tokio::spawn(async move {
-                        push_observed_brightness_task(&d, &tv, version, last_obs, &ops, &fwd).await;
+                        push_observed(&d, &tv, version, last_obs, &ops, &fwd.last_forward_sent).await;
                     });
                 }
-                // Update last_observed from the spawned task's result
-                // on the next reconcile (it reads fresh state anyway).
-                reconcile(&mut sync, &daemon, &state).await;
+                reconcile(&mut bindings, &ops_tx, version, &shared, &daemon, &state).await;
             }
             Action::StreamClosed => {
                 warn!("StateWatcher stream closed; exiting brightness sync");
@@ -304,18 +229,17 @@ pub async fn run(
         }
     }
 
-    // Teardown: destroy all devices, signal the Wayland thread to quit.
-    for tv_id in sync.bindings.keys().cloned().collect::<Vec<_>>() {
-        let _ = sync.ops_tx.send(DeviceOp::Destroy {
-            tv_id: tv_id.clone(),
-        });
+    // Teardown.
+    for tv_id in bindings.keys() {
+        let _ = ops_tx.send(DeviceOp::Destroy { tv_id: tv_id.clone() });
     }
-    sync.bindings.clear();
-    let _ = sync.ops_tx.send(DeviceOp::Shutdown);
+    let _ = ops_tx.send(DeviceOp::Shutdown);
     forward_handle.abort();
-    dbus_observer_handle.abort();
+    dbus_handle.abort();
     let _ = wayland_thread.join();
 }
+
+// ── Wayland thread ─────────────────────────────────────────────
 
 fn start_wayland_thread(
     shared: Arc<Shared>,
@@ -323,39 +247,31 @@ fn start_wayland_thread(
 ) -> Result<(u32, thread::JoinHandle<()>)> {
     let conn = Connection::connect_to_env()
         .map_err(|e| anyhow!("Wayland connection failed: {e}"))?;
-
     let (globals, event_queue): (GlobalList, EventQueue<WaylandState>) =
         registry_queue_init(&conn)
             .map_err(|e| anyhow!("Wayland registry init failed: {e}"))?;
 
-    let global_list = globals.contents().clone_list();
-    let manager_global = global_list
+    let manager = globals
+        .contents()
+        .clone_list()
         .iter()
         .find(|g| g.interface == "kde_external_brightness_v1")
-        .ok_or_else(|| {
-            anyhow!("kde_external_brightness_v1 not available (requires KDE Plasma 6.1+)")
-        })?
+        .ok_or_else(|| anyhow!("kde_external_brightness_v1 not available (KDE Plasma 6.1+)"))?
         .clone();
 
-    let version = manager_global
-        .version
-        .min(KDE_EXTERNAL_BRIGHTNESS_VERSION);
-    info!(
-        "kde_external_brightness_v1 available (server: v{}, using: v{})",
-        manager_global.version, version
-    );
+    let version = manager.version.min(KDE_EXTERNAL_BRIGHTNESS_VERSION);
+    info!("kde_external_brightness_v1 available (server: v{}, using: v{})", manager.version, version);
 
+    let name = manager.name;
     let handle = thread::Builder::new()
-        .name("wayland-brightness".to_string())
-        .spawn(move || {
-            run_wayland_loop(conn, event_queue, globals, shared, ops_rx, manager_global.name, version);
-        })
+        .name("wayland-brightness".into())
+        .spawn(move || wayland_loop(conn, event_queue, globals, shared, ops_rx, name, version))
         .map_err(|e| anyhow!("Failed to spawn Wayland brightness thread: {e}"))?;
 
     Ok((version, handle))
 }
 
-fn run_wayland_loop(
+fn wayland_loop(
     _conn: Connection,
     mut event_queue: EventQueue<WaylandState>,
     globals: GlobalList,
@@ -365,26 +281,16 @@ fn run_wayland_loop(
     version: u32,
 ) {
     let qh = event_queue.handle();
-    let mut state = WaylandState {
-        shared: shared.clone(),
-    };
-
+    let mut state = WaylandState { shared: shared.clone() };
     let registry = globals.registry();
-    let manager: KdeExternalBrightnessV1 =
-        registry.bind(manager_name, version, &qh, version);
-
-    // Device proxies live here on the Wayland thread, keyed by tv_id.
+    let manager: KdeExternalBrightnessV1 = registry.bind(manager_name, version, &qh, version);
     let mut devices: HashMap<String, KdeExternalBrightnessDeviceV1> = HashMap::new();
 
     loop {
-        // Drain all pending ops from the tokio side.
+        // Drain ops from the tokio side.
         loop {
             match ops_rx.try_recv() {
-                Ok(DeviceOp::Create {
-                    tv_id,
-                    edid_base64,
-                    initial_brightness,
-                }) => {
+                Ok(DeviceOp::Create { tv_id, edid_base64, initial_brightness }) => {
                     let device = manager.create_brightness_control(&qh, version);
                     device.set_internal(0);
                     device.set_edid(edid_base64);
@@ -393,27 +299,16 @@ fn run_wayland_loop(
                         device.set_observed_brightness(initial_brightness as u32);
                     }
                     device.commit();
-
                     let wl_id = device.id().protocol_id();
-                    shared
-                        .device_tv_map
-                        .lock()
-                        .expect("lock poisoned")
-                        .insert(wl_id, tv_id.clone());
+                    shared.device_tv_map.lock().expect("poisoned").insert(wl_id, tv_id.clone());
                     devices.insert(tv_id.clone(), device);
                     debug!(tv_id, wl_id, "created brightness device");
                 }
                 Ok(DeviceOp::Destroy { tv_id }) => {
                     if let Some(device) = devices.remove(&tv_id) {
-                        let wl_id = device.id().protocol_id();
-                        shared
-                            .device_tv_map
-                            .lock()
-                            .expect("lock poisoned")
-                            .remove(&wl_id);
+                        shared.device_tv_map.lock().expect("poisoned").remove(&device.id().protocol_id());
                         device.destroy();
                     }
-                    debug!(tv_id, "destroyed brightness device");
                 }
                 Ok(DeviceOp::SetObservedBrightness { tv_id, value }) => {
                     if version >= 2 {
@@ -424,10 +319,7 @@ fn run_wayland_loop(
                     }
                 }
                 Ok(DeviceOp::Shutdown) => {
-                    for (_, device) in devices.drain() {
-                        device.destroy();
-                    }
-                    debug!("Wayland brightness thread shutting down");
+                    for (_, d) in devices.drain() { d.destroy(); }
                     return;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -435,38 +327,22 @@ fn run_wayland_loop(
             }
         }
 
-        // Flush outgoing requests, then non-blocking dispatch +
-        // short sleep so we periodically check ops_rx for Shutdown.
-        if event_queue.flush().is_err() {
-            warn!("Wayland brightness flush error; exiting");
-            return;
-        }
-
-        // prepare_read + read performs a non-blocking read from the
-        // Wayland socket, buffering any new events.
-        if let Some(guard) = event_queue.prepare_read() {
-            let _ = guard.read();
-        }
+        // Non-blocking Wayland dispatch.
+        if event_queue.flush().is_err() { return; }
+        if let Some(guard) = event_queue.prepare_read() { let _ = guard.read(); }
         match event_queue.dispatch_pending(&mut state) {
-            Ok(0) => {
-                // No events dispatched — sleep briefly to avoid
-                // busy-looping while still checking ops_rx promptly.
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
+            Ok(0) => std::thread::sleep(Duration::from_millis(50)),
             Ok(_) => {}
-            Err(_) => {
-                warn!("Wayland brightness dispatch error; exiting");
-                return;
-            }
+            Err(_) => return,
         }
     }
 }
 
-/// Push TV-side brightness to KDE via `set_observed_brightness`.
-/// Runs as a spawned task to avoid deadlocking the shared zbus
-/// connection (the StateWatcher's internal stream state blocks
-/// same-connection D-Bus calls even after the select! arm completes).
-async fn push_observed_brightness_task(
+// ── Reverse path ───────────────────────────────────────────────
+
+/// Push TV-side brightness to KDE. Spawned as a separate task to
+/// avoid deadlocking the shared zbus connection.
+async fn push_observed(
     daemon: &DaemonClient,
     tv_id: &str,
     version: u32,
@@ -474,38 +350,39 @@ async fn push_observed_brightness_task(
     ops_tx: &std::sync::mpsc::Sender<DeviceOp>,
     last_forward_sent: &Mutex<HashMap<String, u8>>,
 ) {
-    if version < 2 {
-        return;
-    }
+    if version < 2 { return; }
+
     let backlight = match daemon.get_backlight(tv_id).await {
         Ok(v) => v,
         Err(_) => return,
     };
-    // Suppress echo from our own forward-path writes.
+
+    // Suppress echo from our own forward writes.
     {
-        let mut sent = last_forward_sent.lock().expect("lock poisoned");
+        let mut sent = last_forward_sent.lock().expect("poisoned");
         if sent.get(tv_id) == Some(&backlight) {
             sent.remove(tv_id);
             return;
         }
     }
-    if last_observed == Some(backlight) {
-        return;
-    }
+    if last_observed == Some(backlight) { return; }
+
     let _ = ops_tx.send(DeviceOp::SetObservedBrightness {
         tv_id: tv_id.to_string(),
         value: backlight,
     });
-    trace!(tv_id, backlight, "pushed observed brightness to compositor");
+    trace!(tv_id, backlight, "pushed observed brightness to KWin");
 }
 
-/// Forward brightness events from KDE to the TV via the daemon.
+// ── Forward drain-loop ─────────────────────────────────────────
+
 async fn forward_brightness_events(
     mut rx: mpsc::UnboundedReceiver<BrightnessEvent>,
     daemon: Arc<DaemonClient>,
-    last_sent: Arc<Mutex<HashMap<String, u8>>>,
+    shared: Arc<Shared>,
 ) {
     while let Some(first) = rx.recv().await {
+        // Coalesce burst: take the latest value per TV.
         let mut latest: HashMap<String, u32> = HashMap::new();
         let BrightnessEvent::Requested { tv_id, value } = &first;
         latest.insert(tv_id.clone(), *value);
@@ -515,12 +392,7 @@ async fn forward_brightness_events(
         }
         for (tv_id, value) in latest {
             let level = (value as u8).min(100);
-            // Record before sending so the reverse path can suppress
-            // the echo when the daemon reports the same value back.
-            last_sent
-                .lock()
-                .expect("lock poisoned")
-                .insert(tv_id.clone(), level);
+            shared.last_forward_sent.lock().expect("poisoned").insert(tv_id.clone(), level);
             if let Err(e) = daemon.set_backlight(&tv_id, level).await {
                 warn!(tv_id, level, error = %e, "forward brightness set failed");
             }
@@ -528,14 +400,12 @@ async fn forward_brightness_events(
     }
 }
 
-/// D-Bus observer for HDR mode: subscribes to `PropertiesChanged`
-/// on `org.kde.ScreenBrightness` displays. When the `Brightness`
-/// property changes, looks up the display label in `label_to_tv`
-/// (populated by reconcile) and forwards to the event channel.
-async fn observe_kde_brightness_dbus(
-    event_tx: mpsc::UnboundedSender<BrightnessEvent>,
-    label_to_tv: Arc<Mutex<HashMap<String, String>>>,
-) {
+// ── D-Bus observer (HDR fallback) ──────────────────────────────
+
+/// Subscribe to `PropertiesChanged` on `org.kde.ScreenBrightness`
+/// displays. Fires in both SDR and HDR modes; in SDR the Wayland
+/// path also fires and the drain-loop deduplicates.
+async fn observe_kde_brightness_dbus(shared: Arc<Shared>) {
     use futures_util::StreamExt;
 
     let Ok(conn) = zbus::Connection::session().await else {
@@ -545,12 +415,9 @@ async fn observe_kde_brightness_dbus(
 
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
-        .sender("org.kde.ScreenBrightness")
-        .unwrap()
-        .interface("org.freedesktop.DBus.Properties")
-        .unwrap()
-        .member("PropertiesChanged")
-        .unwrap()
+        .sender("org.kde.ScreenBrightness").unwrap()
+        .interface("org.freedesktop.DBus.Properties").unwrap()
+        .member("PropertiesChanged").unwrap()
         .build();
 
     let Ok(mut stream) = zbus::MessageStream::for_match_rule(rule, &conn, None).await else {
@@ -558,46 +425,33 @@ async fn observe_kde_brightness_dbus(
         return;
     };
 
-    // Cache: display object path → (label, max_brightness).
     let mut path_cache: HashMap<String, (String, i32)> = HashMap::new();
-
     debug!("D-Bus brightness observer started");
 
     while let Some(msg) = stream.next().await {
         let Ok(msg) = msg else { continue };
-        let body = msg.body();
 
-        // PropertiesChanged(interface: s, changed: a{sv}, invalidated: as)
-        let Ok((iface, changed, _invalidated)): Result<(
+        let Ok((iface, changed, _)): Result<(
             String,
             HashMap<String, zbus::zvariant::OwnedValue>,
             Vec<String>,
-        ), _> = body.deserialize() else {
-            continue;
-        };
+        ), _> = msg.body().deserialize() else { continue };
 
-        if iface != "org.kde.ScreenBrightness.Display" {
-            continue;
-        }
+        if iface != "org.kde.ScreenBrightness.Display" { continue; }
+        let Some(val) = changed.get("Brightness") else { continue; };
+        let Ok(brightness) = i32::try_from(val) else { continue; };
 
-        let Some(brightness_val) = changed.get("Brightness") else {
-            continue;
-        };
-        let Ok(brightness) = <i32>::try_from(brightness_val) else {
-            continue;
-        };
-
-        // Resolve label + max_brightness, caching per display path.
         let path = match msg.header().path() {
             Some(p) => p.to_string(),
             None => continue,
         };
-        let (label, max_brightness) = match path_cache.get(&path) {
-            Some(cached) => cached.clone(),
+
+        let (label, max) = match path_cache.get(&path) {
+            Some(c) => c.clone(),
             None => {
-                let label = read_display_label(&conn, &path).await;
-                let max = read_display_max_brightness(&conn, &path).await;
-                match (label, max) {
+                let l = read_display_prop::<String>(&conn, &path, "Label").await;
+                let m = read_display_prop::<i32>(&conn, &path, "MaxBrightness").await;
+                match (l, m) {
                     (Some(l), Some(m)) if m > 0 => {
                         path_cache.insert(path.clone(), (l.clone(), m));
                         (l, m)
@@ -607,65 +461,45 @@ async fn observe_kde_brightness_dbus(
             }
         };
 
-        // Map label → tv_id via the reconcile-maintained lookup table.
-        let tv_id = label_to_tv.lock().expect("lock poisoned").get(&label).cloned();
-
+        let tv_id = shared.label_to_tv.lock().expect("poisoned").get(&label).cloned();
         if let Some(tv_id) = tv_id {
-            let level = ((brightness as f64 / max_brightness as f64) * 100.0)
-                .round()
-                .clamp(0.0, 100.0) as u32;
-            trace!(tv_id, brightness, max_brightness, level, "D-Bus brightness change");
-            let _ = event_tx.send(BrightnessEvent::Requested {
-                tv_id,
-                value: level,
-            });
+            let level = ((brightness as f64 / max as f64) * 100.0)
+                .round().clamp(0.0, 100.0) as u32;
+            trace!(tv_id, brightness, max, level, "D-Bus brightness change");
+            let _ = shared.event_tx.send(BrightnessEvent::Requested { tv_id, value: level });
         }
     }
 }
 
-/// Read a property from a ScreenBrightness display object.
-async fn read_display_label(conn: &zbus::Connection, path: &str) -> Option<String> {
+async fn read_display_prop<T: TryFrom<zbus::zvariant::OwnedValue>>(
+    conn: &zbus::Connection,
+    path: &str,
+    property: &'static str,
+) -> Option<T> {
     let proxy = zbus::fdo::PropertiesProxy::builder(conn)
-        .destination("org.kde.ScreenBrightness")
-        .ok()?
-        .path(path)
-        .ok()?
-        .build()
-        .await
-        .ok()?;
-    let iface =
-        zbus::names::InterfaceName::from_static_str_unchecked("org.kde.ScreenBrightness.Display");
-    let prop = zbus::names::PropertyName::from_static_str_unchecked("Label");
-    String::try_from(proxy.get(iface, &prop).await.ok()?).ok()
+        .destination("org.kde.ScreenBrightness").ok()?
+        .path(path).ok()?
+        .build().await.ok()?;
+    let iface = zbus::names::InterfaceName::from_static_str_unchecked(
+        "org.kde.ScreenBrightness.Display",
+    );
+    let prop = zbus::names::PropertyName::from_static_str_unchecked(property);
+    T::try_from(proxy.get(iface, &prop).await.ok()?).ok()
 }
 
-async fn read_display_max_brightness(conn: &zbus::Connection, path: &str) -> Option<i32> {
-    let proxy = zbus::fdo::PropertiesProxy::builder(conn)
-        .destination("org.kde.ScreenBrightness")
-        .ok()?
-        .path(path)
-        .ok()?
-        .build()
-        .await
-        .ok()?;
-    let iface =
-        zbus::names::InterfaceName::from_static_str_unchecked("org.kde.ScreenBrightness.Display");
-    let prop = zbus::names::PropertyName::from_static_str_unchecked("MaxBrightness");
-    i32::try_from(proxy.get(iface, &prop).await.ok()?).ok()
-}
+// ── Reconcile ──────────────────────────────────────────────────
 
-/// Reconcile desired brightness devices with current state.
 async fn reconcile(
-    sync: &mut BrightnessSync,
+    bindings: &mut HashMap<String, Binding>,
+    ops_tx: &std::sync::mpsc::Sender<DeviceOp>,
+    _version: u32,
+    shared: &Arc<Shared>,
     daemon: &DaemonClient,
     state: &Arc<RwLock<SessionState>>,
 ) {
     let tvs = match daemon.list_tvs().await {
         Ok(v) => v,
-        Err(e) => {
-            warn!(error = %e, "list_tvs failed during brightness reconcile");
-            return;
-        }
+        Err(e) => { warn!(error = %e, "list_tvs failed during brightness reconcile"); return; }
     };
 
     let desired: HashMap<String, DesiredBrightness> = {
@@ -673,133 +507,90 @@ async fn reconcile(
         tvs.iter()
             .filter_map(|tv| {
                 let profile = s.profiles.get(&tv.id)?;
-                if !matches!(
-                    profile.sync_backlight,
-                    tisvlay_core::SyncBacklight::Backlight
-                ) {
-                    return None;
-                }
-                if !tv.connected {
-                    return None;
-                }
+                if !matches!(profile.sync_backlight, tisvlay_core::SyncBacklight::Backlight) { return None; }
+                if !tv.connected { return None; }
                 let edid = read_edid_for_tv(tv, &s)?;
-                Some((
-                    tv.id.clone(),
-                    DesiredBrightness {
-                        edid_base64: edid.base64,
-                        backlight: tv.backlight,
-                        monitor_name: edid.monitor_name,
-                    },
-                ))
+                Some((tv.id.clone(), DesiredBrightness {
+                    edid_base64: edid.base64,
+                    backlight: tv.backlight,
+                    monitor_name: edid.monitor_name,
+                }))
             })
             .collect()
     };
 
-    // Drop devices no longer desired.
-    let current_ids: Vec<String> = sync.bindings.keys().cloned().collect();
-    for tv_id in current_ids {
-        if !desired.contains_key(&tv_id) {
-            let _ = sync.ops_tx.send(DeviceOp::Destroy {
-                tv_id: tv_id.clone(),
-            });
-            sync.bindings.remove(&tv_id);
-            debug!(tv_id, "unregistered brightness device");
-        }
+    // Drop stale bindings.
+    let stale: Vec<String> = bindings.keys().filter(|id| !desired.contains_key(*id)).cloned().collect();
+    for tv_id in stale {
+        let _ = ops_tx.send(DeviceOp::Destroy { tv_id: tv_id.clone() });
+        bindings.remove(&tv_id);
     }
 
-    // Create devices for new TVs.
+    // Create new bindings.
     for (tv_id, d) in &desired {
-        if sync.bindings.contains_key(tv_id) {
-            continue;
-        }
-        let _ = sync.ops_tx.send(DeviceOp::Create {
+        if bindings.contains_key(tv_id) { continue; }
+        let _ = ops_tx.send(DeviceOp::Create {
             tv_id: tv_id.clone(),
             edid_base64: d.edid_base64.clone(),
             initial_brightness: d.backlight,
         });
-        sync.bindings.insert(
-            tv_id.clone(),
-            BindingMeta {
-                last_observed: Some(d.backlight),
-                monitor_name: d.monitor_name.clone(),
-            },
-        );
+        bindings.insert(tv_id.clone(), Binding {
+            last_observed: Some(d.backlight),
+            monitor_name: d.monitor_name.clone(),
+        });
         debug!(tv_id, "registered brightness device");
     }
 
-    // Rebuild the label→tv_id map for the D-Bus observer.
+    // Rebuild label→tv_id map for the D-Bus observer.
     {
-        let mut map = sync.label_to_tv.lock().expect("lock poisoned");
+        let mut map = shared.label_to_tv.lock().expect("poisoned");
         map.clear();
-        for (tv_id, meta) in &sync.bindings {
-            if let Some(name) = &meta.monitor_name {
+        for (tv_id, b) in bindings.iter() {
+            if let Some(name) = &b.monitor_name {
                 map.insert(name.clone(), tv_id.clone());
             }
         }
     }
 
-    debug!(
-        "brightness reconcile: desired={} bound={}",
-        desired.len(),
-        sync.bindings.len()
-    );
+    debug!("brightness reconcile: desired={} bound={}", desired.len(), bindings.len());
 }
+
+// ── Helpers ────────────────────────────────────────────────────
 
 struct DesiredBrightness {
     edid_base64: String,
     backlight: u8,
-    /// EDID monitor name for D-Bus label matching.
     monitor_name: Option<String>,
 }
 
-/// EDID data read from a DRM connector's sysfs entry.
 struct ConnectorEdid {
-    /// First 128 bytes base64-encoded (for the Wayland protocol).
     base64: String,
-    /// Monitor name from EDID descriptor blocks (for D-Bus label matching).
     monitor_name: Option<String>,
 }
 
 /// Read EDID from the DRM connector matching the TV's desktop config.
-/// Returns the base64-encoded first 128 bytes and the parsed monitor name.
-fn read_edid_for_tv(
-    tv: &tisvlay_core::TvInfo,
-    state: &SessionState,
-) -> Option<ConnectorEdid> {
-    let connector = state
-        .user_config
-        .tv
-        .iter()
+fn read_edid_for_tv(tv: &tisvlay_core::TvInfo, state: &SessionState) -> Option<ConnectorEdid> {
+    let connector = state.user_config.tv.iter()
         .find(|e| e.id == tv.id)?
-        .desktop
-        .as_ref()?
-        .connector
-        .as_deref()?;
+        .desktop.as_ref()?
+        .connector.as_deref()?;
 
     let drm_root = std::path::Path::new("/sys/class/drm");
     for entry in std::fs::read_dir(drm_root).ok()?.flatten() {
-        let dir_name = entry.file_name();
-        let dir_name = dir_name.to_string_lossy();
-        let Some(entry_connector) = dir_name.split_once('-').map(|(_, rest)| rest) else {
-            continue;
-        };
-        if entry_connector != connector {
-            continue;
-        }
-        let edid_bytes = std::fs::read(entry.path().join("edid")).ok()?;
-        if edid_bytes.len() < 128 {
-            return None;
-        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(entry_connector) = name.split_once('-').map(|(_, r)| r) else { continue };
+        if entry_connector != connector { continue; }
+
+        let bytes = std::fs::read(entry.path().join("edid")).ok()?;
+        if bytes.len() < 128 { return None; }
+
         use base64::Engine;
-        let base64 = base64::engine::general_purpose::STANDARD.encode(&edid_bytes[..128]);
-        let monitor_name = edidkit::Edid::parse(&edid_bytes)
-            .ok()
+        let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes[..128]);
+        let monitor_name = edidkit::Edid::parse(&bytes).ok()
             .and_then(|e| e.product().monitor_name.clone())
             .filter(|n| !n.is_empty());
-        return Some(ConnectorEdid {
-            base64,
-            monitor_name,
-        });
+        return Some(ConnectorEdid { base64, monitor_name });
     }
     None
 }
