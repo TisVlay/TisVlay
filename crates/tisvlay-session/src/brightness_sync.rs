@@ -77,7 +77,7 @@ struct Shared {
 /// proxy lives on the Wayland thread; we route all Wayland calls through
 /// the ops channel.
 struct BindingMeta {
-    version: u32,
+    /// Last brightness we pushed to KDE (reverse path echo suppression).
     last_observed: Option<u8>,
     /// EDID monitor name for D-Bus label matching (e.g. "LG TV SSCR2").
     monitor_name: Option<String>,
@@ -152,6 +152,9 @@ struct BrightnessSync {
     /// KDE display label → tv_id for the D-Bus observer. Rebuilt on
     /// every reconcile from the bindings' `monitor_name` fields.
     label_to_tv: Arc<Mutex<HashMap<String, String>>>,
+    /// Last brightness value sent to each TV by the forward path.
+    /// Used by `push_observed_brightness` to suppress echoes.
+    last_forward_sent: Arc<Mutex<HashMap<String, u8>>>,
 }
 
 enum DeviceOp {
@@ -196,9 +199,14 @@ pub async fn run(
         }
     };
 
-    let forward_handle = tokio::spawn(forward_brightness_events(event_rx, daemon.clone()));
-
     let label_to_tv = Arc::new(Mutex::new(HashMap::new()));
+    let last_forward_sent = Arc::new(Mutex::new(HashMap::new()));
+
+    let forward_handle = tokio::spawn(forward_brightness_events(
+        event_rx,
+        daemon.clone(),
+        last_forward_sent.clone(),
+    ));
 
     // D-Bus observer for HDR mode: subscribes to PropertiesChanged
     // on org.kde.ScreenBrightness displays. Uses label_to_tv for
@@ -213,6 +221,7 @@ pub async fn run(
         version,
         bindings: HashMap::new(),
         label_to_tv,
+        last_forward_sent,
     };
 
     reconcile(&mut sync, &daemon, &state).await;
@@ -231,33 +240,66 @@ pub async fn run(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        tokio::select! {
-            _ = shutdown.changed() => {
-                info!("Brightness sync shutdown signalled");
-                break;
-            }
-            _ = tick.tick() => {
-                reconcile(&mut sync, &daemon, &state).await;
-            }
+        // Collect the action from select!, then process outside.
+        // D-Bus calls from inside the watcher.next() arm deadlock
+        // because the zbus connection's message stream is borrowed.
+        enum Action {
+            Shutdown,
+            Reconcile,
+            PropertiesChanged(String),
+            StreamClosed,
+        }
+
+        let action = tokio::select! {
+            _ = shutdown.changed() => Action::Shutdown,
+            _ = tick.tick() => Action::Reconcile,
             evt = watcher.next() => {
                 match evt {
                     Some(StateEvent::DaemonStateChanged(TvStateChange::PropertiesChanged { tv_id })) => {
-                        push_observed_brightness(&mut sync, &daemon, &tv_id).await;
-                        reconcile(&mut sync, &daemon, &state).await;
+                        Action::PropertiesChanged(tv_id)
                     }
                     Some(StateEvent::DaemonStateChanged(_))
                     | Some(StateEvent::FallbackPoll)
                     | Some(StateEvent::DaemonAppeared)
                     | Some(StateEvent::DaemonDisappeared)
-                    | Some(StateEvent::SessionProfileChanged) => {
-                        reconcile(&mut sync, &daemon, &state).await;
-                    }
-                    Some(StateEvent::SessionAppeared | StateEvent::SessionDisappeared) => {}
-                    None => {
-                        warn!("StateWatcher stream closed; exiting brightness sync");
-                        break;
-                    }
+                    | Some(StateEvent::SessionProfileChanged) => Action::Reconcile,
+                    Some(StateEvent::SessionAppeared | StateEvent::SessionDisappeared) => continue,
+                    None => Action::StreamClosed,
                 }
+            }
+        };
+
+        match action {
+            Action::Shutdown => {
+                info!("Brightness sync shutdown signalled");
+                break;
+            }
+            Action::Reconcile => {
+                reconcile(&mut sync, &daemon, &state).await;
+            }
+            Action::PropertiesChanged(tv_id) => {
+                // Spawn on a separate task to avoid deadlocking the
+                // zbus connection — the StateWatcher's internal stream
+                // state can block same-connection D-Bus calls even
+                // after the select! arm completes.
+                let d = daemon.clone();
+                let ops = sync.ops_tx.clone();
+                let fwd = sync.last_forward_sent.clone();
+                let version = sync.version;
+                if let Some(meta) = sync.bindings.get(&tv_id) {
+                    let last_obs = meta.last_observed;
+                    let tv = tv_id.clone();
+                    tokio::spawn(async move {
+                        push_observed_brightness_task(&d, &tv, version, last_obs, &ops, &fwd).await;
+                    });
+                }
+                // Update last_observed from the spawned task's result
+                // on the next reconcile (it reads fresh state anyway).
+                reconcile(&mut sync, &daemon, &state).await;
+            }
+            Action::StreamClosed => {
+                warn!("StateWatcher stream closed; exiting brightness sync");
+                break;
             }
         }
     }
@@ -421,26 +463,36 @@ fn run_wayland_loop(
 }
 
 /// Push TV-side brightness to KDE via `set_observed_brightness`.
-async fn push_observed_brightness(
-    sync: &mut BrightnessSync,
+/// Runs as a spawned task to avoid deadlocking the shared zbus
+/// connection (the StateWatcher's internal stream state blocks
+/// same-connection D-Bus calls even after the select! arm completes).
+async fn push_observed_brightness_task(
     daemon: &DaemonClient,
     tv_id: &str,
+    version: u32,
+    last_observed: Option<u8>,
+    ops_tx: &std::sync::mpsc::Sender<DeviceOp>,
+    last_forward_sent: &Mutex<HashMap<String, u8>>,
 ) {
-    let Some(meta) = sync.bindings.get_mut(tv_id) else {
-        return;
-    };
-    if meta.version < 2 {
+    if version < 2 {
         return;
     }
     let backlight = match daemon.get_backlight(tv_id).await {
         Ok(v) => v,
         Err(_) => return,
     };
-    if meta.last_observed == Some(backlight) {
+    // Suppress echo from our own forward-path writes.
+    {
+        let mut sent = last_forward_sent.lock().expect("lock poisoned");
+        if sent.get(tv_id) == Some(&backlight) {
+            sent.remove(tv_id);
+            return;
+        }
+    }
+    if last_observed == Some(backlight) {
         return;
     }
-    meta.last_observed = Some(backlight);
-    let _ = sync.ops_tx.send(DeviceOp::SetObservedBrightness {
+    let _ = ops_tx.send(DeviceOp::SetObservedBrightness {
         tv_id: tv_id.to_string(),
         value: backlight,
     });
@@ -451,6 +503,7 @@ async fn push_observed_brightness(
 async fn forward_brightness_events(
     mut rx: mpsc::UnboundedReceiver<BrightnessEvent>,
     daemon: Arc<DaemonClient>,
+    last_sent: Arc<Mutex<HashMap<String, u8>>>,
 ) {
     while let Some(first) = rx.recv().await {
         let mut latest: HashMap<String, u32> = HashMap::new();
@@ -462,6 +515,12 @@ async fn forward_brightness_events(
         }
         for (tv_id, value) in latest {
             let level = (value as u8).min(100);
+            // Record before sending so the reverse path can suppress
+            // the echo when the daemon reports the same value back.
+            last_sent
+                .lock()
+                .expect("lock poisoned")
+                .insert(tv_id.clone(), level);
             if let Err(e) = daemon.set_backlight(&tv_id, level).await {
                 warn!(tv_id, level, error = %e, "forward brightness set failed");
             }
@@ -499,8 +558,8 @@ async fn observe_kde_brightness_dbus(
         return;
     };
 
-    // Cache: display object path → label (avoids a D-Bus round-trip per signal).
-    let mut path_label_cache: HashMap<String, String> = HashMap::new();
+    // Cache: display object path → (label, max_brightness).
+    let mut path_cache: HashMap<String, (String, i32)> = HashMap::new();
 
     debug!("D-Bus brightness observer started");
 
@@ -528,21 +587,22 @@ async fn observe_kde_brightness_dbus(
             continue;
         };
 
-        // Resolve the display label, caching the D-Bus lookup.
+        // Resolve label + max_brightness, caching per display path.
         let path = match msg.header().path() {
             Some(p) => p.to_string(),
             None => continue,
         };
-        let label = match path_label_cache.get(&path) {
-            Some(l) => l.clone(),
+        let (label, max_brightness) = match path_cache.get(&path) {
+            Some(cached) => cached.clone(),
             None => {
-                let l = read_display_label(&conn, &path).await;
-                if let Some(ref label) = l {
-                    path_label_cache.insert(path.clone(), label.clone());
-                }
-                match l {
-                    Some(l) => l,
-                    None => continue,
+                let label = read_display_label(&conn, &path).await;
+                let max = read_display_max_brightness(&conn, &path).await;
+                match (label, max) {
+                    (Some(l), Some(m)) if m > 0 => {
+                        path_cache.insert(path.clone(), (l.clone(), m));
+                        (l, m)
+                    }
+                    _ => continue,
                 }
             }
         };
@@ -551,11 +611,10 @@ async fn observe_kde_brightness_dbus(
         let tv_id = label_to_tv.lock().expect("lock poisoned").get(&label).cloned();
 
         if let Some(tv_id) = tv_id {
-            // Scale from KWin's 0-10000 range to 0-100.
-            let level = ((brightness as f64 / 10000.0) * 100.0)
+            let level = ((brightness as f64 / max_brightness as f64) * 100.0)
                 .round()
                 .clamp(0.0, 100.0) as u32;
-            trace!(tv_id, brightness, level, "D-Bus brightness change");
+            trace!(tv_id, brightness, max_brightness, level, "D-Bus brightness change");
             let _ = event_tx.send(BrightnessEvent::Requested {
                 tv_id,
                 value: level,
@@ -564,7 +623,7 @@ async fn observe_kde_brightness_dbus(
     }
 }
 
-/// Read the `Label` property from a ScreenBrightness display object.
+/// Read a property from a ScreenBrightness display object.
 async fn read_display_label(conn: &zbus::Connection, path: &str) -> Option<String> {
     let proxy = zbus::fdo::PropertiesProxy::builder(conn)
         .destination("org.kde.ScreenBrightness")
@@ -574,12 +633,25 @@ async fn read_display_label(conn: &zbus::Connection, path: &str) -> Option<Strin
         .build()
         .await
         .ok()?;
-    let iface = zbus::names::InterfaceName::from_static_str_unchecked(
-        "org.kde.ScreenBrightness.Display",
-    );
+    let iface =
+        zbus::names::InterfaceName::from_static_str_unchecked("org.kde.ScreenBrightness.Display");
     let prop = zbus::names::PropertyName::from_static_str_unchecked("Label");
-    let val = proxy.get(iface, &prop).await.ok()?;
-    String::try_from(val).ok()
+    String::try_from(proxy.get(iface, &prop).await.ok()?).ok()
+}
+
+async fn read_display_max_brightness(conn: &zbus::Connection, path: &str) -> Option<i32> {
+    let proxy = zbus::fdo::PropertiesProxy::builder(conn)
+        .destination("org.kde.ScreenBrightness")
+        .ok()?
+        .path(path)
+        .ok()?
+        .build()
+        .await
+        .ok()?;
+    let iface =
+        zbus::names::InterfaceName::from_static_str_unchecked("org.kde.ScreenBrightness.Display");
+    let prop = zbus::names::PropertyName::from_static_str_unchecked("MaxBrightness");
+    i32::try_from(proxy.get(iface, &prop).await.ok()?).ok()
 }
 
 /// Reconcile desired brightness devices with current state.
@@ -648,7 +720,6 @@ async fn reconcile(
         sync.bindings.insert(
             tv_id.clone(),
             BindingMeta {
-                version: sync.version,
                 last_observed: Some(d.backlight),
                 monitor_name: d.monitor_name.clone(),
             },
