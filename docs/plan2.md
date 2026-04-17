@@ -10,9 +10,9 @@ Sub-plan for Phase 3 of [plan.md](plan.md). Goal: KDE's native brightness slider
 
 Both paths feed into the same drain-loop for coalescing.
 
-**Reverse path** works in SDR mode (via `set_observed_brightness`). In HDR mode KWin ignores it (known limitation — `drm_output.cpp:630` gates on `!highDynamicRange`).
+**Reverse path** (TV remote → KDE slider) is **not working**. The Wayland `set_observed_brightness` protocol request only sets initial state — KWin's `commit()` handler is a one-shot (`m_done` guard), so subsequent commits are no-ops and KWin never re-reads the observed brightness. This is a protocol design limitation, not a bug. A working reverse path would need to call PowerDevil's `SetBrightness` via D-Bus directly, with feedback-loop suppression to avoid echoing our own forward writes.
 
-**Feedback-loop suppression** implemented: forward path records `last_forward_sent` per TV; reverse path checks and suppresses echoes. Reverse path spawns on a separate tokio task to avoid deadlocking the shared zbus connection (the `StateWatcher`'s internal stream state blocks same-connection D-Bus calls even after the `select!` arm returns).
+**Feedback-loop suppression** implemented for the forward path: the drain-loop records `last_forward_sent` per TV, and the reverse path checks it to suppress echoes from the daemon reflecting our own writes.
 
 ## KDE brightness architecture (learned from source + hardware testing)
 
@@ -196,11 +196,11 @@ Verified: KWin still reports MaxBrightness=10000 in SDR mode (PowerDevil's KWinD
 
 Forward path works: `SetBrightness iu 5000 0` → D-Bus observer scales 5000/10000 → TV backlight=50. Both the Wayland `requested_brightness` and D-Bus observer fire in SDR mode; the drain-loop deduplicates.
 
-Reverse path: `set_observed_brightness(75)` sends value 75 to KWin, but KWin's internal brightness is on the 0-10000 scale, so the slider doesn't move meaningfully. Fixing this requires scaling 0-100 → 0-10000 in the reverse path, or having KWin fully adopt our device's scale. Defer as a follow-up.
+Reverse path: `set_observed_brightness` reaches KWin but the slider never updates. Root cause: KWin's `commit()` is a one-shot — `m_done` prevents `addDevice` from re-firing, so KWin never re-reads the observed brightness after initial assignment.
 
 ## Remaining work
 
-1. **Reverse path scale**: `set_observed_brightness` sends 0-100 values. KWin normalizes these correctly via `(value - min) / (max - min)` using our `max_brightness=100`, but PowerDevil's KWinDisplayDetector doesn't re-read the updated brightness from KWin, so the slider doesn't move. This is a KDE-side limitation; defer until a user requests TV-remote → KDE slider sync.
+1. **Reverse path via D-Bus**: call PowerDevil's `SetBrightness` on `org.kde.ScreenBrightness.Display` directly instead of going through the Wayland `set_observed_brightness` (which is initial-state only). Needs feedback-loop suppression to avoid the D-Bus observer echoing our own writes back. The `last_forward_sent` pattern can be extended: record what the reverse path sends, and have the D-Bus observer skip matching values.
 
 ## Future scope
 
