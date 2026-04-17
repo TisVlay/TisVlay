@@ -200,8 +200,7 @@ Reverse path: `set_observed_brightness(75)` sends value 75 to KWin, but KWin's i
 
 ## Remaining work
 
-1. **Reverse path scale**: `set_observed_brightness` sends 0-100 values but KWin expects 0-10000 when KWinDisplayDetector is active. Scale the reverse path output by `max_brightness / 100`.
-2. **`TISVLAY_VOLUME_SYNC` env gate removal**: volume sync is stable; the env gate should be removed so both sync features are always-on.
+1. **Reverse path scale**: `set_observed_brightness` sends 0-100 values. KWin normalizes these correctly via `(value - min) / (max - min)` using our `max_brightness=100`, but PowerDevil's KWinDisplayDetector doesn't re-read the updated brightness from KWin, so the slider doesn't move. This is a KDE-side limitation; defer until a user requests TV-remote → KDE slider sync.
 
 ## Future scope
 
