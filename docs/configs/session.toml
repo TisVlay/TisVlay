@@ -4,14 +4,14 @@ on_session_unlock = "screen_on"
 on_greeter_wake = "screen_on"
 idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
-sync_volume = "mirror_hdmi"
 sync_backlight = "backlight"
+sync_volume = "mirror_hdmi"
 
 [[tv]]
 id = "office"
 
 [tv.profile]
-user = "foo"
+user = "default"
 
 [tv.desktop]
 edid = "76a5e66f2326bab8dd8703c78462e724b554515e47dc08dd679535020bb5ba92"
