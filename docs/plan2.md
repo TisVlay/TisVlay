@@ -10,7 +10,9 @@ Sub-plan for Phase 3 of [plan.md](plan.md). Goal: KDE's native brightness slider
 
 Both paths feed into the same drain-loop for coalescing.
 
-**Remaining work**: reverse path (TV remote → KDE slider), feedback-loop suppression, shutdown cleanup.
+**Reverse path** works in SDR mode (via `set_observed_brightness`). In HDR mode KWin ignores it (known limitation — `drm_output.cpp:630` gates on `!highDynamicRange`).
+
+**Feedback-loop suppression** implemented: forward path records `last_forward_sent` per TV; reverse path checks and suppresses echoes. Reverse path spawns on a separate tokio task to avoid deadlocking the shared zbus connection (the `StateWatcher`'s internal stream state blocks same-connection D-Bus calls even after the `select!` arm returns).
 
 ## KDE brightness architecture (learned from source + hardware testing)
 
@@ -95,18 +97,20 @@ The module is built and verified:
 ## Architecture (current working path)
 
 ```
-┌──────────┐  requested_brightness  ┌──────────────────────┐
-│  KWin    │ ────────────────────>  │  tisvlay-session     │
-│  (comp.) │ <────────────────────  │  (Wayland client)    │
-│          │  set_observed_bright.  │                      │
-└──────────┘                        └──────────┬───────────┘
-                                               │ D-Bus
-                                    ┌──────────┴───────────┐
-                                    │  tisvlayd             │
-                                    │  (system daemon)      │
-                                    │                       │
-                                    │  Tv1.Backlight → TV   │
-                                    └───────────────────────┘
+                  SDR: requested_brightness
+┌──────────┐  ───────────────────────────>  ┌───────────────────┐
+│  KWin    │  <───────────────────────────  │  tisvlay-session  │
+│  (comp.) │  SDR: set_observed_brightness  │                   │
+└────┬─────┘                                │  Wayland client + │
+     │ KScreen                              │  D-Bus observer   │
+┌────┴─────┐  HDR: PropertiesChanged        │                   │
+│PowerDevil│  ───────────────────────────>  │                   │
+│  (D-Bus) │                                └─────────┬─────────┘
+└──────────┘                                          │ D-Bus
+                                            ┌─────────┴─────────┐
+                                            │  tisvlayd          │
+                                            │  Tv1.Backlight→TV  │
+                                            └───────────────────┘
 ```
 
 The kernel module path (future, for HDR + session-independent operation):
@@ -186,13 +190,18 @@ pub enum SyncBacklight {
 
 Config value: `sync_backlight = "backlight"`.
 
+## SDR mode findings
+
+Verified: KWin still reports MaxBrightness=10000 in SDR mode (PowerDevil's KWinDisplayDetector claims the display). Our brightness device is registered and matched by KWin (EDID prefix), but the KWinDisplayDetector path runs in parallel. The D-Bus observer handles both modes correctly by reading `MaxBrightness` from the display's D-Bus property and scaling accordingly.
+
+Forward path works: `SetBrightness iu 5000 0` → D-Bus observer scales 5000/10000 → TV backlight=50. Both the Wayland `requested_brightness` and D-Bus observer fire in SDR mode; the drain-loop deduplicates.
+
+Reverse path: `set_observed_brightness(75)` sends value 75 to KWin, but KWin's internal brightness is on the 0-10000 scale, so the slider doesn't move meaningfully. Fixing this requires scaling 0-100 → 0-10000 in the reverse path, or having KWin fully adopt our device's scale. Defer as a follow-up.
+
 ## Remaining work
 
-1. **Reverse path** (TV remote changes backlight → KDE slider updates): subscribe to `Tv1.Backlight` PropertiesChanged, call `set_observed_brightness` + `commit` on the Wayland device. The `push_observed_brightness` function exists but needs hardware verification.
-2. **Feedback-loop suppression**: last-sent cache to prevent echo when the D-Bus observer sees its own forward-path writes reflected back. Same pattern as volume sync (`last_pushed_volume` / `last_pushed_muted`).
-3. **Shutdown cleanup**: destroy Wayland devices on exit. The non-blocking dispatch loop (50ms sleep) already allows clean Ctrl+C.
-4. **SDR scale mapping**: in SDR mode, KWin uses our `max_brightness=100` so `requested_brightness` values map 1:1 to `Tv1.Backlight`. Verify on hardware.
-5. **HDR scale accuracy**: the D-Bus observer hardcodes `max_brightness=10000` (KWin's default for software brightness). Should read `MaxBrightness` from the display's D-Bus property for correctness.
+1. **Reverse path scale**: `set_observed_brightness` sends 0-100 values but KWin expects 0-10000 when KWinDisplayDetector is active. Scale the reverse path output by `max_brightness / 100`.
+2. **`TISVLAY_VOLUME_SYNC` env gate removal**: volume sync is stable; the env gate should be removed so both sync features are always-on.
 
 ## Future scope
 
