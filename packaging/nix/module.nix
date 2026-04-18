@@ -47,6 +47,36 @@ in
       '';
     };
 
+    enableKernelModule = lib.mkOption {
+      type = lib.types.bool;
+      default = config.boot.kernelPackages.kernel.features.rust or false;
+      defaultText = lib.literalExpression
+        "config.boot.kernelPackages.kernel.features.rust or false";
+      description = ''
+        Build and load the `tisvlay_backlight` out-of-tree kernel
+        module, which provides per-TV `/sys/class/backlight/tisvlay-*`
+        devices for native KDE brightness sync
+        (`sync_backlight = "backlight"`).
+
+        Requires a kernel built with `CONFIG_RUST=y`. Auto-enables
+        when the running kernel's `features.rust` is true; override
+        when you want to opt out or when detection misses.
+      '';
+    };
+
+    kernelModulePackage = lib.mkOption {
+      type = lib.types.package;
+      default = config.boot.kernelPackages.callPackage
+        ../../module/tisvlay-backlight { };
+      defaultText = lib.literalExpression
+        "config.boot.kernelPackages.callPackage ../../module/tisvlay-backlight { }";
+      description = ''
+        The `tisvlay_backlight` kernel module derivation, built against
+        the active `boot.kernelPackages`. Override to inject a
+        pre-built package (e.g. from a flake output).
+      '';
+    };
+
     user = lib.mkOption {
       type = lib.types.str;
       default = "tisvlay";
@@ -180,6 +210,15 @@ in
     # Make the CLI available system-wide.
     environment.systemPackages = [ cfg.package ];
 
+    # Kernel module for virtual /sys/class/backlight/tisvlay-* devices.
+    # Loaded at boot so /dev/tisvlay-bl is present before tisvlayd
+    # starts — otherwise the daemon's chardev driver quietly stays
+    # disabled and brightness sync falls back to the session path.
+    boot.extraModulePackages = lib.mkIf cfg.enableKernelModule [
+      cfg.kernelModulePackage
+    ];
+    boot.kernelModules = lib.mkIf cfg.enableKernelModule [ "tisvlay_bl" ];
+
     # System daemon: manages TV connections, exposes D-Bus API.
     # Config lives in /var/lib/tisvlay/config.toml (StateDirectory), writable
     # by the daemon so the pairing wizard can persist credentials.
@@ -218,7 +257,10 @@ in
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateTmp = true;
-        PrivateDevices = true;
+        # Hide all physical devices by default; relaxed below when the
+        # kernel-module brightness sync is enabled so the daemon can
+        # open /dev/tisvlay-bl.
+        PrivateDevices = !cfg.enableKernelModule;
         NoNewPrivileges = true;
 
         # Network: UNIX (D-Bus), INET{4,6} (WebSocket to TVs, WoL), NETLINK
@@ -270,6 +312,13 @@ in
         # Clean up any SysV IPC the daemon (or its future children)
         # might leak at shutdown.
         RemoveIPC = true;
+      } // lib.optionalAttrs cfg.enableKernelModule {
+        # With PrivateDevices disabled above, restrict which devices
+        # the daemon can actually open to just the virtual-backlight
+        # chardev — the cgroup device controller enforces this
+        # regardless of /dev visibility.
+        DeviceAllow = [ "/dev/tisvlay-bl rw" ];
+        DevicePolicy = "closed";
       };
     };
 
