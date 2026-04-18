@@ -286,7 +286,17 @@ int tisvlay_bl_set(const char *tv_id, int brightness)
 		if (devices[i].in_use &&
 		    strncmp(devices[i].tv_id, tv_id, TISVLAY_ID_MAX) == 0) {
 			devices[i].bd->props.brightness = brightness;
-			backlight_update_status(devices[i].bd);
+			/*
+			 * Use backlight_force_update, not backlight_update_status:
+			 * the latter invokes ops->update_status (our push_event),
+			 * which echoes this daemon-initiated write back as a
+			 * forward event and causes an oscillation loop with the
+			 * subscription-driven reverse path. force_update emits the
+			 * sysfs/uevent notification PowerDevil watches without
+			 * firing the ops callback.
+			 */
+			backlight_force_update(devices[i].bd,
+					       BACKLIGHT_UPDATE_HOTKEY);
 			ret = 0;
 			break;
 		}

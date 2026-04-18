@@ -77,13 +77,13 @@ mod tests {
         };
         let m = DesktopMapping::from_parts(
             Some(&identity),
-            SyncBacklight::Backlight,
+            SyncBacklight::Kernel,
             SyncVolume::MirrorHdmi,
         );
         assert_eq!(m.edid, "abc123");
         assert_eq!(m.connector, "HDMI-A-2");
         assert_eq!(m.sink, "alsa_output.hdmi");
-        assert_eq!(m.sync_backlight, "backlight");
+        assert_eq!(m.sync_backlight, "kernel");
         assert_eq!(m.sync_volume, "mirror_hdmi");
     }
 

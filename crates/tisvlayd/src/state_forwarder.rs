@@ -75,7 +75,7 @@ pub async fn state_change_forwarder(
                 }
 
                 if let Some(driver) = backlight.as_ref() {
-                    sync_backlight_device(driver, &manager, tv_id, connected).await;
+                    sync_backlight_device(driver, &manager, object_server, tv_id, connected).await;
                 }
             }
             StateChangeEvent::OptionChanged {
@@ -148,7 +148,7 @@ pub async fn state_change_forwarder(
                         false
                     };
                     if connected {
-                        sync_backlight_device(driver, &manager, tv_id, true).await;
+                        sync_backlight_device(driver, &manager, object_server, tv_id, true).await;
                     }
                 }
             }
@@ -213,11 +213,12 @@ async fn current_cached_backlight(object_server: &zbus::ObjectServer, path: &str
 
 /// Bring the kernel-module backlight device in sync with the current
 /// connection + desktop mapping. Creates the device when the TV
-/// connects with `sync_backlight = "backlight"` and a connector is
+/// connects with `sync_backlight = "kernel"` and a connector is
 /// known; destroys it otherwise.
 async fn sync_backlight_device(
     driver: &BacklightDriver,
     manager: &TvManager,
+    object_server: &zbus::ObjectServer,
     tv_id: &str,
     connected: bool,
 ) {
@@ -230,7 +231,7 @@ async fn sync_backlight_device(
 
     let mapping = manager.get_desktop_mapping(tv_id).await;
     let Some(mapping) = mapping else { return };
-    if mapping.sync_backlight != "backlight" {
+    if mapping.sync_backlight != "kernel" {
         driver.send(BacklightCommand::Destroy {
             tv_id: tv_id.to_string(),
         });
@@ -241,9 +242,19 @@ async fn sync_backlight_device(
     }
 
     let edid = backlight_driver::read_edid_for_connector(&mapping.connector);
+    let path = tv_path(tv_id);
+    let initial_brightness = current_cached_backlight(object_server, &path)
+        .await
+        .unwrap_or(50);
+    // Device state persists across daemon restarts; destroy first so
+    // CREATE doesn't return -EEXIST and so the initial brightness
+    // always reflects the freshly-observed TV state.
+    driver.send(BacklightCommand::Destroy {
+        tv_id: tv_id.to_string(),
+    });
     driver.send(BacklightCommand::Create {
         tv_id: tv_id.to_string(),
-        initial_brightness: 50,
+        initial_brightness,
         edid,
     });
 }

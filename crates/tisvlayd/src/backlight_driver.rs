@@ -7,7 +7,7 @@
 //! them to `Tv1.Backlight` on the connected TV.
 //!
 //! Device lifecycle is managed via ioctl:
-//! - `CREATE` when a TV connects with `sync_backlight = "backlight"`
+//! - `CREATE` when a TV connects with `sync_backlight = "kernel"`
 //!   and an EDID/connector has been resolved (Phase 1).
 //! - `DESTROY` on disconnect or profile flip.
 //! - `SET_BRIGHTNESS` on TV-side backlight changes (reverse path —
@@ -31,7 +31,9 @@ use crate::tv_manager::TvManager;
 const CHARDEV: &str = "/dev/tisvlay-bl";
 
 /// Module sysfs path — used to detect if the module is loaded.
-const MODULE_SYSFS: &str = "/sys/module/tisvlay_backlight";
+/// Matches the composite module name in `Kbuild` (`tisvlay_bl.o`),
+/// which differs from the Rust source file `tisvlay_backlight.rs`.
+const MODULE_SYSFS: &str = "/sys/module/tisvlay_bl";
 
 /// Maximum TV ID length (must match TISVLAY_ID_MAX in the module).
 const ID_MAX: usize = 64;

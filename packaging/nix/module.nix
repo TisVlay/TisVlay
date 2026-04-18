@@ -58,7 +58,7 @@ in
         Build and load the `tisvlay_backlight` out-of-tree kernel
         module, which provides per-TV `/sys/class/backlight/tisvlay-*`
         devices for native KDE brightness sync
-        (`sync_backlight = "backlight"`).
+        (`sync_backlight = "kernel"`).
 
         Requires a kernel built with `CONFIG_RUST=y`. Auto-enables
         when the running kernel's `features.rust` is true; override
