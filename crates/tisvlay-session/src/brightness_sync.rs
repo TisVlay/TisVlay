@@ -1,7 +1,7 @@
 //! Brightness sync — KDE's brightness slider drives `Tv1.Backlight`.
 //!
 //! For every managed TV whose effective user profile selects
-//! `sync_backlight = "backlight"`, the session service registers a
+//! `sync_backlight = "kernel"`, the session service registers a
 //! `kde_external_brightness_device_v1` with KWin so the desktop
 //! brightness slider controls the TV's OLED pixel brightness.
 //!
@@ -631,10 +631,7 @@ async fn reconcile(
         tvs.iter()
             .filter_map(|tv| {
                 let profile = s.profiles.get(&tv.id)?;
-                if !matches!(
-                    profile.sync_backlight,
-                    tisvlay_core::SyncBacklight::Backlight
-                ) {
+                if !matches!(profile.sync_backlight, tisvlay_core::SyncBacklight::Kernel) {
                     return None;
                 }
                 if !tv.connected {

@@ -89,9 +89,11 @@ pub enum SessionAction {
 /// to produce the `Automated` D-Bus property.
 /// Backlight sync mode between the desktop and a TV.
 ///
-/// Controls the `desktop_sync::brightness` module in `tisvlay-session`.
 /// Per-profile so the user can flip it on an activity basis (e.g. sync
-/// on by default, off in a `"gaming"` profile).
+/// on by default, off in a `"gaming"` profile). Variants are mutually
+/// exclusive: the daemon and session service gate their respective
+/// brightness pipelines on this value so exactly one writer drives the
+/// TV at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncBacklight {
@@ -99,18 +101,39 @@ pub enum SyncBacklight {
     /// (no virtual backlight device created). Default.
     #[default]
     None,
-    /// Create a virtual `/sys/class/backlight/tisvlay-*` device so
-    /// KDE's brightness slider drives `Tv1.Backlight` directly —
-    /// no software dimming. Requires the `tisvlay_backlight` kernel
-    /// module.
-    Backlight,
+
+    /// Native sysfs via the `tisvlay_bl` kernel module. Creates a
+    /// `/sys/class/backlight/tisvlay-*` device matched by EDID so KDE's
+    /// brightness slider drives `Tv1.Backlight` directly — no software
+    /// dimming. Bidirectional. Requires the `tisvlay_bl` kmod loaded
+    /// and a PowerDevil that resolves the virtual backlight to the
+    /// DRM output.
+    Kernel,
+
+    /// Default KDE session backend. KWin's `kde-external-brightness-v1`
+    /// Wayland protocol drives the forward path under SDR; PowerDevil's
+    /// D-Bus observer transparently takes over under HDR. Reverse path
+    /// calls PowerDevil's `SetBrightness`. Bidirectional.
+    Kde,
+
+    /// Strict: KWin `kde-external-brightness-v1` only. SDR only.
+    /// Forward-only — the KDE slider does NOT follow TV-remote changes
+    /// because KWin's `set_observed_brightness` handler is one-shot.
+    KdeWayland,
+
+    /// Strict: PowerDevil D-Bus only. Works in both SDR and HDR.
+    /// Bidirectional.
+    KdeDbus,
 }
 
 impl std::fmt::Display for SyncBacklight {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => f.write_str("none"),
-            Self::Backlight => f.write_str("backlight"),
+            Self::Kernel => f.write_str("kernel"),
+            Self::Kde => f.write_str("kde"),
+            Self::KdeWayland => f.write_str("kde_wayland"),
+            Self::KdeDbus => f.write_str("kde_dbus"),
         }
     }
 }
@@ -1603,7 +1626,7 @@ ip = "192.168.1.1"
             idle_timeout_seconds: Some(999),
             on_idle_timeout: Some(SessionAction::PowerOff),
             on_idle_resume: Some(SessionAction::None),
-            sync_backlight: Some(SyncBacklight::Backlight),
+            sync_backlight: Some(SyncBacklight::Kernel),
             sync_volume: Some(SyncVolume::MirrorHdmi),
         };
 
