@@ -16,7 +16,7 @@ zbus = { workspace = true }
 tracing = { workspace = true }
 tracing-test = { workspace = true }
 tracing-mock = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
