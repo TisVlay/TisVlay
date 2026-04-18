@@ -239,12 +239,8 @@ async fn main() -> Result<()> {
         let bs_state = state.clone();
         let bs_daemon = daemon.clone();
         Some(tokio::spawn(async move {
-            tisvlay_session::brightness_sync::run(
-                bs_daemon,
-                bs_state,
-                brightness_sync_shutdown_rx,
-            )
-            .await;
+            tisvlay_session::brightness_sync::run(bs_daemon, bs_state, brightness_sync_shutdown_rx)
+                .await;
         }))
     };
 

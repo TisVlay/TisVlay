@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
+use crate::backlight_driver::{self, BacklightCommand, BacklightDriver};
 use crate::dbus::{
     MANAGER_PATH, ManagerService, TvBacklightService, TvDesktopService, TvInputService,
     TvPowerService, TvScreenService, TvService, TvVolumeService, tv_path,
@@ -27,6 +28,7 @@ pub async fn state_change_forwarder(
     connection: zbus::Connection,
     mut rx: mpsc::UnboundedReceiver<StateChangeEvent>,
     manager: Arc<TvManager>,
+    backlight: Option<BacklightDriver>,
 ) {
     info!("State change forwarder started");
     let object_server = connection.object_server();
@@ -39,7 +41,21 @@ pub async fn state_change_forwarder(
             } => {
                 let path = tv_path(tv_id);
                 debug!(tv_id = %tv_id, "Forwarding subscription update to D-Bus properties");
+                let prev_backlight = current_cached_backlight(object_server, &path).await;
                 update_tv_cached_state(object_server, &path, state).await;
+
+                // Push TV-side backlight changes to sysfs so KDE's slider
+                // tracks remote-driven updates. Only emit when the value
+                // actually changed, to avoid feedback with the forward
+                // path's own writes.
+                if let (Some(driver), Some(new_bl)) = (backlight.as_ref(), state.backlight) {
+                    if prev_backlight != Some(new_bl) {
+                        driver.send(BacklightCommand::SetBrightness {
+                            tv_id: tv_id.clone(),
+                            brightness: new_bl,
+                        });
+                    }
+                }
             }
             StateChangeEvent::ConnectionChanged {
                 ref tv_id,
@@ -56,6 +72,10 @@ pub async fn state_change_forwarder(
                             warn!(error = %e, tv_id = %tv_id, "Failed to emit Connected property change");
                         }
                     }
+                }
+
+                if let Some(driver) = backlight.as_ref() {
+                    sync_backlight_device(driver, &manager, tv_id, connected).await;
                 }
             }
             StateChangeEvent::OptionChanged {
@@ -114,6 +134,23 @@ pub async fn state_change_forwarder(
                     iface.sync_backlight_changed(emitter).await.ok();
                     iface.sync_volume_changed(emitter).await.ok();
                 }
+
+                // The session service may push the mapping after the TV
+                // already connected — re-evaluate device lifecycle so
+                // the backlight device is (re)created with the now-known
+                // EDID / connector.
+                if let Some(driver) = backlight.as_ref() {
+                    let connected = if let Ok(iface_ref) =
+                        object_server.interface::<_, TvService>(&*path).await
+                    {
+                        iface_ref.get().await.connected
+                    } else {
+                        false
+                    };
+                    if connected {
+                        sync_backlight_device(driver, &manager, tv_id, true).await;
+                    }
+                }
             }
             StateChangeEvent::ConfigReloaded => {
                 debug!("Emitting ConfigReloaded signal on Manager1");
@@ -161,6 +198,54 @@ pub async fn state_change_forwarder(
     }
 
     info!("State change forwarder stopped");
+}
+
+/// Read the cached `Backlight` property on `TvBacklightService`, if
+/// registered. Used to detect whether a subscription update actually
+/// changed the value before pushing it back to sysfs.
+async fn current_cached_backlight(object_server: &zbus::ObjectServer, path: &str) -> Option<u8> {
+    let iface_ref = object_server
+        .interface::<_, TvBacklightService>(path)
+        .await
+        .ok()?;
+    Some(iface_ref.get().await.backlight)
+}
+
+/// Bring the kernel-module backlight device in sync with the current
+/// connection + desktop mapping. Creates the device when the TV
+/// connects with `sync_backlight = "backlight"` and a connector is
+/// known; destroys it otherwise.
+async fn sync_backlight_device(
+    driver: &BacklightDriver,
+    manager: &TvManager,
+    tv_id: &str,
+    connected: bool,
+) {
+    if !connected {
+        driver.send(BacklightCommand::Destroy {
+            tv_id: tv_id.to_string(),
+        });
+        return;
+    }
+
+    let mapping = manager.get_desktop_mapping(tv_id).await;
+    let Some(mapping) = mapping else { return };
+    if mapping.sync_backlight != "backlight" {
+        driver.send(BacklightCommand::Destroy {
+            tv_id: tv_id.to_string(),
+        });
+        return;
+    }
+    if mapping.connector.is_empty() {
+        return;
+    }
+
+    let edid = backlight_driver::read_edid_for_connector(&mapping.connector);
+    driver.send(BacklightCommand::Create {
+        tv_id: tv_id.to_string(),
+        initial_brightness: 50,
+        edid,
+    });
 }
 
 /// Update cached D-Bus properties from a backend subscription state snapshot.

@@ -412,15 +412,11 @@ impl VolumeSync {
             let ds = devices
                 .get(&device_global_id)
                 .ok_or_else(|| anyhow!("Device {device_global_id} not bound"))?;
-            let ri = ds
-                .routes
-                .get(&route_device_index)
-                .copied()
-                .ok_or_else(|| {
-                    anyhow!(
-                        "no route for device_index {route_device_index} on Device {device_global_id}"
-                    )
-                })?;
+            let ri = ds.routes.get(&route_device_index).copied().ok_or_else(|| {
+                anyhow!(
+                    "no route for device_index {route_device_index} on Device {device_global_id}"
+                )
+            })?;
             (ds.device.clone(), ri)
         };
 
@@ -452,11 +448,7 @@ impl VolumeSync {
                     0,
                     Box::new(move |builder| {
                         builder
-                            .push_property(
-                                Route::Index,
-                                PropertyFlags::empty(),
-                                route_index as i32,
-                            )
+                            .push_property(Route::Index, PropertyFlags::empty(), route_index as i32)
                             .push_property(
                                 Route::Device,
                                 PropertyFlags::empty(),
@@ -666,29 +658,26 @@ fn bind_device_if_needed(inner: &Arc<Inner>, device_global_id: u32) {
     let inner_for_param = Arc::clone(inner);
     let dev_gid = device_global_id;
     device.add_listener(DeviceEvents {
-        param: Some(Box::new(
-            move |_seq, param_id, _index, _next, pod| {
-                if param_id != ParamType::Route {
-                    return;
-                }
-                handle_device_route(&inner_for_param, dev_gid, pod);
-            },
-        )),
+        param: Some(Box::new(move |_seq, param_id, _index, _next, pod| {
+            if param_id != ParamType::Route {
+                return;
+            }
+            handle_device_route(&inner_for_param, dev_gid, pod);
+        })),
         ..Default::default()
     });
 
-    inner
-        .devices
-        .lock()
-        .expect("devices lock poisoned")
-        .insert(
-            device_global_id,
-            DeviceState {
-                device,
-                routes: HashMap::new(),
-            },
-        );
-    debug!(device_global_id, "bound Device for route-level volume control");
+    inner.devices.lock().expect("devices lock poisoned").insert(
+        device_global_id,
+        DeviceState {
+            device,
+            routes: HashMap::new(),
+        },
+    );
+    debug!(
+        device_global_id,
+        "bound Device for route-level volume control"
+    );
 }
 
 /// Parse a Route param from a Device and store the route index keyed
