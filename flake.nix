@@ -38,6 +38,14 @@
       {
         packages.default = pkgs.callPackage ./packaging/nix/package.nix { };
 
+        # Out-of-tree kernel module providing /dev/tisvlay-bl and per-TV
+        # /sys/class/backlight/tisvlay-* devices. Built against the
+        # default `linuxPackages` of the flake's nixpkgs — consumers
+        # who need it aligned with a different kernel should override
+        # `services.tisvlay.kernelModulePackage` in the NixOS module.
+        packages.tisvlay-backlight =
+          pkgs.linuxPackages.callPackage ./module/tisvlay-backlight { };
+
         # NixOS VM test: boots a VM with services.tisvlay.enable = true
         # and asserts the module's end-to-end behavior. Run via
         # `nix build .#checks.${system}.vm` or `nix flake check`.
