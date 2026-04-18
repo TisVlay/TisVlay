@@ -58,6 +58,7 @@ hex = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tisvlay-harness = { workspace = true }
 tisvlay-test = { workspace = true }
+tempfile = "3"
 
 [lints]
 workspace = true

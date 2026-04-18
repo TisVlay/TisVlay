@@ -116,39 +116,64 @@ impl SessionService {
     ) -> Result<(), SessionError> {
         info!(tv_id = %tv_id, profile = %profile_name, "D-Bus: SetTvUserProfile");
 
-        let mut s = self.state.write().await;
+        // The desktop mapping rebuilt from the new profile; pushed to
+        // the daemon after the write lock is released so the Manager1
+        // call can't deadlock against our own state lock.
+        let mapping = {
+            let mut s = self.state.write().await;
 
-        // Verify the profile exists (in user config, admin config, or as "default")
-        if profile_name != "default"
-            && !s.user_config.user.profiles.contains_key(profile_name)
-            && !s.admin_user_profiles.contains_key(profile_name)
-        {
-            return Err(SessionError::ProfileNotFound(format!(
-                "Profile '{}' not found in user or admin config",
-                profile_name
-            )));
-        }
+            // Verify the profile exists (in user config, admin config, or as "default")
+            if profile_name != "default"
+                && !s.user_config.user.profiles.contains_key(profile_name)
+                && !s.admin_user_profiles.contains_key(profile_name)
+            {
+                return Err(SessionError::ProfileNotFound(format!(
+                    "Profile '{}' not found in user or admin config",
+                    profile_name
+                )));
+            }
 
-        // Update assignment
-        s.user_config.set_tv_user_profile(tv_id, profile_name);
+            // Update assignment
+            s.user_config.set_tv_user_profile(tv_id, profile_name);
 
-        // Re-resolve the user profile for this TV
-        let resolved = s
-            .user_config
-            .resolve_user_profile(tv_id, &s.admin_user_default);
-        s.profiles.insert(tv_id.to_string(), resolved);
+            // Re-resolve the user profile for this TV
+            let resolved = s
+                .user_config
+                .resolve_user_profile(tv_id, &s.admin_user_default);
+            s.profiles.insert(tv_id.to_string(), resolved.clone());
 
-        // Save user config to disk
-        let save_result = match &self.config_path {
-            Some(path) => s.user_config.save_to(path),
-            None => s.user_config.save(),
+            // Save user config to disk
+            let save_result = match &self.config_path {
+                Some(path) => s.user_config.save_to(path),
+                None => s.user_config.save(),
+            };
+            if let Err(e) = save_result {
+                warn!(error = %e, "Failed to save user config after profile change");
+            }
+
+            // Build the fresh DesktopMapping so the daemon republishes
+            // the new sync modes on Tv1.Desktop and the state forwarder
+            // can gate the kernel-backlight device accordingly.
+            let identity = s
+                .user_config
+                .tv
+                .iter()
+                .find(|e| e.id == tv_id)
+                .and_then(|e| e.desktop.as_ref())
+                .cloned();
+            tisvlay_core::DesktopMapping::from_parts(
+                identity.as_ref(),
+                resolved.sync_backlight,
+                resolved.sync_volume,
+            )
         };
-        if let Err(e) = save_result {
-            warn!(error = %e, "Failed to save user config after profile change");
-        }
 
-        // Drop the write lock before emitting the signal
-        drop(s);
+        // Push the updated mapping to the daemon so `Tv1.Desktop.*`
+        // re-reads and `state_forwarder` re-evaluates brightness
+        // lifecycle under the new profile's sync modes.
+        if let Err(e) = self.daemon.set_desktop_mapping(tv_id, mapping).await {
+            warn!(error = %e, tv_id = %tv_id, "Failed to push updated desktop mapping to daemon");
+        }
 
         // Notify subscribers that the profile changed
         if let Err(e) = Self::user_profile_changed(&ctxt, tv_id, profile_name).await {
@@ -177,6 +202,9 @@ impl SessionService {
             "on_greeter_wake": resolved.on_greeter_wake,
             "idle_timeout_seconds": resolved.idle_timeout_seconds,
             "on_idle_timeout": resolved.on_idle_timeout,
+            "on_idle_resume": resolved.on_idle_resume,
+            "sync_backlight": resolved.sync_backlight,
+            "sync_volume": resolved.sync_volume,
         });
 
         Ok(json.to_string())
