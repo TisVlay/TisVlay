@@ -9,6 +9,8 @@
  * 2. An event queue for forward-path brightness changes (KDE writes to
  *    sysfs → daemon reads from /dev/tisvlay-bl). Uses a wait queue for
  *    blocking reads since that primitive also lacks Rust bindings.
+ * 3. A binary `edid` sysfs attribute on each backlight device so
+ *    PowerDevil can identify which DRM output it corresponds to.
  */
 
 #include <linux/backlight.h>
@@ -17,10 +19,14 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/sysfs.h>
 #include <linux/wait.h>
 
 /* Maximum TV ID length (must match the Rust side). */
 #define TISVLAY_ID_MAX 64
+
+/* Maximum EDID size (base block + one extension). */
+#define TISVLAY_EDID_MAX 256
 
 /* Maximum number of backlight devices. */
 #define TISVLAY_MAX_DEVICES 16
@@ -117,11 +123,32 @@ void tisvlay_events_init(void)
 struct tisvlay_bl_device {
 	struct backlight_device *bd;
 	char tv_id[TISVLAY_ID_MAX];
+	u8 edid[TISVLAY_EDID_MAX];
+	int edid_len;
 	bool in_use;
 };
 
 static struct tisvlay_bl_device devices[TISVLAY_MAX_DEVICES];
 static DEFINE_MUTEX(devices_lock);
+
+/* ── EDID sysfs attribute ──────────────────────────────────────── */
+
+static ssize_t edid_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
+{
+	struct backlight_device *bd = to_backlight_device(dev);
+	struct tisvlay_bl_device *tdev = bl_get_data(bd);
+
+	if (!tdev || tdev->edid_len <= 0)
+		return 0;
+
+	memcpy(buf, tdev->edid, tdev->edid_len);
+	return tdev->edid_len;
+}
+
+static DEVICE_ATTR_RO(edid);
+
+/* ── Backlight ops ─────────────────────────────────────────────── */
 
 static int tisvlay_bl_update_status(struct backlight_device *bd)
 {
@@ -143,7 +170,8 @@ static const struct backlight_ops tisvlay_bl_ops = {
 };
 
 int tisvlay_bl_create(const char *tv_id, int max_brightness,
-		      int initial_brightness)
+		      int initial_brightness,
+		      const u8 *edid_data, int edid_len)
 {
 	struct backlight_properties props;
 	struct backlight_device *bd;
@@ -152,6 +180,8 @@ int tisvlay_bl_create(const char *tv_id, int max_brightness,
 	int i, ret = -ENOMEM;
 
 	if (!tv_id || !tv_id[0] || max_brightness <= 0)
+		return -EINVAL;
+	if (edid_len < 0 || edid_len > TISVLAY_EDID_MAX)
 		return -EINVAL;
 
 	mutex_lock(&devices_lock);
@@ -186,12 +216,30 @@ int tisvlay_bl_create(const char *tv_id, int max_brightness,
 
 	strscpy(dev->tv_id, tv_id, TISVLAY_ID_MAX);
 
+	/* Store EDID before registration so the sysfs attr can read it. */
+	if (edid_data && edid_len > 0) {
+		memcpy(dev->edid, edid_data, edid_len);
+		dev->edid_len = edid_len;
+	} else {
+		dev->edid_len = 0;
+	}
+
 	bd = backlight_device_register(name, NULL, dev,
 				       &tisvlay_bl_ops, &props);
 	if (IS_ERR(bd)) {
 		ret = PTR_ERR(bd);
 		memset(dev, 0, sizeof(*dev));
 		goto out;
+	}
+
+	/* Expose the EDID as a sysfs attribute on the backlight device. */
+	if (dev->edid_len > 0) {
+		ret = device_create_file(&bd->dev, &dev_attr_edid);
+		if (ret) {
+			pr_warn("tisvlay: failed to create edid sysfs attr: %d\n", ret);
+			/* Non-fatal — brightness still works, just no EDID matching. */
+			ret = 0;
+		}
 	}
 
 	dev->bd = bd;
@@ -214,6 +262,8 @@ int tisvlay_bl_destroy(const char *tv_id)
 	for (i = 0; i < TISVLAY_MAX_DEVICES; i++) {
 		if (devices[i].in_use &&
 		    strncmp(devices[i].tv_id, tv_id, TISVLAY_ID_MAX) == 0) {
+			if (devices[i].edid_len > 0)
+				device_remove_file(&devices[i].bd->dev, &dev_attr_edid);
 			backlight_device_unregister(devices[i].bd);
 			memset(&devices[i], 0, sizeof(devices[i]));
 			ret = 0;
@@ -252,6 +302,8 @@ void tisvlay_bl_destroy_all(void)
 	mutex_lock(&devices_lock);
 	for (i = 0; i < TISVLAY_MAX_DEVICES; i++) {
 		if (devices[i].in_use) {
+			if (devices[i].edid_len > 0)
+				device_remove_file(&devices[i].bd->dev, &dev_attr_edid);
 			backlight_device_unregister(devices[i].bd);
 			memset(&devices[i], 0, sizeof(devices[i]));
 		}

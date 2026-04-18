@@ -29,6 +29,9 @@ module! {
 /// Maximum TV ID length including NUL. Must match TISVLAY_ID_MAX in helpers.c.
 const ID_MAX: usize = 64;
 
+/// Maximum EDID size. Must match TISVLAY_EDID_MAX in helpers.c.
+const EDID_MAX: usize = 256;
+
 /// ioctl magic number (arbitrary, 'T' for tisvlay).
 const IOCTL_MAGIC: u32 = b'T' as u32;
 
@@ -45,6 +48,8 @@ struct IoctlCreate {
     tv_id: [u8; ID_MAX],
     max_brightness: i32,
     initial_brightness: i32,
+    edid_len: i32,
+    edid: [u8; EDID_MAX],
 }
 
 /// Argument for IOCTL_DESTROY.
@@ -81,6 +86,8 @@ unsafe extern "C" {
         tv_id: *const core::ffi::c_char,
         max_brightness: core::ffi::c_int,
         initial_brightness: core::ffi::c_int,
+        edid_data: *const u8,
+        edid_len: core::ffi::c_int,
     ) -> core::ffi::c_int;
     fn tisvlay_bl_destroy(tv_id: *const core::ffi::c_char) -> core::ffi::c_int;
     fn tisvlay_bl_set(
@@ -168,29 +175,34 @@ impl MiscDevice for TisvlayBlMisc {
 
         match cmd {
             IOCTL_CREATE => {
-                let tv_id = copy_tv_id_from_user(user, 0)?;
-                let mut max_br: i32 = 0;
-                let mut init_br: i32 = 0;
-
-                // Read max_brightness and initial_brightness after the tv_id.
-                let max_ptr = UserPtr::from_addr(arg + ID_MAX);
-                let init_ptr = UserPtr::from_addr(arg + ID_MAX + 4);
+                // Copy the entire IoctlCreate struct from userspace.
+                let mut create = core::mem::MaybeUninit::<IoctlCreate>::zeroed();
+                let size = core::mem::size_of::<IoctlCreate>();
                 unsafe {
                     kernel::bindings::copy_from_user(
-                        (&raw mut max_br).cast(),
-                        max_ptr.as_const_ptr(),
-                        4usize,
-                    );
-                    kernel::bindings::copy_from_user(
-                        (&raw mut init_br).cast(),
-                        init_ptr.as_const_ptr(),
-                        4usize,
+                        create.as_mut_ptr().cast(),
+                        user.as_const_ptr(),
+                        size,
                     );
                 }
+                let create = unsafe { create.assume_init() };
 
-                // SAFETY: tv_id is NUL-terminated, C helper handles validation.
+                // Ensure NUL termination on tv_id.
+                let mut tv_id = create.tv_id;
+                tv_id[ID_MAX - 1] = 0;
+
+                let edid_len = create.edid_len.clamp(0, EDID_MAX as i32);
+
+                // SAFETY: tv_id is NUL-terminated, edid points to
+                // stack-local data, C helper copies what it needs.
                 let ret = unsafe {
-                    tisvlay_bl_create(tv_id.as_ptr().cast(), max_br, init_br)
+                    tisvlay_bl_create(
+                        tv_id.as_ptr().cast(),
+                        create.max_brightness,
+                        create.initial_brightness,
+                        create.edid.as_ptr(),
+                        edid_len,
+                    )
                 };
                 if ret < 0 {
                     return Err(Error::from_errno(ret));
