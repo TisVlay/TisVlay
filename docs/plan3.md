@@ -1,5 +1,7 @@
 # Config Enums and Brightness Cleanup Refactor
 
+Status: **implemented**, partially verified end-to-end (see §6).
+
 Refactors the brightness synchronization architecture to fix oscillation loops and cleanly isolate the competing approaches (Kernel vs. Wayland vs. D-Bus). The project is pre-release and greenfield, so there are no backwards-compatibility constraints — config values get renamed cleanly, no serde aliases.
 
 ## Goals
@@ -100,13 +102,48 @@ In `tisvlay_bl_set`, replace the `backlight_update_status(bd)` call with `backli
 
 After the fix: one user action = one TV write, zero ioctl → push_event echo round trips.
 
-## Implementation Order
+## 5. Implementation Order
 
-1. **Kernel echo fix first.** Isolated change, testable on its own. Rebuild module, reload, confirm no runaway loop when the daemon drives SET_BRIGHTNESS.
-2. **Config enum rename.** Introduce the new variants in `tisvlay-core`, update the single existing config (`docs/configs/session.toml`) and any fixture TOMLs, update D-Bus string renderers and `DesktopMapping::from_parts` callers. One commit.
-3. **Mutual exclusion in `state_forwarder`.** Gate kernel lifecycle on `sync_backlight == "kernel"`. One commit.
-4. **Session module split.** Move existing code into `brightness/{shared,kde_wayland,kde_dbus,kde}.rs`; delete `brightness_sync.rs`; wire coordinator dispatch by enum value. One commit.
-5. **Manual verification** for each variant: `None`, `Kernel`, `Kde`, `KdeWayland`, `KdeDbus` — forward and reverse where applicable. Document findings in the commit messages or follow-up doc.
+1. **Kernel echo fix first** ✅ — `helpers.c:tisvlay_bl_set` now uses `backlight_force_update(BACKLIGHT_UPDATE_HOTKEY)`.
+2. **Config enum rename** ✅ — `SyncBacklight::Kernel|Kde|KdeWayland|KdeDbus`; call sites, fixture tests, and `docs/configs/session.toml` migrated.
+3. **Mutual exclusion in `state_forwarder`** ✅ — kernel lifecycle gated on `sync_backlight == "kernel"`; cascaded from the enum rename.
+4. **Session module split** ✅ — `brightness/{shared,kde_wayland,kde_dbus,kde,mod}.rs`; `brightness_sync.rs` deleted; coordinator dispatches by enum value.
+5. **Manual verification** — partial, see §6.
+
+## 6. Verification Findings
+
+End-to-end on hardware (LG OLED42C3PUA, HDR, KDE Plasma 6.6.4 with patched PowerDevil):
+
+- **`Kde`**: ✅ Forward (KDE slider → TV) and reverse (TV remote → KDE slider) both work. Confirmed via user test with slider drag and remote press. Forward flows through `kde_external_brightness_v1` (KWin's `requested_brightness`); reverse flows through PowerDevil D-Bus `SetBrightness` from our observer.
+- **`KdeWayland`** / **`KdeDbus`**: ⚠️ Not yet exercised end-to-end. Code paths are covered by the same module-split refactor and share primitives with `Kde`; verification pending.
+- **`Kernel`**: ❌ Doesn't cleanly drive the KDE slider via PowerDevil. Direct sysfs writes (KAuth, `echo ... | sudo tee`) forward correctly; KDE-initiated changes don't reach sysfs. See §7.
+- **`None`**: ✅ Session brightness dispatcher exits at `info!("no KDE-flavor TVs, session brightness sync idle")`; daemon's kernel driver stays inert (no `CREATE` ioctl).
+
+## 7. Known Limitations
+
+### 7.1 `Kernel` mode doesn't integrate with PowerDevil
+
+PowerDevil's `ScreenBrightnessController` picks detectors with the priority `KWinDisplayDetector > BacklightDetector > DDCutilDetector`. The patched `BacklightDetector` can claim external displays with EDID (`isInternal() = !edidData().has_value()`), but `KWinDisplayDetector` runs first and already owns the `/org/kde/ScreenBrightness/display0` entry with its 0-10000 internal scale. Empirical proof: calling `SetBrightness` on `display0` under `Kernel` mode updates PowerDevil's cached value without touching `/sys/class/backlight/tisvlay-*/brightness`, and the TV backlight stays put.
+
+The KDE slider appeared to work earlier in `Kernel` mode only because a stale pre-refactor `tisvlay-session` process (the monolithic `brightness_sync.rs` runtime) was still alive and registering a `kde_external_brightness_device_v1` — that registration, not the kernel module, was the real forward source. Once that process was killed, `Kernel` mode was clearly incomplete.
+
+**Paths forward** (not decided yet):
+
+- **Extend the PowerDevil patch** to make `BacklightDetector` win the race when it has EDID data for an external display. One more `.cpp` file beyond the current patch surface (`ScreenBrightnessController` selection logic). Probably the right long-term fix and a candidate for upstream.
+- **Drop `Kernel` mode** and keep `Kde` as the single user-facing backend. Simpler but loses the native-sysfs plumbing.
+- **Register a placeholder Wayland brightness device in `Kernel` mode** to displace `KWinDisplayDetector`'s claim. Probably doesn't work — verification showed `display0.MaxBrightness` stays at 10000 even with our Wayland device registered under `Kde` mode, so the two detectors coexist rather than preempt.
+
+### 7.2 Session dispatcher startup race
+
+`SessionState::load` returns an empty `profiles` map when the daemon is offline at boot. The initial dispatcher snapshotted that empty state once and exited to the "no KDE-flavor TVs" branch forever, leaving brightness sync disabled until the user restarted the session.
+
+**Fix landed** (`brightness/mod.rs::wait_for_modes`): the dispatcher polls `state.profiles` once per second until it's non-empty or shutdown fires, then dispatches. Covered by `run_does_not_exit_while_state_is_empty` regression test.
+
+### 7.3 `SetTvUserProfile` didn't republish `DesktopMapping`
+
+Flipping a TV's user profile via the tray (or D-Bus) updated `state.profiles` and the user config on disk but never called `Manager1.SetDesktopMapping` on the daemon. The daemon's cached `Tv1.Desktop.SyncBacklight` stayed stale, so `state_forwarder` couldn't gate the kernel backlight device lifecycle on the new mode.
+
+**Fix landed** (`session_dbus::set_tv_user_profile`): rebuild `DesktopMapping` inside the write lock, drop the lock, push to the daemon. Covered by `set_tv_user_profile_republishes_desktop_mapping` regression test. `TestSession::with_user_config_path` was added alongside to isolate tests from `~/.config/tisvlay/config.toml`.
 
 ## Out of Scope
 
