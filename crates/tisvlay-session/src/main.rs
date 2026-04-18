@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     tisvlay_core::logging::init(&[
         "tisvlay_session=info",
         "tisvlay_session::volume_sync=debug",
-        "tisvlay_session::brightness_sync=debug",
+        "tisvlay_session::brightness=debug",
         "zbus=warn",
     ])?;
 
@@ -227,19 +227,18 @@ async fn main() -> Result<()> {
         }))
     };
 
-    // Spawn the brightness-sync coordinator. Registers
-    // kde_external_brightness_device_v1 per TV so KDE's brightness
-    // slider drives Tv1.Backlight. Requires the tisvlay_backlight
-    // kernel module to provide a sysfs backlight device that makes
-    // BacklightDetector claim the TV instead of KWin. Non-fatal if
-    // the Wayland protocol is unavailable.
+    // Spawn the brightness-sync coordinator. Dispatches to one of
+    // the session-side KDE backends based on the resolved user
+    // profile's `sync_backlight` value; exits early if every TV's
+    // mode is `None` or `Kernel` (the daemon's kernel-module path
+    // owns brightness in that case).
     let (brightness_sync_shutdown_tx, brightness_sync_shutdown_rx) =
         tokio::sync::watch::channel(false);
     let brightness_sync_task = {
         let bs_state = state.clone();
         let bs_daemon = daemon.clone();
         Some(tokio::spawn(async move {
-            tisvlay_session::brightness_sync::run(bs_daemon, bs_state, brightness_sync_shutdown_rx)
+            tisvlay_session::brightness::run(bs_daemon, bs_state, brightness_sync_shutdown_rx)
                 .await;
         }))
     };
