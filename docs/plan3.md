@@ -1,6 +1,6 @@
 # Config Enums and Brightness Cleanup Refactor
 
-Status: **implemented**, partially verified end-to-end (see §6).
+Status: **implemented and verified end-to-end** for `Kde` and `Kernel` modes (see §6). `KdeWayland` / `KdeDbus` strict variants still pending hardware testing.
 
 Refactors the brightness synchronization architecture to fix oscillation loops and cleanly isolate the competing approaches (Kernel vs. Wayland vs. D-Bus). The project is pre-release and greenfield, so there are no backwards-compatibility constraints — config values get renamed cleanly, no serde aliases.
 
@@ -114,24 +114,31 @@ After the fix: one user action = one TV write, zero ioctl → push_event echo ro
 
 End-to-end on hardware (LG OLED42C3PUA, HDR, KDE Plasma 6.6.4 with patched PowerDevil):
 
-- **`Kde`**: ✅ Forward (KDE slider → TV) and reverse (TV remote → KDE slider) both work. Confirmed via user test with slider drag and remote press. Forward flows through `kde_external_brightness_v1` (KWin's `requested_brightness`); reverse flows through PowerDevil D-Bus `SetBrightness` from our observer.
+- **`Kde`**: ✅ Forward (KDE slider → TV) and reverse (TV remote → KDE slider) both work. Forward flows through `kde_external_brightness_v1` (KWin's `requested_brightness`); reverse flows through PowerDevil D-Bus `SetBrightness` from our observer.
+- **`Kernel`**: ✅ Forward and reverse both work with the extended PowerDevil patch (§7.1). KDE slider writes sysfs via the patched `BacklightDetector`, kernel module forwards to the daemon, daemon pushes to the TV. TV-remote changes fire `sysfs_notify`/uevent through `backlight_force_update`, which PowerDevil's `BacklightBrightness` observes and reports back to the KDE slider.
 - **`KdeWayland`** / **`KdeDbus`**: ⚠️ Not yet exercised end-to-end. Code paths are covered by the same module-split refactor and share primitives with `Kde`; verification pending.
-- **`Kernel`**: ❌ Doesn't cleanly drive the KDE slider via PowerDevil. Direct sysfs writes (KAuth, `echo ... | sudo tee`) forward correctly; KDE-initiated changes don't reach sysfs. See §7.
 - **`None`**: ✅ Session brightness dispatcher exits at `info!("no KDE-flavor TVs, session brightness sync idle")`; daemon's kernel driver stays inert (no `CREATE` ioctl).
 
 ## 7. Known Limitations
 
-### 7.1 `Kernel` mode doesn't integrate with PowerDevil
+### 7.1 `Kernel` mode requires an extended PowerDevil patch
 
-PowerDevil's `ScreenBrightnessController` picks detectors with the priority `KWinDisplayDetector > BacklightDetector > DDCutilDetector`. The patched `BacklightDetector` can claim external displays with EDID (`isInternal() = !edidData().has_value()`), but `KWinDisplayDetector` runs first and already owns the `/org/kde/ScreenBrightness/display0` entry with its 0-10000 internal scale. Empirical proof: calling `SetBrightness` on `display0` under `Kernel` mode updates PowerDevil's cached value without touching `/sys/class/backlight/tisvlay-*/brightness`, and the TV backlight stays put.
+Out-of-the-box KDE Plasma, PowerDevil's `ScreenBrightnessController` picks detectors with the priority `KWinDisplayDetector > BacklightDetector > DDCutilDetector`. `KWinDisplayDetector` runs first and owns `/org/kde/ScreenBrightness/display0` with KDE's 0-10000 internal scale — slider writes update KWin's compositor-side brightness (for HDR tone-mapping) without ever reaching sysfs. The kernel module is installed and observing but effectively orphaned from the user-facing slider.
 
-The KDE slider appeared to work earlier in `Kernel` mode only because a stale pre-refactor `tisvlay-session` process (the monolithic `brightness_sync.rs` runtime) was still alive and registering a `kde_external_brightness_device_v1` — that registration, not the kernel module, was the real forward source. Once that process was killed, `Kernel` mode was clearly incomplete.
+**Resolved** via a two-piece patch on `kdePackages.powerdevil` (overlay at `~/Documents/nix-config/pkgs/patches/powerdevil-backlight-edid.patch`):
 
-**Paths forward** (not decided yet):
+1. **Extend `BacklightDetector` to external displays** — `backlightbrightness.{cpp,h}` and `backlighthelper_linux.{cpp,h}`. The KAuth helper now returns lists of all sysfs backlights (`syspaths`, `brightnesses`, `brightnessmaxes`); the detector constructs one `BacklightBrightness` per entry, each of which reads `$syspath/device/edid` or `$syspath/edid` for its EDID. `isInternal()` flips to `!edidData().has_value()` so EDID-carrying entries present as external.
 
-- **Extend the PowerDevil patch** to make `BacklightDetector` win the race when it has EDID data for an external display. One more `.cpp` file beyond the current patch surface (`ScreenBrightnessController` selection logic). Probably the right long-term fix and a candidate for upstream.
-- **Drop `Kernel` mode** and keep `Kde` as the single user-facing backend. Simpler but loses the native-sysfs plumbing.
-- **Register a placeholder Wayland brightness device in `Kernel` mode** to displace `KWinDisplayDetector`'s claim. Probably doesn't work — verification showed `display0.MaxBrightness` stays at 10000 even with our Wayland device registered under `Kde` mode, so the two detectors coexist rather than preempt.
+2. **Make `BacklightDetector` evict `KWinDisplayDetector`** when both report the same EDID — `screenbrightnesscontroller.cpp::onDetectorDisplaysChanged`. When a hardware detector has a non-internal display with EDID, the matching entry from `KWinDisplayDetector` is removed from `newDisplayById` in favor of the hardware one. Combined with excluding `BacklightDetector` from the `shouldUseExternalControl` shunt, this makes the `BacklightDetector` entry the single authoritative `display0` — slider writes hit sysfs directly and `MaxBrightness` reports the real sysfs max (100 for our kmod).
+
+Patch kept out-of-tree for now; candidate for upstream once the EDID attribute convention stabilizes and the kernel module (or a generalization of it) is production-ready.
+
+The tisvlay kernel module exports the EDID blob via `DEVICE_ATTR_RO(edid)` on the backlight device, which matches what the patched `BacklightBrightness::edidData()` expects. Matching bytes between `/sys/class/backlight/tisvlay-<tv>/edid` and `KScreen::Output::edid->rawData()` is what keys the eviction.
+
+**Cosmetic follow-ups** (not blocking):
+
+- PowerDevil renders our display's `Label` as `"Built-in Screen"` (its fallback when `BacklightBrightness::label()` has nothing vendor-provided). Could be improved by exposing a `display_name` attribute from the kernel module or by teaching `BacklightBrightness::label()` to parse the monitor name from EDID.
+- Slight off-by-one rounding: setting `display0` to 40 lands as sysfs `41`. Within PowerDevil's `knownSafeMinBrightness` / ratio semantics. Not worth chasing.
 
 ### 7.2 Session dispatcher startup race
 
