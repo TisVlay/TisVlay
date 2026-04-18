@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tisvlay_core::{SystemConfig, UserConfig};
 use tracing::{info, warn};
 
+use tisvlayd::backlight_driver;
 use tisvlayd::dbus::{BusKind, DBUS_NAME, ManagerService, build_dbus_connection};
 use tisvlayd::registry::create_registry;
 use tisvlayd::state_forwarder::state_change_forwarder;
@@ -120,11 +121,18 @@ async fn main() -> Result<()> {
         warn!(error = %e, "Failed to start logind monitor (system lifecycle events unavailable)");
     }
 
+    // Spawn the virtual-backlight kernel module driver. Returns None
+    // when the module isn't loaded or /dev/tisvlay-bl isn't accessible;
+    // in that case sync falls back to the session service's Wayland /
+    // D-Bus paths.
+    let backlight = backlight_driver::spawn(shared_manager.clone());
+
     // Spawn task to forward state changes to D-Bus properties and signals
     let signal_worker = tokio::spawn(state_change_forwarder(
         connection.clone(),
         state_change_rx,
         shared_manager.clone(),
+        backlight,
     ));
 
     // Spawn kernel netlink monitor for per-interface carrier detection and route changes.

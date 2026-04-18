@@ -20,6 +20,7 @@
 //! the out-of-crate test harness ([`tisvlay_harness`](../tisvlay_harness)).
 //! Do not depend on it from published code.
 
+pub mod backlight_driver;
 pub mod dbus;
 pub mod logind;
 pub mod netlink;

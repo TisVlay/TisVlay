@@ -6,8 +6,8 @@
 
 pub(crate) mod client {
     use wayland_client;
-    use wayland_client::protocol::*;
     use wayland_client::backend as wayland_backend;
+    use wayland_client::protocol::*;
 
     pub(crate) mod __interfaces {
         use wayland_client::backend as wayland_backend;
