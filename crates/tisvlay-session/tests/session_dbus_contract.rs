@@ -135,8 +135,7 @@ async fn read_daemon_sync_backlight(conn: &zbus::Connection, tv_id: &str) -> Str
         .build()
         .await
         .unwrap();
-    let iface =
-        zbus::names::InterfaceName::from_static_str_unchecked("org.tisvlay.Tv1.Desktop");
+    let iface = zbus::names::InterfaceName::from_static_str_unchecked("org.tisvlay.Tv1.Desktop");
     let prop = zbus::names::PropertyName::from_static_str_unchecked("SyncBacklight");
     String::try_from(proxy.get(iface, &prop).await.unwrap()).unwrap()
 }

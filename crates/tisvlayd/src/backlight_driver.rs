@@ -636,7 +636,13 @@ mod tests {
         // map — would forward to TV id "" which is nonsense.
         let (tx, mut rx) = mpsc::unbounded_channel();
         tx.send(mk_evt("office", 60)).unwrap();
-        let out = coalesce_events(BrightnessEvent { tv_id: [0; ID_MAX], brightness: 99 }, &mut rx);
+        let out = coalesce_events(
+            BrightnessEvent {
+                tv_id: [0; ID_MAX],
+                brightness: 99,
+            },
+            &mut rx,
+        );
         assert_eq!(out, HashMap::from([("office".to_string(), 60u8)]));
     }
 }
