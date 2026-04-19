@@ -43,6 +43,7 @@ rtnetlink = "0.20"
 netlink-packet-core = "0.8"
 netlink-packet-route = "0.28"
 libc = "0.2"
+async-trait = { workspace = true }
 
 [dev-dependencies]
 # test-util enables tokio::time::pause/advance for deterministic clock
