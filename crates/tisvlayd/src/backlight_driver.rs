@@ -17,15 +17,23 @@
 //! the task logs once and exits; brightness sync falls back to the
 //! session service's Wayland/D-Bus paths.
 
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
 use crate::tv_manager::TvManager;
+
+/// Cap on the per-TV forward queue so an unresponsive TV (one that
+/// never echoes subscription updates) can't grow the queue unbounded.
+/// Beyond this many pending forwards the oldest entries silently
+/// drop — matching echoes after the drop would just not be
+/// suppressed, which is acceptable.
+const MAX_PENDING_FORWARDS: usize = 32;
 
 /// Control chardev path.
 const CHARDEV: &str = "/dev/tisvlay-bl";
@@ -110,6 +118,15 @@ pub enum BacklightCommand {
 #[derive(Debug, Clone)]
 pub struct BacklightDriver {
     tx: mpsc::UnboundedSender<BacklightCommand>,
+    /// Pending forwards we've sent to the TV but haven't seen echoed
+    /// back yet, in FIFO order per TV. `handle_event` appends on every
+    /// forward; `consume_echo` drains matches. The reverse path uses
+    /// this to distinguish TV-initiated changes (user pressed the
+    /// remote) from echoes of our own forward writes — without it the
+    /// daemon re-pushes every echo to sysfs, PowerDevil observes the
+    /// sysfs change as external input, and the KDE slider visually
+    /// bounces through the ramp-echo history before settling.
+    pending_forwards: Arc<Mutex<HashMap<String, VecDeque<u8>>>>,
 }
 
 impl BacklightDriver {
@@ -119,6 +136,24 @@ impl BacklightDriver {
         if let Err(e) = self.tx.send(cmd) {
             debug!(error = %e, "backlight driver: command channel closed");
         }
+    }
+
+    /// Called by the reverse path (state_forwarder on `Tv1.Backlight`
+    /// subscription updates) to decide whether `level` is an echo of a
+    /// value we recently forwarded to the TV. If so, drain the queue
+    /// up through the matched entry and return `true` so the caller
+    /// skips the `SetBrightness` ioctl. Any queue entries older than
+    /// the match are dropped too — TV's physical backlight ramp tends
+    /// to emit only a subset of the values it was driven through.
+    pub fn consume_echo(&self, tv_id: &str, level: u8) -> bool {
+        let mut map = self.pending_forwards.lock().expect("poisoned");
+        if let Some(queue) = map.get_mut(tv_id)
+            && let Some(pos) = queue.iter().position(|&v| v == level)
+        {
+            queue.drain(0..=pos);
+            return true;
+        }
+        false
     }
 }
 
@@ -137,11 +172,20 @@ pub fn spawn(manager: Arc<TvManager>) -> Option<BacklightDriver> {
     }
 
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run(manager, rx));
-    Some(BacklightDriver { tx })
+    let pending_forwards: Arc<Mutex<HashMap<String, VecDeque<u8>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    tokio::spawn(run(manager, rx, pending_forwards.clone()));
+    Some(BacklightDriver {
+        tx,
+        pending_forwards,
+    })
 }
 
-async fn run(manager: Arc<TvManager>, mut rx: mpsc::UnboundedReceiver<BacklightCommand>) {
+async fn run(
+    manager: Arc<TvManager>,
+    mut rx: mpsc::UnboundedReceiver<BacklightCommand>,
+    pending_forwards: Arc<Mutex<HashMap<String, VecDeque<u8>>>>,
+) {
     // Open the chardev. Hold it for the task's lifetime — the kernel
     // module's event queue is shared across all openers, so reusing
     // one handle avoids races and simplifies shutdown.
@@ -182,7 +226,7 @@ async fn run(manager: Arc<TvManager>, mut rx: mpsc::UnboundedReceiver<BacklightC
                 }
             },
             evt = event_rx.recv() => match evt {
-                Some(evt) => handle_event(&manager, evt).await,
+                Some(evt) => handle_event(&manager, &pending_forwards, evt).await,
                 None => {
                     debug!("backlight driver: reader thread exited, shutting down");
                     break;
@@ -237,13 +281,31 @@ fn handle_command(fd: i32, cmd: BacklightCommand) {
     }
 }
 
-async fn handle_event(manager: &TvManager, evt: BrightnessEvent) {
+async fn handle_event(
+    manager: &TvManager,
+    pending_forwards: &Mutex<HashMap<String, VecDeque<u8>>>,
+    evt: BrightnessEvent,
+) {
     let tv_id = match std::str::from_utf8(&evt.tv_id) {
         Ok(s) => s.trim_end_matches('\0').to_string(),
         Err(_) => return,
     };
     let level = (evt.brightness as u8).min(100);
     trace!(tv_id, level, "backlight event from sysfs");
+
+    // Record the pending forward *before* sending to the TV. The TV
+    // will eventually echo this value (possibly along with ramp-
+    // intermediate values) via a subscription update, and the reverse
+    // path needs the record in place so it can match and suppress.
+    {
+        let mut map = pending_forwards.lock().expect("poisoned");
+        let queue = map.entry(tv_id.clone()).or_default();
+        queue.push_back(level);
+        while queue.len() > MAX_PENDING_FORWARDS {
+            queue.pop_front();
+        }
+    }
+
     if let Err(e) = manager.set_backlight(&tv_id, level).await {
         warn!(tv_id, level, error = %e, "forward from sysfs to TV failed");
     }
@@ -326,5 +388,137 @@ fn read_loop(fd: i32, tx: mpsc::UnboundedSender<BrightnessEvent>) {
         if tx.send(evt).is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a bare `BacklightDriver` wired to a fresh command channel
+    /// and empty queue map, bypassing `spawn()` (which refuses to run
+    /// without the kernel module loaded).
+    fn mk_driver() -> (BacklightDriver, mpsc::UnboundedReceiver<BacklightCommand>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let pending_forwards = Arc::new(Mutex::new(HashMap::new()));
+        (
+            BacklightDriver {
+                tx,
+                pending_forwards,
+            },
+            rx,
+        )
+    }
+
+    /// Mirror the forward-recording logic inside `handle_event` so tests
+    /// can simulate a sysfs-read-and-forward without spinning up a real
+    /// driver task. Any change to the real recording logic must mirror
+    /// into here.
+    fn record(driver: &BacklightDriver, tv_id: &str, level: u8) {
+        let mut map = driver.pending_forwards.lock().expect("poisoned");
+        let queue = map.entry(tv_id.to_string()).or_default();
+        queue.push_back(level);
+        while queue.len() > MAX_PENDING_FORWARDS {
+            queue.pop_front();
+        }
+    }
+
+    #[test]
+    fn consume_echo_returns_false_on_empty_queue() {
+        let (driver, _rx) = mk_driver();
+        assert!(!driver.consume_echo("office", 42));
+    }
+
+    #[test]
+    fn consume_echo_drains_a_single_matching_forward() {
+        let (driver, _rx) = mk_driver();
+        record(&driver, "office", 42);
+        assert!(driver.consume_echo("office", 42));
+        // Queue is now empty; a second echo with the same value is
+        // not suppressed (treated as genuine TV input).
+        assert!(!driver.consume_echo("office", 42));
+    }
+
+    /// Regression: during a rapid slider drag the TV emits multiple
+    /// ramp-echo updates. Without echo suppression, each echo fires a
+    /// `SetBrightness` ioctl that writes sysfs back to a stale value,
+    /// visibly yanking the KDE slider through the echo train. The
+    /// queue-drain-up-through-match semantics is what makes this work
+    /// when the TV only echoes a subset of the values it was driven
+    /// through.
+    #[test]
+    fn consume_echo_drains_ramp_up_through_matched_value() {
+        let (driver, _rx) = mk_driver();
+        for v in [30u8, 40, 50, 60, 70, 80] {
+            record(&driver, "office", v);
+        }
+
+        // TV echoes an intermediate ramp value — everything up through
+        // the match should be drained, leaving later forwards pending.
+        assert!(driver.consume_echo("office", 50));
+        {
+            let map = driver.pending_forwards.lock().unwrap();
+            let queue = map.get("office").expect("queue should still exist");
+            assert_eq!(
+                queue.iter().copied().collect::<Vec<_>>(),
+                vec![60, 70, 80],
+                "queue should retain forwards newer than the matched echo"
+            );
+        }
+
+        // TV eventually echoes the final target — drains the rest.
+        assert!(driver.consume_echo("office", 80));
+        let map = driver.pending_forwards.lock().unwrap();
+        assert!(map.get("office").unwrap().is_empty());
+    }
+
+    #[test]
+    fn consume_echo_returns_false_for_unknown_value() {
+        // Genuine TV-initiated change (user presses backlight on remote)
+        // must NOT be suppressed even while forwards are pending — the
+        // KDE slider still needs to track user-driven TV state.
+        let (driver, _rx) = mk_driver();
+        record(&driver, "office", 30);
+        record(&driver, "office", 40);
+
+        assert!(!driver.consume_echo("office", 99));
+
+        // Queue is untouched.
+        let map = driver.pending_forwards.lock().unwrap();
+        assert_eq!(
+            map.get("office").unwrap().iter().copied().collect::<Vec<_>>(),
+            vec![30, 40]
+        );
+    }
+
+    #[test]
+    fn consume_echo_is_isolated_per_tv_id() {
+        let (driver, _rx) = mk_driver();
+        record(&driver, "living_room", 50);
+        // Other TV's queue is unaffected by this TV's echo — and an
+        // echo for a TV that never forwarded anything gets no
+        // spurious match.
+        assert!(!driver.consume_echo("office", 50));
+        assert!(driver.consume_echo("living_room", 50));
+    }
+
+    #[test]
+    fn pending_queue_is_capped_at_max_pending_forwards() {
+        // If a TV goes silent and never echoes, the queue is bounded
+        // so the process doesn't leak unbounded memory. Matching
+        // echoes for values older than the cap simply aren't
+        // suppressed — acceptable trade-off for bounded memory.
+        let (driver, _rx) = mk_driver();
+        for v in 0u8..=(MAX_PENDING_FORWARDS as u8 + 10) {
+            record(&driver, "office", v);
+        }
+        let queue_len = driver
+            .pending_forwards
+            .lock()
+            .unwrap()
+            .get("office")
+            .unwrap()
+            .len();
+        assert_eq!(queue_len, MAX_PENDING_FORWARDS);
     }
 }

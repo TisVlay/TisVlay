@@ -46,10 +46,14 @@ pub async fn state_change_forwarder(
 
                 // Push TV-side backlight changes to sysfs so KDE's slider
                 // tracks remote-driven updates. Only emit when the value
-                // actually changed, to avoid feedback with the forward
-                // path's own writes.
+                // actually changed, and skip echoes of values we just
+                // forwarded via the chardev read path — otherwise the
+                // TV's ramp-echo train would fire a SetBrightness ioctl
+                // for each intermediate value, bouncing sysfs back
+                // through stale positions and visually yanking the KDE
+                // slider during rapid drags.
                 if let (Some(driver), Some(new_bl)) = (backlight.as_ref(), state.backlight) {
-                    if prev_backlight != Some(new_bl) {
+                    if prev_backlight != Some(new_bl) && !driver.consume_echo(tv_id, new_bl) {
                         driver.send(BacklightCommand::SetBrightness {
                             tv_id: tv_id.clone(),
                             brightness: new_bl,
