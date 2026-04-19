@@ -186,6 +186,33 @@ t+700ms  sysfs=91  KDE=90  daemon=91    ← finally caught up
 
 **Fix landed**: new `coalesce_events(first_evt, &mut event_rx) -> HashMap<String, u8>` helper drains pending events via non-blocking `try_recv` and keeps the latest value per TV. A 16-event burst collapses to one `manager.set_backlight(90)` call — daemon catches up within one SSAP round-trip (~50 ms) instead of ~700 ms. Covered by 5 unit tests (`coalesce_events_*`).
 
+### 7.6 Spurious `ConnectionChanged(false)` on subscription swap killed the kernel device on boot
+
+On first boot with `sync_backlight = "kernel"`, the kernel backlight device would get created then immediately destroyed — end result `/sys/class/backlight/tisvlay-office` missing, no forward/reverse sync, until the user manually re-pushed `SetDesktopMapping`. The journald trace showed:
+
+```
+18:18:06  backlight driver task started
+18:18:07  SetDesktopMapping pushed          (session, TV not yet connected)
+18:18:13  Connected to TV + CC(true)        (on_startup emits true)
+18:18:13  Subscribed to backend state updates     (subscription #1)
+18:18:14  Subscribed to backend state updates     (subscription #2 — conn replaced)
+18:18:14  Backend state subscription ended        (subscription #1's rx drained)
+18:18:14  CC(false)                          ← spurious!
+18:18:14  D C D C D                          (state_forwarder: true→D+C, true→D+C, false→D)
+```
+
+At daemon startup the LG backend establishes two successive WebSocket connections in quick succession (LG's SSAP handshake pattern). Each connection gets its own state subscription task. When the older connection is replaced, its `state_rx` closes out — and the old task's cleanup path unconditionally emitted `ConnectionChanged(false)` regardless of whether the TV was actually disconnected. `state_forwarder` treats any `false` as a reason to destroy the kernel device; the fresh subscription's connection was already seen by the earlier `true` event, so nothing re-created it after the spurious `false`.
+
+**Fix landed** ([tv_manager.rs::run_subscription_task](../crates/tisvlayd/src/tv_manager.rs)): gate the subscription-end emission on actual connection state. Read the TV's `is_connected()` from the shared `tvs` map before emitting — if a replacement connection is up, skip the `false` (log `still_connected=true` for diagnostics). If the TV has been removed from the map entirely (config reload, RemoveTv), early-return with a dedicated log line rather than emitting for a zombie D-Bus path.
+
+The subscription task body was extracted from its inline closure inside `try_subscribe_state` to a free `async fn` (same commit) so this gating is unit-testable without a full `TvManager`. Covered by 3 regression tests using a minimal `FakeConnection`:
+
+- `subscription_end_suppresses_false_when_tv_still_connected` — the bug proper
+- `subscription_end_emits_false_when_tv_disconnected` — the reverse-path-intact complement
+- `subscription_end_on_removed_tv_emits_nothing` — the let-else early-return path
+
+Verified on hardware: boot ioctl sequence is now `D C D C` ending with C (device present on first boot, no manual `SetDesktopMapping` re-push needed).
+
 ## Out of Scope
 
 - GNOME backend. Will motivate the `DesktopBrightnessSync` trait; until then, no trait.
