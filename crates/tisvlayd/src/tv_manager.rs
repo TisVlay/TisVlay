@@ -1738,10 +1738,7 @@ mod tests {
     /// no subsequent event to re-create it.
     #[tokio::test]
     async fn subscription_end_suppresses_false_when_tv_still_connected() {
-        let tvs = mk_tvs(
-            "office",
-            Some(Box::new(FakeConnection { connected: true })),
-        );
+        let tvs = mk_tvs("office", Some(Box::new(FakeConnection { connected: true })));
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (state_tx, state_rx) = mpsc::unbounded_channel();
         drop(state_tx); // end of stream — subscription closed
@@ -1786,8 +1783,7 @@ mod tests {
     /// for a TV whose D-Bus objects have been torn down is pointless.
     #[tokio::test]
     async fn subscription_end_on_removed_tv_emits_nothing() {
-        let tvs: Arc<RwLock<IndexMap<String, TvEntry>>> =
-            Arc::new(RwLock::new(IndexMap::new()));
+        let tvs: Arc<RwLock<IndexMap<String, TvEntry>>> = Arc::new(RwLock::new(IndexMap::new()));
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (state_tx, state_rx) = mpsc::unbounded_channel();
         drop(state_tx);
