@@ -2025,6 +2025,7 @@ name = "tisvlayd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "futures-util",
  "indexmap",
