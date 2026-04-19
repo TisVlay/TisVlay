@@ -125,13 +125,15 @@ End-to-end on hardware (LG OLED42C3PUA, HDR, KDE Plasma 6.6.4 with patched Power
 
 Out-of-the-box KDE Plasma, PowerDevil's `ScreenBrightnessController` picks detectors with the priority `KWinDisplayDetector > BacklightDetector > DDCutilDetector`. `KWinDisplayDetector` runs first and owns `/org/kde/ScreenBrightness/display0` with KDE's 0-10000 internal scale — slider writes update KWin's compositor-side brightness (for HDR tone-mapping) without ever reaching sysfs. The kernel module is installed and observing but effectively orphaned from the user-facing slider.
 
-**Resolved** via a two-piece patch on `kdePackages.powerdevil` (overlay at `~/Documents/nix-config/pkgs/patches/powerdevil-backlight-edid.patch`):
+**Resolved** via a three-piece patch on `kdePackages.powerdevil` (overlay at `~/Documents/nix-config/pkgs/patches/powerdevil-backlight-edid.patch`):
 
 1. **Extend `BacklightDetector` to external displays** — `backlightbrightness.{cpp,h}` and `backlighthelper_linux.{cpp,h}`. The KAuth helper now returns lists of all sysfs backlights (`syspaths`, `brightnesses`, `brightnessmaxes`); the detector constructs one `BacklightBrightness` per entry, each of which reads `$syspath/device/edid` or `$syspath/edid` for its EDID. `isInternal()` flips to `!edidData().has_value()` so EDID-carrying entries present as external.
 
 2. **Make `BacklightDetector` evict `KWinDisplayDetector`** when both report the same EDID — `screenbrightnesscontroller.cpp::onDetectorDisplaysChanged`. When a hardware detector has a non-internal display with EDID, the matching entry from `KWinDisplayDetector` is removed from `newDisplayById` in favor of the hardware one. Combined with excluding `BacklightDetector` from the `shouldUseExternalControl` shunt, this makes the `BacklightDetector` entry the single authoritative `display0` — slider writes hit sysfs directly and `MaxBrightness` reports the real sysfs max (100 for our kmod).
 
-Patch kept out-of-tree for now; candidate for upstream once the EDID attribute convention stabilizes and the kernel module (or a generalization of it) is production-ready.
+3. **Re-run `BacklightDetector` on backlight hotplug events** — `backlightbrightness.{cpp,h}`. Upstream only runs `detect()` once at `plasma-powerdevil.service` startup; any backlight device that appears after that (our kmod loaded after PowerDevil, late modprobe, USB-C dock display drivers, gpu-screen-recorder virtual outputs) stays invisible until the daemon is manually restarted. `BacklightDetector` now watches the `backlight` udev subsystem for `deviceAdded`/`deviceRemoved` and re-runs `detect()`, emitting `displaysChanged` from every terminal branch so `ScreenBrightnessController` picks up the new set on the re-detect pass. KAuth is async so re-entry is guarded by an `m_isDetecting` / `m_needsRedetect` pair, gated through a `finishDetectionCycle(success)` helper at every success/error path — without the reset-first ordering the re-queue would deadlock against the entry guard.
+
+Patch kept out-of-tree for now; candidate for upstream (the hotplug piece is a legitimate framework bug independent of tisvlay — any dynamic backlight ecosystem hits it).
 
 The tisvlay kernel module exports the EDID blob via `DEVICE_ATTR_RO(edid)` on the backlight device, which matches what the patched `BacklightBrightness::edidData()` expects. Matching bytes between `/sys/class/backlight/tisvlay-<tv>/edid` and `KScreen::Output::edid->rawData()` is what keys the eviction.
 
@@ -151,6 +153,38 @@ The tisvlay kernel module exports the EDID blob via `DEVICE_ATTR_RO(edid)` on th
 Flipping a TV's user profile via the tray (or D-Bus) updated `state.profiles` and the user config on disk but never called `Manager1.SetDesktopMapping` on the daemon. The daemon's cached `Tv1.Desktop.SyncBacklight` stayed stale, so `state_forwarder` couldn't gate the kernel backlight device lifecycle on the new mode.
 
 **Fix landed** (`session_dbus::set_tv_user_profile`): rebuild `DesktopMapping` inside the write lock, drop the lock, push to the daemon. Covered by `set_tv_user_profile_republishes_desktop_mapping` regression test. `TestSession::with_user_config_path` was added alongside to isolate tests from `~/.config/tisvlay/config.toml`.
+
+### 7.4 Reverse-path echo bounced sysfs during slider drags
+
+Rapid slider drags in `Kernel` mode made the KDE slider visually yank backward through stale values before settling at the target. The trace, captured with a 25 ms sysfs-sampling loop during a 5 ms/step ramp from 20 to 80:
+
+```
+samples  1-14: sysfs 21 → 31 → 46 → ... → 81   (legitimate forward drive)
+samples 15-19: sysfs 81 81 81 81 81              (settled briefly)
+sample  20:    sysfs 31                           ← TV echo of an earlier forward
+sample  22:    sysfs 56
+sample  31:    sysfs 66
+sample  32+:   sysfs 81                           (finally settled)
+```
+
+LG SSAP's subscription delivers ramp-intermediate values as the TV's backlight physically slews. `state_forwarder`'s reverse path fired a `SetBrightness` ioctl on every subscription value that differed from the D-Bus cache, including echoes of forwards we'd just sent — each ioctl went back to sysfs via `backlight_force_update`, PowerDevil's udev observer reported it as external input, and the KDE slider snapped to the stale value.
+
+**Fix landed** ([backlight_driver.rs](../crates/tisvlayd/src/backlight_driver.rs)): a new `PendingForwards` newtype on `BacklightDriver` keeps a per-TV FIFO of values the forward path has sent to the TV. `handle_event` appends before calling `manager.set_backlight`; `state_forwarder`'s SubscriptionUpdate consults `consume_echo(tv_id, level)` which drains everything up through a matching entry and returns `true`. Drain-up-through-match handles TV ramp behavior that echoes only a subset of intermediate values. Genuine TV-remote changes never appear in the queue so `consume_echo` returns `false` and the ioctl still fires — the reverse path from TV to KDE stays intact. Covered by 6 unit tests (`consume_echo_*`, `pending_queue_is_capped_at_max_pending_forwards`).
+
+### 7.5 Forward path lagged the TV ~700 ms behind the slider
+
+With §7.4 fixed (no more visual bounce), a second issue surfaced: on a 16-step rapid drag, sysfs and KDE snap to the target immediately but the daemon's cached `Tv1.Backlight` lags behind by hundreds of milliseconds as it serializes 16 LG SSAP commands at ~40-60 ms each:
+
+```
+t+100ms  sysfs=91  KDE=90  daemon=26    ← TV still way behind
+t+200ms  sysfs=91  KDE=90  daemon=26
+t+400ms  sysfs=91  KDE=90  daemon=61
+t+700ms  sysfs=91  KDE=90  daemon=91    ← finally caught up
+```
+
+`handle_event` was processing one chardev event per iteration and awaiting the full TV round-trip for each. The session-side forward drain-loop already had a coalescing pattern (`forward_brightness_events` in `brightness/shared.rs`) — extended the same pattern to the daemon.
+
+**Fix landed**: new `coalesce_events(first_evt, &mut event_rx) -> HashMap<String, u8>` helper drains pending events via non-blocking `try_recv` and keeps the latest value per TV. A 16-event burst collapses to one `manager.set_backlight(90)` call — daemon catches up within one SSAP round-trip (~50 ms) instead of ~700 ms. Covered by 5 unit tests (`coalesce_events_*`).
 
 ## Out of Scope
 
