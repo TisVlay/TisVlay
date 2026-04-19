@@ -226,7 +226,7 @@ async fn run(
                 }
             },
             evt = event_rx.recv() => match evt {
-                Some(evt) => handle_event(&manager, &pending_forwards, evt).await,
+                Some(evt) => handle_event(&manager, &pending_forwards, &mut event_rx, evt).await,
                 None => {
                     debug!("backlight driver: reader thread exited, shutting down");
                     break;
@@ -284,31 +284,67 @@ fn handle_command(fd: i32, cmd: BacklightCommand) {
 async fn handle_event(
     manager: &TvManager,
     pending_forwards: &Mutex<HashMap<String, VecDeque<u8>>>,
-    evt: BrightnessEvent,
+    event_rx: &mut mpsc::UnboundedReceiver<BrightnessEvent>,
+    first_evt: BrightnessEvent,
 ) {
-    let tv_id = match std::str::from_utf8(&evt.tv_id) {
-        Ok(s) => s.trim_end_matches('\0').to_string(),
-        Err(_) => return,
-    };
-    let level = (evt.brightness as u8).min(100);
-    trace!(tv_id, level, "backlight event from sysfs");
+    let latest = coalesce_events(first_evt, event_rx);
 
-    // Record the pending forward *before* sending to the TV. The TV
-    // will eventually echo this value (possibly along with ramp-
-    // intermediate values) via a subscription update, and the reverse
-    // path needs the record in place so it can match and suppress.
-    {
-        let mut map = pending_forwards.lock().expect("poisoned");
-        let queue = map.entry(tv_id.clone()).or_default();
-        queue.push_back(level);
-        while queue.len() > MAX_PENDING_FORWARDS {
-            queue.pop_front();
+    for (tv_id, level) in latest {
+        trace!(tv_id, level, "backlight event from sysfs (coalesced)");
+
+        // Record the pending forward *before* sending to the TV. The TV
+        // will eventually echo this value (possibly along with ramp-
+        // intermediate values) via a subscription update, and the
+        // reverse path needs the record in place so it can match and
+        // suppress.
+        {
+            let mut map = pending_forwards.lock().expect("poisoned");
+            let queue = map.entry(tv_id.clone()).or_default();
+            queue.push_back(level);
+            while queue.len() > MAX_PENDING_FORWARDS {
+                queue.pop_front();
+            }
+        }
+
+        if let Err(e) = manager.set_backlight(&tv_id, level).await {
+            warn!(tv_id, level, error = %e, "forward from sysfs to TV failed");
         }
     }
+}
 
-    if let Err(e) = manager.set_backlight(&tv_id, level).await {
-        warn!(tv_id, level, error = %e, "forward from sysfs to TV failed");
+/// Collapse a burst of pending `BrightnessEvent`s into the latest
+/// value per TV, starting from `first_evt` and draining anything the
+/// channel has ready right now via non-blocking `try_recv`.
+///
+/// Without this coalescing step the daemon would serially forward
+/// every intermediate ramp value PowerDevil writes to sysfs — each
+/// LG SSAP call takes ~40-60 ms, so a 16-step slider drag lags the
+/// TV state behind the slider by hundreds of milliseconds.
+fn coalesce_events(
+    first_evt: BrightnessEvent,
+    event_rx: &mut mpsc::UnboundedReceiver<BrightnessEvent>,
+) -> HashMap<String, u8> {
+    fn parse(evt: BrightnessEvent) -> Option<(String, u8)> {
+        let tv_id = std::str::from_utf8(&evt.tv_id)
+            .ok()?
+            .trim_end_matches('\0')
+            .to_string();
+        if tv_id.is_empty() {
+            return None;
+        }
+        Some((tv_id, (evt.brightness as u8).min(100)))
     }
+
+    let mut latest: HashMap<String, u8> = HashMap::new();
+    if let Some((tv, level)) = parse(first_evt) {
+        latest.insert(tv, level);
+    }
+    while let Ok(evt) = event_rx.try_recv() {
+        if let Some((tv, level)) = parse(evt) {
+            latest.insert(tv, level);
+        }
+    }
+    latest
 }
 
 /// Read the raw EDID bytes for a DRM connector (e.g., `"HDMI-A-2"`).
@@ -520,5 +556,94 @@ mod tests {
             .unwrap()
             .len();
         assert_eq!(queue_len, MAX_PENDING_FORWARDS);
+    }
+
+    // ── coalesce_events (forward burst coalescing) ────────────────
+
+    /// Build a `BrightnessEvent` the way the kernel chardev read-loop
+    /// would — tv_id padded with NULs, brightness as i32.
+    fn mk_evt(tv_id: &str, brightness: i32) -> BrightnessEvent {
+        let mut buf = [0u8; ID_MAX];
+        let bytes = tv_id.as_bytes();
+        let n = bytes.len().min(ID_MAX - 1);
+        buf[..n].copy_from_slice(&bytes[..n]);
+        BrightnessEvent {
+            tv_id: buf,
+            brightness,
+        }
+    }
+
+    #[test]
+    fn coalesce_events_returns_first_event_when_channel_empty() {
+        // Baseline: no burst, just a single event in flight.
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let out = coalesce_events(mk_evt("office", 50), &mut rx);
+        assert_eq!(out, HashMap::from([("office".to_string(), 50u8)]));
+    }
+
+    /// Regression: fast slider drags queue many events in the
+    /// channel before the daemon's select loop picks the first one
+    /// up. Without coalescing, each ramp step fires a separate
+    /// `manager.set_backlight` which serializes over the TV backend
+    /// at ~40-60 ms per SSAP call — a 16-step drag lags the TV ~800
+    /// ms behind the slider. The coalescer collapses the burst to
+    /// one-per-TV.
+    #[test]
+    fn coalesce_events_collapses_same_tv_burst_to_latest() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Queue 15 follow-up events while the first is still in flight.
+        for v in [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90] {
+            tx.send(mk_evt("office", v)).unwrap();
+        }
+        let out = coalesce_events(mk_evt("office", 15), &mut rx);
+        assert_eq!(
+            out,
+            HashMap::from([("office".to_string(), 90u8)]),
+            "same-TV burst must collapse to the latest value (90), not \
+             dispatch all 16 one at a time"
+        );
+        // Channel fully drained — no lingering events would be picked
+        // up by a subsequent poll of the select loop.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn coalesce_events_keeps_latest_per_tv_across_mixed_burst() {
+        // Multiple TVs bursting concurrently — each gets its own
+        // latest value; no cross-TV overwrite.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(mk_evt("office", 45)).unwrap();
+        tx.send(mk_evt("living_room", 70)).unwrap();
+        tx.send(mk_evt("office", 55)).unwrap();
+        tx.send(mk_evt("living_room", 80)).unwrap();
+        tx.send(mk_evt("office", 60)).unwrap();
+
+        let out = coalesce_events(mk_evt("office", 40), &mut rx);
+        assert_eq!(
+            out,
+            HashMap::from([
+                ("office".to_string(), 60u8),
+                ("living_room".to_string(), 80u8),
+            ])
+        );
+    }
+
+    #[test]
+    fn coalesce_events_clamps_brightness_to_100() {
+        // Sysfs technically allows max_brightness up to i32::MAX;
+        // our TV backend works in 0-100.
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let out = coalesce_events(mk_evt("office", 250), &mut rx);
+        assert_eq!(out.get("office").copied(), Some(100));
+    }
+
+    #[test]
+    fn coalesce_events_drops_events_with_empty_tv_id() {
+        // Bogus event (all-zero tv_id) shouldn't land in the latest
+        // map — would forward to TV id "" which is nonsense.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(mk_evt("office", 60)).unwrap();
+        let out = coalesce_events(BrightnessEvent { tv_id: [0; ID_MAX], brightness: 99 }, &mut rx);
+        assert_eq!(out, HashMap::from([("office".to_string(), 60u8)]));
     }
 }
