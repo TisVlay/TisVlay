@@ -378,12 +378,32 @@ impl TvManager {
                             break;
                         }
                     }
-                    // Subscription ended -- TV likely disconnected.
-                    let _ = tx.send(StateChangeEvent::ConnectionChanged {
-                        tv_id: tv_id.clone(),
-                        connected: false,
-                    });
-                    debug!(tv_id = %tv_id, "Backend state subscription ended");
+                    // Subscription ended. Emit ConnectionChanged(false)
+                    // only if the TV is actually disconnected at this
+                    // point — when a new connection replaces an old
+                    // one (WoL retry, reconnect, carrier change), its
+                    // fresh subscription task runs while this older
+                    // task's `state_rx` closes out. A spurious false
+                    // here would tear down the kernel backlight
+                    // device (state_forwarder gates on it) and the
+                    // reconnect path's ConnectionChanged(true) may
+                    // have already fired, leaving nothing to re-
+                    // create the device.
+                    let still_connected = match tvs.read().await.get(tv_id.as_str()) {
+                        Some((_, tv_arc)) => tv_arc.lock().await.is_connected(),
+                        None => false,
+                    };
+                    if !still_connected {
+                        let _ = tx.send(StateChangeEvent::ConnectionChanged {
+                            tv_id: tv_id.clone(),
+                            connected: false,
+                        });
+                    }
+                    debug!(
+                        tv_id = %tv_id,
+                        still_connected,
+                        "Backend state subscription ended"
+                    );
                 });
             }
             Err(_) => {
