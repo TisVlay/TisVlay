@@ -795,15 +795,11 @@ fn parse_eld(text: &str) -> Option<HardwareId> {
         };
         let value = value.trim();
         match key.trim() {
-            "monitor_present" => {
-                if value == "1" {
-                    monitor_present = true;
-                }
+            "monitor_present" if value == "1" => {
+                monitor_present = true;
             }
-            "monitor_name" => {
-                if !value.is_empty() {
-                    monitor_name = Some(value.to_string());
-                }
+            "monitor_name" if !value.is_empty() => {
+                monitor_name = Some(value.to_string());
             }
             "manufacture_id" => {
                 // Format: "0x6d1e" — little-endian u16 whose bytes
