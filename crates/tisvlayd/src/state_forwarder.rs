@@ -95,30 +95,24 @@ pub async fn state_change_forwarder(
                     let emitter = iface_ref.signal_emitter();
                     match key.as_str() {
                         "managed" => {
-                            if let Ok(managed) = value.parse::<bool>() {
-                                if iface.managed != managed {
-                                    iface.managed = managed;
-                                    iface.managed_changed(emitter).await.ok();
-                                }
+                            if let Ok(managed) = value.parse::<bool>()
+                                && iface.managed != managed
+                            {
+                                iface.managed = managed;
+                                iface.managed_changed(emitter).await.ok();
                             }
                         }
-                        "name" => {
-                            if iface.name != *value {
-                                iface.name = value.clone();
-                                iface.name_changed(emitter).await.ok();
-                            }
+                        "name" if iface.name != *value => {
+                            iface.name = value.clone();
+                            iface.name_changed(emitter).await.ok();
                         }
-                        "profile.system" => {
-                            if iface.system_profile != *value {
-                                iface.system_profile = value.clone();
-                                iface.system_profile_changed(emitter).await.ok();
-                            }
+                        "profile.system" if iface.system_profile != *value => {
+                            iface.system_profile = value.clone();
+                            iface.system_profile_changed(emitter).await.ok();
                         }
-                        "primary_input" => {
-                            if iface.primary_input != *value {
-                                iface.primary_input = value.clone();
-                                iface.primary_input_changed(emitter).await.ok();
-                            }
+                        "primary_input" if iface.primary_input != *value => {
+                            iface.primary_input = value.clone();
+                            iface.primary_input_changed(emitter).await.ok();
                         }
                         _ => {}
                     }
