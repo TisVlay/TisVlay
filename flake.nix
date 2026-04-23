@@ -36,7 +36,10 @@
         };
       in
       {
-        packages.default = pkgs.callPackage ./packaging/nix/package.nix { };
+        packages = {
+          tisvlay = pkgs.callPackage ./packaging/nix/package.nix { };
+          default = self.packages.${system}.tisvlay;
+        };
 
         # NixOS VM test: boots a VM with services.tisvlay.enable = true
         # and asserts the module's end-to-end behavior. Run via

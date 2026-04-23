@@ -40,12 +40,12 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ./package.nix { };
-      defaultText = lib.literalExpression "pkgs.callPackage ./package.nix { }";
+      default = pkgs.tisvlay or (pkgs.callPackage ./package.nix { });
+      defaultText = lib.literalExpression "pkgs.tisvlay";
       description = ''
-        The tisvlay package to use. Defaults to building from this
-        module's sibling `package.nix`. Override when the module is
-        imported via a flake that exposes the package elsewhere.
+        The tisvlay package to use. Defaults to `pkgs.tisvlay` when the
+        flake's `overlays.default` is applied; otherwise falls back to
+        building from this module's sibling `package.nix`.
       '';
     };
 
