@@ -10,9 +10,7 @@ let
 
   tomlFormat = pkgs.formats.toml { };
   configFile =
-    if cfg.settings == null
-    then null
-    else tomlFormat.generate "tisvlay-config.toml" cfg.settings;
+    if cfg.settings == null then null else tomlFormat.generate "tisvlay-config.toml" cfg.settings;
 
   dbusPolicy = ''
     <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
@@ -107,7 +105,10 @@ in
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      example = [ "--config" "/etc/tisvlay/custom.toml" ];
+      example = [
+        "--config"
+        "/etc/tisvlay/custom.toml"
+      ];
       description = ''
         Extra command-line arguments appended to `tisvlayd`'s
         `ExecStart`. Use for one-off overrides the module does not
@@ -164,7 +165,8 @@ in
       description = "tisvlay daemon user";
       group = cfg.group;
       isSystemUser = true;
-    } // lib.optionalAttrs (cfg.uid != null) {
+    }
+    // lib.optionalAttrs (cfg.uid != null) {
       uid = cfg.uid;
     };
 
@@ -195,7 +197,10 @@ in
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
           [ (lib.getExe' cfg.package "tisvlayd") ]
-          ++ lib.optionals (configFile != null) [ "--config" "${configFile}" ]
+          ++ lib.optionals (configFile != null) [
+            "--config"
+            "${configFile}"
+          ]
           ++ cfg.extraArgs
         );
         ExecReload = "${pkgs.util-linux}/bin/kill -HUP $MAINPID";
@@ -293,7 +298,10 @@ in
     systemd.user.services.tisvlay-tray = {
       description = "tisvlay system tray";
       wantedBy = [ "graphical-session.target" ];
-      after = [ "graphical-session.target" "tisvlay-session.service" ];
+      after = [
+        "graphical-session.target"
+        "tisvlay-session.service"
+      ];
       partOf = [ "graphical-session.target" ];
       documentation = [ "https://github.com/ruffsl/tisvlay" ];
       environment = {
