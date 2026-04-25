@@ -46,10 +46,6 @@
         # `nix build .#checks.${system}.vm` or `nix flake check`.
         checks.vm = pkgs.callPackage ./packaging/nix/test.nix { };
 
-        devShells.powerdevil = pkgs.mkShell {
-          inputsFrom = [ pkgs.kdePackages.powerdevil ];
-        };
-
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             cargo-insta
