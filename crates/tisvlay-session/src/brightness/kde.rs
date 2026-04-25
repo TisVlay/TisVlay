@@ -1,9 +1,13 @@
-//! Full KDE brightness orchestrator — composes `kde_wayland` (forward)
-//! and `kde_dbus` (forward HDR fallback + reverse) so the KDE slider
-//! stays in sync with `Tv1.Backlight` under both SDR and HDR.
+//! Universal KDE brightness coordinator.
 //!
-//! Accepts TVs whose profile resolves to any of `Kde`, `KdeWayland`,
-//! or `KdeDbus` so a mixed-mode configuration still gets served.
+//! Runs the Wayland device manager and the PowerDevil D-Bus observer
+//! concurrently and lets each opt in on a per-TV basis via
+//! [`BrightnessMechanism::accepts`]. A user can mix `Kde`, `KdeWayland`
+//! and `KdeDbus` modes across different TVs and each TV gets exactly
+//! the mechanisms it asked for. Switching a TV's mode at runtime
+//! (`SetTvUserProfile` → `Tv1.Desktop.SyncBacklight` flip) is picked
+//! up on the next tick of the reconcile loop without requiring a
+//! session restart.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,24 +16,26 @@ use std::time::Duration;
 use tokio::sync::{RwLock, mpsc, watch};
 use tracing::{info, warn};
 
-use tisvlay_core::{DaemonClient, StateEvent, StateWatcher, StateWatcherConfig, TvStateChange};
+use tisvlay_core::{
+    DaemonClient, StateEvent, StateWatcher, StateWatcherConfig, SyncBacklight, TvStateChange,
+};
 
 use crate::SessionState;
 use crate::brightness::kde_dbus::{
     observe_kde_brightness_dbus, push_brightness_to_kde, reconcile_label_map,
 };
 use crate::brightness::kde_wayland::{Binding, reconcile, start_wayland_thread};
-use crate::brightness::shared::{DeviceOp, Shared, forward_brightness_events};
+use crate::brightness::shared::{BrightnessMechanism, DeviceOp, Shared, forward_brightness_events};
 
-/// Run the full Kde orchestrator: Wayland forward, D-Bus
-/// observer forward (HDR fallback), D-Bus reverse. Serves any TV
-/// whose profile is a KDE flavor (`Kde`, `KdeWayland`, `KdeDbus`).
+/// Run the universal KDE coordinator. Drives every TV through the
+/// mechanisms its current `sync_backlight` mode opts into. Stays
+/// alive across mid-session profile flips.
 pub async fn run(
     daemon: Arc<DaemonClient>,
     state: Arc<RwLock<SessionState>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    info!("brightness: kde (full) starting");
+    info!("brightness: kde coordinator starting");
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let shared = Shared::new(event_tx);
@@ -62,19 +68,9 @@ pub async fn run(
         session_conn.clone(),
     ));
 
-    // Accept any KDE flavor — an explicit KdeWayland- or KdeDbus-only
-    // user still gets the correct single subsystem doing the work
-    // because the strict variants have their own dispatcher entry
-    // point; this path exists for `Kde` and mixed configurations.
-    let accept = [
-        tisvlay_core::SyncBacklight::Kde,
-        tisvlay_core::SyncBacklight::KdeWayland,
-        tisvlay_core::SyncBacklight::KdeDbus,
-    ];
-
     let mut bindings: HashMap<String, Binding> = HashMap::new();
-    reconcile(&mut bindings, &ops_tx, &shared, &daemon, &state, &accept).await;
-    reconcile_label_map(&shared, &daemon, &state, &accept).await;
+    reconcile(&mut bindings, &ops_tx, &shared, &daemon, &state).await;
+    reconcile_label_map(&shared, &daemon, &state).await;
 
     let mut watcher = match StateWatcher::new(&daemon, StateWatcherConfig::default()).await {
         Ok(w) => w,
@@ -117,49 +113,17 @@ pub async fn run(
 
         match action {
             Action::Shutdown => {
-                info!("brightness: kde shutdown signalled");
+                info!("brightness: kde coordinator shutdown signalled");
                 break;
             }
             Action::Tick => {
-                reconcile(&mut bindings, &ops_tx, &shared, &daemon, &state, &accept).await;
-                reconcile_label_map(&shared, &daemon, &state, &accept).await;
+                reconcile(&mut bindings, &ops_tx, &shared, &daemon, &state).await;
+                reconcile_label_map(&shared, &daemon, &state).await;
             }
             Action::Props(tv_id) => {
-                // Reverse path: push to PowerDevil for any Kde-flavor TV
-                // (except strict KdeWayland, which has no reverse path).
-                if let Ok(tvs) = daemon.list_tvs().await {
-                    if let Some(tv) = tvs.iter().find(|t| t.id == tv_id) {
-                        let mode = {
-                            let s = state.read().await;
-                            s.profiles.get(&tv_id).map(|p| p.sync_backlight)
-                        };
-                        let reverse_ok = matches!(
-                            mode,
-                            Some(
-                                tisvlay_core::SyncBacklight::Kde
-                                    | tisvlay_core::SyncBacklight::KdeDbus
-                            )
-                        );
-                        if reverse_ok {
-                            let backlight = tv.backlight;
-                            let is_echo = {
-                                let mut sent = shared.last_forward_sent.lock().expect("poisoned");
-                                if sent.get(&tv_id) == Some(&backlight) {
-                                    sent.remove(&tv_id);
-                                    true
-                                } else {
-                                    false
-                                }
-                            };
-                            if !is_echo {
-                                push_brightness_to_kde(&shared, &session_conn, &tv_id, backlight)
-                                    .await;
-                            }
-                        }
-                    }
-                }
-                reconcile(&mut bindings, &ops_tx, &shared, &daemon, &state, &accept).await;
-                reconcile_label_map(&shared, &daemon, &state, &accept).await;
+                push_reverse_if_accepted(&tv_id, &shared, &session_conn, &daemon, &state).await;
+                reconcile(&mut bindings, &ops_tx, &shared, &daemon, &state).await;
+                reconcile_label_map(&shared, &daemon, &state).await;
             }
             Action::StreamClosed => {
                 warn!("StateWatcher stream closed; exiting kde");
@@ -177,4 +141,45 @@ pub async fn run(
     forward_handle.abort();
     dbus_handle.abort();
     let _ = wayland_thread.join();
+}
+
+/// Reverse path: when a TV's `Tv1.Backlight` changes, push the new
+/// value back to PowerDevil if the TV's resolved mode opts into the
+/// D-Bus mechanism. Suppresses our own forward-path echoes by
+/// consulting `shared.last_forward_sent`.
+async fn push_reverse_if_accepted(
+    tv_id: &str,
+    shared: &Arc<Shared>,
+    session_conn: &Arc<zbus::Connection>,
+    daemon: &DaemonClient,
+    state: &Arc<RwLock<SessionState>>,
+) {
+    let Ok(tvs) = daemon.list_tvs().await else {
+        return;
+    };
+    let Some(tv) = tvs.iter().find(|t| t.id == tv_id) else {
+        return;
+    };
+    let mode: Option<SyncBacklight> = {
+        let s = state.read().await;
+        s.profiles.get(tv_id).map(|p| p.sync_backlight)
+    };
+    let Some(mode) = mode else { return };
+    if !BrightnessMechanism::Dbus.accepts(mode) {
+        return;
+    }
+
+    let backlight = tv.backlight;
+    let is_echo = {
+        let mut sent = shared.last_forward_sent.lock().expect("poisoned");
+        if sent.get(tv_id) == Some(&backlight) {
+            sent.remove(tv_id);
+            true
+        } else {
+            false
+        }
+    };
+    if !is_echo {
+        push_brightness_to_kde(shared, session_conn, tv_id, backlight).await;
+    }
 }
