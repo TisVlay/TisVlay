@@ -148,8 +148,6 @@ async fn get_effective_user_profile_includes_all_fields() {
         "idle_timeout_seconds",
         "on_idle_timeout",
         "on_idle_resume",
-        "sync_backlight",
-        "sync_volume",
     ] {
         assert!(
             value.get(key).is_some(),

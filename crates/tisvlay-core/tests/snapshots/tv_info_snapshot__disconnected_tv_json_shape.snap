@@ -19,9 +19,7 @@ expression: sample_disconnected()
   "desktop": {
     "edid": "",
     "connector": "",
-    "sink": "",
-    "sync_backlight": "",
-    "sync_volume": ""
+    "sink": ""
   },
   "path": "/org/tisvlay/Tv/guest_room",
   "power_state": "unknown",

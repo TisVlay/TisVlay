@@ -87,84 +87,6 @@ pub enum SessionAction {
 ///
 /// Combined with the per-TV `primary_input` and the global `managed` flag
 /// to produce the `Automated` D-Bus property.
-/// Backlight sync mode between the desktop and a TV.
-///
-/// Per-profile so the user can flip it on an activity basis (e.g. sync
-/// on by default, off in a `"gaming"` profile). Variants are mutually
-/// exclusive: the daemon and session service gate their respective
-/// brightness pipelines on this value so exactly one writer drives the
-/// TV at a time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SyncBacklight {
-    /// Sync disabled. KDE uses software brightness for the display
-    /// (no virtual backlight device created). Default.
-    #[default]
-    None,
-
-    /// Native sysfs via the `tisvlay_bl` kernel module. Creates a
-    /// `/sys/class/backlight/tisvlay-*` device matched by EDID so KDE's
-    /// brightness slider drives `Tv1.Backlight` directly — no software
-    /// dimming. Bidirectional. Requires the `tisvlay_bl` kmod loaded
-    /// and a PowerDevil that resolves the virtual backlight to the
-    /// DRM output.
-    Kernel,
-
-    /// Default KDE session backend. KWin's `kde-external-brightness-v1`
-    /// Wayland protocol drives the forward path under SDR; PowerDevil's
-    /// D-Bus observer transparently takes over under HDR. Reverse path
-    /// calls PowerDevil's `SetBrightness`. Bidirectional.
-    Kde,
-
-    /// Strict: KWin `kde-external-brightness-v1` only. SDR only.
-    /// Forward-only — the KDE slider does NOT follow TV-remote changes
-    /// because KWin's `set_observed_brightness` handler is one-shot.
-    KdeWayland,
-
-    /// Strict: PowerDevil D-Bus only. Works in both SDR and HDR.
-    /// Bidirectional.
-    KdeDbus,
-}
-
-impl std::fmt::Display for SyncBacklight {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::None => f.write_str("none"),
-            Self::Kernel => f.write_str("kernel"),
-            Self::Kde => f.write_str("kde"),
-            Self::KdeWayland => f.write_str("kde_wayland"),
-            Self::KdeDbus => f.write_str("kde_dbus"),
-        }
-    }
-}
-
-/// Volume sync mode between the desktop and a TV.
-///
-/// Controls the `volume_sync` module in `tisvlay-session`.
-/// Per-profile so the user can flip it on an activity basis.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SyncVolume {
-    /// Sync disabled. KDE's volume widget controls whichever sink the
-    /// user picked, matching a no-tisvlay install. Default.
-    #[default]
-    None,
-    /// Bind to the existing PipeWire HDMI sink matching the TV and
-    /// bridge its volume / mute with `Tv1.Volume`. The TV's native
-    /// row in KDE's audio widget becomes the slider that drives the
-    /// TV — no extra sink appears.
-    MirrorHdmi,
-}
-
-impl std::fmt::Display for SyncVolume {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::None => f.write_str("none"),
-            Self::MirrorHdmi => f.write_str("mirror_hdmi"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AutomateWhen {
@@ -378,14 +300,6 @@ pub struct UserProfileConfig {
     /// Action when activity resumes after idle timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_idle_resume: Option<SessionAction>,
-
-    /// Desktop → TV backlight sync mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sync_backlight: Option<SyncBacklight>,
-
-    /// Desktop → TV volume sync mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sync_volume: Option<SyncVolume>,
 }
 
 impl UserProfileConfig {
@@ -402,8 +316,6 @@ impl UserProfileConfig {
             idle_timeout_seconds: Some(d.idle_timeout_seconds),
             on_idle_timeout: Some(d.on_idle_timeout),
             on_idle_resume: Some(d.on_idle_resume),
-            sync_backlight: Some(d.sync_backlight),
-            sync_volume: Some(d.sync_volume),
         }
     }
 
@@ -419,8 +331,6 @@ impl UserProfileConfig {
             idle_timeout_seconds: self.idle_timeout_seconds.or(base.idle_timeout_seconds),
             on_idle_timeout: self.on_idle_timeout.or(base.on_idle_timeout),
             on_idle_resume: self.on_idle_resume.or(base.on_idle_resume),
-            sync_backlight: self.sync_backlight.or(base.sync_backlight),
-            sync_volume: self.sync_volume.or(base.sync_volume),
         }
     }
 
@@ -437,8 +347,6 @@ impl UserProfileConfig {
             idle_timeout_seconds: self.idle_timeout_seconds.unwrap_or(d.idle_timeout_seconds),
             on_idle_timeout: self.on_idle_timeout.unwrap_or(d.on_idle_timeout),
             on_idle_resume: self.on_idle_resume.unwrap_or(d.on_idle_resume),
-            sync_backlight: self.sync_backlight.unwrap_or(d.sync_backlight),
-            sync_volume: self.sync_volume.unwrap_or(d.sync_volume),
         }
     }
 }
@@ -466,10 +374,6 @@ pub struct ResolvedUserProfile {
     pub on_idle_timeout: SessionAction,
     /// Action when activity resumes after idle timeout.
     pub on_idle_resume: SessionAction,
-    /// Desktop → TV backlight sync mode.
-    pub sync_backlight: SyncBacklight,
-    /// Desktop → TV volume sync mode.
-    pub sync_volume: SyncVolume,
 }
 
 impl Default for ResolvedUserProfile {
@@ -481,8 +385,6 @@ impl Default for ResolvedUserProfile {
             idle_timeout_seconds: 0,
             on_idle_timeout: SessionAction::ScreenOff,
             on_idle_resume: SessionAction::ScreenOn,
-            sync_backlight: SyncBacklight::None,
-            sync_volume: SyncVolume::None,
         }
     }
 }
@@ -1626,8 +1528,6 @@ ip = "192.168.1.1"
             idle_timeout_seconds: Some(999),
             on_idle_timeout: Some(SessionAction::PowerOff),
             on_idle_resume: Some(SessionAction::None),
-            sync_backlight: Some(SyncBacklight::Kernel),
-            sync_volume: Some(SyncVolume::MirrorHdmi),
         };
 
         let merged = full_override.merge_with_base(&base);

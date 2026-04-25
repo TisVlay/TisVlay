@@ -1,4 +1,4 @@
-//! Desktop-side identity + sync state for a single TV.
+//! Desktop-side identity for a single TV.
 //!
 //! This is the D-Bus payload for `Manager1.SetDesktopMapping` and the
 //! backing type for the `org.tisvlay.Tv1.Desktop` feature interface.
@@ -10,18 +10,15 @@
 //!
 //! Fields use the empty-string convention for unknowns (rather than
 //! `Option<String>`) because the D-Bus type system doesn't have a
-//! first-class notion of absence. The enum-string fields use the same
-//! snake_case variants as [`SyncBacklight`](crate::SyncBacklight) and
-//! [`SyncVolume`](crate::SyncVolume) for direct round-tripping.
+//! first-class notion of absence.
 
 use serde::{Deserialize, Serialize};
 
-use crate::{SyncBacklight, SyncVolume, UserTvDesktopConfig};
+use crate::UserTvDesktopConfig;
 
-/// Resolved desktop mapping and sync state for a TV.
+/// Resolved desktop mapping for a TV.
 ///
-/// On D-Bus this serializes as `(sssss)` —
-/// `(edid, connector, sink, sync_backlight, sync_volume)`.
+/// On D-Bus this serializes as `(sss)` — `(edid, connector, sink)`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "dbus", derive(zbus::zvariant::Type))]
 pub struct DesktopMapping {
@@ -32,19 +29,11 @@ pub struct DesktopMapping {
     pub connector: String,
     /// PipeWire sink identifier. Empty = unknown.
     pub sink: String,
-    /// Resolved backlight sync mode (`"none"`, `"wayland"`).
-    pub sync_backlight: String,
-    /// Resolved volume sync mode (`"none"`, `"mirror_hdmi"`).
-    pub sync_volume: String,
 }
 
 impl DesktopMapping {
-    /// Assemble from the user-config identity fields plus resolved sync modes.
-    pub fn from_parts(
-        identity: Option<&UserTvDesktopConfig>,
-        sync_backlight: SyncBacklight,
-        sync_volume: SyncVolume,
-    ) -> Self {
+    /// Assemble from the user-config identity fields.
+    pub fn from_parts(identity: Option<&UserTvDesktopConfig>) -> Self {
         Self {
             edid: identity
                 .and_then(|i| i.edid.as_deref())
@@ -58,8 +47,6 @@ impl DesktopMapping {
                 .and_then(|i| i.sink.as_deref())
                 .unwrap_or("")
                 .to_string(),
-            sync_backlight: sync_backlight.to_string(),
-            sync_volume: sync_volume.to_string(),
         }
     }
 }
@@ -75,25 +62,17 @@ mod tests {
             connector: Some("HDMI-A-2".to_string()),
             sink: Some("alsa_output.hdmi".to_string()),
         };
-        let m = DesktopMapping::from_parts(
-            Some(&identity),
-            SyncBacklight::Kernel,
-            SyncVolume::MirrorHdmi,
-        );
+        let m = DesktopMapping::from_parts(Some(&identity));
         assert_eq!(m.edid, "abc123");
         assert_eq!(m.connector, "HDMI-A-2");
         assert_eq!(m.sink, "alsa_output.hdmi");
-        assert_eq!(m.sync_backlight, "kernel");
-        assert_eq!(m.sync_volume, "mirror_hdmi");
     }
 
     #[test]
     fn from_parts_without_identity_uses_empty_strings() {
-        let m = DesktopMapping::from_parts(None, SyncBacklight::None, SyncVolume::None);
+        let m = DesktopMapping::from_parts(None);
         assert!(m.edid.is_empty());
         assert!(m.connector.is_empty());
         assert!(m.sink.is_empty());
-        assert_eq!(m.sync_backlight, "none");
-        assert_eq!(m.sync_volume, "none");
     }
 }

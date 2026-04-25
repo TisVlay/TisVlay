@@ -477,26 +477,6 @@ impl TvDesktopService {
             .map(|m| m.sink)
             .unwrap_or_default()
     }
-
-    /// Resolved backlight sync mode (`"none"` or `"wayland"`).
-    #[zbus(property)]
-    async fn sync_backlight(&self) -> String {
-        self.manager
-            .get_desktop_mapping(&self.tv_id)
-            .await
-            .map(|m| m.sync_backlight)
-            .unwrap_or_else(|| "none".to_string())
-    }
-
-    /// Resolved volume sync mode (`"none"` or `"mirror_hdmi"`).
-    #[zbus(property)]
-    async fn sync_volume(&self) -> String {
-        self.manager
-            .get_desktop_mapping(&self.tv_id)
-            .await
-            .map(|m| m.sync_volume)
-            .unwrap_or_else(|| "none".to_string())
-    }
 }
 
 // =============================================================================

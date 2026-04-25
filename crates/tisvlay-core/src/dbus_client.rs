@@ -286,12 +286,6 @@ trait TisvlayTvDesktop {
 
     #[zbus(property)]
     fn sink(&self) -> zbus::Result<String>;
-
-    #[zbus(property)]
-    fn sync_backlight(&self) -> zbus::Result<String>;
-
-    #[zbus(property)]
-    fn sync_volume(&self) -> zbus::Result<String>;
 }
 
 /// D-Bus proxy for TV backlight control.
@@ -817,8 +811,6 @@ impl DaemonClient {
                 edid: get_sub_str("org.tisvlay.Tv1.Desktop", "Edid", ""),
                 connector: get_sub_str("org.tisvlay.Tv1.Desktop", "Connector", ""),
                 sink: get_sub_str("org.tisvlay.Tv1.Desktop", "Sink", ""),
-                sync_backlight: get_sub_str("org.tisvlay.Tv1.Desktop", "SyncBacklight", "none"),
-                sync_volume: get_sub_str("org.tisvlay.Tv1.Desktop", "SyncVolume", "none"),
             };
 
             let fallbacks = fallbacks.into_inner();

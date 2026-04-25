@@ -84,9 +84,9 @@ pub use pairing::{
 
 // Configuration
 pub use config::{
-    AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SyncBacklight,
-    SyncVolume, SystemConfig, SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment,
-    UserConfig, UserProfileConfig, UserSection, UserTvConfig, UserTvDesktopConfig,
+    AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
+    SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
+    UserProfileConfig, UserSection, UserTvConfig, UserTvDesktopConfig,
     UserTvProfileAssignment, is_valid_tv_id, tv_id_from_name,
 };
 

@@ -4,8 +4,6 @@ on_session_unlock = "screen_on"
 on_greeter_wake = "screen_on"
 idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
-sync_backlight = "kernel"
-sync_volume = "mirror_hdmi"
 
 [[tv]]
 id = "office"

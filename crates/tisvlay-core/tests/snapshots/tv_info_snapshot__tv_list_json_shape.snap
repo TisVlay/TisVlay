@@ -20,9 +20,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     "desktop": {
       "edid": "abc123",
       "connector": "HDMI-A-2",
-      "sink": "alsa_output.hdmi",
-      "sync_backlight": "wayland",
-      "sync_volume": "mirror_hdmi"
+      "sink": "alsa_output.hdmi"
     },
     "path": "/org/tisvlay/Tv/living_room",
     "power_state": "active",
@@ -63,9 +61,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     "desktop": {
       "edid": "",
       "connector": "",
-      "sink": "",
-      "sync_backlight": "",
-      "sync_volume": ""
+      "sink": ""
     },
     "path": "/org/tisvlay/Tv/guest_room",
     "power_state": "unknown",

@@ -140,7 +140,7 @@ impl SessionService {
             let resolved = s
                 .user_config
                 .resolve_user_profile(tv_id, &s.admin_user_default);
-            s.profiles.insert(tv_id.to_string(), resolved.clone());
+            s.profiles.insert(tv_id.to_string(), resolved);
 
             // Save user config to disk
             let save_result = match &self.config_path {
@@ -152,8 +152,7 @@ impl SessionService {
             }
 
             // Build the fresh DesktopMapping so the daemon republishes
-            // the new sync modes on Tv1.Desktop and the state forwarder
-            // can gate the kernel-backlight device accordingly.
+            // the identity fields on Tv1.Desktop.
             let identity = s
                 .user_config
                 .tv
@@ -161,11 +160,7 @@ impl SessionService {
                 .find(|e| e.id == tv_id)
                 .and_then(|e| e.desktop.as_ref())
                 .cloned();
-            tisvlay_core::DesktopMapping::from_parts(
-                identity.as_ref(),
-                resolved.sync_backlight,
-                resolved.sync_volume,
-            )
+            tisvlay_core::DesktopMapping::from_parts(identity.as_ref())
         };
 
         // Push the updated mapping to the daemon so `Tv1.Desktop.*`
@@ -202,8 +197,6 @@ impl SessionService {
             "idle_timeout_seconds": resolved.idle_timeout_seconds,
             "on_idle_timeout": resolved.on_idle_timeout,
             "on_idle_resume": resolved.on_idle_resume,
-            "sync_backlight": resolved.sync_backlight,
-            "sync_volume": resolved.sync_volume,
         });
 
         Ok(json.to_string())

@@ -155,14 +155,13 @@ impl SessionState {
 
         // Auto-detect desktop-side identity (EDID → HardwareId) for
         // any TVs without a hand-set mapping, then push the resolved
-        // DesktopMapping (identity + sync modes) to the daemon so it
-        // can republish on Tv1.Desktop.
+        // DesktopMapping to the daemon so it can republish on
+        // Tv1.Desktop.
         let persist_config_path = user_config_path.cloned();
         probe_and_push_desktop_mappings(
             daemon,
             &tv_infos,
             &mut user_config,
-            &profiles,
             persist_config_path.as_deref(),
         )
         .await;
@@ -209,7 +208,6 @@ async fn probe_and_push_desktop_mappings(
     daemon: &DaemonClient,
     tv_infos: &[tisvlay_core::TvInfo],
     user_config: &mut UserConfig,
-    profiles: &HashMap<String, ResolvedUserProfile>,
     persist_path: Option<&std::path::Path>,
 ) {
     // Collect managed TVs with a non-empty HardwareId — only those can
@@ -274,18 +272,14 @@ async fn probe_and_push_desktop_mappings(
     }
 
     // Push a DesktopMapping per TV — identity from (possibly just
-    // updated) user_config, sync modes from the resolved profile.
+    // updated) user_config.
     for tv in tv_infos {
         let identity = user_config
             .tv
             .iter()
             .find(|e| e.id == tv.id)
             .and_then(|e| e.desktop.as_ref());
-        let (sync_backlight, sync_volume) = profiles
-            .get(&tv.id)
-            .map(|p| (p.sync_backlight, p.sync_volume))
-            .unwrap_or_default();
-        let mapping = DesktopMapping::from_parts(identity, sync_backlight, sync_volume);
+        let mapping = DesktopMapping::from_parts(identity);
         if let Err(e) = daemon.set_desktop_mapping(&tv.id, mapping).await {
             warn!(tv_id = %tv.id, error = %e, "Failed to push desktop mapping to daemon");
         }
