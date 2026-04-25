@@ -80,7 +80,6 @@ url = "2"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
-
 # Internal crates. Both `path` and `version` are required so the same
 # entries work for local development (path wins) and for `cargo package`
 # / publish (version is used when path is stripped from the published
