@@ -46,8 +46,7 @@
         # default `linuxPackages` of the flake's nixpkgs — consumers
         # who need it aligned with a different kernel should override
         # `services.tisvlay.kernelModulePackage` in the NixOS module.
-        packages.tisvlay-backlight =
-          pkgs.linuxPackages.callPackage ./module/tisvlay-backlight { };
+        packages.tisvlay-backlight = pkgs.linuxPackages.callPackage ./module/tisvlay-backlight { };
 
         # NixOS VM test: boots a VM with services.tisvlay.enable = true
         # and asserts the module's end-to-end behavior. Run via

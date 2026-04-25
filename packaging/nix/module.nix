@@ -50,8 +50,7 @@ in
     enableKernelModule = lib.mkOption {
       type = lib.types.bool;
       default = config.boot.kernelPackages.kernel.features.rust or false;
-      defaultText = lib.literalExpression
-        "config.boot.kernelPackages.kernel.features.rust or false";
+      defaultText = lib.literalExpression "config.boot.kernelPackages.kernel.features.rust or false";
       description = ''
         Build and load the `tisvlay_backlight` out-of-tree kernel
         module, which provides per-TV `/sys/class/backlight/tisvlay-*`
@@ -66,10 +65,8 @@ in
 
     kernelModulePackage = lib.mkOption {
       type = lib.types.package;
-      default = config.boot.kernelPackages.callPackage
-        ../../module/tisvlay-backlight { };
-      defaultText = lib.literalExpression
-        "config.boot.kernelPackages.callPackage ../../module/tisvlay-backlight { }";
+      default = config.boot.kernelPackages.callPackage ../../module/tisvlay-backlight { };
+      defaultText = lib.literalExpression "config.boot.kernelPackages.callPackage ../../module/tisvlay-backlight { }";
       description = ''
         The `tisvlay_backlight` kernel module derivation, built against
         the active `boot.kernelPackages`. Override to inject a
@@ -312,7 +309,8 @@ in
         # Clean up any SysV IPC the daemon (or its future children)
         # might leak at shutdown.
         RemoveIPC = true;
-      } // lib.optionalAttrs cfg.enableKernelModule {
+      }
+      // lib.optionalAttrs cfg.enableKernelModule {
         # With PrivateDevices disabled above, restrict which devices
         # the daemon can actually open to just the virtual-backlight
         # chardev — the cgroup device controller enforces this
