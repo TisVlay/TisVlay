@@ -45,8 +45,6 @@ struct Args {
 async fn main() -> Result<()> {
     tisvlay_core::logging::init(&[
         "tisvlay_session=info",
-        "tisvlay_session::volume_sync=debug",
-        "tisvlay_session::brightness=debug",
         "zbus=warn",
     ])?;
 
@@ -210,53 +208,10 @@ async fn main() -> Result<()> {
         tisvlay_session::event_handler(event_rx, handler_state, handler_daemon).await;
     });
 
-    // Spawn the volume-sync coordinator. Holds a PipeWire connection
-    // for the lifetime of the session, creating / destroying virtual
-    // sinks per TV based on the effective user profile.
-    let (volume_sync_shutdown_tx, volume_sync_shutdown_rx) = tokio::sync::watch::channel(false);
-    let volume_sync_task = {
-        let volume_sync_state = state.clone();
-        let volume_sync_daemon = daemon.clone();
-        Some(tokio::spawn(async move {
-            tisvlay_session::volume_sync::run(
-                volume_sync_daemon,
-                volume_sync_state,
-                volume_sync_shutdown_rx,
-            )
-            .await;
-        }))
-    };
-
-    // Spawn the brightness-sync coordinator. Dispatches to one of
-    // the session-side KDE backends based on the resolved user
-    // profile's `sync_backlight` value; exits early if every TV's
-    // mode is `None` or `Kernel` (the daemon's kernel-module path
-    // owns brightness in that case).
-    let (brightness_sync_shutdown_tx, brightness_sync_shutdown_rx) =
-        tokio::sync::watch::channel(false);
-    let brightness_sync_task = {
-        let bs_state = state.clone();
-        let bs_daemon = daemon.clone();
-        Some(tokio::spawn(async move {
-            tisvlay_session::brightness::run(bs_daemon, bs_state, brightness_sync_shutdown_rx)
-                .await;
-        }))
-    };
-
     // Wait for shutdown signals
     wait_for_signals(state, daemon, args.config).await;
 
     info!("Shutting down...");
-
-    // Signal coordinators to tear down cleanly.
-    let _ = volume_sync_shutdown_tx.send(true);
-    let _ = brightness_sync_shutdown_tx.send(true);
-    if let Some(task) = volume_sync_task {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
-    }
-    if let Some(task) = brightness_sync_task {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
-    }
 
     // Abort the handler task
     handler_task.abort();

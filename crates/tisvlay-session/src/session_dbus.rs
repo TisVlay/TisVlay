@@ -169,8 +169,7 @@ impl SessionService {
         };
 
         // Push the updated mapping to the daemon so `Tv1.Desktop.*`
-        // re-reads and `state_forwarder` re-evaluates brightness
-        // lifecycle under the new profile's sync modes.
+        // re-reads under the new profile.
         if let Err(e) = self.daemon.set_desktop_mapping(tv_id, mapping).await {
             warn!(error = %e, tv_id = %tv_id, "Failed to push updated desktop mapping to daemon");
         }

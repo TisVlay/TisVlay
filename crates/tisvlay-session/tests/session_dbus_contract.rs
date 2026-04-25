@@ -123,81 +123,10 @@ async fn set_unknown_profile_returns_error() {
     assert!(result.is_err(), "setting unknown profile should fail");
 }
 
-/// Read `Tv1.Desktop.SyncBacklight` for a TV via standard D-Bus
-/// Properties.Get on the daemon's registered object.
-async fn read_daemon_sync_backlight(conn: &zbus::Connection, tv_id: &str) -> String {
-    let path = zbus::zvariant::ObjectPath::try_from(format!("/org/tisvlay/Tv/{tv_id}")).unwrap();
-    let proxy = zbus::fdo::PropertiesProxy::builder(conn)
-        .destination("org.tisvlay.Daemon")
-        .unwrap()
-        .path(path)
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-    let iface = zbus::names::InterfaceName::from_static_str_unchecked("org.tisvlay.Tv1.Desktop");
-    let prop = zbus::names::PropertyName::from_static_str_unchecked("SyncBacklight");
-    String::try_from(proxy.get(iface, &prop).await.unwrap()).unwrap()
-}
-
-/// Regression: flipping a TV's user profile must republish a fresh
-/// `DesktopMapping` on the daemon so `Tv1.Desktop.SyncBacklight`
-/// reflects the new profile's sync modes. Without the push, the
-/// daemon's `state_forwarder` can't gate the kernel backlight
-/// lifecycle and two writers race on the TV.
-#[tokio::test]
-async fn set_tv_user_profile_republishes_desktop_mapping() {
-    // Isolate the user-config path so profile writes don't touch the
-    // developer's real `~/.config/tisvlay/config.toml`.
-    let tmp = tempfile::tempdir().unwrap();
-    let config_path = tmp.path().join("config.toml");
-    let session = TestSession::with_user_config_path("push_tv", config_path)
-        .await
-        .unwrap();
-    let bus = tisvlay_test::PrivateBus::shared();
-
-    // Inject a non-default user profile that flips sync_backlight to
-    // Kernel. Starting state has only the default profile, which
-    // resolves to sync_backlight = None.
-    {
-        use tisvlay_core::{SyncBacklight, UserProfileConfig};
-        let mut s = session.state().write().await;
-        let profile = UserProfileConfig {
-            sync_backlight: Some(SyncBacklight::Kernel),
-            ..Default::default()
-        };
-        s.user_config
-            .user
-            .profiles
-            .insert("bright".to_string(), profile);
-    }
-
-    // Baseline: default profile → sync_backlight "none".
-    let read_conn = bus.connect().await.unwrap();
-    let initial = read_daemon_sync_backlight(&read_conn, "push_tv").await;
-    assert_eq!(initial, "none", "baseline SyncBacklight should be 'none'");
-
-    // Flip to the bright profile via SetTvUserProfile.
-    let call_conn = bus.connect().await.unwrap();
-    let proxy = session_proxy(&call_conn).await.unwrap();
-    let _: () = proxy
-        .call("SetTvUserProfile", &("push_tv", "bright"))
-        .await
-        .unwrap();
-
-    // The daemon's cached mapping must now reflect the new profile.
-    let after = read_daemon_sync_backlight(&read_conn, "push_tv").await;
-    assert_eq!(
-        after, "kernel",
-        "SetTvUserProfile must push a fresh DesktopMapping so the \
-         daemon's Tv1.Desktop.SyncBacklight reflects the new profile"
-    );
-}
-
 /// Regression: the JSON returned by `GetEffectiveUserProfile` must
 /// carry every `ResolvedUserProfile` field. A prior version of the
-/// ad-hoc json! builder omitted `on_idle_resume`, `sync_backlight`,
-/// and `sync_volume`, silently breaking consumers that read those.
+/// ad-hoc json! builder omitted `on_idle_resume`, silently breaking
+/// consumers that read it.
 #[tokio::test]
 async fn get_effective_user_profile_includes_all_fields() {
     let _session = TestSession::new("eff_full_tv").await.unwrap();
