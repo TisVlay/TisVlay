@@ -43,6 +43,7 @@ impl ManagerService {
     #[cfg(feature = "discovery")]
     async fn discover_tvs(
         &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         timeout_ms: u32,
     ) -> Result<Vec<(String, String, String, (String, String, String), String)>, DaemonError> {
         info!(timeout_ms = timeout_ms, "D-Bus: DiscoverTvs");
@@ -53,13 +54,34 @@ impl ManagerService {
             .await
             .map_err(DaemonError::from)?;
 
-        Ok(tvs
+        let results = tvs
             .into_iter()
             .map(|tv| {
                 let hardware_id = tv.hardware_id.unwrap_or_default().to_dbus_tuple();
                 (tv.id, tv.name, tv.address, hardware_id, tv.vendor)
             })
-            .collect())
+            .collect::<Vec<_>>();
+
+        // Emit DiscoveryFound for each result before returning, so
+        // subscribers see the full list whether they wait on the RPC
+        // or only listen to the signal stream. Best-effort — the
+        // RPC's return value is the authoritative list.
+        for tv in &results {
+            if let Err(e) = Self::discovery_found(
+                &emitter,
+                &tv.0,
+                &tv.1,
+                &tv.2,
+                (&tv.3.0, &tv.3.1, &tv.3.2),
+                &tv.4,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "Failed to emit DiscoveryFound signal");
+            }
+        }
+
+        Ok(results)
     }
 
     // -------------------------------------------------------------------------
@@ -253,6 +275,48 @@ impl ManagerService {
     /// Subscribers should refresh profile lists and TV properties.
     #[zbus(signal)]
     pub async fn config_reloaded(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    /// Pairing-flow phase transition.
+    ///
+    /// Emitted as `pair_tv()` walks through the underlying
+    /// [`tisvlay_core::PairingState`]. `phase` is the stable D-Bus
+    /// string from `PairingState::to_dbus_state()`: `awaiting_tv`,
+    /// `awaiting_input`, `complete`, `failed`. `message` is a
+    /// human-readable detail (e.g., "Please accept the pairing
+    /// request on your TV", or the failure reason).
+    ///
+    /// Pair this with the synchronous `AddTv` RPC: subscribe to the
+    /// signal first, then call `AddTv`, draining phases until the
+    /// call returns.
+    #[zbus(signal)]
+    pub async fn pairing_progress(
+        emitter: &SignalEmitter<'_>,
+        tv_id: &str,
+        phase: &str,
+        message: &str,
+    ) -> zbus::Result<()>;
+
+    /// One TV was discovered during a `DiscoverTvs` scan.
+    ///
+    /// Wire payload mirrors `DiscoverTvs`'s return tuple:
+    /// `(id, name, address, (manufacturer, model, serial), vendor)`.
+    /// Empty strings represent unknown fields. Listening to this
+    /// signal lets clients render results progressively instead of
+    /// waiting on the synchronous RPC return.
+    ///
+    /// In v1 the signals are emitted in a burst right before
+    /// `DiscoverTvs` returns (no per-backend streaming yet); the
+    /// wire shape is forward-compatible with future per-backend
+    /// streaming refactors.
+    #[zbus(signal)]
+    pub async fn discovery_found(
+        emitter: &SignalEmitter<'_>,
+        id: &str,
+        name: &str,
+        address: &str,
+        hardware_id: (&str, &str, &str),
+        vendor: &str,
+    ) -> zbus::Result<()>;
 }
 
 /// Convert a serde_json::Value to a toml::Value.

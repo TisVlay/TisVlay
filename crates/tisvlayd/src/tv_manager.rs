@@ -125,6 +125,19 @@ pub enum StateChangeEvent {
         tv_id: String,
         phase: tisvlay_core::PowerCyclePhase,
     },
+    /// A pairing flow transitioned to a new state.
+    ///
+    /// The forwarder emits `Manager1.PairingProgress(tv_id, phase: s)`
+    /// so wizard UIs can render staged feedback ("Confirm on TV..." /
+    /// "Awaiting input" / "Complete" / "Failed: <reason>").
+    ///
+    /// `phase` matches [`tisvlay_core::PairingState::to_dbus_state`]:
+    /// `awaiting_tv`, `awaiting_input`, `complete`, `failed`.
+    PairingProgress {
+        tv_id: String,
+        phase: String,
+        message: String,
+    },
 }
 
 /// Basic TV information for D-Bus properties.
@@ -1372,29 +1385,58 @@ impl TvManager {
     ) -> Result<String, TvManagerError> {
         info!(name = %name, vendor = %vendor, "Pairing TV");
 
+        // Generate ID upfront so PairingProgress signals can carry a
+        // stable identifier even before the connection is established.
+        // Uses tv_id_from_name() which produces D-Bus-safe IDs
+        // (alphanumeric + underscore only).
+        let tv_id = id
+            .map(String::from)
+            .unwrap_or_else(|| tisvlay_core::tv_id_from_name(name));
+
         // Start pairing via registry
         let mut session = self
             .registry
             .start_pairing(vendor, &vendor_config)
             .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
+        // Spawn a watcher that forwards PairingState changes as
+        // `Manager1.PairingProgress` events. Bounded by the session's
+        // lifetime — when wait_for_completion returns and the session
+        // drops, the watch channel closes and the task exits.
+        let mut state_rx = session.subscribe();
+        let progress_tx = self.state_change_tx.clone();
+        let progress_tv_id = tv_id.clone();
+        let progress_task = tokio::spawn(async move {
+            // Emit the initial state before the first .changed() call.
+            let initial = state_rx.borrow().clone();
+            let _ = progress_tx.send(StateChangeEvent::PairingProgress {
+                tv_id: progress_tv_id.clone(),
+                phase: initial.to_dbus_state().to_string(),
+                message: initial.message().to_string(),
+            });
+            while state_rx.changed().await.is_ok() {
+                let s = state_rx.borrow().clone();
+                let _ = progress_tx.send(StateChangeEvent::PairingProgress {
+                    tv_id: progress_tv_id.clone(),
+                    phase: s.to_dbus_state().to_string(),
+                    message: s.message().to_string(),
+                });
+                if s.is_terminal() {
+                    break;
+                }
+            }
+        });
+
         // Wait for pairing to complete
-        let credentials = session
-            .wait_for_completion()
-            .await
-            .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
+        let result = session.wait_for_completion().await;
+        progress_task.abort();
+        let credentials = result.map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
         // Build final vendor config from pairing results
         let final_config = self
             .registry
             .build_config_from_pairing(vendor, &vendor_config, &credentials)
             .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
-
-        // Generate ID from name if not provided. Uses tv_id_from_name()
-        // which produces D-Bus-safe IDs (alphanumeric + underscore only).
-        let tv_id = id
-            .map(String::from)
-            .unwrap_or_else(|| tisvlay_core::tv_id_from_name(name));
 
         // Create TV config with vendor-specific connection parameters
         let mut tv_config = TvConfig::new(&tv_id, name, vendor, managed);

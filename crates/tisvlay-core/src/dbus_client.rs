@@ -123,6 +123,25 @@ trait TisvlayManager {
 
     /// Set a system-level TV option.
     fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> zbus::Result<()>;
+
+    /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
+    /// `awaiting_input`, `complete`, `failed`. See
+    /// [`tisvlay_core::PairingState`] for the canonical enum.
+    #[zbus(signal)]
+    fn pairing_progress(&self, tv_id: String, phase: String, message: String) -> zbus::Result<()>;
+
+    /// One TV was discovered during a `DiscoverTvs` scan. Tuple shape
+    /// matches the synchronous RPC return:
+    /// `(id, name, address, (manufacturer, model, serial), vendor)`.
+    #[zbus(signal)]
+    fn discovery_found(
+        &self,
+        id: String,
+        name: String,
+        address: String,
+        hardware_id: (String, String, String),
+        vendor: String,
+    ) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -962,6 +981,62 @@ impl DaemonClient {
                 "failed" => Some(crate::PowerCyclePhase::Failed),
                 _ => None,
             }
+        }))
+    }
+
+    /// Subscribe to `Manager1.PairingProgress` signals.
+    ///
+    /// Returns a stream of `(tv_id, phase, message)` tuples emitted
+    /// during `pair_tv()` calls. Phase strings: `awaiting_tv`,
+    /// `awaiting_input`, `complete`, `failed`. Set up the stream
+    /// **before** calling `pair_tv` if you want to observe its
+    /// progress — phases emitted before the stream is active are
+    /// dropped.
+    pub async fn pairing_progress_stream(
+        &self,
+    ) -> Result<impl futures_util::Stream<Item = (String, String, String)> + use<>> {
+        use futures_util::StreamExt;
+
+        let raw = self
+            .manager
+            .receive_pairing_progress()
+            .await
+            .context("failed to subscribe to PairingProgress signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Some((args.tv_id, args.phase, args.message))
+        }))
+    }
+
+    /// Subscribe to `Manager1.DiscoveryFound` signals.
+    ///
+    /// Returns a stream of `(id, name, address, hardware_id, vendor)`
+    /// tuples — same shape as the `discover_tvs` RPC return value.
+    /// In v1 the daemon emits these in a burst right before
+    /// `DiscoverTvs` returns; clients should still set up the stream
+    /// before calling `discover_tvs` so future per-backend streaming
+    /// arrives intact.
+    pub async fn discovery_found_stream(
+        &self,
+    ) -> Result<
+        impl futures_util::Stream<Item = (String, String, String, crate::HardwareId, String)> + use<>,
+    > {
+        use futures_util::StreamExt;
+
+        let raw = self
+            .manager
+            .receive_discovery_found()
+            .await
+            .context("failed to subscribe to DiscoveryFound signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Some((
+                args.id,
+                args.name,
+                args.address,
+                crate::HardwareId::from_dbus_tuple(args.hardware_id),
+                args.vendor,
+            ))
         }))
     }
 
