@@ -36,7 +36,10 @@
         };
       in
       {
-        packages.default = pkgs.callPackage ./packaging/nix/package.nix { };
+        packages = {
+          tisvlay = pkgs.callPackage ./packaging/nix/package.nix { };
+          default = self.packages.${system}.tisvlay;
+        };
 
         # Out-of-tree kernel module providing /dev/tisvlay-bl and per-TV
         # /sys/class/backlight/tisvlay-* devices. Built against the
