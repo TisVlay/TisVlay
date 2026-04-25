@@ -30,7 +30,6 @@ tisvlay-core = { workspace = true, features = ["logging"] }
 tisvlay-backends = { workspace = true }
 tokio = { workspace = true }
 zbus = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
@@ -42,7 +41,6 @@ indexmap = { workspace = true }
 rtnetlink = "0.20"
 netlink-packet-core = "0.8"
 netlink-packet-route = "0.28"
-libc = "0.2"
 async-trait = { workspace = true }
 
 [dev-dependencies]

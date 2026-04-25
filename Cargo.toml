@@ -34,7 +34,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "
 # WebSocket
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
-webpki-roots = "1.0"
 futures-util = "0.3"
 
 # Serialization
@@ -77,10 +76,9 @@ ssdp-client = "2"
 urlencoding = "2"
 url = "2"
 
-# Wayland (for idle detection + brightness sync)
+# Wayland (for idle detection / greeter wake)
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
-wayland-scanner = "0.31"
 
 # Hashing / hex (for stable EDID hashes in desktop-sync)
 sha2 = "0.11"

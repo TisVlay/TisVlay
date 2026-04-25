@@ -1689,7 +1689,6 @@ dependencies = [
 name = "tisvlay-backends"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "tisvlay-core",
  "tisvlay-lg",
  "tisvlay-mock",
@@ -1712,7 +1711,6 @@ dependencies = [
  "tisvlay-harness",
  "tisvlay-test",
  "tokio",
- "tracing",
  "tracing-subscriber",
 ]
 
@@ -1749,7 +1747,6 @@ dependencies = [
  "tempfile",
  "tisvlay-backends",
  "tisvlay-core",
- "tisvlay-mock",
  "tisvlay-session",
  "tisvlay-test",
  "tisvlayd",
@@ -1778,7 +1775,6 @@ dependencies = [
  "tracing",
  "url",
  "urlencoding",
- "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -1853,11 +1849,9 @@ dependencies = [
  "clap",
  "futures-util",
  "indexmap",
- "libc",
  "netlink-packet-core",
  "netlink-packet-route",
  "rtnetlink",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tisvlay-backends",

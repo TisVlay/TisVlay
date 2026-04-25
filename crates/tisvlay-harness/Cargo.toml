@@ -13,7 +13,6 @@ repository.workspace = true
 [dependencies]
 # Shared primitives from the workspace test layer.
 tisvlay-test = { workspace = true }
-tisvlay-mock = { workspace = true }
 
 # Core types referenced by the fixtures (SystemConfig, TvConfig).
 tisvlay-core = { workspace = true }
