@@ -32,7 +32,6 @@ fn sample_connected() -> TvInfo {
         system_profile: "default".to_string(),
         hardware_id: HardwareId::new(Some("GSM"), Some("OLED65G4SUB"), Some("serial-1")),
         desktop: DesktopMapping {
-            edid: "abc123".to_string(),
             connector: "HDMI-A-2".to_string(),
         },
         path: "/org/tisvlay/Tv/living_room".to_string(),

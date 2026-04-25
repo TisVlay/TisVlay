@@ -448,17 +448,13 @@ pub struct TvDesktopService {
 
 #[interface(name = "org.tisvlay.Tv1.Desktop")]
 impl TvDesktopService {
-    /// EDID hash of the matching monitor (empty when unknown).
-    #[zbus(property)]
-    async fn edid(&self) -> String {
-        self.manager
-            .get_desktop_mapping(&self.tv_id)
-            .await
-            .map(|m| m.edid)
-            .unwrap_or_default()
-    }
-
-    /// DRM connector name (empty when unknown / not needed).
+    /// DRM connector name the session probe matched this TV to (empty
+    /// when unknown / not yet probed).
+    ///
+    /// Tooling that wants richer EDID detail (capability tables,
+    /// manufacture date, vendor blocks) reads this connector name and
+    /// parses `/sys/class/drm/<connector>/edid` itself via the probe
+    /// library — D-Bus carries only the matching outcome.
     #[zbus(property)]
     async fn connector(&self) -> String {
         self.manager

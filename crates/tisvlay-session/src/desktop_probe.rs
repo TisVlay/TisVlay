@@ -25,7 +25,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
 use tisvlay_core::HardwareId;
 use tracing::{debug, trace, warn};
 
@@ -35,8 +34,6 @@ pub struct ProbedDisplay {
     /// DRM connector name (e.g. `HDMI-A-2`, derived from the sysfs
     /// directory name `card0-HDMI-A-2` → `HDMI-A-2`).
     pub connector: String,
-    /// Hex-encoded SHA-256 of the full EDID bytes (base + any extensions).
-    pub edid_hash: String,
     /// Parsed hardware identity for TV-side cross-referencing.
     pub hardware_id: HardwareId,
 }
@@ -93,7 +90,6 @@ impl ProbedDisplay {
         match parse_hardware_id(&edid) {
             Ok(hardware_id) => Ok(Some(Self {
                 connector: connector.to_string(),
-                edid_hash: hash_edid(&edid),
                 hardware_id,
             })),
             Err(e) => {
@@ -237,12 +233,6 @@ fn parse_hardware_id(edid: &[u8]) -> Result<HardwareId, edidkit::EdidError> {
     })
 }
 
-fn hash_edid(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    hex::encode(h.finalize())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,12 +295,10 @@ mod tests {
         let displays = vec![
             ProbedDisplay {
                 connector: "HDMI-A-1".into(),
-                edid_hash: "aaa".into(),
                 hardware_id: hw("GSM", "M", None::<&str>),
             },
             ProbedDisplay {
                 connector: "HDMI-A-2".into(),
-                edid_hash: "bbb".into(),
                 hardware_id: hw("GSM", "M", None::<&str>),
             },
         ];
@@ -325,8 +313,6 @@ mod tests {
         // office gets HDMI-A-2.
         assert_eq!(out["living"].connector, "HDMI-A-1");
         assert_eq!(out["office"].connector, "HDMI-A-2");
-        assert_eq!(out["living"].edid_hash, "aaa");
-        assert_eq!(out["office"].edid_hash, "bbb");
     }
 
     /// Cross-restart stability: feeding the same probed displays in
@@ -338,12 +324,10 @@ mod tests {
     fn match_is_stable_across_read_dir_reorderings() {
         let display_a = ProbedDisplay {
             connector: "HDMI-A-1".into(),
-            edid_hash: "aaa".into(),
             hardware_id: hw("GSM", "M", None::<&str>),
         };
         let display_b = ProbedDisplay {
             connector: "HDMI-A-2".into(),
-            edid_hash: "bbb".into(),
             hardware_id: hw("GSM", "M", None::<&str>),
         };
         let tvs = vec![
@@ -367,12 +351,10 @@ mod tests {
         let displays = vec![
             ProbedDisplay {
                 connector: "HDMI-A-1".into(),
-                edid_hash: "generic".into(),
                 hardware_id: hw("GSM", "LG TV SSCR2", None::<&str>),
             },
             ProbedDisplay {
                 connector: "HDMI-A-2".into(),
-                edid_hash: "exact".into(),
                 hardware_id: hw("GSM", "OLED65G4SUB", Some("abc")),
             },
         ];
@@ -389,7 +371,6 @@ mod tests {
     fn fewer_displays_than_tvs_leaves_extras_unmatched() {
         let displays = vec![ProbedDisplay {
             connector: "HDMI-A-1".into(),
-            edid_hash: "aaa".into(),
             hardware_id: hw("GSM", "M", None::<&str>),
         }];
         let tvs = vec![
@@ -400,14 +381,6 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out.contains_key("living"));
         assert!(!out.contains_key("office"));
-    }
-
-    #[test]
-    fn hash_is_stable() {
-        let a = hash_edid(&[0u8; 128]);
-        let b = hash_edid(&[0u8; 128]);
-        assert_eq!(a, b);
-        assert_ne!(a, hash_edid(&[1u8; 128]));
     }
 
     #[test]

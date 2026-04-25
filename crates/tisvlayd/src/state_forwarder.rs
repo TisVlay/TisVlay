@@ -101,8 +101,7 @@ pub async fn state_change_forwarder(
                 {
                     let emitter = iface_ref.signal_emitter();
                     let iface = iface_ref.get_mut().await;
-                    // `invalidates` properties — clients re-read on next access.
-                    iface.edid_changed(emitter).await.ok();
+                    // `invalidates` property — clients re-read on next access.
                     iface.connector_changed(emitter).await.ok();
                 }
             }

@@ -17,7 +17,6 @@ expression: sample_disconnected()
     "serial": null
   },
   "desktop": {
-    "edid": "",
     "connector": ""
   },
   "path": "/org/tisvlay/Tv/guest_room",

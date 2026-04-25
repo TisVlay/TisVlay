@@ -17,7 +17,6 @@ expression: sample_connected()
     "serial": "serial-1"
   },
   "desktop": {
-    "edid": "abc123",
     "connector": "HDMI-A-2"
   },
   "path": "/org/tisvlay/Tv/living_room",

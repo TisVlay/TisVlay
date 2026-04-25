@@ -775,7 +775,6 @@ impl DaemonClient {
                 .and_then(|v| <Vec<(String, String)>>::try_from(v.clone()).ok())
                 .unwrap_or_default();
             let desktop = crate::DesktopMapping {
-                edid: get_sub_str("org.tisvlay.Tv1.Desktop", "Edid", ""),
                 connector: get_sub_str("org.tisvlay.Tv1.Desktop", "Connector", ""),
             };
 

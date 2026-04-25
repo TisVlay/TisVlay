@@ -225,7 +225,6 @@ async fn probe_and_push_desktop_mappings(daemon: &DaemonClient, tv_infos: &[tisv
     for tv in tv_infos {
         let mapping = match matches.get(&tv.id) {
             Some(d) => DesktopMapping {
-                edid: d.edid_hash.clone(),
                 connector: d.connector.clone(),
             },
             None => DesktopMapping::default(),
