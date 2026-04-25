@@ -268,23 +268,6 @@ trait TisvlayTvInput {
     fn available_inputs(&self) -> zbus::Result<Vec<(String, String)>>;
 }
 
-/// D-Bus proxy for desktop identity.
-///
-/// All properties are read-only — writes go through
-/// [`TisvlayManagerProxy::set_desktop_mapping`] on the manager, not
-/// per-TV. Empty strings mean unknown / unset.
-#[proxy(
-    interface = "org.tisvlay.Tv1.Desktop",
-    default_service = "org.tisvlay.Daemon"
-)]
-trait TisvlayTvDesktop {
-    #[zbus(property)]
-    fn edid(&self) -> zbus::Result<String>;
-
-    #[zbus(property)]
-    fn connector(&self) -> zbus::Result<String>;
-}
-
 /// D-Bus proxy for TV backlight control.
 #[proxy(
     interface = "org.tisvlay.Tv1.Backlight",
@@ -483,11 +466,6 @@ struct TvProxies {
     volume: TisvlayTvVolumeProxy<'static>,
     input: TisvlayTvInputProxy<'static>,
     backlight: TisvlayTvBacklightProxy<'static>,
-    // Future: direct proxy access for tray/GUI readouts. Not consumed
-    // yet — SetDesktopMapping writes go through TisvlayManagerProxy
-    // and reads are served via GetManagedObjects.
-    #[allow(dead_code)]
-    desktop: TisvlayTvDesktopProxy<'static>,
 }
 
 impl TvProxies {
@@ -529,17 +507,10 @@ impl TvProxies {
 
         let backlight = TisvlayTvBacklightProxy::builder(&connection)
             .destination(DAEMON_SERVICE)?
-            .path(path.clone())?
-            .build()
-            .await
-            .context("Failed to create TV backlight proxy")?;
-
-        let desktop = TisvlayTvDesktopProxy::builder(&connection)
-            .destination(DAEMON_SERVICE)?
             .path(path)?
             .build()
             .await
-            .context("Failed to create TV desktop proxy")?;
+            .context("Failed to create TV backlight proxy")?;
 
         Ok(Self {
             base,
@@ -548,7 +519,6 @@ impl TvProxies {
             volume,
             input,
             backlight,
-            desktop,
         })
     }
 }
