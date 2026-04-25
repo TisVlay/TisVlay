@@ -12,6 +12,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     "managed": true,
     "automated": true,
     "system_profile": "default",
+    "primary_input": "HDMI_1",
     "hardware_id": {
       "manufacturer": "GSM",
       "model": "OLED65G4SUB",
@@ -51,6 +52,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     "managed": false,
     "automated": false,
     "system_profile": "guest",
+    "primary_input": "",
     "hardware_id": {
       "manufacturer": null,
       "model": null,

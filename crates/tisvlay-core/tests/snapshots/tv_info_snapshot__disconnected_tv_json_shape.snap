@@ -11,6 +11,7 @@ expression: sample_disconnected()
   "managed": false,
   "automated": false,
   "system_profile": "guest",
+  "primary_input": "",
   "hardware_id": {
     "manufacturer": null,
     "model": null,

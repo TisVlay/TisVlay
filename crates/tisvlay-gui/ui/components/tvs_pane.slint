@@ -1,4 +1,4 @@
-import { ListView, ScrollView, GroupBox, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { ListView, ScrollView, GroupBox, VerticalBox, HorizontalBox, Button, Slider, CheckBox, ComboBox, Switch } from "std-widgets.slint";
 
 export struct TvViewModel {
     id: string,
@@ -10,14 +10,25 @@ export struct TvViewModel {
     muted: bool,
     backlight: int,
     current-input: string,
+    /// IDs of available inputs as flat strings (e.g. ["HDMI_1", ...]).
+    /// Used as the model for the input-switcher ComboBox. Slint
+    /// expressions can't transform a struct-array into a string-array,
+    /// so we materialize it on the Rust side and ship it parallel to
+    /// the live state.
+    available-input-ids: [string],
     system-profile: string,
     user-profile: string,
+    primary-input: string,
     managed: bool,
     automated: bool,
     hw-manufacturer: string,
     hw-model: string,
     hw-serial: string,
     desktop-connector: string,
+    /// Empty when no power-on is in flight; otherwise the latest
+    /// phase string from `Tv1.Power.PowerCycleProgress`
+    /// ("wol_sent" / "connecting" / "connected" / "failed").
+    power-cycle-phase: string,
 }
 
 component StatusBadge inherits Rectangle {
@@ -114,6 +125,24 @@ component TvListItem inherits Rectangle {
 
 component TvDetail inherits ScrollView {
     in property <TvViewModel> tv;
+    in property <[string]> system-profiles;
+    in property <[string]> user-profiles;
+    /// Lookup model for the input switcher / primary-input dropdowns.
+    /// Comes from `tv.available-inputs[*].id`.
+    in property <[string]> available-input-ids;
+
+    callback set-volume(int);
+    callback set-mute(bool);
+    callback set-backlight(int);
+    callback set-is-screen-on(bool);
+    callback switch-input(string);
+    callback power-on();
+    callback power-off();
+    callback set-managed(bool);
+    callback set-system-profile(string);
+    callback set-user-profile(string);
+    callback set-primary-input(string);
+    callback request-remove();
 
     VerticalBox {
         padding: 16px;
@@ -141,26 +170,158 @@ component TvDetail inherits ScrollView {
                 label-on: "Managed";
                 label-off: "Unmanaged";
             }
+            Button {
+                text: "Remove";
+                clicked => { root.request-remove(); }
+            }
         }
 
-        // Live state
+        // Power
         GroupBox {
-            title: "Live state";
+            title: "Power";
             VerticalLayout {
-                spacing: 2px;
-                LabeledRow { label: "Power"; value: root.tv.power-state; }
-                LabeledRow { label: "Screen"; value: root.tv.is-screen-on ? "on" : "off"; }
-                LabeledRow {
-                    label: "Volume";
-                    value: root.tv.connected
-                        ? (root.tv.muted ? (root.tv.volume + " (muted)") : root.tv.volume)
-                        : "—";
+                spacing: 8px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Button {
+                        text: tv.connected ? "Power Off" : "Power On";
+                        // Disable while a power-cycle is in flight (any
+                        // non-empty phase that isn't "connected" / "failed").
+                        enabled: tv.power-cycle-phase == ""
+                              || tv.power-cycle-phase == "connected"
+                              || tv.power-cycle-phase == "failed";
+                        clicked => {
+                            if (tv.connected) {
+                                root.power-off();
+                            } else {
+                                root.power-on();
+                            }
+                        }
+                    }
+                    Text {
+                        // Live phase indicator. Empty when idle.
+                        text: tv.power-cycle-phase == "wol_sent" ? "Sending wake-up..."
+                            : tv.power-cycle-phase == "connecting" ? "Connecting..."
+                            : tv.power-cycle-phase == "connected" ? "Connected"
+                            : tv.power-cycle-phase == "failed" ? "Wake failed"
+                            : "";
+                        color: tv.power-cycle-phase == "failed" ? #b91c1c : #6b7280;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
                 }
-                LabeledRow {
-                    label: "Backlight";
-                    value: root.tv.connected ? root.tv.backlight : "—";
+
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: "Screen";
+                        width: 100px;
+                        vertical-alignment: center;
+                    }
+                    Switch {
+                        checked: tv.is-screen-on;
+                        enabled: tv.connected;
+                        toggled => { root.set-is-screen-on(self.checked); }
+                    }
+                    Text {
+                        text: "(blanks the panel without powering off)";
+                        color: #9ca3af;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
                 }
-                LabeledRow { label: "Current input"; value: root.tv.current-input; }
+            }
+        }
+
+        // Audio
+        GroupBox {
+            title: "Audio";
+            VerticalLayout {
+                spacing: 8px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "Volume";
+                        width: 100px;
+                        vertical-alignment: center;
+                    }
+                    Slider {
+                        minimum: 0;
+                        maximum: 100;
+                        value: tv.volume;
+                        enabled: tv.connected && !tv.muted;
+                        changed(v) => { root.set-volume(round(v)); }
+                    }
+                    Text {
+                        text: tv.connected ? tv.volume : "—";
+                        width: 32px;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                    }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "Mute";
+                        width: 100px;
+                        vertical-alignment: center;
+                    }
+                    Switch {
+                        checked: tv.muted;
+                        enabled: tv.connected;
+                        toggled => { root.set-mute(self.checked); }
+                    }
+                }
+            }
+        }
+
+        // Picture
+        GroupBox {
+            title: "Picture";
+            HorizontalBox {
+                spacing: 8px;
+                Text {
+                    text: "Backlight";
+                    width: 100px;
+                    vertical-alignment: center;
+                }
+                Slider {
+                    minimum: 0;
+                    maximum: 100;
+                    value: tv.backlight;
+                    enabled: tv.connected;
+                    changed(v) => { root.set-backlight(round(v)); }
+                }
+                Text {
+                    text: tv.connected ? tv.backlight : "—";
+                    width: 32px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+
+        // Input
+        GroupBox {
+            title: "Input";
+            HorizontalBox {
+                spacing: 8px;
+                Text {
+                    text: "Current";
+                    width: 100px;
+                    vertical-alignment: center;
+                }
+                ComboBox {
+                    model: root.available-input-ids;
+                    current-value: tv.current-input;
+                    enabled: tv.connected && root.available-input-ids.length > 0;
+                    selected(v) => { root.switch-input(v); }
+                }
             }
         }
 
@@ -168,11 +329,73 @@ component TvDetail inherits ScrollView {
         GroupBox {
             title: "Configuration";
             VerticalLayout {
-                spacing: 2px;
+                spacing: 8px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "Managed";
+                        width: 140px;
+                        vertical-alignment: center;
+                    }
+                    Switch {
+                        checked: tv.managed;
+                        toggled => { root.set-managed(self.checked); }
+                    }
+                    Text {
+                        text: tv.automated ? "(automated now)" : "";
+                        color: #9ca3af;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "System profile";
+                        width: 140px;
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        model: root.system-profiles;
+                        current-value: tv.system-profile;
+                        enabled: root.system-profiles.length > 0;
+                        selected(v) => { root.set-system-profile(v); }
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "User profile";
+                        width: 140px;
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        model: root.user-profiles;
+                        current-value: tv.user-profile;
+                        enabled: root.user-profiles.length > 0;
+                        selected(v) => { root.set-user-profile(v); }
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "Primary input";
+                        width: 140px;
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        model: root.available-input-ids;
+                        current-value: tv.primary-input;
+                        enabled: root.available-input-ids.length > 0;
+                        selected(v) => { root.set-primary-input(v); }
+                    }
+                }
+
                 LabeledRow { label: "TV ID"; value: root.tv.id; }
-                LabeledRow { label: "System profile"; value: root.tv.system-profile; }
-                LabeledRow { label: "User profile"; value: root.tv.user-profile; }
-                LabeledRow { label: "Automated"; value: root.tv.automated ? "yes" : "no"; }
             }
         }
 
@@ -190,15 +413,95 @@ component TvDetail inherits ScrollView {
     }
 }
 
+component ConfirmDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> title;
+    in property <string> message;
+    in property <string> confirm-label: "OK";
+    callback confirmed();
+    callback cancelled();
+
+    visible: open;
+    background: #00000080;
+    width: 100%;
+    height: 100%;
+
+    // Block clicks behind the dialog.
+    TouchArea {
+        clicked => { root.cancelled(); }
+    }
+
+    Rectangle {
+        background: white;
+        border-radius: 6px;
+        width: 360px;
+        height: 160px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+
+        // Block clicks from propagating to the backdrop.
+        TouchArea {}
+
+        VerticalBox {
+            padding: 16px;
+            spacing: 12px;
+            Text {
+                text: root.title;
+                font-size: 16px;
+                font-weight: 700;
+                color: #111827;
+            }
+            Text {
+                text: root.message;
+                wrap: word-wrap;
+                color: #374151;
+            }
+            HorizontalBox {
+                alignment: end;
+                spacing: 8px;
+                Button {
+                    text: "Cancel";
+                    clicked => { root.cancelled(); }
+                }
+                Button {
+                    text: root.confirm-label;
+                    clicked => { root.confirmed(); }
+                }
+            }
+        }
+    }
+}
+
 export component TvsPane {
     in property <[TvViewModel]> tvs;
     in property <bool> daemon-available;
+    in property <[string]> system-profiles;
+    in property <[string]> user-profiles;
     in-out property <int> selected-index: -1;
+
+    callback set-volume(string, int);
+    callback set-mute(string, bool);
+    callback set-backlight(string, int);
+    callback set-is-screen-on(string, bool);
+    callback switch-input(string, string);
+    callback power-on(string);
+    callback power-off(string);
+    callback set-managed(string, bool);
+    callback set-system-profile(string, string);
+    callback set-user-profile(string, string);
+    callback set-primary-input(string, string);
+    callback remove-tv(string);
+    callback reload-config();
+
+    // The id of the TV pending removal confirmation. Empty when no
+    // dialog is open.
+    property <string> pending-remove-id: "";
+    property <string> pending-remove-name: "";
 
     HorizontalLayout {
         spacing: 0;
 
-        // Master: TV list
+        // Master: TV list + footer
         Rectangle {
             width: 260px;
             background: white;
@@ -257,6 +560,24 @@ export component TvsPane {
                         clicked => { root.selected-index = i; }
                     }
                 }
+
+                // Footer: Reload Config
+                Rectangle {
+                    height: 48px;
+                    background: #f9fafb;
+                    Rectangle {
+                        height: 1px;
+                        background: #e5e7eb;
+                    }
+                    HorizontalBox {
+                        padding: 8px;
+                        alignment: stretch;
+                        Button {
+                            text: "Reload Config";
+                            clicked => { root.reload-config(); }
+                        }
+                    }
+                }
             }
         }
 
@@ -275,9 +596,46 @@ export component TvsPane {
                 height: parent.height;
             }
 
-            if root.selected-index >= 0 && root.selected-index < root.tvs.length: TvDetail {
-                tv: root.tvs[root.selected-index];
+            for tv[i] in root.tvs: TvDetail {
+                visible: i == root.selected-index;
+                tv: tv;
+                system-profiles: root.system-profiles;
+                user-profiles: root.user-profiles;
+                available-input-ids: tv.available-input-ids;
+
+                set-volume(v) => { root.set-volume(tv.id, v); }
+                set-mute(m) => { root.set-mute(tv.id, m); }
+                set-backlight(b) => { root.set-backlight(tv.id, b); }
+                set-is-screen-on(s) => { root.set-is-screen-on(tv.id, s); }
+                switch-input(input) => { root.switch-input(tv.id, input); }
+                power-on => { root.power-on(tv.id); }
+                power-off => { root.power-off(tv.id); }
+                set-managed(m) => { root.set-managed(tv.id, m); }
+                set-system-profile(p) => { root.set-system-profile(tv.id, p); }
+                set-user-profile(p) => { root.set-user-profile(tv.id, p); }
+                set-primary-input(p) => { root.set-primary-input(tv.id, p); }
+                request-remove => {
+                    root.pending-remove-id = tv.id;
+                    root.pending-remove-name = tv.name;
+                }
             }
+        }
+    }
+
+    // Confirm-remove dialog (overlay).
+    ConfirmDialog {
+        open: root.pending-remove-id != "";
+        title: "Remove TV";
+        message: "Remove '" + root.pending-remove-name + "' from the daemon's configuration?";
+        confirm-label: "Remove";
+        confirmed => {
+            root.remove-tv(root.pending-remove-id);
+            root.pending-remove-id = "";
+            root.pending-remove-name = "";
+        }
+        cancelled => {
+            root.pending-remove-id = "";
+            root.pending-remove-name = "";
         }
     }
 }

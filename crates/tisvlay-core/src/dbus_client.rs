@@ -429,6 +429,10 @@ pub struct TvInfo {
     pub automated: bool,
     /// System profile name assigned to this TV.
     pub system_profile: String,
+    /// Primary-input ID for this TV (the HDMI port the controlling PC
+    /// is plugged into). Empty when unset; "_unknown_" when set to
+    /// the wildcard (every input is treated as primary).
+    pub primary_input: String,
     /// Vendor-reported hardware identity (manufacturer / model / serial).
     pub hardware_id: crate::HardwareId,
     /// Desktop-side identity from the daemon's in-process DRM-EDID
@@ -731,6 +735,8 @@ impl DaemonClient {
                 }
             };
 
+            let primary_input = get_str("PrimaryInput");
+
             let hardware_id = props
                 .get("HardwareId")
                 .and_then(|v: &OwnedValue| <(String, String, String)>::try_from(v.clone()).ok())
@@ -802,6 +808,7 @@ impl DaemonClient {
                 managed,
                 automated,
                 system_profile,
+                primary_input,
                 hardware_id,
                 desktop,
                 path: path.as_str().to_string(),

@@ -11,6 +11,7 @@ expression: sample_connected()
   "managed": true,
   "automated": true,
   "system_profile": "default",
+  "primary_input": "HDMI_1",
   "hardware_id": {
     "manufacturer": "GSM",
     "model": "OLED65G4SUB",

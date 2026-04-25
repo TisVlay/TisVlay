@@ -1,28 +1,80 @@
 //! Fetches TV state from the daemon and maps it into the Slint
 //! `TvViewModel` struct generated from `ui/main.slint`.
+//!
+//! The fetched data lives in plain `Vec`-based structs (`TvViewRaw`)
+//! so it crosses the tokio→Slint thread boundary as `Send`. The Slint
+//! event-loop closure then wraps the inner per-row lists into
+//! `ModelRc` (which holds `Rc`, `!Send`).
 
 use anyhow::Result;
 use slint::SharedString;
 use tisvlay_core::{DaemonClient, SessionClient};
 use tracing::debug;
 
-use crate::TvViewModel;
+/// Per-TV view-model row in a thread-safe shape (no `Rc` inside).
+/// Converted to the Slint-generated `TvViewModel` inside the event
+/// loop, where `ModelRc::new` is allowed.
+pub(crate) struct TvViewRaw {
+    pub id: SharedString,
+    pub name: SharedString,
+    pub connected: bool,
+    pub power_state: SharedString,
+    pub is_screen_on: bool,
+    pub volume: i32,
+    pub muted: bool,
+    pub backlight: i32,
+    pub current_input: SharedString,
+    pub available_input_ids: Vec<SharedString>,
+    pub system_profile: SharedString,
+    pub user_profile: SharedString,
+    pub primary_input: SharedString,
+    pub managed: bool,
+    pub automated: bool,
+    pub hw_manufacturer: SharedString,
+    pub hw_model: SharedString,
+    pub hw_serial: SharedString,
+    pub desktop_connector: SharedString,
+}
+
+/// Snapshot of fetched state for one refresh pass.
+pub(crate) struct StateSnapshot {
+    pub tvs: Vec<TvViewRaw>,
+    pub system_profiles: Vec<SharedString>,
+    pub user_profiles: Vec<SharedString>,
+}
 
 /// Fetch every configured TV's state plus session-side user-profile
-/// assignments. Returns a plain `Vec<TvViewModel>` (Send) so it can be
-/// shipped to the Slint event loop via `invoke_from_event_loop`; the
-/// caller wraps it into a `ModelRc` (which holds an `Rc`, `!Send`)
-/// inside the Slint loop.
+/// assignment + global profile lists for ComboBox population.
 ///
 /// Single round-trip on the system bus (`GetManagedObjects` via
-/// `DaemonClient::list_tvs`) plus one optional session-bus call per TV
-/// for the user-profile assignment. No per-TV control-bus traffic.
-pub(crate) async fn fetch_tv_models(
+/// `DaemonClient::list_tvs`), one daemon call for system profiles,
+/// one optional session-bus call for user profiles, and one optional
+/// session-bus call per TV for the user-profile assignment.
+pub(crate) async fn fetch_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
-) -> Result<Vec<TvViewModel>> {
+) -> Result<StateSnapshot> {
     let tvs = daemon.list_tvs().await?;
     debug!(count = tvs.len(), "Fetched TVs from daemon");
+
+    let system_profiles: Vec<SharedString> = daemon
+        .list_system_profiles()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, _)| SharedString::from(name))
+        .collect();
+
+    let user_profiles: Vec<SharedString> = match session {
+        Some(s) => s
+            .list_user_profiles()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, _)| SharedString::from(name))
+            .collect(),
+        None => Vec::new(),
+    };
 
     let mut models = Vec::with_capacity(tvs.len());
     for tv in tvs {
@@ -31,7 +83,13 @@ pub(crate) async fn fetch_tv_models(
             None => String::new(),
         };
 
-        models.push(TvViewModel {
+        let available_input_ids: Vec<SharedString> = tv
+            .inputs
+            .iter()
+            .map(|(id, _)| SharedString::from(id.as_str()))
+            .collect();
+
+        models.push(TvViewRaw {
             id: SharedString::from(tv.id),
             name: SharedString::from(tv.name),
             connected: tv.connected,
@@ -41,8 +99,10 @@ pub(crate) async fn fetch_tv_models(
             muted: tv.muted,
             backlight: tv.backlight as i32,
             current_input: SharedString::from(tv.current_input),
+            available_input_ids,
             system_profile: SharedString::from(tv.system_profile),
             user_profile: SharedString::from(user_profile),
+            primary_input: SharedString::from(tv.primary_input),
             managed: tv.managed,
             automated: tv.automated,
             hw_manufacturer: SharedString::from(tv.hardware_id.manufacturer.unwrap_or_default()),
@@ -54,5 +114,9 @@ pub(crate) async fn fetch_tv_models(
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
 
-    Ok(models)
+    Ok(StateSnapshot {
+        tvs: models,
+        system_profiles,
+        user_profiles,
+    })
 }

@@ -45,8 +45,24 @@ export component AppWindow inherits Window {
     in property <[TvViewModel]> tvs;
     in property <bool> daemon-available: false;
     in property <bool> session-available: false;
+    in property <[string]> system-profiles;
+    in property <[string]> user-profiles;
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
+
+    callback set-volume(string, int);
+    callback set-mute(string, bool);
+    callback set-backlight(string, int);
+    callback set-is-screen-on(string, bool);
+    callback switch-input(string, string);
+    callback power-on(string);
+    callback power-off(string);
+    callback set-managed(string, bool);
+    callback set-system-profile(string, string);
+    callback set-user-profile(string, string);
+    callback set-primary-input(string, string);
+    callback remove-tv(string);
+    callback reload-config();
 
     HorizontalBox {
         padding: 0;
@@ -119,6 +135,22 @@ export component AppWindow inherits Window {
                 tvs: root.tvs;
                 selected-index <=> root.selected-tv-index;
                 daemon-available: root.daemon-available;
+                system-profiles: root.system-profiles;
+                user-profiles: root.user-profiles;
+
+                set-volume(id, v) => { root.set-volume(id, v); }
+                set-mute(id, m) => { root.set-mute(id, m); }
+                set-backlight(id, b) => { root.set-backlight(id, b); }
+                set-is-screen-on(id, s) => { root.set-is-screen-on(id, s); }
+                switch-input(id, input) => { root.switch-input(id, input); }
+                power-on(id) => { root.power-on(id); }
+                power-off(id) => { root.power-off(id); }
+                set-managed(id, m) => { root.set-managed(id, m); }
+                set-system-profile(id, p) => { root.set-system-profile(id, p); }
+                set-user-profile(id, p) => { root.set-user-profile(id, p); }
+                set-primary-input(id, p) => { root.set-primary-input(id, p); }
+                remove-tv(id) => { root.remove-tv(id); }
+                reload-config => { root.reload-config(); }
             }
             if root.active-pane == Pane.profiles: ProfilesPane {}
             if root.active-pane == Pane.session: SessionPane {}

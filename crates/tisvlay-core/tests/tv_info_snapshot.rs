@@ -30,6 +30,7 @@ fn sample_connected() -> TvInfo {
         managed: true,
         automated: true,
         system_profile: "default".to_string(),
+        primary_input: "HDMI_1".to_string(),
         hardware_id: HardwareId::new(Some("GSM"), Some("OLED65G4SUB"), Some("serial-1")),
         desktop: DesktopMapping {
             connector: "HDMI-A-2".to_string(),
@@ -60,6 +61,7 @@ fn sample_disconnected() -> TvInfo {
         managed: false,
         automated: false,
         system_profile: "guest".to_string(),
+        primary_input: String::new(),
         hardware_id: HardwareId::default(),
         desktop: DesktopMapping::default(),
         path: "/org/tisvlay/Tv/guest_room".to_string(),
