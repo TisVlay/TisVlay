@@ -213,6 +213,16 @@ The subscription task body was extracted from its inline closure inside `try_sub
 
 Verified on hardware: boot ioctl sequence is now `D C D C` ending with C (device present on first boot, no manual `SetDesktopMapping` re-push needed).
 
+### 7.7 Runtime profile flips into a KDE-flavor mode didn't revive the dispatcher
+
+Discovered while exercising `KdeWayland`/`KdeDbus` strict-variant verification (§6). Reproduction: session boots with all-`Kernel` (or all-`None`) profiles → user calls `Session1.SetTvUserProfile office kdewl` → `Tv1.Desktop.SyncBacklight` flips to `"kde_wayland"` and the user config persists, but no Wayland brightness device appears and slider drags don't reach the TV. Restarting the session fixes it.
+
+Root cause was in [brightness/mod.rs::wait_for_modes](../crates/tisvlay-session/src/brightness/mod.rs): the gate was "any mode resolved" (i.e. `state.profiles` non-empty), not "any KDE-flavor mode resolved". With `[Kernel]` the gate returned immediately, the dispatch ladder fell through to the `else info!("no KDE-flavor TVs, session brightness sync idle")` arm, and `run` returned. The dispatcher task was finished — `state.profiles` mutation by `SetTvUserProfile` had nothing left to wake.
+
+**Fix landed** ([brightness/mod.rs](../crates/tisvlay-session/src/brightness/mod.rs)): rename `wait_for_modes` → `wait_for_kde_modes`, tighten the gate to `modes.iter().any(is_kde_mode)`, drop the trailing `else info!("idle")` branch. The dispatcher now polls at 1Hz until a TV with `Kde`/`KdeWayland`/`KdeDbus` appears, then dispatches. A one-shot `info!("brightness: no KDE-flavor TV profiles yet, waiting for profile change")` keeps the idle case observable in journald without flooding. Covered by `run_keeps_polling_when_only_non_kde_profiles_present` regression test.
+
+Out of scope for this fix: re-dispatch when modes change *between* KDE flavors after the dispatcher already entered a backend (e.g. `Kde` → `KdeDbus` mid-session). The reconcile loops inside each backend handle TV-set changes within their own accept set, but no inter-backend hand-off exists. Users switching variants for debugging still need a session restart; the §6 verification matrix never required mid-session swaps.
+
 ## Out of Scope
 
 - GNOME backend. Will motivate the `DesktopBrightnessSync` trait; until then, no trait.
