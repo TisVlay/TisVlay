@@ -76,6 +76,9 @@
           # Tell cargo where to find the musl linker
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${pkgs.pkgsMusl.stdenv.cc}/bin/cc";
 
+          # Tell rust-analyzer where to find std sources for go-to-definition.
+          RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library";
+
           # Tell cargo-llvm-cov where to find LLVM tools matching rustc's LLVM 21.
           # rustup's llvm-tools-preview is not available with the Nix-managed
           # toolchain, so we point at nixpkgs' LLVM 21 bintools instead.
