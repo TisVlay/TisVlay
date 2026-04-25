@@ -30,24 +30,12 @@ anyhow = { workspace = true }
 futures-util = { workspace = true }
 clap = { workspace = true }
 
-# Wayland idle detection (greeter wake) + brightness sync (kde-external-brightness-v1)
+# Wayland idle detection (greeter wake)
 wayland-client = { workspace = true }
 wayland-protocols = { workspace = true }
-wayland-scanner = { workspace = true }
-# Base64 encoding for EDID blob in the brightness protocol
-base64 = "0.22"
 
 # EDID parsing for desktop-sync identity matching
 edidkit = "0.1"
-# PipeWire client (pure-Rust) for virtual sink creation + volume sync.
-# Pinned to upstream HEAD rather than the 0.1.4 crates.io release: the
-# release aborts inside source_io_trampoline when the PipeWire 1.4.x
-# protocol handler hits a decode error (upstream commit 22d5108 fixes
-# the Option::unwrap in on_remote_data; several adjacent fixes for
-# protocol / pod handling also live on HEAD). Revert to a crates.io
-# pin once a 0.1.5 or later is tagged that includes these fixes.
-pipewire-native = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "0a2cff2e73ba79f63568fb892073b264266714a2" }
-pipewire-native-spa = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-native-rs.git", rev = "0a2cff2e73ba79f63568fb892073b264266714a2" }
 toml = { workspace = true }
 # SHA-256 for stable EDID hashing
 sha2 = { workspace = true }

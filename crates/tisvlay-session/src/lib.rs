@@ -5,7 +5,6 @@
 
 pub mod desktop_probe;
 pub mod idle;
-mod kde_external_brightness;
 pub mod session_dbus;
 pub mod session_monitor;
 pub mod wayland_idle;
