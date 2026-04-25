@@ -1,30 +1,32 @@
 //! Desktop-side identity probe.
 //!
 //! Enumerates DRM connectors under `/sys/class/drm/`, parses each
-//! connector's EDID, and matches it against the set of TVs reported by
-//! `tisvlayd` (via `Tv1.HardwareId`). Each match becomes a
-//! [`UserTvDesktopConfig`] that the session service persists into the
-//! user config and pushes to the daemon as a [`DesktopMapping`] via
-//! `Manager1.SetDesktopMapping`.
+//! connector's EDID, and matches each against the set of TVs reported
+//! by `tisvlayd` (via `Tv1.HardwareId`). Each match yields a
+//! [`DesktopMapping`](tisvlay_core::DesktopMapping) the session pushes
+//! to the daemon via `Manager1.SetDesktopMapping`.
 //!
 //! Purely read-only against the system — no DRM ioctls, no extra
 //! capabilities. Reads sysfs files as the logged-in user; fails gracefully
 //! when a connector has no EDID (disconnected) or the EDID is malformed.
 //!
-//! # Same-model dual-TV setups
+//! # Determinism
 //!
-//! EDID-based matching returns a single candidate TV per display.
-//! When the same `HardwareId` matches multiple displays (two identical
-//! TVs on the same host), the connector name (`HDMI-A-1`, `HDMI-A-2`,
-//! …) from the DRM path acts as the tiebreaker — stored in the config
-//! alongside the EDID hash so subsequent runs don't re-probe.
+//! No on-disk persistence — the probe re-runs at every session start
+//! and `Session1.ReloadConfig`. To keep TV-to-connector assignments
+//! stable across runs (especially for same-model dual-TV setups where
+//! `HardwareId` alone can't disambiguate), the matcher sorts probed
+//! displays by connector name lexicographically and assigns each
+//! display to at most one TV via a greedy claim. Cross-restart
+//! stability follows from sort + iteration determinism rather than
+//! cached state.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
-use tisvlay_core::{HardwareId, UserTvDesktopConfig};
+use tisvlay_core::HardwareId;
 use tracing::{debug, trace, warn};
 
 /// A DRM display the probe found connected to the host.
@@ -104,73 +106,65 @@ impl ProbedDisplay {
 
 /// Match a probe result set against TVs keyed by `HardwareId`.
 ///
-/// Returns a map of `tv_id -> UserTvDesktopConfig` containing whichever
-/// identity fields the probe could resolve. When a single `HardwareId`
-/// matches multiple displays — i.e. same-model duals — both TVs get
-/// entries and the connector field is populated so the next run can
-/// still distinguish them (with the user, not the probe, ultimately
-/// choosing which TV goes on which connector).
+/// Returns a map of `tv_id -> &ProbedDisplay` for each TV the probe
+/// could pair with a display. Each display is claimed by at most one
+/// TV — same-model dual-TV setups get distinct connectors as long as
+/// there are enough probed displays to go around.
 ///
-/// `existing` is consulted for manual overrides: if the user has
-/// pre-set `connector` on a given TV, the probe filters matching
-/// displays to that connector first before falling back to any
-/// matching-by-identity candidate.
-pub fn match_displays_to_tvs(
-    displays: &[ProbedDisplay],
+/// Determinism: probed displays are sorted by connector name
+/// lexicographically before matching, and each TV in the input order
+/// claims the highest-scoring unclaimed display. Same inputs (TV
+/// list, display set) always produce the same assignment, regardless
+/// of the order `read_dir` returned the displays in.
+pub fn match_displays_to_tvs<'a>(
+    displays: &'a [ProbedDisplay],
     tvs: &[(String, HardwareId)],
-    existing: &HashMap<String, UserTvDesktopConfig>,
-) -> HashMap<String, UserTvDesktopConfig> {
-    let mut out = HashMap::new();
+) -> std::collections::HashMap<String, &'a ProbedDisplay> {
+    let mut sorted: Vec<&'a ProbedDisplay> = displays.iter().collect();
+    sorted.sort_by(|a, b| a.connector.cmp(&b.connector));
+
+    let mut claimed: HashSet<String> = HashSet::new();
+    let mut out = std::collections::HashMap::new();
 
     for (tv_id, tv_hw) in tvs {
-        let manual_connector = existing.get(tv_id).and_then(|c| c.connector.as_deref());
+        let mut best: Option<&'a ProbedDisplay> = None;
+        let mut best_score: u32 = 0;
+        let mut tied: usize = 0;
 
-        // All manufacturer-matching displays, ranked by stronger
-        // model/serial evidence when available.
-        let mut candidates: Vec<&ProbedDisplay> = displays
-            .iter()
-            .filter(|d| identity_matches(tv_hw, &d.hardware_id))
-            .collect();
-        candidates.sort_by_key(|d| std::cmp::Reverse(match_score(tv_hw, &d.hardware_id)));
+        for d in &sorted {
+            if claimed.contains(&d.connector) || !identity_matches(tv_hw, &d.hardware_id) {
+                continue;
+            }
+            let score = match_score(tv_hw, &d.hardware_id);
+            match best {
+                None => {
+                    best = Some(*d);
+                    best_score = score;
+                    tied = 1;
+                }
+                Some(_) if score > best_score => {
+                    best = Some(*d);
+                    best_score = score;
+                    tied = 1;
+                }
+                Some(_) if score == best_score => {
+                    tied += 1;
+                }
+                _ => {}
+            }
+        }
 
-        let top_score = candidates
-            .first()
-            .map(|d| match_score(tv_hw, &d.hardware_id))
-            .unwrap_or(0);
-        let best: Vec<&ProbedDisplay> = candidates
-            .iter()
-            .take_while(|d| match_score(tv_hw, &d.hardware_id) == top_score)
-            .copied()
-            .collect();
-
-        let pick: Option<&ProbedDisplay> = if best.is_empty() {
-            None
-        } else if best.len() == 1 {
-            Some(best[0])
-        } else if let Some(hint) = manual_connector {
-            best.iter()
-                .find(|d| d.connector == hint)
-                .copied()
-                .or_else(|| best.first().copied())
-        } else {
-            warn!(
-                tv_id = %tv_id,
-                count = best.len(),
-                "Multiple displays match by manufacturer; first candidate chosen — set `[tv.desktop].connector` to disambiguate"
-            );
-            best.first().copied()
-        };
-
-        if let Some(d) = pick {
-            out.insert(
-                tv_id.clone(),
-                UserTvDesktopConfig {
-                    edid: Some(d.edid_hash.clone()),
-                    // Always record the connector when we know it —
-                    // cheap and lets next run disambiguate faster.
-                    connector: Some(d.connector.clone()),
-                },
-            );
+        if let Some(d) = best {
+            if tied > 1 {
+                warn!(
+                    tv_id = %tv_id,
+                    connector = %d.connector,
+                    tied,
+                    "Multiple unclaimed displays match by manufacturer; picked deterministically by connector-name sort"
+                );
+            }
+            claimed.insert(d.connector.clone());
+            out.insert(tv_id.clone(), d);
         }
     }
 
@@ -303,8 +297,11 @@ mod tests {
         assert!(!identity_matches(&b, &a));
     }
 
+    /// Same-model dual-TV: each TV claims a distinct display, and the
+    /// assignment is deterministic from connector-name sort + TV input
+    /// order alone (no persistence needed).
     #[test]
-    fn match_dual_tvs_picks_manual_connector() {
+    fn match_dual_tvs_picks_distinct_displays_deterministically() {
         let displays = vec![
             ProbedDisplay {
                 connector: "HDMI-A-1".into(),
@@ -321,23 +318,88 @@ mod tests {
             ("living".to_string(), hw("GSM", "M", None::<&str>)),
             ("office".to_string(), hw("GSM", "M", None::<&str>)),
         ];
-        let mut existing = HashMap::new();
-        existing.insert(
-            "office".to_string(),
-            UserTvDesktopConfig {
-                edid: None,
-                connector: Some("HDMI-A-2".into()),
+        let out = match_displays_to_tvs(&displays, &tvs);
+
+        assert_eq!(out.len(), 2);
+        // Sorted-by-connector-name + greedy claim: living gets HDMI-A-1,
+        // office gets HDMI-A-2.
+        assert_eq!(out["living"].connector, "HDMI-A-1");
+        assert_eq!(out["office"].connector, "HDMI-A-2");
+        assert_eq!(out["living"].edid_hash, "aaa");
+        assert_eq!(out["office"].edid_hash, "bbb");
+    }
+
+    /// Cross-restart stability: feeding the same probed displays in
+    /// different orders (mimics sysfs `read_dir` reordering on a
+    /// kernel update or hot-plug event) produces the same assignment.
+    /// This is the property that lets us drop on-disk persistence —
+    /// determinism comes from the matcher itself, not cached state.
+    #[test]
+    fn match_is_stable_across_read_dir_reorderings() {
+        let display_a = ProbedDisplay {
+            connector: "HDMI-A-1".into(),
+            edid_hash: "aaa".into(),
+            hardware_id: hw("GSM", "M", None::<&str>),
+        };
+        let display_b = ProbedDisplay {
+            connector: "HDMI-A-2".into(),
+            edid_hash: "bbb".into(),
+            hardware_id: hw("GSM", "M", None::<&str>),
+        };
+        let tvs = vec![
+            ("living".to_string(), hw("GSM", "M", None::<&str>)),
+            ("office".to_string(), hw("GSM", "M", None::<&str>)),
+        ];
+
+        let order_1 = [display_a.clone(), display_b.clone()];
+        let order_2 = [display_b, display_a];
+        let out_1 = match_displays_to_tvs(&order_1, &tvs);
+        let out_2 = match_displays_to_tvs(&order_2, &tvs);
+
+        assert_eq!(out_1["living"].connector, out_2["living"].connector);
+        assert_eq!(out_1["office"].connector, out_2["office"].connector);
+    }
+
+    /// Higher score (model + serial agreement) wins over a generic
+    /// manufacturer-only match, regardless of connector-name order.
+    #[test]
+    fn higher_score_match_wins_over_lower_score() {
+        let displays = vec![
+            ProbedDisplay {
+                connector: "HDMI-A-1".into(),
+                edid_hash: "generic".into(),
+                hardware_id: hw("GSM", "LG TV SSCR2", None::<&str>),
             },
-        );
-        let out = match_displays_to_tvs(&displays, &tvs, &existing);
-        assert_eq!(out["office"].connector.as_deref(), Some("HDMI-A-2"));
-        assert_eq!(out["office"].edid.as_deref(), Some("bbb"));
-        // `living` falls through to whichever display `office` didn't
-        // claim: in this naive implementation both get the same first
-        // candidate — the connector tiebreaker only reshuffles the TV
-        // that already has a hint. Leaving precise dedup for a future
-        // pass; document the behavior in the probe output.
+            ProbedDisplay {
+                connector: "HDMI-A-2".into(),
+                edid_hash: "exact".into(),
+                hardware_id: hw("GSM", "OLED65G4SUB", Some("abc")),
+            },
+        ];
+        let tvs = vec![("office".to_string(), hw("GSM", "OLED65G4SUB", Some("abc")))];
+        let out = match_displays_to_tvs(&displays, &tvs);
+        // Even though HDMI-A-1 sorts first, the exact-score match on
+        // HDMI-A-2 wins.
+        assert_eq!(out["office"].connector, "HDMI-A-2");
+    }
+
+    /// More TVs than displays: TVs without a free claim get no entry
+    /// in the output.
+    #[test]
+    fn fewer_displays_than_tvs_leaves_extras_unmatched() {
+        let displays = vec![ProbedDisplay {
+            connector: "HDMI-A-1".into(),
+            edid_hash: "aaa".into(),
+            hardware_id: hw("GSM", "M", None::<&str>),
+        }];
+        let tvs = vec![
+            ("living".to_string(), hw("GSM", "M", None::<&str>)),
+            ("office".to_string(), hw("GSM", "M", None::<&str>)),
+        ];
+        let out = match_displays_to_tvs(&displays, &tvs);
+        assert_eq!(out.len(), 1);
         assert!(out.contains_key("living"));
+        assert!(!out.contains_key("office"));
     }
 
     #[test]

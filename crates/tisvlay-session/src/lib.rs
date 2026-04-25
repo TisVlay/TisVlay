@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
     DaemonClient, DesktopMapping, HardwareId, ResolvedUserProfile, SessionAction, UserConfig,
-    UserProfileConfig, UserTvDesktopConfig,
+    UserProfileConfig,
 };
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -88,7 +88,7 @@ impl SessionState {
         };
 
         // Load user config (optional)
-        let mut user_config = match user_config_path {
+        let user_config = match user_config_path {
             Some(path) => match UserConfig::load_from(path) {
                 Ok(Some(config)) => {
                     info!(
@@ -154,17 +154,12 @@ impl SessionState {
         }
 
         // Auto-detect desktop-side identity (EDID → HardwareId) for
-        // any TVs without a hand-set mapping, then push the resolved
-        // DesktopMapping to the daemon so it can republish on
-        // Tv1.Desktop.
-        let persist_config_path = user_config_path.cloned();
-        probe_and_push_desktop_mappings(
-            daemon,
-            &tv_infos,
-            &mut user_config,
-            persist_config_path.as_deref(),
-        )
-        .await;
+        // each managed TV and push the resolved DesktopMapping to the
+        // daemon so it can republish on Tv1.Desktop. In-memory only:
+        // the probe re-runs at every session start and reload, so no
+        // user-config persistence is needed for cross-restart
+        // stability — the matcher itself is deterministic.
+        probe_and_push_desktop_mappings(daemon, &tv_infos).await;
 
         info!(tvs = tv_ids.len(), "Session state loaded");
 
@@ -197,34 +192,26 @@ impl SessionState {
     }
 }
 
-/// Run the DRM probe, merge results into user config, persist to disk,
-/// and push a `DesktopMapping` per TV to the daemon.
+/// Run the DRM probe, match each managed TV to a physical connector
+/// by EDID, and push a `DesktopMapping` per TV to the daemon.
 ///
 /// Best-effort end-to-end: any individual step failing logs a warning
 /// and moves on. A failed probe or a failed push doesn't block session
 /// startup — the session service can still handle idle / session lock
 /// events without the display mapping being wired up.
-async fn probe_and_push_desktop_mappings(
-    daemon: &DaemonClient,
-    tv_infos: &[tisvlay_core::TvInfo],
-    user_config: &mut UserConfig,
-    persist_path: Option<&std::path::Path>,
-) {
-    // Collect managed TVs with a non-empty HardwareId — only those can
-    // be EDID-matched. Unmanaged TVs and headless TVs still get a
-    // DesktopMapping push with empty identity fields.
+///
+/// In-memory only — no on-disk persistence. The matcher is
+/// deterministic (sorts probed displays by connector name and
+/// greedily claims one per TV), so cross-restart stability follows
+/// from the probe itself, not from cached state.
+async fn probe_and_push_desktop_mappings(daemon: &DaemonClient, tv_infos: &[tisvlay_core::TvInfo]) {
+    // Collect TVs with a non-empty HardwareId — only those can be
+    // EDID-matched. Unmanaged TVs and headless TVs still get a
+    // DesktopMapping push with empty identity fields below.
     let tvs_for_match: Vec<(String, HardwareId)> = tv_infos
         .iter()
         .filter(|t| !t.hardware_id.is_empty())
         .map(|t| (t.id.clone(), t.hardware_id.clone()))
-        .collect();
-
-    // Snapshot user-set desktop identities for the matcher so manual
-    // connector overrides and user-provided sinks are preserved.
-    let existing: HashMap<String, UserTvDesktopConfig> = user_config
-        .tv
-        .iter()
-        .filter_map(|e| e.desktop.as_ref().map(|d| (e.id.clone(), d.clone())))
         .collect();
 
     let probed = desktop_probe::ProbedDisplay::enumerate();
@@ -233,62 +220,20 @@ async fn probe_and_push_desktop_mappings(
         "Desktop probe enumerated DRM displays"
     );
 
-    let matches = desktop_probe::match_displays_to_tvs(&probed, &tvs_for_match, &existing);
+    let matches = desktop_probe::match_displays_to_tvs(&probed, &tvs_for_match);
 
-    // Merge matches back into user_config. Track whether anything
-    // actually changed so we only write to disk when there's a delta.
-    let mut config_dirty = false;
-    for (tv_id, fresh) in matches {
-        let entry = match user_config.tv.iter_mut().find(|t| t.id == tv_id) {
-            Some(existing_entry) => existing_entry,
-            None => {
-                user_config.tv.push(tisvlay_core::UserTvConfig {
-                    id: tv_id.clone(),
-                    profile: Default::default(),
-                    desktop: None,
-                });
-                user_config.tv.last_mut().unwrap()
-            }
-        };
-        let prior = entry.desktop.clone();
-        if prior.as_ref() != Some(&fresh) {
-            entry.desktop = Some(fresh);
-            config_dirty = true;
-        }
-    }
-
-    if config_dirty {
-        if let Some(path) = persist_path {
-            if let Err(e) = save_user_config(user_config, path) {
-                warn!(error = %e, path = %path.display(), "Failed to persist updated user config");
-            } else {
-                debug!(path = %path.display(), "Persisted updated desktop mappings to user config");
-            }
-        }
-    }
-
-    // Push a DesktopMapping per TV — identity from (possibly just
-    // updated) user_config.
     for tv in tv_infos {
-        let identity = user_config
-            .tv
-            .iter()
-            .find(|e| e.id == tv.id)
-            .and_then(|e| e.desktop.as_ref());
-        let mapping = DesktopMapping::from_parts(identity);
+        let mapping = match matches.get(&tv.id) {
+            Some(d) => DesktopMapping {
+                edid: d.edid_hash.clone(),
+                connector: d.connector.clone(),
+            },
+            None => DesktopMapping::default(),
+        };
         if let Err(e) = daemon.set_desktop_mapping(&tv.id, mapping).await {
             warn!(tv_id = %tv.id, error = %e, "Failed to push desktop mapping to daemon");
         }
     }
-}
-
-fn save_user_config(config: &UserConfig, path: &std::path::Path) -> Result<()> {
-    let body = toml::to_string_pretty(config).context("Failed to serialize user config")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
-    }
-    std::fs::write(path, body).with_context(|| format!("Failed to write {}", path.display()))
 }
 
 /// Get the action for a session event from a resolved user profile.

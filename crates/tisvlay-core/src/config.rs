@@ -804,34 +804,6 @@ pub struct UserTvConfig {
     /// Profile assignment for this TV.
     #[serde(default)]
     pub profile: UserTvProfileAssignment,
-
-    /// Desktop-side identity mapping (monitor + audio sink).
-    ///
-    /// Populated by the session service's auto-detection probe on first
-    /// run and persisted back via `Manager1.SetDesktopMapping`. Users
-    /// can override any field manually — manual entries are preserved
-    /// across re-runs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub desktop: Option<UserTvDesktopConfig>,
-}
-
-/// Desktop identity mapping for a TV.
-///
-/// Stored under `[[tv]]` → `[tv.desktop]` in the user config. All fields
-/// optional; the session service fills in whatever it can probe and
-/// leaves anything the user has hand-set alone.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UserTvDesktopConfig {
-    /// EDID hash of the matching monitor. Implementation-defined format
-    /// — currently a hex string, but opaque to consumers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub edid: Option<String>,
-
-    /// DRM connector name (e.g. `HDMI-A-2`). Only consulted when EDID
-    /// matching is ambiguous — e.g. two of the same TV connected to the
-    /// same host.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connector: Option<String>,
 }
 
 impl UserConfig {
@@ -969,7 +941,6 @@ impl UserConfig {
             self.tv.push(UserTvConfig {
                 id: tv_id,
                 profile: UserTvProfileAssignment { user: profile },
-                desktop: None,
             });
         }
     }
