@@ -1,0 +1,48 @@
+import { VerticalBox, GroupBox } from "std-widgets.slint";
+
+export component AboutPane {
+    in property <bool> daemon-available;
+    in property <bool> session-available;
+
+    VerticalBox {
+        padding: 24px;
+        spacing: 16px;
+        alignment: start;
+
+        Text {
+            text: "tisvlay";
+            font-size: 28px;
+            font-weight: 700;
+            color: #111827;
+        }
+
+        Text {
+            text: "Multi-vendor TV control for Linux desktops.";
+            font-size: 14px;
+            color: #6b7280;
+        }
+
+        GroupBox {
+            title: "Connections";
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: "Daemon (system bus): " + (root.daemon-available ? "connected" : "offline");
+                    color: root.daemon-available ? #047857 : #b91c1c;
+                    font-size: 13px;
+                }
+                Text {
+                    text: "Session (user bus): " + (root.session-available ? "connected" : "offline");
+                    color: root.session-available ? #047857 : #b91c1c;
+                    font-size: 13px;
+                }
+            }
+        }
+
+        Text {
+            text: "Apache-2.0 — https://github.com/ruffsl/tisvlay";
+            color: #6b7280;
+            font-size: 12px;
+        }
+    }
+}

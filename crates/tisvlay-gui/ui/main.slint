@@ -1,0 +1,131 @@
+import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
+import { TvsPane, TvViewModel } from "components/tvs_pane.slint";
+import { ProfilesPane } from "components/profiles_pane.slint";
+import { SessionPane } from "components/session_pane.slint";
+import { AboutPane } from "components/about_pane.slint";
+
+export { TvViewModel }
+
+export enum Pane {
+    tvs,
+    profiles,
+    session,
+    about,
+}
+
+component SidebarItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 40px;
+    background: selected ? #3b82f6 : (touch.has-hover ? #1f2937 : transparent);
+    border-radius: 4px;
+
+    Text {
+        text: label;
+        color: selected ? white : #d1d5db;
+        x: 12px;
+        vertical-alignment: center;
+        height: parent.height;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "tisvlay";
+    preferred-width: 900px;
+    preferred-height: 640px;
+    min-width: 720px;
+    min-height: 480px;
+
+    in property <[TvViewModel]> tvs;
+    in property <bool> daemon-available: false;
+    in property <bool> session-available: false;
+    in-out property <int> selected-tv-index: -1;
+    in-out property <Pane> active-pane: Pane.tvs;
+
+    HorizontalBox {
+        padding: 0;
+        spacing: 0;
+
+        // Sidebar
+        Rectangle {
+            width: 180px;
+            background: #111827;
+
+            VerticalBox {
+                padding: 8px;
+                spacing: 4px;
+
+                Text {
+                    text: "tisvlay";
+                    font-size: 18px;
+                    font-weight: 700;
+                    color: white;
+                    horizontal-alignment: left;
+                    height: 36px;
+                    vertical-alignment: center;
+                }
+
+                SidebarItem {
+                    label: "TVs";
+                    selected: root.active-pane == Pane.tvs;
+                    clicked => { root.active-pane = Pane.tvs; }
+                }
+                SidebarItem {
+                    label: "Profiles";
+                    selected: root.active-pane == Pane.profiles;
+                    clicked => { root.active-pane = Pane.profiles; }
+                }
+                SidebarItem {
+                    label: "Session";
+                    selected: root.active-pane == Pane.session;
+                    clicked => { root.active-pane = Pane.session; }
+                }
+                SidebarItem {
+                    label: "About";
+                    selected: root.active-pane == Pane.about;
+                    clicked => { root.active-pane = Pane.about; }
+                }
+
+                // Spacer pushes status to bottom
+                Rectangle { vertical-stretch: 1; }
+
+                Text {
+                    text: root.daemon-available ? "Daemon: ●" : "Daemon: ○";
+                    color: root.daemon-available ? #10b981 : #ef4444;
+                    font-size: 11px;
+                    horizontal-alignment: left;
+                }
+                Text {
+                    text: root.session-available ? "Session: ●" : "Session: ○";
+                    color: root.session-available ? #10b981 : #ef4444;
+                    font-size: 11px;
+                    horizontal-alignment: left;
+                }
+            }
+        }
+
+        // Content area
+        Rectangle {
+            background: #f9fafb;
+            horizontal-stretch: 1;
+
+            if root.active-pane == Pane.tvs: TvsPane {
+                tvs: root.tvs;
+                selected-index <=> root.selected-tv-index;
+                daemon-available: root.daemon-available;
+            }
+            if root.active-pane == Pane.profiles: ProfilesPane {}
+            if root.active-pane == Pane.session: SessionPane {}
+            if root.active-pane == Pane.about: AboutPane {
+                daemon-available: root.daemon-available;
+                session-available: root.session-available;
+            }
+        }
+    }
+}

@@ -1,0 +1,40 @@
+[package]
+name = "tisvlay-gui"
+description = "Settings + management GUI for tisvlay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "tisvlay-gui"
+path = "src/main.rs"
+
+[dependencies]
+tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
+tokio = { workspace = true }
+slint = "1.16"
+zbus = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true }
+
+# Optional: enable the in-process MCP server for AI-assisted UI inspection
+# during dev. Pinned to the exact slint version because the backend
+# selector does not follow semver.
+i-slint-backend-selector = { version = "=1.16.1", features = ["mcp"], optional = true }
+
+[features]
+dev-mcp = ["dep:i-slint-backend-selector"]
+
+[build-dependencies]
+slint-build = "1.16"
+
+[lints]
+workspace = true

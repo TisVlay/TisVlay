@@ -1,0 +1,283 @@
+import { ListView, ScrollView, GroupBox, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export struct TvViewModel {
+    id: string,
+    name: string,
+    connected: bool,
+    power-state: string,
+    is-screen-on: bool,
+    volume: int,
+    muted: bool,
+    backlight: int,
+    current-input: string,
+    system-profile: string,
+    user-profile: string,
+    managed: bool,
+    automated: bool,
+    hw-manufacturer: string,
+    hw-model: string,
+    hw-serial: string,
+    desktop-connector: string,
+}
+
+component StatusBadge inherits Rectangle {
+    in property <bool> ok;
+    in property <string> label-on;
+    in property <string> label-off;
+
+    background: ok ? #10b98120 : #ef444420;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: ok ? #10b981 : #ef4444;
+    horizontal-stretch: 0;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        Text {
+            text: ok ? root.label-on : root.label-off;
+            color: ok ? #047857 : #b91c1c;
+            font-size: 11px;
+            font-weight: 600;
+        }
+    }
+}
+
+component LabeledRow inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    height: row-layout.preferred-height;
+
+    row-layout := HorizontalBox {
+        padding: 4px;
+        spacing: 8px;
+
+        Text {
+            text: root.label;
+            color: #6b7280;
+            font-size: 12px;
+            width: 140px;
+        }
+        Text {
+            text: root.value == "" ? "—" : root.value;
+            color: #111827;
+            font-size: 12px;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+component TvListItem inherits Rectangle {
+    in property <string> name;
+    in property <bool> connected;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 56px;
+    background: selected ? #dbeafe : (touch.has-hover ? #f3f4f6 : transparent);
+
+    HorizontalBox {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: center;
+
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: connected ? #10b981 : #9ca3af;
+        }
+        Text {
+            text: name;
+            color: #111827;
+            font-size: 14px;
+            font-weight: selected ? 600 : 400;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+    }
+
+    // Bottom separator (Slint Rectangle has no per-side border).
+    Rectangle {
+        height: 1px;
+        y: parent.height - 1px;
+        background: #e5e7eb;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component TvDetail inherits ScrollView {
+    in property <TvViewModel> tv;
+
+    VerticalBox {
+        padding: 16px;
+        spacing: 12px;
+
+        // Header
+        HorizontalBox {
+            spacing: 12px;
+            alignment: center;
+
+            Text {
+                text: tv.name;
+                font-size: 20px;
+                font-weight: 700;
+                color: #111827;
+                horizontal-stretch: 1;
+            }
+            StatusBadge {
+                ok: tv.connected;
+                label-on: "Connected";
+                label-off: "Disconnected";
+            }
+            StatusBadge {
+                ok: tv.managed;
+                label-on: "Managed";
+                label-off: "Unmanaged";
+            }
+        }
+
+        // Live state
+        GroupBox {
+            title: "Live state";
+            VerticalLayout {
+                spacing: 2px;
+                LabeledRow { label: "Power"; value: root.tv.power-state; }
+                LabeledRow { label: "Screen"; value: root.tv.is-screen-on ? "on" : "off"; }
+                LabeledRow {
+                    label: "Volume";
+                    value: root.tv.connected
+                        ? (root.tv.muted ? (root.tv.volume + " (muted)") : root.tv.volume)
+                        : "—";
+                }
+                LabeledRow {
+                    label: "Backlight";
+                    value: root.tv.connected ? root.tv.backlight : "—";
+                }
+                LabeledRow { label: "Current input"; value: root.tv.current-input; }
+            }
+        }
+
+        // Configuration
+        GroupBox {
+            title: "Configuration";
+            VerticalLayout {
+                spacing: 2px;
+                LabeledRow { label: "TV ID"; value: root.tv.id; }
+                LabeledRow { label: "System profile"; value: root.tv.system-profile; }
+                LabeledRow { label: "User profile"; value: root.tv.user-profile; }
+                LabeledRow { label: "Automated"; value: root.tv.automated ? "yes" : "no"; }
+            }
+        }
+
+        // Hardware identity
+        GroupBox {
+            title: "Hardware identity";
+            VerticalLayout {
+                spacing: 2px;
+                LabeledRow { label: "Manufacturer"; value: root.tv.hw-manufacturer; }
+                LabeledRow { label: "Model"; value: root.tv.hw-model; }
+                LabeledRow { label: "Serial"; value: root.tv.hw-serial; }
+                LabeledRow { label: "DRM connector"; value: root.tv.desktop-connector; }
+            }
+        }
+    }
+}
+
+export component TvsPane {
+    in property <[TvViewModel]> tvs;
+    in property <bool> daemon-available;
+    in-out property <int> selected-index: -1;
+
+    HorizontalLayout {
+        spacing: 0;
+
+        // Master: TV list
+        Rectangle {
+            width: 260px;
+            background: white;
+
+            // Right separator
+            Rectangle {
+                width: 1px;
+                x: parent.width - 1px;
+                background: #e5e7eb;
+            }
+
+            VerticalLayout {
+                Rectangle {
+                    height: 36px;
+                    background: #f9fafb;
+                    Text {
+                        text: "TVs";
+                        x: 12px;
+                        vertical-alignment: center;
+                        height: parent.height;
+                        color: #374151;
+                        font-size: 13px;
+                        font-weight: 600;
+                    }
+                    // Bottom separator
+                    Rectangle {
+                        height: 1px;
+                        y: parent.height - 1px;
+                        background: #e5e7eb;
+                    }
+                }
+
+                if root.tvs.length == 0 && !root.daemon-available: Text {
+                    text: "Daemon offline";
+                    color: #ef4444;
+                    horizontal-alignment: center;
+                    vertical-alignment: top;
+                    font-size: 13px;
+                    height: 60px;
+                }
+
+                if root.tvs.length == 0 && root.daemon-available: Text {
+                    text: "No TVs configured";
+                    color: #9ca3af;
+                    horizontal-alignment: center;
+                    vertical-alignment: top;
+                    font-size: 13px;
+                    height: 60px;
+                }
+
+                ListView {
+                    for tv[i] in root.tvs: TvListItem {
+                        name: tv.name;
+                        connected: tv.connected;
+                        selected: i == root.selected-index;
+                        clicked => { root.selected-index = i; }
+                    }
+                }
+            }
+        }
+
+        // Detail: selected TV
+        Rectangle {
+            background: #f9fafb;
+            horizontal-stretch: 1;
+
+            if root.selected-index < 0 || root.selected-index >= root.tvs.length: Text {
+                text: root.tvs.length == 0 ? "" : "Select a TV from the list";
+                color: #9ca3af;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+
+            if root.selected-index >= 0 && root.selected-index < root.tvs.length: TvDetail {
+                tv: root.tvs[root.selected-index];
+            }
+        }
+    }
+}
