@@ -112,7 +112,7 @@ pub enum StateChangeEvent {
     /// for all connected network TVs in case their route shifted to a
     /// different NIC (failover, DHCP renewal, VPN up/down).
     RouteChanged,
-    /// Session service pushed a new desktop mapping for a TV.
+    /// In-process desktop probe produced a new mapping for a TV.
     ///
     /// The forwarder invalidates the `org.tisvlay.Tv1.Desktop` cached
     /// properties so the next read returns the updated identity.
@@ -236,13 +236,12 @@ pub struct TvManager {
     disk_write_lock: Mutex<()>,
     /// Channel to send state change events.
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
-    /// In-memory cache of desktop mappings pushed by `tisvlay-session`
-    /// via `Manager1.SetDesktopMapping`. The session service owns the
-    /// authoritative file storage (under `~/.config/tisvlay/`); the
-    /// daemon holds this cache only to back the `org.tisvlay.Tv1.Desktop`
-    /// D-Bus surface so tray / GUI / CLI consumers can read from a
-    /// single place. Empty on startup — session service re-pushes on
-    /// connect.
+    /// In-memory cache of desktop mappings produced by the in-process
+    /// DRM-EDID probe (see [`crate::desktop_probe`]). Repopulated on
+    /// every TV `ConnectionChanged(true)` and on `Manager1.ReloadConfig`.
+    /// Backs the `org.tisvlay.Tv1.Desktop` D-Bus surface so tray / GUI /
+    /// CLI consumers read from a single place. Not persisted to disk —
+    /// re-derives deterministically from sysfs each daemon start.
     desktop_mappings: RwLock<std::collections::HashMap<String, tisvlay_core::DesktopMapping>>,
 }
 
@@ -891,11 +890,12 @@ impl TvManager {
         tv.connection.as_ref().and_then(|c| c.hardware_id())
     }
 
-    /// Get the current desktop mapping pushed by `tisvlay-session`.
+    /// Get the current desktop mapping for a TV.
     ///
-    /// Returns `None` when the session service hasn't pushed a mapping
-    /// for this TV yet (e.g. session not started, or TV not visible
-    /// to the session's auto-detection probe).
+    /// Returns `None` when the in-process DRM-EDID probe (see
+    /// [`crate::desktop_probe`]) hasn't matched a connector yet — e.g.
+    /// the backend hasn't connected, the TV's `HardwareId` is empty,
+    /// or no DRM connector EDID matches it.
     pub async fn get_desktop_mapping(&self, tv_id: &str) -> Option<tisvlay_core::DesktopMapping> {
         let mappings = self.desktop_mappings.read().await;
         mappings.get(tv_id).cloned()

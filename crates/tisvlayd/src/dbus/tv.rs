@@ -437,8 +437,8 @@ impl TvBacklightService {
 /// Desktop identity for a TV.
 ///
 /// All properties are live-read from the manager's in-memory mapping
-/// cache, which is populated by `tisvlay-session` via
-/// `Manager1.SetDesktopMapping`. Empty strings mean unknown / unset.
+/// cache, which is populated by the daemon's in-process desktop probe
+/// (see [`crate::desktop_probe`]). Empty strings mean unknown / unset.
 /// Emits `invalidates` on change so clients re-read on next access.
 #[derive(Debug)]
 pub struct TvDesktopService {
@@ -448,8 +448,8 @@ pub struct TvDesktopService {
 
 #[interface(name = "org.tisvlay.Tv1.Desktop")]
 impl TvDesktopService {
-    /// DRM connector name the session probe matched this TV to (empty
-    /// when unknown / not yet probed).
+    /// DRM connector name the daemon's desktop probe matched this TV
+    /// to (empty when unknown / not yet probed).
     ///
     /// Tooling that wants richer EDID detail (capability tables,
     /// manufacture date, vendor blocks) reads this connector name and

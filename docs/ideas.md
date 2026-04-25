@@ -36,7 +36,7 @@ Today's `tisvlay-session` listener path (D-Bus screensaver, Wayland idle, logind
 
 - **Sub-100 ms lockscreen-snap-back.** Mouse jiggle on lockscreen → TV unblanks before the user perceives lag. Today's Wayland idle path delivers this; any replacement must too.
 - **Distinguish fast blank from slow power-off.** `Tv1.Power.SetIsScreenOn(false)` keeps the TV powered (~100 ms LG round-trip on resume); `PowerOff` deep-sleeps (5-10 s LG OLED cold boot, requires WoL on wake). Map: lockscreen blank / idle blank → `IsScreenOn(false)`; system suspend / explicit user action / long-idle escalation → `PowerOff`.
-- **Stay multi-TV.** Per-TV instances keyed by EDID-matched DRM connector (the existing `Tv1.Desktop.{Edid, Connector}` surface).
+- **Stay multi-TV.** Per-TV instances keyed by EDID-matched DRM connector (the existing `Tv1.Desktop.Connector` surface).
 - **Handle detached TVs (HDMI splitter, network-only) via per-TV idle timer in the daemon, resets on user-initiated activity.**
 
 ### Candidate event sources, ranked by latency

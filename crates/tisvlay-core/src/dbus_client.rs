@@ -424,9 +424,9 @@ pub struct TvInfo {
     pub system_profile: String,
     /// Vendor-reported hardware identity (manufacturer / model / serial).
     pub hardware_id: crate::HardwareId,
-    /// Desktop-side identity pushed by `tisvlay-session`. Fields are
-    /// empty strings until the session service pushes a mapping for
-    /// this TV.
+    /// Desktop-side identity from the daemon's in-process DRM-EDID
+    /// probe. Empty strings until `tisvlayd` matches a connector for
+    /// this TV (typically on the first `ConnectionChanged(true)`).
     pub desktop: crate::DesktopMapping,
     /// D-Bus object path.
     pub path: String,

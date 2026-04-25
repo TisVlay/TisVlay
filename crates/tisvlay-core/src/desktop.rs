@@ -1,11 +1,11 @@
 //! Desktop-side identity for a single TV.
 //!
-//! D-Bus payload for `Manager1.SetDesktopMapping` and the backing type
-//! for the `org.tisvlay.Tv1.Desktop` feature interface. The session
-//! service runs a DRM-EDID probe at startup, matches each managed TV
-//! to a physical connector, and pushes the result to the daemon via
-//! `SetDesktopMapping`. The daemon caches in memory only — there is
-//! no on-disk persistence.
+//! Backing type for the `org.tisvlay.Tv1.Desktop` feature interface.
+//! `tisvlayd` runs a DRM-EDID probe in-process whenever a managed TV's
+//! `HardwareId` becomes available (on `ConnectionChanged(true)` and
+//! `Manager1.ReloadConfig`), matches each TV to a physical connector,
+//! and caches the result in memory only — there is no on-disk
+//! persistence and no cross-process push.
 //!
 //! The mapping carries the matching outcome only — `(connector)` —
 //! not the underlying EDID detail. Tooling that needs richer EDID

@@ -1,23 +1,25 @@
 //! Desktop-side identity probe.
 //!
 //! Enumerates DRM connectors under `/sys/class/drm/`, parses each
-//! connector's EDID, and matches each against the set of TVs reported
-//! by `tisvlayd` (via `Tv1.HardwareId`). Each match yields a
-//! [`DesktopMapping`](tisvlay_core::DesktopMapping) the session pushes
-//! to the daemon via `Manager1.SetDesktopMapping`.
+//! connector's EDID, and matches each against the set of managed TVs
+//! by `HardwareId`. Each match yields a
+//! [`DesktopMapping`](tisvlay_core::DesktopMapping) the daemon caches
+//! and exposes via `Tv1.Desktop.Connector`.
 //!
 //! Purely read-only against the system — no DRM ioctls, no extra
-//! capabilities. Reads sysfs files as the logged-in user; fails gracefully
+//! capabilities. Reads sysfs files as the daemon user; fails gracefully
 //! when a connector has no EDID (disconnected) or the EDID is malformed.
 //!
 //! # Determinism
 //!
-//! No on-disk persistence — the probe re-runs at every session start
-//! and `Session1.ReloadConfig`. To keep TV-to-connector assignments
-//! stable across runs (especially for same-model dual-TV setups where
-//! `HardwareId` alone can't disambiguate), the matcher sorts probed
-//! displays by connector name lexicographically and assigns each
-//! display to at most one TV via a greedy claim. Cross-restart
+//! No on-disk persistence — the probe re-runs on every TV
+//! `ConnectionChanged(true)` (when a freshly-connected backend's
+//! `HardwareId` first becomes available) and on `Manager1.ReloadConfig`.
+//! To keep TV-to-connector assignments stable across runs (especially
+//! for same-model dual-TV setups where `HardwareId` alone can't
+//! disambiguate), the matcher sorts probed displays by connector name
+//! lexicographically and assigns each display to at most one TV via a
+//! greedy claim. Cross-restart
 //! stability follows from sort + iteration determinism rather than
 //! cached state.
 
