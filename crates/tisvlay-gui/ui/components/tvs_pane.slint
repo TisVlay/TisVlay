@@ -87,7 +87,7 @@ component VendorTile inherits Rectangle {
 //
 // `tone` selects the color palette. Defaults to neutral.
 
-component Chip inherits Rectangle {
+export component Chip inherits Rectangle {
     in property <string> label;
     /// One of: "neutral", "success", "danger", "warn", "accent".
     in property <string> tone: "neutral";
@@ -137,7 +137,7 @@ component Chip inherits Rectangle {
 // padding. Mirrors the JSX `AppGroup`. Children supply their own
 // vertical layout.
 
-component Group {
+export component Group {
     in property <string> title;
     in property <length> body-padding: 14px;
 

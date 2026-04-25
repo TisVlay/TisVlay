@@ -1,48 +1,100 @@
-import { VerticalBox, GroupBox } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Group } from "tvs_pane.slint";
 
-export component AboutPane {
-    in property <bool> daemon-available;
-    in property <bool> session-available;
+component StatusLine {
+    in property <bool> ok;
+    in property <string> label;
 
-    VerticalBox {
-        padding: 24px;
-        spacing: 16px;
+    HorizontalLayout {
+        spacing: 8px;
         alignment: start;
 
-        Text {
-            text: "tisvlay";
-            font-size: 28px;
-            font-weight: 700;
-            color: #111827;
-        }
-
-        Text {
-            text: "Multi-vendor TV control for Linux desktops.";
-            font-size: 14px;
-            color: #6b7280;
-        }
-
-        GroupBox {
-            title: "Connections";
-            VerticalLayout {
-                spacing: 4px;
-                Text {
-                    text: "Daemon (system bus): " + (root.daemon-available ? "connected" : "offline");
-                    color: root.daemon-available ? #047857 : #b91c1c;
-                    font-size: 13px;
-                }
-                Text {
-                    text: "Session (user bus): " + (root.session-available ? "connected" : "offline");
-                    color: root.session-available ? #047857 : #b91c1c;
-                    font-size: 13px;
-                }
+        VerticalLayout {
+            alignment: center;
+            // Bullet — solid when connected, hollow ring when offline.
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.ok ? Theme.success : transparent;
+                border-width: root.ok ? 0 : 1.5px;
+                border-color: Theme.danger;
             }
         }
 
-        Text {
-            text: "Apache-2.0 — https://github.com/ruffsl/tisvlay";
-            color: #6b7280;
-            font-size: 12px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.label + ": " + (root.ok ? "connected" : "offline");
+                color: root.ok ? Theme.success-text : Theme.danger-text;
+                font-size: 13px;
+            }
+        }
+    }
+}
+
+export component AboutPane inherits Rectangle {
+    in property <bool> daemon-available;
+    in property <bool> session-available;
+
+    background: Theme.surface-alt;
+
+    ScrollView {
+        VerticalLayout {
+            width: 100%;
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 28px;
+            padding-bottom: 24px;
+            spacing: 18px;
+
+            // -- Title block --
+            VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "tisvlay";
+                    font-size: 28px;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+                Text {
+                    text: "Multi-vendor TV control for Linux desktops.";
+                    color: Theme.text-dim;
+                    font-size: 14px;
+                }
+            }
+
+            // -- Connections --
+            Group {
+                title: "CONNECTIONS";
+
+                StatusLine {
+                    ok: root.daemon-available;
+                    label: "Daemon (system bus)";
+                }
+                StatusLine {
+                    ok: root.session-available;
+                    label: "Session (user bus)";
+                }
+            }
+
+            // -- Footer --
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: "Apache-2.0";
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                }
+                Text {
+                    text: "https://github.com/ruffsl/tisvlay";
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    font-family: "ui-monospace, monospace";
+                }
+            }
         }
     }
 }
