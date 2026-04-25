@@ -117,7 +117,6 @@ impl TestDaemon {
             connection.clone(),
             state_change_rx,
             manager.clone(),
-            None,
         ));
 
         Ok(Self {
