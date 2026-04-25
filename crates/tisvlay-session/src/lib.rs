@@ -238,11 +238,7 @@ async fn probe_and_push_desktop_mappings(
     // Merge matches back into user_config. Track whether anything
     // actually changed so we only write to disk when there's a delta.
     let mut config_dirty = false;
-    for (tv_id, mut fresh) in matches {
-        // Preserve user-set sink if we didn't resolve one.
-        if fresh.sink.is_none() {
-            fresh.sink = existing.get(&tv_id).and_then(|c| c.sink.clone());
-        }
+    for (tv_id, fresh) in matches {
         let entry = match user_config.tv.iter_mut().find(|t| t.id == tv_id) {
             Some(existing_entry) => existing_entry,
             None => {

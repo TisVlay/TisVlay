@@ -18,8 +18,7 @@ expression: sample_connected()
   },
   "desktop": {
     "edid": "abc123",
-    "connector": "HDMI-A-2",
-    "sink": "alsa_output.hdmi"
+    "connector": "HDMI-A-2"
   },
   "path": "/org/tisvlay/Tv/living_room",
   "power_state": "active",

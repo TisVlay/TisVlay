@@ -104,7 +104,6 @@ pub async fn state_change_forwarder(
                     // `invalidates` properties — clients re-read on next access.
                     iface.edid_changed(emitter).await.ok();
                     iface.connector_changed(emitter).await.ok();
-                    iface.sink_changed(emitter).await.ok();
                 }
             }
             StateChangeEvent::ConfigReloaded => {

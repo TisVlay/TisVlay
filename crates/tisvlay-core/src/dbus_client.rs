@@ -283,9 +283,6 @@ trait TisvlayTvDesktop {
 
     #[zbus(property)]
     fn connector(&self) -> zbus::Result<String>;
-
-    #[zbus(property)]
-    fn sink(&self) -> zbus::Result<String>;
 }
 
 /// D-Bus proxy for TV backlight control.
@@ -810,7 +807,6 @@ impl DaemonClient {
             let desktop = crate::DesktopMapping {
                 edid: get_sub_str("org.tisvlay.Tv1.Desktop", "Edid", ""),
                 connector: get_sub_str("org.tisvlay.Tv1.Desktop", "Connector", ""),
-                sink: get_sub_str("org.tisvlay.Tv1.Desktop", "Sink", ""),
             };
 
             let fallbacks = fallbacks.into_inner();

@@ -467,16 +467,6 @@ impl TvDesktopService {
             .map(|m| m.connector)
             .unwrap_or_default()
     }
-
-    /// PipeWire sink identifier (empty when unknown).
-    #[zbus(property)]
-    async fn sink(&self) -> String {
-        self.manager
-            .get_desktop_mapping(&self.tv_id)
-            .await
-            .map(|m| m.sink)
-            .unwrap_or_default()
-    }
 }
 
 // =============================================================================

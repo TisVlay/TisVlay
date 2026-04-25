@@ -18,8 +18,7 @@ expression: sample_disconnected()
   },
   "desktop": {
     "edid": "",
-    "connector": "",
-    "sink": ""
+    "connector": ""
   },
   "path": "/org/tisvlay/Tv/guest_room",
   "power_state": "unknown",

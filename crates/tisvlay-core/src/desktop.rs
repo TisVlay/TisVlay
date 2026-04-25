@@ -18,7 +18,7 @@ use crate::UserTvDesktopConfig;
 
 /// Resolved desktop mapping for a TV.
 ///
-/// On D-Bus this serializes as `(sss)` — `(edid, connector, sink)`.
+/// On D-Bus this serializes as `(ss)` — `(edid, connector)`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "dbus", derive(zbus::zvariant::Type))]
 pub struct DesktopMapping {
@@ -27,8 +27,6 @@ pub struct DesktopMapping {
     /// DRM connector name (e.g. `HDMI-A-2`). Tiebreaker for same-model
     /// dual-TV setups. Empty = unknown / not needed.
     pub connector: String,
-    /// PipeWire sink identifier. Empty = unknown.
-    pub sink: String,
 }
 
 impl DesktopMapping {
@@ -41,10 +39,6 @@ impl DesktopMapping {
                 .to_string(),
             connector: identity
                 .and_then(|i| i.connector.as_deref())
-                .unwrap_or("")
-                .to_string(),
-            sink: identity
-                .and_then(|i| i.sink.as_deref())
                 .unwrap_or("")
                 .to_string(),
         }
@@ -60,12 +54,10 @@ mod tests {
         let identity = UserTvDesktopConfig {
             edid: Some("abc123".to_string()),
             connector: Some("HDMI-A-2".to_string()),
-            sink: Some("alsa_output.hdmi".to_string()),
         };
         let m = DesktopMapping::from_parts(Some(&identity));
         assert_eq!(m.edid, "abc123");
         assert_eq!(m.connector, "HDMI-A-2");
-        assert_eq!(m.sink, "alsa_output.hdmi");
     }
 
     #[test]
@@ -73,6 +65,5 @@ mod tests {
         let m = DesktopMapping::from_parts(None);
         assert!(m.edid.is_empty());
         assert!(m.connector.is_empty());
-        assert!(m.sink.is_empty());
     }
 }

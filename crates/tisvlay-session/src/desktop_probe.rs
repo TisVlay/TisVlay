@@ -169,9 +169,6 @@ pub fn match_displays_to_tvs(
                     // Always record the connector when we know it —
                     // cheap and lets next run disambiguate faster.
                     connector: Some(d.connector.clone()),
-                    // Sink is left alone here — populated separately
-                    // by the PipeWire probe.
-                    sink: existing.get(tv_id).and_then(|c| c.sink.clone()),
                 },
             );
         }
@@ -330,7 +327,6 @@ mod tests {
             UserTvDesktopConfig {
                 edid: None,
                 connector: Some("HDMI-A-2".into()),
-                sink: None,
             },
         );
         let out = match_displays_to_tvs(&displays, &tvs, &existing);
@@ -342,27 +338,6 @@ mod tests {
         // that already has a hint. Leaving precise dedup for a future
         // pass; document the behavior in the probe output.
         assert!(out.contains_key("living"));
-    }
-
-    #[test]
-    fn preserves_existing_sink() {
-        let displays = vec![ProbedDisplay {
-            connector: "HDMI-A-1".into(),
-            edid_hash: "aaa".into(),
-            hardware_id: hw("GSM", "M", None::<&str>),
-        }];
-        let tvs = vec![("living".to_string(), hw("GSM", "M", None::<&str>))];
-        let mut existing = HashMap::new();
-        existing.insert(
-            "living".to_string(),
-            UserTvDesktopConfig {
-                edid: None,
-                connector: None,
-                sink: Some("my-sink".into()),
-            },
-        );
-        let out = match_displays_to_tvs(&displays, &tvs, &existing);
-        assert_eq!(out["living"].sink.as_deref(), Some("my-sink"));
     }
 
     #[test]

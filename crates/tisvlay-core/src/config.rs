@@ -832,12 +832,6 @@ pub struct UserTvDesktopConfig {
     /// same host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connector: Option<String>,
-
-    /// PipeWire sink identifier. The exact field stored here (node name,
-    /// device description, etc.) is chosen by the session-side probe
-    /// based on which identifier is most stable for the matching device.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sink: Option<String>,
 }
 
 impl UserConfig {

@@ -34,7 +34,6 @@ fn sample_connected() -> TvInfo {
         desktop: DesktopMapping {
             edid: "abc123".to_string(),
             connector: "HDMI-A-2".to_string(),
-            sink: "alsa_output.hdmi".to_string(),
         },
         path: "/org/tisvlay/Tv/living_room".to_string(),
         power_state: "active".to_string(),
