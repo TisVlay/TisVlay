@@ -154,10 +154,12 @@ component TvDetail inherits ScrollView {
         padding: 16px;
         spacing: 12px;
 
-        // Header
+        // Header — alignment defaults to `stretch` so the TV name with
+        // `horizontal-stretch: 1` pushes the badges + Remove button to
+        // the right. Setting `alignment: center` here would center-pack
+        // the children as a group and ignore stretch values.
         HorizontalBox {
             spacing: 12px;
-            alignment: center;
 
             Text {
                 text: tv.name;
@@ -186,6 +188,7 @@ component TvDetail inherits ScrollView {
         GroupBox {
             title: "Power";
             VerticalLayout {
+                width: 100%;
                 spacing: 8px;
 
                 HorizontalBox {
@@ -247,6 +250,7 @@ component TvDetail inherits ScrollView {
         GroupBox {
             title: "Audio";
             VerticalLayout {
+                width: 100%;
                 spacing: 8px;
 
                 HorizontalBox {
@@ -290,6 +294,7 @@ component TvDetail inherits ScrollView {
         GroupBox {
             title: "Picture";
             HorizontalBox {
+                width: 100%;
                 spacing: 8px;
                 Text {
                     text: "Backlight";
@@ -316,6 +321,7 @@ component TvDetail inherits ScrollView {
         GroupBox {
             title: "Input";
             HorizontalBox {
+                width: 100%;
                 spacing: 8px;
                 Text {
                     text: "Current";
@@ -335,6 +341,7 @@ component TvDetail inherits ScrollView {
         GroupBox {
             title: "Configuration";
             VerticalLayout {
+                width: 100%;
                 spacing: 8px;
 
                 HorizontalBox {
@@ -409,6 +416,7 @@ component TvDetail inherits ScrollView {
         GroupBox {
             title: "Hardware identity";
             VerticalLayout {
+                width: 100%;
                 spacing: 2px;
                 LabeledRow { label: "Manufacturer"; value: root.tv.hw-manufacturer; }
                 LabeledRow { label: "Model"; value: root.tv.hw-model; }
