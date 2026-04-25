@@ -117,6 +117,14 @@ pub enum StateChangeEvent {
     /// The forwarder invalidates the `org.tisvlay.Tv1.Desktop` cached
     /// properties so the next read returns the updated identity.
     DesktopMappingChanged { tv_id: String },
+    /// A power-on flow walked into a new phase.
+    ///
+    /// The forwarder emits `Tv1.Power.PowerCycleProgress(phase: s)` so
+    /// the GUI can show staged feedback during the 5-30 s wake window.
+    PowerCycleProgress {
+        tv_id: String,
+        phase: tisvlay_core::PowerCyclePhase,
+    },
 }
 
 /// Basic TV information for D-Bus properties.
@@ -1204,6 +1212,13 @@ impl TvManager {
             tv.config.clone()
         };
 
+        // The backend's wake_and_connect is atomic from our view; it
+        // sends the WoL packet, then loops on connect attempts. Emit
+        // both `WolSent` and `Connecting` upfront so the GUI sees the
+        // staged transition; the actual time spent is in connect retry.
+        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::WolSent);
+        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connecting);
+
         // Backend handles wake + boot wait + connect retry (no lock held)
         let result = self.registry.wake_and_connect_tv(&config).await;
 
@@ -1219,6 +1234,7 @@ impl TvManager {
                     }
                 }
                 Err(e) => {
+                    self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Failed);
                     return Err(TvManagerError::WakeFailed {
                         tv_id: tv_id.to_string(),
                         source: e,
@@ -1227,10 +1243,20 @@ impl TvManager {
             }
         }
 
+        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connected);
         self.emit_connection_changed(tv_id, true);
         self.resolve_monitored_interface(tv_id).await;
         info!(tv_id = %tv_id, "TV is online after WoL");
         Ok(())
+    }
+
+    /// Shorthand for emitting a [`StateChangeEvent::PowerCycleProgress`]
+    /// event. Keeps `power_on` readable.
+    fn emit_power_cycle_phase(&self, tv_id: &str, phase: tisvlay_core::PowerCyclePhase) {
+        self.emit_state_change(StateChangeEvent::PowerCycleProgress {
+            tv_id: tv_id.to_string(),
+            phase,
+        });
     }
 
     /// Power off a TV.

@@ -372,8 +372,22 @@ async fn main() -> Result<()> {
             let tv_id = tv_id?;
             match action {
                 PowerAction::On => {
-                    client.power_on(&tv_id).await?;
-                    println!("Wake signal sent to TV");
+                    // Subscribe to PowerCycleProgress before issuing the
+                    // call so phases emitted during wake-and-connect are
+                    // surfaced to the user. The stream task ends when
+                    // power_on returns and we drop the receiver.
+                    use futures_util::StreamExt;
+                    let progress = client.power_cycle_progress_stream(&tv_id).await?;
+                    let logger = tokio::spawn(async move {
+                        let mut s = std::pin::pin!(progress);
+                        while let Some(phase) = s.next().await {
+                            println!("  → {phase}");
+                        }
+                    });
+                    let result = client.power_on(&tv_id).await;
+                    logger.abort();
+                    result?;
+                    println!("TV is online");
                 }
                 PowerAction::Off => {
                     client.power_off(&tv_id).await?;

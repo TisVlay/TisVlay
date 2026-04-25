@@ -204,6 +204,13 @@ trait TisvlayTvPower {
     /// Get current power state.
     #[zbus(property)]
     fn power_state(&self) -> zbus::Result<String>;
+
+    /// Phase transitions during a power-on flow.
+    ///
+    /// Phase string is one of `wol_sent`, `connecting`, `connected`,
+    /// `failed` — see [`crate::PowerCyclePhase`] for the typed shape.
+    #[zbus(signal)]
+    fn power_cycle_progress(&self, phase: String) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for TV screen control.
@@ -909,6 +916,46 @@ impl DaemonClient {
     pub async fn power_off(&self, tv_id: &str) -> Result<()> {
         self.with_proxies(tv_id, "power off", |p| Box::pin(p.power.power_off()))
             .await
+    }
+
+    /// Subscribe to `Tv1.Power.PowerCycleProgress` signals for a TV.
+    ///
+    /// Returns a stream of [`crate::PowerCyclePhase`] values yielded as
+    /// the daemon walks through `WolSent` → `Connecting` → `Connected`
+    /// or `Failed` during a `PowerOn`. Set up the subscription **before**
+    /// calling [`Self::power_on`] — phases emitted before the stream is
+    /// active are dropped.
+    ///
+    /// Unknown phase strings (forward-compat slack from a newer daemon)
+    /// are skipped silently.
+    pub async fn power_cycle_progress_stream(
+        &self,
+        tv_id: &str,
+    ) -> Result<impl futures_util::Stream<Item = crate::PowerCyclePhase> + use<>> {
+        use futures_util::StreamExt;
+
+        let path = tv_path(tv_id);
+        let obj_path = OwnedObjectPath::try_from(path).context("Invalid TV path")?;
+        let proxy = TisvlayTvPowerProxy::builder(&self.connection)
+            .path(obj_path)
+            .context("Invalid TV path for Tv1.Power proxy")?
+            .build()
+            .await
+            .context("failed to build Tv1.Power proxy")?;
+        let raw = proxy
+            .receive_power_cycle_progress()
+            .await
+            .context("failed to subscribe to PowerCycleProgress signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            match args.phase.as_str() {
+                "wol_sent" => Some(crate::PowerCyclePhase::WolSent),
+                "connecting" => Some(crate::PowerCyclePhase::Connecting),
+                "connected" => Some(crate::PowerCyclePhase::Connected),
+                "failed" => Some(crate::PowerCyclePhase::Failed),
+                _ => None,
+            }
+        }))
     }
 
     /// Turn screen on (resume from blank).

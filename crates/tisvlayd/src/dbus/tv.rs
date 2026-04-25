@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tisvlay_core::TvState;
 use tracing::info;
 use zbus::interface;
+use zbus::object_server::SignalEmitter;
 
 /// Base TV interface with properties and connection management.
 ///
@@ -244,6 +245,16 @@ impl TvPowerService {
     fn power_state(&self) -> &str {
         &self.power_state
     }
+
+    /// Phase transitions during a power-on flow.
+    ///
+    /// Emitted as the manager walks through wake-on-LAN and connect
+    /// retry. Phase values: `wol_sent`, `connecting`, `connected`,
+    /// `failed` (see [`tisvlay_core::PowerCyclePhase`]). GUIs subscribe
+    /// to render staged feedback during the 5-30 s wake window.
+    #[zbus(signal)]
+    pub async fn power_cycle_progress(emitter: &SignalEmitter<'_>, phase: &str)
+    -> zbus::Result<()>;
 }
 
 // =============================================================================

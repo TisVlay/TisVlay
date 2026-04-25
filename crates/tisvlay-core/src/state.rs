@@ -4,6 +4,45 @@ use crate::HardwareId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Phases a power-on (wake-and-connect) flow walks through.
+///
+/// Emitted as a `(s)` D-Bus signal on `Tv1.Power.PowerCycleProgress`
+/// so GUIs can show staged feedback ("Sending wake-up..." → "Connecting..."
+/// → "Connected" / "Failed") instead of a single 5-30 s spinner. The
+/// backend's WoL packet send and connect-retry loop are atomic from
+/// the manager's view, so `WolSent` and `Connecting` fire back-to-back
+/// just before the manager calls `wake_and_connect_tv`; `Connected`
+/// or `Failed` fires after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerCyclePhase {
+    /// Wake-on-LAN packet has been (or is about to be) sent.
+    WolSent,
+    /// Manager is attempting to establish a connection to the TV.
+    Connecting,
+    /// Connection succeeded; the TV is online.
+    Connected,
+    /// Wake-and-connect failed (TV unreachable, timeout, etc.).
+    Failed,
+}
+
+impl PowerCyclePhase {
+    /// Wire representation. Stable string contract for the D-Bus signal.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WolSent => "wol_sent",
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::fmt::Display for PowerCyclePhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Current state of a TV.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TvState {

@@ -91,7 +91,7 @@ pub use config::{
 };
 
 // State
-pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
+pub use state::{DiscoveredTv, InputInfo, PowerCyclePhase, PowerState, TvState};
 
 // Errors
 pub use error::{Error, Result};

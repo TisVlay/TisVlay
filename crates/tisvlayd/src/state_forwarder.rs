@@ -164,6 +164,19 @@ pub async fn state_change_forwarder(
                     iface.connector_changed(emitter).await.ok();
                 }
             }
+            StateChangeEvent::PowerCycleProgress { ref tv_id, phase } => {
+                let path = tv_path(tv_id);
+                debug!(tv_id = %tv_id, phase = %phase, "Forwarding power-cycle phase to D-Bus");
+                if let Ok(iface_ref) = object_server.interface::<_, TvPowerService>(&*path).await
+                    && let Err(e) = TvPowerService::power_cycle_progress(
+                        iface_ref.signal_emitter(),
+                        phase.as_str(),
+                    )
+                    .await
+                {
+                    warn!(error = %e, tv_id = %tv_id, "Failed to emit PowerCycleProgress");
+                }
+            }
             StateChangeEvent::ConfigReloaded => {
                 debug!("Emitting ConfigReloaded signal on Manager1");
 
