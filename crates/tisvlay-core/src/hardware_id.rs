@@ -3,8 +3,9 @@
 //! Backends that can read their own identity — via vendor protocol, SSDP
 //! headers, CEC OSD name, or similar — populate a [`HardwareId`] for
 //! cross-referencing with EDID data read from the host's display stack.
-//! This is the key used by the desktop-sync feature to match a TV to
-//! the monitor it presents as on Linux.
+//! Used by the desktop-display matcher to map a managed TV to the
+//! monitor it presents as on Linux, and exposed on D-Bus for tooling
+//! to key per-TV automations on a stable identity.
 //!
 //! Backends that can't read their identity return `None` from
 //! [`TvConnection::hardware_id`](crate::TvConnection::hardware_id).

@@ -203,7 +203,7 @@ impl SessionState {
 /// Best-effort end-to-end: any individual step failing logs a warning
 /// and moves on. A failed probe or a failed push doesn't block session
 /// startup — the session service can still handle idle / session lock
-/// events without desktop sync being wired up.
+/// events without the display mapping being wired up.
 async fn probe_and_push_desktop_mappings(
     daemon: &DaemonClient,
     tv_infos: &[tisvlay_core::TvInfo],

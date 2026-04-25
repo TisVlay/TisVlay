@@ -108,10 +108,11 @@ fn parse_response(resp: &ssdp_client::SearchResponse) -> Option<DiscoveredTv> {
         .unwrap_or_else(|| format!("LG TV ({})", ip));
 
     // LG's EDID PNPID is "GSM" — always fill it so downstream matching
-    // (e.g. desktop-sync EDID cross-reference) has a manufacturer to
-    // work with. Model is best-effort: parsed from the DLNA device
-    // name when it's in the "[LG] webOS TV <MODEL>" form. Serial isn't
-    // available over SSDP — the backend fills it after connecting.
+    // (e.g. EDID cross-reference for display matching) has a
+    // manufacturer to work with. Model is best-effort: parsed from the
+    // DLNA device name when it's in the "[LG] webOS TV <MODEL>" form.
+    // Serial isn't available over SSDP — the backend fills it after
+    // connecting.
     let hardware_id = Some(HardwareId::new(
         Some(LG_PNPID),
         parse_model_from_dlna_name(&name).map(str::to_string),

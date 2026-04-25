@@ -34,7 +34,7 @@ clap = { workspace = true }
 wayland-client = { workspace = true }
 wayland-protocols = { workspace = true }
 
-# EDID parsing for desktop-sync identity matching
+# EDID parsing for display identity matching
 edidkit = "0.1"
 toml = { workspace = true }
 # SHA-256 for stable EDID hashing
