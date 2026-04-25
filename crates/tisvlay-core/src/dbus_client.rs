@@ -450,7 +450,7 @@ pub struct TvInfo {
     /// Whether automation should fire for this TV right now.
     ///
     /// Computed from `managed`, `automate_when`, `primary_input`, and
-    /// the TV's current input. See gate composition table in plan2.md.
+    /// the TV's current input.
     pub automated: bool,
     /// System profile name assigned to this TV.
     pub system_profile: String,
