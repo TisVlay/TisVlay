@@ -131,7 +131,12 @@ export component AppWindow inherits Window {
             background: #f9fafb;
             horizontal-stretch: 1;
 
+            // Each pane is positioned absolutely within this Rectangle.
+            // Slint Rectangles don't lay out children, so panes must
+            // bind width / height to the parent explicitly.
             if root.active-pane == Pane.tvs: TvsPane {
+                width: 100%;
+                height: 100%;
                 tvs: root.tvs;
                 selected-index <=> root.selected-tv-index;
                 daemon-available: root.daemon-available;
@@ -152,9 +157,17 @@ export component AppWindow inherits Window {
                 remove-tv(id) => { root.remove-tv(id); }
                 reload-config => { root.reload-config(); }
             }
-            if root.active-pane == Pane.profiles: ProfilesPane {}
-            if root.active-pane == Pane.session: SessionPane {}
+            if root.active-pane == Pane.profiles: ProfilesPane {
+                width: 100%;
+                height: 100%;
+            }
+            if root.active-pane == Pane.session: SessionPane {
+                width: 100%;
+                height: 100%;
+            }
             if root.active-pane == Pane.about: AboutPane {
+                width: 100%;
+                height: 100%;
                 daemon-available: root.daemon-available;
                 session-available: root.session-available;
             }

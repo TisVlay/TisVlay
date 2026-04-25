@@ -43,6 +43,8 @@ component StatusBadge inherits Rectangle {
     horizontal-stretch: 0;
 
     HorizontalLayout {
+        width: 100%;
+        height: 100%;
         padding-left: 8px;
         padding-right: 8px;
         padding-top: 2px;
@@ -62,6 +64,7 @@ component LabeledRow inherits Rectangle {
     height: row-layout.preferred-height;
 
     row-layout := HorizontalBox {
+        width: 100%;
         padding: 4px;
         spacing: 8px;
 
@@ -90,14 +93,17 @@ component TvListItem inherits Rectangle {
     background: selected ? #dbeafe : (touch.has-hover ? #f3f4f6 : transparent);
 
     HorizontalBox {
+        width: 100%;
+        height: 100%;
         padding-left: 12px;
         padding-right: 12px;
         spacing: 8px;
-        alignment: center;
+        alignment: start;
 
         Rectangle {
             width: 8px;
             height: 8px;
+            y: (parent.height - self.height) / 2;
             border-radius: 4px;
             background: connected ? #10b981 : #9ca3af;
         }
@@ -443,6 +449,8 @@ component ConfirmDialog inherits Rectangle {
         TouchArea {}
 
         VerticalBox {
+            width: 100%;
+            height: 100%;
             padding: 16px;
             spacing: 12px;
             Text {
@@ -499,6 +507,12 @@ export component TvsPane {
     property <string> pending-remove-name: "";
 
     HorizontalLayout {
+        // Slint Rectangles don't lay out children, so any
+        // HorizontalLayout / VerticalLayout that lives inside one needs
+        // explicit fill. The parent of TvsPane is a no-layout Rectangle
+        // in main.slint.
+        width: 100%;
+        height: 100%;
         spacing: 0;
 
         // Master: TV list + footer
@@ -514,6 +528,8 @@ export component TvsPane {
             }
 
             VerticalLayout {
+                width: 100%;
+                height: 100%;
                 Rectangle {
                     height: 36px;
                     background: #f9fafb;
@@ -565,11 +581,15 @@ export component TvsPane {
                 Rectangle {
                     height: 48px;
                     background: #f9fafb;
+                    // Top separator (anchored at y=0 of the footer)
                     Rectangle {
                         height: 1px;
+                        y: 0;
                         background: #e5e7eb;
                     }
                     HorizontalBox {
+                        width: 100%;
+                        height: 100%;
                         padding: 8px;
                         alignment: stretch;
                         Button {
@@ -597,6 +617,8 @@ export component TvsPane {
             }
 
             for tv[i] in root.tvs: TvDetail {
+                width: parent.width;
+                height: parent.height;
                 visible: i == root.selected-index;
                 tv: tv;
                 system-profiles: root.system-profiles;
