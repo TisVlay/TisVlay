@@ -25,13 +25,3 @@ target
 
 # Nix build output symlink
 result
-
-# Kernel module build artifacts
-module/**/.*
-module/**/*.o
-module/**/*.ko
-module/**/*.ko.*
-module/**/*.mod
-module/**/*.mod.c
-module/**/Module.symvers
-module/**/modules.order

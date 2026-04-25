@@ -124,7 +124,7 @@ trait TisvlayManager {
     /// Set a system-level TV option.
     fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> zbus::Result<()>;
 
-    /// Push a desktop identity + sync state mapping for a TV.
+    /// Push a desktop identity mapping for a TV.
     ///
     /// Called by `tisvlay-session`; the daemon caches the value and
     /// republishes it on `org.tisvlay.Tv1.Desktop`.
@@ -268,7 +268,7 @@ trait TisvlayTvInput {
     fn available_inputs(&self) -> zbus::Result<Vec<(String, String)>>;
 }
 
-/// D-Bus proxy for desktop identity + sync state.
+/// D-Bus proxy for desktop identity.
 ///
 /// All properties are read-only — writes go through
 /// [`TisvlayManagerProxy::set_desktop_mapping`] on the manager, not
@@ -447,9 +447,9 @@ pub struct TvInfo {
     pub system_profile: String,
     /// Vendor-reported hardware identity (manufacturer / model / serial).
     pub hardware_id: crate::HardwareId,
-    /// Desktop-side identity and sync state pushed by `tisvlay-session`.
-    /// Fields are empty strings until the session service pushes a
-    /// mapping for this TV.
+    /// Desktop-side identity pushed by `tisvlay-session`. Fields are
+    /// empty strings until the session service pushes a mapping for
+    /// this TV.
     pub desktop: crate::DesktopMapping,
     /// D-Bus object path.
     pub path: String,
@@ -1124,7 +1124,7 @@ impl DaemonClient {
             .with_context(|| format!("Failed to set TV option: {} {}={}", tv_id, key, value))
     }
 
-    /// Push a desktop identity + sync state mapping for a TV.
+    /// Push a desktop identity mapping for a TV.
     pub async fn set_desktop_mapping(
         &self,
         tv_id: &str,

@@ -434,7 +434,7 @@ impl TvBacklightService {
 // Desktop mapping interface
 // =============================================================================
 
-/// Desktop identity + sync state for a TV.
+/// Desktop identity for a TV.
 ///
 /// All properties are live-read from the manager's in-memory mapping
 /// cache, which is populated by `tisvlay-session` via

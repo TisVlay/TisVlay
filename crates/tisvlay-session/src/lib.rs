@@ -212,7 +212,7 @@ async fn probe_and_push_desktop_mappings(
 ) {
     // Collect managed TVs with a non-empty HardwareId — only those can
     // be EDID-matched. Unmanaged TVs and headless TVs still get a
-    // DesktopMapping push (identity empty, sync modes from profile).
+    // DesktopMapping push with empty identity fields.
     let tvs_for_match: Vec<(String, HardwareId)> = tv_infos
         .iter()
         .filter(|t| !t.hardware_id.is_empty())

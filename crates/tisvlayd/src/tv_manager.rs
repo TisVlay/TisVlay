@@ -115,8 +115,7 @@ pub enum StateChangeEvent {
     /// Session service pushed a new desktop mapping for a TV.
     ///
     /// The forwarder invalidates the `org.tisvlay.Tv1.Desktop` cached
-    /// properties so the next read returns the updated identity and
-    /// sync-mode values.
+    /// properties so the next read returns the updated identity.
     DesktopMappingChanged { tv_id: String },
 }
 
@@ -310,8 +309,9 @@ fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvMa
 /// `ConnectionChanged(false)` only if the TV is actually disconnected
 /// — a replacement connection (WoL retry, reconnect, carrier change)
 /// starts a fresh subscription whose rx closes this older task's
-/// rx out, and a spurious `false` here would tear down the kernel
-/// backlight device without anything left to re-create it.
+/// rx out, and a spurious `false` here would tear down any per-TV
+/// resources (D-Bus interfaces, downstream observers) that no
+/// subsequent event would re-create.
 ///
 /// Extracted as a free function (rather than an inline closure) so
 /// its end-of-stream gating is unit-testable without a full
@@ -1734,8 +1734,8 @@ mod tests {
     /// TV is still connected (a replacement connection's fresh
     /// subscription has taken over), the end-handler must NOT emit
     /// `ConnectionChanged(false)`. Emitting here would trigger
-    /// `state_forwarder` to destroy the kernel backlight device with
-    /// no subsequent event to re-create it.
+    /// downstream consumers to tear down per-TV resources with no
+    /// subsequent event to re-create them.
     #[tokio::test]
     async fn subscription_end_suppresses_false_when_tv_still_connected() {
         let tvs = mk_tvs("office", Some(Box::new(FakeConnection { connected: true })));

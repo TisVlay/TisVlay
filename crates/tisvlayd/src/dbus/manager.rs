@@ -214,14 +214,14 @@ impl ManagerService {
             .collect()
     }
 
-    /// Push a desktop identity + sync state mapping for a TV.
+    /// Push a desktop identity mapping for a TV.
     ///
     /// Called by `tisvlay-session` on startup and whenever the user's
-    /// mapping or active profile changes. The daemon caches the mapping
-    /// in memory and republishes it on `org.tisvlay.Tv1.Desktop` so
-    /// tray / GUI / CLI consumers have a single place to read. The
-    /// session service owns the file storage under `~/.config/tisvlay/`;
-    /// the daemon does not persist this to disk.
+    /// mapping changes. The daemon caches the mapping in memory and
+    /// republishes it on `org.tisvlay.Tv1.Desktop` so tray / GUI / CLI
+    /// consumers have a single place to read. The session service owns
+    /// the file storage under `~/.config/tisvlay/`; the daemon does
+    /// not persist this to disk.
     async fn set_desktop_mapping(
         &self,
         tv_id: &str,

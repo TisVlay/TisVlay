@@ -73,7 +73,7 @@ pub use capabilities::Capabilities;
 // Hardware identity
 pub use hardware_id::HardwareId;
 
-// Desktop mapping (identity + sync state)
+// Desktop mapping (identity)
 pub use desktop::DesktopMapping;
 
 // Pairing
