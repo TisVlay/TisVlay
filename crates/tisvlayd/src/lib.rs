@@ -15,12 +15,15 @@
 //!   by the daemon at startup.
 //! - [`logind`] — logind monitoring (shutdown inhibitor, sleep events).
 //! - [`netlink`] — kernel netlink monitoring (carrier, route changes).
+//! - [`desktop_probe`] — DRM connector enumeration + EDID-based
+//!   matching of managed TVs to physical displays.
 //!
 //! The `__internals` module is a `#[doc(hidden)]` re-export surface for
 //! the out-of-crate test harness ([`tisvlay_harness`](../tisvlay_harness)).
 //! Do not depend on it from published code.
 
 pub mod dbus;
+pub mod desktop_probe;
 pub mod logind;
 pub mod netlink;
 pub mod registry;

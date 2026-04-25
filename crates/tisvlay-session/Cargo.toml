@@ -34,9 +34,6 @@ clap = { workspace = true }
 wayland-client = { workspace = true }
 wayland-protocols = { workspace = true }
 
-# EDID parsing for display identity matching
-edidkit = "0.1"
-
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tisvlay-harness = { workspace = true }

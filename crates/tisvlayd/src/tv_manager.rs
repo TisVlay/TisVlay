@@ -901,18 +901,21 @@ impl TvManager {
         mappings.get(tv_id).cloned()
     }
 
-    /// Record a desktop mapping pushed by `tisvlay-session`.
+    /// Record a desktop mapping for a TV.
     ///
-    /// Overwrites any existing entry for this TV. Emits
-    /// `StateChangeEvent::DesktopMappingChanged` so the D-Bus forwarder
-    /// invalidates the `Tv1.Desktop` property cache. The caller is
-    /// expected to validate `tv_id` — the daemon does not check that
-    /// the ID corresponds to a configured TV, because the session
-    /// service may legitimately push mappings for TVs it knows about
-    /// that the daemon doesn't yet.
+    /// Idempotent: when the new mapping is byte-equal to the current
+    /// cached value, the entry isn't touched and no event fires.
+    /// Otherwise the cache is updated and
+    /// `StateChangeEvent::DesktopMappingChanged` fires so the D-Bus
+    /// forwarder invalidates the `Tv1.Desktop` property cache.
+    /// Callers in the daemon's probe path can re-push every TV's
+    /// mapping every probe pass without spamming D-Bus listeners.
     pub async fn set_desktop_mapping(&self, tv_id: &str, mapping: tisvlay_core::DesktopMapping) {
         {
             let mut mappings = self.desktop_mappings.write().await;
+            if mappings.get(tv_id) == Some(&mapping) {
+                return;
+            }
             mappings.insert(tv_id.to_string(), mapping);
         }
         self.emit_state_change(StateChangeEvent::DesktopMappingChanged {

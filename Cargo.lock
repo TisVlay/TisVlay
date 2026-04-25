@@ -1731,7 +1731,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "edidkit",
  "futures-util",
  "serde_json",
  "tempfile",
@@ -1780,6 +1779,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "edidkit",
  "futures-util",
  "indexmap",
  "netlink-packet-core",

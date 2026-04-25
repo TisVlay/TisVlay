@@ -3,7 +3,6 @@
 //! The binary entry point lives in `main.rs`; this library exposes the
 //! modules that integration tests need to drive.
 
-pub mod desktop_probe;
 pub mod idle;
 pub mod session_dbus;
 pub mod session_monitor;
@@ -23,8 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
-    DaemonClient, DesktopMapping, HardwareId, ResolvedUserProfile, SessionAction, UserConfig,
-    UserProfileConfig,
+    DaemonClient, ResolvedUserProfile, SessionAction, UserConfig, UserProfileConfig,
 };
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -153,14 +151,6 @@ impl SessionState {
             profiles.insert(tv_id.clone(), resolved);
         }
 
-        // Auto-detect desktop-side identity (EDID → HardwareId) for
-        // each managed TV and push the resolved DesktopMapping to the
-        // daemon so it can republish on Tv1.Desktop. In-memory only:
-        // the probe re-runs at every session start and reload, so no
-        // user-config persistence is needed for cross-restart
-        // stability — the matcher itself is deterministic.
-        probe_and_push_desktop_mappings(daemon, &tv_infos).await;
-
         info!(tvs = tv_ids.len(), "Session state loaded");
 
         Ok(Self {
@@ -189,49 +179,6 @@ impl SessionState {
             .filter(|&t| t > 0)
             .min()
             .unwrap_or(0)
-    }
-}
-
-/// Run the DRM probe, match each managed TV to a physical connector
-/// by EDID, and push a `DesktopMapping` per TV to the daemon.
-///
-/// Best-effort end-to-end: any individual step failing logs a warning
-/// and moves on. A failed probe or a failed push doesn't block session
-/// startup — the session service can still handle idle / session lock
-/// events without the display mapping being wired up.
-///
-/// In-memory only — no on-disk persistence. The matcher is
-/// deterministic (sorts probed displays by connector name and
-/// greedily claims one per TV), so cross-restart stability follows
-/// from the probe itself, not from cached state.
-async fn probe_and_push_desktop_mappings(daemon: &DaemonClient, tv_infos: &[tisvlay_core::TvInfo]) {
-    // Collect TVs with a non-empty HardwareId — only those can be
-    // EDID-matched. Unmanaged TVs and headless TVs still get a
-    // DesktopMapping push with empty identity fields below.
-    let tvs_for_match: Vec<(String, HardwareId)> = tv_infos
-        .iter()
-        .filter(|t| !t.hardware_id.is_empty())
-        .map(|t| (t.id.clone(), t.hardware_id.clone()))
-        .collect();
-
-    let probed = desktop_probe::ProbedDisplay::enumerate();
-    debug!(
-        count = probed.len(),
-        "Desktop probe enumerated DRM displays"
-    );
-
-    let matches = desktop_probe::match_displays_to_tvs(&probed, &tvs_for_match);
-
-    for tv in tv_infos {
-        let mapping = match matches.get(&tv.id) {
-            Some(d) => DesktopMapping {
-                connector: d.connector.clone(),
-            },
-            None => DesktopMapping::default(),
-        };
-        if let Err(e) = daemon.set_desktop_mapping(&tv.id, mapping).await {
-            warn!(tv_id = %tv.id, error = %e, "Failed to push desktop mapping to daemon");
-        }
     }
 }
 

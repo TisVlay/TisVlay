@@ -123,12 +123,6 @@ trait TisvlayManager {
 
     /// Set a system-level TV option.
     fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> zbus::Result<()>;
-
-    /// Push a desktop identity mapping for a TV.
-    ///
-    /// Called by `tisvlay-session`; the daemon caches the value and
-    /// republishes it on `org.tisvlay.Tv1.Desktop`.
-    fn set_desktop_mapping(&self, tv_id: &str, mapping: crate::DesktopMapping) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -1091,19 +1085,6 @@ impl DaemonClient {
             .set_tv_option(tv_id, key, value)
             .await
             .with_context(|| format!("Failed to set TV option: {} {}={}", tv_id, key, value))
-    }
-
-    /// Push a desktop identity mapping for a TV.
-    pub async fn set_desktop_mapping(
-        &self,
-        tv_id: &str,
-        mapping: crate::DesktopMapping,
-    ) -> Result<()> {
-        debug!(tv_id = %tv_id, ?mapping, "Calling SetDesktopMapping on daemon");
-        self.manager
-            .set_desktop_mapping(tv_id, mapping)
-            .await
-            .with_context(|| format!("Failed to set desktop mapping for TV {}", tv_id))
     }
 }
 

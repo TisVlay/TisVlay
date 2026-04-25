@@ -43,6 +43,9 @@ netlink-packet-core = "0.8"
 netlink-packet-route = "0.28"
 async-trait = { workspace = true }
 
+# EDID parsing for the desktop probe (DRM-connector ↔ TV matching)
+edidkit = "0.1"
+
 [dev-dependencies]
 # test-util enables tokio::time::pause/advance for deterministic clock
 # control in the TvManager integration tests (B.1.x).
