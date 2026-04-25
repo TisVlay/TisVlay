@@ -29,9 +29,6 @@ tisvlay-mock = { workspace = true, optional = true }
 # Serialization
 toml.workspace = true
 
-# Async
-async-trait.workspace = true
-
 # Logging
 tracing.workspace = true
 

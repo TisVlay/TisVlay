@@ -122,3 +122,36 @@ async fn set_unknown_profile_returns_error() {
 
     assert!(result.is_err(), "setting unknown profile should fail");
 }
+
+/// Regression: the JSON returned by `GetEffectiveUserProfile` must
+/// carry every `ResolvedUserProfile` field. A prior version of the
+/// ad-hoc json! builder omitted `on_idle_resume`, silently breaking
+/// consumers that read it.
+#[tokio::test]
+async fn get_effective_user_profile_includes_all_fields() {
+    let _session = TestSession::new("eff_full_tv").await.unwrap();
+    let bus = tisvlay_test::PrivateBus::shared();
+    let conn = bus.connect().await.unwrap();
+    let proxy = session_proxy(&conn).await.unwrap();
+
+    let json: String = proxy
+        .call("GetEffectiveUserProfile", &("eff_full_tv",))
+        .await
+        .unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&json).expect("effective profile should be valid JSON");
+
+    for key in [
+        "on_session_lock",
+        "on_session_unlock",
+        "on_greeter_wake",
+        "idle_timeout_seconds",
+        "on_idle_timeout",
+        "on_idle_resume",
+    ] {
+        assert!(
+            value.get(key).is_some(),
+            "missing '{key}' in GetEffectiveUserProfile: {json}"
+        );
+    }
+}

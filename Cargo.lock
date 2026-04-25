@@ -317,6 +317,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
+name = "edidkit"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9830c5359b290f9eab7417018ed74688b8187604ed1fad6da05aeed1cde31943"
+
+[[package]]
 name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1619,7 +1625,6 @@ dependencies = [
 name = "tisvlay-backends"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "tisvlay-core",
  "tisvlay-lg",
  "tisvlay-mock",
@@ -1642,7 +1647,6 @@ dependencies = [
  "tisvlay-harness",
  "tisvlay-test",
  "tokio",
- "tracing",
  "tracing-subscriber",
 ]
 
@@ -1679,7 +1683,6 @@ dependencies = [
  "tempfile",
  "tisvlay-backends",
  "tisvlay-core",
- "tisvlay-mock",
  "tisvlay-session",
  "tisvlay-test",
  "tisvlayd",
@@ -1708,7 +1711,6 @@ dependencies = [
  "tracing",
  "url",
  "urlencoding",
- "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -1731,6 +1733,7 @@ dependencies = [
  "clap",
  "futures-util",
  "serde_json",
+ "tempfile",
  "tisvlay-core",
  "tisvlay-harness",
  "tisvlay-test",
@@ -1774,13 +1777,14 @@ name = "tisvlayd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
+ "edidkit",
  "futures-util",
  "indexmap",
  "netlink-packet-core",
  "netlink-packet-route",
  "rtnetlink",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tisvlay-backends",

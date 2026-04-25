@@ -1,4 +1,5 @@
 {
+    "rust-analyzer.server.path": "rust-analyzer",
     "cSpell.words": [
         "archlinux",
         "bintools",
@@ -30,6 +31,7 @@
         "rstest",
         "ruffsl",
         "rustc",
+        "rustlib",
         "rustls",
         "rustup",
         "serde",

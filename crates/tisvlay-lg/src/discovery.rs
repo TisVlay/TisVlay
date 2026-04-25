@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use ssdp_client::{SearchTarget, URN};
 use std::collections::HashMap;
 use std::time::Duration;
-use tisvlay_core::{DiscoveredTv, Result};
+use tisvlay_core::{DiscoveredTv, HardwareId, Result};
 
 /// Discover LG TVs on the network using SSDP.
 ///
@@ -107,14 +107,41 @@ fn parse_response(resp: &ssdp_client::SearchResponse) -> Option<DiscoveredTv> {
         .map(|s| s.into_owned())
         .unwrap_or_else(|| format!("LG TV ({})", ip));
 
+    // LG's EDID PNPID is "GSM" — always fill it so downstream matching
+    // (e.g. EDID cross-reference for display matching) has a
+    // manufacturer to work with. Model is best-effort: parsed from the
+    // DLNA device name when it's in the "[LG] webOS TV <MODEL>" form.
+    // Serial isn't available over SSDP — the backend fills it after
+    // connecting.
+    let hardware_id = Some(HardwareId::new(
+        Some(LG_PNPID),
+        parse_model_from_dlna_name(&name).map(str::to_string),
+        None::<String>,
+    ));
+
     Some(DiscoveredTv {
         id,
         name,
         address: ip,
-        hardware_id: String::new(),
+        hardware_id,
         vendor: crate::VENDOR_ID.to_string(),
         location: location.to_string(),
     })
+}
+
+/// LG's EDID PNPID manufacturer code.
+const LG_PNPID: &str = "GSM";
+
+/// Extract the model string from a DLNA device name like
+/// `"[LG] webOS TV OLED65G4SUB"`. Returns `None` when the name
+/// doesn't follow that convention.
+fn parse_model_from_dlna_name(name: &str) -> Option<&str> {
+    // Accept either "[LG] webOS TV <MODEL>" or just anything after
+    // "[LG]" — the model is whatever comes after the last space.
+    name.strip_prefix("[LG]")
+        .and_then(|rest| rest.trim().rsplit_once(' '))
+        .map(|(_, model)| model)
+        .filter(|m| !m.is_empty())
 }
 
 /// Extract UUID from USN header.
@@ -163,7 +190,7 @@ mod tests {
             id: "uuid".to_string(),
             name: "[LG] webOS TV OLED65G4SUB".to_string(),
             address: "192.168.1.170".to_string(),
-            hardware_id: String::new(),
+            hardware_id: None,
             vendor: "lg".to_string(),
             location: String::new(),
         };
@@ -174,6 +201,22 @@ mod tests {
             ..with_dlna
         };
         assert!(!has_dlna_name(&fallback));
+    }
+
+    #[test]
+    fn test_parse_model_from_dlna_name() {
+        assert_eq!(
+            parse_model_from_dlna_name("[LG] webOS TV OLED65G4SUB"),
+            Some("OLED65G4SUB")
+        );
+        assert_eq!(
+            parse_model_from_dlna_name("[LG] webOS TV OLED42C3PUA"),
+            Some("OLED42C3PUA")
+        );
+        // Fallback name (no "[LG]" prefix) — no model extracted.
+        assert_eq!(parse_model_from_dlna_name("LG TV (192.168.1.170)"), None);
+        // Bracket but nothing after it — no model.
+        assert_eq!(parse_model_from_dlna_name("[LG]"), None);
     }
 
     #[test]

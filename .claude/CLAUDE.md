@@ -15,6 +15,7 @@ See [docs/design.md](docs/design.md) for the full architecture, D-Bus interface 
 
 ## What's Next
 
+- Event-driven power-management redesign — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md) "Event-driven power-management redesign" for design notes carried forward from the dev-branch sync research.
 - `tisvlay-gui`: Slint-based settings window
 - TV discovery and pairing wizard (with managed checkbox)
 - Per-TV configuration and session behavior settings

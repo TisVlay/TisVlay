@@ -112,6 +112,11 @@ pub enum StateChangeEvent {
     /// for all connected network TVs in case their route shifted to a
     /// different NIC (failover, DHCP renewal, VPN up/down).
     RouteChanged,
+    /// In-process desktop probe produced a new mapping for a TV.
+    ///
+    /// The forwarder invalidates the `org.tisvlay.Tv1.Desktop` cached
+    /// properties so the next read returns the updated identity.
+    DesktopMappingChanged { tv_id: String },
 }
 
 /// Basic TV information for D-Bus properties.
@@ -231,6 +236,13 @@ pub struct TvManager {
     disk_write_lock: Mutex<()>,
     /// Channel to send state change events.
     state_change_tx: mpsc::UnboundedSender<StateChangeEvent>,
+    /// In-memory cache of desktop mappings produced by the in-process
+    /// DRM-EDID probe (see [`crate::desktop_probe`]). Repopulated on
+    /// every TV `ConnectionChanged(true)` and on `Manager1.ReloadConfig`.
+    /// Backs the `org.tisvlay.Tv1.Desktop` D-Bus surface so tray / GUI /
+    /// CLI consumers read from a single place. Not persisted to disk —
+    /// re-derives deterministically from sysfs each daemon start.
+    desktop_mappings: RwLock<std::collections::HashMap<String, tisvlay_core::DesktopMapping>>,
 }
 
 impl std::fmt::Debug for TvManager {
@@ -289,6 +301,67 @@ fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvMa
     Ok(())
 }
 
+/// Body of the task spawned by [`TvManager::try_subscribe_state`].
+///
+/// Forwards backend state pushes as `StateChangeEvent::SubscriptionUpdate`
+/// until the backend's `state_rx` closes. When it closes, emit a
+/// `ConnectionChanged(false)` only if the TV is actually disconnected
+/// — a replacement connection (WoL retry, reconnect, carrier change)
+/// starts a fresh subscription whose rx closes this older task's
+/// rx out, and a spurious `false` here would tear down any per-TV
+/// resources (D-Bus interfaces, downstream observers) that no
+/// subsequent event would re-create.
+///
+/// Extracted as a free function (rather than an inline closure) so
+/// its end-of-stream gating is unit-testable without a full
+/// `TvManager` + backend stack.
+async fn run_subscription_task(
+    tv_id: String,
+    tvs: Arc<RwLock<IndexMap<String, TvEntry>>>,
+    tx: mpsc::UnboundedSender<StateChangeEvent>,
+    mut state_rx: mpsc::UnboundedReceiver<TvState>,
+) {
+    while let Some(state) = state_rx.recv().await {
+        // Update last_known_input on ManagedTv for the automation gate.
+        if let Some(ref input) = state.current_input {
+            let tvs_read = tvs.read().await;
+            if let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) {
+                tv_arc.lock().await.last_known_input = Some(input.clone());
+            }
+        }
+        let event = StateChangeEvent::SubscriptionUpdate {
+            tv_id: tv_id.clone(),
+            state,
+        };
+        if tx.send(event).is_err() {
+            break;
+        }
+    }
+
+    let still_connected = {
+        let tvs_read = tvs.read().await;
+        let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) else {
+            // TV removed mid-lifecycle (config reload, RemoveTv D-Bus);
+            // its D-Bus objects are gone too, so any emission here
+            // would land on a zombie path.
+            debug!(tv_id = %tv_id, "Backend state subscription ended (TV unknown)");
+            return;
+        };
+        tv_arc.lock().await.is_connected()
+    };
+    if !still_connected {
+        let _ = tx.send(StateChangeEvent::ConnectionChanged {
+            tv_id: tv_id.clone(),
+            connected: false,
+        });
+    }
+    debug!(
+        tv_id = %tv_id,
+        still_connected,
+        "Backend state subscription ended"
+    );
+}
+
 impl TvManager {
     /// Create a new TV manager from configuration.
     ///
@@ -328,6 +401,7 @@ impl TvManager {
             user_section,
             disk_write_lock: Mutex::new(()),
             state_change_tx,
+            desktop_mappings: RwLock::new(std::collections::HashMap::new()),
         };
 
         (manager, state_change_rx)
@@ -341,35 +415,14 @@ impl TvManager {
     /// If not supported, does nothing (the tray's fallback poll handles it).
     async fn try_subscribe_state(&self, tv_id: &str, connection: &mut dyn TvConnection) {
         match connection.subscribe_state().await {
-            Ok(mut state_rx) => {
-                let tv_id = tv_id.to_string();
-                let tx = self.state_change_tx.clone();
-                let tvs = self.tvs.clone();
+            Ok(state_rx) => {
                 info!(tv_id = %tv_id, "Subscribed to backend state updates");
-                tokio::spawn(async move {
-                    while let Some(state) = state_rx.recv().await {
-                        // Update last_known_input on ManagedTv for the automation gate.
-                        if let Some(ref input) = state.current_input {
-                            let tvs_read = tvs.read().await;
-                            if let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) {
-                                tv_arc.lock().await.last_known_input = Some(input.clone());
-                            }
-                        }
-                        let event = StateChangeEvent::SubscriptionUpdate {
-                            tv_id: tv_id.clone(),
-                            state,
-                        };
-                        if tx.send(event).is_err() {
-                            break;
-                        }
-                    }
-                    // Subscription ended -- TV likely disconnected.
-                    let _ = tx.send(StateChangeEvent::ConnectionChanged {
-                        tv_id: tv_id.clone(),
-                        connected: false,
-                    });
-                    debug!(tv_id = %tv_id, "Backend state subscription ended");
-                });
+                tokio::spawn(run_subscription_task(
+                    tv_id.to_string(),
+                    self.tvs.clone(),
+                    self.state_change_tx.clone(),
+                    state_rx,
+                ));
             }
             Err(_) => {
                 // Backend doesn't support subscriptions -- this is fine,
@@ -451,10 +504,7 @@ impl TvManager {
         if let Some(mut conn) = conn {
             let _ = conn.close().await;
             info!(tv_id = %tv_id, "Route changed ({previous:?} -> {interface:?}): disconnected");
-            self.emit_state_change(StateChangeEvent::ConnectionChanged {
-                tv_id: tv_id.to_string(),
-                connected: false,
-            });
+            self.emit_connection_changed(tv_id, false);
         }
 
         if should_disconnect || should_reconnect {
@@ -468,6 +518,17 @@ impl TvManager {
         if let Err(e) = self.state_change_tx.send(event) {
             debug!("Failed to send state change event: {}", e);
         }
+    }
+
+    /// Shorthand for the 7+ call sites that emit a connection-status
+    /// change. Avoids re-spelling the event shape each time and keeps
+    /// the construction in one place so future field additions don't
+    /// have to chase every call site.
+    fn emit_connection_changed(&self, tv_id: &str, connected: bool) {
+        self.emit_state_change(StateChangeEvent::ConnectionChanged {
+            tv_id: tv_id.to_string(),
+            connected,
+        });
     }
 
     /// Get a per-TV Arc, briefly holding the outer read lock for lookup only.
@@ -662,10 +723,7 @@ impl TvManager {
                         }
                     }
                 }
-                manager.emit_state_change(StateChangeEvent::ConnectionChanged {
-                    tv_id: tv_id.to_string(),
-                    connected: true,
-                });
+                manager.emit_connection_changed(tv_id, true);
                 manager.resolve_monitored_interface(tv_id).await;
 
                 match manager.screen_on(tv_id).await {
@@ -820,6 +878,51 @@ impl TvManager {
         Some(tv.capabilities())
     }
 
+    /// Get the TV's vendor-reported hardware identity, if known.
+    ///
+    /// Returns `None` when the TV isn't currently connected or the
+    /// backend doesn't report identity. The backend's own `hardware_id`
+    /// method is synchronous — it reads a cached value — so this
+    /// doesn't hold the connection lock across any I/O.
+    pub async fn get_hardware_id(&self, tv_id: &str) -> Option<tisvlay_core::HardwareId> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        tv.connection.as_ref().and_then(|c| c.hardware_id())
+    }
+
+    /// Get the current desktop mapping for a TV.
+    ///
+    /// Returns `None` when the in-process DRM-EDID probe (see
+    /// [`crate::desktop_probe`]) hasn't matched a connector yet — e.g.
+    /// the backend hasn't connected, the TV's `HardwareId` is empty,
+    /// or no DRM connector EDID matches it.
+    pub async fn get_desktop_mapping(&self, tv_id: &str) -> Option<tisvlay_core::DesktopMapping> {
+        let mappings = self.desktop_mappings.read().await;
+        mappings.get(tv_id).cloned()
+    }
+
+    /// Record a desktop mapping for a TV.
+    ///
+    /// Idempotent: when the new mapping is byte-equal to the current
+    /// cached value, the entry isn't touched and no event fires.
+    /// Otherwise the cache is updated and
+    /// `StateChangeEvent::DesktopMappingChanged` fires so the D-Bus
+    /// forwarder invalidates the `Tv1.Desktop` property cache.
+    /// Callers in the daemon's probe path can re-push every TV's
+    /// mapping every probe pass without spamming D-Bus listeners.
+    pub async fn set_desktop_mapping(&self, tv_id: &str, mapping: tisvlay_core::DesktopMapping) {
+        {
+            let mut mappings = self.desktop_mappings.write().await;
+            if mappings.get(tv_id) == Some(&mapping) {
+                return;
+            }
+            mappings.insert(tv_id.to_string(), mapping);
+        }
+        self.emit_state_change(StateChangeEvent::DesktopMappingChanged {
+            tv_id: tv_id.to_string(),
+        });
+    }
+
     /// Force reconnection to a TV.
     ///
     /// Disconnects (if connected), then reconnects. The per-TV lock is
@@ -883,10 +986,7 @@ impl TvManager {
             }
         }
 
-        self.emit_state_change(StateChangeEvent::ConnectionChanged {
-            tv_id: tv_id.to_string(),
-            connected: true,
-        });
+        self.emit_connection_changed(tv_id, true);
         self.resolve_monitored_interface(tv_id).await;
 
         Ok(())
@@ -953,10 +1053,7 @@ impl TvManager {
         for (tv_id, mut conn) in to_close {
             let _ = conn.close().await;
             info!(tv_id = %tv_id, "Carrier lost on {interface}: disconnected");
-            self.emit_state_change(StateChangeEvent::ConnectionChanged {
-                tv_id,
-                connected: false,
-            });
+            self.emit_connection_changed(&tv_id, false);
         }
     }
 
@@ -1037,10 +1134,7 @@ impl TvManager {
 
             info!(tv_id = %tv_id, "Connected to TV");
             tv.connection = Some(connection);
-            self.emit_state_change(StateChangeEvent::ConnectionChanged {
-                tv_id: tv_id.to_string(),
-                connected: true,
-            });
+            self.emit_connection_changed(tv_id, true);
 
             // Resolve which NIC routes to this TV (inline — we hold the lock)
             if self
@@ -1133,10 +1227,7 @@ impl TvManager {
             }
         }
 
-        self.emit_state_change(StateChangeEvent::ConnectionChanged {
-            tv_id: tv_id.to_string(),
-            connected: true,
-        });
+        self.emit_connection_changed(tv_id, true);
         self.resolve_monitored_interface(tv_id).await;
         info!(tv_id = %tv_id, "TV is online after WoL");
         Ok(())
@@ -1587,5 +1678,121 @@ impl TvManager {
         self.emit_state_change(StateChangeEvent::ConfigReloaded);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use tisvlay_core::HardwareId;
+
+    /// Minimal `TvConnection` fake for unit tests — only implements
+    /// what `ManagedTv::is_connected()` needs and the trait's
+    /// required methods. Everything else inherits the trait's
+    /// `Err(not_supported)` defaults.
+    struct FakeConnection {
+        connected: bool,
+    }
+
+    #[async_trait]
+    impl TvConnection for FakeConnection {
+        fn vendor_id(&self) -> &'static str {
+            "fake"
+        }
+        fn is_connected(&self) -> bool {
+            self.connected
+        }
+        async fn get_state(&mut self) -> tisvlay_core::Result<TvState> {
+            Ok(TvState::default())
+        }
+        async fn close(&mut self) -> tisvlay_core::Result<()> {
+            self.connected = false;
+            Ok(())
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::empty()
+        }
+        fn hardware_id(&self) -> Option<HardwareId> {
+            None
+        }
+    }
+
+    fn mk_tvs(
+        tv_id: &str,
+        connection: Option<Box<dyn TvConnection>>,
+    ) -> Arc<RwLock<IndexMap<String, TvEntry>>> {
+        let mut tv = ManagedTv::new(
+            TvConfig::new(tv_id, tv_id, "fake", true),
+            ResolvedSystemProfile::default(),
+        );
+        tv.connection = connection;
+
+        let mut map = IndexMap::new();
+        map.insert(tv_id.to_string(), (true, Arc::new(Mutex::new(tv))));
+        Arc::new(RwLock::new(map))
+    }
+
+    /// Regression: when the subscription's `state_rx` closes but the
+    /// TV is still connected (a replacement connection's fresh
+    /// subscription has taken over), the end-handler must NOT emit
+    /// `ConnectionChanged(false)`. Emitting here would trigger
+    /// downstream consumers to tear down per-TV resources with no
+    /// subsequent event to re-create them.
+    #[tokio::test]
+    async fn subscription_end_suppresses_false_when_tv_still_connected() {
+        let tvs = mk_tvs("office", Some(Box::new(FakeConnection { connected: true })));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (state_tx, state_rx) = mpsc::unbounded_channel();
+        drop(state_tx); // end of stream — subscription closed
+
+        run_subscription_task("office".to_string(), tvs, tx, state_rx).await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "subscription end with TV still connected must not emit any event"
+        );
+    }
+
+    /// Complement to the regression above: when the TV is actually
+    /// disconnected (connection gone), the subscription-end handler
+    /// SHOULD emit `ConnectionChanged(false)` so state_forwarder can
+    /// tear down the kernel device and downstream consumers know the
+    /// TV is offline.
+    #[tokio::test]
+    async fn subscription_end_emits_false_when_tv_disconnected() {
+        let tvs = mk_tvs(
+            "office",
+            Some(Box::new(FakeConnection { connected: false })),
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (state_tx, state_rx) = mpsc::unbounded_channel();
+        drop(state_tx);
+
+        run_subscription_task("office".to_string(), tvs, tx, state_rx).await;
+
+        match rx.try_recv() {
+            Ok(StateChangeEvent::ConnectionChanged { tv_id, connected }) => {
+                assert_eq!(tv_id, "office");
+                assert!(!connected);
+            }
+            other => panic!("expected ConnectionChanged(false), got {other:?}"),
+        }
+    }
+
+    /// If the TV has been removed from the `tvs` map entirely (config
+    /// reload, RemoveTv D-Bus call), the subscription-end handler
+    /// returns early with just a debug log — emitting a ConnectionChanged
+    /// for a TV whose D-Bus objects have been torn down is pointless.
+    #[tokio::test]
+    async fn subscription_end_on_removed_tv_emits_nothing() {
+        let tvs: Arc<RwLock<IndexMap<String, TvEntry>>> = Arc::new(RwLock::new(IndexMap::new()));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (state_tx, state_rx) = mpsc::unbounded_channel();
+        drop(state_tx);
+
+        run_subscription_task("ghost_tv".to_string(), tvs, tx, state_rx).await;
+
+        assert!(rx.try_recv().is_err());
     }
 }

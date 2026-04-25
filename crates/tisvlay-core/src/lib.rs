@@ -46,7 +46,9 @@
 mod capabilities;
 mod config;
 pub mod dbus_paths;
+mod desktop;
 mod error;
+mod hardware_id;
 mod pairing;
 mod state;
 mod traits;
@@ -67,6 +69,12 @@ pub use traits::{Transport, TvBackend, TvConnection, TvConnector, TvDiscovery};
 
 // Capabilities
 pub use capabilities::Capabilities;
+
+// Hardware identity
+pub use hardware_id::HardwareId;
+
+// Desktop mapping (identity)
+pub use desktop::DesktopMapping;
 
 // Pairing
 pub use pairing::{

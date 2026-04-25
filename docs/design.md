@@ -629,14 +629,26 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 9. Tray gains dual submenus: "User Profile" and "System Profile" per TV
 10. CLI: `tisvlay profile user list/get/set` and `tisvlay profile system list/get/set`
 
-### Phase 5: GUI Configuration
+### Brightness / Volume Sync (researched and scrapped)
 
-**Goal**: User-friendly setup and configuration.
+[PR #34](https://github.com/ruffsl/TisVlay/pull/34) carried experimental volume sync via PipeWire and brightness sync via KWin Wayland + PowerDevil D-Bus + a virtual backlight kernel module that ultimately did not merge to main. PowerDevil binary patches against Plasma's release cadence, the non-bidirectional `kde_external_brightness_v1` protocol, HDR-vs-SDR code-path divergence, and gain-stage chaining in PipeWire mirror sinks made the maintenance burden outweigh the capability. The granular commit history is preserved in that PR; see [docs/ideas.md](ideas.md) for the rationale and the event-driven power-management direction the next merge cycle is taking.
+
+## Future Work
+
+Forward-looking work that hasn't shipped yet. No fixed sequencing — entries land in whichever order makes sense.
+
+### GUI Configuration
+
+User-friendly setup and configuration.
 
 1. `tisvlay-gui`: Slint-based settings window
 2. TV discovery and pairing wizard with managed checkbox
 3. Per-TV configuration
 4. Session behavior settings
+
+### Event-Driven Power Management
+
+Today's `tisvlay-session` listener path drives `Tv1.Power.SetIsScreenOn` / `PowerOff` from session-bus events (screensaver, Wayland idle, logind, idle timer). A follow-up merge replaces this with per-DE adapters (KWin idle/DPMS, wlroots output management, X11 XScreenSaver, logind fallback) that emit a unified `ScreenBlank` / `ScreenWake` / `Sleep` / `Wake` event surface the daemon dispatches to `Tv1.Power.*`. Hard requirements (sub-100 ms lockscreen-snap-back, blank-vs-off distinction, multi-TV per-EDID-connector, detached-TV idle-timer fallback) and the "what NOT to do" gotchas are captured in [docs/ideas.md](ideas.md).
 
 ---
 

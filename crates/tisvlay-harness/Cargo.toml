@@ -13,7 +13,6 @@ repository.workspace = true
 [dependencies]
 # Shared primitives from the workspace test layer.
 tisvlay-test = { workspace = true }
-tisvlay-mock = { workspace = true }
 
 # Core types referenced by the fixtures (SystemConfig, TvConfig).
 tisvlay-core = { workspace = true }
@@ -33,7 +32,7 @@ zbus = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 toml = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

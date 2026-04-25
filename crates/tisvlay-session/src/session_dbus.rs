@@ -147,7 +147,6 @@ impl SessionService {
             warn!(error = %e, "Failed to save user config after profile change");
         }
 
-        // Drop the write lock before emitting the signal
         drop(s);
 
         // Notify subscribers that the profile changed
@@ -177,6 +176,7 @@ impl SessionService {
             "on_greeter_wake": resolved.on_greeter_wake,
             "idle_timeout_seconds": resolved.idle_timeout_seconds,
             "on_idle_timeout": resolved.on_idle_timeout,
+            "on_idle_resume": resolved.on_idle_resume,
         });
 
         Ok(json.to_string())

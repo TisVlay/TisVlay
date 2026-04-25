@@ -37,12 +37,14 @@ impl ManagerService {
 
     /// Discover available TVs using all registered backends.
     ///
-    /// Returns: Array of (id, name, address, hardware_id, vendor) tuples.
+    /// Returns: Array of `(id, name, address, (manufacturer, model, serial), vendor)`
+    /// tuples. The nested `(sss)` carries the discovered hardware identity
+    /// with empty strings for unknown fields.
     #[cfg(feature = "discovery")]
     async fn discover_tvs(
         &self,
         timeout_ms: u32,
-    ) -> Result<Vec<(String, String, String, String, String)>, DaemonError> {
+    ) -> Result<Vec<(String, String, String, (String, String, String), String)>, DaemonError> {
         info!(timeout_ms = timeout_ms, "D-Bus: DiscoverTvs");
 
         let tvs = self
@@ -53,7 +55,10 @@ impl ManagerService {
 
         Ok(tvs
             .into_iter()
-            .map(|tv| (tv.id, tv.name, tv.address, tv.hardware_id, tv.vendor))
+            .map(|tv| {
+                let hardware_id = tv.hardware_id.unwrap_or_default().to_dbus_tuple();
+                (tv.id, tv.name, tv.address, hardware_id, tv.vendor)
+            })
             .collect())
     }
 

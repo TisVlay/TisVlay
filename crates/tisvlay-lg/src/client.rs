@@ -1,14 +1,14 @@
 //! High-level WebOS TV client.
 
 use crate::connection::Connection;
-use crate::endpoints::{audio, input, luna, notification, picture, power, timeouts};
+use crate::endpoints::{audio, input, luna, notification, picture, power, system, timeouts};
 use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
     VolumeInfo, VolumeResponse,
 };
 use serde_json::{Value, json};
 use std::time::Duration;
-use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
+use tisvlay_core::{Error, HardwareId, InputInfo, PowerState, Result, TvState};
 use tokio::sync::mpsc;
 
 /// Client for controlling an LG WebOS TV.
@@ -514,6 +514,39 @@ impl WebOsClient {
             .unwrap_or(50);
 
         Ok(raw.clamp(0, 100) as u8)
+    }
+
+    // -------------------------------------------------------------------------
+    // System info
+    // -------------------------------------------------------------------------
+
+    /// Fetch hardware identity from `ssap://system/getSystemInfo`.
+    ///
+    /// LG's `getSystemInfo` returns `modelName`, `serialNumber`, and
+    /// related fields. Not every field is populated on every firmware —
+    /// older sets may omit `serialNumber`. The returned [`HardwareId`]
+    /// uses the EDID PNPID `"GSM"` for manufacturer (LG is always GSM)
+    /// and fills model / serial from whichever fields the TV reports.
+    pub async fn get_hardware_id(&mut self) -> Result<HardwareId> {
+        let response = self.command(system::GET_SYSTEM_INFO, json!({})).await?;
+        let payload = &response.payload;
+
+        let model = payload
+            .get("modelName")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let serial = payload
+            .get("serialNumber")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        Ok(HardwareId {
+            manufacturer: Some("GSM".to_string()),
+            model,
+            serial,
+        })
     }
 
     // -------------------------------------------------------------------------

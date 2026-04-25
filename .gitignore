@@ -22,3 +22,6 @@ target
 
 # Direnv
 .direnv/
+
+# Nix build output symlink
+result

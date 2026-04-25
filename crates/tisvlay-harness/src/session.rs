@@ -53,7 +53,29 @@ impl TestSession {
     /// The TV uses the default system profile. The session loads state
     /// from the daemon, registers the Session D-Bus interface, and
     /// spawns the event handler — all on the shared private bus.
+    ///
+    /// User config path is `None`, which means `SessionState::load` and
+    /// the Session D-Bus interface fall back to XDG defaults
+    /// (`~/.config/tisvlay/config.toml`). For tests that exercise
+    /// profile mutation without polluting the developer's real user
+    /// config, use [`TestSession::with_user_config_path`].
     pub async fn new(tv_id: &str) -> anyhow::Result<Self> {
+        Self::build(tv_id, None).await
+    }
+
+    /// Like [`TestSession::new`] but pins the user config to a
+    /// specific path — typically a file inside a `tempfile::TempDir`
+    /// the test owns. Avoids reading or writing
+    /// `~/.config/tisvlay/config.toml` for tests that call
+    /// `SetTvUserProfile` or `ReloadConfig`.
+    pub async fn with_user_config_path(
+        tv_id: &str,
+        config_path: std::path::PathBuf,
+    ) -> anyhow::Result<Self> {
+        Self::build(tv_id, Some(config_path)).await
+    }
+
+    async fn build(tv_id: &str, config_path: Option<std::path::PathBuf>) -> anyhow::Result<Self> {
         let daemon = TestDaemon::with_one_mock_tv(tv_id).await?;
 
         // Connect the daemon and reconnect so the TV is online.
@@ -66,7 +88,7 @@ impl TestSession {
         let daemon_client = Arc::new(DaemonClient::from_connection(client_conn).await?);
 
         // Load session state from the daemon.
-        let session_state = SessionState::load(&daemon_client, None).await?;
+        let session_state = SessionState::load(&daemon_client, config_path.as_ref()).await?;
         let state = Arc::new(RwLock::new(session_state));
 
         // Register session D-Bus interface on the private bus.
@@ -74,7 +96,7 @@ impl TestSession {
             tisvlay_core::BusKind::Address(bus.address()),
             state.clone(),
             daemon_client.clone(),
-            None,
+            config_path,
         )
         .await?;
 

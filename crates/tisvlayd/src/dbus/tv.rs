@@ -164,6 +164,21 @@ impl TvService {
         self.automate_when.should_automate(primary, current)
     }
 
+    /// Vendor-reported hardware identity: `(manufacturer, model, serial)`.
+    ///
+    /// Live-read from the backend's cached identity (empty strings for
+    /// unknown fields). Emits `invalidates` rather than a full value
+    /// change signal so clients re-fetch on the next access after the
+    /// backend connects and populates its cache.
+    #[zbus(property(emits_changed_signal = "invalidates"))]
+    async fn hardware_id(&self) -> (String, String, String) {
+        self.manager
+            .get_hardware_id(&self.tv_id)
+            .await
+            .unwrap_or_default()
+            .to_dbus_tuple()
+    }
+
     /// Capabilities supported by this TV.
     ///
     /// Queried live from the backend (populated after connection).
@@ -416,6 +431,41 @@ impl TvBacklightService {
 }
 
 // =============================================================================
+// Desktop mapping interface
+// =============================================================================
+
+/// Desktop identity for a TV.
+///
+/// All properties are live-read from the manager's in-memory mapping
+/// cache, which is populated by the daemon's in-process desktop probe
+/// (see [`crate::desktop_probe`]). Empty strings mean unknown / unset.
+/// Emits `invalidates` on change so clients re-read on next access.
+#[derive(Debug)]
+pub struct TvDesktopService {
+    pub(crate) tv_id: String,
+    pub(crate) manager: Arc<TvManager>,
+}
+
+#[interface(name = "org.tisvlay.Tv1.Desktop")]
+impl TvDesktopService {
+    /// DRM connector name the daemon's desktop probe matched this TV
+    /// to (empty when unknown / not yet probed).
+    ///
+    /// Tooling that wants richer EDID detail (capability tables,
+    /// manufacture date, vendor blocks) reads this connector name and
+    /// parses `/sys/class/drm/<connector>/edid` itself via the probe
+    /// library — D-Bus carries only the matching outcome.
+    #[zbus(property)]
+    async fn connector(&self) -> String {
+        self.manager
+            .get_desktop_mapping(&self.tv_id)
+            .await
+            .map(|m| m.connector)
+            .unwrap_or_default()
+    }
+}
+
+// =============================================================================
 // Helper to register all interfaces
 // =============================================================================
 
@@ -426,6 +476,7 @@ pub async fn unregister_tv_interfaces(
 ) -> zbus::Result<()> {
     let object_server = connection.object_server();
     // Ignore errors -- the interface may not be registered (e.g., added but never connected).
+    let _ = object_server.remove::<TvDesktopService, _>(path).await;
     let _ = object_server.remove::<TvBacklightService, _>(path).await;
     let _ = object_server.remove::<TvInputService, _>(path).await;
     let _ = object_server.remove::<TvVolumeService, _>(path).await;
@@ -571,6 +622,16 @@ pub async fn register_tv_interfaces(
                 tv_id: tv_id.clone(),
                 manager: manager.clone(),
                 backlight,
+            },
+        )
+        .await?;
+
+    object_server
+        .at(
+            path,
+            TvDesktopService {
+                tv_id: tv_id.clone(),
+                manager: manager.clone(),
             },
         )
         .await?;

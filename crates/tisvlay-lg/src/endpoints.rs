@@ -2,6 +2,12 @@
 //!
 //! These endpoints are used to control LG WebOS TVs via the SSAP protocol.
 
+/// System metadata endpoints.
+pub(crate) mod system {
+    /// Get system info (model name, serial number, etc.).
+    pub(crate) const GET_SYSTEM_INFO: &str = "ssap://system/getSystemInfo";
+}
+
 /// Power control endpoints.
 pub mod power {
     /// Turn off the TV (standby).

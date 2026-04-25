@@ -13,10 +13,59 @@ use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
-    MANAGER_PATH, ManagerService, TvBacklightService, TvInputService, TvPowerService,
-    TvScreenService, TvService, TvVolumeService, tv_path,
+    MANAGER_PATH, ManagerService, TvBacklightService, TvDesktopService, TvInputService,
+    TvPowerService, TvScreenService, TvService, TvVolumeService, tv_path,
 };
+use crate::desktop_probe;
 use crate::tv_manager::{StateChangeEvent, TvManager};
+
+/// Re-run the DRM-EDID probe and update each managed TV's
+/// [`tisvlay_core::DesktopMapping`] cache on the manager.
+///
+/// Cheap: probes `/sys/class/drm/`, parses each connector's EDID via
+/// `edidkit`, runs the deterministic matcher (sort by connector name,
+/// then greedy claim per TV by `HardwareId`). Triggered on every
+/// `ConnectionChanged(true)` event (a freshly-connected backend's
+/// `HardwareId` is now available so the global match should
+/// re-evaluate) and on `ConfigReloaded` (the TV list may have changed).
+///
+/// TVs the matcher couldn't resolve get cleared to an empty mapping
+/// so `Tv1.Desktop.Connector` reflects "no match" rather than a
+/// stale value from a prior probe.
+pub(crate) async fn refresh_desktop_mapping(manager: &TvManager) {
+    let tv_ids = manager.list_tv_ids().await;
+
+    let mut tvs_for_match: Vec<(String, tisvlay_core::HardwareId)> = Vec::new();
+    for tv_id in &tv_ids {
+        if let Some(hw) = manager.get_hardware_id(tv_id).await
+            && !hw.is_empty()
+        {
+            tvs_for_match.push((tv_id.clone(), hw));
+        }
+    }
+
+    let probed = desktop_probe::ProbedDisplay::enumerate();
+    debug!(
+        count = probed.len(),
+        candidates = tvs_for_match.len(),
+        "Desktop probe enumerated DRM displays"
+    );
+
+    let matches = desktop_probe::match_displays_to_tvs(&probed, &tvs_for_match);
+
+    for tv_id in &tv_ids {
+        let mapping = match matches.get(tv_id) {
+            Some(d) => tisvlay_core::DesktopMapping {
+                connector: d.connector.clone(),
+            },
+            None => tisvlay_core::DesktopMapping::default(),
+        };
+        // set_desktop_mapping only emits DesktopMappingChanged when
+        // the mapping is *new*; identical re-pushes are no-ops, so
+        // calling it for every TV every probe is cheap.
+        manager.set_desktop_mapping(tv_id, mapping).await;
+    }
+}
 
 /// Forward state change events to D-Bus cached properties.
 ///
@@ -57,6 +106,16 @@ pub async fn state_change_forwarder(
                         }
                     }
                 }
+
+                // The TV's `HardwareId` becomes available after the
+                // backend connects (LG fills it from SSAP getSystemInfo
+                // on the first command). Re-run the desktop probe now
+                // so the EDID matcher has every managed TV's identity
+                // populated and the assignment converges to the
+                // correct global claim.
+                if connected {
+                    refresh_desktop_mapping(&manager).await;
+                }
             }
             StateChangeEvent::OptionChanged {
                 ref tv_id,
@@ -71,33 +130,38 @@ pub async fn state_change_forwarder(
                     let emitter = iface_ref.signal_emitter();
                     match key.as_str() {
                         "managed" => {
-                            if let Ok(managed) = value.parse::<bool>() {
-                                if iface.managed != managed {
-                                    iface.managed = managed;
-                                    iface.managed_changed(emitter).await.ok();
-                                }
+                            if let Ok(managed) = value.parse::<bool>()
+                                && iface.managed != managed
+                            {
+                                iface.managed = managed;
+                                iface.managed_changed(emitter).await.ok();
                             }
                         }
-                        "name" => {
-                            if iface.name != *value {
-                                iface.name = value.clone();
-                                iface.name_changed(emitter).await.ok();
-                            }
+                        "name" if iface.name != *value => {
+                            iface.name = value.clone();
+                            iface.name_changed(emitter).await.ok();
                         }
-                        "profile.system" => {
-                            if iface.system_profile != *value {
-                                iface.system_profile = value.clone();
-                                iface.system_profile_changed(emitter).await.ok();
-                            }
+                        "profile.system" if iface.system_profile != *value => {
+                            iface.system_profile = value.clone();
+                            iface.system_profile_changed(emitter).await.ok();
                         }
-                        "primary_input" => {
-                            if iface.primary_input != *value {
-                                iface.primary_input = value.clone();
-                                iface.primary_input_changed(emitter).await.ok();
-                            }
+                        "primary_input" if iface.primary_input != *value => {
+                            iface.primary_input = value.clone();
+                            iface.primary_input_changed(emitter).await.ok();
                         }
                         _ => {}
                     }
+                }
+            }
+            StateChangeEvent::DesktopMappingChanged { ref tv_id } => {
+                let path = tv_path(tv_id);
+                debug!(tv_id = %tv_id, "Forwarding desktop mapping change to D-Bus");
+                if let Ok(iface_ref) = object_server.interface::<_, TvDesktopService>(&*path).await
+                {
+                    let emitter = iface_ref.signal_emitter();
+                    let iface = iface_ref.get_mut().await;
+                    // `invalidates` property — clients re-read on next access.
+                    iface.connector_changed(emitter).await.ok();
                 }
             }
             StateChangeEvent::ConfigReloaded => {
@@ -108,6 +172,11 @@ pub async fn state_change_forwarder(
                         warn!(error = %e, "Failed to emit ConfigReloaded signal");
                     }
                 }
+
+                // The TV list may have changed under us; re-run the
+                // global EDID match so any newly-added TVs pick up
+                // their connector and any removed TVs drop theirs.
+                refresh_desktop_mapping(&manager).await;
             }
             StateChangeEvent::InterfaceDown { ref interface } => {
                 debug!(interface = %interface, "Interface carrier down: disconnecting affected TVs");

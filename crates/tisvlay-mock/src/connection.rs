@@ -6,7 +6,9 @@
 
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
-use tisvlay_core::{Capabilities, Error, InputInfo, PowerState, Result, TvConnection, TvState};
+use tisvlay_core::{
+    Capabilities, Error, HardwareId, InputInfo, PowerState, Result, TvConnection, TvState,
+};
 use tokio::sync::mpsc;
 
 use crate::config::MockVendorConfig;
@@ -24,14 +26,19 @@ pub struct MockConnection {
     /// each state-mutating method so subscribers see cumulative state
     /// after every operation — matching LG's push model.
     subscription_tx: Option<mpsc::UnboundedSender<TvState>>,
+    /// Pre-seeded hardware identity applied at connect time. Returned
+    /// from [`TvConnection::hardware_id`]; `None` when no test has
+    /// seeded one via `MockHandle::set_hardware_id`.
+    hardware_id: Option<HardwareId>,
 }
 
 impl MockConnection {
     /// Create a new mock connection from a vendor config.
     ///
     /// Initializes state from the config's `initial_*` fields and marks
-    /// the connection as live.
-    pub fn new(config: &MockVendorConfig) -> Self {
+    /// the connection as live. `hardware_id` is optionally seeded by
+    /// the connector from state set via `MockHandle::set_hardware_id`.
+    pub fn new(config: &MockVendorConfig, hardware_id: Option<HardwareId>) -> Self {
         let power = PowerState::parse(&config.initial_power_state);
         let inputs: Vec<InputInfo> = config
             .inputs
@@ -55,6 +62,7 @@ impl MockConnection {
             state: Arc::new(Mutex::new(state)),
             connected: true,
             subscription_tx: None,
+            hardware_id,
         }
     }
 
@@ -96,6 +104,10 @@ impl TvConnection for MockConnection {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities::ALL
+    }
+
+    fn hardware_id(&self) -> Option<HardwareId> {
+        self.hardware_id.clone()
     }
 
     // ------------------------------------------------------------------

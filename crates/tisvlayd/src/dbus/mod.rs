@@ -12,8 +12,8 @@ pub use manager::ManagerService;
 pub use setup::build_dbus_connection;
 pub use tisvlay_core::BusKind;
 pub use tv::{
-    TvBacklightService, TvInputService, TvPowerService, TvScreenService, TvService,
-    TvVolumeService, register_tv_interfaces, unregister_tv_interfaces,
+    TvBacklightService, TvDesktopService, TvInputService, TvPowerService, TvScreenService,
+    TvService, TvVolumeService, register_tv_interfaces, unregister_tv_interfaces,
 };
 
 // Re-export D-Bus path constants and helpers from tisvlay-core.

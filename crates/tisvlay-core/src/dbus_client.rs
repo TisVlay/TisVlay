@@ -81,11 +81,14 @@ impl BusKind<'_> {
 )]
 trait TisvlayManager {
     /// Discover TVs on the network.
-    /// Returns: [(id, name, ip, mac, vendor)]
+    ///
+    /// Returns `(id, name, address, (manufacturer, model, serial), vendor)` tuples.
+    /// The nested `(sss)` carries the vendor-reported hardware identity with
+    /// empty strings for unknown fields.
     fn discover_tvs(
         &self,
         timeout_ms: u32,
-    ) -> zbus::Result<Vec<(String, String, String, String, String)>>;
+    ) -> zbus::Result<Vec<(String, String, String, (String, String, String), String)>>;
 
     /// Get supported vendors.
     /// Returns: [(vendor_id, vendor_name)]
@@ -168,6 +171,11 @@ trait TisvlayTv {
     /// Set the system profile for this TV.
     #[zbus(property)]
     fn set_system_profile(&self, profile: &str) -> zbus::Result<()>;
+
+    /// Vendor-reported hardware identity: `(manufacturer, model, serial)`.
+    /// Empty strings represent unknown fields.
+    #[zbus(property)]
+    fn hardware_id(&self) -> zbus::Result<(String, String, String)>;
 
     /// Capabilities supported by this TV.
     #[zbus(property)]
@@ -410,10 +418,16 @@ pub struct TvInfo {
     /// Whether automation should fire for this TV right now.
     ///
     /// Computed from `managed`, `automate_when`, `primary_input`, and
-    /// the TV's current input. See gate composition table in plan2.md.
+    /// the TV's current input.
     pub automated: bool,
     /// System profile name assigned to this TV.
     pub system_profile: String,
+    /// Vendor-reported hardware identity (manufacturer / model / serial).
+    pub hardware_id: crate::HardwareId,
+    /// Desktop-side identity from the daemon's in-process DRM-EDID
+    /// probe. Empty strings until `tisvlayd` matches a connector for
+    /// this TV (typically on the first `ConnectionChanged(true)`).
+    pub desktop: crate::DesktopMapping,
     /// D-Bus object path.
     pub path: String,
 
@@ -710,6 +724,12 @@ impl DaemonClient {
                 }
             };
 
+            let hardware_id = props
+                .get("HardwareId")
+                .and_then(|v: &OwnedValue| <(String, String, String)>::try_from(v.clone()).ok())
+                .map(crate::HardwareId::from_dbus_tuple)
+                .unwrap_or_default();
+
             // Helper to extract properties from a sub-interface.
             let get_iface_props = |iface_name: &str| -> Option<&HashMap<String, OwnedValue>> {
                 ifaces
@@ -748,6 +768,9 @@ impl DaemonClient {
                 .and_then(|p| p.get("AvailableInputs"))
                 .and_then(|v| <Vec<(String, String)>>::try_from(v.clone()).ok())
                 .unwrap_or_default();
+            let desktop = crate::DesktopMapping {
+                connector: get_sub_str("org.tisvlay.Tv1.Desktop", "Connector", ""),
+            };
 
             let fallbacks = fallbacks.into_inner();
             if !fallbacks.is_empty() {
@@ -772,6 +795,8 @@ impl DaemonClient {
                 managed,
                 automated,
                 system_profile,
+                hardware_id,
+                desktop,
                 path: path.as_str().to_string(),
                 power_state,
                 is_screen_on,
@@ -788,15 +813,28 @@ impl DaemonClient {
 
     /// Discover TVs on the network.
     ///
-    /// Returns a vector of tuples: `(id, name, address, hardware_id, vendor)`.
+    /// Returns `(id, name, address, hardware_id, vendor)` tuples.
     pub async fn discover_tvs(
         &self,
         timeout_ms: u32,
-    ) -> Result<Vec<(String, String, String, String, String)>> {
-        self.manager
+    ) -> Result<Vec<(String, String, String, crate::HardwareId, String)>> {
+        let raw = self
+            .manager
             .discover_tvs(timeout_ms)
             .await
-            .context("Failed to discover TVs")
+            .context("Failed to discover TVs")?;
+        Ok(raw
+            .into_iter()
+            .map(|(id, name, address, hw_tuple, vendor)| {
+                (
+                    id,
+                    name,
+                    address,
+                    crate::HardwareId::from_dbus_tuple(hw_tuple),
+                    vendor,
+                )
+            })
+            .collect())
     }
 
     /// Get supported vendors.
