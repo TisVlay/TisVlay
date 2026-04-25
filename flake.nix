@@ -69,6 +69,7 @@
             llvmPackages_21.bintools-unwrapped
             pkg-config
             pkgsMusl.stdenv.cc
+            prek
             socat
             tcpdump
             wakeonlan
