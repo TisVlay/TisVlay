@@ -1,22 +1,18 @@
 //! Brightness sync coordinator.
 //!
-//! Dispatches to exactly one backend based on the resolved user
-//! profiles across all managed TVs. Variants are mutually exclusive
-//! with the daemon's kernel-module path — see
-//! `crates/tisvlay-core/src/config.rs::SyncBacklight`.
+//! Dispatches into the universal KDE coordinator ([`kde::run`]) once
+//! at least one TV's resolved profile is a KDE-flavor mode. The
+//! coordinator then runs the Wayland device manager and PowerDevil
+//! D-Bus observer concurrently and selects, per TV, which mechanisms
+//! that TV's mode opts into — see
+//! [`shared::BrightnessMechanism`](crate::brightness::shared::BrightnessMechanism).
 //!
-//! # Dispatch rule
-//!
-//! - Any TV with `Kde` → [`kde`] (full orchestrator: Wayland + D-Bus,
-//!   serves all KDE flavors).
-//! - Else any TV with `KdeWayland` → [`kde_wayland`] (strict Wayland,
-//!   forward only).
-//! - Else any TV with `KdeDbus` → [`kde_dbus`] (strict D-Bus,
-//!   bidirectional).
-//! - Else (all `None` or `Kernel`) → stay in the wait loop until a
-//!   KDE-flavor profile appears (either from a `SetTvUserProfile` flip
-//!   at runtime or from the daemon populating `state.profiles` at
-//!   boot), then dispatch.
+//! Mid-session profile flips (`SetTvUserProfile` from the tray or
+//! D-Bus) take effect on the next reconcile tick — no session restart
+//! required. Mutually exclusive with the daemon's kernel-module path
+//! at the per-TV level: a TV in `Kernel` opts out of all KDE
+//! mechanisms, a TV in `Kde`/`KdeWayland`/`KdeDbus` opts out of the
+//! kernel device. The state-forwarder enforces the kernel side.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,25 +34,17 @@ pub mod shared;
 /// daemon isn't up yet, `state.profiles` is empty and we don't yet
 /// know whether any TV wants a KDE-flavor backend. Poll state until
 /// a TV with a KDE-flavor profile appears (or the user flips one in
-/// at runtime via `SetTvUserProfile`), then dispatch to exactly one
-/// backend.
+/// at runtime via `SetTvUserProfile`), then dispatch into the
+/// universal coordinator.
 pub async fn run(
     daemon: Arc<DaemonClient>,
     state: Arc<RwLock<SessionState>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let modes = match wait_for_kde_modes(&state, &mut shutdown).await {
-        Some(m) => m,
-        None => return,
-    };
-
-    if modes.contains(&SyncBacklight::Kde) {
-        kde::run(daemon, state, shutdown).await;
-    } else if modes.contains(&SyncBacklight::KdeWayland) {
-        kde_wayland::run(daemon, state, shutdown).await;
-    } else if modes.contains(&SyncBacklight::KdeDbus) {
-        kde_dbus::run(daemon, state, shutdown).await;
+    if wait_for_kde_modes(&state, &mut shutdown).await.is_none() {
+        return;
     }
+    kde::run(daemon, state, shutdown).await;
 }
 
 /// Block until at least one TV's resolved profile is a KDE-flavor

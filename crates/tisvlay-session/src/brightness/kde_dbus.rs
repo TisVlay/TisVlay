@@ -14,15 +14,14 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use tokio::sync::{RwLock, watch};
-use tracing::{debug, info, trace, warn};
+use tokio::sync::RwLock;
+use tracing::{debug, trace, warn};
 
-use tisvlay_core::{DaemonClient, StateEvent, StateWatcher, StateWatcherConfig, TvStateChange};
+use tisvlay_core::DaemonClient;
 
 use crate::SessionState;
-use crate::brightness::shared::{BrightnessEvent, Shared, forward_brightness_events};
+use crate::brightness::shared::{BrightnessEvent, BrightnessMechanism, Shared};
 
 // ── Forward: PropertiesChanged observer ────────────────────────
 
@@ -198,8 +197,8 @@ async fn read_display_prop<T: TryFrom<zbus::zvariant::OwnedValue>>(
 // ── Reconcile (label→tv_id map only) ───────────────────────────
 
 /// Rebuild `shared.label_to_tv` from EDID monitor names for any TV
-/// whose profile matches `accept_modes`. The observer and reverse
-/// path use this map to route D-Bus traffic.
+/// whose profile opts into the D-Bus mechanism. The observer and
+/// reverse path use this map to route D-Bus traffic.
 ///
 /// Unlike `kde_wayland::reconcile`, there's no Wayland device
 /// lifecycle — the D-Bus observer subscribes globally and filters by
@@ -208,7 +207,6 @@ pub async fn reconcile_label_map(
     shared: &Arc<Shared>,
     daemon: &DaemonClient,
     state: &Arc<RwLock<SessionState>>,
-    accept_modes: &[tisvlay_core::SyncBacklight],
 ) {
     let tvs = match daemon.list_tvs().await {
         Ok(v) => v,
@@ -225,7 +223,7 @@ pub async fn reconcile_label_map(
             let Some(profile) = s.profiles.get(&tv.id) else {
                 continue;
             };
-            if !accept_modes.contains(&profile.sync_backlight) {
+            if !BrightnessMechanism::Dbus.accepts(profile.sync_backlight) {
                 continue;
             }
             let Some(edid) = crate::brightness::shared::read_edid_for_tv(tv, &s) else {
@@ -239,131 +237,4 @@ pub async fn reconcile_label_map(
 
     let mut slot = shared.label_to_tv.lock().expect("poisoned");
     *slot = map;
-}
-
-// ── Strict D-Bus-only entry point ──────────────────────────────
-
-/// Run the strict D-Bus-only backend: PropertiesChanged observer for
-/// forward, SetBrightness for reverse. No Wayland involvement.
-/// Handles `SyncBacklight::KdeDbus` TVs.
-pub async fn run(
-    daemon: Arc<DaemonClient>,
-    state: Arc<RwLock<SessionState>>,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    info!("brightness: kde_dbus (strict) starting");
-
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let shared = Shared::new(event_tx);
-
-    let session_conn = match zbus::Connection::session().await {
-        Ok(c) => Arc::new(c),
-        Err(e) => {
-            warn!("Session D-Bus unavailable, brightness sync disabled: {e}");
-            return;
-        }
-    };
-
-    let forward_handle = tokio::spawn(forward_brightness_events(
-        event_rx,
-        daemon.clone(),
-        shared.clone(),
-    ));
-
-    let dbus_handle = tokio::spawn(observe_kde_brightness_dbus(
-        shared.clone(),
-        session_conn.clone(),
-    ));
-
-    let accept = [tisvlay_core::SyncBacklight::KdeDbus];
-    reconcile_label_map(&shared, &daemon, &state, &accept).await;
-
-    let mut watcher = match StateWatcher::new(&daemon, StateWatcherConfig::default()).await {
-        Ok(w) => w,
-        Err(e) => {
-            warn!(error = %e, "StateWatcher setup failed — exiting brightness sync");
-            forward_handle.abort();
-            dbus_handle.abort();
-            return;
-        }
-    };
-
-    let mut tick = tokio::time::interval(Duration::from_secs(10));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    loop {
-        enum Action {
-            Shutdown,
-            Tick,
-            Props(String),
-            StreamClosed,
-        }
-
-        let action = tokio::select! {
-            _ = shutdown.changed() => Action::Shutdown,
-            _ = tick.tick() => Action::Tick,
-            evt = watcher.next() => match evt {
-                Some(StateEvent::DaemonStateChanged(
-                    TvStateChange::PropertiesChanged { tv_id },
-                )) => Action::Props(tv_id),
-                Some(StateEvent::DaemonStateChanged(_)
-                    | StateEvent::FallbackPoll
-                    | StateEvent::DaemonAppeared
-                    | StateEvent::DaemonDisappeared
-                    | StateEvent::SessionProfileChanged) => Action::Tick,
-                Some(StateEvent::SessionAppeared | StateEvent::SessionDisappeared) => continue,
-                None => Action::StreamClosed,
-            },
-        };
-
-        match action {
-            Action::Shutdown => {
-                info!("brightness: kde_dbus shutdown signalled");
-                break;
-            }
-            Action::Tick => {
-                reconcile_label_map(&shared, &daemon, &state, &accept).await;
-            }
-            Action::Props(tv_id) => {
-                // Reverse path: observe TV-side change, push to PowerDevil.
-                if let Ok(tvs) = daemon.list_tvs().await {
-                    if let Some(tv) = tvs.iter().find(|t| t.id == tv_id) {
-                        // Only reverse-sync TVs in our accepted mode set.
-                        let should_push = {
-                            let s = state.read().await;
-                            s.profiles
-                                .get(&tv_id)
-                                .map(|p| accept.contains(&p.sync_backlight))
-                                .unwrap_or(false)
-                        };
-                        if !should_push {
-                            continue;
-                        }
-                        let backlight = tv.backlight;
-                        // Suppress echo from our own forward writes.
-                        let is_echo = {
-                            let mut sent = shared.last_forward_sent.lock().expect("poisoned");
-                            if sent.get(&tv_id) == Some(&backlight) {
-                                sent.remove(&tv_id);
-                                true
-                            } else {
-                                false
-                            }
-                        };
-                        if !is_echo {
-                            push_brightness_to_kde(&shared, &session_conn, &tv_id, backlight).await;
-                        }
-                    }
-                }
-                reconcile_label_map(&shared, &daemon, &state, &accept).await;
-            }
-            Action::StreamClosed => {
-                warn!("StateWatcher stream closed; exiting kde_dbus");
-                break;
-            }
-        }
-    }
-
-    forward_handle.abort();
-    dbus_handle.abort();
 }

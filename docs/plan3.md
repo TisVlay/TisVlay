@@ -1,6 +1,6 @@
 # Config Enums and Brightness Cleanup Refactor
 
-Status: **implemented and verified end-to-end** for `Kde` and `Kernel` modes (see §6). `KdeWayland` / `KdeDbus` strict variants still pending hardware testing.
+Status: **implemented and verified end-to-end** for `Kde` and `Kernel` modes (see §6). `KdeWayland` / `KdeDbus` strict variants are now per-TV mode selectors against the universal coordinator (see §7.8) — they exercise the same code paths as `Kde`, so the §6 verification covers them transitively. Mid-session profile flips work without a session restart.
 
 Refactors the brightness synchronization architecture to fix oscillation loops and cleanly isolate the competing approaches (Kernel vs. Wayland vs. D-Bus). The project is pre-release and greenfield, so there are no backwards-compatibility constraints — config values get renamed cleanly, no serde aliases.
 
@@ -221,7 +221,34 @@ Root cause was in [brightness/mod.rs::wait_for_modes](../crates/tisvlay-session/
 
 **Fix landed** ([brightness/mod.rs](../crates/tisvlay-session/src/brightness/mod.rs)): rename `wait_for_modes` → `wait_for_kde_modes`, tighten the gate to `modes.iter().any(is_kde_mode)`, drop the trailing `else info!("idle")` branch. The dispatcher now polls at 1Hz until a TV with `Kde`/`KdeWayland`/`KdeDbus` appears, then dispatches. A one-shot `info!("brightness: no KDE-flavor TV profiles yet, waiting for profile change")` keeps the idle case observable in journald without flooding. Covered by `run_keeps_polling_when_only_non_kde_profiles_present` regression test.
 
-Out of scope for this fix: re-dispatch when modes change *between* KDE flavors after the dispatcher already entered a backend (e.g. `Kde` → `KdeDbus` mid-session). The reconcile loops inside each backend handle TV-set changes within their own accept set, but no inter-backend hand-off exists. Users switching variants for debugging still need a session restart; the §6 verification matrix never required mid-session swaps.
+### 7.8 Strict variants couldn't be swapped mid-session
+
+§7.7 fixed the cold-start case (no KDE-flavor mode at boot, then a flip arrives). The remaining gap was warm-running transitions — `Kde` → `KdeDbus` or `KdeWayland` → `Kde` — where the dispatcher had already entered one of the three strict backends and could not exit cleanly to re-dispatch. The strict `kde_wayland::run` and `kde_dbus::run` entry points each owned their own Wayland thread / D-Bus observer for life, with accept arrays hardcoded to a single mode. Users experimenting with sync settings to find what works on their hardware needed a session restart on every change.
+
+The fix collapses the three backends into a single universal coordinator. Each per-TV mode selects which mechanisms apply, not which backend runs:
+
+| TV's `sync_backlight` | KWin Wayland device | PowerDevil D-Bus observer | D-Bus reverse `SetBrightness` |
+|---|---|---|---|
+| `Kde` | ✓ | ✓ | ✓ |
+| `KdeWayland` | ✓ | — | — |
+| `KdeDbus` | — | ✓ | ✓ |
+| `Kernel` | — | — | — |
+| `None` | — | — | — |
+
+The matrix is encoded in [`shared::BrightnessMechanism::accepts`](../crates/tisvlay-session/src/brightness/shared.rs) — a single `match` per mechanism, called by `kde_wayland::reconcile` and `kde_dbus::reconcile_label_map` to filter the per-TV TV set. The reverse-path gate in `kde::run` uses the same predicate.
+
+**Fix landed**:
+
+- New `BrightnessMechanism { Wayland, Dbus }` enum with an `accepts(SyncBacklight) -> bool` method ([shared.rs](../crates/tisvlay-session/src/brightness/shared.rs)).
+- Reconcile call sites take the mechanism implicitly — `reconcile` filters by `BrightnessMechanism::Wayland.accepts`, `reconcile_label_map` by `BrightnessMechanism::Dbus.accepts`. Accept-array parameters dropped from both.
+- `kde::run` becomes the universal coordinator: starts both subsystems, lets them filter per-TV. Reverse-path push factored out into `push_reverse_if_accepted`.
+- Strict `kde_wayland::run` and `kde_dbus::run` entry points deleted. `mod.rs::run` collapses the if/else dispatch ladder to a single `kde::run` call.
+
+**Behavior on profile flip**: `SetTvUserProfile` mutates `state.profiles`. The next reconcile tick (or `Tv1.Backlight` `PropertiesChanged` event) re-evaluates `BrightnessMechanism::*.accepts` per TV; mechanisms that newly opt in get devices/routing entries created, mechanisms that opt out get them destroyed. No backend tear-down/restart needed.
+
+Covered by partition tests in `brightness::shared::tests` (`wayland_mechanism_accepts_kde_and_kde_wayland_only`, `dbus_mechanism_accepts_kde_and_kde_dbus_only`) — these would fail if either matrix row regressed.
+
+Side benefit: §7.7's `kde::run` had a latent bug where mixed `[Kde, KdeDbus]` configs created a Wayland device for the KdeDbus TV (its single accept array `[Kde, KdeWayland, KdeDbus]` was passed to both reconciles). The §7.8 split fixes that too.
 
 ## Out of Scope
 

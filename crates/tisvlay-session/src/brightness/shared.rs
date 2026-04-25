@@ -7,9 +7,41 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tisvlay_core::DaemonClient;
+use tisvlay_core::{DaemonClient, SyncBacklight};
 use tokio::sync::mpsc;
 use tracing::warn;
+
+/// Which KDE brightness mechanism a code path drives.
+///
+/// `Kde` mode activates both. `KdeWayland` and `KdeDbus` strict modes
+/// activate only one. `Kernel` and `None` activate neither — the
+/// daemon's kernel-module path or no sync at all handle those.
+///
+/// Used by reconcile call sites to filter the per-TV TV set down to
+/// just those whose resolved profile opts into the mechanism in
+/// question. A single TV can opt in to one or both independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrightnessMechanism {
+    /// `kde_external_brightness_v1` device — handles forward (slider →
+    /// TV). Active under `Kde` (composite) and `KdeWayland` (strict).
+    Wayland,
+    /// PowerDevil D-Bus `org.kde.ScreenBrightness` — handles forward
+    /// fallback for HDR and reverse (TV → slider). Active under `Kde`
+    /// (composite) and `KdeDbus` (strict).
+    Dbus,
+}
+
+impl BrightnessMechanism {
+    /// Whether a TV with this resolved sync_backlight mode opts in to
+    /// the mechanism. Codifies the Kde-flavor matrix in one place so
+    /// adding a new strict variant requires updating exactly here.
+    pub fn accepts(self, mode: SyncBacklight) -> bool {
+        match self {
+            Self::Wayland => matches!(mode, SyncBacklight::Kde | SyncBacklight::KdeWayland),
+            Self::Dbus => matches!(mode, SyncBacklight::Kde | SyncBacklight::KdeDbus),
+        }
+    }
+}
 
 /// A brightness value a forward path produced. The drain-loop coalesces
 /// bursts per-TV and calls `Tv1.Backlight` on the daemon.
@@ -163,4 +195,34 @@ pub struct DesiredBrightness {
     pub edid_base64: String,
     pub backlight: u8,
     pub monitor_name: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression-style: the per-mechanism partition is what makes
+    /// strict variants safe under a single universal coordinator.
+    /// Without these guarantees, a TV in `KdeDbus` would still get a
+    /// Wayland device created (and vice versa) — the lifecycle leak
+    /// that motivated splitting the accept arrays in `kde::run`.
+    #[test]
+    fn wayland_mechanism_accepts_kde_and_kde_wayland_only() {
+        let m = BrightnessMechanism::Wayland;
+        assert!(m.accepts(SyncBacklight::Kde));
+        assert!(m.accepts(SyncBacklight::KdeWayland));
+        assert!(!m.accepts(SyncBacklight::KdeDbus));
+        assert!(!m.accepts(SyncBacklight::Kernel));
+        assert!(!m.accepts(SyncBacklight::None));
+    }
+
+    #[test]
+    fn dbus_mechanism_accepts_kde_and_kde_dbus_only() {
+        let m = BrightnessMechanism::Dbus;
+        assert!(m.accepts(SyncBacklight::Kde));
+        assert!(m.accepts(SyncBacklight::KdeDbus));
+        assert!(!m.accepts(SyncBacklight::KdeWayland));
+        assert!(!m.accepts(SyncBacklight::Kernel));
+        assert!(!m.accepts(SyncBacklight::None));
+    }
 }
