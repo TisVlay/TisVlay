@@ -19,7 +19,14 @@ path = "src/main.rs"
 [dependencies]
 tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
 tokio = { workspace = true }
-slint = "1.16"
+# `accessibility` is dropped from the default features. It pulls in
+# `accesskit_unix`, which spawns its own thread to talk to the
+# accessibility bus via zbus. That thread isn't a tokio worker, and
+# zbus's tokio backend panics with "no reactor running" when it tries
+# to spawn its blocking I/O work from there. Re-enabling accessibility
+# requires running zbus on async-io rather than tokio (workspace-wide
+# decision), or configuring accesskit to share our tokio runtime.
+slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "compat-1-2", "renderer-femtovg"] }
 zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

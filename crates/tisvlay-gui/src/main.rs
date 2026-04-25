@@ -41,68 +41,84 @@ fn main() -> Result<()> {
     let args = Args::parse();
     info!("tisvlay-gui starting");
 
-    // The Slint event loop is the main thread. A separate tokio runtime
-    // drives D-Bus state and posts updates back to the Slint loop via
-    // `slint::invoke_from_event_loop`.
+    // Slint's event loop owns the main thread once `run()` is called.
+    // A multi-thread tokio runtime backs all D-Bus work; spawned tasks
+    // live on its worker threads. We hold an `_enter` guard on the main
+    // thread so any `tokio::spawn` invoked here (or from inside a Slint
+    // callback) finds a runtime via `Handle::current()`. Without the
+    // guard, zbus's internal `tokio::spawn` calls panic with "no reactor
+    // running".
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("Failed to build tokio runtime")?;
+    let _enter = rt.enter();
 
     let app = AppWindow::new()?;
+    let app_weak = app.as_weak();
+    let use_session_bus = args.user;
 
-    rt.block_on(async {
-        let daemon = if args.user {
-            info!("Connecting to daemon on session bus (development mode)");
-            DaemonClient::new_session().await
-        } else {
-            info!("Connecting to daemon on system bus");
-            DaemonClient::new_system().await
+    // All D-Bus setup + the watcher run as one detached task on the
+    // runtime. Initial fetch is async, so the window paints empty for
+    // a frame before populating; that's acceptable and matches the
+    // "daemon offline" code path's UX shape.
+    tokio::spawn(async move {
+        if let Err(e) = run_dbus_loop(use_session_bus, app_weak).await {
+            warn!(error = %e, "D-Bus loop terminated");
         }
-        .context("Failed to create daemon client")?;
-        let daemon = Arc::new(daemon);
+    });
 
-        let session: Arc<RwLock<Option<SessionClient>>> =
-            Arc::new(RwLock::new(match SessionClient::new().await {
-                Ok(client) if client.is_available().await => Some(client),
-                _ => None,
-            }));
-
-        let initial_session_available = session.read().await.is_some();
-        let initial_models = match fetch_tv_models(&daemon, session.read().await.as_ref()).await {
-            Ok(models) => Some(models),
-            Err(e) => {
-                debug!(error = %e, "Initial TV fetch failed; daemon may be offline");
-                None
-            }
-        };
-
-        // Push initial state onto the Slint event loop.
-        let app_weak = app.as_weak();
-        let initial_daemon_available = initial_models.is_some();
-        slint::invoke_from_event_loop(move || {
-            if let Some(app) = app_weak.upgrade() {
-                if let Some(models) = initial_models {
-                    app.set_tvs(ModelRc::new(VecModel::from(models)));
-                }
-                app.set_daemon_available(initial_daemon_available);
-                app.set_session_available(initial_session_available);
-            }
-        })
-        .ok();
-
-        // Background watcher: refresh on every signal-driven state
-        // change and on session-service appearance.
-        let app_weak = app.as_weak();
-        tokio::spawn(watch_state(daemon.clone(), session.clone(), app_weak));
-
-        anyhow::Ok(())
-    })?;
-
-    // Run the Slint event loop on the main thread.
+    // Slint event loop blocks the main thread; tokio workers keep
+    // driving tasks. `rt` drops at end of `main`, aborting any
+    // remaining tasks.
     app.run()?;
 
     info!("tisvlay-gui shutting down");
+    Ok(())
+}
+
+async fn run_dbus_loop(use_session_bus: bool, app_weak: slint::Weak<AppWindow>) -> Result<()> {
+    let daemon = if use_session_bus {
+        info!("Connecting to daemon on session bus (development mode)");
+        DaemonClient::new_session().await
+    } else {
+        info!("Connecting to daemon on system bus");
+        DaemonClient::new_system().await
+    }
+    .context("Failed to create daemon client")?;
+    let daemon = Arc::new(daemon);
+
+    let session: Arc<RwLock<Option<SessionClient>>> =
+        Arc::new(RwLock::new(match SessionClient::new().await {
+            Ok(client) if client.is_available().await => Some(client),
+            _ => None,
+        }));
+
+    let initial_session_available = session.read().await.is_some();
+    let initial_models = match fetch_tv_models(&daemon, session.read().await.as_ref()).await {
+        Ok(models) => Some(models),
+        Err(e) => {
+            debug!(error = %e, "Initial TV fetch failed; daemon may be offline");
+            None
+        }
+    };
+
+    // Push initial state onto the Slint event loop.
+    let app_weak_init = app_weak.clone();
+    let initial_daemon_available = initial_models.is_some();
+    slint::invoke_from_event_loop(move || {
+        if let Some(app) = app_weak_init.upgrade() {
+            if let Some(models) = initial_models {
+                app.set_tvs(ModelRc::new(VecModel::from(models)));
+            }
+            app.set_daemon_available(initial_daemon_available);
+            app.set_session_available(initial_session_available);
+        }
+    })
+    .ok();
+
+    // Background watcher runs forever (until the runtime is dropped).
+    watch_state(daemon, session, app_weak).await;
     Ok(())
 }
 
