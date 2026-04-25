@@ -480,6 +480,8 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
         .map(|raw| TvViewModel {
             id: raw.id,
             name: raw.name,
+            vendor: raw.vendor,
+            ip: raw.ip,
             connected: raw.connected,
             power_state: raw.power_state,
             is_screen_on: raw.is_screen_on,

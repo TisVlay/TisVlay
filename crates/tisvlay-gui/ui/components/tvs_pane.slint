@@ -1,8 +1,20 @@
-import { ListView, ScrollView, GroupBox, VerticalBox, HorizontalBox, Button, Slider, CheckBox, ComboBox, Switch } from "std-widgets.slint";
+// TVs pane — master/detail layout.
+//
+// Implements the design at
+//   .claude/ui/design_handoff_tisvlay_gui/tvs-pane.jsx
+// using the global Theme tokens from ../theme.slint. Stick to stock
+// std-widgets (Button, Switch, Slider, ComboBox, ScrollView, ListView)
+// plus a handful of bespoke primitives below (Chip, VendorTile, Group,
+// FormRow) — no exotic styling.
+
+import { ListView, ScrollView, VerticalBox, HorizontalBox, Button, Slider, ComboBox, Switch } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
 
 export struct TvViewModel {
     id: string,
     name: string,
+    vendor: string,
+    ip: string,
     connected: bool,
     power-state: string,
     is-screen-on: bool,
@@ -10,11 +22,6 @@ export struct TvViewModel {
     muted: bool,
     backlight: int,
     current-input: string,
-    /// IDs of available inputs as flat strings (e.g. ["HDMI_1", ...]).
-    /// Used as the model for the input-switcher ComboBox. Slint
-    /// expressions can't transform a struct-array into a string-array,
-    /// so we materialize it on the Rust side and ship it parallel to
-    /// the live state.
     available-input-ids: [string],
     system-profile: string,
     user-profile: string,
@@ -31,97 +38,272 @@ export struct TvViewModel {
     power-cycle-phase: string,
 }
 
-component StatusBadge inherits Rectangle {
-    in property <bool> ok;
-    in property <string> label-on;
-    in property <string> label-off;
+// =============================================================================
+// Vendor tile — colored square with two-letter code.
+// =============================================================================
+//
+// Hardcoded vendor → (letters, bg, fg) map. Decorative; not pulled from
+// theme tokens. Same map used in app-shell.jsx (uploads/app-shell.jsx).
 
-    background: ok ? #10b98120 : #ef444420;
-    border-radius: 4px;
-    border-width: 1px;
-    border-color: ok ? #10b981 : #ef4444;
-    horizontal-stretch: 0;
+component VendorTile inherits Rectangle {
+    in property <string> vendor;
+    in property <length> tile-size: 28px;
 
-    HorizontalLayout {
+    width: tile-size;
+    height: tile-size;
+    border-radius: 5px;
+
+    property <bool> is-lg: vendor == "lg";
+    property <bool> is-samsung: vendor == "samsung";
+    property <bool> is-sony: vendor == "sony";
+    property <bool> is-known: is-lg || is-samsung || is-sony;
+
+    background: is-lg ? #a50034
+              : is-samsung ? #1428a0
+              : is-sony ? #111111
+              : Theme.chip;
+    border-width: is-known ? 0 : 1px;
+    border-color: Theme.border;
+
+    Text {
+        text: root.is-lg ? "LG"
+            : root.is-samsung ? "SS"
+            : root.is-sony ? "SY"
+            : "MK";
+        color: root.is-known ? white : Theme.chip-text;
+        font-size: root.tile-size * 0.40;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
         width: 100%;
         height: 100%;
+    }
+}
+
+// =============================================================================
+// Chip — small status pill (Connected, Managed, Unmanaged, etc.).
+// =============================================================================
+//
+// `tone` selects the color palette. Defaults to neutral.
+
+component Chip inherits Rectangle {
+    in property <string> label;
+    /// One of: "neutral", "success", "danger", "warn", "accent".
+    in property <string> tone: "neutral";
+
+    property <brush> bg-color: tone == "success" ? Theme.success-soft
+                              : tone == "danger" ? Theme.danger-soft
+                              : tone == "warn" ? Theme.warn-soft
+                              : tone == "accent" ? Theme.accent-soft
+                              : Theme.chip;
+    property <brush> fg-color: tone == "success" ? Theme.success-text
+                              : tone == "danger" ? Theme.danger-text
+                              : tone == "warn" ? Theme.warn-text
+                              : tone == "accent" ? Theme.accent
+                              : Theme.chip-text;
+    property <brush> br-color: tone == "success" ? Theme.success
+                              : tone == "danger" ? Theme.danger
+                              : tone == "warn" ? Theme.warn
+                              : tone == "accent" ? Theme.accent
+                              : Theme.chip-border;
+
+    background: bg-color;
+    border-color: br-color;
+    border-width: 1px;
+    border-radius: 10px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    HorizontalLayout {
         padding-left: 8px;
         padding-right: 8px;
-        padding-top: 2px;
-        padding-bottom: 2px;
+        padding-top: 3px;
+        padding-bottom: 3px;
         Text {
-            text: ok ? root.label-on : root.label-off;
-            color: ok ? #047857 : #b91c1c;
+            text: root.label;
+            color: root.fg-color;
             font-size: 11px;
             font-weight: 600;
         }
     }
 }
 
-component LabeledRow inherits Rectangle {
-    in property <string> label;
-    in property <string> value;
-    height: row-layout.preferred-height;
+// =============================================================================
+// Group — design-system replacement for std-widgets GroupBox.
+// =============================================================================
+//
+// Uppercase 11px title above a card with 1px border, 6px radius, 14px
+// padding. Mirrors the JSX `AppGroup`. Children supply their own
+// vertical layout.
 
-    row-layout := HorizontalBox {
+component Group {
+    in property <string> title;
+    in property <length> body-padding: 14px;
+
+    VerticalLayout {
         width: 100%;
-        padding: 4px;
-        spacing: 8px;
+        spacing: 0;
 
-        Text {
-            text: root.label;
-            color: #6b7280;
-            font-size: 12px;
-            width: 140px;
+        // Title
+        HorizontalLayout {
+            padding-left: 2px;
+            padding-bottom: 8px;
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
         }
-        Text {
-            text: root.value == "" ? "—" : root.value;
-            color: #111827;
-            font-size: 12px;
-            horizontal-stretch: 1;
+
+        // Card
+        Rectangle {
+            background: Theme.surface;
+            border-color: Theme.border;
+            border-width: 1px;
+            border-radius: 6px;
+
+            VerticalLayout {
+                width: 100%;
+                padding: root.body-padding;
+                spacing: 12px;
+                @children
+            }
         }
     }
 }
 
-component TvListItem inherits Rectangle {
-    in property <string> name;
-    in property <bool> connected;
+// =============================================================================
+// FormRow — labeled config row with optional helper text below.
+// =============================================================================
+//
+// Layout:
+//   [ 140px label ] [ control flex ]
+//                   [ helper      ]
+
+component FormRow {
+    in property <string> label;
+    in property <string> helper;
+    in property <length> label-width: 140px;
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: 14px;
+        alignment: stretch;
+
+        VerticalLayout {
+            width: root.label-width;
+            alignment: start;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 13px;
+                vertical-alignment: top;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 4px;
+            horizontal-stretch: 1;
+
+            HorizontalLayout {
+                width: 100%;
+                @children
+            }
+
+            if root.helper != "": Text {
+                text: root.helper;
+                color: Theme.text-faint;
+                font-size: 11px;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Master list — left column, 260px.
+// =============================================================================
+
+component TvListRow inherits Rectangle {
+    in property <TvViewModel> tv;
     in property <bool> selected;
     callback clicked();
 
-    height: 56px;
-    background: selected ? #dbeafe : (touch.has-hover ? #f3f4f6 : transparent);
+    height: 64px;
+    background: selected ? Theme.row-selected
+              : (touch.has-hover ? Theme.row-hover : transparent);
 
-    HorizontalBox {
+    // 3px left accent stripe when selected.
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: root.selected ? Theme.accent : transparent;
+    }
+
+    HorizontalLayout {
         width: 100%;
         height: 100%;
         padding-left: 12px;
         padding-right: 12px;
-        spacing: 8px;
+        spacing: 10px;
         alignment: start;
 
-        Rectangle {
-            width: 8px;
-            height: 8px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 4px;
-            background: connected ? #10b981 : #9ca3af;
+        VerticalLayout {
+            width: 28px;
+            alignment: center;
+            VendorTile {
+                vendor: root.tv.vendor;
+                tile-size: 28px;
+            }
         }
-        Text {
-            text: name;
-            color: #111827;
-            font-size: 14px;
-            font-weight: selected ? 600 : 400;
+
+        VerticalLayout {
             horizontal-stretch: 1;
-            vertical-alignment: center;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.tv.name;
+                color: root.selected ? Theme.row-selected-text : Theme.text;
+                font-size: 13px;
+                font-weight: root.selected ? 600 : 500;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+
+                // Connection status dot.
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: root.tv.connected ? Theme.success : Theme.text-faint;
+                }
+                Text {
+                    text: !root.tv.connected ? "Standby"
+                        : (root.tv.is-screen-on ? "On" : "Screen off");
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                }
+                if !root.tv.managed: Text {
+                    text: "· unmanaged";
+                    color: Theme.warn-text;
+                    font-size: 11px;
+                }
+            }
         }
     }
 
-    // Bottom separator (Slint Rectangle has no per-side border).
+    // Bottom 1px separator.
     Rectangle {
-        height: 1px;
         y: parent.height - 1px;
-        background: #e5e7eb;
+        height: 1px;
+        background: Theme.border;
     }
 
     touch := TouchArea {
@@ -129,13 +311,279 @@ component TvListItem inherits Rectangle {
     }
 }
 
-component TvDetail inherits ScrollView {
+component TvList inherits Rectangle {
+    in property <[TvViewModel]> tvs;
+    in property <bool> daemon-available;
+    in-out property <int> selected-index;
+    callback request-pair();
+    callback reload-config();
+
+    width: 260px;
+    background: Theme.surface-alt;
+
+    // Right separator.
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        // -- Header band --
+        Rectangle {
+            height: 40px;
+            background: Theme.surface;
+
+            // Bottom separator.
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border;
+            }
+
+            HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                padding-left: 12px;
+                padding-right: 8px;
+                spacing: 8px;
+                alignment: stretch;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: root.tvs.length == 1
+                            ? "1 CONFIGURED"
+                            : root.tvs.length + " CONFIGURED";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        font-weight: 600;
+                        letter-spacing: 0.6px;
+                    }
+                }
+
+                // "+" Pair-new-TV button.
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 12px;
+                    background: pair-touch.has-hover ? #2c8fc4 : Theme.accent;
+
+                    Text {
+                        text: "+";
+                        color: white;
+                        font-size: 16px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                    pair-touch := TouchArea {
+                        clicked => { root.request-pair(); }
+                    }
+                }
+            }
+        }
+
+        // -- Empty / offline / list states --
+        if root.tvs.length == 0 && !root.daemon-available: Rectangle {
+            VerticalLayout {
+                width: 100%;
+                alignment: center;
+                padding: 16px;
+                Text {
+                    text: "Daemon offline";
+                    color: Theme.danger-text;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        if root.tvs.length == 0 && root.daemon-available: Rectangle {
+            VerticalLayout {
+                width: 100%;
+                alignment: center;
+                padding: 16px;
+                Text {
+                    text: "No TVs configured";
+                    color: Theme.text-faint;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        ListView {
+            for tv[i] in root.tvs: TvListRow {
+                tv: tv;
+                selected: i == root.selected-index;
+                clicked => { root.selected-index = i; }
+            }
+        }
+
+        // -- Footer: Reload Config --
+        Rectangle {
+            height: 48px;
+            background: Theme.surface2;
+
+            Rectangle {
+                y: 0;
+                height: 1px;
+                background: Theme.border;
+            }
+
+            HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                padding: 8px;
+                Button {
+                    text: "Reload config";
+                    clicked => { root.reload-config(); }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Detail — right column, fills remaining width.
+// =============================================================================
+
+component LabeledRow {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> mono: false;
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: 8px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+
+        VerticalLayout {
+            width: 140px;
+            alignment: start;
+            Text {
+                text: root.label;
+                color: Theme.text-dim;
+                font-size: 12.5px;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: start;
+            Text {
+                text: root.value == "" ? "—" : root.value;
+                color: Theme.text;
+                font-size: 12.5px;
+                font-family: root.mono ? "ui-monospace, monospace" : "";
+                overflow: elide;
+            }
+        }
+    }
+}
+
+component TvDetailHeader inherits Rectangle {
+    in property <TvViewModel> tv;
+    callback request-remove();
+
+    height: header-layout.preferred-height;
+    background: Theme.surface;
+
+    // Bottom separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    header-layout := HorizontalLayout {
+        width: 100%;
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 18px;
+        padding-bottom: 14px;
+        spacing: 14px;
+        alignment: stretch;
+
+        VerticalLayout {
+            width: 40px;
+            alignment: center;
+            VendorTile {
+                vendor: root.tv.vendor;
+                tile-size: 40px;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 4px;
+
+            Text {
+                text: root.tv.name;
+                color: Theme.text;
+                font-size: 20px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                Text {
+                    text: root.tv.ip == "" ? "—" : root.tv.ip;
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                    font-family: "ui-monospace, monospace";
+                }
+                Text {
+                    text: "·";
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                }
+                Text {
+                    text: root.tv.hw-model == "" ? "—" : root.tv.hw-model;
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                }
+            }
+        }
+
+        // Status badges.
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: end;
+                Chip {
+                    label: root.tv.connected ? "Connected" : "Disconnected";
+                    tone: root.tv.connected ? "success" : "neutral";
+                }
+                Chip {
+                    label: !root.tv.managed
+                        ? "Unmanaged"
+                        : (root.tv.automated ? "Automated" : "Managed");
+                    tone: !root.tv.managed
+                        ? "warn"
+                        : (root.tv.automated ? "accent" : "neutral");
+                }
+            }
+        }
+    }
+}
+
+component TvDetail inherits Rectangle {
     in property <TvViewModel> tv;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
-    /// Lookup model for the input switcher / primary-input dropdowns.
-    /// Comes from `tv.available-inputs[*].id`.
-    in property <[string]> available-input-ids;
 
     callback set-volume(int);
     callback set-mute(bool);
@@ -150,282 +598,382 @@ component TvDetail inherits ScrollView {
     callback set-primary-input(string);
     callback request-remove();
 
-    VerticalBox {
-        padding: 16px;
-        spacing: 12px;
+    background: Theme.surface-alt;
 
-        // Header — alignment defaults to `stretch` so the TV name with
-        // `horizontal-stretch: 1` pushes the badges + Remove button to
-        // the right. Setting `alignment: center` here would center-pack
-        // the children as a group and ignore stretch values.
-        HorizontalBox {
-            spacing: 12px;
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
 
-            Text {
-                text: tv.name;
-                font-size: 20px;
-                font-weight: 700;
-                color: #111827;
-                horizontal-stretch: 1;
-            }
-            StatusBadge {
-                ok: tv.connected;
-                label-on: "Connected";
-                label-off: "Disconnected";
-            }
-            StatusBadge {
-                ok: tv.managed;
-                label-on: "Managed";
-                label-off: "Unmanaged";
-            }
-            Button {
-                text: "Remove";
-                clicked => { root.request-remove(); }
-            }
+        // Sticky-ish header.
+        TvDetailHeader {
+            tv: root.tv;
         }
 
-        // Power
-        GroupBox {
-            title: "Power";
+        // Scrollable body.
+        ScrollView {
             VerticalLayout {
                 width: 100%;
-                spacing: 8px;
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 20px;
+                padding-bottom: 24px;
+                spacing: 16px;
 
-                HorizontalBox {
-                    spacing: 8px;
-                    alignment: start;
+                // -- Power --
+                Group {
+                    title: "POWER";
 
-                    Button {
-                        text: tv.connected ? "Power Off" : "Power On";
-                        // Disable while a power-cycle is in flight (any
-                        // non-empty phase that isn't "connected" / "failed").
-                        enabled: tv.power-cycle-phase == ""
-                              || tv.power-cycle-phase == "connected"
-                              || tv.power-cycle-phase == "failed";
-                        clicked => {
-                            if (tv.connected) {
-                                root.power-off();
-                            } else {
-                                root.power-on();
+                    HorizontalLayout {
+                        spacing: 14px;
+                        alignment: stretch;
+
+                        Button {
+                            text: root.tv.connected ? "Power off" : "Power on";
+                            primary: !root.tv.connected;
+                            // Disable while a power-cycle is in flight (any
+                            // non-empty phase that isn't "connected" / "failed").
+                            enabled: root.tv.power-cycle-phase == ""
+                                  || root.tv.power-cycle-phase == "connected"
+                                  || root.tv.power-cycle-phase == "failed";
+                            clicked => {
+                                if (root.tv.connected) {
+                                    root.power-off();
+                                } else {
+                                    root.power-on();
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: root.tv.power-cycle-phase == "wol_sent" ? "Sending wake-up…"
+                                    : root.tv.power-cycle-phase == "connecting" ? "Connecting…"
+                                    : root.tv.power-cycle-phase == "connected" ? "Connected"
+                                    : root.tv.power-cycle-phase == "failed" ? "Wake failed"
+                                    : root.tv.connected
+                                        ? ("Power state: " + root.tv.power-state)
+                                        : "Wake this TV with WoL and reconnect.";
+                                color: root.tv.power-cycle-phase == "failed" ? Theme.danger-text
+                                     : root.tv.power-cycle-phase == "connected" ? Theme.success-text
+                                     : Theme.text-dim;
+                                font-size: 12px;
                             }
                         }
                     }
-                    Text {
-                        // Live phase indicator. Empty when idle.
-                        text: tv.power-cycle-phase == "wol_sent" ? "Sending wake-up..."
-                            : tv.power-cycle-phase == "connecting" ? "Connecting..."
-                            : tv.power-cycle-phase == "connected" ? "Connected"
-                            : tv.power-cycle-phase == "failed" ? "Wake failed"
-                            : "";
-                        color: tv.power-cycle-phase == "failed" ? #b91c1c : #6b7280;
-                        font-size: 12px;
-                        vertical-alignment: center;
+
+                    // 1px divider.
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.border;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 14px;
+                        alignment: stretch;
+
+                        VerticalLayout {
+                            width: 110px;
+                            alignment: center;
+                            Text {
+                                text: "Screen";
+                                color: Theme.text;
+                                font-size: 13px;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            Switch {
+                                checked: root.tv.is-screen-on;
+                                enabled: root.tv.connected;
+                                toggled => { root.set-is-screen-on(self.checked); }
+                            }
+                        }
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: "Blanks the panel without powering off (OLED-safe, instant resume).";
+                                color: Theme.text-faint;
+                                font-size: 11.5px;
+                                wrap: word-wrap;
+                            }
+                        }
                     }
                 }
 
-                HorizontalBox {
-                    spacing: 8px;
-                    alignment: start;
-                    Text {
-                        text: "Screen";
-                        width: 100px;
-                        vertical-alignment: center;
-                    }
-                    Switch {
-                        checked: tv.is-screen-on;
-                        enabled: tv.connected;
-                        toggled => { root.set-is-screen-on(self.checked); }
-                    }
-                    Text {
-                        text: "(blanks the panel without powering off)";
-                        color: #9ca3af;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-        }
+                // -- Audio --
+                Group {
+                    title: "AUDIO";
 
-        // Audio
-        GroupBox {
-            title: "Audio";
-            VerticalLayout {
-                width: 100%;
-                spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 14px;
+                        VerticalLayout {
+                            width: 110px;
+                            alignment: center;
+                            Text {
+                                text: "Volume";
+                                color: Theme.text;
+                                font-size: 13px;
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Slider {
+                                minimum: 0;
+                                maximum: 100;
+                                value: root.tv.volume;
+                                enabled: root.tv.connected && !root.tv.muted;
+                                changed(v) => { root.set-volume(round(v)); }
+                            }
+                        }
+                        VerticalLayout {
+                            width: 36px;
+                            alignment: center;
+                            Text {
+                                text: root.tv.connected ? root.tv.volume : "—";
+                                color: root.tv.connected ? Theme.text : Theme.text-faint;
+                                font-size: 13px;
+                                horizontal-alignment: right;
+                                width: 100%;
+                            }
+                        }
+                    }
 
-                HorizontalBox {
-                    spacing: 8px;
-                    Text {
-                        text: "Volume";
-                        width: 100px;
-                        vertical-alignment: center;
-                    }
-                    Slider {
-                        minimum: 0;
-                        maximum: 100;
-                        value: tv.volume;
-                        enabled: tv.connected && !tv.muted;
-                        changed(v) => { root.set-volume(round(v)); }
-                    }
-                    Text {
-                        text: tv.connected ? tv.volume : "—";
-                        width: 32px;
-                        vertical-alignment: center;
-                        horizontal-alignment: right;
-                    }
-                }
-                HorizontalBox {
-                    spacing: 8px;
-                    Text {
-                        text: "Mute";
-                        width: 100px;
-                        vertical-alignment: center;
-                    }
-                    Switch {
-                        checked: tv.muted;
-                        enabled: tv.connected;
-                        toggled => { root.set-mute(self.checked); }
-                    }
-                }
-            }
-        }
-
-        // Picture
-        GroupBox {
-            title: "Picture";
-            HorizontalBox {
-                width: 100%;
-                spacing: 8px;
-                Text {
-                    text: "Backlight";
-                    width: 100px;
-                    vertical-alignment: center;
-                }
-                Slider {
-                    minimum: 0;
-                    maximum: 100;
-                    value: tv.backlight;
-                    enabled: tv.connected;
-                    changed(v) => { root.set-backlight(round(v)); }
-                }
-                Text {
-                    text: tv.connected ? tv.backlight : "—";
-                    width: 32px;
-                    vertical-alignment: center;
-                    horizontal-alignment: right;
-                }
-            }
-        }
-
-        // Input
-        GroupBox {
-            title: "Input";
-            HorizontalBox {
-                width: 100%;
-                spacing: 8px;
-                Text {
-                    text: "Current";
-                    width: 100px;
-                    vertical-alignment: center;
-                }
-                ComboBox {
-                    model: root.available-input-ids;
-                    current-value: tv.current-input;
-                    enabled: tv.connected && root.available-input-ids.length > 0;
-                    selected(v) => { root.switch-input(v); }
-                }
-            }
-        }
-
-        // Configuration
-        GroupBox {
-            title: "Configuration";
-            VerticalLayout {
-                width: 100%;
-                spacing: 8px;
-
-                HorizontalBox {
-                    spacing: 8px;
-                    Text {
-                        text: "Managed";
-                        width: 140px;
-                        vertical-alignment: center;
-                    }
-                    Switch {
-                        checked: tv.managed;
-                        toggled => { root.set-managed(self.checked); }
-                    }
-                    Text {
-                        text: tv.automated ? "(automated now)" : "";
-                        color: #9ca3af;
-                        font-size: 11px;
-                        vertical-alignment: center;
+                    HorizontalLayout {
+                        spacing: 14px;
+                        VerticalLayout {
+                            width: 110px;
+                            alignment: center;
+                            Text {
+                                text: "Mute";
+                                color: Theme.text;
+                                font-size: 13px;
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Switch {
+                                checked: root.tv.muted;
+                                enabled: root.tv.connected;
+                                toggled => { root.set-mute(self.checked); }
+                            }
+                        }
                     }
                 }
 
-                HorizontalBox {
-                    spacing: 8px;
-                    Text {
-                        text: "System profile";
-                        width: 140px;
-                        vertical-alignment: center;
-                    }
-                    ComboBox {
-                        model: root.system-profiles;
-                        current-value: tv.system-profile;
-                        enabled: root.system-profiles.length > 0;
-                        selected(v) => { root.set-system-profile(v); }
+                // -- Picture --
+                Group {
+                    title: "PICTURE";
+
+                    HorizontalLayout {
+                        spacing: 14px;
+                        VerticalLayout {
+                            width: 110px;
+                            alignment: center;
+                            Text {
+                                text: "Backlight";
+                                color: Theme.text;
+                                font-size: 13px;
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Slider {
+                                minimum: 0;
+                                maximum: 100;
+                                value: root.tv.backlight;
+                                enabled: root.tv.connected;
+                                changed(v) => { root.set-backlight(round(v)); }
+                            }
+                        }
+                        VerticalLayout {
+                            width: 36px;
+                            alignment: center;
+                            Text {
+                                text: root.tv.connected ? root.tv.backlight : "—";
+                                color: root.tv.connected ? Theme.text : Theme.text-faint;
+                                font-size: 13px;
+                                horizontal-alignment: right;
+                                width: 100%;
+                            }
+                        }
                     }
                 }
 
-                HorizontalBox {
-                    spacing: 8px;
-                    Text {
-                        text: "User profile";
-                        width: 140px;
-                        vertical-alignment: center;
-                    }
-                    ComboBox {
-                        model: root.user-profiles;
-                        current-value: tv.user-profile;
-                        enabled: root.user-profiles.length > 0;
-                        selected(v) => { root.set-user-profile(v); }
+                // -- Input --
+                Group {
+                    title: "INPUT";
+
+                    HorizontalLayout {
+                        spacing: 14px;
+                        VerticalLayout {
+                            width: 110px;
+                            alignment: center;
+                            Text {
+                                text: "Current";
+                                color: Theme.text;
+                                font-size: 13px;
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            ComboBox {
+                                model: root.tv.available-input-ids;
+                                current-value: root.tv.current-input;
+                                enabled: root.tv.connected
+                                      && root.tv.available-input-ids.length > 0;
+                                selected(v) => { root.switch-input(v); }
+                            }
+                        }
                     }
                 }
 
-                HorizontalBox {
-                    spacing: 8px;
-                    Text {
-                        text: "Primary input";
-                        width: 140px;
-                        vertical-alignment: center;
+                // -- Configuration --
+                Group {
+                    title: "CONFIGURATION";
+
+                    FormRow {
+                        label: "Managed";
+                        helper: "Participates in boot, sleep, and session automation.";
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            VerticalLayout {
+                                alignment: center;
+                                Switch {
+                                    checked: root.tv.managed;
+                                    toggled => { root.set-managed(self.checked); }
+                                }
+                            }
+                            if root.tv.automated: VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "● automated now";
+                                    color: Theme.accent;
+                                    font-size: 11.5px;
+                                    font-weight: 500;
+                                }
+                            }
+                        }
                     }
-                    ComboBox {
-                        model: root.available-input-ids;
-                        current-value: tv.primary-input;
-                        enabled: root.available-input-ids.length > 0;
-                        selected(v) => { root.set-primary-input(v); }
+
+                    FormRow {
+                        label: "System profile";
+                        helper: "Drives daemon lifecycle (boot/shutdown/sleep).";
+                        ComboBox {
+                            model: root.system-profiles;
+                            current-value: root.tv.system-profile;
+                            enabled: root.system-profiles.length > 0;
+                            selected(v) => { root.set-system-profile(v); }
+                        }
+                    }
+
+                    FormRow {
+                        label: "User profile";
+                        helper: "Drives session events (lock/unlock/idle).";
+                        ComboBox {
+                            model: root.user-profiles;
+                            current-value: root.tv.user-profile;
+                            enabled: root.user-profiles.length > 0;
+                            selected(v) => { root.set-user-profile(v); }
+                        }
+                    }
+
+                    FormRow {
+                        label: "Primary input";
+                        helper: "Which input this PC uses; affects on-primary automation.";
+                        ComboBox {
+                            model: root.tv.available-input-ids;
+                            current-value: root.tv.primary-input;
+                            enabled: root.tv.available-input-ids.length > 0;
+                            selected(v) => { root.set-primary-input(v); }
+                        }
                     }
                 }
 
-                LabeledRow { label: "TV ID"; value: root.tv.id; }
-            }
-        }
+                // -- Hardware identity --
+                Group {
+                    title: "HARDWARE IDENTITY";
 
-        // Hardware identity
-        GroupBox {
-            title: "Hardware identity";
-            VerticalLayout {
-                width: 100%;
-                spacing: 2px;
-                LabeledRow { label: "Manufacturer"; value: root.tv.hw-manufacturer; }
-                LabeledRow { label: "Model"; value: root.tv.hw-model; }
-                LabeledRow { label: "Serial"; value: root.tv.hw-serial; }
-                LabeledRow { label: "DRM connector"; value: root.tv.desktop-connector; }
+                    LabeledRow { label: "TV ID"; value: root.tv.id; mono: true; }
+                    LabeledRow { label: "Manufacturer"; value: root.tv.hw-manufacturer; }
+                    LabeledRow { label: "Model"; value: root.tv.hw-model; }
+                    LabeledRow { label: "Serial"; value: root.tv.hw-serial; mono: true; }
+                    LabeledRow { label: "DRM connector"; value: root.tv.desktop-connector; mono: true; }
+                }
+
+                // -- Danger zone --
+                Group {
+                    title: "DANGER ZONE";
+
+                    HorizontalLayout {
+                        spacing: 14px;
+                        alignment: stretch;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: "Removes this TV from the daemon's configuration. Pairing must be redone.";
+                                color: Theme.text-dim;
+                                font-size: 12.5px;
+                                wrap: word-wrap;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: "Remove TV";
+                                clicked => { root.request-remove(); }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
+
+component TvDetailEmpty inherits Rectangle {
+    background: Theme.surface-alt;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        alignment: center;
+        spacing: 8px;
+
+        HorizontalLayout {
+            alignment: center;
+            Text {
+                text: "Select a TV";
+                color: Theme.text;
+                font-size: 15px;
+                font-weight: 600;
+            }
+        }
+        HorizontalLayout {
+            alignment: center;
+            Text {
+                text: "Pick a TV from the list, or pair a new one with the + button.";
+                color: Theme.text-dim;
+                font-size: 12.5px;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Confirm-remove modal (shared with the TVs pane).
+// =============================================================================
 
 component ConfirmDialog inherits Rectangle {
     in property <bool> open: false;
@@ -440,53 +988,61 @@ component ConfirmDialog inherits Rectangle {
     width: 100%;
     height: 100%;
 
-    // Block clicks behind the dialog.
     TouchArea {
         clicked => { root.cancelled(); }
     }
 
     Rectangle {
-        background: white;
+        background: Theme.surface;
         border-radius: 6px;
-        width: 360px;
-        height: 160px;
+        border-color: Theme.border;
+        border-width: 1px;
+        width: 380px;
+        height: 170px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
 
-        // Block clicks from propagating to the backdrop.
         TouchArea {}
 
-        VerticalBox {
+        VerticalLayout {
             width: 100%;
             height: 100%;
-            padding: 16px;
+            padding: 18px;
             spacing: 12px;
+
             Text {
                 text: root.title;
+                color: Theme.text;
                 font-size: 16px;
                 font-weight: 700;
-                color: #111827;
             }
             Text {
                 text: root.message;
+                color: Theme.text-dim;
+                font-size: 13px;
                 wrap: word-wrap;
-                color: #374151;
             }
-            HorizontalBox {
-                alignment: end;
+            Rectangle { vertical-stretch: 1; }
+            HorizontalLayout {
                 spacing: 8px;
+                alignment: end;
                 Button {
                     text: "Cancel";
                     clicked => { root.cancelled(); }
                 }
                 Button {
                     text: root.confirm-label;
+                    primary: true;
                     clicked => { root.confirmed(); }
                 }
             }
         }
     }
 }
+
+// =============================================================================
+// TvsPane — top-level pane composition.
+// =============================================================================
 
 export component TvsPane {
     in property <[TvViewModel]> tvs;
@@ -508,122 +1064,38 @@ export component TvsPane {
     callback set-primary-input(string, string);
     callback remove-tv(string);
     callback reload-config();
+    callback request-pair();
 
-    // The id of the TV pending removal confirmation. Empty when no
-    // dialog is open.
     property <string> pending-remove-id: "";
     property <string> pending-remove-name: "";
 
     HorizontalLayout {
-        // Slint Rectangles don't lay out children, so any
-        // HorizontalLayout / VerticalLayout that lives inside one needs
-        // explicit fill. The parent of TvsPane is a no-layout Rectangle
-        // in main.slint.
         width: 100%;
         height: 100%;
         spacing: 0;
 
-        // Master: TV list + footer
-        Rectangle {
-            width: 260px;
-            background: white;
-
-            // Right separator
-            Rectangle {
-                width: 1px;
-                x: parent.width - 1px;
-                background: #e5e7eb;
-            }
-
-            VerticalLayout {
-                width: 100%;
-                height: 100%;
-                Rectangle {
-                    height: 36px;
-                    background: #f9fafb;
-                    Text {
-                        text: "TVs";
-                        x: 12px;
-                        vertical-alignment: center;
-                        height: parent.height;
-                        color: #374151;
-                        font-size: 13px;
-                        font-weight: 600;
-                    }
-                    // Bottom separator
-                    Rectangle {
-                        height: 1px;
-                        y: parent.height - 1px;
-                        background: #e5e7eb;
-                    }
-                }
-
-                if root.tvs.length == 0 && !root.daemon-available: Text {
-                    text: "Daemon offline";
-                    color: #ef4444;
-                    horizontal-alignment: center;
-                    vertical-alignment: top;
-                    font-size: 13px;
-                    height: 60px;
-                }
-
-                if root.tvs.length == 0 && root.daemon-available: Text {
-                    text: "No TVs configured";
-                    color: #9ca3af;
-                    horizontal-alignment: center;
-                    vertical-alignment: top;
-                    font-size: 13px;
-                    height: 60px;
-                }
-
-                ListView {
-                    for tv[i] in root.tvs: TvListItem {
-                        name: tv.name;
-                        connected: tv.connected;
-                        selected: i == root.selected-index;
-                        clicked => { root.selected-index = i; }
-                    }
-                }
-
-                // Footer: Reload Config
-                Rectangle {
-                    height: 48px;
-                    background: #f9fafb;
-                    // Top separator (anchored at y=0 of the footer)
-                    Rectangle {
-                        height: 1px;
-                        y: 0;
-                        background: #e5e7eb;
-                    }
-                    HorizontalBox {
-                        width: 100%;
-                        height: 100%;
-                        padding: 8px;
-                        alignment: stretch;
-                        Button {
-                            text: "Reload Config";
-                            clicked => { root.reload-config(); }
-                        }
-                    }
-                }
-            }
+        TvList {
+            tvs: root.tvs;
+            daemon-available: root.daemon-available;
+            selected-index <=> root.selected-index;
+            request-pair => { root.request-pair(); }
+            reload-config => { root.reload-config(); }
         }
 
-        // Detail: selected TV
+        // Detail column — fills remaining width.
         Rectangle {
-            background: #f9fafb;
             horizontal-stretch: 1;
+            background: Theme.surface-alt;
 
-            if root.selected-index < 0 || root.selected-index >= root.tvs.length: Text {
-                text: root.tvs.length == 0 ? "" : "Select a TV from the list";
-                color: #9ca3af;
-                font-size: 14px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: parent.width;
-                height: parent.height;
+            // Empty placeholder when no TV selected.
+            if root.selected-index < 0 || root.selected-index >= root.tvs.length: TvDetailEmpty {
+                width: 100%;
+                height: 100%;
             }
 
+            // One TvDetail per TV, only the selected one is visible. Keeps
+            // per-TV state (slider scroll position, etc.) intact when
+            // switching selections.
             for tv[i] in root.tvs: TvDetail {
                 width: parent.width;
                 height: parent.height;
@@ -631,7 +1103,6 @@ export component TvsPane {
                 tv: tv;
                 system-profiles: root.system-profiles;
                 user-profiles: root.user-profiles;
-                available-input-ids: tv.available-input-ids;
 
                 set-volume(v) => { root.set-volume(tv.id, v); }
                 set-mute(m) => { root.set-mute(tv.id, m); }
@@ -652,11 +1123,11 @@ export component TvsPane {
         }
     }
 
-    // Confirm-remove dialog (overlay).
     ConfirmDialog {
         open: root.pending-remove-id != "";
         title: "Remove TV";
-        message: "Remove '" + root.pending-remove-name + "' from the daemon's configuration?";
+        message: "Remove '" + root.pending-remove-name
+            + "' from the daemon's configuration? Pairing must be redone if you re-add it.";
         confirm-label: "Remove";
         confirmed => {
             root.remove-tv(root.pending-remove-id);

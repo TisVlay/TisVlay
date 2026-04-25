@@ -17,6 +17,8 @@ use tracing::debug;
 pub(crate) struct TvViewRaw {
     pub id: SharedString,
     pub name: SharedString,
+    pub vendor: SharedString,
+    pub ip: SharedString,
     pub connected: bool,
     pub power_state: SharedString,
     pub is_screen_on: bool,
@@ -92,6 +94,8 @@ pub(crate) async fn fetch_state(
         models.push(TvViewRaw {
             id: SharedString::from(tv.id),
             name: SharedString::from(tv.name),
+            vendor: SharedString::from(tv.vendor),
+            ip: SharedString::from(tv.address),
             connected: tv.connected,
             power_state: SharedString::from(tv.power_state),
             is_screen_on: tv.is_screen_on,

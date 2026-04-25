@@ -1,10 +1,11 @@
 import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 import { TvsPane, TvViewModel } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
 import { AboutPane } from "components/about_pane.slint";
 
-export { TvViewModel }
+export { TvViewModel, Theme }
 
 export enum Pane {
     tvs,
@@ -18,13 +19,16 @@ component SidebarItem inherits Rectangle {
     in property <bool> selected;
     callback clicked();
 
-    height: 40px;
-    background: selected ? #3b82f6 : (touch.has-hover ? #1f2937 : transparent);
-    border-radius: 4px;
+    height: 36px;
+    background: selected ? Theme.sidebar-selected
+              : (touch.has-hover ? Theme.sidebar-hover : transparent);
+    border-radius: 5px;
 
     Text {
         text: label;
-        color: selected ? white : #d1d5db;
+        color: selected ? white : Theme.sidebar-text;
+        font-size: 13px;
+        font-weight: selected ? 600 : 500;
         x: 12px;
         vertical-alignment: center;
         height: parent.height;
@@ -49,6 +53,10 @@ export component AppWindow inherits Window {
     in property <[string]> user-profiles;
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
+    /// Two-way bound to `Theme.dark-mode` so flipping this re-tints
+    /// every component that reads from `Theme.*`. Set from Rust at
+    /// startup; in-app toggle UI lands in a follow-up.
+    in-out property <bool> dark-mode <=> Theme.dark-mode;
 
     callback set-volume(string, int);
     callback set-mute(string, bool);
@@ -63,6 +71,7 @@ export component AppWindow inherits Window {
     callback set-primary-input(string, string);
     callback remove-tv(string);
     callback reload-config();
+    callback request-pair();
 
     HorizontalBox {
         padding: 0;
@@ -71,17 +80,18 @@ export component AppWindow inherits Window {
         // Sidebar
         Rectangle {
             width: 180px;
-            background: #111827;
+            background: Theme.sidebar;
 
             VerticalBox {
                 padding: 8px;
-                spacing: 4px;
+                spacing: 2px;
 
                 Text {
                     text: "tisvlay";
-                    font-size: 18px;
+                    font-size: 16px;
                     font-weight: 700;
                     color: white;
+                    letter-spacing: 0.2px;
                     horizontal-alignment: left;
                     height: 36px;
                     vertical-alignment: center;
@@ -112,15 +122,15 @@ export component AppWindow inherits Window {
                 Rectangle { vertical-stretch: 1; }
 
                 Text {
-                    text: root.daemon-available ? "Daemon: ●" : "Daemon: ○";
-                    color: root.daemon-available ? #10b981 : #ef4444;
-                    font-size: 11px;
+                    text: root.daemon-available ? "● Daemon" : "○ Daemon";
+                    color: root.daemon-available ? Theme.success : Theme.danger;
+                    font-size: 11.5px;
                     horizontal-alignment: left;
                 }
                 Text {
-                    text: root.session-available ? "Session: ●" : "Session: ○";
-                    color: root.session-available ? #10b981 : #ef4444;
-                    font-size: 11px;
+                    text: root.session-available ? "● Session" : "○ Session";
+                    color: root.session-available ? Theme.success : Theme.danger;
+                    font-size: 11.5px;
                     horizontal-alignment: left;
                 }
             }
@@ -128,7 +138,7 @@ export component AppWindow inherits Window {
 
         // Content area
         Rectangle {
-            background: #f9fafb;
+            background: Theme.surface-alt;
             horizontal-stretch: 1;
 
             // Each pane is positioned absolutely within this Rectangle.
@@ -156,6 +166,7 @@ export component AppWindow inherits Window {
                 set-primary-input(id, p) => { root.set-primary-input(id, p); }
                 remove-tv(id) => { root.remove-tv(id); }
                 reload-config => { root.reload-config(); }
+                request-pair => { root.request-pair(); }
             }
             if root.active-pane == Pane.profiles: ProfilesPane {
                 width: 100%;

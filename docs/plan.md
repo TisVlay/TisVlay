@@ -60,6 +60,16 @@ Same dual-bus pattern as `tisvlay-cli` and `tisvlay-tray`. `--user` flag selects
 
 Default `fluent` (closest to KDE Breeze visually). Switchable at build time via `SLINT_STYLE` env var. Standard widget library only — no style-specific widgets, so `fluent` → `material` / `cosmic` / `cupertino` is a one-flag swap if we want to revisit later.
 
+### Design tokens & theme global
+
+The Claude Design agent produced a high-fidelity handoff at [.claude/ui/design_handoff_tisvlay_gui/](../.claude/ui/design_handoff_tisvlay_gui/) — interactive HTML prototype, static gallery, and reusable JSX primitives. The README in that folder is the source of truth for visual decisions; key tokens (`bg`, `surface`, `text`, `accent`, `success`/`danger`/`warn` palettes, `chip`, `row-hover` / `row-selected`, etc.) are ported to Slint as a single global at [crates/tisvlay-gui/ui/theme.slint](../crates/tisvlay-gui/ui/theme.slint).
+
+`Theme` exposes one `dark-mode: bool` switch that branches every color property between the light and dark palettes. Components reference `Theme.text`, `Theme.surface`, `Theme.accent`, etc. directly — no inline colors. Flipping `Theme.dark-mode` re-tints the whole UI without component rebuilds.
+
+**Vendor color tiles** (LG red `#a50034`, Samsung blue `#1428a0`, Sony black, mock chip-gray) are intentionally outside the theme system — they're decorative brand identity, not theme-derived. Defined inline in the `VendorTile` component for reuse from the tray and any future widgets.
+
+The handoff ships its design as React/JSX prototypes; treat them as visual references, not implementation. Stick to stock `std-widgets` (Button, Switch, Slider, ComboBox, ScrollView, ListView) plus a small set of bespoke primitives (`Chip`, `VendorTile`, `Group`, `FormRow`, `LabeledRow`) — no exotic animations, no custom shaders.
+
 ## D-Bus surface
 
 ### Already exists (consumed unchanged)
