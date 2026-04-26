@@ -237,7 +237,6 @@ component TvList inherits Rectangle {
     in property <bool> daemon-available;
     in-out property <int> selected-index;
     callback request-pair();
-    callback reload-config();
 
     width: Design.width-master;
     background: Theme.surface-alt;
@@ -355,27 +354,6 @@ component TvList inherits Rectangle {
             }
         }
 
-        // -- Footer: Reload Config --
-        Rectangle {
-            height: 48px;
-            background: Theme.surface2;
-
-            Rectangle {
-                y: 0;
-                height: Design.border-thin;
-                background: Theme.border;
-            }
-
-            HorizontalLayout {
-                width: 100%;
-                height: 100%;
-                padding: Design.gap-stack;
-                Btn {
-                    text: "Reload config";
-                    clicked => { root.reload-config(); }
-                }
-            }
-        }
     }
 }
 
@@ -974,7 +952,6 @@ export component TvsPane {
     callback set-user-profile(string, string);
     callback set-primary-input(string, string);
     callback remove-tv(string);
-    callback reload-config();
     callback request-pair();
 
     // -- Wizard callbacks (forwarded to AppWindow → Rust) --
@@ -1046,7 +1023,6 @@ export component TvsPane {
             daemon-available: root.daemon-available;
             selected-index <=> root.selected-index;
             request-pair => { root.request-pair(); }
-            reload-config => { root.reload-config(); }
         }
 
         // Detail column — fills remaining width.
