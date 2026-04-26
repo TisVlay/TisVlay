@@ -37,10 +37,16 @@ every other freedesktop service the user's tools (`busctl`, `d-feet`,
 **In scope** — convert these four `readwrite` properties to
 `read`-only + Set method:
 
-- `org.tisvlay.Tv1.Screen.IsScreenOn` → method `SetIsScreenOn(b)`
+- `org.tisvlay.Tv1.Screen.IsScreenOn` → method `SetScreen(b)`
 - `org.tisvlay.Tv1.Volume.Volume` → method `SetVolume(y)`
 - `org.tisvlay.Tv1.Volume.Muted` → method `SetMuted(b)`
 - `org.tisvlay.Tv1.Backlight.Backlight` → method `SetBacklight(y)`
+
+The property name `IsScreenOn` stays (it's a boolean predicate —
+clean to read); the method drops the `Is…On` suffix to read as a
+verb-on-the-interface (`Tv1.Screen.SetScreen(true)`), matching the
+shape of `SetVolume` / `SetMuted` / `SetBacklight`. The Rust-side
+fn name on both daemon impl and proxy trait becomes `set_screen`.
 
 **Out of scope** — config-driven properties stay `readwrite`. They're
 synchronous on the daemon side (no TV roundtrip, no ramp, no race),
@@ -115,12 +121,24 @@ Changes per setter:
 
 Specific sites in `crates/tisvlayd/src/dbus/tv.rs`:
 
-| Setter | Current line | After: D-Bus method |
+| Rust fn | Current line | After: D-Bus method |
 |---|---|---|
-| `set_is_screen_on` | ~287 | `Tv1.Screen.SetIsScreenOn(b)` |
+| `set_is_screen_on` → renamed to `set_screen` | ~287 | `Tv1.Screen.SetScreen(b)` |
 | `set_volume` | ~329 | `Tv1.Volume.SetVolume(y)` |
 | `set_muted` | ~350 | `Tv1.Volume.SetMuted(b)` |
 | `set_backlight` | ~427 | `Tv1.Backlight.SetBacklight(y)` |
+
+Also: change every method's receiver from `&mut self` to `&self`.
+After the refactor there's no field mutation in any of these
+methods (`state_forwarder` owns cache writes), so `&mut self` is
+unjustified — and the [zbus FAQ on hangs](../libs/zbus/book/src/faq.md#im-experiencing-hangs-what-could-be-wrong)
+is explicit that a slow `&mut self` interface method blocks all
+other calls into the same interface for the duration. On a slow
+ramping property (Luna roundtrip ~100-500ms for backlight) that's
+visible if a second client tries to call into the interface during
+the first client's `SetBacklight`. With `&self`, calls are
+concurrent at the zbus layer; TvManager's per-TV mutex still
+serializes the actual TV work, which is the right granularity.
 
 The "Volume control interface" struct doc-comment ("Volume and mute
 are writable properties. Setting them sends the command to the TV
@@ -142,7 +160,9 @@ fn set_backlight(&self, level: u8) -> zbus::Result<()>;
 
 Sites in the proxy traits:
 
-- `TisvlayTvScreen::set_is_screen_on` (line ~247).
+- `TisvlayTvScreen::set_is_screen_on` (line ~247) → rename to
+  `set_screen`. zbus auto-converts to `Tv1.Screen.SetScreen` D-Bus
+  method, so naming on both sides aligns.
 - `TisvlayTvVolume::set_volume` (line ~262).
 - `TisvlayTvVolume::set_muted` (line ~270).
 - `TisvlayTvBacklight::set_backlight` (line ~303).
@@ -150,8 +170,10 @@ Sites in the proxy traits:
 `DaemonClient` wrapper methods (`set_volume`, `set_mute`,
 `set_backlight`, `screen_on`, `screen_off`) — public Rust API
 unchanged. Internally they call `p.X.set_Y(...)` on the proxy; that
-call now invokes a method instead of `Properties.Set`. zero diff at
-the wrapper level.
+call now invokes a method instead of `Properties.Set`. The two
+internal `p.screen.set_is_screen_on(true|false)` calls inside
+`DaemonClient::screen_on` and `screen_off` get renamed to
+`p.screen.set_screen(true|false)` to match the proxy trait rename.
 
 ### Phase 3 — Cleanup
 
@@ -207,7 +229,7 @@ Stale comments and references to remove:
   > OLEDs)."
 
   And update each interface line:
-  - `Tv1.Screen` — `IsScreenOn` (ro) property; `SetIsScreenOn(b)` method.
+  - `Tv1.Screen` — `IsScreenOn` (ro) property; `SetScreen(b)` method.
   - `Tv1.Volume` — `Volume` (ro), `Muted` (ro) properties;
     `SetVolume(y)`, `SetMuted(b)` methods.
   - `Tv1.Backlight` — `Backlight` (ro) property; `SetBacklight(y)`
@@ -234,7 +256,11 @@ Stale comments and references to remove:
       org.tisvlay.Tv1.Volume SetVolume y 30
   ```
 
-  Same translation for `Muted`, `IsScreenOn`, `Backlight`.
+  Same translation for `Muted` → `SetMuted` and `Backlight` →
+  `SetBacklight`. For Screen, the property name (`IsScreenOn`) and
+  the method name (`SetScreen`) differ — the read line stays
+  `get-property … IsScreenOn`, the write line becomes
+  `call … org.tisvlay.Tv1.Screen SetScreen b true`.
 
 - Update the section heading from "Writable properties (set via
   `Properties.Set`)" to "Writable state (set via methods)".
@@ -330,56 +356,64 @@ one setter in a throwaway diff and confirm:
   `state_forwarder` is the only emit path. Still relevant; the test
   now passes structurally rather than by workaround.
 
-## Open questions
+## Decisions
 
-- **Do any external tools or scripts use `busctl set-property` on
-  these properties?** Not that we know of — the project is internal
-  and pre-1.0. If a search turns up scripts in `packaging/scripts/`
-  or `docs/`, update them to use `call` form.
+- **External tools / scripts**: none in this workspace use
+  `busctl set-property` against these interfaces today, and there
+  are no external API consumers. Free to change the surface.
+- **Method receiver**: `&self` (not `&mut self`). Avoids the zbus
+  hang / serialize-on-mut behavior; concurrency floor is
+  TvManager's per-TV mutex, which is the right granularity.
+- **Screen method name**: `Tv1.Screen.SetScreen(b)` (not
+  `SetIsScreenOn`). Drops the awkward "Is…On" suffix; reads as a
+  verb on the interface, matches the shape of other Set* methods.
+  The property name `IsScreenOn` stays — boolean predicate naming
+  is fine for getters.
 
-- **Should `set_volume` / `set_backlight` / etc. on the daemon take
-  `&self` instead of `&mut self`?** Currently `&mut self` because of
-  the pre-cache write. After the refactor there's no field mutation
-  in the setter, so `&self` is correct and avoids the
-  serialize-on-mut bottleneck warned about in
-  [zbus FAQ](../libs/zbus/book/src/faq.md) ("a `interface` method
-  that takes a `&mut self` argument is taking too long" → hangs). On
-  ramping properties this matters: while one client is awaiting
-  `SetBacklight` (slow Luna roundtrip), another `SetBacklight` from
-  a different client would queue behind it on `&mut self`. With
-  `&self`, calls are concurrent (TvManager's per-TV mutex serializes
-  the actual TV work). Worth taking.
+## Commit strategy
 
-  Caveat: getters that read `self.X` still want consistent reads;
-  zbus property cache fields are the only state being read, and
-  those are mutated by `state_forwarder` via `iface_ref.get_mut()`,
-  not by the setter methods. So `&self` is safe for the methods.
+Two commits:
 
-- **Naming**: `SetIsScreenOn` reads awkwardly. Alternatives:
-  `Show`/`Blank`? `SetScreen(s)`? Probably fine to keep
-  `SetIsScreenOn` for symmetry with the property name. Decide while
-  implementing.
+1. **Code refactor**: daemon impls + proxy traits + DaemonClient
+   internals + comment cleanup in `dbus/tv.rs` and the test files.
+   Verifies via `just check`. Single conceptual change ("D-Bus
+   surface: writable state via methods").
+2. **Doc sweep**: `docs/design.md`, `.claude/CLAUDE.md`,
+   `docs/plan2.md` close-out, `docs/plan3.md` close-out (mark this
+   plan as done). Pure docs.
 
-## Recommendation
+Splitting keeps the code-review surface clean — the refactor
+reviewer reads a code-only diff, the doc reviewer reads a
+doc-only diff.
 
-Do the whole refactor in one commit. Scope is contained, the diff
-is net-negative on workaround code, and partial states (some
-properties migrated, others not) would be confusingly inconsistent
-on the D-Bus surface.
+Suggested commit messages:
 
-Suggested commit message stem:
 ```
 refactor(daemon): writable state via methods, properties read-only
 
 Convert Tv1.Volume.Volume / Volume.Muted / Backlight.Backlight /
 Screen.IsScreenOn from `readwrite` properties to read-only
-properties + Set methods. Aligns with the conventional D-Bus
-pattern (UPower, GNOME settings, BlueZ, NetworkManager) and zbus's
-own screen-brightness example. Eliminates the auto-emit-on-Set vs.
-state_forwarder race that motivated the "drop pre-cache"
-workarounds; state_forwarder is now the single authoritative emit
-path by construction. Reconciler / OptimisticSlider stay — those
-solve delta-dispatch gating during TV ramps, an orthogonal concern.
+properties + Set methods (SetVolume, SetMuted, SetBacklight,
+SetScreen). Aligns with the conventional D-Bus pattern (UPower,
+GNOME settings, BlueZ, NetworkManager) and zbus's own
+screen-brightness example.
+
+Eliminates the auto-emit-on-Set vs. state_forwarder race that
+motivated the "drop pre-cache" workarounds — state_forwarder is
+now the single authoritative emit path by construction. Method
+receivers switch from `&mut self` to `&self` so concurrent calls
+into the same interface no longer queue behind a slow setter
+(notably backlight via Luna). Reconciler / OptimisticSlider stay
+— those solve delta-dispatch gating during TV ramps, an
+orthogonal client-side concern.
+```
+
+```
+docs: writable state surface (methods, not Properties.Set)
+
+Sweep follow-up to the D-Bus surface refactor. Updates
+docs/design.md interface table + write-path narrative,
+.claude/CLAUDE.md busctl examples, and closes out plans 2 and 3.
 ```
 
 ## Sequence (for execution)
