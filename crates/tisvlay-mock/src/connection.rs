@@ -35,6 +35,9 @@ pub struct MockConnection {
     /// `MockVendorConfig::backlight_ramp_intermediates` to model TVs
     /// that ramp.
     backlight_ramp_intermediates: Vec<u8>,
+    /// Delay between ramp steps. 0 → `yield_now` (instant); >0 →
+    /// `tokio::time::sleep` so tests can interleave commands mid-ramp.
+    backlight_ramp_step_delay: std::time::Duration,
 }
 
 impl MockConnection {
@@ -69,6 +72,9 @@ impl MockConnection {
             subscription_tx: None,
             hardware_id,
             backlight_ramp_intermediates: config.backlight_ramp_intermediates.clone(),
+            backlight_ramp_step_delay: std::time::Duration::from_millis(
+                config.backlight_ramp_step_delay_ms,
+            ),
         }
     }
 
@@ -76,15 +82,25 @@ impl MockConnection {
     /// to any active subscriber. Matches LG's behavior where every
     /// backend-initiated change results in a push event.
     fn mutate_and_push(&self, f: impl FnOnce(&mut TvState)) {
-        let snapshot = {
-            let mut state = self.state.lock().expect("mock state lock poisoned");
-            f(&mut state);
-            state.clone()
-        };
-        if let Some(tx) = &self.subscription_tx {
-            // Silently drop if the receiver has been closed — matches LG.
-            let _ = tx.send(snapshot);
-        }
+        push_state(&self.state, &self.subscription_tx, f);
+    }
+}
+
+/// Free-function variant of [`MockConnection::mutate_and_push`] that
+/// can be called from a spawned task (which can't capture
+/// `&MockConnection` directly).
+fn push_state(
+    state: &Arc<Mutex<TvState>>,
+    subscription_tx: &Option<mpsc::UnboundedSender<TvState>>,
+    f: impl FnOnce(&mut TvState),
+) {
+    let snapshot = {
+        let mut state = state.lock().expect("mock state lock poisoned");
+        f(&mut state);
+        state.clone()
+    };
+    if let Some(tx) = subscription_tx {
+        let _ = tx.send(snapshot);
     }
 }
 
@@ -242,16 +258,38 @@ impl TvConnection for MockConnection {
 
     async fn set_backlight(&mut self, level: u8) -> Result<()> {
         let level = level.min(100);
-        // If configured to ramp, push each intermediate via subscription
-        // (yielding between each so the daemon's state-change forwarder
-        // can drain and emit `PropertiesChanged` per step). Then push
-        // the final target. Models real LG TV behavior under
-        // `setSystemSettings#picture/backlight`.
-        for v in self.backlight_ramp_intermediates.clone() {
-            self.mutate_and_push(|s| s.backlight = Some(v.min(100)));
-            tokio::task::yield_now().await;
+        let intermediates = self.backlight_ramp_intermediates.clone();
+        let delay = self.backlight_ramp_step_delay;
+
+        if delay.is_zero() {
+            // Synchronous ramp: push all values inline before
+            // returning. Used by emit-ordering tests where the goal
+            // is to exercise the daemon's `PropertiesChanged`
+            // sequencing under back-to-back pushes; timing doesn't
+            // matter, just order.
+            for v in intermediates {
+                self.mutate_and_push(|s| s.backlight = Some(v.min(100)));
+                tokio::task::yield_now().await;
+            }
+            self.mutate_and_push(|s| s.backlight = Some(level));
+        } else {
+            // Async ramp: return immediately, push intermediates over
+            // time on a spawned task. Models real LG behavior — the
+            // Luna `setSystemSettings` roundtrip completes well
+            // before the TV finishes its physical backlight ramp, so
+            // subscription pushes (`picture/backlight`) arrive AFTER
+            // `set_backlight` returns. Tests that need to interleave
+            // a new command mid-ramp depend on this asynchrony.
+            let state = self.state.clone();
+            let subscription_tx = self.subscription_tx.clone();
+            tokio::spawn(async move {
+                for v in intermediates {
+                    push_state(&state, &subscription_tx, |s| s.backlight = Some(v.min(100)));
+                    tokio::time::sleep(delay).await;
+                }
+                push_state(&state, &subscription_tx, |s| s.backlight = Some(level));
+            });
         }
-        self.mutate_and_push(|s| s.backlight = Some(level));
         Ok(())
     }
 

@@ -1927,3 +1927,244 @@ impl<K, V> std::fmt::Debug for Coalescer<K, V> {
             .finish()
     }
 }
+
+// =============================================================================
+// Reconciler
+// =============================================================================
+
+/// Optimistic-value reconciliation gate.
+///
+/// Models the "user intent vs. authoritative observation" pattern that
+/// shows up in any UI controlling a remote endpoint that takes time to
+/// converge:
+///
+/// - The **optimistic value** (`current()`) is what the user has
+///   signaled they want. UI elements display this; new user commands
+///   compute deltas against this.
+/// - **Authoritative observations** (`observe(value)`) come from
+///   outside (a daemon's state-change push, a poll result).
+/// - Between a [`dispatch`](Self::dispatch) and the matching
+///   [`observe`](Self::observe), intermediate observations are
+///   gated out — they represent transient state (e.g., a TV
+///   ramping toward a target) that should not bounce the optimistic
+///   value backward.
+/// - Once an observation matches the last dispatched value the gate
+///   opens; subsequent observations apply directly, allowing genuine
+///   external changes (e.g., a different client moves the value) to
+///   propagate.
+///
+/// # When to use
+///
+/// Any time the GUI/tray reads a remote-mirrored value AND issues
+/// commands relative to that value. Without gating, the apply layer
+/// reads a transient (mid-ramp) observation as the base for the next
+/// delta and lands somewhere unexpected. The tray's scroll-wheel
+/// dispatch is the canonical case: a fast forward burst followed by
+/// a small back scroll otherwise lands at a mid-ramp value minus the
+/// back-scroll's delta, far below where the user expects.
+///
+/// The Slint side currently implements this same algorithm in
+/// `OptimisticSlider` (in Slint code, since the slider thumb's
+/// position is naturally a Slint property). This Rust struct serves
+/// the equivalent role for Rust-side consumers (tray, future
+/// non-Slint UIs).
+///
+/// # Concurrency
+///
+/// `Clone` is cheap (shares an `Arc`); pass clones into closures.
+/// Internal state is guarded by a `std::sync::Mutex` — operations are
+/// non-blocking in the runtime sense (no `.await`).
+pub struct Reconciler<V> {
+    inner: std::sync::Arc<std::sync::Mutex<ReconcilerInner<V>>>,
+}
+
+struct ReconcilerInner<V> {
+    /// Current optimistic value — what `current()` returns.
+    optimistic: V,
+    /// Most recent value passed to `dispatch()`.
+    last_sent: V,
+    /// True between a dispatch and a matching observation.
+    pending: bool,
+}
+
+impl<V> Reconciler<V>
+where
+    V: Copy + PartialEq + Send + 'static,
+{
+    /// Construct with an initial optimistic value (matching the
+    /// authoritative state at construction time).
+    pub fn new(initial: V) -> Self {
+        Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(ReconcilerInner {
+                optimistic: initial,
+                last_sent: initial,
+                pending: false,
+            })),
+        }
+    }
+
+    /// Get the current optimistic value (what UI should display, what
+    /// new commands should compute deltas against).
+    pub fn current(&self) -> V {
+        self.inner
+            .lock()
+            .expect("Reconciler mutex poisoned")
+            .optimistic
+    }
+
+    /// Record a user-driven dispatch. The optimistic value updates
+    /// immediately; a subsequent `observe(value)` matching this value
+    /// will close the gate.
+    pub fn dispatch(&self, value: V) {
+        let mut inner = self.inner.lock().expect("Reconciler mutex poisoned");
+        inner.optimistic = value;
+        inner.last_sent = value;
+        inner.pending = true;
+    }
+
+    /// Reconcile against an authoritative observation.
+    ///
+    /// - If pending and the observation matches `last_sent`, the
+    ///   authority has converged: clear pending.
+    /// - If pending and the observation differs, it's a stale
+    ///   intermediate (e.g., TV ramp): drop.
+    /// - If not pending, the observation represents an external
+    ///   change: update the optimistic value to match.
+    pub fn observe(&self, value: V) {
+        let mut inner = self.inner.lock().expect("Reconciler mutex poisoned");
+        if inner.pending {
+            if value == inner.last_sent {
+                inner.pending = false;
+            }
+            // else: stale intermediate — drop.
+        } else {
+            inner.optimistic = value;
+            inner.last_sent = value;
+        }
+    }
+}
+
+impl<V> Clone for Reconciler<V> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<V: std::fmt::Debug> std::fmt::Debug for Reconciler<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let inner = self.inner.lock();
+        match inner {
+            Ok(inner) => f
+                .debug_struct("Reconciler")
+                .field("optimistic", &inner.optimistic)
+                .field("last_sent", &inner.last_sent)
+                .field("pending", &inner.pending)
+                .finish(),
+            Err(_) => f
+                .debug_struct("Reconciler")
+                .field("poisoned", &true)
+                .finish(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod reconciler_tests {
+    use super::Reconciler;
+
+    #[test]
+    fn initial_value_is_returned_by_current() {
+        let r = Reconciler::new(42u8);
+        assert_eq!(r.current(), 42);
+    }
+
+    #[test]
+    fn dispatch_updates_optimistic_immediately() {
+        let r = Reconciler::new(0u8);
+        r.dispatch(50);
+        assert_eq!(r.current(), 50);
+    }
+
+    #[test]
+    fn pending_observations_that_dont_match_are_dropped() {
+        let r = Reconciler::new(0u8);
+        r.dispatch(50);
+        // Simulated TV ramp: 10, 20, 30, 40 — none match 50.
+        r.observe(10);
+        assert_eq!(
+            r.current(),
+            50,
+            "intermediate ramp value must not regress optimistic"
+        );
+        r.observe(20);
+        r.observe(30);
+        r.observe(40);
+        assert_eq!(r.current(), 50);
+    }
+
+    #[test]
+    fn observation_matching_last_sent_clears_pending() {
+        let r = Reconciler::new(0u8);
+        r.dispatch(50);
+        r.observe(50);
+        assert_eq!(r.current(), 50);
+        // After convergence, an external change applies (would be
+        // dropped before convergence).
+        r.observe(80);
+        assert_eq!(r.current(), 80);
+    }
+
+    #[test]
+    fn external_change_while_idle_updates_optimistic() {
+        let r = Reconciler::new(20u8);
+        // No dispatch — pending=false. External observation applies.
+        r.observe(75);
+        assert_eq!(r.current(), 75);
+    }
+
+    #[test]
+    fn back_scroll_during_ramp_uses_intent_as_base() {
+        // Models the tray's scroll-asymmetry bug: a fast forward burst
+        // followed by a small back scroll while the TV is still
+        // ramping. The reconciler keeps `current()` pinned to the
+        // user's intent throughout, so the apply layer's
+        // `current() + delta` lands where the user expects.
+        let r = Reconciler::new(0u8);
+        r.dispatch(50);
+        // TV ramps 0→50 via 10, 20, 30, 40. Each observation arrives
+        // BEFORE the back-scroll dispatch.
+        r.observe(10);
+        r.observe(20);
+        r.observe(30);
+        // User scrolls back -2 mid-ramp. Apply reads `current()`.
+        let base = r.current();
+        assert_eq!(base, 50, "user-intent base, NOT the bouncing observation");
+        let new_target = base - 2;
+        r.dispatch(new_target);
+        assert_eq!(r.current(), 48);
+        // TV now ramps from wherever it was (~30) toward 48. None of
+        // those intermediates are 48, so they're all dropped.
+        r.observe(35);
+        r.observe(40);
+        r.observe(45);
+        assert_eq!(r.current(), 48);
+        r.observe(48);
+        assert_eq!(r.current(), 48);
+    }
+
+    #[test]
+    fn re_dispatch_before_convergence_replaces_target() {
+        let r = Reconciler::new(0u8);
+        r.dispatch(50);
+        r.observe(20); // mid-ramp, dropped
+        // User changes mind before TV reaches 50.
+        r.dispatch(70);
+        // Old ramp value (50) arrives — dropped because we now want 70.
+        r.observe(50);
+        assert_eq!(r.current(), 70);
+        r.observe(70);
+        assert_eq!(r.current(), 70);
+    }
+}

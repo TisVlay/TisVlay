@@ -7,7 +7,8 @@
 mod state;
 mod tray;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -17,9 +18,92 @@ use tracing::{debug, info, warn};
 
 use state::fetch_all_state;
 use tisvlay_core::{
-    Coalescer, DaemonClient, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
+    Coalescer, DaemonClient, Reconciler, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
 };
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
+
+/// Per-(tv_id, property) `Reconciler<u8>` maps for scroll-driven
+/// values. The tray's apply layer uses the reconciler's `current()` as
+/// the base for the next delta — pinned to the user's intent — and
+/// `dispatch()` to update intent when issuing a daemon write. The
+/// refresh path (`refresh_state` below) feeds every fetched value
+/// through `observe()`, gating mid-ramp values that don't match
+/// `last_sent` so the tooltip and the apply's base stay stable.
+///
+/// Without this, fetching the daemon's bouncing cache during a TV
+/// ramp and writing it straight into `CachedTvState` causes a small
+/// reverse scroll mid-ramp to land far below the user's intent
+/// (apply reads a mid-ramp observation as the base for `current +
+/// delta`). See `crates/tisvlayd/tests/scroll_apply_under_ramp.rs`
+/// for the regression test.
+#[derive(Clone, Default, Debug)]
+struct ScrollReconcilers {
+    volume: Arc<Mutex<HashMap<String, Reconciler<u8>>>>,
+    backlight: Arc<Mutex<HashMap<String, Reconciler<u8>>>>,
+}
+
+impl ScrollReconcilers {
+    /// Feed an authoritative observation; lazily creates the per-TV
+    /// reconciler on first use. Returns the post-observation
+    /// `current()` so callers can write the gated value into their
+    /// own caches (e.g. `CachedTvState`).
+    fn observe_volume(&self, tv_id: &str, value: u8) -> u8 {
+        let mut map = self.volume.lock().expect("volume reconciler mutex");
+        let r = map
+            .entry(tv_id.to_string())
+            .or_insert_with(|| Reconciler::new(value));
+        r.observe(value);
+        r.current()
+    }
+
+    fn observe_backlight(&self, tv_id: &str, value: u8) -> u8 {
+        let mut map = self.backlight.lock().expect("backlight reconciler mutex");
+        let r = map
+            .entry(tv_id.to_string())
+            .or_insert_with(|| Reconciler::new(value));
+        r.observe(value);
+        r.current()
+    }
+
+    /// Read the current optimistic value as a base for a new delta.
+    /// Returns `fallback` if no reconciler exists yet (no refresh has
+    /// fired for this TV, e.g. immediately after pairing).
+    fn current_volume(&self, tv_id: &str, fallback: u8) -> u8 {
+        self.volume
+            .lock()
+            .expect("volume reconciler mutex")
+            .get(tv_id)
+            .map(|r| r.current())
+            .unwrap_or(fallback)
+    }
+
+    fn current_backlight(&self, tv_id: &str, fallback: u8) -> u8 {
+        self.backlight
+            .lock()
+            .expect("backlight reconciler mutex")
+            .get(tv_id)
+            .map(|r| r.current())
+            .unwrap_or(fallback)
+    }
+
+    /// Record a user-driven dispatch for the gate. Lazily creates the
+    /// reconciler if none exists.
+    fn dispatch_volume(&self, tv_id: &str, target: u8) {
+        let mut map = self.volume.lock().expect("volume reconciler mutex");
+        let r = map
+            .entry(tv_id.to_string())
+            .or_insert_with(|| Reconciler::new(target));
+        r.dispatch(target);
+    }
+
+    fn dispatch_backlight(&self, tv_id: &str, target: u8) {
+        let mut map = self.backlight.lock().expect("backlight reconciler mutex");
+        let r = map
+            .entry(tv_id.to_string())
+            .or_insert_with(|| Reconciler::new(target));
+        r.dispatch(target);
+    }
+}
 
 /// tisvlay system tray - TV control from your taskbar.
 #[derive(Parser, Debug)]
@@ -98,29 +182,43 @@ async fn main() -> Result<()> {
 
     info!("Tray icon spawned");
 
+    // Per-(tv_id) reconcilers for scroll-driven properties. Shared
+    // between the watch_state refresh path and the scroll apply
+    // closures so the apply's base value (`current + delta`) and the
+    // menu's displayed value both stay pinned to the user's intent
+    // during TV ramps. See `ScrollReconcilers` docstring above.
+    let reconcilers = ScrollReconcilers::default();
+
     // Spawn signal watcher (replaces polling)
     let watch_daemon = daemon.clone();
     let watch_session = session.clone();
     let watch_handle = handle.clone();
+    let watch_reconcilers = reconcilers.clone();
     tokio::spawn(async move {
-        watch_state(watch_daemon, watch_session, watch_handle).await;
+        watch_state(watch_daemon, watch_session, watch_handle, watch_reconcilers).await;
     });
 
     // Per-(tv_id) sum-merge coalescers for scroll-wheel deltas. Folds
     // a burst of `ScrollBy` events into a single daemon write per TV
-    // per target. The apply reads the cached value, applies the
-    // accumulated delta, dispatches, and writes back optimistically —
-    // same logic as the previous inline `try_recv` loop in
-    // `process_commands`, just lifted into a generic helper.
+    // per target. The apply uses `ScrollReconcilers` to read the
+    // user's intent (not the bouncing daemon cache during a TV ramp)
+    // as the base for `current + delta`, then dispatches the new
+    // intent BEFORE awaiting the daemon round-trip so the gate is in
+    // place before any subscription pushes arrive.
+
     let volume_scroll = Coalescer::new(|old: i32, new: i32| old + new, {
         let daemon = daemon.clone();
         let handle = handle.clone();
+        let reconcilers = reconcilers.clone();
         move |tv_id: String, steps: i32| {
             let daemon = daemon.clone();
             let handle = handle.clone();
+            let reconcilers = reconcilers.clone();
             async move {
-                let current = get_cached_volume(&handle, &tv_id).await;
+                let fallback = get_cached_volume(&handle, &tv_id).await;
+                let current = reconcilers.current_volume(&tv_id, fallback);
                 let new = (current as i32 + steps * VOLUME_STEP as i32).clamp(0, 100) as u8;
+                reconcilers.dispatch_volume(&tv_id, new);
                 if let Err(e) = daemon.set_volume(&tv_id, new).await {
                     warn!(tv_id = %tv_id, error = %e, "Set volume failed");
                 } else {
@@ -132,12 +230,16 @@ async fn main() -> Result<()> {
     let backlight_scroll = Coalescer::new(|old: i32, new: i32| old + new, {
         let daemon = daemon.clone();
         let handle = handle.clone();
+        let reconcilers = reconcilers.clone();
         move |tv_id: String, steps: i32| {
             let daemon = daemon.clone();
             let handle = handle.clone();
+            let reconcilers = reconcilers.clone();
             async move {
-                let current = get_cached_backlight(&handle, &tv_id).await;
+                let fallback = get_cached_backlight(&handle, &tv_id).await;
+                let current = reconcilers.current_backlight(&tv_id, fallback);
                 let new = (current as i32 + steps * BACKLIGHT_STEP as i32).clamp(0, 100) as u8;
+                reconcilers.dispatch_backlight(&tv_id, new);
                 if let Err(e) = daemon.set_backlight(&tv_id, new).await {
                     warn!(tv_id = %tv_id, error = %e, "Set backlight failed");
                 } else {
@@ -151,6 +253,7 @@ async fn main() -> Result<()> {
     let cmd_daemon = daemon.clone();
     let cmd_session = session.clone();
     let cmd_handle = handle.clone();
+    let cmd_reconcilers = reconcilers.clone();
     let cmd_task = tokio::spawn(async move {
         process_commands(
             cmd_rx,
@@ -159,6 +262,7 @@ async fn main() -> Result<()> {
             cmd_handle,
             volume_scroll,
             backlight_scroll,
+            cmd_reconcilers,
         )
         .await;
     });
@@ -191,16 +295,33 @@ async fn wait_for_signal() {
 }
 
 /// Fetch TV state and update the tray menu immediately.
+///
+/// Each TV's `volume` and `backlight` are routed through
+/// `reconcilers.observe_*` before being written to `CachedTvState`,
+/// so mid-ramp values that don't match a pending dispatch don't
+/// bounce the displayed/menu value (or the apply layer's base for
+/// the next delta). Other fields (connected, current_input, etc.)
+/// pass through unchanged — they aren't delta-driven and don't have
+/// transient intermediate states to gate.
 async fn refresh_state(
     daemon: &DaemonClient,
     session: &tokio::sync::RwLock<Option<SessionClient>>,
     handle: &ksni::Handle<TisvlayTray>,
+    reconcilers: &ScrollReconcilers,
 ) {
     let session_ref = session.read().await;
     let session_client = session_ref.as_ref();
 
     match fetch_all_state(daemon, session_client).await {
-        Ok(tvs) => {
+        Ok(mut tvs) => {
+            for tv in &mut tvs {
+                if let Some(v) = tv.volume {
+                    tv.volume = Some(reconcilers.observe_volume(&tv.id, v));
+                }
+                if let Some(b) = tv.backlight {
+                    tv.backlight = Some(reconcilers.observe_backlight(&tv.id, b));
+                }
+            }
             debug!(count = tvs.len(), "Refresh: state updated");
             handle
                 .update(|t| {
@@ -233,6 +354,7 @@ async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
+    reconcilers: ScrollReconcilers,
 ) {
     let mut watcher = match StateWatcher::new(&daemon, Default::default()).await {
         Ok(w) => w,
@@ -250,11 +372,13 @@ async fn watch_state(
         let daemon = daemon.clone();
         let session = session.clone();
         let handle = handle.clone();
+        let reconcilers = reconcilers.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
             let handle = handle.clone();
-            async move { refresh_state(&daemon, &session, &handle).await }
+            let reconcilers = reconcilers.clone();
+            async move { refresh_state(&daemon, &session, &handle, &reconcilers).await }
         });
     };
 
@@ -306,6 +430,7 @@ async fn process_commands(
     handle: ksni::Handle<TisvlayTray>,
     volume_scroll: Coalescer<String, i32>,
     backlight_scroll: Coalescer<String, i32>,
+    reconcilers: ScrollReconcilers,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         debug!(cmd = ?cmd, "Processing tray command");
@@ -324,7 +449,7 @@ async fn process_commands(
                     }
                 }
                 drop(session_ref);
-                refresh_state(&daemon, &session, &handle).await;
+                refresh_state(&daemon, &session, &handle, &reconcilers).await;
             }
             TrayCommand::PowerOn(id) => {
                 if let Err(e) = daemon.power_on(&id).await {

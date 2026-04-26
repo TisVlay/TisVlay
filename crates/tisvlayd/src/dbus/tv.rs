@@ -294,7 +294,9 @@ impl TvScreenService {
             self.manager.screen_off(&self.tv_id).await
         }
         .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        self.is_screen_on = on;
+        // No optimistic pre-cache: state_forwarder updates the cache
+        // from TV-side subscription pushes. See `set_backlight` for
+        // the full rationale.
         Ok(())
     }
 }
@@ -336,7 +338,9 @@ impl TvVolumeService {
             .set_volume(&self.tv_id, level)
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        self.volume = level;
+        // No optimistic pre-cache: state_forwarder updates the cache
+        // from TV-side subscription pushes. See `set_backlight` for
+        // the full rationale.
         Ok(())
     }
 
@@ -354,7 +358,8 @@ impl TvVolumeService {
             .set_mute(&self.tv_id, muted)
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        self.muted = muted;
+        // No optimistic pre-cache: state_forwarder updates the cache
+        // from TV-side subscription pushes.
         Ok(())
     }
 }
@@ -432,21 +437,23 @@ impl TvBacklightService {
             ));
         }
         info!(tv_id = %self.tv_id, backlight = level, "D-Bus: set Backlight");
-        // Dispatch and return — do NOT pre-cache `self.backlight`. The
-        // cache is updated by `state_forwarder` from the TV's
-        // subscription pushes. Backlight on LG OLEDs ramps gradually
-        // (`setSystemSettings#picture/backlight` pushes intermediate
-        // values), so a pre-cache combined with zbus's auto-emit on
-        // `Properties.Set` causes an early `PropertiesChanged` with
-        // the user's target value to fire BEFORE state_forwarder has
-        // relayed the TV's intermediates. Convergence-gating clients
-        // (the GUI's `OptimisticSlider`) would treat that early emit
-        // as "daemon converged", clear `pending`, and apply subsequent
-        // ramp values as external changes — visibly snapping the
-        // slider thumb. Volume / mute / screen / is_screen_on keep
-        // the pre-cache because LG applies them instantaneously, so
-        // their subscription push arrives before zbus's auto-emit can
-        // race ahead. See
+        // Dispatch and return — do NOT pre-cache `self.backlight`.
+        // The cache is the daemon's view of TV-actual state, populated
+        // by `state_forwarder` from subscription pushes. Pre-caching
+        // here lets zbus's auto-emit on `Properties.Set` race ahead
+        // of the subscription path: clients see a `PropertiesChanged`
+        // with the user's target value BEFORE the TV has actually
+        // reached it, which (for ramping properties like backlight)
+        // breaks convergence-gating clients — they treat the early
+        // emit as "daemon converged", clear `pending`, and apply
+        // subsequent ramp values as external changes (visible thumb
+        // snap-back).
+        //
+        // Same reasoning applied to `set_volume` / `set_muted` /
+        // `set_is_screen_on`. They didn't visibly manifest the bug
+        // because LG applies those instantaneously (subscription push
+        // arrives before zbus's auto-emit), but the inconsistency was
+        // a footgun. See
         // `crates/tisvlayd/tests/backlight_emit_ordering.rs`.
         self.manager
             .set_backlight(&self.tv_id, level)
