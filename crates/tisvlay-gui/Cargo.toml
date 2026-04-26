@@ -31,13 +31,7 @@ directories = { workspace = true }
 # to spawn its blocking I/O work from there. Re-enabling accessibility
 # requires running zbus on async-io rather than tokio (workspace-wide
 # decision), or configuring accesskit to share our tokio runtime.
-# `backend-qt` enables the optional Qt6 widget style. Available
-# at compile time when `SLINT_STYLE=qt` is set; the Qt6 dev libs
-# need to be on the system (provided by the Nix dev shell —
-# `pkgs.qt6.qtbase` + `qt6.qtwayland`). Without `qt` selected the
-# Qt backend isn't initialized, so it costs only a slightly larger
-# build artifact.
-slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "backend-qt", "compat-1-2", "renderer-femtovg"] }
+slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "compat-1-2", "renderer-femtovg"] }
 zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
