@@ -67,6 +67,16 @@
               libxi
               libxrandr
             ];
+            # Qt6 for Slint's optional `qt` style. Activated at build
+            # time when `SLINT_STYLE=qt` (build.rs reads the env);
+            # `i-slint-backend-qt` links against qtbase. qtwayland
+            # added so `QT_QPA_PLATFORM=wayland` works under a
+            # Wayland session. If you don't care about the qt style,
+            # this set is harmless (it just sits on PATH).
+            qt6Libs = with pkgs; [
+              qt6.qtbase
+              qt6.qtwayland
+            ];
           in
           pkgs.mkShell {
             packages = with pkgs; [
@@ -90,7 +100,7 @@
               tcpdump
               wakeonlan
               rust
-            ] ++ slintRuntimeLibs;
+            ] ++ slintRuntimeLibs ++ qt6Libs;
 
             # Tell cargo where to find the musl linker
             CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${pkgs.pkgsMusl.stdenv.cc}/bin/cc";
@@ -104,10 +114,12 @@
             LLVM_COV = "${pkgs.llvmPackages_21.bintools-unwrapped}/bin/llvm-cov";
             LLVM_PROFDATA = "${pkgs.llvmPackages_21.bintools-unwrapped}/bin/llvm-profdata";
 
-            # Slint's femtovg renderer dlopens libGL / wayland / xcb at runtime;
-            # without LD_LIBRARY_PATH the GUI binary built in the dev shell
-            # can't find them on a non-NixOS host or in a pure shell.
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath slintRuntimeLibs;
+            # Slint's femtovg renderer dlopens libGL / wayland / xcb at
+            # runtime, and the optional qt backend dlopens Qt libs.
+            # Without LD_LIBRARY_PATH the GUI binary built in the dev
+            # shell can't find them on a non-NixOS host or in a pure
+            # shell.
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (slintRuntimeLibs ++ qt6Libs);
           };
       }
     );
