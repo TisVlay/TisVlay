@@ -199,6 +199,17 @@ pub async fn state_change_forwarder(
                     }
                 }
 
+                // Per-TV config-derived properties (managed, system
+                // profile, primary input, automate_when) may have
+                // changed via direct config-file edits. The reload
+                // path doesn't emit per-key OptionChanged events for
+                // these, so resync the cached D-Bus fields here.
+                let object_server = connection.object_server();
+                for tv_id in manager.list_tv_ids().await {
+                    let path = tv_path(&tv_id);
+                    refresh_tv_config_state(object_server, &path, &tv_id, &manager).await;
+                }
+
                 // The TV list may have changed under us; re-run the
                 // global EDID match so any newly-added TVs pick up
                 // their connector and any removed TVs drop theirs.
@@ -349,5 +360,65 @@ async fn update_tv_cached_state(object_server: &zbus::ObjectServer, path: &str, 
                     .ok();
             }
         }
+    }
+}
+
+/// Refresh cached `TvService` properties that derive from the on-disk
+/// config (name / managed / system_profile / primary_input /
+/// automate_when). Used after `ConfigReloaded` to propagate direct
+/// config-file edits — `set_tv_option` already emits per-key
+/// `OptionChanged` events, but `reload_config` does not, so without
+/// this resync clients see stale cached values until daemon restart.
+async fn refresh_tv_config_state(
+    object_server: &zbus::ObjectServer,
+    path: &str,
+    tv_id: &str,
+    manager: &Arc<TvManager>,
+) {
+    let Ok(iface_ref) = object_server.interface::<_, TvService>(path).await else {
+        return;
+    };
+
+    let info = manager.get_tv_info(tv_id).await;
+    let system_profile = manager
+        .get_tv_system_profile(tv_id)
+        .await
+        .unwrap_or_else(|| "default".to_string());
+    let primary_input = manager
+        .get_tv_primary_input(tv_id)
+        .await
+        .unwrap_or_default();
+    let automate_when = manager
+        .get_tv_automate_when(tv_id)
+        .await
+        .unwrap_or_default();
+
+    let mut iface = iface_ref.get_mut().await;
+    let emitter = iface_ref.signal_emitter();
+
+    if let Some(info) = info {
+        if iface.name != info.name {
+            iface.name = info.name;
+            iface.name_changed(emitter).await.ok();
+        }
+        if iface.managed != info.managed {
+            iface.managed = info.managed;
+            iface.managed_changed(emitter).await.ok();
+        }
+    }
+    if iface.system_profile != system_profile {
+        iface.system_profile = system_profile;
+        iface.system_profile_changed(emitter).await.ok();
+    }
+    if iface.primary_input != primary_input {
+        iface.primary_input = primary_input;
+        iface.primary_input_changed(emitter).await.ok();
+    }
+    if iface.automate_when != automate_when {
+        iface.automate_when = automate_when;
+        iface.automate_when_changed(emitter).await.ok();
+        // `Automated` is computed from automate_when + current_input
+        // + managed; conservatively re-emit so clients re-read it.
+        iface.automated_changed(emitter).await.ok();
     }
 }

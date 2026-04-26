@@ -153,6 +153,13 @@ impl TestDaemon {
     pub fn handle(&self) -> &MockHandle {
         &self.handle
     }
+
+    /// Path to the config file backing this daemon. Tests can overwrite
+    /// this file (via `SystemConfig::save_to`) and then call
+    /// `manager().reload_config()` to exercise reload paths.
+    pub fn config_path(&self) -> std::path::PathBuf {
+        self._config_dir.path().join("config.toml")
+    }
 }
 
 impl Drop for TestDaemon {
