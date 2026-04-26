@@ -96,7 +96,8 @@ fn main() -> Result<()> {
     // fall back to System, which mirrors the desktop's portal setting.
     let initial_config = GuiConfig::load_or_default();
     app.set_appearance_mode(config_to_slint_mode(initial_config.appearance));
-    app.global::<Settings>().on_appearance_mode_changed(|mode| {
+    let settings = app.global::<Settings>();
+    settings.on_appearance_mode_changed(|mode| {
         let cfg = GuiConfig {
             appearance: slint_to_config_mode(mode),
         };
@@ -163,6 +164,13 @@ fn register_callbacks(
     session: Arc<RwLock<Option<SessionClient>>>,
     reconcilers: Reconcilers,
 ) {
+    // Slint global handles. Bound once for the registration phase;
+    // closures captured by `move` re-acquire from the upgraded
+    // `AppWindow` (the global proxy borrows from the window and
+    // can't outlive the function scope).
+    let daemon_global = app.global::<Daemon>();
+    let wizard = app.global::<PairingWizard>();
+
     // Slider drags coalesce per TV via `Coalescer`: each `changed(v)`
     // tick fires into the per-TV worker, which drains-keep-latest
     // before each daemon round-trip. Bounds in-flight calls to one
@@ -200,12 +208,12 @@ fn register_callbacks(
     });
 
     let coalescer = volume_coalescer.clone();
-    app.global::<Daemon>().on_set_volume(move |tv_id, value| {
+    daemon_global.on_set_volume(move |tv_id, value| {
         coalescer.fire(tv_id.to_string(), value.clamp(0, 100) as u8);
     });
 
     let d = daemon.clone();
-    app.global::<Daemon>().on_set_mute(move |tv_id, muted| {
+    daemon_global.on_set_mute(move |tv_id, muted| {
         let d = d.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
@@ -216,13 +224,12 @@ fn register_callbacks(
     });
 
     let coalescer = backlight_coalescer.clone();
-    app.global::<Daemon>()
-        .on_set_backlight(move |tv_id, value| {
-            coalescer.fire(tv_id.to_string(), value.clamp(0, 100) as u8);
-        });
+    daemon_global.on_set_backlight(move |tv_id, value| {
+        coalescer.fire(tv_id.to_string(), value.clamp(0, 100) as u8);
+    });
 
     let d = daemon.clone();
-    app.global::<Daemon>().on_set_screen(move |tv_id, on| {
+    daemon_global.on_set_screen(move |tv_id, on| {
         let d = d.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
@@ -238,17 +245,16 @@ fn register_callbacks(
     });
 
     let d = daemon.clone();
-    app.global::<Daemon>()
-        .on_switch_input(move |tv_id, input_id| {
-            let d = d.clone();
-            let tv_id = tv_id.to_string();
-            let input_id = input_id.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = d.switch_input(&tv_id, &input_id).await {
-                    warn!(tv_id = %tv_id, input = %input_id, error = %e, "switch_input failed");
-                }
-            });
+    daemon_global.on_switch_input(move |tv_id, input_id| {
+        let d = d.clone();
+        let tv_id = tv_id.to_string();
+        let input_id = input_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = d.switch_input(&tv_id, &input_id).await {
+                warn!(tv_id = %tv_id, input = %input_id, error = %e, "switch_input failed");
+            }
         });
+    });
 
     // Power-on subscribes to PowerCycleProgress for the duration of
     // the call so the GUI can show staged feedback. External wakes
@@ -256,7 +262,7 @@ fn register_callbacks(
     // they'll reflect via the regular Connected state refresh.
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    app.global::<Daemon>().on_power_on(move |tv_id| {
+    daemon_global.on_power_on(move |tv_id| {
         let d = d.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
@@ -268,7 +274,7 @@ fn register_callbacks(
     });
 
     let d = daemon.clone();
-    app.global::<Daemon>().on_power_off(move |tv_id| {
+    daemon_global.on_power_off(move |tv_id| {
         let d = d.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
@@ -279,20 +285,19 @@ fn register_callbacks(
     });
 
     let d = daemon.clone();
-    app.global::<Daemon>()
-        .on_set_managed(move |tv_id, managed| {
-            let d = d.clone();
-            let tv_id = tv_id.to_string();
-            tokio::spawn(async move {
-                let value = if managed { "true" } else { "false" };
-                if let Err(e) = d.set_tv_option(&tv_id, "managed", value).await {
-                    warn!(tv_id = %tv_id, managed, error = %e, "set_managed failed");
-                }
-            });
+    daemon_global.on_set_managed(move |tv_id, managed| {
+        let d = d.clone();
+        let tv_id = tv_id.to_string();
+        tokio::spawn(async move {
+            let value = if managed { "true" } else { "false" };
+            if let Err(e) = d.set_tv_option(&tv_id, "managed", value).await {
+                warn!(tv_id = %tv_id, managed, error = %e, "set_managed failed");
+            }
         });
+    });
 
     let d = daemon.clone();
-    app.global::<Daemon>().on_set_system_profile(move |tv_id, profile| {
+    daemon_global.on_set_system_profile(move |tv_id, profile| {
         let d = d.clone();
         let tv_id = tv_id.to_string();
         let profile = profile.to_string();
@@ -304,7 +309,7 @@ fn register_callbacks(
     });
 
     let s = session.clone();
-    app.global::<Daemon>().on_set_user_profile(move |tv_id, profile| {
+    daemon_global.on_set_user_profile(move |tv_id, profile| {
         let s = s.clone();
         let tv_id = tv_id.to_string();
         let profile = profile.to_string();
@@ -324,20 +329,19 @@ fn register_callbacks(
     });
 
     let d = daemon.clone();
-    app.global::<Daemon>()
-        .on_set_primary_input(move |tv_id, input| {
-            let d = d.clone();
-            let tv_id = tv_id.to_string();
-            let input = input.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = d.set_tv_option(&tv_id, "primary_input", &input).await {
-                    warn!(tv_id = %tv_id, input = %input, error = %e, "set_primary_input failed");
-                }
-            });
+    daemon_global.on_set_primary_input(move |tv_id, input| {
+        let d = d.clone();
+        let tv_id = tv_id.to_string();
+        let input = input.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = d.set_tv_option(&tv_id, "primary_input", &input).await {
+                warn!(tv_id = %tv_id, input = %input, error = %e, "set_primary_input failed");
+            }
         });
+    });
 
     let d = daemon.clone();
-    app.global::<Daemon>().on_remove_tv(move |tv_id| {
+    daemon_global.on_remove_tv(move |tv_id| {
         let d = d.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
@@ -349,7 +353,7 @@ fn register_callbacks(
 
     let d = daemon.clone();
     let s = session.clone();
-    app.global::<Daemon>().on_reload_config(move || {
+    daemon_global.on_reload_config(move || {
         let d = d.clone();
         let s = s.clone();
         tokio::spawn(async move {
@@ -372,16 +376,17 @@ fn register_callbacks(
     // Open wizard + start discovery.
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    app.global::<Daemon>().on_request_pair(move || {
+    daemon_global.on_request_pair(move || {
         let d = d.clone();
         let app_weak = app_weak.clone();
         // Reset wizard state on the Slint side first so the user sees
         // the wizard immediately, then kick off discovery.
         if let Some(app) = app_weak.upgrade() {
+            let wizard = app.global::<PairingWizard>();
             reset_wizard(&app);
-            app.global::<PairingWizard>().set_active(true);
-            app.global::<PairingWizard>().set_step(1);
-            app.global::<PairingWizard>().set_discovery_streaming(true);
+            wizard.set_active(true);
+            wizard.set_step(1);
+            wizard.set_discovery_streaming(true);
         }
         tokio::spawn(async move {
             run_wizard_discovery(d, app_weak).await;
@@ -389,7 +394,7 @@ fn register_callbacks(
     });
 
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>().on_cancel(move || {
+    wizard.on_cancel(move || {
         info!("wizard: cancel fired");
         if let Some(app) = app_weak.upgrade() {
             reset_wizard(&app);
@@ -399,72 +404,64 @@ fn register_callbacks(
     // Step transitions. Driven entirely from Slint property reads.
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>().on_step_next(move || {
+    wizard.on_step_next(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
         };
-        let step = app.global::<PairingWizard>().get_step();
+        let wizard = app.global::<PairingWizard>();
+        let step = wizard.get_step();
         info!(step, "wizard: step-next fired");
         match step {
             1 => {
                 // Discover → Configure: copy selected TV's vendor /
                 // address / model and a default name into the
                 // wizard's AppWindow-level fields, then advance.
-                let i = app.global::<PairingWizard>().get_selected_index();
+                let i = wizard.get_selected_index();
                 if i < 0 {
                     return;
                 }
-                let model = app.global::<PairingWizard>().get_discovered();
+                let model = wizard.get_discovered();
                 if let Some(tv) = model.row_data(i as usize) {
-                    if app.global::<PairingWizard>().get_tv_name().is_empty() {
+                    if wizard.get_tv_name().is_empty() {
                         let default = if tv.name.is_empty() {
                             tv.address.clone()
                         } else {
                             tv.name.clone()
                         };
-                        app.global::<PairingWizard>().set_tv_name(default);
+                        wizard.set_tv_name(default);
                     }
-                    app.global::<PairingWizard>().set_selected_vendor(tv.vendor);
-                    app.global::<PairingWizard>()
-                        .set_selected_address(tv.address);
-                    app.global::<PairingWizard>()
-                        .set_selected_hw_model(tv.hw_model);
+                    wizard.set_selected_vendor(tv.vendor);
+                    wizard.set_selected_address(tv.address);
+                    wizard.set_selected_hw_model(tv.hw_model);
                 }
-                if app
-                    .global::<PairingWizard>()
-                    .get_system_profile()
-                    .is_empty()
-                {
-                    app.global::<PairingWizard>()
-                        .set_system_profile("default".into());
+                if wizard.get_system_profile().is_empty() {
+                    wizard.set_system_profile("default".into());
                 }
-                app.global::<PairingWizard>().set_step(2);
+                wizard.set_step(2);
             }
             2 => {
                 // Configure → Pair: kick off pair_tv with collected fields.
-                let name = app.global::<PairingWizard>().get_tv_name().to_string();
+                let name = wizard.get_tv_name().to_string();
                 if name.is_empty() {
                     return;
                 }
-                let i = app.global::<PairingWizard>().get_selected_index();
+                let i = wizard.get_selected_index();
                 if i < 0 {
                     return;
                 }
-                let model = app.global::<PairingWizard>().get_discovered();
+                let model = wizard.get_discovered();
                 let Some(tv) = model.row_data(i as usize) else {
                     return;
                 };
                 let vendor = tv.vendor.to_string();
                 let address = tv.address.to_string();
-                let mac = app.global::<PairingWizard>().get_manual_mac().to_string();
+                let mac = wizard.get_manual_mac().to_string();
                 let wake_id = if mac.is_empty() { None } else { Some(mac) };
-                let managed = app.global::<PairingWizard>().get_managed();
+                let managed = wizard.get_managed();
 
-                app.global::<PairingWizard>().set_step(3);
-                app.global::<PairingWizard>()
-                    .set_pair_phase(SharedString::default());
-                app.global::<PairingWizard>()
-                    .set_pair_message(SharedString::default());
+                wizard.set_step(3);
+                wizard.set_pair_phase(SharedString::default());
+                wizard.set_pair_message(SharedString::default());
 
                 let d = d.clone();
                 let app_weak = app.as_weak();
@@ -473,61 +470,60 @@ fn register_callbacks(
                 });
             }
             // Pair → Done. Only allowed when pair_phase == "complete".
-            3 if app.global::<PairingWizard>().get_pair_phase() == "complete" => {
-                app.global::<PairingWizard>().set_step(4);
+            3 if wizard.get_pair_phase() == "complete" => {
+                wizard.set_step(4);
             }
             _ => {}
         }
     });
 
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>().on_step_back(move || {
+    wizard.on_step_back(move || {
         if let Some(app) = app_weak.upgrade() {
-            let step = app.global::<PairingWizard>().get_step();
+            let wizard = app.global::<PairingWizard>();
+            let step = wizard.get_step();
             if step > 1 {
-                app.global::<PairingWizard>().set_step(step - 1);
+                wizard.set_step(step - 1);
             }
         }
     });
 
     // Pair-failed → discovery: clear pair state and rewind to step 1.
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>().on_back_to_discovery(move || {
+    wizard.on_back_to_discovery(move || {
         if let Some(app) = app_weak.upgrade() {
-            app.global::<PairingWizard>()
-                .set_pair_phase(SharedString::default());
-            app.global::<PairingWizard>()
-                .set_pair_message(SharedString::default());
-            app.global::<PairingWizard>().set_step(1);
+            let wizard = app.global::<PairingWizard>();
+            wizard.set_pair_phase(SharedString::default());
+            wizard.set_pair_message(SharedString::default());
+            wizard.set_step(1);
         }
     });
 
     // Pair-failed → retry: restart pair_tv with the same parameters.
     let d = daemon.clone();
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>().on_retry_pair(move || {
+    wizard.on_retry_pair(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
         };
-        let name = app.global::<PairingWizard>().get_tv_name().to_string();
-        let i = app.global::<PairingWizard>().get_selected_index();
+        let wizard = app.global::<PairingWizard>();
+        let name = wizard.get_tv_name().to_string();
+        let i = wizard.get_selected_index();
         if i < 0 || name.is_empty() {
             return;
         }
-        let model = app.global::<PairingWizard>().get_discovered();
+        let model = wizard.get_discovered();
         let Some(tv) = model.row_data(i as usize) else {
             return;
         };
         let vendor = tv.vendor.to_string();
         let address = tv.address.to_string();
-        let mac = app.global::<PairingWizard>().get_manual_mac().to_string();
+        let mac = wizard.get_manual_mac().to_string();
         let wake_id = if mac.is_empty() { None } else { Some(mac) };
-        let managed = app.global::<PairingWizard>().get_managed();
+        let managed = wizard.get_managed();
 
-        app.global::<PairingWizard>()
-            .set_pair_phase(SharedString::default());
-        app.global::<PairingWizard>()
-            .set_pair_message(SharedString::default());
+        wizard.set_pair_phase(SharedString::default());
+        wizard.set_pair_message(SharedString::default());
 
         let d = d.clone();
         let app_weak = app.as_weak();
@@ -537,7 +533,7 @@ fn register_callbacks(
     });
 
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>().on_finish(move || {
+    wizard.on_finish(move || {
         if let Some(app) = app_weak.upgrade() {
             reset_wizard(&app);
         }
@@ -548,35 +544,31 @@ fn register_callbacks(
     // so step 2 / step 3 / step 4 read consistent values without
     // round-tripping through model row indexing.
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>().on_selected_changed(move |i| {
+    wizard.on_selected_changed(move |i| {
         let Some(app) = app_weak.upgrade() else {
             return;
         };
-        app.global::<PairingWizard>().set_selected_index(i);
+        let wizard = app.global::<PairingWizard>();
+        wizard.set_selected_index(i);
         if i < 0 {
-            app.global::<PairingWizard>()
-                .set_selected_vendor(SharedString::default());
-            app.global::<PairingWizard>()
-                .set_selected_address(SharedString::default());
-            app.global::<PairingWizard>()
-                .set_selected_hw_model(SharedString::default());
+            wizard.set_selected_vendor(SharedString::default());
+            wizard.set_selected_address(SharedString::default());
+            wizard.set_selected_hw_model(SharedString::default());
             return;
         }
-        let model = app.global::<PairingWizard>().get_discovered();
+        let model = wizard.get_discovered();
         if let Some(tv) = model.row_data(i as usize) {
-            app.global::<PairingWizard>().set_selected_vendor(tv.vendor);
-            app.global::<PairingWizard>()
-                .set_selected_address(tv.address);
-            app.global::<PairingWizard>()
-                .set_selected_hw_model(tv.hw_model);
+            wizard.set_selected_vendor(tv.vendor);
+            wizard.set_selected_address(tv.address);
+            wizard.set_selected_hw_model(tv.hw_model);
         }
     });
 
     // Other input handlers — Slint's `<=>` already handles
     // property-level sync; these are no-ops for now.
-    app.global::<PairingWizard>().on_name_edited(|_| {});
-    app.global::<PairingWizard>().on_profile_selected(|_| {});
-    app.global::<PairingWizard>().on_managed_toggled(|_| {});
+    wizard.on_name_edited(|_| {});
+    wizard.on_profile_selected(|_| {});
+    wizard.on_managed_toggled(|_| {});
 
     // Manual-entry: edits flush back via two-way binding; the explicit
     // edited callbacks are wire-only no-ops to satisfy LineEdit.
@@ -584,59 +576,57 @@ fn register_callbacks(
     // Resolve back to the canonical vendor id by looking up in
     // `wizard_supported_vendors`.
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>()
-        .on_manual_vendor_edited(move |display_name| {
-            let Some(app) = app_weak.upgrade() else {
+    wizard.on_manual_vendor_edited(move |display_name| {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let wizard = app.global::<PairingWizard>();
+        let model = wizard.get_supported_vendors();
+        for i in 0..model.row_count() {
+            if let Some(opt) = model.row_data(i)
+                && opt.name == display_name
+            {
+                wizard.set_manual_vendor(opt.id);
                 return;
-            };
-            let model = app.global::<PairingWizard>().get_supported_vendors();
-            for i in 0..model.row_count() {
-                if let Some(opt) = model.row_data(i)
-                    && opt.name == display_name
-                {
-                    app.global::<PairingWizard>().set_manual_vendor(opt.id);
-                    return;
-                }
             }
-            // No match — accept the display name as-is so a future
-            // backend doesn't get silently dropped.
-            app.global::<PairingWizard>()
-                .set_manual_vendor(display_name);
-        });
+        }
+        // No match — accept the display name as-is so a future
+        // backend doesn't get silently dropped.
+        wizard.set_manual_vendor(display_name);
+    });
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>().on_manual_ip_edited(move |v| {
+    wizard.on_manual_ip_edited(move |v| {
         if let Some(app) = app_weak.upgrade() {
-            app.global::<PairingWizard>().set_manual_ip(v);
+            let wizard = app.global::<PairingWizard>();
+            wizard.set_manual_ip(v);
         }
     });
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>()
-        .on_manual_mac_edited(move |v| {
-            if let Some(app) = app_weak.upgrade() {
-                app.global::<PairingWizard>().set_manual_mac(v);
-            }
-        });
+    wizard.on_manual_mac_edited(move |v| {
+        if let Some(app) = app_weak.upgrade() {
+            let wizard = app.global::<PairingWizard>();
+            wizard.set_manual_mac(v);
+        }
+    });
 
     // Manual-add: synthesize a discovered-TV row from the user's
     // typed vendor + IP, append it to the wizard model, select it,
     // and advance to Configure. From step 2 on the flow is identical
     // to the SSDP path.
     let app_weak = app.as_weak();
-    app.global::<PairingWizard>().on_manual_add(move || {
+    wizard.on_manual_add(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
         };
-        let mut vendor = app
-            .global::<PairingWizard>()
-            .get_manual_vendor()
-            .to_string();
+        let wizard = app.global::<PairingWizard>();
+        let mut vendor = wizard.get_manual_vendor().to_string();
         if vendor.is_empty() {
             // Slint property defaults can drop through `<=>` chains in
             // some configurations — fall back to LG since that's the
             // only vendor the manual UI currently offers.
             vendor = "lg".to_string();
         }
-        let ip = app.global::<PairingWizard>().get_manual_ip().to_string();
+        let ip = wizard.get_manual_ip().to_string();
         if ip.is_empty() {
             return;
         }
@@ -652,66 +642,47 @@ fn register_callbacks(
 
         // Append to existing list (or create a fresh one) so any
         // already-discovered TVs aren't lost.
-        let model = app.global::<PairingWizard>().get_discovered();
+        let model = wizard.get_discovered();
         let mut rows: Vec<WizardDiscoveredTv> = (0..model.row_count())
             .filter_map(|i| model.row_data(i))
             .collect();
         rows.push(synthetic);
         let new_index = (rows.len() - 1) as i32;
-        app.global::<PairingWizard>()
-            .set_discovered(ModelRc::new(VecModel::from(rows)));
-        app.global::<PairingWizard>().set_selected_index(new_index);
+        wizard.set_discovered(ModelRc::new(VecModel::from(rows)));
+        wizard.set_selected_index(new_index);
         // Also publish individual selected-* fields so the wizard
         // doesn't have to round-trip through model row indexing for
         // step 2's vendor / address display.
-        app.global::<PairingWizard>()
-            .set_selected_vendor(SharedString::from(vendor));
-        app.global::<PairingWizard>()
-            .set_selected_address(SharedString::from(ip));
-        app.global::<PairingWizard>()
-            .set_selected_hw_model(SharedString::default());
-        if app
-            .global::<PairingWizard>()
-            .get_system_profile()
-            .is_empty()
-        {
-            app.global::<PairingWizard>()
-                .set_system_profile("default".into());
+        wizard.set_selected_vendor(SharedString::from(vendor));
+        wizard.set_selected_address(SharedString::from(ip));
+        wizard.set_selected_hw_model(SharedString::default());
+        if wizard.get_system_profile().is_empty() {
+            wizard.set_system_profile("default".into());
         }
-        app.global::<PairingWizard>().set_step(2);
+        wizard.set_step(2);
     });
 }
 
 /// Clear all wizard state and close the wizard.
 fn reset_wizard(app: &AppWindow) {
-    app.global::<PairingWizard>().set_active(false);
-    app.global::<PairingWizard>().set_step(1);
-    app.global::<PairingWizard>().set_selected_index(-1);
-    app.global::<PairingWizard>()
-        .set_tv_name(SharedString::default());
-    app.global::<PairingWizard>()
-        .set_system_profile(SharedString::default());
-    app.global::<PairingWizard>().set_managed(true);
-    app.global::<PairingWizard>().set_manual_vendor("lg".into());
-    app.global::<PairingWizard>()
-        .set_manual_ip(SharedString::default());
-    app.global::<PairingWizard>()
-        .set_manual_mac(SharedString::default());
-    app.global::<PairingWizard>()
-        .set_selected_vendor(SharedString::default());
-    app.global::<PairingWizard>()
-        .set_selected_address(SharedString::default());
-    app.global::<PairingWizard>()
-        .set_selected_hw_model(SharedString::default());
-    app.global::<PairingWizard>().set_discovery_streaming(false);
-    app.global::<PairingWizard>()
-        .set_discovery_error(SharedString::default());
-    app.global::<PairingWizard>()
-        .set_pair_phase(SharedString::default());
-    app.global::<PairingWizard>()
-        .set_pair_message(SharedString::default());
-    app.global::<PairingWizard>()
-        .set_discovered(ModelRc::new(VecModel::<WizardDiscoveredTv>::default()));
+    let wizard = app.global::<PairingWizard>();
+    wizard.set_active(false);
+    wizard.set_step(1);
+    wizard.set_selected_index(-1);
+    wizard.set_tv_name(SharedString::default());
+    wizard.set_system_profile(SharedString::default());
+    wizard.set_managed(true);
+    wizard.set_manual_vendor("lg".into());
+    wizard.set_manual_ip(SharedString::default());
+    wizard.set_manual_mac(SharedString::default());
+    wizard.set_selected_vendor(SharedString::default());
+    wizard.set_selected_address(SharedString::default());
+    wizard.set_selected_hw_model(SharedString::default());
+    wizard.set_discovery_streaming(false);
+    wizard.set_discovery_error(SharedString::default());
+    wizard.set_pair_phase(SharedString::default());
+    wizard.set_pair_message(SharedString::default());
+    wizard.set_discovered(ModelRc::new(VecModel::<WizardDiscoveredTv>::default()));
 }
 
 /// Drive a single discovery scan and stream results into the wizard's
@@ -741,9 +712,9 @@ async fn run_wizard_discovery(daemon: Arc<DaemonClient>, app_weak: slint::Weak<A
             let app_weak = app_weak.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(app) = app_weak.upgrade() {
-                    app.global::<PairingWizard>()
-                        .set_discovered(ModelRc::new(VecModel::from(rows)));
-                    app.global::<PairingWizard>().set_discovery_streaming(false);
+                    let wizard = app.global::<PairingWizard>();
+                    wizard.set_discovered(ModelRc::new(VecModel::from(rows)));
+                    wizard.set_discovery_streaming(false);
                 }
             })
             .ok();
@@ -753,9 +724,9 @@ async fn run_wizard_discovery(daemon: Arc<DaemonClient>, app_weak: slint::Weak<A
             let app_weak = app_weak.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(app) = app_weak.upgrade() {
-                    app.global::<PairingWizard>().set_discovery_streaming(false);
-                    app.global::<PairingWizard>()
-                        .set_discovery_error(SharedString::from(msg));
+                    let wizard = app.global::<PairingWizard>();
+                    wizard.set_discovery_streaming(false);
+                    wizard.set_discovery_error(SharedString::from(msg));
                 }
             })
             .ok();
@@ -809,10 +780,9 @@ async fn run_wizard_pair(
             let drainer_weak = drainer_weak.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(app) = drainer_weak.upgrade() {
-                    app.global::<PairingWizard>()
-                        .set_pair_phase(SharedString::from(phase));
-                    app.global::<PairingWizard>()
-                        .set_pair_message(SharedString::from(message));
+                    let wizard = app.global::<PairingWizard>();
+                    wizard.set_pair_phase(SharedString::from(phase));
+                    wizard.set_pair_message(SharedString::from(message));
                 }
             })
             .ok();
@@ -826,20 +796,17 @@ async fn run_wizard_pair(
     let app_weak = app_weak.clone();
     slint::invoke_from_event_loop(move || {
         if let Some(app) = app_weak.upgrade() {
+            let wizard = app.global::<PairingWizard>();
             match result {
                 Ok(_tv_id) => {
-                    app.global::<PairingWizard>()
-                        .set_pair_phase("complete".into());
-                    if app.global::<PairingWizard>().get_pair_message().is_empty() {
-                        app.global::<PairingWizard>()
-                            .set_pair_message("Client key stored.".into());
+                    wizard.set_pair_phase("complete".into());
+                    if wizard.get_pair_message().is_empty() {
+                        wizard.set_pair_message("Client key stored.".into());
                     }
                 }
                 Err(e) => {
-                    app.global::<PairingWizard>()
-                        .set_pair_phase("failed".into());
-                    app.global::<PairingWizard>()
-                        .set_pair_message(SharedString::from(format!("{e}")));
+                    wizard.set_pair_phase("failed".into());
+                    wizard.set_pair_message(SharedString::from(format!("{e}")));
                 }
             }
         }
@@ -864,18 +831,15 @@ async fn run_pair_no_progress(
     let app_weak = app_weak.clone();
     slint::invoke_from_event_loop(move || {
         if let Some(app) = app_weak.upgrade() {
+            let wizard = app.global::<PairingWizard>();
             match result {
                 Ok(_) => {
-                    app.global::<PairingWizard>()
-                        .set_pair_phase("complete".into());
-                    app.global::<PairingWizard>()
-                        .set_pair_message("Paired successfully.".into());
+                    wizard.set_pair_phase("complete".into());
+                    wizard.set_pair_message("Paired successfully.".into());
                 }
                 Err(e) => {
-                    app.global::<PairingWizard>()
-                        .set_pair_phase("failed".into());
-                    app.global::<PairingWizard>()
-                        .set_pair_message(SharedString::from(format!("{e}")));
+                    wizard.set_pair_phase("failed".into());
+                    wizard.set_pair_message(SharedString::from(format!("{e}")));
                 }
             }
         }
@@ -978,6 +942,7 @@ async fn initial_fetch_and_watch(
     let initial_daemon_available = initial_snapshot.is_some();
     slint::invoke_from_event_loop(move || {
         if let Some(app) = app_weak_init.upgrade() {
+            let wizard = app.global::<PairingWizard>();
             if let Some(snapshot) = initial_snapshot {
                 push_snapshot(&app, snapshot);
             }
@@ -992,10 +957,8 @@ async fn initial_fetch_and_watch(
                     name: SharedString::from(name),
                 })
                 .collect();
-            app.global::<PairingWizard>()
-                .set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
-            app.global::<PairingWizard>()
-                .set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
+            wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
+            wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
             app.set_daemon_available(initial_daemon_available);
             app.set_session_available(initial_session_available);
         }
