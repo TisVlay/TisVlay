@@ -87,8 +87,8 @@ function ShellFrame({ theme, pane, selectedId = "living-room", tvsOverride, daem
   }
 
   return (
-    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: theme === "light" ? "#e8ebf0" : "#0e1014" }}>
-      <AppWindow theme={theme} width={1040} height={680} title="tisvlay">
+    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "stretch", justifyContent: "stretch", background: theme === "light" ? "#e8ebf0" : "#0e1014" }}>
+      <AppWindow theme={theme} width="100%" height="100%" title="tisvlay">
         <Sidebar theme={theme} active={pane}
           daemonAvailable={daemonAvailable} sessionAvailable={true} />
         {paneEl}

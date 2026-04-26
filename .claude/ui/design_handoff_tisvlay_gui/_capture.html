@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>capture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; background: #e8ebf0; font-family: "Inter", system-ui, sans-serif; }
+  body.dark { background: #0e1014; }
+  /* Stage holds the design at native 1040×680 then is scaled to fit the iframe width. */
+  #stage { width: 1040px; height: 680px; transform-origin: top left; }
+  #root { width: 1040px; height: 680px; }
+  @keyframes tv-pulse { 0% { transform: scale(0.6); opacity: 0.7; } 100% { transform: scale(2.4); opacity: 0; } }
+</style>
+
+<script src="https://unpkg.com/html-to-image@1.11.11/dist/html-to-image.js"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<div id="stage"><div id="root"></div></div>
+
+<script>
+  // Scale the stage so it fits the iframe and the screenshot captures it whole.
+  function rescale() {
+    const stage = document.getElementById("stage");
+    if (!stage) return;
+    const sx = window.innerWidth / 1040;
+    const sy = window.innerHeight / 680;
+    const s = Math.min(sx, sy, 1);
+    stage.style.transform = `scale(${s})`;
+    document.body.style.width = (1040 * s) + "px";
+    document.body.style.height = (680 * s) + "px";
+  }
+  window.addEventListener("resize", rescale);
+  setTimeout(rescale, 100);
+  setTimeout(rescale, 1500);
+</script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="app-shell.jsx"></script>
+<script type="text/babel" src="tvs-pane.jsx"></script>
+<script type="text/babel" src="other-panes.jsx"></script>
+
+<script type="text/babel" data-presets="env,react">
+const CONFIGS = {
+  "tvs-light":                 { theme: "light", pane: "tvs" },
+  "tvs-dark":                  { theme: "dark",  pane: "tvs" },
+  "tvs-detail-light":          { theme: "light", pane: "tvs", selectedId: "living-room" },
+  "tvs-detail-dark":           { theme: "dark",  pane: "tvs", selectedId: "living-room" },
+  "tvs-disconnected":          { theme: "light", pane: "tvs", selectedId: "guest" },
+  "tvs-empty":                 { theme: "light", pane: "tvs", tvsOverride: [] },
+  "tvs-offline":               { theme: "light", pane: "tvs", daemonAvailable: false },
+  "profiles-system-default":   { theme: "light", pane: "profiles" },
+  "profiles-system-default-dark": { theme: "dark", pane: "profiles" },
+  "about-light":               { theme: "light", pane: "about" },
+  "about-dark":                { theme: "dark",  pane: "about" },
+};
+
+function CaptureShell({ theme, pane, selectedId = "living-room", tvsOverride, daemonAvailable = true }) {
+  const tvs = tvsOverride || SAMPLE_TVS_FULL;
+  const t = APP_T[theme];
+  let paneEl;
+  if (!daemonAvailable) {
+    paneEl = (
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: t.surface }}>
+        <PaneHeader theme={theme} title="TVs" subtitle="Daemon unreachable." />
+        <TvsPaneOffline theme={theme} />
+      </div>
+    );
+  } else if (pane === "tvs") {
+    paneEl = (
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: t.surface }}>
+        <PaneHeader theme={theme}
+          title="TVs"
+          subtitle={tvs.length === 0 ? "No TVs configured" : `${tvs.length} configured · ${tvs.filter(x => x.connected).length} connected`}
+          actions={tvs.length > 0 && (
+            <AppBtn theme={theme} variant="accent" iconLeft={<SidebarIcon name="plus" size={14} />}>
+              Pair new TV
+            </AppBtn>
+          )} />
+        <TvsPane theme={theme} tvs={tvs} selectedId={selectedId}
+          onSelect={() => {}} onTvChange={() => {}} onAdd={() => {}} />
+      </div>
+    );
+  } else if (pane === "profiles") {
+    paneEl = <ProfilesPane theme={theme} />;
+  } else if (pane === "about") {
+    paneEl = <AboutPane theme={theme} daemonAvailable={true} sessionAvailable={true} />;
+  }
+  return (
+    <AppWindow theme={theme} width="100%" height="100%" title="tisvlay">
+      <Sidebar theme={theme} active={pane} daemonAvailable={daemonAvailable} sessionAvailable={true} />
+      {paneEl}
+    </AppWindow>
+  );
+}
+
+function render() {
+  const id = (location.hash || "#tvs-light").slice(1);
+  const cfg = CONFIGS[id] || CONFIGS["tvs-light"];
+  document.body.classList.toggle("dark", cfg.theme === "dark");
+  ReactDOM.createRoot(document.getElementById("root")).render(<CaptureShell {...cfg} />);
+  window.__captureReady = true;
+}
+
+// Wait until app-shell etc are loaded.
+function waitAndRender() {
+  if (window.AppWindow && window.SAMPLE_TVS_FULL && window.TvsPane && window.ProfilesPane && window.AboutPane && window.TvsPaneOffline && window.PaneHeader && window.AppBtn && window.SidebarIcon && window.Sidebar) {
+    render();
+  } else {
+    setTimeout(waitAndRender, 50);
+  }
+}
+waitAndRender();
+window.addEventListener("hashchange", () => { window.__captureReady = false; render(); });
+
+window.captureRoot = async function() {
+  // Wait for fonts and any layout to settle.
+  if (document.fonts && document.fonts.ready) await document.fonts.ready;
+  await new Promise(r => requestAnimationFrame(r));
+  const node = document.getElementById("root");
+  // pixelRatio 2 for crisp output.
+  return await window.htmlToImage.toPng(node, { width: 1040, height: 680, pixelRatio: 1, cacheBust: true });
+};
+</script>
+
+</body>
+</html>
