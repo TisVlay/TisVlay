@@ -197,7 +197,9 @@ component TvListRow inherits Rectangle {
                 spacing: Design.gap-tight;
                 alignment: start;
 
-                // Connection status dot.
+                // Connection status dot — mirrors the detail-header
+                // "Connected" chip: green when connected, dimmed when
+                // not.
                 Rectangle {
                     y: (parent.height - self.height) / 2;
                     width: Design.size-status-dot;
@@ -205,15 +207,16 @@ component TvListRow inherits Rectangle {
                     border-radius: 3px;
                     background: root.tv.connected ? Theme.success : Theme.text-faint;
                 }
+
+                // Management state — mirrors the detail-header
+                // "Managed/Automated/Unmanaged" chip's color scheme.
                 Text {
-                    text: !root.tv.connected ? "Off"
-                        : (root.tv.is-screen-on ? "On" : "Screen off");
-                    color: Theme.text-dim;
-                    font-size: Design.font-mini;
-                }
-                if !root.tv.managed: Text {
-                    text: "· unmanaged";
-                    color: Theme.warn-text;
+                    text: !root.tv.managed
+                        ? "Unmanaged"
+                        : (root.tv.automated ? "Automated" : "Managed");
+                    color: !root.tv.managed
+                        ? Theme.warn-text
+                        : (root.tv.automated ? Theme.success-text : Theme.accent);
                     font-size: Design.font-mini;
                 }
             }
@@ -481,7 +484,7 @@ component TvDetailHeader inherits Rectangle {
                         : (root.tv.automated ? "Automated" : "Managed");
                     tone: !root.tv.managed
                         ? "warn"
-                        : (root.tv.automated ? "accent" : "neutral");
+                        : (root.tv.automated ? "success" : "accent");
                 }
             }
         }
