@@ -887,6 +887,39 @@ async fn watch_state(
         }
     };
 
+    // Detach refresh work from the signal-drain loop. If we awaited
+    // `refresh(...).await` directly here, the loop would not call
+    // `watcher.next()` again until the refresh finishes — meaning
+    // zbus's signal_stream stops being drained, the bounded channel
+    // fills, the I/O task blocks pushing, and method-call replies
+    // queue behind unread signal frames in the kernel recv buffer.
+    // Result: outstanding GUI commands hang waiting for replies that
+    // are buried under thousands of unread signals (e.g., during a
+    // self-induced flood from a fast slider drag echoing back many
+    // PropertiesChanged events).
+    //
+    // Fix: spawn refresh as a separate task and dedupe via an
+    // AtomicBool. The watcher loop returns to `next()` immediately,
+    // so signal_stream stays drained regardless of refresh latency.
+    // At most one refresh is in flight; signals that arrive while a
+    // refresh is running collapse into a single trailing refresh
+    // when the in-flight one releases the flag.
+    let refresh_in_flight = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let trigger_refresh = |daemon: Arc<DaemonClient>,
+                          session: Arc<RwLock<Option<SessionClient>>>,
+                          app_weak: slint::Weak<AppWindow>,
+                          flag: Arc<std::sync::atomic::AtomicBool>| {
+        use std::sync::atomic::Ordering;
+        if flag.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        tokio::spawn(async move {
+            refresh(&daemon, &session, &app_weak).await;
+            flag.store(false, Ordering::Relaxed);
+        });
+    };
+
     loop {
         let Some(event) = watcher.next().await else {
             break;
@@ -897,7 +930,12 @@ async fn watch_state(
             | StateEvent::DaemonAppeared
             | StateEvent::SessionProfileChanged
             | StateEvent::FallbackPoll => {
-                refresh(&daemon, &session, &app_weak).await;
+                trigger_refresh(
+                    daemon.clone(),
+                    session.clone(),
+                    app_weak.clone(),
+                    refresh_in_flight.clone(),
+                );
             }
             StateEvent::DaemonDisappeared => {
                 let cb_weak = app_weak.clone();
@@ -921,7 +959,12 @@ async fn watch_state(
                         }
                     })
                     .ok();
-                    refresh(&daemon, &session, &app_weak).await;
+                    trigger_refresh(
+                        daemon.clone(),
+                        session.clone(),
+                        app_weak.clone(),
+                        refresh_in_flight.clone(),
+                    );
                 }
             }
             StateEvent::SessionDisappeared => {
@@ -933,7 +976,12 @@ async fn watch_state(
                     }
                 })
                 .ok();
-                refresh(&daemon, &session, &app_weak).await;
+                trigger_refresh(
+                    daemon.clone(),
+                    session.clone(),
+                    app_weak.clone(),
+                    refresh_in_flight.clone(),
+                );
             }
         }
     }

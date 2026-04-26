@@ -194,6 +194,39 @@ async fn watch_state(
         }
     };
 
+    // Detach refresh work from the signal-drain loop. If we awaited
+    // `refresh_state(...).await` directly here, the loop would not
+    // call `watcher.next()` again until the refresh finishes —
+    // meaning zbus's signal_stream stops being drained, the bounded
+    // channel fills, the I/O task blocks, and eventually method-call
+    // replies queue behind unread signal frames in the kernel recv
+    // buffer. Result: outstanding tray commands hang waiting for
+    // replies that are buried under thousands of signals.
+    //
+    // Fix: spawn refresh as a separate task and dedupe via an
+    // AtomicBool. The watcher loop returns to `next()` immediately,
+    // so signal_stream stays drained regardless of refresh latency.
+    // At most one refresh is in flight; signals that arrive while a
+    // refresh is running collapse into a single "trailing refresh"
+    // by re-arming the flag at the end of each task.
+    let refresh_in_flight = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let trigger_refresh = |daemon: Arc<DaemonClient>,
+                          session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
+                          handle: ksni::Handle<TisvlayTray>,
+                          flag: Arc<std::sync::atomic::AtomicBool>| {
+        use std::sync::atomic::Ordering;
+        // Skip if a refresh is already in flight; the in-progress
+        // one will pick up the latest state when it completes.
+        if flag.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        tokio::spawn(async move {
+            refresh_state(&daemon, &session, &handle).await;
+            flag.store(false, Ordering::Relaxed);
+        });
+    };
+
     loop {
         if handle.is_closed() {
             break;
@@ -208,7 +241,12 @@ async fn watch_state(
             | StateEvent::DaemonAppeared
             | StateEvent::SessionProfileChanged
             | StateEvent::FallbackPoll => {
-                refresh_state(&daemon, &session, &handle).await;
+                trigger_refresh(
+                    daemon.clone(),
+                    session.clone(),
+                    handle.clone(),
+                    refresh_in_flight.clone(),
+                );
             }
             StateEvent::DaemonDisappeared => {
                 handle
@@ -222,13 +260,23 @@ async fn watch_state(
                 if let Ok(client) = SessionClient::new().await {
                     if client.is_available().await {
                         *session.write().await = Some(client);
-                        refresh_state(&daemon, &session, &handle).await;
+                        trigger_refresh(
+                            daemon.clone(),
+                            session.clone(),
+                            handle.clone(),
+                            refresh_in_flight.clone(),
+                        );
                     }
                 }
             }
             StateEvent::SessionDisappeared => {
                 *session.write().await = None;
-                refresh_state(&daemon, &session, &handle).await;
+                trigger_refresh(
+                    daemon.clone(),
+                    session.clone(),
+                    handle.clone(),
+                    refresh_in_flight.clone(),
+                );
             }
         }
     }
