@@ -919,7 +919,29 @@ async fn watch_state(
     session: Arc<RwLock<Option<SessionClient>>>,
     app_weak: slint::Weak<AppWindow>,
 ) {
-    let mut watcher = match StateWatcher::new(&daemon, Default::default()).await {
+    // No debounce: every D-Bus state signal triggers a refresh fire.
+    // The default 100ms (originally a flood guard before
+    // `RefreshTrigger` existed) is now redundant — `RefreshTrigger`
+    // already folds concurrent fires into a single in-flight refresh
+    // plus one trailing-edge follow-up, so floods can't backlog.
+    //
+    // Removing the debounce means the daemon→GUI sample rate is bounded
+    // by `fetch_state` latency (≈ms locally), not by a fixed timer.
+    // Slint's winit backend then rate-limits the visual side: it
+    // queries the live monitor refresh rate via
+    // `current_monitor().refresh_rate_millihertz()` and coalesces
+    // dirty-property updates between vsync frames (verified in
+    // `internal/backends/winit/frame_throttle.rs`). So we get whatever
+    // the display actually supports — 60 Hz, 120 Hz, VRR, mixed
+    // multi-monitor — without hardcoding a sample rate. Spamming
+    // `invoke_from_event_loop` is cheap; the property tracker dedups
+    // and only one paint per frame happens regardless of how many
+    // updates feed in.
+    let watcher_config = tisvlay_core::StateWatcherConfig {
+        signal_debounce: std::time::Duration::ZERO,
+        ..Default::default()
+    };
+    let mut watcher = match StateWatcher::new(&daemon, watcher_config).await {
         Ok(w) => w,
         Err(e) => {
             warn!(error = %e, "Failed to create state watcher; live updates disabled");
