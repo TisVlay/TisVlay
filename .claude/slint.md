@@ -1,7 +1,7 @@
 # Slint notes — what I learned while building tisvlay-gui
 
 Self-notes for future me. The upstream Slint skill at
-[/home/ruffsl/ws/lgtv/libs/slint/docs/skills/slint/SKILL.md](/home/ruffsl/ws/lgtv/libs/slint/docs/skills/slint/SKILL.md)
+[docs/skills/slint/SKILL.md](https://github.com/slint-ui/slint/blob/d5364974c658785f04bc99cdf426bd40f83d6387/docs/skills/slint/SKILL.md)
 covers the basics; this file captures the things I stumbled on that
 the skill doesn't say outright.
 
@@ -33,7 +33,7 @@ binary itself listens.
 
 - **Disabling Slint's `accessibility` default feature does NOT break
   MCP introspection.** I read the source at
-  [internal/backends/testing/mcp_server.rs](/home/ruffsl/ws/lgtv/libs/slint/internal/backends/testing/mcp_server.rs)
+  [internal/backends/testing/mcp_server.rs](https://github.com/slint-ui/slint/blob/d5364974c658785f04bc99cdf426bd40f83d6387/internal/backends/testing/mcp_server.rs)
   to confirm. `accessibility` is required only for
   `invoke_accessibility_action` and the `matchElementAccessibleRole`
   query filter — neither has been load-bearing. Element trees,
@@ -182,21 +182,61 @@ briefly but that's tolerable.
 
 - **Slint Rectangles don't lay out children.** A layout
   (HorizontalBox, VerticalBox, etc.) inside a non-layout Rectangle
-  takes its *preferred* size, not the Rectangle's. Add explicit
-  `width: 100%; height: 100%` on the inner layout, or make the wrapper
-  inherit Rectangle so the layout fills.
+  takes its *preferred* size, not the Rectangle's. Either make the
+  wrapper inherit Rectangle so the layout fills, or use `width: 100%`
+  on the inner layout (safe inside Rectangle — see next bullet for the
+  caveat).
+
+- **`width: 100%` on a layout child is dangerous and almost always
+  wrong.** Setting `width: <percent>` on any element triggers
+  `fixed_width=true` AND records `min_width = <percent>` (per
+  [layout.rs:254](https://github.com/slint-ui/slint/blob/d5364974c658785f04bc99cdf426bd40f83d6387/internal/compiler/layout.rs#L254)),
+  i.e. `min_percent: 100`. That value bubbles upward through every
+  wrapping layout's `box_layout_info_ortho` merge (which takes `.max()`
+  of `min_percent`), and the grandparent's `solve_box_layout` resolves
+  it as an absolute min equal to the full content width. The wrapping
+  layout then claims the entire row, overshooting fixed siblings by
+  their widths.
+
+  Layouts fill their parent's available width by default — `width:
+  100%` on a layout inside another layout is unnecessary and harmful.
+  Symptom: a stretch column that overshoots a sibling row by exactly
+  the fixed sibling's width. Diagnosis: grep ancestors for `width:
+  100%`. Fix: delete it; rely on default fill.
+
+  Rectangle BLOCKS this propagation — its layout-info is hardcoded
+  (per [layout.rs:790](https://github.com/slint-ui/slint/blob/d5364974c658785f04bc99cdf426bd40f83d6387/internal/compiler/layout.rs#L790)),
+  ignoring children. So `width: 100%` *inside a Rectangle wrapper* is
+  fine. The bug only triggers when the chain is layout → layout → ...
+  → stretch allocator without a Rectangle in between.
+
+- **Slint's box-layout stretch math itself is CORRECT.** Verified via
+  minimal repro: a HorizontalLayout with three Rectangle children
+  (fixed-width, `horizontal-stretch: 1`, fixed-width) allocates the
+  middle child the exact remainder. If you observe stretch overshoot,
+  the cause is almost always the `width: 100%` propagation above, not
+  the stretch algorithm.
+
+- **`ScrollView` allows horizontal overflow by default.** Its
+  `viewport-width` auto-sizes to children's preferred width; if a
+  child's preferred exceeds visible-width, content scrolls
+  horizontally and clips at the window edge instead of wrapping
+  inside the card. For vertical-only scroll (the typical case), pin
+  it: `ScrollView { viewport-width: self.visible-width; ... }`.
 
 - **Per-side borders don't exist.** No `border-bottom-width` etc. Use
   a thin Rectangle as a separator at `y: parent.height - 1px`.
 
-- **GroupBox internal layout collapses single VerticalLayout children
-  to preferred width.** Set `width: 100%` on the inner VerticalLayout
-  so its row HorizontalBoxes don't get squeezed. Otherwise sliders
-  inside collapse to ~16 px.
-
 - **`alignment: center` on a Layout is MAIN-axis (horizontal for
   HorizontalLayout).** Don't use it expecting cross-axis (vertical)
   centering — that's the default for cross-axis already.
+
+- **`width: Npx` does not set `preferred_width`.** It sets
+  `fixed_width=true`, `min_width=N`, `max_width=N`, and the user's
+  `width` binding. The solver clamps the cell's preferred to
+  `[min,max] = [N,N]` so the math still works. But there's no
+  cooperation with `preferred-width` queries — if you read
+  `elem.preferred-width` it returns 0, not N.
 
 ### Send / Slint thread bridge
 
