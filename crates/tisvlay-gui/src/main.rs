@@ -1019,7 +1019,54 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
             power_cycle_phase: SharedString::default(),
         })
         .collect();
-    app.set_tvs(ModelRc::new(VecModel::from(tvs)));
-    app.set_system_profiles(ModelRc::new(VecModel::from(snapshot.system_profiles)));
-    app.set_user_profiles(ModelRc::new(VecModel::from(snapshot.user_profiles)));
+    sync_vec_model(&app.get_tvs(), tvs, |m| app.set_tvs(m));
+    sync_vec_model(
+        &app.get_system_profiles(),
+        snapshot.system_profiles,
+        |m| app.set_system_profiles(m),
+    );
+    sync_vec_model(
+        &app.get_user_profiles(),
+        snapshot.user_profiles,
+        |m| app.set_user_profiles(m),
+    );
+}
+
+/// Replace a `ModelRc` content **in place** when it's backed by a
+/// `VecModel`, falling back to a full handle replacement otherwise
+/// (typically only on first push, or after a model reset).
+///
+/// In-place mutation is essential for any model whose `for ... in
+/// model` repeater hosts widgets with internal state — Slider drags,
+/// ScrollView positions, focus, hover. Replacing the `ModelRc` handle
+/// triggers Slint's repeater to treat it as a model reset and rebuild
+/// every child from scratch, which detaches mouse capture mid-drag and
+/// resets scroll offsets.
+///
+/// This helper diffs by index: `set_row_data` for matching rows, push
+/// for new rows past the existing length, remove for trailing rows
+/// that no longer exist. The repeater fires `row_changed` /
+/// `row_added` / `row_removed` signals — never a model reset — so
+/// child widgets survive across pushes.
+fn sync_vec_model<T: Clone + 'static>(
+    current: &ModelRc<T>,
+    new_rows: Vec<T>,
+    fallback: impl FnOnce(ModelRc<T>),
+) {
+    let Some(vec_model) = current.as_any().downcast_ref::<VecModel<T>>() else {
+        fallback(ModelRc::new(VecModel::from(new_rows)));
+        return;
+    };
+    let cur_len = vec_model.row_count();
+    let new_len = new_rows.len();
+    for (i, row) in new_rows.into_iter().enumerate() {
+        if i < cur_len {
+            vec_model.set_row_data(i, row);
+        } else {
+            vec_model.push(row);
+        }
+    }
+    while vec_model.row_count() > new_len {
+        vec_model.remove(vec_model.row_count() - 1);
+    }
 }
