@@ -43,6 +43,25 @@ to polish (4-7). Each is independent — partial completion is fine.
 | 6 | `Palette.color-scheme = ...` direct, drop `AppearanceMode` enum | small | small |
 | 7 | Animations (`animate background { duration: 150ms; }`) | small | polish |
 
+## Decisions (locked)
+
+- **Helper module layout**: split `dbus_client.rs` into per-helper
+  modules. `RefreshTrigger`, `Coalescer<K, V>`, and
+  `Reconciler<V>` + new `ReconcilerMap<K, V>` each get their own
+  file. `dbus_client.rs` keeps just the actual D-Bus client. (Per
+  the user's preference for smaller, single-purpose modules.)
+- **Slint global split**: three separate files, one global per
+  concern. `ui/globals/daemon.slint` (TV control callbacks),
+  `ui/globals/pairing_wizard.slint`, `ui/globals/settings.slint`.
+- **Style switch**: try `cosmic` first; if it renders cleanly on
+  KDE Plasma in both light and dark mode, commit to it. The goal
+  is broader than just "drop Themed* wrappers" — lean on the
+  DE/Palette for theming so we maintain less of our own brushes.
+- **Theme reduction**: after the style switch, audit `theme.slint`
+  for tokens that can be replaced with std-widgets `Palette`
+  values. Goal: minimize our custom theme surface.
+- **Animation feel**: decide during execution; pure polish.
+
 ## Phase 1 — Convergence gating in Rust
 
 ### Why
@@ -75,9 +94,22 @@ push the state machine to Rust.
 
 ### Steps
 
-1. **Generalize `ScrollReconcilers` into `ReconcilerMap<K, V>`** in
-   `tisvlay-core/src/dbus_client.rs` (next to `Reconciler` and
-   `Coalescer`):
+1. **Split helpers out of `dbus_client.rs`** (precursor — keeps the
+   rest of Phase 1 less noisy and aligns with the locked decision
+   on module layout):
+   - `crates/tisvlay-core/src/refresh_trigger.rs` — `RefreshTrigger`.
+   - `crates/tisvlay-core/src/coalescer.rs` — `Coalescer<K, V>`
+     (move with the existing unit tests).
+   - `crates/tisvlay-core/src/reconciler.rs` — `Reconciler<V>` + the
+     new `ReconcilerMap<K, V>` (added below). Move the existing
+     `reconciler_tests` mod with it.
+   - `dbus_client.rs` retains only the actual D-Bus client surface
+     (`DaemonClient`, `SessionClient`, proxy traits, `StateWatcher`,
+     `StateEvent`, etc.).
+   - `lib.rs` re-exports unchanged from the consumer's perspective.
+
+2. **Generalize `ScrollReconcilers` into `ReconcilerMap<K, V>`** in
+   the new `reconciler.rs`:
 
    ```rust
    pub struct ReconcilerMap<K, V> {
@@ -101,14 +133,14 @@ push the state machine to Rust.
    - Per-key isolation.
    - Observation gating per key.
 
-2. **Tray migration**: replace `ScrollReconcilers` struct in
+3. **Tray migration**: replace `ScrollReconcilers` struct in
    `tisvlay-tray/src/main.rs` with two `ReconcilerMap<String, u8>`
    instances (volume + backlight). Existing tray code mostly stays
    the same; just the helper struct is replaced. The `process_commands`
    ScrollBy match arm and the `refresh_state` observation pass are
    the call sites.
 
-3. **GUI migration**: in `tisvlay-gui/src/main.rs`, add the same two
+4. **GUI migration**: in `tisvlay-gui/src/main.rs`, add the same two
    `ReconcilerMap<String, u8>` instances. Wire them into:
    - `register_callbacks`: `on_set_volume` / `on_set_backlight`
      callbacks call `volume_recs.dispatch(tv_id, value)` BEFORE
@@ -120,7 +152,7 @@ push the state machine to Rust.
      returned `current()` value when populating the per-row
      `TvViewModel` instead of the raw daemon value.
 
-4. **Slint `OptimisticSlider` simplification**: in
+5. **Slint `OptimisticSlider` simplification**: in
    `tisvlay-gui/ui/widgets.slint`, remove `last-sent`, `pending`,
    the `changed model-value` if-else block. Keep:
    ```slint
@@ -146,7 +178,7 @@ push the state machine to Rust.
    broken `<=>` binding to a controlled value (the alternative is
    a pure binding which the Slider's two-way value can't sustain).
 
-5. **Tests**:
+6. **Tests**:
    - `scroll_apply_under_ramp.rs`: should pass unchanged (uses
      `Reconciler<V>` directly).
    - Add a unit test for `ReconcilerMap<K, V>` covering the lazy
@@ -212,8 +244,24 @@ example uses the pattern verbatim.
 
 ### Steps
 
-1. **Declare `global Daemon`** in `tisvlay-gui/ui/main.slint` (or a
-   new `ui/globals.slint`):
+1. **Create `ui/globals/` directory** with three per-concern files:
+   - `ui/globals/daemon.slint` — TV control writes (volume, mute,
+     backlight, screen, input, power on/off, managed, profiles,
+     primary input, remove-tv, request-pair).
+   - `ui/globals/pairing_wizard.slint` — pairing flow callbacks
+     (cancel, step-next, step-back, retry-pair, back-to-discovery,
+     finish, selected-changed, name-edited, profile-selected,
+     managed-toggled, manual-vendor-edited, manual-ip-edited,
+     manual-mac-edited, manual-add) plus the wizard's in-out state
+     properties (selected-index, tv-name, etc.) if it makes sense
+     to host them on the global.
+   - `ui/globals/settings.slint` — appearance-mode plumbing,
+     reload-config trigger.
+
+   Each file declares one `export global X { ... }`. Imported into
+   `main.slint` so they're registered with the AppWindow.
+
+2. **Declare callbacks** on each global. Example for `Daemon`:
    ```slint
    export global Daemon {
        callback set-volume(string, int);
@@ -232,32 +280,32 @@ example uses the pattern verbatim.
    }
    ```
 
-2. **Rust binding** (one site, replaces the ~12 separate
+3. **Rust binding** (one site per global, replaces the ~12 separate
    `app.on_set_*` registrations in `register_callbacks`):
    ```rust
-   let daemon_global = app.global::<Daemon>();
-   daemon_global.on_set_volume(...);
-   daemon_global.on_set_backlight(...);
+   let daemon = app.global::<Daemon>();
+   daemon.on_set_volume(...);
+   daemon.on_set_backlight(...);
+   // ...
+
+   let wizard = app.global::<PairingWizard>();
+   wizard.on_cancel(...);
+   // ...
+
+   let settings = app.global::<Settings>();
+   settings.on_appearance_mode_changed(...);
    // ...
    ```
 
-3. **Migrate call sites**: in panes and components, replace
-   `root.set-volume(tv.id, v)` with `Daemon.set-volume(tv.id, v)`.
-   Drop the corresponding `callback set-volume(...)` declarations
-   from each parent component.
+4. **Migrate call sites**: in panes and components, replace
+   `root.set-volume(tv.id, v)` with `Daemon.set-volume(tv.id, v)`,
+   `root.wizard-cancel()` with `PairingWizard.cancel()`, etc.
 
-4. **Delete callback re-exports**: the `callback set-volume(string, int);`
-   declarations on `TvsPane`, `TvDetail`, etc. become dead and can be
-   removed. Same for the `set-volume(v) => { root.set-volume(tv.id, v); }`
-   forwarding handlers.
-
-5. **Wizard callbacks decision**: the pairing wizard has its own
-   set of callbacks (`wizard-cancel`, `wizard-step-next`, etc.).
-   These are wizard-internal — they probably belong in a
-   `global PairingWizard` rather than mixed with `Daemon`.
-   Decide while implementing: separate global per concern, or one
-   global for everything? Recommend separate globals (`Daemon`,
-   `PairingWizard`, possibly `Settings`).
+5. **Delete callback re-exports**: the
+   `callback set-volume(string, int);` declarations on `TvsPane`,
+   `TvDetail`, etc. become dead and can be removed. Same for the
+   `set-volume(v) => { root.set-volume(tv.id, v); }` forwarding
+   handlers. Same for the wizard pane's ~15 callback re-exports.
 
 ### Risks
 
@@ -286,24 +334,40 @@ Wizard-specific callbacks split into `global PairingWizard {...}`
 to keep concerns separated.
 ```
 
-## Phase 3 — `SLINT_STYLE=cosmic` experiment
+## Phase 3 — Lean on DE / `Palette`, drop custom theme
 
 ### Why
 
-`Btn`, `ThemedTextInput`, `ThemedCheckBox`, `ThemedSelect` exist
-because std-widgets default to `fluent` style which renders poorly
-on KDE/Plasma + unfocused windows (low-contrast borders,
-washed-out disabled states). They reimplement std-widgets with
-explicit theme tokens.
+Two related problems:
 
-Slint ships built-in styles: `fluent`, `material`, `cupertino`,
-`cosmic`, `qt`. `cosmic` (System76's COSMIC desktop style) is
-closest to KDE Breeze and may render acceptably without our
-wrappers.
+1. `Btn`, `ThemedTextInput`, `ThemedCheckBox`, `ThemedSelect` exist
+   because std-widgets at the default `fluent` style render poorly
+   on KDE/Plasma + unfocused windows (low-contrast borders,
+   washed-out disabled states). They reimplement std-widgets with
+   explicit theme tokens.
 
-If it works: ~500 LOC of `widgets.slint` (the `Themed*` impls) goes
-away, replaced by direct std-widget usage. Btn / Chip / Group /
-FormRow stay (those aren't theme workarounds).
+2. Our `theme.slint` has ~30 named brushes (surface, surface-alt,
+   border, border-strong, accent, accent-soft, accent-pressed,
+   success/-soft/-text, warn/-soft/-text, danger/-soft/-text/
+   -pressed, chip/-text/-border, row-hover/-selected/-text,
+   text/-dim/-faint). Many of these duplicate concepts already in
+   std-widgets `Palette` (background, foreground, accent-background,
+   alternate-background, etc.). We maintain a parallel hierarchy.
+
+The user's preference is to **lean on the DE/Palette for theming
+and maintain less ourselves**. Slint ships built-in styles —
+`fluent`, `material`, `cupertino`, `cosmic`, `qt`. `cosmic` is
+closest to KDE Breeze; it's the most promising starting point for
+"feels native on KDE".
+
+If `cosmic` works:
+- ~500 LOC of `widgets.slint` (the `Themed*` impls) goes away.
+- A significant chunk of `theme.slint` collapses into `Palette`
+  references (or just gets deleted in favor of using `Palette`
+  directly at call sites).
+- We follow the user's chosen color-scheme automatically (already
+  partially via `Palette.color-scheme`; cosmic's brushes follow it
+  natively).
 
 ### Steps
 
@@ -336,35 +400,72 @@ FormRow stay (those aren't theme workarounds).
    std-widgets `LineEdit`, `CheckBox`, `ComboBox`, `Button`
    directly.
 
-4. **If not acceptable**: keep wrappers, document the experiment
-   outcome in a comment near the `Btn` definition so future-us
-   doesn't re-investigate. ("Tried cosmic 2026-04: still washes out
-   on hover. fluent + wrappers stays.")
+4. **Audit `theme.slint`**: for each brush, check whether
+   `Palette` provides an equivalent. Replace usages with `Palette.*`
+   at call sites and delete the local brush. Likely deletions:
+   - `Theme.surface` → `Palette.background`.
+   - `Theme.surface-alt` → `Palette.alternate-background`.
+   - `Theme.text` → `Palette.foreground`.
+   - `Theme.accent` → `Palette.accent-background` (or whatever
+     `Palette` exposes — Slint 1.16's `Palette` reference at
+     [palette.mdx](../libs/slint/docs/astro/src/content/docs/reference/std-widgets/globals/palette.mdx)).
+
+   What probably stays: domain-specific tokens (chip backgrounds,
+   status colors `success-text`/`warn-text`/`danger-text` for
+   chips, `accent-soft` for selection backgrounds). Goal is to
+   shrink `theme.slint` from ~30 brushes to whatever's genuinely
+   project-specific.
+
+5. **Audit `design.slint`**: not theme-related (sizes/spacing),
+   but worth a sanity pass. Likely all of it stays; spacing/sizing
+   isn't something `Palette` covers.
+
+6. **If `cosmic` doesn't look right**: try `qt` (renders via Qt
+   Quick if the feature is enabled — can match KDE more closely
+   but adds a Qt build dep) or fall back to `fluent` + Themed
+   wrappers. Document the outcome in a comment near `Btn` so we
+   don't re-investigate. ("Tried cosmic 2026-04-26: still washes
+   out on hover-state in dark mode. Reverted.")
+
+### Future direction (out of scope here)
+
+True DE-driven theming (accent color from KDE settings, custom
+palette files) would require xdg-desktop-portal `Settings`
+namespace queries for the user's accent color and writing it into
+`Palette.accent-background` at runtime. Not in scope for this
+plan; document as a future improvement if `cosmic` doesn't fully
+satisfy.
 
 ### Risks
 
-- **Visual regression on platforms other than KDE**: GNOME/sway
-  users may prefer fluent. If we want per-DE styling, that's a
-  bigger problem (Slint compiles against one style at build time).
-  Address by leaving `SLINT_STYLE` overridable at build time;
-  document in README.
+- **Visual regression on non-KDE platforms**: cosmic targets the
+  COSMIC desktop. On GNOME/sway/macOS users may prefer
+  fluent/cupertino. Address by leaving `SLINT_STYLE` overridable
+  at build time; document in README.
 - **`Btn`'s variant logic**: `Btn` has `variant: "default" |
   "accent" | "danger"` — std-widgets `Button` has `primary: bool`
   and no danger variant. May need to keep `Btn` for the danger
   case even if cosmic fixes the others.
+- **Theme audit churn**: replacing every `Theme.surface` reference
+  with `Palette.background` touches many files. Mostly mechanical;
+  diff will be wide but shallow.
 
 ### Suggested commit message (if it works)
 
 ```
-feat(gui): switch slint style to cosmic, drop Themed* wrappers
+feat(gui): adopt cosmic style + Palette, drop custom theme layer
 
 Replace fluent + custom Btn/ThemedTextInput/ThemedCheckBox/
-ThemedSelect with stock std-widgets at the cosmic style. Closer
-to KDE Breeze rendering on the target platform; drops ~500 LOC of
-theme workarounds.
+ThemedSelect with stock std-widgets at the cosmic style — closer
+to KDE Breeze rendering on the target platform — and collapse
+most of theme.slint into Palette references at call sites. The
+theme global retains only domain-specific tokens (chip palettes,
+status colors).
 
-Btn kept for the danger variant (std-widgets Button has primary
-but not danger).
+Drops ~500 LOC of theme workarounds plus the parallel Theme/
+Palette hierarchy. The GUI now follows the user's DE-chosen
+color-scheme via Palette without our own per-brush light/dark
+branching.
 ```
 
 ## Phase 4 — Computed bindings replace `changed` handlers
@@ -524,42 +625,93 @@ transitions are animated. Slint makes animations cheap.
 
 ## Cleanup checklist
 
+Phase 1:
+- [ ] Move `RefreshTrigger` from `dbus_client.rs` into
+  `tisvlay-core/src/refresh_trigger.rs`.
+- [ ] Move `Coalescer<K, V>` (with its tests) into
+  `tisvlay-core/src/coalescer.rs`.
+- [ ] Move `Reconciler<V>` (with its tests) into
+  `tisvlay-core/src/reconciler.rs` and add `ReconcilerMap<K, V>`
+  alongside.
+- [ ] Update `lib.rs` to declare the new modules + keep public
+  re-exports unchanged.
 - [ ] Delete `OptimisticSlider`'s `last-sent`, `pending`, gating
-  if-else block (Phase 1).
-- [ ] Rename `ScrollReconcilers` → use `ReconcilerMap<K, V>` in
-  tray (Phase 1). The tray's helper struct goes away as a named
-  type; just two `ReconcilerMap` fields.
+  if-else block. Add a tight comment noting Rust owns the gate.
+- [ ] Replace `ScrollReconcilers` struct in the tray with two
+  `ReconcilerMap<String, u8>` instances (volume + backlight). The
+  named struct goes away.
+
+Phase 2:
+- [ ] Create `ui/globals/daemon.slint`,
+  `ui/globals/pairing_wizard.slint`, `ui/globals/settings.slint`.
 - [ ] Delete the AppWindow callback declarations replaced by
-  `global Daemon` (Phase 2).
+  globals.
 - [ ] Delete the per-pane callback re-exports + forwarders
-  (Phase 2).
-- [ ] If Phase 3 succeeds: delete `ThemedTextInput`,
-  `ThemedCheckBox`, `ThemedSelect`, possibly `Btn` from
-  `widgets.slint`.
+  (TvsPane / TvDetail / PairingWizard pane).
+
+Phase 3 (conditional on cosmic success):
+- [ ] Switch build-time style to `cosmic` in
+  `tisvlay-gui/build.rs`.
+- [ ] Delete `ThemedTextInput`, `ThemedCheckBox`, `ThemedSelect`
+  from `widgets.slint`. Migrate call sites to std-widgets
+  `LineEdit` / `CheckBox` / `ComboBox`.
+- [ ] Delete `Btn` if cosmic's `Button` is acceptable in all
+  three variants; otherwise keep `Btn` for the danger variant.
+- [ ] Audit `theme.slint` brush-by-brush: replace
+  surface/text/accent/etc. with `Palette.*` references at call
+  sites; delete the corresponding brushes from `Theme`.
+- [ ] `theme.slint` shrinks to project-specific tokens only
+  (chip palettes, status semantic colors).
+
+Phase 4:
+- [ ] `rg -n "changed " crates/tisvlay-gui/ui/` and convert each
+  pure-derive site to an `out property` computed binding.
+
+Phase 5:
+- [ ] Add `on_ui` helper near top of `main.rs`.
+- [ ] Migrate every `slint::invoke_from_event_loop(... upgrade()
+  ...)` site to use it.
+
+Phase 6:
 - [ ] Drop `AppearanceMode` enum + Rust mapper functions
-  (Phase 6).
+  (`config_to_slint_mode`, `slint_to_config_mode`).
+- [ ] Settings pane writes `Palette.color-scheme` directly.
+- [ ] Verify System mode round-trip works after a forced toggle.
+
+Phase 7:
+- [ ] Hover transitions on Btn / Chip / row backgrounds.
+- [ ] Dialog open/close fade.
+- [ ] Smoke-test with `SLINT_SLOW_ANIMATIONS=4`.
+
+Cross-cutting:
 - [ ] Update `crates/tisvlay-gui/ui/main.slint` doc-comment
   describing the AppWindow surface — should reflect the new
-  global-callback model.
+  globals-callback model.
 - [ ] Sweep `docs/design.md` for any GUI-architecture
   paragraphs (probably none, but check).
+- [ ] Sweep `.claude/CLAUDE.md` for stale GUI patterns (callback
+  examples, theme references).
+- [ ] Close out `plan4.md` with a status header when done
+  (matching the pattern of `plan2.md` / `plan3.md`).
 
 ## What to keep (rationale)
 
-- **`Theme` and `Design` globals** — already idiomatic. The
-  iot-dashboard example does literally the same thing.
 - **`Reconciler<V>`** in core — solves the gating problem; Phase 1
   builds on it, doesn't replace it.
 - **`Coalescer<K, V>`** + **`RefreshTrigger`** — orthogonal to this
-  work.
+  work; just moving to their own files.
+- **`Design` global** (sizes / spacing tokens) — `Palette` doesn't
+  cover layout dimensions; this stays.
+- **A reduced `Theme` global** — keeps domain-specific tokens that
+  `Palette` doesn't cover (chip background palette, status semantic
+  colors `success-text` / `warn-text` / `danger-text`, accent-soft
+  for selection backgrounds). Goal: shrink, not delete.
 - **`sync_vec_model` helper** in Rust — necessary for in-place
   `VecModel` mutation. There's no Slint built-in alternative that
   preserves widget state across server-driven row updates.
 - **`if cond : Component {}` and `visible:` patterns** — both used
   correctly for their respective semantics (instantiate-on-demand
   vs hide-but-keep-state).
-- **`Palette.color-scheme`-conditioned brushes in `Theme`** —
-  idiomatic; the iot-dashboard's Skin global does the same.
 
 ## Verification
 
@@ -602,26 +754,15 @@ if cosmic looks good). Phases 4-7 are small and naturally bundle.
 If a phase reveals unexpected cost or design questions, stop and
 return to this plan rather than carry on into the next phase.
 
-## Open questions (to decide while implementing)
+## Open questions (defer to execution)
 
-- **Phase 1**: should `ReconcilerMap` live next to `Reconciler` in
-  `dbus_client.rs`, or in a separate `concurrency.rs` /
-  `reconciler.rs` module? With `Reconciler` + `Coalescer` +
-  `RefreshTrigger` + (now) `ReconcilerMap` all in `dbus_client.rs`,
-  the file is getting concept-heavy. A `tisvlay-core/src/concurrency.rs`
-  module pulling all four out is starting to look attractive.
-  Decide with the implementer.
+- **Phase 3 outcome**: only worth doing if `cosmic` actually looks
+  good on KDE. The 15-minute experiment is the gate. If
+  `cosmic` doesn't satisfy and `qt` would help (it follows Qt's
+  desktop palette directly, but adds a Qt build dep), evaluate
+  that as a fallback. If neither, abandon the phase, keep the
+  Themed wrappers, document why in code.
 
-- **Phase 2**: one `global Daemon` for everything, or split into
-  `Daemon` (TV control) + `Wizard` (pairing) + `Settings`
-  (appearance / reload)? Recommend split — keeps each global's
-  callback list short and the concerns visually separated. But
-  one global is also defensible as the simplest possible.
-
-- **Phase 3**: only worth doing if `cosmic` actually looks good on
-  KDE. If `fluent` + Themed wrappers feel better visually, abandon
-  the phase and document the rationale.
-
-- **Phase 7**: which animations actually feel good? Subjective.
-  Worth a quick playthrough with `SLINT_SLOW_ANIMATIONS=4` to make
-  sure timings aren't off.
+- **Phase 7 timing**: which animations actually feel good?
+  Subjective. Worth a quick playthrough with
+  `SLINT_SLOW_ANIMATIONS=4` to make sure timings aren't off.
