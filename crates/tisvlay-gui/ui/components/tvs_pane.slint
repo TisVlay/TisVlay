@@ -465,13 +465,16 @@ component TvDetailHeader inherits Rectangle {
         // Status badges.
         VerticalLayout {
             alignment: center;
+            spacing: Design.gap-tight;
             HorizontalLayout {
-                spacing: Design.gap-tight;
                 alignment: end;
                 Chip {
                     label: root.tv.connected ? "Connected" : "Disconnected";
                     tone: root.tv.connected ? "success" : "neutral";
                 }
+            }
+            HorizontalLayout {
+                alignment: end;
                 Chip {
                     label: !root.tv.managed
                         ? "Unmanaged"
