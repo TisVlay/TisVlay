@@ -49,6 +49,17 @@ pub struct MockVendorConfig {
     /// shorthand is only applied if no handle outcome is present.
     #[serde(default)]
     pub pairing: PairingShorthand,
+
+    /// If non-empty, `set_backlight(target)` pushes each of these
+    /// values via the subscription channel (with a yield between
+    /// each), then pushes `target`. Models real LG TVs that ramp
+    /// backlight gradually rather than snapping, emitting multiple
+    /// `picture/backlight` subscription updates per setSystemSettings
+    /// call. Used by regression tests for the daemon's
+    /// `PropertiesChanged` emit ordering under intermediate state
+    /// pushes. Default empty (snap-to-target, like volume).
+    #[serde(default)]
+    pub backlight_ramp_intermediates: Vec<u8>,
 }
 
 fn default_address() -> String {
@@ -89,6 +100,7 @@ impl Default for MockVendorConfig {
             initial_backlight: default_backlight(),
             inputs: default_inputs(),
             pairing: PairingShorthand::default(),
+            backlight_ramp_intermediates: Vec::new(),
         }
     }
 }

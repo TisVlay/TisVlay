@@ -30,6 +30,11 @@ pub struct MockConnection {
     /// from [`TvConnection::hardware_id`]; `None` when no test has
     /// seeded one via `MockHandle::set_hardware_id`.
     hardware_id: Option<HardwareId>,
+    /// Intermediate values pushed by `set_backlight` before the final
+    /// target. Empty by default (snap behavior); populated from
+    /// `MockVendorConfig::backlight_ramp_intermediates` to model TVs
+    /// that ramp.
+    backlight_ramp_intermediates: Vec<u8>,
 }
 
 impl MockConnection {
@@ -63,6 +68,7 @@ impl MockConnection {
             connected: true,
             subscription_tx: None,
             hardware_id,
+            backlight_ramp_intermediates: config.backlight_ramp_intermediates.clone(),
         }
     }
 
@@ -236,6 +242,15 @@ impl TvConnection for MockConnection {
 
     async fn set_backlight(&mut self, level: u8) -> Result<()> {
         let level = level.min(100);
+        // If configured to ramp, push each intermediate via subscription
+        // (yielding between each so the daemon's state-change forwarder
+        // can drain and emit `PropertiesChanged` per step). Then push
+        // the final target. Models real LG TV behavior under
+        // `setSystemSettings#picture/backlight`.
+        for v in self.backlight_ramp_intermediates.clone() {
+            self.mutate_and_push(|s| s.backlight = Some(v.min(100)));
+            tokio::task::yield_now().await;
+        }
         self.mutate_and_push(|s| s.backlight = Some(level));
         Ok(())
     }

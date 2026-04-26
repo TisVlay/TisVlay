@@ -432,11 +432,26 @@ impl TvBacklightService {
             ));
         }
         info!(tv_id = %self.tv_id, backlight = level, "D-Bus: set Backlight");
+        // Dispatch and return — do NOT pre-cache `self.backlight`. The
+        // cache is updated by `state_forwarder` from the TV's
+        // subscription pushes. Backlight on LG OLEDs ramps gradually
+        // (`setSystemSettings#picture/backlight` pushes intermediate
+        // values), so a pre-cache combined with zbus's auto-emit on
+        // `Properties.Set` causes an early `PropertiesChanged` with
+        // the user's target value to fire BEFORE state_forwarder has
+        // relayed the TV's intermediates. Convergence-gating clients
+        // (the GUI's `OptimisticSlider`) would treat that early emit
+        // as "daemon converged", clear `pending`, and apply subsequent
+        // ramp values as external changes — visibly snapping the
+        // slider thumb. Volume / mute / screen / is_screen_on keep
+        // the pre-cache because LG applies them instantaneously, so
+        // their subscription push arrives before zbus's auto-emit can
+        // race ahead. See
+        // `crates/tisvlayd/tests/backlight_emit_ordering.rs`.
         self.manager
             .set_backlight(&self.tv_id, level)
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        self.backlight = level;
         Ok(())
     }
 }
