@@ -22,8 +22,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
-    Coalescer, DaemonClient, PowerCyclePhase, RefreshTrigger, SessionClient, StateEvent,
-    StateWatcher,
+    Coalescer, DaemonClient, PowerCyclePhase, ReconcilerMap, RefreshTrigger, SessionClient,
+    StateEvent, StateWatcher,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -32,6 +32,36 @@ use crate::gui_config::{AppearanceMode as ConfigAppearanceMode, GuiConfig};
 use crate::state::{StateSnapshot, fetch_state};
 
 slint::include_modules!();
+
+/// Per-(tv_id, property) reconciler maps for ramping TV-state values.
+/// User input dispatches through `volume.dispatch` / `backlight.dispatch`
+/// before the daemon write; the refresh path observes every fetched
+/// value through the same maps and pushes the gated `current()` into
+/// the Slint model. Mid-ramp values that don't match the last
+/// dispatch are dropped, so the slider thumb stays at user intent
+/// during a TV transition. Symmetric with the tray's `Reconcilers`.
+#[derive(Clone, Default, Debug)]
+struct Reconcilers {
+    volume: ReconcilerMap<String, u8>,
+    backlight: ReconcilerMap<String, u8>,
+}
+
+impl Reconcilers {
+    /// Route every TV's volume + backlight in a freshly-fetched
+    /// snapshot through the reconcilers' `observe` calls, mutating
+    /// the snapshot in place so `push_snapshot` sees gated values.
+    /// Called from worker threads BEFORE the
+    /// `invoke_from_event_loop` push.
+    fn reconcile(&self, snapshot: &mut StateSnapshot) {
+        for tv in &mut snapshot.tvs {
+            let id = tv.id.to_string();
+            tv.volume = self.volume.observe(&id, tv.volume.clamp(0, 100) as u8) as i32;
+            tv.backlight = self
+                .backlight
+                .observe(&id, tv.backlight.clamp(0, 100) as u8) as i32;
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "tisvlay-gui", version, about)]
@@ -99,13 +129,24 @@ fn main() -> Result<()> {
         anyhow::Ok((daemon, session))
     })?;
 
+    // Per-(tv_id, property) reconcilers shared across the user-input
+    // dispatch path (Slint callback → coalescer.apply → reconciler
+    // .dispatch → daemon write) and the daemon-refresh path
+    // (state watcher → fetch → reconciler.observe → Slint model).
+    let reconcilers = Reconcilers::default();
+
     // Wire callbacks before the event loop starts so they're ready when
     // the user interacts with controls.
-    register_callbacks(&app, daemon.clone(), session.clone());
+    register_callbacks(&app, daemon.clone(), session.clone(), reconcilers.clone());
 
     // Background watcher: refresh on every signal-driven state change.
     let app_weak = app.as_weak();
-    tokio::spawn(initial_fetch_and_watch(daemon, session, app_weak));
+    tokio::spawn(initial_fetch_and_watch(
+        daemon,
+        session,
+        reconcilers,
+        app_weak,
+    ));
 
     // Slint event loop blocks the main thread; tokio workers keep
     // driving tasks. `rt` drops at end of `main`, aborting any
@@ -120,16 +161,23 @@ fn register_callbacks(
     app: &AppWindow,
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    reconcilers: Reconcilers,
 ) {
     // Slider drags coalesce per TV via `Coalescer`: each `changed(v)`
     // tick fires into the per-TV worker, which drains-keep-latest
     // before each daemon round-trip. Bounds in-flight calls to one
-    // per (tv_id, property) regardless of drag rate.
+    // per (tv_id, property) regardless of drag rate. Each apply
+    // dispatches through the reconciler BEFORE the daemon write so
+    // mid-ramp echoes arriving during the round-trip are correctly
+    // gated.
     let volume_coalescer: Coalescer<String, u8> = Coalescer::new(|_, new| new, {
         let d = daemon.clone();
+        let recs = reconcilers.clone();
         move |id: String, v: u8| {
             let d = d.clone();
+            let recs = recs.clone();
             async move {
+                recs.volume.dispatch(&id, v);
                 if let Err(e) = d.set_volume(&id, v).await {
                     warn!(tv_id = %id, error = %e, "set_volume failed");
                 }
@@ -138,9 +186,12 @@ fn register_callbacks(
     });
     let backlight_coalescer: Coalescer<String, u8> = Coalescer::new(|_, new| new, {
         let d = daemon.clone();
+        let recs = reconcilers.clone();
         move |id: String, v: u8| {
             let d = d.clone();
+            let recs = recs.clone();
             async move {
+                recs.backlight.dispatch(&id, v);
                 if let Err(e) = d.set_backlight(&id, v).await {
                     warn!(tv_id = %id, error = %e, "set_backlight failed");
                 }
@@ -839,11 +890,15 @@ fn update_power_cycle_phase(
 async fn initial_fetch_and_watch(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
 ) {
     let initial_session_available = session.read().await.is_some();
     let initial_snapshot = match fetch_state(&daemon, session.read().await.as_ref()).await {
-        Ok(s) => Some(s),
+        Ok(mut s) => {
+            reconcilers.reconcile(&mut s);
+            Some(s)
+        }
         Err(e) => {
             debug!(error = %e, "Initial state fetch failed; daemon may be offline");
             None
@@ -885,12 +940,13 @@ async fn initial_fetch_and_watch(
     })
     .ok();
 
-    watch_state(daemon, session, app_weak).await;
+    watch_state(daemon, session, reconcilers, app_weak).await;
 }
 
 async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
 ) {
     // No debounce: every D-Bus state signal triggers a refresh fire.
@@ -930,12 +986,14 @@ async fn watch_state(
     let trigger_refresh = || {
         let daemon = daemon.clone();
         let session = session.clone();
+        let reconcilers = reconcilers.clone();
         let app_weak = app_weak.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
+            let reconcilers = reconcilers.clone();
             let app_weak = app_weak.clone();
-            async move { refresh(&daemon, &session, &app_weak).await }
+            async move { refresh(&daemon, &session, &reconcilers, &app_weak).await }
         });
     };
 
@@ -994,11 +1052,13 @@ async fn watch_state(
 async fn refresh(
     daemon: &DaemonClient,
     session: &RwLock<Option<SessionClient>>,
+    reconcilers: &Reconcilers,
     app_weak: &slint::Weak<AppWindow>,
 ) {
     let session_ref = session.read().await;
     match fetch_state(daemon, session_ref.as_ref()).await {
-        Ok(snapshot) => {
+        Ok(mut snapshot) => {
+            reconcilers.reconcile(&mut snapshot);
             let app_weak = app_weak.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(app) = app_weak.upgrade() {

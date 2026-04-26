@@ -7,8 +7,7 @@
 mod state;
 mod tray;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -18,91 +17,27 @@ use tracing::{debug, info, warn};
 
 use state::fetch_all_state;
 use tisvlay_core::{
-    Coalescer, DaemonClient, Reconciler, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
+    Coalescer, DaemonClient, ReconcilerMap, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
 };
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
-/// Per-(tv_id, property) `Reconciler<u8>` maps for scroll-driven
-/// values. The tray's apply layer uses the reconciler's `current()` as
-/// the base for the next delta — pinned to the user's intent — and
-/// `dispatch()` to update intent when issuing a daemon write. The
-/// refresh path (`refresh_state` below) feeds every fetched value
-/// through `observe()`, gating mid-ramp values that don't match
-/// `last_sent` so the tooltip and the apply's base stay stable.
+/// Per-(tv_id, property) reconciler maps for scroll-driven values.
+/// Bundles the volume and backlight maps so the apply layer can be
+/// passed a single `Reconcilers` value through `process_commands`,
+/// `watch_state`, and `refresh_state` without two parameters
+/// everywhere.
 ///
-/// Without this, fetching the daemon's bouncing cache during a TV
-/// ramp and writing it straight into `CachedTvState` causes a small
-/// reverse scroll mid-ramp to land far below the user's intent
-/// (apply reads a mid-ramp observation as the base for `current +
-/// delta`). See `crates/tisvlayd/tests/scroll_apply_under_ramp.rs`
-/// for the regression test.
+/// The apply uses `volume.current()` / `backlight.current()` as the
+/// base for the next delta (pinned to user intent) and `dispatch()`
+/// to update intent on each user input. The refresh path feeds
+/// every fetched value through `observe()`, gating mid-ramp values
+/// that don't match the last dispatch. See
+/// `crates/tisvlayd/tests/scroll_apply_under_ramp.rs` for the
+/// regression test that this gating prevents.
 #[derive(Clone, Default, Debug)]
-struct ScrollReconcilers {
-    volume: Arc<Mutex<HashMap<String, Reconciler<u8>>>>,
-    backlight: Arc<Mutex<HashMap<String, Reconciler<u8>>>>,
-}
-
-impl ScrollReconcilers {
-    /// Feed an authoritative observation; lazily creates the per-TV
-    /// reconciler on first use. Returns the post-observation
-    /// `current()` so callers can write the gated value into their
-    /// own caches (e.g. `CachedTvState`).
-    fn observe_volume(&self, tv_id: &str, value: u8) -> u8 {
-        let mut map = self.volume.lock().expect("volume reconciler mutex");
-        let r = map
-            .entry(tv_id.to_string())
-            .or_insert_with(|| Reconciler::new(value));
-        r.observe(value);
-        r.current()
-    }
-
-    fn observe_backlight(&self, tv_id: &str, value: u8) -> u8 {
-        let mut map = self.backlight.lock().expect("backlight reconciler mutex");
-        let r = map
-            .entry(tv_id.to_string())
-            .or_insert_with(|| Reconciler::new(value));
-        r.observe(value);
-        r.current()
-    }
-
-    /// Read the current optimistic value as a base for a new delta.
-    /// Returns `fallback` if no reconciler exists yet (no refresh has
-    /// fired for this TV, e.g. immediately after pairing).
-    fn current_volume(&self, tv_id: &str, fallback: u8) -> u8 {
-        self.volume
-            .lock()
-            .expect("volume reconciler mutex")
-            .get(tv_id)
-            .map(|r| r.current())
-            .unwrap_or(fallback)
-    }
-
-    fn current_backlight(&self, tv_id: &str, fallback: u8) -> u8 {
-        self.backlight
-            .lock()
-            .expect("backlight reconciler mutex")
-            .get(tv_id)
-            .map(|r| r.current())
-            .unwrap_or(fallback)
-    }
-
-    /// Record a user-driven dispatch for the gate. Lazily creates the
-    /// reconciler if none exists.
-    fn dispatch_volume(&self, tv_id: &str, target: u8) {
-        let mut map = self.volume.lock().expect("volume reconciler mutex");
-        let r = map
-            .entry(tv_id.to_string())
-            .or_insert_with(|| Reconciler::new(target));
-        r.dispatch(target);
-    }
-
-    fn dispatch_backlight(&self, tv_id: &str, target: u8) {
-        let mut map = self.backlight.lock().expect("backlight reconciler mutex");
-        let r = map
-            .entry(tv_id.to_string())
-            .or_insert_with(|| Reconciler::new(target));
-        r.dispatch(target);
-    }
+struct Reconcilers {
+    volume: ReconcilerMap<String, u8>,
+    backlight: ReconcilerMap<String, u8>,
 }
 
 /// tisvlay system tray - TV control from your taskbar.
@@ -186,8 +121,8 @@ async fn main() -> Result<()> {
     // between the watch_state refresh path and the scroll apply
     // closures so the apply's base value (`current + delta`) and the
     // menu's displayed value both stay pinned to the user's intent
-    // during TV ramps. See `ScrollReconcilers` docstring above.
-    let reconcilers = ScrollReconcilers::default();
+    // during TV ramps. See `Reconcilers` docstring above.
+    let reconcilers = Reconcilers::default();
 
     // Spawn signal watcher (replaces polling)
     let watch_daemon = daemon.clone();
@@ -200,7 +135,7 @@ async fn main() -> Result<()> {
 
     // Per-(tv_id) sum-merge coalescers for scroll-wheel deltas. Folds
     // a burst of `ScrollBy` events into a single daemon write per TV
-    // per target. The apply uses `ScrollReconcilers` to read the
+    // per target. The apply uses `Reconcilers` to read the
     // user's intent (not the bouncing daemon cache during a TV ramp)
     // as the base for `current + delta`, then dispatches the new
     // intent BEFORE awaiting the daemon round-trip so the gate is in
@@ -216,9 +151,9 @@ async fn main() -> Result<()> {
             let reconcilers = reconcilers.clone();
             async move {
                 let fallback = get_cached_volume(&handle, &tv_id).await;
-                let current = reconcilers.current_volume(&tv_id, fallback);
+                let current = reconcilers.volume.current(&tv_id, fallback);
                 let new = (current as i32 + steps * VOLUME_STEP as i32).clamp(0, 100) as u8;
-                reconcilers.dispatch_volume(&tv_id, new);
+                reconcilers.volume.dispatch(&tv_id, new);
                 if let Err(e) = daemon.set_volume(&tv_id, new).await {
                     warn!(tv_id = %tv_id, error = %e, "Set volume failed");
                 } else {
@@ -237,9 +172,9 @@ async fn main() -> Result<()> {
             let reconcilers = reconcilers.clone();
             async move {
                 let fallback = get_cached_backlight(&handle, &tv_id).await;
-                let current = reconcilers.current_backlight(&tv_id, fallback);
+                let current = reconcilers.backlight.current(&tv_id, fallback);
                 let new = (current as i32 + steps * BACKLIGHT_STEP as i32).clamp(0, 100) as u8;
-                reconcilers.dispatch_backlight(&tv_id, new);
+                reconcilers.backlight.dispatch(&tv_id, new);
                 if let Err(e) = daemon.set_backlight(&tv_id, new).await {
                     warn!(tv_id = %tv_id, error = %e, "Set backlight failed");
                 } else {
@@ -297,7 +232,7 @@ async fn wait_for_signal() {
 /// Fetch TV state and update the tray menu immediately.
 ///
 /// Each TV's `volume` and `backlight` are routed through
-/// `reconcilers.observe_*` before being written to `CachedTvState`,
+/// `reconcilers.{volume,backlight}.observe` before being written to `CachedTvState`,
 /// so mid-ramp values that don't match a pending dispatch don't
 /// bounce the displayed/menu value (or the apply layer's base for
 /// the next delta). Other fields (connected, current_input, etc.)
@@ -307,7 +242,7 @@ async fn refresh_state(
     daemon: &DaemonClient,
     session: &tokio::sync::RwLock<Option<SessionClient>>,
     handle: &ksni::Handle<TisvlayTray>,
-    reconcilers: &ScrollReconcilers,
+    reconcilers: &Reconcilers,
 ) {
     let session_ref = session.read().await;
     let session_client = session_ref.as_ref();
@@ -316,10 +251,10 @@ async fn refresh_state(
         Ok(mut tvs) => {
             for tv in &mut tvs {
                 if let Some(v) = tv.volume {
-                    tv.volume = Some(reconcilers.observe_volume(&tv.id, v));
+                    tv.volume = Some(reconcilers.volume.observe(&tv.id, v));
                 }
                 if let Some(b) = tv.backlight {
-                    tv.backlight = Some(reconcilers.observe_backlight(&tv.id, b));
+                    tv.backlight = Some(reconcilers.backlight.observe(&tv.id, b));
                 }
             }
             debug!(count = tvs.len(), "Refresh: state updated");
@@ -354,7 +289,7 @@ async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
-    reconcilers: ScrollReconcilers,
+    reconcilers: Reconcilers,
 ) {
     let mut watcher = match StateWatcher::new(&daemon, Default::default()).await {
         Ok(w) => w,
@@ -430,7 +365,7 @@ async fn process_commands(
     handle: ksni::Handle<TisvlayTray>,
     volume_scroll: Coalescer<String, i32>,
     backlight_scroll: Coalescer<String, i32>,
-    reconcilers: ScrollReconcilers,
+    reconcilers: Reconcilers,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         debug!(cmd = ?cmd, "Processing tray command");

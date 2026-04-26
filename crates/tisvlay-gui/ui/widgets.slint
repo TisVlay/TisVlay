@@ -376,35 +376,35 @@ export component ThemedSelect inherits Rectangle {
 //
 // A horizontal slider paired with a numeric readout, designed for
 // values that are mirrored on a remote endpoint (the daemon → TV).
-// Implements convergence gating so the thumb tracks the user's drag
-// in real time without snapping back to stale daemon echoes.
+// Convergence gating lives on the Rust side (`Reconciler<V>` /
+// `ReconcilerMap<K, V>` in `tisvlay-core`); this component is a thin
+// view that displays a Rust-driven `model-value` and forwards user
+// input via `committed(int)`.
 //
 // Behavior:
-//   - The Slider's `value` is bound to a local `display` property
-//     (the user's intent / optimistic value), not directly to
-//     `model-value`. The readout shows the same local value, so the
-//     numeric feedback stays in lockstep with the thumb.
-//   - On each user change, `last-sent` is updated and `pending` is
-//     set; the `committed(int)` callback fires for the consumer to
-//     dispatch the write.
-//   - When `model-value` changes (a daemon echo), the `changed` block
-//     reconciles: if pending and the echo matches `last-sent`, the
-//     daemon has converged — clear pending. If pending and the echo
-//     differs, it's a stale intermediate from an earlier coalesced
-//     write — drop. If not pending, the echo represents a true
-//     external change (TV remote, another client) and applies.
+//   - `model-value` is the gated authoritative value pushed by Rust
+//     after going through the reconciler. While the Rust side has a
+//     pending dispatch, intermediate ramp echoes are dropped before
+//     reaching `model-value`, so the value Slint receives is stable
+//     during a TV transition.
+//   - The Slider's `value` is two-way bound to a local `display`
+//     property so user drag updates the thumb without breaking the
+//     binding to `model-value`. The `changed model-value` handler
+//     re-syncs `display` from the model after a user drag (one
+//     writer per direction, no loop hazard).
+//   - User input fires `committed(int)`; the consumer is expected to
+//     dispatch through its `Reconciler` + daemon write path.
 //
-// Use this for any value that:
-//   - Is exposed by the daemon as a numeric property mirrored from
-//     a TV (volume, backlight, future contrast / brightness / color
-//     balance).
-//   - Has a "live preview" widget (a slider thumb the user drags).
-//
-// For discrete-selection inputs (current input, profile choice) the
-// flicker pattern doesn't apply — use ThemedSelect instead.
+// Use for any value mirrored on the daemon as a numeric property and
+// driven via a "live preview" slider thumb (volume, backlight,
+// future contrast / brightness / color balance). For discrete
+// selection inputs use ThemedSelect — the flicker pattern doesn't
+// apply.
 
 export component OptimisticSlider {
-    /// Authoritative value from the model (daemon-tracked).
+    /// Gated authoritative value from the model (Rust drives it
+    /// through a reconciler; intermediate ramp echoes are dropped
+    /// upstream).
     in property <int> model-value;
     in property <int> minimum: 0;
     in property <int> maximum: 100;
@@ -416,27 +416,16 @@ export component OptimisticSlider {
     /// faint text color.
     in property <bool> value-visible: true;
     /// Fired when the user changes the value, rounded to int. The
-    /// consumer is expected to dispatch the write through whatever
-    /// coalescer / async path it owns.
+    /// consumer is expected to dispatch the write through its
+    /// reconciler + daemon write path.
     callback committed(int);
 
-    // === Convergence gating (see component header for rationale) ===
+    // Local display value bound two-way to the Slider so user drag
+    // updates the thumb. Re-synced from `model-value` whenever Rust
+    // pushes a new value (the user-side `<=>` write breaks the
+    // initial-value binding; this restores it).
     in-out property <float> display: model-value;
-    property <int> last-sent: model-value;
-    property <bool> pending: false;
-
-    changed model-value => {
-        if (pending) {
-            if (model-value == last-sent) {
-                display = model-value;
-                pending = false;
-            }
-            // else: stale intermediate echo — ignore.
-        } else {
-            display = model-value;
-            last-sent = model-value;
-        }
-    }
+    changed model-value => { display = model-value; }
 
     HorizontalLayout {
         spacing: Design.gap-row;
@@ -447,11 +436,7 @@ export component OptimisticSlider {
             maximum: root.maximum;
             value <=> root.display;
             enabled: root.enabled;
-            changed(v) => {
-                root.last-sent = round(v);
-                root.pending = true;
-                root.committed(round(v));
-            }
+            changed(v) => { root.committed(round(v)); }
         }
 
         Text {

@@ -44,12 +44,15 @@
 
 // Core modules (always available)
 mod capabilities;
+mod coalescer;
 mod config;
 pub mod dbus_paths;
 mod desktop;
 mod error;
 mod hardware_id;
 mod pairing;
+mod reconciler;
+mod refresh_trigger;
 mod state;
 mod traits;
 pub mod wol;
@@ -99,6 +102,12 @@ pub use error::{Error, Result};
 // Wake-on-LAN
 pub use wol::{MacAddress, WakeOptions, wake, wake_with_options};
 
+// Concurrency helpers (always available — async tokio utilities,
+// not D-Bus-specific).
+pub use coalescer::Coalescer;
+pub use reconciler::{Reconciler, ReconcilerMap};
+pub use refresh_trigger::RefreshTrigger;
+
 // =============================================================================
 // Public re-exports: Optional features
 // =============================================================================
@@ -111,7 +120,6 @@ pub use dbus_paths::{
 
 #[cfg(feature = "dbus")]
 pub use dbus_client::{
-    BusKind, Coalescer, DaemonClient, Reconciler, RefreshTrigger, ServiceEvent, SessionClient,
-    StateEvent, StateWatcher, StateWatcherConfig, TvInfo, TvStateChange, add_signal_match,
-    subscribe_signals, watch_service,
+    BusKind, DaemonClient, ServiceEvent, SessionClient, StateEvent, StateWatcher,
+    StateWatcherConfig, TvInfo, TvStateChange, add_signal_match, subscribe_signals, watch_service,
 };
