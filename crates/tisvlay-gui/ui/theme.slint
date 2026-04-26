@@ -5,14 +5,32 @@
 // token branches on `dark-mode`; consumers reference `Theme.token-name`
 // without caring which variant they get.
 //
-// To switch themes at runtime, set `Theme.dark-mode = true` from Rust
-// or anywhere in Slint.
+// `Theme.mode` is the user-facing setting (System/Light/Dark). The
+// derived `dark-mode` flag resolves it: explicit Light/Dark wins;
+// otherwise we mirror `Palette.color-scheme`, which Slint's winit
+// backend keeps in sync with xdg-desktop-portal's
+// `org.freedesktop.appearance / color-scheme` setting.
 //
 // When adding a new token: add the property here, fall back to a sensible
 // dark-mode value, and reference it via `Theme.foo` from components.
 
+import { Palette } from "std-widgets.slint";
+
+export enum AppearanceMode { system, light, dark }
+
 export global Theme {
-    in-out property <bool> dark-mode: false;
+    /// User preference. Set from Rust at startup (loaded from gui.toml)
+    /// and from the Settings pane combo. Defaults to System so a fresh
+    /// install follows the desktop's light/dark preference.
+    in-out property <AppearanceMode> mode: AppearanceMode.system;
+
+    /// Resolved flag every token reads from. Computed; do not assign.
+    /// On platforms where the portal doesn't answer (or returns
+    /// `unknown`), System falls back to light.
+    out property <bool> dark-mode:
+        mode == AppearanceMode.dark ? true
+      : mode == AppearanceMode.light ? false
+      : Palette.color-scheme == ColorScheme.dark;
 
     // -- Surfaces --
     out property <brush> bg: dark-mode ? #1b1e23 : #fbfbfc;

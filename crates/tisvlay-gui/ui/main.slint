@@ -1,16 +1,18 @@
 import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { Theme, AppearanceMode } from "theme.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
+import { SettingsPane } from "components/settings_pane.slint";
 import { AboutPane } from "components/about_pane.slint";
 
-export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption }
+export { TvViewModel, Theme, AppearanceMode, WizardDiscoveredTv, VendorOption }
 
 export enum Pane {
     tvs,
     profiles,
     session,
+    settings,
     about,
 }
 
@@ -53,10 +55,11 @@ export component AppWindow inherits Window {
     in property <[string]> user-profiles;
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
-    /// Two-way bound to `Theme.dark-mode` so flipping this re-tints
-    /// every component that reads from `Theme.*`. Set from Rust at
-    /// startup; in-app toggle UI lands in a follow-up.
-    in-out property <bool> dark-mode <=> Theme.dark-mode;
+    /// Two-way bound to `Theme.mode`. Rust seeds it from `gui.toml` at
+    /// startup; the Settings pane writes it via `appearance-mode-changed`,
+    /// which Rust persists.
+    in-out property <AppearanceMode> appearance-mode <=> Theme.mode;
+    callback appearance-mode-changed(AppearanceMode);
 
     // -- Pairing wizard state (driven from Rust) --
     in property <bool> wizard-active;
@@ -157,6 +160,11 @@ export component AppWindow inherits Window {
                     clicked => { root.active-pane = Pane.session; }
                 }
                 SidebarItem {
+                    label: "Settings";
+                    selected: root.active-pane == Pane.settings;
+                    clicked => { root.active-pane = Pane.settings; }
+                }
+                SidebarItem {
                     label: "About";
                     selected: root.active-pane == Pane.about;
                     clicked => { root.active-pane = Pane.about; }
@@ -176,27 +184,6 @@ export component AppWindow inherits Window {
                     color: root.session-available ? Theme.success : Theme.danger;
                     font-size: 11.5px;
                     horizontal-alignment: left;
-                }
-
-                // Light/dark theme toggle.
-                Rectangle {
-                    height: 28px;
-                    HorizontalLayout {
-                        width: 100%;
-                        height: 100%;
-                        spacing: 6px;
-                        VerticalLayout {
-                            alignment: center;
-                            Text {
-                                text: Theme.dark-mode ? "☀  Light" : "🌙  Dark";
-                                color: Theme.sidebar-text;
-                                font-size: 11.5px;
-                            }
-                        }
-                    }
-                    theme-touch := TouchArea {
-                        clicked => { Theme.dark-mode = !Theme.dark-mode; }
-                    }
                 }
             }
         }
@@ -276,6 +263,11 @@ export component AppWindow inherits Window {
             if root.active-pane == Pane.session: SessionPane {
                 width: 100%;
                 height: 100%;
+            }
+            if root.active-pane == Pane.settings: SettingsPane {
+                width: 100%;
+                height: 100%;
+                mode-changed(m) => { root.appearance-mode-changed(m); }
             }
             if root.active-pane == Pane.about: AboutPane {
                 width: 100%;

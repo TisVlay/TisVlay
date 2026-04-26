@@ -1,0 +1,113 @@
+// User-visible settings.
+//
+// Currently: appearance only. Persistence is owned by Rust
+// (`src/gui_config.rs`); this pane drives `Theme.mode` for live preview
+// and emits `mode-changed` so Rust can write to disk.
+
+import { Palette } from "std-widgets.slint";
+import { Theme, AppearanceMode } from "../theme.slint";
+import { Group, ThemedSelect } from "../widgets.slint";
+
+export component SettingsPane inherits Rectangle {
+    callback mode-changed(AppearanceMode);
+
+    property <[string]> mode-options: ["System", "Light", "Dark"];
+
+    function mode-label(m: AppearanceMode) -> string {
+        if (m == AppearanceMode.light) {
+            return "Light";
+        }
+        if (m == AppearanceMode.dark) {
+            return "Dark";
+        }
+        return "System";
+    }
+
+    function label-mode(s: string) -> AppearanceMode {
+        if (s == "Light") {
+            return AppearanceMode.light;
+        }
+        if (s == "Dark") {
+            return AppearanceMode.dark;
+        }
+        return AppearanceMode.system;
+    }
+
+    background: Theme.surface-alt;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 28px;
+        padding-bottom: 24px;
+        spacing: 18px;
+        alignment: start;
+
+        Text {
+            text: "Settings";
+            color: Theme.text;
+            font-size: 22px;
+            font-weight: 700;
+        }
+
+        Group {
+            title: "APPEARANCE";
+
+            VerticalLayout {
+                width: 100%;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    width: 100%;
+                    spacing: 14px;
+                    alignment: stretch;
+
+                    VerticalLayout {
+                        width: 140px;
+                        alignment: center;
+                        Text {
+                            text: "Theme";
+                            color: Theme.text;
+                            font-size: 13px;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        horizontal-stretch: 1;
+                        alignment: start;
+                        ThemedSelect {
+                            min-width: 200px;
+                            max-width: 220px;
+                            model: root.mode-options;
+                            current-value: root.mode-label(Theme.mode);
+                            selected(label) => {
+                                Theme.mode = root.label-mode(label);
+                                root.mode-changed(root.label-mode(label));
+                            }
+                        }
+                    }
+                }
+
+                if Theme.mode == AppearanceMode.system: HorizontalLayout {
+                    width: 100%;
+                    padding-left: 154px;
+                    Text {
+                        text: Palette.color-scheme == ColorScheme.dark
+                            ? "Following your desktop setting (currently: dark)."
+                          : Palette.color-scheme == ColorScheme.light
+                            ? "Following your desktop setting (currently: light)."
+                          : "Following your desktop setting (no preference detected — defaulting to light).";
+                        color: Theme.text-faint;
+                        font-size: 11.5px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // Spacer pushes content to the top.
+        Rectangle { vertical-stretch: 1; }
+    }
+}

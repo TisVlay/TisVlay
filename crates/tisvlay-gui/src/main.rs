@@ -13,17 +13,19 @@
 // generated UI scaffolding.
 #![allow(unreachable_pub, missing_debug_implementations)]
 
+mod gui_config;
 mod state;
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use slint::{Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{DaemonClient, PowerCyclePhase, SessionClient, StateEvent, StateWatcher};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use crate::gui_config::{AppearanceMode as ConfigAppearanceMode, GuiConfig};
 use crate::state::{StateSnapshot, fetch_state};
 
 slint::include_modules!();
@@ -55,6 +57,20 @@ fn main() -> Result<()> {
     let _enter = rt.enter();
 
     let app = AppWindow::new()?;
+
+    // Seed appearance from disk before the window paints, so the first
+    // frame already reflects the user's saved preference. Failures
+    // fall back to System, which mirrors the desktop's portal setting.
+    let initial_config = GuiConfig::load_or_default();
+    app.set_appearance_mode(config_to_slint_mode(initial_config.appearance));
+    app.on_appearance_mode_changed(|mode| {
+        let cfg = GuiConfig {
+            appearance: slint_to_config_mode(mode),
+        };
+        if let Err(e) = cfg.save() {
+            warn!(error = %e, "failed to persist gui.toml");
+        }
+    });
 
     // Build clients eagerly (synchronously, via block_on) so callbacks
     // can capture them at registration time. This briefly blocks the
@@ -824,7 +840,10 @@ async fn initial_fetch_and_watch(
     // pairing wizard's manual-entry vendor selector. Failures are
     // tolerable — the wizard falls back to its hardcoded "lg" default.
     let vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
-    debug!(count = vendor_pairs.len(), "Fetched supported vendors from daemon");
+    debug!(
+        count = vendor_pairs.len(),
+        "Fetched supported vendors from daemon"
+    );
 
     let app_weak_init = app_weak.clone();
     let initial_daemon_available = initial_snapshot.is_some();
@@ -947,6 +966,22 @@ async fn refresh(
             })
             .ok();
         }
+    }
+}
+
+fn config_to_slint_mode(m: ConfigAppearanceMode) -> AppearanceMode {
+    match m {
+        ConfigAppearanceMode::System => AppearanceMode::System,
+        ConfigAppearanceMode::Light => AppearanceMode::Light,
+        ConfigAppearanceMode::Dark => AppearanceMode::Dark,
+    }
+}
+
+fn slint_to_config_mode(m: AppearanceMode) -> ConfigAppearanceMode {
+    match m {
+        AppearanceMode::System => ConfigAppearanceMode::System,
+        AppearanceMode::Light => ConfigAppearanceMode::Light,
+        AppearanceMode::Dark => ConfigAppearanceMode::Dark,
     }
 }
 

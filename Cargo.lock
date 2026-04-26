@@ -5416,13 +5416,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "directories",
  "futures-util",
  "i-slint-backend-selector",
+ "serde",
  "serde_json",
  "slint",
  "slint-build",
  "tisvlay-core",
  "tokio",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "zbus",
 ]
