@@ -101,7 +101,6 @@ component FormRow {
     HorizontalLayout {
         width: 100%;
         spacing: 14px;
-        alignment: stretch;
 
         VerticalLayout {
             width: root.label-width;
@@ -114,9 +113,14 @@ component FormRow {
             }
         }
 
+        // Bind width explicitly. `horizontal-stretch: 1` here
+        // miscalculates: Slint allocates `parent.width - spacing` to the
+        // stretch column without subtracting the fixed-width label, so
+        // the right column ends up `label-width` over budget. Computing
+        // the width directly bypasses that.
         VerticalLayout {
+            width: parent.width - root.label-width - 14px;
             spacing: 4px;
-            horizontal-stretch: 1;
 
             HorizontalLayout {
                 width: 100%;
@@ -127,6 +131,7 @@ component FormRow {
                 text: root.helper;
                 color: Theme.text-faint;
                 font-size: 11px;
+                wrap: word-wrap;
             }
         }
     }
@@ -526,8 +531,13 @@ component TvDetail inherits Rectangle {
             tv: root.tv;
         }
 
-        // Scrollable body.
+        // Scrollable body. Pin viewport-width to visible-width so the
+        // content cannot scroll horizontally; without this, a row whose
+        // preferred width exceeds the visible viewport (e.g. a Slider
+        // stretched via FormRow) lets the viewport grow to fit and the
+        // overflow clips at the window edge instead of the card.
         ScrollView {
+            viewport-width: self.visible-width;
             VerticalLayout {
                 width: 100%;
                 padding-left: 24px;
@@ -584,42 +594,32 @@ component TvDetail inherits Rectangle {
                 Group {
                     title: "AUDIO";
 
-                    HorizontalLayout {
-                        spacing: 14px;
-                        VerticalLayout {
-                            width: 110px;
-                            alignment: center;
-                            Text {
-                                text: "Volume";
-                                color: Theme.text;
-                                font-size: 13px;
-                            }
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
+                    FormRow {
+                        label: "Volume";
+                        label-width: 110px;
+                        HorizontalLayout {
+                            spacing: 14px;
                             Slider {
+                                horizontal-stretch: 1;
                                 minimum: 0;
                                 maximum: 100;
                                 value: root.tv.volume;
                                 enabled: root.tv.connected && !root.tv.muted;
                                 changed(v) => { root.set-volume(round(v)); }
                             }
-                        }
-                        VerticalLayout {
-                            width: 36px;
-                            alignment: center;
                             Text {
+                                width: 36px;
                                 text: root.tv.connected ? root.tv.volume : "—";
                                 color: root.tv.connected ? Theme.text : Theme.text-faint;
                                 font-size: 13px;
                                 horizontal-alignment: right;
-                                width: 100%;
+                                vertical-alignment: center;
                             }
                         }
                     }
 
                     HorizontalLayout {
+                        width: 100%;
                         spacing: 14px;
                         VerticalLayout {
                             width: 110px;
@@ -646,72 +646,43 @@ component TvDetail inherits Rectangle {
                 Group {
                     title: "PICTURE";
 
-                    HorizontalLayout {
-                        spacing: 14px;
-                        VerticalLayout {
-                            width: 110px;
-                            alignment: center;
-                            Text {
-                                text: "Backlight";
-                                color: Theme.text;
-                                font-size: 13px;
-                            }
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
+                    FormRow {
+                        label: "Backlight";
+                        label-width: 110px;
+                        HorizontalLayout {
+                            spacing: 14px;
                             Slider {
+                                horizontal-stretch: 1;
                                 minimum: 0;
                                 maximum: 100;
                                 value: root.tv.backlight;
                                 enabled: root.tv.connected;
                                 changed(v) => { root.set-backlight(round(v)); }
                             }
-                        }
-                        VerticalLayout {
-                            width: 36px;
-                            alignment: center;
                             Text {
+                                width: 36px;
                                 text: root.tv.connected ? root.tv.backlight : "—";
                                 color: root.tv.connected ? Theme.text : Theme.text-faint;
                                 font-size: 13px;
                                 horizontal-alignment: right;
-                                width: 100%;
+                                vertical-alignment: center;
                             }
                         }
                     }
 
-                    HorizontalLayout {
-                        spacing: 14px;
-                        alignment: stretch;
-
-                        VerticalLayout {
-                            width: 110px;
-                            alignment: center;
-                            Text {
-                                text: "Screen";
-                                color: Theme.text;
-                                font-size: 13px;
-                            }
-                        }
-
-                        VerticalLayout {
-                            alignment: center;
-                            Switch {
-                                checked: root.tv.is-screen-on;
-                                enabled: root.tv.connected;
-                                toggled => { root.set-is-screen-on(self.checked); }
-                            }
-                        }
-
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            Text {
-                                text: "Blanks the panel without powering off (OLED-safe, instant resume).";
-                                color: Theme.text-faint;
-                                font-size: 11.5px;
-                                wrap: word-wrap;
+                    FormRow {
+                        label: "Screen";
+                        label-width: 110px;
+                        helper: "Blanks the panel without powering off (OLED-safe, instant resume).";
+                        HorizontalLayout {
+                            alignment: start;
+                            VerticalLayout {
+                                alignment: center;
+                                Switch {
+                                    checked: root.tv.is-screen-on;
+                                    enabled: root.tv.connected;
+                                    toggled => { root.set-is-screen-on(self.checked); }
+                                }
                             }
                         }
                     }
@@ -722,6 +693,7 @@ component TvDetail inherits Rectangle {
                     title: "INPUT";
 
                     HorizontalLayout {
+                        width: 100%;
                         spacing: 14px;
                         VerticalLayout {
                             width: 110px;
