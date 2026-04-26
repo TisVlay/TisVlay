@@ -10,10 +10,12 @@
 import { ListView, ScrollView, VerticalBox, HorizontalBox, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { Daemon } from "../globals/daemon.slint";
+import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { Btn, Chip, Group, OptimisticSlider, ThemedSelect } from "../widgets.slint";
-import { PairingWizard, WizardDiscoveredTv, VendorOption } from "pairing_wizard.slint";
+import { PairingWizardPane } from "pairing_wizard.slint";
 
-export { PairingWizard, WizardDiscoveredTv, VendorOption, Btn, Chip, Group, ThemedSelect }
+export { WizardDiscoveredTv, VendorOption, Btn, Chip, Group, ThemedSelect }
 
 export struct TvViewModel {
     id: string,
@@ -239,7 +241,6 @@ component TvList inherits Rectangle {
     in property <[TvViewModel]> tvs;
     in property <bool> daemon-available;
     in-out property <int> selected-index;
-    callback request-pair();
 
     width: Design.width-master;
     background: Theme.surface-alt;
@@ -314,7 +315,7 @@ component TvList inherits Rectangle {
                     pair-touch := TouchArea {
                         enabled: root.daemon-available;
                         mouse-cursor: root.daemon-available ? pointer : default;
-                        clicked => { root.request-pair(); }
+                        clicked => { Daemon.request-pair(); }
                     }
                 }
             }
@@ -496,17 +497,10 @@ component TvDetail inherits Rectangle {
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
 
-    callback set-volume(int);
-    callback set-mute(bool);
-    callback set-backlight(int);
-    callback set-is-screen-on(bool);
-    callback switch-input(string);
-    callback power-on();
-    callback power-off();
-    callback set-managed(bool);
-    callback set-system-profile(string);
-    callback set-user-profile(string);
-    callback set-primary-input(string);
+    /// Local — fires when the user hits "Remove TV". TvsPane catches
+    /// this and shows the confirm-remove dialog (which calls
+    /// `Daemon.remove-tv(...)` on confirm). All other writes go
+    /// straight to the Daemon global from the leaf widgets.
     callback request-remove();
 
     background: Theme.surface-alt;
@@ -554,9 +548,9 @@ component TvDetail inherits Rectangle {
                                   || root.tv.power-cycle-phase == "failed";
                             clicked => {
                                 if (root.tv.connected) {
-                                    root.power-off();
+                                    Daemon.power-off(root.tv.id);
                                 } else {
-                                    root.power-on();
+                                    Daemon.power-on(root.tv.id);
                                 }
                             }
                         }
@@ -589,7 +583,7 @@ component TvDetail inherits Rectangle {
                                 alignment: center;
                                 Switch {
                                     checked: root.tv.managed;
-                                    toggled => { root.set-managed(self.checked); }
+                                    toggled => { Daemon.set-managed(root.tv.id, self.checked); }
                                 }
                             }
                             // if root.tv.automated: VerticalLayout {
@@ -617,7 +611,7 @@ component TvDetail inherits Rectangle {
                             current-value: root.tv.system-profile;
                             placeholder: "default";
                             enabled: root.system-profiles.length > 0;
-                            selected(v) => { root.set-system-profile(v); }
+                            selected(v) => { Daemon.set-system-profile(root.tv.id, v); }
                         }
                     }
 
@@ -629,7 +623,7 @@ component TvDetail inherits Rectangle {
                             current-value: root.tv.user-profile;
                             placeholder: "default";
                             enabled: root.user-profiles.length > 0;
-                            selected(v) => { root.set-user-profile(v); }
+                            selected(v) => { Daemon.set-user-profile(root.tv.id, v); }
                         }
                     }
                 }
@@ -644,7 +638,7 @@ component TvDetail inherits Rectangle {
                             model-value: root.tv.volume;
                             enabled: root.tv.connected && !root.tv.muted;
                             value-visible: root.tv.connected;
-                            committed(v) => { root.set-volume(v); }
+                            committed(v) => { Daemon.set-volume(root.tv.id, v); }
                         }
                     }
 
@@ -666,7 +660,7 @@ component TvDetail inherits Rectangle {
                             Switch {
                                 checked: root.tv.muted;
                                 enabled: root.tv.connected;
-                                toggled => { root.set-mute(self.checked); }
+                                toggled => { Daemon.set-mute(root.tv.id, self.checked); }
                             }
                         }
                     }
@@ -682,7 +676,7 @@ component TvDetail inherits Rectangle {
                             model-value: root.tv.backlight;
                             enabled: root.tv.connected;
                             value-visible: root.tv.connected;
-                            committed(v) => { root.set-backlight(v); }
+                            committed(v) => { Daemon.set-backlight(root.tv.id, v); }
                         }
                     }
 
@@ -696,7 +690,7 @@ component TvDetail inherits Rectangle {
                                 Switch {
                                     checked: root.tv.is-screen-on;
                                     enabled: root.tv.connected;
-                                    toggled => { root.set-is-screen-on(self.checked); }
+                                    toggled => { Daemon.set-screen(root.tv.id, self.checked); }
                                 }
                             }
                         }
@@ -728,7 +722,7 @@ component TvDetail inherits Rectangle {
                                 placeholder: "—";
                                 enabled: root.tv.connected
                                       && root.tv.available-input-ids.length > 0;
-                                selected(v) => { root.switch-input(v); }
+                                selected(v) => { Daemon.switch-input(root.tv.id, v); }
                             }
                         }
                     }
@@ -741,7 +735,7 @@ component TvDetail inherits Rectangle {
                             current-value: root.tv.primary-input;
                             placeholder: "—";
                             enabled: root.tv.available-input-ids.length > 0;
-                            selected(v) => { root.set-primary-input(v); }
+                            selected(v) => { Daemon.set-primary-input(root.tv.id, v); }
                         }
                     }
                 }
@@ -899,101 +893,23 @@ export component TvsPane {
     in property <[string]> user-profiles;
     in-out property <int> selected-index: -1;
 
-    // -- Wizard state (driven from Rust) --
-    in property <bool> wizard-active;
-    in property <int> wizard-step;
-    in property <[WizardDiscoveredTv]> wizard-discovered;
-    in property <bool> wizard-discovery-streaming;
-    in property <string> wizard-discovery-error;
-    in-out property <int> wizard-selected-index: -1;
-    in-out property <string> wizard-tv-name;
-    in-out property <string> wizard-system-profile;
-    in-out property <bool> wizard-managed: true;
-    in property <string> wizard-pair-phase;
-    in property <string> wizard-pair-message;
-    in-out property <string> wizard-manual-vendor: "lg";
-    in-out property <string> wizard-manual-ip;
-    in-out property <string> wizard-manual-mac;
-    in property <[VendorOption]> wizard-supported-vendors;
-    in property <[string]> wizard-supported-vendor-names;
-    in property <string> wizard-selected-vendor;
-    in property <string> wizard-selected-address;
-    in property <string> wizard-selected-hw-model;
-
-    callback set-volume(string, int);
-    callback set-mute(string, bool);
-    callback set-backlight(string, int);
-    callback set-is-screen-on(string, bool);
-    callback switch-input(string, string);
-    callback power-on(string);
-    callback power-off(string);
-    callback set-managed(string, bool);
-    callback set-system-profile(string, string);
-    callback set-user-profile(string, string);
-    callback set-primary-input(string, string);
-    callback remove-tv(string);
-    callback request-pair();
-
-    // -- Wizard callbacks (forwarded to AppWindow → Rust) --
-    callback wizard-cancel();
-    callback wizard-step-next();
-    callback wizard-step-back();
-    callback wizard-retry-pair();
-    callback wizard-back-to-discovery();
-    callback wizard-finish();
-    callback wizard-selected-changed(int);
-    callback wizard-name-edited(string);
-    callback wizard-profile-selected(string);
-    callback wizard-managed-toggled(bool);
-    callback wizard-manual-vendor-edited(string);
-    callback wizard-manual-ip-edited(string);
-    callback wizard-manual-mac-edited(string);
-    callback wizard-manual-add();
+    // Wizard state and callbacks live on the `PairingWizard` global
+    // (`globals/pairing_wizard.slint`); user-input dispatch goes
+    // through the `Daemon` global (`globals/daemon.slint`). TvsPane
+    // doesn't forward callbacks anymore — leaf widgets call the
+    // globals directly.
 
     property <string> pending-remove-id: "";
     property <string> pending-remove-name: "";
 
     // Pairing wizard takes over the whole pane when active.
-    if root.wizard-active: PairingWizard {
+    if PairingWizard.active: PairingWizardPane {
         width: 100%;
         height: 100%;
-        current-step: root.wizard-step;
-        discovered: root.wizard-discovered;
-        discovery-streaming: root.wizard-discovery-streaming;
-        discovery-error: root.wizard-discovery-error;
-        selected-index <=> root.wizard-selected-index;
-        tv-name <=> root.wizard-tv-name;
-        system-profile <=> root.wizard-system-profile;
-        managed <=> root.wizard-managed;
-        manual-vendor <=> root.wizard-manual-vendor;
-        manual-ip <=> root.wizard-manual-ip;
-        manual-mac <=> root.wizard-manual-mac;
-        supported-vendors: root.wizard-supported-vendors;
-        supported-vendor-names: root.wizard-supported-vendor-names;
-        selected-vendor: root.wizard-selected-vendor;
-        selected-address: root.wizard-selected-address;
-        selected-hw-model: root.wizard-selected-hw-model;
         system-profiles: root.system-profiles;
-        pair-phase: root.wizard-pair-phase;
-        pair-message: root.wizard-pair-message;
-
-        cancel => { root.wizard-cancel(); }
-        step-next => { root.wizard-step-next(); }
-        step-back => { root.wizard-step-back(); }
-        retry-pair => { root.wizard-retry-pair(); }
-        back-to-discovery => { root.wizard-back-to-discovery(); }
-        finish => { root.wizard-finish(); }
-        selected-changed(i) => { root.wizard-selected-changed(i); }
-        name-edited(v) => { root.wizard-name-edited(v); }
-        profile-selected(v) => { root.wizard-profile-selected(v); }
-        managed-toggled(v) => { root.wizard-managed-toggled(v); }
-        manual-vendor-edited(v) => { root.wizard-manual-vendor-edited(v); }
-        manual-ip-edited(v) => { root.wizard-manual-ip-edited(v); }
-        manual-mac-edited(v) => { root.wizard-manual-mac-edited(v); }
-        manual-add => { root.wizard-manual-add(); }
     }
 
-    if !root.wizard-active: HorizontalLayout {
+    if !PairingWizard.active: HorizontalLayout {
         width: 100%;
         height: 100%;
         spacing: 0;
@@ -1002,7 +918,6 @@ export component TvsPane {
             tvs: root.tvs;
             daemon-available: root.daemon-available;
             selected-index <=> root.selected-index;
-            request-pair => { root.request-pair(); }
         }
 
         // Detail column — fills remaining width.
@@ -1027,17 +942,6 @@ export component TvsPane {
                 system-profiles: root.system-profiles;
                 user-profiles: root.user-profiles;
 
-                set-volume(v) => { root.set-volume(tv.id, v); }
-                set-mute(m) => { root.set-mute(tv.id, m); }
-                set-backlight(b) => { root.set-backlight(tv.id, b); }
-                set-is-screen-on(s) => { root.set-is-screen-on(tv.id, s); }
-                switch-input(input) => { root.switch-input(tv.id, input); }
-                power-on => { root.power-on(tv.id); }
-                power-off => { root.power-off(tv.id); }
-                set-managed(m) => { root.set-managed(tv.id, m); }
-                set-system-profile(p) => { root.set-system-profile(tv.id, p); }
-                set-user-profile(p) => { root.set-user-profile(tv.id, p); }
-                set-primary-input(p) => { root.set-primary-input(tv.id, p); }
                 request-remove => {
                     root.pending-remove-id = tv.id;
                     root.pending-remove-name = tv.name;
@@ -1053,7 +957,7 @@ export component TvsPane {
             + "' from the daemon's configuration? Pairing must be redone if you re-add it.";
         confirm-label: "Remove";
         confirmed => {
-            root.remove-tv(root.pending-remove-id);
+            Daemon.remove-tv(root.pending-remove-id);
             root.pending-remove-id = "";
             root.pending-remove-name = "";
         }

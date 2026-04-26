@@ -1,17 +1,17 @@
 // User-visible settings.
 //
 // Currently: appearance only. Persistence is owned by Rust
-// (`src/gui_config.rs`); this pane drives `Theme.mode` for live preview
-// and emits `mode-changed` so Rust can write to disk.
+// (`src/gui_config.rs`); this pane drives `Theme.mode` for live
+// preview and fires `Settings.appearance-mode-changed` (global
+// callback) so Rust writes the choice to disk.
 
 import { Palette } from "std-widgets.slint";
 import { Theme, AppearanceMode } from "../theme.slint";
 import { Design } from "../design.slint";
+import { Settings } from "../globals/settings.slint";
 import { Group, ThemedSelect } from "../widgets.slint";
 
 export component SettingsPane inherits Rectangle {
-    callback mode-changed(AppearanceMode);
-
     property <[string]> mode-options: ["System", "Light", "Dark"];
 
     function mode-label(m: AppearanceMode) -> string {
@@ -85,7 +85,7 @@ export component SettingsPane inherits Rectangle {
                             current-value: root.mode-label(Theme.mode);
                             selected(label) => {
                                 Theme.mode = root.label-mode(label);
-                                root.mode-changed(root.label-mode(label));
+                                Settings.appearance-mode-changed(root.label-mode(label));
                             }
                         }
                     }

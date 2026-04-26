@@ -1,0 +1,74 @@
+// Pairing wizard state + callbacks. The wizard is a multi-step
+// flow with significant Rust-driven state (discovered TVs,
+// streaming flag, pair phase) and user-driven state (selected
+// index, name edits, vendor/IP/MAC for manual entry). All of it
+// lives on this global so the wizard's pane and sub-components
+// access state directly without prop-drilling through TvsPane /
+// AppWindow.
+
+// Types co-located here so the global owns the dependency chain:
+// `components/pairing_wizard.slint` (the view) imports both the
+// global and its struct types from this file, never the other
+// direction.
+
+export struct WizardDiscoveredTv {
+    id: string,
+    name: string,
+    vendor: string,
+    address: string,
+    hw-model: string,
+}
+
+export struct VendorOption {
+    id: string,
+    name: string,
+}
+
+export global PairingWizard {
+    // -- Driven from Rust --
+    /// Whether the wizard is currently displayed. Set true on
+    /// `Daemon.request-pair()` and false on cancel/finish.
+    in-out property <bool> active;
+    in-out property <int> step: 1;
+    in-out property <[WizardDiscoveredTv]> discovered;
+    in-out property <bool> discovery-streaming;
+    in-out property <string> discovery-error;
+    in-out property <string> pair-phase;
+    in-out property <string> pair-message;
+    /// Vendors registered on the running daemon, fetched via
+    /// `Manager1.GetSupportedVendors`. Pushed once at startup.
+    in-out property <[VendorOption]> supported-vendors;
+    in-out property <[string]> supported-vendor-names;
+    /// Mirrors the currently-selected discovered TV's fields.
+    /// Published as separate properties (instead of indexing into
+    /// the model from Slint) because struct-from-model bindings
+    /// have been unreliable across step transitions.
+    in-out property <string> selected-vendor;
+    in-out property <string> selected-address;
+    in-out property <string> selected-hw-model;
+
+    // -- Two-way: Rust seeds, the wizard's controls write back --
+    in-out property <int> selected-index: -1;
+    in-out property <string> tv-name;
+    in-out property <string> system-profile;
+    in-out property <bool> managed: true;
+    in-out property <string> manual-vendor: "lg";
+    in-out property <string> manual-ip;
+    in-out property <string> manual-mac;
+
+    // -- Callbacks --
+    callback cancel();
+    callback step-next();
+    callback step-back();
+    callback retry-pair();
+    callback back-to-discovery();
+    callback finish();
+    callback selected-changed(int);
+    callback name-edited(string);
+    callback profile-selected(string);
+    callback managed-toggled(bool);
+    callback manual-vendor-edited(string);
+    callback manual-ip-edited(string);
+    callback manual-mac-edited(string);
+    callback manual-add();
+}

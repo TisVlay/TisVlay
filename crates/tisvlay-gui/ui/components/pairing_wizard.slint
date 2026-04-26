@@ -1,33 +1,22 @@
 // Pairing wizard — takes over the TVs pane content area when active.
 //
-// Renders one of four steps based on `current-step`:
+// Renders one of four steps based on `PairingWizard.step`:
 //   1 = Discover    SSDP scan, list of found TVs, user picks one
 //   2 = Configure   name + system profile + managed checkbox
 //   3 = Pair        live PairingProgress phase from the daemon
 //   4 = Done        summary + Close
 //
-// All state is hoisted to AppWindow and driven from Rust — this
-// component is rendering only. User actions emit callbacks; Rust
-// interprets them, talks to the daemon, and pushes results back as
-// property changes.
+// All state and callbacks live on the `PairingWizard` global
+// (`globals/pairing_wizard.slint`). The outer `PairingWizardPane`
+// is just rendering; inner step components retain their local
+// callback interfaces and the outer pane forwards them to the
+// global.
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { Chip, Btn, ThemedTextInput, ThemedCheckBox, ThemedSelect } from "../widgets.slint";
-
-export struct WizardDiscoveredTv {
-    id: string,
-    name: string,
-    vendor: string,
-    address: string,
-    hw-model: string,
-}
-
-export struct VendorOption {
-    id: string,
-    name: string,
-}
 
 // =============================================================================
 // Stepper — 4 numbered circles with labels, connected by lines.
@@ -870,72 +859,41 @@ component StepDone {
 // Top-level wizard.
 // =============================================================================
 
-export component PairingWizard inherits Rectangle {
-    in property <int> current-step: 1;
+// Outer wizard view. Reads its state from the `PairingWizard` global
+// (in `globals/pairing_wizard.slint`) and forwards inner-step
+// callbacks to the global. Other panes don't see any of this — they
+// just render `PairingWizardPane { }` and the global drives it.
+//
+// Renamed from `PairingWizard` to disambiguate from the global of
+// the same name; matches the `*Pane` naming used by `TvsPane`,
+// `SettingsPane`, etc.
 
-    // Step 1 inputs
-    in property <[WizardDiscoveredTv]> discovered;
-    in property <bool> discovery-streaming;
-    in property <string> discovery-error;
-    in-out property <int> selected-index: -1;
-    in-out property <string> manual-vendor: "lg";
-    in-out property <string> manual-ip;
-    in-out property <string> manual-mac;
-    in property <[VendorOption]> supported-vendors;
-    in property <[string]> supported-vendor-names;
-    /// Currently-selected TV's vendor / address / model — set from
-    /// Rust on selection-changed and manual-add. Avoids reading
-    /// struct fields out of the discovered model.
-    in property <string> selected-vendor;
-    in property <string> selected-address;
-    in property <string> selected-hw-model;
-
-    // Step 2 inputs
+export component PairingWizardPane inherits Rectangle {
+    /// Shared state — the same list AppWindow exposes for the
+    /// TvDetail's profile dropdown. Not wizard-specific, so kept as
+    /// an in-property rather than hosted on the global.
     in property <[string]> system-profiles;
-    in-out property <string> tv-name;
-    in-out property <string> system-profile;
-    in-out property <bool> managed: true;
-
-    // Step 3 inputs
-    in property <string> pair-phase;
-    in property <string> pair-message;
-
-    callback cancel();
-    callback step-back();
-    callback step-next();
-    callback retry-pair();
-    callback back-to-discovery();
-    callback finish();
-
-    callback selected-changed(int);
-    callback name-edited(string);
-    callback profile-selected(string);
-    callback managed-toggled(bool);
-    callback manual-vendor-edited(string);
-    callback manual-ip-edited(string);
-    callback manual-mac-edited(string);
-    callback manual-add();
 
     background: Theme.surface;
 
     // Currently-selected discovered TV (or empty struct).
     property <WizardDiscoveredTv> selected-tv:
-        root.selected-index >= 0 && root.selected-index < root.discovered.length
-            ? root.discovered[root.selected-index]
+        PairingWizard.selected-index >= 0 && PairingWizard.selected-index < PairingWizard.discovered.length
+            ? PairingWizard.discovered[PairingWizard.selected-index]
             : { id: "", name: "", vendor: "", address: "", hw-model: "" };
 
     // Whether the primary action button is enabled at the current step.
     property <bool> next-enabled:
-        current-step == 1 ? root.selected-index >= 0
-      : current-step == 2 ? root.tv-name != ""
-      : current-step == 3 ? root.pair-phase == "complete"
-      : current-step == 4 ? true
+        PairingWizard.step == 1 ? PairingWizard.selected-index >= 0
+      : PairingWizard.step == 2 ? PairingWizard.tv-name != ""
+      : PairingWizard.step == 3 ? PairingWizard.pair-phase == "complete"
+      : PairingWizard.step == 4 ? true
       : false;
 
     property <string> next-label:
-        current-step == 2 ? "Pair"
-      : current-step == 3 ? "Next"
-      : current-step == 4 ? "Close"
+        PairingWizard.step == 2 ? "Pair"
+      : PairingWizard.step == 3 ? "Next"
+      : PairingWizard.step == 4 ? "Close"
       : "Next";
 
     VerticalLayout {
@@ -944,7 +902,7 @@ export component PairingWizard inherits Rectangle {
 
         // Stepper at top
         Stepper {
-            current: root.current-step;
+            current: PairingWizard.step;
         }
 
         // Body
@@ -954,46 +912,46 @@ export component PairingWizard inherits Rectangle {
                 padding: 20px;
                 spacing: Design.gap-pane;
 
-                if root.current-step == 1: StepDiscover {
-                    discovered: root.discovered;
-                    supported-vendors: root.supported-vendors;
-                    supported-vendor-names: root.supported-vendor-names;
-                    streaming: root.discovery-streaming;
-                    error-message: root.discovery-error;
-                    selected-index: root.selected-index;
-                    manual-vendor <=> root.manual-vendor;
-                    manual-ip <=> root.manual-ip;
-                    manual-mac <=> root.manual-mac;
-                    selection-changed(i) => { root.selected-changed(i); }
-                    manual-vendor-edited(v) => { root.manual-vendor-edited(v); }
-                    manual-ip-edited(v) => { root.manual-ip-edited(v); }
-                    manual-mac-edited(v) => { root.manual-mac-edited(v); }
-                    manual-add => { root.manual-add(); }
+                if PairingWizard.step == 1: StepDiscover {
+                    discovered: PairingWizard.discovered;
+                    supported-vendors: PairingWizard.supported-vendors;
+                    supported-vendor-names: PairingWizard.supported-vendor-names;
+                    streaming: PairingWizard.discovery-streaming;
+                    error-message: PairingWizard.discovery-error;
+                    selected-index: PairingWizard.selected-index;
+                    manual-vendor <=> PairingWizard.manual-vendor;
+                    manual-ip <=> PairingWizard.manual-ip;
+                    manual-mac <=> PairingWizard.manual-mac;
+                    selection-changed(i) => { PairingWizard.selected-changed(i); }
+                    manual-vendor-edited(v) => { PairingWizard.manual-vendor-edited(v); }
+                    manual-ip-edited(v) => { PairingWizard.manual-ip-edited(v); }
+                    manual-mac-edited(v) => { PairingWizard.manual-mac-edited(v); }
+                    manual-add => { PairingWizard.manual-add(); }
                 }
-                if root.current-step == 2: StepConfigure {
-                    selected-vendor: root.selected-vendor;
-                    selected-address: root.selected-address;
-                    selected-hw-model: root.selected-hw-model;
-                    tv-name <=> root.tv-name;
-                    system-profile: root.system-profile;
-                    managed: root.managed;
+                if PairingWizard.step == 2: StepConfigure {
+                    selected-vendor: PairingWizard.selected-vendor;
+                    selected-address: PairingWizard.selected-address;
+                    selected-hw-model: PairingWizard.selected-hw-model;
+                    tv-name <=> PairingWizard.tv-name;
+                    system-profile: PairingWizard.system-profile;
+                    managed: PairingWizard.managed;
                     system-profiles: root.system-profiles;
-                    name-edited(v) => { root.name-edited(v); }
-                    profile-selected(v) => { root.profile-selected(v); }
-                    managed-toggled(v) => { root.managed-toggled(v); }
+                    name-edited(v) => { PairingWizard.name-edited(v); }
+                    profile-selected(v) => { PairingWizard.profile-selected(v); }
+                    managed-toggled(v) => { PairingWizard.managed-toggled(v); }
                 }
-                if root.current-step == 3: StepPair {
-                    phase: root.pair-phase;
-                    message: root.pair-message;
-                    tv-address: root.selected-address;
-                    retry => { root.retry-pair(); }
-                    back-to-discovery => { root.back-to-discovery(); }
+                if PairingWizard.step == 3: StepPair {
+                    phase: PairingWizard.pair-phase;
+                    message: PairingWizard.pair-message;
+                    tv-address: PairingWizard.selected-address;
+                    retry => { PairingWizard.retry-pair(); }
+                    back-to-discovery => { PairingWizard.back-to-discovery(); }
                 }
-                if root.current-step == 4: StepDone {
-                    tv-name: root.tv-name;
-                    tv-vendor: root.selected-vendor;
-                    tv-address: root.selected-address;
-                    managed: root.managed;
+                if PairingWizard.step == 4: StepDone {
+                    tv-name: PairingWizard.tv-name;
+                    tv-vendor: PairingWizard.selected-vendor;
+                    tv-address: PairingWizard.selected-address;
+                    managed: PairingWizard.managed;
                 }
             }
         }
@@ -1016,24 +974,24 @@ export component PairingWizard inherits Rectangle {
                 spacing: Design.gap-stack;
                 alignment: stretch;
 
-                if root.current-step != 4: Btn {
+                if PairingWizard.step != 4: Btn {
                     text: "Cancel";
-                    clicked => { root.cancel(); }
+                    clicked => { PairingWizard.cancel(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                if root.current-step == 2 || (root.current-step == 3 && root.pair-phase != "awaiting_tv" && root.pair-phase != "awaiting_input"): Btn {
+                if PairingWizard.step == 2 || (PairingWizard.step == 3 && PairingWizard.pair-phase != "awaiting_tv" && PairingWizard.pair-phase != "awaiting_input"): Btn {
                     text: "Back";
-                    clicked => { root.step-back(); }
+                    clicked => { PairingWizard.step-back(); }
                 }
                 Btn {
                     text: root.next-label;
                     variant: "accent";
                     enabled: root.next-enabled;
                     clicked => {
-                        if (root.current-step == 4) {
-                            root.finish();
+                        if (PairingWizard.step == 4) {
+                            PairingWizard.finish();
                         } else {
-                            root.step-next();
+                            PairingWizard.step-next();
                         }
                     }
                 }

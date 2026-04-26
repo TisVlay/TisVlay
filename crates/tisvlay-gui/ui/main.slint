@@ -1,13 +1,16 @@
 import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
 import { Theme, AppearanceMode } from "theme.slint";
 import { Design } from "design.slint";
+import { Daemon } from "globals/daemon.slint";
+import { PairingWizard } from "globals/pairing_wizard.slint";
+import { Settings } from "globals/settings.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
 import { AboutPane } from "components/about_pane.slint";
 
-export { TvViewModel, Theme, AppearanceMode, WizardDiscoveredTv, VendorOption }
+export { TvViewModel, Theme, AppearanceMode, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard, Settings }
 
 export enum Pane {
     tvs,
@@ -49,6 +52,9 @@ export component AppWindow inherits Window {
     min-width: 720px;
     min-height: 480px;
 
+    // TV-state model (read-only from Slint's perspective; Rust pushes
+    // updates via `app.set_tvs(...)`). Writes go through the Daemon
+    // global's callbacks.
     in property <[TvViewModel]> tvs;
     in property <bool> daemon-available: false;
     in property <bool> session-available: false;
@@ -56,70 +62,17 @@ export component AppWindow inherits Window {
     in property <[string]> user-profiles;
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
-    /// Two-way bound to `Theme.mode`. Rust seeds it from `gui.toml` at
-    /// startup; the Settings pane writes it via `appearance-mode-changed`,
-    /// which Rust persists.
+
+    // Appearance mode is bound to `Theme.mode` two-ways. Rust seeds
+    // it from `gui.toml` at startup; the Settings pane writes it
+    // via `Settings.appearance-mode-changed`, which Rust persists.
+    // (Phase 6 of plan4 may collapse this further.)
     in-out property <AppearanceMode> appearance-mode <=> Theme.mode;
-    callback appearance-mode-changed(AppearanceMode);
 
-    // -- Pairing wizard state (driven from Rust) --
-    in property <bool> wizard-active;
-    in property <int> wizard-step: 1;
-    in property <[WizardDiscoveredTv]> wizard-discovered;
-    in property <bool> wizard-discovery-streaming;
-    in property <string> wizard-discovery-error;
-    in-out property <int> wizard-selected-index: -1;
-    in-out property <string> wizard-tv-name;
-    in-out property <string> wizard-system-profile;
-    in-out property <bool> wizard-managed: true;
-    in property <string> wizard-pair-phase;
-    in property <string> wizard-pair-message;
-    in-out property <string> wizard-manual-vendor: "lg";
-    in-out property <string> wizard-manual-ip;
-    in-out property <string> wizard-manual-mac;
-    /// Vendors registered on the running daemon, fetched via
-    /// `Manager1.GetSupportedVendors`. Pushed once at startup; the
-    /// wizard reads it for the manual-entry vendor combobox.
-    in property <[VendorOption]> wizard-supported-vendors;
-    in property <[string]> wizard-supported-vendor-names;
-    /// Mirrors the currently-selected discovered TV's fields. We
-    /// publish these as separate properties (instead of indexing into
-    /// the model from Slint) because struct-from-model bindings have
-    /// been unreliable across step transitions.
-    in property <string> wizard-selected-vendor;
-    in property <string> wizard-selected-address;
-    in property <string> wizard-selected-hw-model;
-
-    callback set-volume(string, int);
-    callback set-mute(string, bool);
-    callback set-backlight(string, int);
-    callback set-is-screen-on(string, bool);
-    callback switch-input(string, string);
-    callback power-on(string);
-    callback power-off(string);
-    callback set-managed(string, bool);
-    callback set-system-profile(string, string);
-    callback set-user-profile(string, string);
-    callback set-primary-input(string, string);
-    callback remove-tv(string);
-    callback reload-config();
-    callback request-pair();
-
-    // -- Wizard callbacks --
-    callback wizard-cancel();
-    callback wizard-step-next();
-    callback wizard-step-back();
-    callback wizard-retry-pair();
-    callback wizard-back-to-discovery();
-    callback wizard-finish();
-    callback wizard-selected-changed(int);
-    callback wizard-name-edited(string);
-    callback wizard-profile-selected(string);
-    callback wizard-managed-toggled(bool);
-    callback wizard-manual-vendor-edited(string);
-    callback wizard-manual-ip-edited(string);
-    callback wizard-manual-mac-edited(string);
-    callback wizard-manual-add();
+    // Daemon callbacks moved to `Daemon` global (globals/daemon.slint).
+    // Wizard callbacks + state moved to `PairingWizard` global
+    // (globals/pairing_wizard.slint). Settings notifications moved to
+    // `Settings` global (globals/settings.slint).
 
     HorizontalBox {
         padding: 0;
@@ -217,7 +170,7 @@ export component AppWindow inherits Window {
                     reload-touch := TouchArea {
                         enabled: root.daemon-available;
                         mouse-cursor: root.daemon-available ? pointer : default;
-                        clicked => { root.reload-config(); }
+                        clicked => { Daemon.reload-config(); }
                     }
                 }
 
@@ -252,56 +205,6 @@ export component AppWindow inherits Window {
                 daemon-available: root.daemon-available;
                 system-profiles: root.system-profiles;
                 user-profiles: root.user-profiles;
-
-                set-volume(id, v) => { root.set-volume(id, v); }
-                set-mute(id, m) => { root.set-mute(id, m); }
-                set-backlight(id, b) => { root.set-backlight(id, b); }
-                set-is-screen-on(id, s) => { root.set-is-screen-on(id, s); }
-                switch-input(id, input) => { root.switch-input(id, input); }
-                power-on(id) => { root.power-on(id); }
-                power-off(id) => { root.power-off(id); }
-                set-managed(id, m) => { root.set-managed(id, m); }
-                set-system-profile(id, p) => { root.set-system-profile(id, p); }
-                set-user-profile(id, p) => { root.set-user-profile(id, p); }
-                set-primary-input(id, p) => { root.set-primary-input(id, p); }
-                remove-tv(id) => { root.remove-tv(id); }
-                request-pair => { root.request-pair(); }
-
-                // Wizard plumbing
-                wizard-active: root.wizard-active;
-                wizard-step: root.wizard-step;
-                wizard-discovered: root.wizard-discovered;
-                wizard-discovery-streaming: root.wizard-discovery-streaming;
-                wizard-discovery-error: root.wizard-discovery-error;
-                wizard-selected-index <=> root.wizard-selected-index;
-                wizard-tv-name <=> root.wizard-tv-name;
-                wizard-system-profile <=> root.wizard-system-profile;
-                wizard-managed <=> root.wizard-managed;
-                wizard-manual-vendor <=> root.wizard-manual-vendor;
-                wizard-manual-ip <=> root.wizard-manual-ip;
-                wizard-manual-mac <=> root.wizard-manual-mac;
-                wizard-supported-vendors: root.wizard-supported-vendors;
-                wizard-supported-vendor-names: root.wizard-supported-vendor-names;
-                wizard-selected-vendor: root.wizard-selected-vendor;
-                wizard-selected-address: root.wizard-selected-address;
-                wizard-selected-hw-model: root.wizard-selected-hw-model;
-                wizard-pair-phase: root.wizard-pair-phase;
-                wizard-pair-message: root.wizard-pair-message;
-
-                wizard-cancel => { root.wizard-cancel(); }
-                wizard-step-next => { root.wizard-step-next(); }
-                wizard-step-back => { root.wizard-step-back(); }
-                wizard-retry-pair => { root.wizard-retry-pair(); }
-                wizard-back-to-discovery => { root.wizard-back-to-discovery(); }
-                wizard-finish => { root.wizard-finish(); }
-                wizard-selected-changed(i) => { root.wizard-selected-changed(i); }
-                wizard-name-edited(v) => { root.wizard-name-edited(v); }
-                wizard-profile-selected(v) => { root.wizard-profile-selected(v); }
-                wizard-managed-toggled(v) => { root.wizard-managed-toggled(v); }
-                wizard-manual-vendor-edited(v) => { root.wizard-manual-vendor-edited(v); }
-                wizard-manual-ip-edited(v) => { root.wizard-manual-ip-edited(v); }
-                wizard-manual-mac-edited(v) => { root.wizard-manual-mac-edited(v); }
-                wizard-manual-add => { root.wizard-manual-add(); }
             }
             if root.active-pane == Pane.profiles: ProfilesPane {
                 width: 100%;
@@ -314,7 +217,6 @@ export component AppWindow inherits Window {
             if root.active-pane == Pane.settings: SettingsPane {
                 width: 100%;
                 height: 100%;
-                mode-changed(m) => { root.appearance-mode-changed(m); }
             }
             if root.active-pane == Pane.about: AboutPane {
                 width: 100%;

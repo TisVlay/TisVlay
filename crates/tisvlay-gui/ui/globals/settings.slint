@@ -1,0 +1,21 @@
+// Settings pane callbacks. The appearance mode itself lives in
+// `Theme.mode` (the Theme global), which is the canonical source
+// for theming brushes that branch on light/dark/system. This
+// global hosts only the *side-effect* notification — Rust persists
+// the new mode to `gui.toml` when it fires.
+//
+// Phase 6 of plan4 may collapse this further by letting Rust write
+// `Theme.mode` directly via `app.global::<Theme>().set_mode(...)`
+// in response to a portal-driven update; in that world this
+// global may not need a callback at all. Keeping it minimal for
+// now.
+
+import { AppearanceMode } from "../theme.slint";
+
+export global Settings {
+    /// Fired when the user picks a different appearance mode in the
+    /// Settings pane. Rust persists the choice to `gui.toml`. The
+    /// actual brush re-evaluation is reactive via `Theme.mode`,
+    /// which is set in the same handler that fires this callback.
+    callback appearance-mode-changed(AppearanceMode);
+}
