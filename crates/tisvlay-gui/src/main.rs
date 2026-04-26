@@ -16,17 +16,34 @@
 mod gui_config;
 mod state;
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{DaemonClient, PowerCyclePhase, SessionClient, StateEvent, StateWatcher};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::gui_config::{AppearanceMode as ConfigAppearanceMode, GuiConfig};
 use crate::state::{StateSnapshot, fetch_state};
+
+/// Per-TV last-wins coalescer for fast slider drags.
+///
+/// Lazily spawns one worker task per `tv_id` on first use. Subsequent
+/// callbacks push values into the worker's mpsc channel. The worker
+/// drains all queued values keeping only the latest, then issues a
+/// single daemon write. While that write is in flight, more values
+/// queue; the next iteration coalesces them again.
+///
+/// Net effect: at most one in-flight daemon call per TV per property,
+/// and the value sent is always the most recent the user produced —
+/// queue depth stays bounded regardless of slider drag rate. Without
+/// this, a fast drag floods the daemon's WebSocket SSAP queue and
+/// the TV processes commands seconds behind the user's cursor.
+type CoalesceMap = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<u8>>>>;
 
 slint::include_modules!();
 
@@ -118,16 +135,24 @@ fn register_callbacks(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
 ) {
-    // Volume slider — fires on every drag tick. Spawn-and-forget for
-    // M2; debounce/coalesce is a follow-up if drag UX feels laggy.
+    // Slider drags coalesce per TV: on every tick the callback pushes
+    // the value into the per-TV mpsc; the worker drains-keep-latest
+    // before each daemon round-trip. Bounds in-flight calls to one
+    // per (tv_id, property) regardless of drag rate.
+    let volume_coalescers: CoalesceMap = Arc::new(Mutex::new(HashMap::new()));
+    let backlight_coalescers: CoalesceMap = Arc::new(Mutex::new(HashMap::new()));
+
     let d = daemon.clone();
+    let senders = volume_coalescers.clone();
     app.on_set_volume(move |tv_id, value| {
         let d = d.clone();
-        let tv_id = tv_id.to_string();
-        let value = value.clamp(0, 100) as u8;
-        tokio::spawn(async move {
-            if let Err(e) = d.set_volume(&tv_id, value).await {
-                warn!(tv_id = %tv_id, error = %e, "set_volume failed");
+        let senders = senders.clone();
+        coalesce_send(senders, tv_id.to_string(), value.clamp(0, 100) as u8, move |id, v| {
+            let d = d.clone();
+            async move {
+                if let Err(e) = d.set_volume(&id, v).await {
+                    warn!(tv_id = %id, error = %e, "set_volume failed");
+                }
             }
         });
     });
@@ -144,13 +169,16 @@ fn register_callbacks(
     });
 
     let d = daemon.clone();
+    let senders = backlight_coalescers.clone();
     app.on_set_backlight(move |tv_id, value| {
         let d = d.clone();
-        let tv_id = tv_id.to_string();
-        let value = value.clamp(0, 100) as u8;
-        tokio::spawn(async move {
-            if let Err(e) = d.set_backlight(&tv_id, value).await {
-                warn!(tv_id = %tv_id, error = %e, "set_backlight failed");
+        let senders = senders.clone();
+        coalesce_send(senders, tv_id.to_string(), value.clamp(0, 100) as u8, move |id, v| {
+            let d = d.clone();
+            async move {
+                if let Err(e) = d.set_backlight(&id, v).await {
+                    warn!(tv_id = %id, error = %e, "set_backlight failed");
+                }
             }
         });
     });
@@ -1015,6 +1043,45 @@ async fn refresh(
             .ok();
         }
     }
+}
+
+/// Push `value` into the per-`tv_id` coalescing channel, lazily
+/// spawning a worker on first use. The worker drains queued values
+/// keeping the latest, then calls `apply` once with `(tv_id, latest)`.
+///
+/// `apply` is a closure that takes the (tv_id, value) pair and returns
+/// a future performing the daemon write. It must be `Clone` so we can
+/// move it into the spawned worker task.
+fn coalesce_send<F, Fut>(senders: CoalesceMap, tv_id: String, value: u8, apply: F)
+where
+    F: Fn(String, u8) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = ()> + Send,
+{
+    tokio::spawn(async move {
+        let tx = {
+            let mut map = senders.lock().await;
+            if let Some(tx) = map.get(&tv_id) {
+                tx.clone()
+            } else {
+                let (tx, mut rx) = mpsc::unbounded_channel::<u8>();
+                let tv_id_inner = tv_id.clone();
+                let apply_inner = apply.clone();
+                tokio::spawn(async move {
+                    while let Some(mut latest) = rx.recv().await {
+                        // Drain anything queued while we were
+                        // waiting; only the most recent matters.
+                        while let Ok(v) = rx.try_recv() {
+                            latest = v;
+                        }
+                        apply_inner(tv_id_inner.clone(), latest).await;
+                    }
+                });
+                map.insert(tv_id.clone(), tx.clone());
+                tx
+            }
+        };
+        let _ = tx.send(value);
+    });
 }
 
 fn config_to_slint_mode(m: ConfigAppearanceMode) -> AppearanceMode {
