@@ -509,6 +509,24 @@ component TvDetail inherits Rectangle {
     callback set-primary-input(string);
     callback request-remove();
 
+    // Local Slider value mirrors. Slint's `Slider.value` is `in-out` —
+    // when the user drags, the slider's TouchArea writes to value
+    // internally, which permanently breaks any `value: tv.volume`
+    // upstream binding. Subsequent external pushes (TV remote → daemon
+    // → model row update) would never reach the slider thumb. We work
+    // around this by binding the slider via `<=>` to a local in-out
+    // property here, and re-syncing it explicitly on every `tv` change.
+    in-out property <float> volume-display: tv.volume;
+    in-out property <float> backlight-display: tv.backlight;
+    changed tv => {
+        // Re-establish the link from the authoritative model after
+        // user drags have broken the initial bindings on the local
+        // display props. Fires on any field change since `tv` is a
+        // struct (refreshes are whole-row replacements).
+        volume-display = tv.volume;
+        backlight-display = tv.backlight;
+    }
+
     background: Theme.surface-alt;
 
     VerticalLayout {
@@ -646,7 +664,7 @@ component TvDetail inherits Rectangle {
                                 horizontal-stretch: 1;
                                 minimum: 0;
                                 maximum: 100;
-                                value: root.tv.volume;
+                                value <=> root.volume-display;
                                 enabled: root.tv.connected && !root.tv.muted;
                                 changed(v) => { root.set-volume(round(v)); }
                             }
@@ -697,7 +715,7 @@ component TvDetail inherits Rectangle {
                                 horizontal-stretch: 1;
                                 minimum: 0;
                                 maximum: 100;
-                                value: root.tv.backlight;
+                                value <=> root.backlight-display;
                                 enabled: root.tv.connected;
                                 changed(v) => { root.set-backlight(round(v)); }
                             }
