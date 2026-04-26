@@ -263,8 +263,10 @@ impl TvPowerService {
 
 /// Screen control interface (OLED-safe blanking).
 ///
-/// The screen state is exposed as a writable boolean property `IsScreenOn`.
-/// Setting `true` unblanks the screen, setting `false` blanks it.
+/// `IsScreenOn` is a read-only boolean property reflecting the TV's
+/// current screen state, populated by `state_forwarder` from backend
+/// subscription pushes. Writes go through the `SetScreen(b)` method
+/// (`true` unblanks, `false` blanks).
 #[derive(Debug)]
 pub struct TvScreenService {
     pub(crate) tv_id: String,
@@ -277,27 +279,20 @@ pub struct TvScreenService {
 #[interface(name = "org.tisvlay.Tv1.Screen")]
 impl TvScreenService {
     /// Whether the screen is currently on.
-    ///
-    /// Set `true` to unblank, `false` to blank (OLED-safe screen off).
     #[zbus(property)]
     fn is_screen_on(&self) -> bool {
         self.is_screen_on
     }
 
-    /// Set screen on/off state.
-    #[zbus(property)]
-    async fn set_is_screen_on(&mut self, on: bool) -> zbus::fdo::Result<()> {
-        info!(tv_id = %self.tv_id, on = on, "D-Bus: set IsScreenOn");
+    /// Set the screen on (true) or off (false).
+    async fn set_screen(&self, on: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, on = on, "D-Bus: SetScreen");
         if on {
             self.manager.screen_on(&self.tv_id).await
         } else {
             self.manager.screen_off(&self.tv_id).await
         }
-        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        // No optimistic pre-cache: state_forwarder updates the cache
-        // from TV-side subscription pushes. See `set_backlight` for
-        // the full rationale.
-        Ok(())
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }
 
@@ -307,8 +302,10 @@ impl TvScreenService {
 
 /// Volume control interface.
 ///
-/// Volume and mute are writable properties. Setting them sends the command
-/// to the TV backend and updates the cache on success.
+/// `Volume` and `Muted` are read-only properties reflecting the TV's
+/// current state, populated by `state_forwarder` from backend
+/// subscription pushes. Writes go through the `SetVolume(y)` and
+/// `SetMuted(b)` methods.
 #[derive(Debug)]
 pub struct TvVolumeService {
     pub(crate) tv_id: String,
@@ -328,20 +325,15 @@ impl TvVolumeService {
     }
 
     /// Set volume level (0-100).
-    #[zbus(property)]
-    async fn set_volume(&mut self, level: u8) -> zbus::fdo::Result<()> {
+    async fn set_volume(&self, level: u8) -> zbus::fdo::Result<()> {
         if level > 100 {
             return Err(zbus::fdo::Error::InvalidArgs("Volume must be 0-100".into()));
         }
-        info!(tv_id = %self.tv_id, volume = level, "D-Bus: set Volume");
+        info!(tv_id = %self.tv_id, volume = level, "D-Bus: SetVolume");
         self.manager
             .set_volume(&self.tv_id, level)
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        // No optimistic pre-cache: state_forwarder updates the cache
-        // from TV-side subscription pushes. See `set_backlight` for
-        // the full rationale.
-        Ok(())
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// Whether audio is currently muted.
@@ -351,16 +343,12 @@ impl TvVolumeService {
     }
 
     /// Set mute state.
-    #[zbus(property)]
-    async fn set_muted(&mut self, muted: bool) -> zbus::fdo::Result<()> {
-        info!(tv_id = %self.tv_id, muted = muted, "D-Bus: set Muted");
+    async fn set_muted(&self, muted: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, muted = muted, "D-Bus: SetMuted");
         self.manager
             .set_mute(&self.tv_id, muted)
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        // No optimistic pre-cache: state_forwarder updates the cache
-        // from TV-side subscription pushes.
-        Ok(())
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }
 
@@ -409,8 +397,10 @@ impl TvInputService {
 
 /// Backlight control interface (OLED pixel brightness).
 ///
-/// Backlight is a writable property. Setting it sends the command to the
-/// TV backend and updates the cache on success.
+/// `Backlight` is a read-only property reflecting the TV's current
+/// pixel-brightness level, populated by `state_forwarder` from
+/// backend subscription pushes. Writes go through the
+/// `SetBacklight(y)` method.
 #[derive(Debug)]
 pub struct TvBacklightService {
     pub(crate) tv_id: String,
@@ -429,37 +419,17 @@ impl TvBacklightService {
     }
 
     /// Set backlight level (0-100).
-    #[zbus(property)]
-    async fn set_backlight(&mut self, level: u8) -> zbus::fdo::Result<()> {
+    async fn set_backlight(&self, level: u8) -> zbus::fdo::Result<()> {
         if level > 100 {
             return Err(zbus::fdo::Error::InvalidArgs(
                 "Backlight must be 0-100".into(),
             ));
         }
-        info!(tv_id = %self.tv_id, backlight = level, "D-Bus: set Backlight");
-        // Dispatch and return — do NOT pre-cache `self.backlight`.
-        // The cache is the daemon's view of TV-actual state, populated
-        // by `state_forwarder` from subscription pushes. Pre-caching
-        // here lets zbus's auto-emit on `Properties.Set` race ahead
-        // of the subscription path: clients see a `PropertiesChanged`
-        // with the user's target value BEFORE the TV has actually
-        // reached it, which (for ramping properties like backlight)
-        // breaks convergence-gating clients — they treat the early
-        // emit as "daemon converged", clear `pending`, and apply
-        // subsequent ramp values as external changes (visible thumb
-        // snap-back).
-        //
-        // Same reasoning applied to `set_volume` / `set_muted` /
-        // `set_is_screen_on`. They didn't visibly manifest the bug
-        // because LG applies those instantaneously (subscription push
-        // arrives before zbus's auto-emit), but the inconsistency was
-        // a footgun. See
-        // `crates/tisvlayd/tests/backlight_emit_ordering.rs`.
+        info!(tv_id = %self.tv_id, backlight = level, "D-Bus: SetBacklight");
         self.manager
             .set_backlight(&self.tv_id, level)
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        Ok(())
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }
 

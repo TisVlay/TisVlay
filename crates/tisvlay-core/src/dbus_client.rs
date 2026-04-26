@@ -243,8 +243,7 @@ trait TisvlayTvScreen {
     fn is_screen_on(&self) -> zbus::Result<bool>;
 
     /// Set screen on/off (true = unblank, false = blank).
-    #[zbus(property)]
-    fn set_is_screen_on(&self, on: bool) -> zbus::Result<()>;
+    fn set_screen(&self, on: bool) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for TV volume control.
@@ -258,7 +257,6 @@ trait TisvlayTvVolume {
     fn volume(&self) -> zbus::Result<u8>;
 
     /// Set volume level (0-100).
-    #[zbus(property)]
     fn set_volume(&self, level: u8) -> zbus::Result<()>;
 
     /// Whether audio is currently muted.
@@ -266,7 +264,6 @@ trait TisvlayTvVolume {
     fn muted(&self) -> zbus::Result<bool>;
 
     /// Set mute state.
-    #[zbus(property)]
     fn set_muted(&self, muted: bool) -> zbus::Result<()>;
 }
 
@@ -299,7 +296,6 @@ trait TisvlayTvBacklight {
     fn backlight(&self) -> zbus::Result<u8>;
 
     /// Set backlight level (0-100).
-    #[zbus(property)]
     fn set_backlight(&self, level: u8) -> zbus::Result<()>;
 }
 
@@ -1043,7 +1039,7 @@ impl DaemonClient {
     /// Turn screen on (resume from blank).
     pub async fn screen_on(&self, tv_id: &str) -> Result<()> {
         self.with_proxies(tv_id, "turn screen on", |p| {
-            Box::pin(p.screen.set_is_screen_on(true))
+            Box::pin(p.screen.set_screen(true))
         })
         .await
     }
@@ -1051,7 +1047,7 @@ impl DaemonClient {
     /// Turn screen off (OLED-safe blank).
     pub async fn screen_off(&self, tv_id: &str) -> Result<()> {
         self.with_proxies(tv_id, "turn screen off", |p| {
-            Box::pin(p.screen.set_is_screen_on(false))
+            Box::pin(p.screen.set_screen(false))
         })
         .await
     }

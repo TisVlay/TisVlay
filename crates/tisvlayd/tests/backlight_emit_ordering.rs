@@ -1,24 +1,21 @@
 //! Regression: with a TV firmware that ramps backlight (LG OLEDs do
 //! this via `setSystemSettings#picture/backlight` subscription pushes),
-//! the daemon must NOT emit the user's set value before the TV has
-//! actually applied it. Otherwise GUI clients applying convergence
-//! gating (`OptimisticSlider`) treat the early value-matching emit as
-//! "daemon converged" and clear pending — causing subsequent ramp
-//! values from the subscription path to render as external changes,
-//! visibly snapping the slider thumb backward through the ramp.
+//! the daemon's `PropertiesChanged` stream for `Tv1.Backlight.Backlight`
+//! must reflect ONLY the TV's real intermediate values, in order.
+//! Clients applying convergence gating (`Reconciler`,
+//! `OptimisticSlider`) treat any early value-matching emit as "daemon
+//! converged" and clear pending — so a stray emit with the user's
+//! target value before the TV has actually reached it would let
+//! subsequent ramp values render as external changes, snapping the
+//! slider thumb backward through the ramp.
 //!
-//! The bug surfaces when the daemon's `Tv1.Backlight.Backlight` D-Bus
-//! property setter optimistically pre-caches the user's target value
-//! (`self.backlight = level`) before zbus's auto-emit runs. The
-//! auto-emit reads the cached value and fires `PropertiesChanged`
-//! with the user's target — even though the TV is still ramping and
-//! subsequent subscription pushes will send the real intermediate
-//! values.
-//!
-//! With the fix, the setter dispatches to the backend and returns
-//! without touching the cached value. The cache is updated only by
-//! `state_forwarder` when the TV's subscription pushes arrive, and
-//! `PropertiesChanged` emits exactly one event per real state change.
+//! By construction this is impossible in the current architecture:
+//! `Backlight` is a read-only D-Bus property and `SetBacklight` is a
+//! method, so zbus has no setter to auto-emit from. `state_forwarder`
+//! is the single authoritative emit path, driven by backend
+//! subscription pushes. This test guards that single-path invariant
+//! against accidental regression (e.g., someone re-introducing a
+//! writable property + setter).
 
 #![cfg(feature = "mock")]
 
