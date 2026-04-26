@@ -1,0 +1,414 @@
+// Shared UI primitives used across multiple panes / components.
+//
+// Tokens come from `theme.slint` — these widgets only know about
+// themed colors, not raw hex values. Add a primitive here when it's
+// needed by ≥ 2 panes; pane-specific helpers stay in their pane.
+
+import { Theme } from "theme.slint";
+
+// =============================================================================
+// Chip — small status pill (Connected, Managed, Unmanaged, etc.).
+// =============================================================================
+//
+// `tone` selects the color palette. Defaults to neutral.
+
+export component Chip inherits Rectangle {
+    in property <string> label;
+    /// One of: "neutral", "success", "danger", "warn", "accent".
+    in property <string> tone: "neutral";
+
+    property <brush> bg-color: tone == "success" ? Theme.success-soft
+                              : tone == "danger" ? Theme.danger-soft
+                              : tone == "warn" ? Theme.warn-soft
+                              : tone == "accent" ? Theme.accent-soft
+                              : Theme.chip;
+    property <brush> fg-color: tone == "success" ? Theme.success-text
+                              : tone == "danger" ? Theme.danger-text
+                              : tone == "warn" ? Theme.warn-text
+                              : tone == "accent" ? Theme.accent
+                              : Theme.chip-text;
+    property <brush> br-color: tone == "success" ? Theme.success
+                              : tone == "danger" ? Theme.danger
+                              : tone == "warn" ? Theme.warn
+                              : tone == "accent" ? Theme.accent
+                              : Theme.chip-border;
+
+    background: bg-color;
+    border-color: br-color;
+    border-width: 1px;
+    border-radius: 10px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 3px;
+        padding-bottom: 3px;
+        Text {
+            text: root.label;
+            color: root.fg-color;
+            font-size: 11px;
+            font-weight: 600;
+        }
+    }
+}
+
+// =============================================================================
+// Btn — themed button with explicit colors per variant + state.
+// =============================================================================
+//
+// Slint's std-widgets `Button` defers to the platform style (Fluent on
+// Linux). On unfocused windows + disabled state, that combination
+// produces text contrast far below the design's mockups. This widget
+// drives every color from `Theme.*` directly so the rendering is
+// stable across focus states.
+//
+// `variant` selects the palette:
+//   "default" — light bg, border, dark text  (Cancel / Back)
+//   "accent"  — accent bg, white text         (Next / Pair / Close)
+//   "danger"  — danger bg, white text         (Remove TV)
+
+export component Btn inherits Rectangle {
+    in property <string> text;
+    /// One of: "default", "accent", "danger".
+    in property <string> variant: "default";
+    in property <bool> enabled: true;
+    in property <length> min-button-width: 80px;
+    callback clicked();
+
+    property <bool> is-accent: variant == "accent";
+    property <bool> is-danger: variant == "danger";
+    property <bool> is-filled: is-accent || is-danger;
+
+    // Manually compute resolved colors for clarity at the bind sites.
+    property <brush> filled-bg: is-danger ? Theme.danger : Theme.accent;
+    // Filled buttons darken slightly on hover instead of falling
+    // through to `accent-soft` — the soft variant is meant for
+    // selection backgrounds (dark text on light bg), not for filled
+    // hover states (which keep white text and need a darker bg to
+    // stay legible).
+    property <brush> filled-bg-hover: is-danger ? Theme.danger-pressed : Theme.accent-pressed;
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-height: 32px;
+    min-width: min-button-width;
+
+    background: !enabled
+        ? Theme.surface2
+        : is-filled
+            ? (touch.has-hover ? filled-bg-hover : filled-bg)
+            : (touch.pressed ? Theme.surface2
+              : touch.has-hover ? Theme.row-hover
+              : Theme.surface);
+    border-color: !enabled
+        ? Theme.border
+        : is-filled
+            ? (touch.has-hover ? filled-bg-hover : filled-bg)
+            : Theme.border-strong;
+    border-width: 1px;
+    border-radius: 4px;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: !root.enabled
+                ? Theme.text-faint
+                : root.is-filled
+                    ? white
+                    : Theme.text;
+            font-size: 13px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// =============================================================================
+// ThemedTextInput — themed line-input.
+// =============================================================================
+//
+// Slint's std-widgets `LineEdit` defers to the platform style; on
+// Fluent + unfocused windows the border / placeholder render at very
+// low contrast. We wrap Slint's native `TextInput` element in a
+// themed Rectangle so the frame is always visible regardless of focus
+// state.
+
+export component ThemedTextInput inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text;
+    in property <bool> mono: false;
+    callback edited(string);
+
+    background: Theme.surface;
+    border-color: edit.has-focus ? Theme.accent : Theme.border-strong;
+    border-width: 1px;
+    border-radius: 4px;
+    min-height: 32px;
+    horizontal-stretch: 1;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 10px;
+        padding-right: 10px;
+
+        edit := TextInput {
+            text <=> root.text;
+            color: Theme.text;
+            font-size: 13px;
+            font-family: root.mono ? "ui-monospace, monospace" : "";
+            single-line: true;
+            vertical-alignment: center;
+            edited => { root.edited(self.text); }
+        }
+    }
+
+    // Placeholder shown when empty and not focused.
+    if root.text == "" && !edit.has-focus: Text {
+        text: root.placeholder;
+        color: Theme.text-faint;
+        font-size: 13px;
+        font-family: root.mono ? "ui-monospace, monospace" : "";
+        x: 10px;
+        vertical-alignment: center;
+        height: 100%;
+    }
+}
+
+// =============================================================================
+// ThemedCheckBox — themed checkbox with custom-painted box + label.
+// =============================================================================
+//
+// Slint's std-widgets `CheckBox` is platform-styled and washes out on
+// unfocused Fluent. Drives every visual from `Theme.*`.
+
+export component ThemedCheckBox inherits Rectangle {
+    in property <bool> checked;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    min-height: 22px;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 8px;
+        alignment: start;
+
+        // Box
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+                border-width: 1.5px;
+                border-color: !root.enabled
+                    ? Theme.border
+                    : (root.checked ? Theme.accent : Theme.border-strong);
+                background: !root.enabled
+                    ? Theme.surface2
+                    : (root.checked ? Theme.accent : Theme.surface);
+
+                if root.checked: Text {
+                    // Unicode check; Path would be cleaner but this is
+                    // good enough at 18px.
+                    text: "✓";
+                    color: white;
+                    font-size: 14px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+
+        // Label
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.label;
+                color: root.enabled ? Theme.text : Theme.text-faint;
+                font-size: 13px;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.toggled(!root.checked); }
+    }
+}
+
+// =============================================================================
+// ThemedSelect — themed dropdown.
+// =============================================================================
+//
+// Slint's std-widgets `ComboBox` washes out the same way. We render
+// the trigger ourselves and use a `PopupWindow` for the dropdown
+// list, so colors stay tied to `Theme.*`.
+
+export component ThemedSelect inherits Rectangle {
+    in property <[string]> model;
+    in-out property <string> current-value;
+    in property <bool> enabled: true;
+    in property <string> placeholder: "—";
+    callback selected(string);
+
+    background: Theme.surface;
+    border-color: trigger.has-hover && root.enabled
+        ? Theme.accent
+        : Theme.border-strong;
+    border-width: 1px;
+    border-radius: 4px;
+    min-height: 32px;
+    horizontal-stretch: 1;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.current-value == "" ? root.placeholder : root.current-value;
+                color: !root.enabled
+                    ? Theme.text-faint
+                    : (root.current-value == "" ? Theme.text-faint : Theme.text);
+                font-size: 13px;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: "▾";
+                color: Theme.text-dim;
+                font-size: 11px;
+            }
+        }
+    }
+
+    trigger := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { popup.show(); }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: parent.height + 2px;
+        width: parent.width;
+
+        Rectangle {
+            background: Theme.surface;
+            border-color: Theme.border;
+            border-width: 1px;
+            border-radius: 4px;
+
+            VerticalLayout {
+                width: 100%;
+                padding-top: 4px;
+                padding-bottom: 4px;
+
+                for opt in root.model: Rectangle {
+                    height: 30px;
+                    background: opt-touch.has-hover ? Theme.row-hover : transparent;
+                    HorizontalLayout {
+                        width: 100%;
+                        height: 100%;
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: opt;
+                                color: opt == root.current-value
+                                    ? Theme.row-selected-text
+                                    : Theme.text;
+                                font-size: 13px;
+                                font-weight: opt == root.current-value ? 600 : 400;
+                            }
+                        }
+                    }
+                    opt-touch := TouchArea {
+                        clicked => {
+                            root.current-value = opt;
+                            root.selected(opt);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Group — uppercase 11px title above a card.
+// =============================================================================
+//
+// Replaces std-widgets' GroupBox with the design's flatter shape.
+// Children supply their own vertical layout via `@children`.
+
+export component Group {
+    in property <string> title;
+    in property <length> body-padding: 14px;
+
+    VerticalLayout {
+        width: 100%;
+        spacing: 0;
+
+        // Title
+        HorizontalLayout {
+            padding-left: 2px;
+            padding-bottom: 8px;
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
+        }
+
+        // Card
+        Rectangle {
+            background: Theme.surface;
+            border-color: Theme.border;
+            border-width: 1px;
+            border-radius: 6px;
+
+            VerticalLayout {
+                width: 100%;
+                padding: root.body-padding;
+                spacing: 12px;
+                @children
+            }
+        }
+    }
+}

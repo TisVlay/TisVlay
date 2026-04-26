@@ -7,8 +7,12 @@
 // plus a handful of bespoke primitives below (Chip, VendorTile, Group,
 // FormRow) — no exotic styling.
 
-import { ListView, ScrollView, VerticalBox, HorizontalBox, Button, Slider, ComboBox, Switch } from "std-widgets.slint";
+import { ListView, ScrollView, VerticalBox, HorizontalBox, Slider, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { Btn, Chip, Group, ThemedSelect } from "../widgets.slint";
+import { PairingWizard, WizardDiscoveredTv, VendorOption } from "pairing_wizard.slint";
+
+export { PairingWizard, WizardDiscoveredTv, VendorOption, Btn, Chip, Group, ThemedSelect }
 
 export struct TvViewModel {
     id: string,
@@ -78,100 +82,6 @@ component VendorTile inherits Rectangle {
         vertical-alignment: center;
         width: 100%;
         height: 100%;
-    }
-}
-
-// =============================================================================
-// Chip — small status pill (Connected, Managed, Unmanaged, etc.).
-// =============================================================================
-//
-// `tone` selects the color palette. Defaults to neutral.
-
-export component Chip inherits Rectangle {
-    in property <string> label;
-    /// One of: "neutral", "success", "danger", "warn", "accent".
-    in property <string> tone: "neutral";
-
-    property <brush> bg-color: tone == "success" ? Theme.success-soft
-                              : tone == "danger" ? Theme.danger-soft
-                              : tone == "warn" ? Theme.warn-soft
-                              : tone == "accent" ? Theme.accent-soft
-                              : Theme.chip;
-    property <brush> fg-color: tone == "success" ? Theme.success-text
-                              : tone == "danger" ? Theme.danger-text
-                              : tone == "warn" ? Theme.warn-text
-                              : tone == "accent" ? Theme.accent
-                              : Theme.chip-text;
-    property <brush> br-color: tone == "success" ? Theme.success
-                              : tone == "danger" ? Theme.danger
-                              : tone == "warn" ? Theme.warn
-                              : tone == "accent" ? Theme.accent
-                              : Theme.chip-border;
-
-    background: bg-color;
-    border-color: br-color;
-    border-width: 1px;
-    border-radius: 10px;
-    horizontal-stretch: 0;
-    vertical-stretch: 0;
-
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        padding-top: 3px;
-        padding-bottom: 3px;
-        Text {
-            text: root.label;
-            color: root.fg-color;
-            font-size: 11px;
-            font-weight: 600;
-        }
-    }
-}
-
-// =============================================================================
-// Group — design-system replacement for std-widgets GroupBox.
-// =============================================================================
-//
-// Uppercase 11px title above a card with 1px border, 6px radius, 14px
-// padding. Mirrors the JSX `AppGroup`. Children supply their own
-// vertical layout.
-
-export component Group {
-    in property <string> title;
-    in property <length> body-padding: 14px;
-
-    VerticalLayout {
-        width: 100%;
-        spacing: 0;
-
-        // Title
-        HorizontalLayout {
-            padding-left: 2px;
-            padding-bottom: 8px;
-            Text {
-                text: root.title;
-                color: Theme.text-dim;
-                font-size: 11px;
-                font-weight: 600;
-                letter-spacing: 0.6px;
-            }
-        }
-
-        // Card
-        Rectangle {
-            background: Theme.surface;
-            border-color: Theme.border;
-            border-width: 1px;
-            border-radius: 6px;
-
-            VerticalLayout {
-                width: 100%;
-                padding: root.body-padding;
-                spacing: 12px;
-                @children
-            }
-        }
     }
 }
 
@@ -366,13 +276,17 @@ component TvList inherits Rectangle {
                     }
                 }
 
-                // "+" Pair-new-TV button.
+                // "+" Pair-new-TV button. Disabled when the daemon is
+                // offline — pairing requires an active daemon
+                // connection, so without one the wizard is futile.
                 Rectangle {
                     width: 24px;
                     height: 24px;
                     y: (parent.height - self.height) / 2;
                     border-radius: 12px;
-                    background: pair-touch.has-hover ? #2c8fc4 : Theme.accent;
+                    background: !root.daemon-available
+                        ? Theme.text-faint
+                        : (pair-touch.has-hover ? #2c8fc4 : Theme.accent);
 
                     Text {
                         text: "+";
@@ -385,6 +299,8 @@ component TvList inherits Rectangle {
                         height: 100%;
                     }
                     pair-touch := TouchArea {
+                        enabled: root.daemon-available;
+                        mouse-cursor: root.daemon-available ? pointer : default;
                         clicked => { root.request-pair(); }
                     }
                 }
@@ -443,7 +359,7 @@ component TvList inherits Rectangle {
                 width: 100%;
                 height: 100%;
                 padding: 8px;
-                Button {
+                Btn {
                     text: "Reload config";
                     clicked => { root.reload-config(); }
                 }
@@ -628,9 +544,9 @@ component TvDetail inherits Rectangle {
                         spacing: 14px;
                         alignment: stretch;
 
-                        Button {
+                        Btn {
                             text: root.tv.connected ? "Power off" : "Power on";
-                            primary: !root.tv.connected;
+                            variant: root.tv.connected ? "default" : "accent";
                             // Disable while a power-cycle is in flight (any
                             // non-empty phase that isn't "connected" / "failed").
                             enabled: root.tv.power-cycle-phase == ""
@@ -825,9 +741,10 @@ component TvDetail inherits Rectangle {
                         VerticalLayout {
                             horizontal-stretch: 1;
                             alignment: center;
-                            ComboBox {
+                            ThemedSelect {
                                 model: root.tv.available-input-ids;
                                 current-value: root.tv.current-input;
+                                placeholder: "—";
                                 enabled: root.tv.connected
                                       && root.tv.available-input-ids.length > 0;
                                 selected(v) => { root.switch-input(v); }
@@ -868,9 +785,10 @@ component TvDetail inherits Rectangle {
                     FormRow {
                         label: "System profile";
                         helper: "Drives daemon lifecycle (boot/shutdown/sleep).";
-                        ComboBox {
+                        ThemedSelect {
                             model: root.system-profiles;
                             current-value: root.tv.system-profile;
+                            placeholder: "default";
                             enabled: root.system-profiles.length > 0;
                             selected(v) => { root.set-system-profile(v); }
                         }
@@ -879,9 +797,10 @@ component TvDetail inherits Rectangle {
                     FormRow {
                         label: "User profile";
                         helper: "Drives session events (lock/unlock/idle).";
-                        ComboBox {
+                        ThemedSelect {
                             model: root.user-profiles;
                             current-value: root.tv.user-profile;
+                            placeholder: "default";
                             enabled: root.user-profiles.length > 0;
                             selected(v) => { root.set-user-profile(v); }
                         }
@@ -890,9 +809,10 @@ component TvDetail inherits Rectangle {
                     FormRow {
                         label: "Primary input";
                         helper: "Which input this PC uses; affects on-primary automation.";
-                        ComboBox {
+                        ThemedSelect {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input;
+                            placeholder: "—";
                             enabled: root.tv.available-input-ids.length > 0;
                             selected(v) => { root.set-primary-input(v); }
                         }
@@ -929,8 +849,9 @@ component TvDetail inherits Rectangle {
                         }
                         VerticalLayout {
                             alignment: center;
-                            Button {
+                            Btn {
                                 text: "Remove TV";
+                                variant: "danger";
                                 clicked => { root.request-remove(); }
                             }
                         }
@@ -1026,13 +947,13 @@ component ConfirmDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: 8px;
                 alignment: end;
-                Button {
+                Btn {
                     text: "Cancel";
                     clicked => { root.cancelled(); }
                 }
-                Button {
+                Btn {
                     text: root.confirm-label;
-                    primary: true;
+                    variant: "danger";
                     clicked => { root.confirmed(); }
                 }
             }
@@ -1051,6 +972,27 @@ export component TvsPane {
     in property <[string]> user-profiles;
     in-out property <int> selected-index: -1;
 
+    // -- Wizard state (driven from Rust) --
+    in property <bool> wizard-active;
+    in property <int> wizard-step;
+    in property <[WizardDiscoveredTv]> wizard-discovered;
+    in property <bool> wizard-discovery-streaming;
+    in property <string> wizard-discovery-error;
+    in-out property <int> wizard-selected-index: -1;
+    in-out property <string> wizard-tv-name;
+    in-out property <string> wizard-system-profile;
+    in-out property <bool> wizard-managed: true;
+    in property <string> wizard-pair-phase;
+    in property <string> wizard-pair-message;
+    in-out property <string> wizard-manual-vendor: "lg";
+    in-out property <string> wizard-manual-ip;
+    in-out property <string> wizard-manual-mac;
+    in property <[VendorOption]> wizard-supported-vendors;
+    in property <[string]> wizard-supported-vendor-names;
+    in property <string> wizard-selected-vendor;
+    in property <string> wizard-selected-address;
+    in property <string> wizard-selected-hw-model;
+
     callback set-volume(string, int);
     callback set-mute(string, bool);
     callback set-backlight(string, int);
@@ -1066,10 +1008,66 @@ export component TvsPane {
     callback reload-config();
     callback request-pair();
 
+    // -- Wizard callbacks (forwarded to AppWindow → Rust) --
+    callback wizard-cancel();
+    callback wizard-step-next();
+    callback wizard-step-back();
+    callback wizard-retry-pair();
+    callback wizard-back-to-discovery();
+    callback wizard-finish();
+    callback wizard-selected-changed(int);
+    callback wizard-name-edited(string);
+    callback wizard-profile-selected(string);
+    callback wizard-managed-toggled(bool);
+    callback wizard-manual-vendor-edited(string);
+    callback wizard-manual-ip-edited(string);
+    callback wizard-manual-mac-edited(string);
+    callback wizard-manual-add();
+
     property <string> pending-remove-id: "";
     property <string> pending-remove-name: "";
 
-    HorizontalLayout {
+    // Pairing wizard takes over the whole pane when active.
+    if root.wizard-active: PairingWizard {
+        width: 100%;
+        height: 100%;
+        current-step: root.wizard-step;
+        discovered: root.wizard-discovered;
+        discovery-streaming: root.wizard-discovery-streaming;
+        discovery-error: root.wizard-discovery-error;
+        selected-index <=> root.wizard-selected-index;
+        tv-name <=> root.wizard-tv-name;
+        system-profile <=> root.wizard-system-profile;
+        managed <=> root.wizard-managed;
+        manual-vendor <=> root.wizard-manual-vendor;
+        manual-ip <=> root.wizard-manual-ip;
+        manual-mac <=> root.wizard-manual-mac;
+        supported-vendors: root.wizard-supported-vendors;
+        supported-vendor-names: root.wizard-supported-vendor-names;
+        selected-vendor: root.wizard-selected-vendor;
+        selected-address: root.wizard-selected-address;
+        selected-hw-model: root.wizard-selected-hw-model;
+        system-profiles: root.system-profiles;
+        pair-phase: root.wizard-pair-phase;
+        pair-message: root.wizard-pair-message;
+
+        cancel => { root.wizard-cancel(); }
+        step-next => { root.wizard-step-next(); }
+        step-back => { root.wizard-step-back(); }
+        retry-pair => { root.wizard-retry-pair(); }
+        back-to-discovery => { root.wizard-back-to-discovery(); }
+        finish => { root.wizard-finish(); }
+        selected-changed(i) => { root.wizard-selected-changed(i); }
+        name-edited(v) => { root.wizard-name-edited(v); }
+        profile-selected(v) => { root.wizard-profile-selected(v); }
+        managed-toggled(v) => { root.wizard-managed-toggled(v); }
+        manual-vendor-edited(v) => { root.wizard-manual-vendor-edited(v); }
+        manual-ip-edited(v) => { root.wizard-manual-ip-edited(v); }
+        manual-mac-edited(v) => { root.wizard-manual-mac-edited(v); }
+        manual-add => { root.wizard-manual-add(); }
+    }
+
+    if !root.wizard-active: HorizontalLayout {
         width: 100%;
         height: 100%;
         spacing: 0;

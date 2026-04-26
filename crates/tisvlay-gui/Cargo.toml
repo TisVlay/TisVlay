@@ -20,6 +20,7 @@ path = "src/main.rs"
 tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
 tokio = { workspace = true }
 futures-util = { workspace = true }
+serde_json = { workspace = true }
 # `accessibility` is dropped from the default features. It pulls in
 # `accesskit_unix`, which spawns its own thread to talk to the
 # accessibility bus via zbus. That thread isn't a tokio worker, and

@@ -5418,6 +5418,7 @@ dependencies = [
  "clap",
  "futures-util",
  "i-slint-backend-selector",
+ "serde_json",
  "slint",
  "slint-build",
  "tisvlay-core",

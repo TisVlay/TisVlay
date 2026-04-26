@@ -1,11 +1,11 @@
 import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { TvsPane, TvViewModel } from "components/tvs_pane.slint";
+import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
 import { AboutPane } from "components/about_pane.slint";
 
-export { TvViewModel, Theme }
+export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption }
 
 export enum Pane {
     tvs,
@@ -58,6 +58,34 @@ export component AppWindow inherits Window {
     /// startup; in-app toggle UI lands in a follow-up.
     in-out property <bool> dark-mode <=> Theme.dark-mode;
 
+    // -- Pairing wizard state (driven from Rust) --
+    in property <bool> wizard-active;
+    in property <int> wizard-step: 1;
+    in property <[WizardDiscoveredTv]> wizard-discovered;
+    in property <bool> wizard-discovery-streaming;
+    in property <string> wizard-discovery-error;
+    in-out property <int> wizard-selected-index: -1;
+    in-out property <string> wizard-tv-name;
+    in-out property <string> wizard-system-profile;
+    in-out property <bool> wizard-managed: true;
+    in property <string> wizard-pair-phase;
+    in property <string> wizard-pair-message;
+    in-out property <string> wizard-manual-vendor: "lg";
+    in-out property <string> wizard-manual-ip;
+    in-out property <string> wizard-manual-mac;
+    /// Vendors registered on the running daemon, fetched via
+    /// `Manager1.GetSupportedVendors`. Pushed once at startup; the
+    /// wizard reads it for the manual-entry vendor combobox.
+    in property <[VendorOption]> wizard-supported-vendors;
+    in property <[string]> wizard-supported-vendor-names;
+    /// Mirrors the currently-selected discovered TV's fields. We
+    /// publish these as separate properties (instead of indexing into
+    /// the model from Slint) because struct-from-model bindings have
+    /// been unreliable across step transitions.
+    in property <string> wizard-selected-vendor;
+    in property <string> wizard-selected-address;
+    in property <string> wizard-selected-hw-model;
+
     callback set-volume(string, int);
     callback set-mute(string, bool);
     callback set-backlight(string, int);
@@ -72,6 +100,22 @@ export component AppWindow inherits Window {
     callback remove-tv(string);
     callback reload-config();
     callback request-pair();
+
+    // -- Wizard callbacks --
+    callback wizard-cancel();
+    callback wizard-step-next();
+    callback wizard-step-back();
+    callback wizard-retry-pair();
+    callback wizard-back-to-discovery();
+    callback wizard-finish();
+    callback wizard-selected-changed(int);
+    callback wizard-name-edited(string);
+    callback wizard-profile-selected(string);
+    callback wizard-managed-toggled(bool);
+    callback wizard-manual-vendor-edited(string);
+    callback wizard-manual-ip-edited(string);
+    callback wizard-manual-mac-edited(string);
+    callback wizard-manual-add();
 
     HorizontalBox {
         padding: 0;
@@ -133,6 +177,27 @@ export component AppWindow inherits Window {
                     font-size: 11.5px;
                     horizontal-alignment: left;
                 }
+
+                // Light/dark theme toggle.
+                Rectangle {
+                    height: 28px;
+                    HorizontalLayout {
+                        width: 100%;
+                        height: 100%;
+                        spacing: 6px;
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: Theme.dark-mode ? "☀  Light" : "🌙  Dark";
+                                color: Theme.sidebar-text;
+                                font-size: 11.5px;
+                            }
+                        }
+                    }
+                    theme-touch := TouchArea {
+                        clicked => { Theme.dark-mode = !Theme.dark-mode; }
+                    }
+                }
             }
         }
 
@@ -167,6 +232,42 @@ export component AppWindow inherits Window {
                 remove-tv(id) => { root.remove-tv(id); }
                 reload-config => { root.reload-config(); }
                 request-pair => { root.request-pair(); }
+
+                // Wizard plumbing
+                wizard-active: root.wizard-active;
+                wizard-step: root.wizard-step;
+                wizard-discovered: root.wizard-discovered;
+                wizard-discovery-streaming: root.wizard-discovery-streaming;
+                wizard-discovery-error: root.wizard-discovery-error;
+                wizard-selected-index <=> root.wizard-selected-index;
+                wizard-tv-name <=> root.wizard-tv-name;
+                wizard-system-profile <=> root.wizard-system-profile;
+                wizard-managed <=> root.wizard-managed;
+                wizard-manual-vendor <=> root.wizard-manual-vendor;
+                wizard-manual-ip <=> root.wizard-manual-ip;
+                wizard-manual-mac <=> root.wizard-manual-mac;
+                wizard-supported-vendors: root.wizard-supported-vendors;
+                wizard-supported-vendor-names: root.wizard-supported-vendor-names;
+                wizard-selected-vendor: root.wizard-selected-vendor;
+                wizard-selected-address: root.wizard-selected-address;
+                wizard-selected-hw-model: root.wizard-selected-hw-model;
+                wizard-pair-phase: root.wizard-pair-phase;
+                wizard-pair-message: root.wizard-pair-message;
+
+                wizard-cancel => { root.wizard-cancel(); }
+                wizard-step-next => { root.wizard-step-next(); }
+                wizard-step-back => { root.wizard-step-back(); }
+                wizard-retry-pair => { root.wizard-retry-pair(); }
+                wizard-back-to-discovery => { root.wizard-back-to-discovery(); }
+                wizard-finish => { root.wizard-finish(); }
+                wizard-selected-changed(i) => { root.wizard-selected-changed(i); }
+                wizard-name-edited(v) => { root.wizard-name-edited(v); }
+                wizard-profile-selected(v) => { root.wizard-profile-selected(v); }
+                wizard-managed-toggled(v) => { root.wizard-managed-toggled(v); }
+                wizard-manual-vendor-edited(v) => { root.wizard-manual-vendor-edited(v); }
+                wizard-manual-ip-edited(v) => { root.wizard-manual-ip-edited(v); }
+                wizard-manual-mac-edited(v) => { root.wizard-manual-mac-edited(v); }
+                wizard-manual-add => { root.wizard-manual-add(); }
             }
             if root.active-pane == Pane.profiles: ProfilesPane {
                 width: 100%;

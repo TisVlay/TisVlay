@@ -279,6 +279,467 @@ fn register_callbacks(
             }
         });
     });
+
+    // -------------------------------------------------------------------------
+    // Pairing wizard
+    // -------------------------------------------------------------------------
+
+    // Open wizard + start discovery.
+    let d = daemon.clone();
+    let app_weak = app.as_weak();
+    app.on_request_pair(move || {
+        let d = d.clone();
+        let app_weak = app_weak.clone();
+        // Reset wizard state on the Slint side first so the user sees
+        // the wizard immediately, then kick off discovery.
+        if let Some(app) = app_weak.upgrade() {
+            reset_wizard(&app);
+            app.set_wizard_active(true);
+            app.set_wizard_step(1);
+            app.set_wizard_discovery_streaming(true);
+        }
+        tokio::spawn(async move {
+            run_wizard_discovery(d, app_weak).await;
+        });
+    });
+
+    let app_weak = app.as_weak();
+    app.on_wizard_cancel(move || {
+        info!("wizard: cancel fired");
+        if let Some(app) = app_weak.upgrade() {
+            reset_wizard(&app);
+        }
+    });
+
+    // Step transitions. Driven entirely from Slint property reads.
+    let d = daemon.clone();
+    let app_weak = app.as_weak();
+    app.on_wizard_step_next(move || {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let step = app.get_wizard_step();
+        info!(step, "wizard: step-next fired");
+        match step {
+            1 => {
+                // Discover → Configure: copy selected TV's vendor /
+                // address / model and a default name into the
+                // wizard's AppWindow-level fields, then advance.
+                let i = app.get_wizard_selected_index();
+                if i < 0 {
+                    return;
+                }
+                let model = app.get_wizard_discovered();
+                if let Some(tv) = model.row_data(i as usize) {
+                    if app.get_wizard_tv_name().is_empty() {
+                        let default = if tv.name.is_empty() {
+                            tv.address.clone()
+                        } else {
+                            tv.name.clone()
+                        };
+                        app.set_wizard_tv_name(default);
+                    }
+                    app.set_wizard_selected_vendor(tv.vendor);
+                    app.set_wizard_selected_address(tv.address);
+                    app.set_wizard_selected_hw_model(tv.hw_model);
+                }
+                if app.get_wizard_system_profile().is_empty() {
+                    app.set_wizard_system_profile("default".into());
+                }
+                app.set_wizard_step(2);
+            }
+            2 => {
+                // Configure → Pair: kick off pair_tv with collected fields.
+                let name = app.get_wizard_tv_name().to_string();
+                if name.is_empty() {
+                    return;
+                }
+                let i = app.get_wizard_selected_index();
+                if i < 0 {
+                    return;
+                }
+                let model = app.get_wizard_discovered();
+                let Some(tv) = model.row_data(i as usize) else {
+                    return;
+                };
+                let vendor = tv.vendor.to_string();
+                let address = tv.address.to_string();
+                let mac = app.get_wizard_manual_mac().to_string();
+                let wake_id = if mac.is_empty() { None } else { Some(mac) };
+                let managed = app.get_wizard_managed();
+
+                app.set_wizard_step(3);
+                app.set_wizard_pair_phase(SharedString::default());
+                app.set_wizard_pair_message(SharedString::default());
+
+                let d = d.clone();
+                let app_weak = app.as_weak();
+                tokio::spawn(async move {
+                    run_wizard_pair(d, app_weak, name, vendor, address, wake_id, managed).await;
+                });
+            }
+            // Pair → Done. Only allowed when pair_phase == "complete".
+            3 if app.get_wizard_pair_phase() == "complete" => {
+                app.set_wizard_step(4);
+            }
+            _ => {}
+        }
+    });
+
+    let app_weak = app.as_weak();
+    app.on_wizard_step_back(move || {
+        if let Some(app) = app_weak.upgrade() {
+            let step = app.get_wizard_step();
+            if step > 1 {
+                app.set_wizard_step(step - 1);
+            }
+        }
+    });
+
+    // Pair-failed → discovery: clear pair state and rewind to step 1.
+    let app_weak = app.as_weak();
+    app.on_wizard_back_to_discovery(move || {
+        if let Some(app) = app_weak.upgrade() {
+            app.set_wizard_pair_phase(SharedString::default());
+            app.set_wizard_pair_message(SharedString::default());
+            app.set_wizard_step(1);
+        }
+    });
+
+    // Pair-failed → retry: restart pair_tv with the same parameters.
+    let d = daemon.clone();
+    let app_weak = app.as_weak();
+    app.on_wizard_retry_pair(move || {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let name = app.get_wizard_tv_name().to_string();
+        let i = app.get_wizard_selected_index();
+        if i < 0 || name.is_empty() {
+            return;
+        }
+        let model = app.get_wizard_discovered();
+        let Some(tv) = model.row_data(i as usize) else {
+            return;
+        };
+        let vendor = tv.vendor.to_string();
+        let address = tv.address.to_string();
+        let mac = app.get_wizard_manual_mac().to_string();
+        let wake_id = if mac.is_empty() { None } else { Some(mac) };
+        let managed = app.get_wizard_managed();
+
+        app.set_wizard_pair_phase(SharedString::default());
+        app.set_wizard_pair_message(SharedString::default());
+
+        let d = d.clone();
+        let app_weak = app.as_weak();
+        tokio::spawn(async move {
+            run_wizard_pair(d, app_weak, name, vendor, address, wake_id, managed).await;
+        });
+    });
+
+    let app_weak = app.as_weak();
+    app.on_wizard_finish(move || {
+        if let Some(app) = app_weak.upgrade() {
+            reset_wizard(&app);
+        }
+    });
+
+    // Selection changed: copy the selected discovered TV's vendor /
+    // address / hw_model to the AppWindow-level selected-* properties
+    // so step 2 / step 3 / step 4 read consistent values without
+    // round-tripping through model row indexing.
+    let app_weak = app.as_weak();
+    app.on_wizard_selected_changed(move |i| {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        app.set_wizard_selected_index(i);
+        if i < 0 {
+            app.set_wizard_selected_vendor(SharedString::default());
+            app.set_wizard_selected_address(SharedString::default());
+            app.set_wizard_selected_hw_model(SharedString::default());
+            return;
+        }
+        let model = app.get_wizard_discovered();
+        if let Some(tv) = model.row_data(i as usize) {
+            app.set_wizard_selected_vendor(tv.vendor);
+            app.set_wizard_selected_address(tv.address);
+            app.set_wizard_selected_hw_model(tv.hw_model);
+        }
+    });
+
+    // Other input handlers — Slint's `<=>` already handles
+    // property-level sync; these are no-ops for now.
+    app.on_wizard_name_edited(|_| {});
+    app.on_wizard_profile_selected(|_| {});
+    app.on_wizard_managed_toggled(|_| {});
+
+    // Manual-entry: edits flush back via two-way binding; the explicit
+    // edited callbacks are wire-only no-ops to satisfy LineEdit.
+    // The ThemedSelect emits the *display name* (e.g. "LG WebOS").
+    // Resolve back to the canonical vendor id by looking up in
+    // `wizard_supported_vendors`.
+    let app_weak = app.as_weak();
+    app.on_wizard_manual_vendor_edited(move |display_name| {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let model = app.get_wizard_supported_vendors();
+        for i in 0..model.row_count() {
+            if let Some(opt) = model.row_data(i)
+                && opt.name == display_name
+            {
+                app.set_wizard_manual_vendor(opt.id);
+                return;
+            }
+        }
+        // No match — accept the display name as-is so a future
+        // backend doesn't get silently dropped.
+        app.set_wizard_manual_vendor(display_name);
+    });
+    let app_weak = app.as_weak();
+    app.on_wizard_manual_ip_edited(move |v| {
+        if let Some(app) = app_weak.upgrade() {
+            app.set_wizard_manual_ip(v);
+        }
+    });
+    let app_weak = app.as_weak();
+    app.on_wizard_manual_mac_edited(move |v| {
+        if let Some(app) = app_weak.upgrade() {
+            app.set_wizard_manual_mac(v);
+        }
+    });
+
+    // Manual-add: synthesize a discovered-TV row from the user's
+    // typed vendor + IP, append it to the wizard model, select it,
+    // and advance to Configure. From step 2 on the flow is identical
+    // to the SSDP path.
+    let app_weak = app.as_weak();
+    app.on_wizard_manual_add(move || {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let mut vendor = app.get_wizard_manual_vendor().to_string();
+        if vendor.is_empty() {
+            // Slint property defaults can drop through `<=>` chains in
+            // some configurations — fall back to LG since that's the
+            // only vendor the manual UI currently offers.
+            vendor = "lg".to_string();
+        }
+        let ip = app.get_wizard_manual_ip().to_string();
+        if ip.is_empty() {
+            return;
+        }
+        info!(vendor = %vendor, ip = %ip, "wizard: manual add");
+
+        let synthetic = WizardDiscoveredTv {
+            id: SharedString::default(),
+            name: SharedString::default(),
+            vendor: SharedString::from(vendor.clone()),
+            address: SharedString::from(ip.clone()),
+            hw_model: SharedString::default(),
+        };
+
+        // Append to existing list (or create a fresh one) so any
+        // already-discovered TVs aren't lost.
+        let model = app.get_wizard_discovered();
+        let mut rows: Vec<WizardDiscoveredTv> = (0..model.row_count())
+            .filter_map(|i| model.row_data(i))
+            .collect();
+        rows.push(synthetic);
+        let new_index = (rows.len() - 1) as i32;
+        app.set_wizard_discovered(ModelRc::new(VecModel::from(rows)));
+        app.set_wizard_selected_index(new_index);
+        // Also publish individual selected-* fields so the wizard
+        // doesn't have to round-trip through model row indexing for
+        // step 2's vendor / address display.
+        app.set_wizard_selected_vendor(SharedString::from(vendor));
+        app.set_wizard_selected_address(SharedString::from(ip));
+        app.set_wizard_selected_hw_model(SharedString::default());
+        if app.get_wizard_system_profile().is_empty() {
+            app.set_wizard_system_profile("default".into());
+        }
+        app.set_wizard_step(2);
+    });
+}
+
+/// Clear all wizard state and close the wizard.
+fn reset_wizard(app: &AppWindow) {
+    app.set_wizard_active(false);
+    app.set_wizard_step(1);
+    app.set_wizard_selected_index(-1);
+    app.set_wizard_tv_name(SharedString::default());
+    app.set_wizard_system_profile(SharedString::default());
+    app.set_wizard_managed(true);
+    app.set_wizard_manual_vendor("lg".into());
+    app.set_wizard_manual_ip(SharedString::default());
+    app.set_wizard_manual_mac(SharedString::default());
+    app.set_wizard_selected_vendor(SharedString::default());
+    app.set_wizard_selected_address(SharedString::default());
+    app.set_wizard_selected_hw_model(SharedString::default());
+    app.set_wizard_discovery_streaming(false);
+    app.set_wizard_discovery_error(SharedString::default());
+    app.set_wizard_pair_phase(SharedString::default());
+    app.set_wizard_pair_message(SharedString::default());
+    app.set_wizard_discovered(ModelRc::new(VecModel::<WizardDiscoveredTv>::default()));
+}
+
+/// Drive a single discovery scan and stream results into the wizard's
+/// `wizard_discovered` model. Subscribes to `Manager1.DiscoveryFound`
+/// before invoking `discover_tvs` so signals emitted during the call
+/// are captured. v1: the daemon emits in a burst right before the
+/// RPC returns, but the subscription pattern is forward-compatible.
+async fn run_wizard_discovery(daemon: Arc<DaemonClient>, app_weak: slint::Weak<AppWindow>) {
+    // v1: the daemon currently emits DiscoveryFound signals in a burst
+    // right before discover_tvs returns, so subscribing here adds no
+    // streaming benefit yet — we just take the synchronous RPC return.
+    // When the daemon refactors to per-backend streaming, swap this
+    // for a discovery_found_stream() drainer (the helper exists on
+    // DaemonClient; the wire shape is forward-compatible).
+    match daemon.discover_tvs(5000).await {
+        Ok(tvs) => {
+            let rows: Vec<WizardDiscoveredTv> = tvs
+                .into_iter()
+                .map(|(id, name, address, hw_id, vendor)| WizardDiscoveredTv {
+                    id: SharedString::from(id),
+                    name: SharedString::from(name),
+                    vendor: SharedString::from(vendor),
+                    address: SharedString::from(address),
+                    hw_model: SharedString::from(hw_id.model.unwrap_or_default()),
+                })
+                .collect();
+            let app_weak = app_weak.clone();
+            slint::invoke_from_event_loop(move || {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_wizard_discovered(ModelRc::new(VecModel::from(rows)));
+                    app.set_wizard_discovery_streaming(false);
+                }
+            })
+            .ok();
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            let app_weak = app_weak.clone();
+            slint::invoke_from_event_loop(move || {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_wizard_discovery_streaming(false);
+                    app.set_wizard_discovery_error(SharedString::from(msg));
+                }
+            })
+            .ok();
+        }
+    }
+}
+
+/// Build vendor-agnostic config JSON for pairing via daemon.
+///
+/// Matches the CLI's `build_pairing_config_json` shape: each vendor
+/// connector accepts `address` and `wake_id` via serde aliases
+/// alongside its native field names. Empty `wake_id` → field omitted.
+fn build_pairing_config_json(address: &str, wake_id: Option<&str>) -> String {
+    let mut config = serde_json::json!({ "address": address });
+    if let Some(wid) = wake_id.filter(|s| !s.is_empty()) {
+        config["wake_id"] = serde_json::Value::String(wid.to_string());
+    }
+    config.to_string()
+}
+
+/// Run a `pair_tv` call with live progress updates streamed into the
+/// wizard's `wizard_pair_phase` / `wizard_pair_message` fields.
+/// Mirrors `run_power_on_with_progress` but for the pairing flow.
+async fn run_wizard_pair(
+    daemon: Arc<DaemonClient>,
+    app_weak: slint::Weak<AppWindow>,
+    name: String,
+    vendor: String,
+    address: String,
+    wake_id: Option<String>,
+    managed: bool,
+) {
+    use futures_util::StreamExt;
+
+    // Subscribe before issuing the call so we don't miss the first
+    // phase (typically `awaiting_tv` on LG).
+    let stream = match daemon.pairing_progress_stream().await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "PairingProgress subscribe failed; falling back to phase-less pair");
+            // Fall through and just call pair_tv without progress updates.
+            run_pair_no_progress(daemon, app_weak, name, vendor, address, wake_id, managed).await;
+            return;
+        }
+    };
+
+    let drainer_weak = app_weak.clone();
+    let drainer = tokio::spawn(async move {
+        let mut s = std::pin::pin!(stream);
+        while let Some((_tv_id, phase, message)) = s.next().await {
+            let drainer_weak = drainer_weak.clone();
+            slint::invoke_from_event_loop(move || {
+                if let Some(app) = drainer_weak.upgrade() {
+                    app.set_wizard_pair_phase(SharedString::from(phase));
+                    app.set_wizard_pair_message(SharedString::from(message));
+                }
+            })
+            .ok();
+        }
+    });
+
+    let config_json = build_pairing_config_json(&address, wake_id.as_deref());
+    let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
+    drainer.abort();
+
+    let app_weak = app_weak.clone();
+    slint::invoke_from_event_loop(move || {
+        if let Some(app) = app_weak.upgrade() {
+            match result {
+                Ok(_tv_id) => {
+                    app.set_wizard_pair_phase("complete".into());
+                    if app.get_wizard_pair_message().is_empty() {
+                        app.set_wizard_pair_message("Client key stored.".into());
+                    }
+                }
+                Err(e) => {
+                    app.set_wizard_pair_phase("failed".into());
+                    app.set_wizard_pair_message(SharedString::from(format!("{e}")));
+                }
+            }
+        }
+    })
+    .ok();
+}
+
+/// Fallback pair flow when the PairingProgress subscription fails to
+/// set up. Just calls pair_tv synchronously and reflects the final
+/// success/failure outcome in the wizard.
+async fn run_pair_no_progress(
+    daemon: Arc<DaemonClient>,
+    app_weak: slint::Weak<AppWindow>,
+    name: String,
+    vendor: String,
+    address: String,
+    wake_id: Option<String>,
+    managed: bool,
+) {
+    let config_json = build_pairing_config_json(&address, wake_id.as_deref());
+    let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
+    let app_weak = app_weak.clone();
+    slint::invoke_from_event_loop(move || {
+        if let Some(app) = app_weak.upgrade() {
+            match result {
+                Ok(_) => {
+                    app.set_wizard_pair_phase("complete".into());
+                    app.set_wizard_pair_message("Paired successfully.".into());
+                }
+                Err(e) => {
+                    app.set_wizard_pair_phase("failed".into());
+                    app.set_wizard_pair_message(SharedString::from(format!("{e}")));
+                }
+            }
+        }
+    })
+    .ok();
 }
 
 /// Subscribe to PowerCycleProgress for `tv_id`, fire `power_on`, and
@@ -359,6 +820,12 @@ async fn initial_fetch_and_watch(
         }
     };
 
+    // Fetch the daemon's vendor list once at startup. Used by the
+    // pairing wizard's manual-entry vendor selector. Failures are
+    // tolerable — the wizard falls back to its hardcoded "lg" default.
+    let vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
+    debug!(count = vendor_pairs.len(), "Fetched supported vendors from daemon");
+
     let app_weak_init = app_weak.clone();
     let initial_daemon_available = initial_snapshot.is_some();
     slint::invoke_from_event_loop(move || {
@@ -366,6 +833,19 @@ async fn initial_fetch_and_watch(
             if let Some(snapshot) = initial_snapshot {
                 push_snapshot(&app, snapshot);
             }
+            let names: Vec<SharedString> = vendor_pairs
+                .iter()
+                .map(|(_, name)| SharedString::from(name.as_str()))
+                .collect();
+            let vendors: Vec<VendorOption> = vendor_pairs
+                .into_iter()
+                .map(|(id, name)| VendorOption {
+                    id: SharedString::from(id),
+                    name: SharedString::from(name),
+                })
+                .collect();
+            app.set_wizard_supported_vendors(ModelRc::new(VecModel::from(vendors)));
+            app.set_wizard_supported_vendor_names(ModelRc::new(VecModel::from(names)));
             app.set_daemon_available(initial_daemon_available);
             app.set_session_available(initial_session_available);
         }

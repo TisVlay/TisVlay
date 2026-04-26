@@ -39,6 +39,10 @@ export global Theme {
     // -- Accent (Breeze blue, theme-stable) --
     out property <brush> accent: #3daee9;
     out property <brush> accent-soft: dark-mode ? #1c3a4d : #e3f3fc;
+    /// Hover/pressed state for filled accent buttons. Light-mode →
+    /// darker accent (still keeps white text legible); dark-mode →
+    /// slightly lighter so the bg shifts visibly against the surface.
+    out property <brush> accent-pressed: dark-mode ? #5dc4f5 : #2c8fc4;
 
     // -- Status colors --
     out property <brush> success: dark-mode ? #34d399 : #10b981;
@@ -48,6 +52,9 @@ export global Theme {
     out property <brush> danger: dark-mode ? #f87171 : #dc2626;
     out property <brush> danger-soft: dark-mode ? #3a1c1c : #fee2e2;
     out property <brush> danger-text: dark-mode ? #fca5a5 : #b91c1c;
+    /// Hover/pressed state for filled danger buttons. Same shape as
+    /// `accent-pressed` — preserves white text legibility on hover.
+    out property <brush> danger-pressed: dark-mode ? #fca5a5 : #b91c1c;
 
     out property <brush> warn: dark-mode ? #fbbf24 : #d97706;
     out property <brush> warn-soft: dark-mode ? #3a2e0e : #fef3c7;
