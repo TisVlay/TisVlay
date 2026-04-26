@@ -7,10 +7,10 @@
 // plus a handful of bespoke primitives below (Chip, VendorTile, Group,
 // FormRow) — no exotic styling.
 
-import { ListView, ScrollView, VerticalBox, HorizontalBox, Slider, Switch } from "std-widgets.slint";
+import { ListView, ScrollView, VerticalBox, HorizontalBox, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { Btn, Chip, Group, ThemedSelect } from "../widgets.slint";
+import { Btn, Chip, Group, OptimisticSlider, ThemedSelect } from "../widgets.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "pairing_wizard.slint";
 
 export { PairingWizard, WizardDiscoveredTv, VendorOption, Btn, Chip, Group, ThemedSelect }
@@ -509,67 +509,6 @@ component TvDetail inherits Rectangle {
     callback set-primary-input(string);
     callback request-remove();
 
-    // Local Slider value mirrors. Slint's `Slider.value` is `in-out` —
-    // when the user drags, the slider's TouchArea writes to value
-    // internally, which permanently breaks any `value: tv.volume`
-    // upstream binding. Subsequent external pushes (TV remote → daemon
-    // → model row update) would never reach the slider thumb. We work
-    // around this by binding the slider via `<=>` to a local in-out
-    // property here, the user's intent. The `changed tv` handler below
-    // reconciles this local value with the authoritative `tv.X` field
-    // using convergence gating — purely event-driven, no timers.
-    in-out property <float> volume-display: tv.volume;
-    in-out property <float> backlight-display: tv.backlight;
-
-    // Convergence-gating state. `last-sent-X` is the value we most
-    // recently pushed to the daemon; `X-pending` is true while we are
-    // still waiting for the daemon's echo to catch up to that value.
-    //
-    // While pending, daemon echoes that DON'T match `last-sent-X` are
-    // stale intermediates from earlier coalesced writes — ignore them
-    // (otherwise they'd snap the thumb backward mid-drag). When an
-    // echo finally matches `last-sent-X`, the daemon has converged to
-    // our intent — clear pending. Once not pending, any echo is
-    // authoritative (TV remote, another client) and applies directly.
-    //
-    // Same shape as the tray's optimistic cache + signal-driven
-    // reconcile in `crates/tisvlay-tray/src/main.rs`'s `ScrollBy`
-    // branch — the local `volume-display` *is* the optimistic cache,
-    // and `changed tv` is the reconcile.
-    in-out property <int> last-sent-volume: tv.volume;
-    in-out property <int> last-sent-backlight: tv.backlight;
-    in-out property <bool> volume-pending: false;
-    in-out property <bool> backlight-pending: false;
-
-    changed tv => {
-        // Reconcile local optimistic value with authoritative model.
-        // `tv` is a struct so this fires on any field change, including
-        // selection changes (whole-row replacement).
-        if (volume-pending) {
-            if (tv.volume == last-sent-volume) {
-                // Daemon caught up to our last-sent value. Sync up
-                // (visually a no-op) and clear pending.
-                volume-display = tv.volume;
-                volume-pending = false;
-            }
-            // else: stale intermediate echo from a coalesced earlier
-            // write while the user has already moved past it. Drop.
-        } else {
-            // Idle — no in-flight intent. External change applies.
-            volume-display = tv.volume;
-            last-sent-volume = tv.volume;
-        }
-        if (backlight-pending) {
-            if (tv.backlight == last-sent-backlight) {
-                backlight-display = tv.backlight;
-                backlight-pending = false;
-            }
-        } else {
-            backlight-display = tv.backlight;
-            last-sent-backlight = tv.backlight;
-        }
-    }
-
     background: Theme.surface-alt;
 
     VerticalLayout {
@@ -701,33 +640,11 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: "Volume";
-                        HorizontalLayout {
-                            spacing: Design.gap-row;
-                            Slider {
-                                horizontal-stretch: 1;
-                                minimum: 0;
-                                maximum: 100;
-                                value <=> root.volume-display;
-                                enabled: root.tv.connected && !root.tv.muted;
-                                changed(v) => {
-                                    root.last-sent-volume = round(v);
-                                    root.volume-pending = true;
-                                    root.set-volume(round(v));
-                                }
-                            }
-                            Text {
-                                width: Design.width-readout-col;
-                                // Drive the readout off the local optimistic
-                                // value (the slider's source of truth) instead
-                                // of `tv.volume`, which lags behind by a
-                                // daemon round-trip. Same idea as the tray's
-                                // optimistic cache write in `ScrollBy`.
-                                text: root.tv.connected ? round(root.volume-display) : "—";
-                                color: root.tv.connected ? Theme.text : Theme.text-faint;
-                                font-size: Design.font-body;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                            }
+                        OptimisticSlider {
+                            model-value: root.tv.volume;
+                            enabled: root.tv.connected && !root.tv.muted;
+                            value-visible: root.tv.connected;
+                            committed(v) => { root.set-volume(v); }
                         }
                     }
 
@@ -761,28 +678,11 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: "Backlight";
-                        HorizontalLayout {
-                            spacing: Design.gap-row;
-                            Slider {
-                                horizontal-stretch: 1;
-                                minimum: 0;
-                                maximum: 100;
-                                value <=> root.backlight-display;
-                                enabled: root.tv.connected;
-                                changed(v) => {
-                                    root.last-sent-backlight = round(v);
-                                    root.backlight-pending = true;
-                                    root.set-backlight(round(v));
-                                }
-                            }
-                            Text {
-                                width: Design.width-readout-col;
-                                text: root.tv.connected ? round(root.backlight-display) : "—";
-                                color: root.tv.connected ? Theme.text : Theme.text-faint;
-                                font-size: Design.font-body;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                            }
+                        OptimisticSlider {
+                            model-value: root.tv.backlight;
+                            enabled: root.tv.connected;
+                            value-visible: root.tv.connected;
+                            committed(v) => { root.set-backlight(v); }
                         }
                     }
 

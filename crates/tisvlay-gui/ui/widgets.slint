@@ -4,6 +4,7 @@
 // themed colors, not raw hex values. Add a primitive here when it's
 // needed by ≥ 2 panes; pane-specific helpers stay in their pane.
 
+import { Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 
@@ -365,6 +366,101 @@ export component ThemedSelect inherits Rectangle {
                     }
                 }
             }
+        }
+    }
+}
+
+// =============================================================================
+// OptimisticSlider — slider + readout that tracks user intent.
+// =============================================================================
+//
+// A horizontal slider paired with a numeric readout, designed for
+// values that are mirrored on a remote endpoint (the daemon → TV).
+// Implements convergence gating so the thumb tracks the user's drag
+// in real time without snapping back to stale daemon echoes.
+//
+// Behavior:
+//   - The Slider's `value` is bound to a local `display` property
+//     (the user's intent / optimistic value), not directly to
+//     `model-value`. The readout shows the same local value, so the
+//     numeric feedback stays in lockstep with the thumb.
+//   - On each user change, `last-sent` is updated and `pending` is
+//     set; the `committed(int)` callback fires for the consumer to
+//     dispatch the write.
+//   - When `model-value` changes (a daemon echo), the `changed` block
+//     reconciles: if pending and the echo matches `last-sent`, the
+//     daemon has converged — clear pending. If pending and the echo
+//     differs, it's a stale intermediate from an earlier coalesced
+//     write — drop. If not pending, the echo represents a true
+//     external change (TV remote, another client) and applies.
+//
+// Use this for any value that:
+//   - Is exposed by the daemon as a numeric property mirrored from
+//     a TV (volume, backlight, future contrast / brightness / color
+//     balance).
+//   - Has a "live preview" widget (a slider thumb the user drags).
+//
+// For discrete-selection inputs (current input, profile choice) the
+// flicker pattern doesn't apply — use ThemedSelect instead.
+
+export component OptimisticSlider {
+    /// Authoritative value from the model (daemon-tracked).
+    in property <int> model-value;
+    in property <int> minimum: 0;
+    in property <int> maximum: 100;
+    /// Slider responds to user input. Independent from `value-visible`
+    /// because some values (volume) keep showing a number even when
+    /// muted disables drag.
+    in property <bool> enabled: true;
+    /// Readout shows the numeric value (else "—") and uses normal vs
+    /// faint text color.
+    in property <bool> value-visible: true;
+    /// Fired when the user changes the value, rounded to int. The
+    /// consumer is expected to dispatch the write through whatever
+    /// coalescer / async path it owns.
+    callback committed(int);
+
+    // === Convergence gating (see component header for rationale) ===
+    in-out property <float> display: model-value;
+    property <int> last-sent: model-value;
+    property <bool> pending: false;
+
+    changed model-value => {
+        if (pending) {
+            if (model-value == last-sent) {
+                display = model-value;
+                pending = false;
+            }
+            // else: stale intermediate echo — ignore.
+        } else {
+            display = model-value;
+            last-sent = model-value;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: Design.gap-row;
+
+        Slider {
+            horizontal-stretch: 1;
+            minimum: root.minimum;
+            maximum: root.maximum;
+            value <=> root.display;
+            enabled: root.enabled;
+            changed(v) => {
+                root.last-sent = round(v);
+                root.pending = true;
+                root.committed(round(v));
+            }
+        }
+
+        Text {
+            width: Design.width-readout-col;
+            text: root.value-visible ? round(root.display) : "—";
+            color: root.value-visible ? Theme.text : Theme.text-faint;
+            font-size: Design.font-body;
+            horizontal-alignment: right;
+            vertical-alignment: center;
         }
     }
 }
