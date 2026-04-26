@@ -543,7 +543,7 @@ component StepConfigure {
                 font-weight: 600;
             }
             Text {
-                text: "Set how tisvlay should refer to and automate this device.";
+                text: "Set how TisVlay should refer to and automate this device.";
                 color: Theme.text-dim;
                 font-size: Design.font-meta;
             }
@@ -639,7 +639,7 @@ component StepConfigure {
                 spacing: Design.gap-tight;
 
                 ThemedCheckBox {
-                    label: "Managed by tisvlay";
+                    label: "Managed by TisVlay";
                     checked: root.managed;
                     toggled(v) => { root.managed-toggled(v); }
                 }
@@ -728,7 +728,7 @@ component StepPair {
                         text: root.message != ""
                             ? root.message
                             : (root.phase == "complete"
-                                ? "Client key stored. tisvlay can now control this TV."
+                                ? "Client key stored. TisVlay can now control this TV."
                                 : root.phase == "failed"
                                     ? "The prompt was rejected, or the request timed out."
                                     : "Use the magic remote (or the directional pad) to choose Accept on the TV.");

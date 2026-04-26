@@ -149,11 +149,11 @@ impl Tray for TisvlayTray {
         let connected = self.tvs.iter().filter(|tv| tv.connected).count();
         let total = self.tvs.len();
         if !self.daemon_available {
-            "tisvlay [daemon offline]".into()
+            "TisVlay [daemon offline]".into()
         } else if total == 0 {
-            "tisvlay".into()
+            "TisVlay".into()
         } else {
-            format!("tisvlay [{}/{}]", connected, total)
+            format!("TisVlay [{}/{}]", connected, total)
         }
     }
 
