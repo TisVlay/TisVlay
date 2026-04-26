@@ -1,5 +1,16 @@
 # Follow-up plan — regression test + coalescer factor-out
 
+> **Status (closed):** Item (C) shipped — `Coalescer<K, V>` lives in
+> `crates/tisvlay-core/src/dbus_client.rs` next to `RefreshTrigger`,
+> used by both the tray (sum-merge for scroll deltas) and the GUI
+> (last-wins for slider drags). Item (A) skipped per the
+> recommendation below; the consumer-pattern contract is documented
+> in `RefreshTrigger`'s docstring with the bug history. Subsequent
+> work (D-Bus surface refactor, scroll-asymmetry fix, OptimisticSlider
+> extraction) lives in [plan3.md](plan3.md) and the commits since.
+>
+> Kept as historical context for the design decisions.
+
 The `RefreshTrigger` refactor is done (`tisvlay_core::RefreshTrigger`,
 both watch_state loops use it). This file scopes the two remaining
 follow-ups from the prior plan: **(A)** a regression test for the

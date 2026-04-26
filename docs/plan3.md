@@ -1,5 +1,16 @@
 # Plan 3 — D-Bus surface: read-only properties + Set methods
 
+> **Status (closed):** Shipped across two commits — the code refactor
+> (daemon impls, proxy traits, DaemonClient internals, test
+> docstring) and this docs sweep (`docs/design.md`,
+> `.claude/CLAUDE.md`, plan close-outs). All four writable TV-state
+> properties are now read-only with paired `Set*` methods, method
+> receivers are `&self`, and the "no pre-cache" workaround comments
+> are gone. `state_forwarder` is the single authoritative emit path
+> by construction. Reconciler / OptimisticSlider stay as documented.
+>
+> Kept as historical context for the design decisions.
+
 ## Motivation
 
 Today, the daemon's writable TV-state properties (`Tv1.Volume.Volume`,

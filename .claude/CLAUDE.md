@@ -201,13 +201,13 @@ busctl --user introspect org.tisvlay.Daemon /org/tisvlay/Tv/living_room
 busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1 Connected
 busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume Volume
 
-# Writable properties (set via Properties.Set)
-busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume Volume y 30
-busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume Muted b true
-busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Screen IsScreenOn b false
-busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Backlight Backlight y 80
+# Writable state (set via Set* methods; properties are read-only)
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume SetVolume y 30
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume SetMuted b true
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Screen SetScreen b false
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Backlight SetBacklight y 80
 
-# Methods (complex operations that aren't simple property sets)
+# Other methods
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Power PowerOff
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Power PowerOn
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Input SwitchInput s HDMI_2
