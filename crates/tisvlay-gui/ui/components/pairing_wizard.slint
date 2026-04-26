@@ -13,6 +13,7 @@
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
 import { Chip, Btn, ThemedTextInput, ThemedCheckBox, ThemedSelect } from "../widgets.slint";
 
 export struct WizardDiscoveredTv {
@@ -41,7 +42,7 @@ component StepperItem {
     property <bool> active: step == current;
 
     HorizontalLayout {
-        spacing: 8px;
+        spacing: Design.gap-stack;
         alignment: start;
 
         VerticalLayout {
@@ -52,11 +53,11 @@ component StepperItem {
                 border-radius: 11px;
                 background: done || active ? Theme.accent : Theme.surface;
                 border-color: done || active ? Theme.accent : Theme.border-strong;
-                border-width: 1px;
+                border-width: Design.border-thin;
                 Text {
                     text: root.step;
                     color: done || active ? white : Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Design.font-mini;
                     font-weight: 600;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -71,7 +72,7 @@ component StepperItem {
             Text {
                 text: root.label;
                 color: active ? Theme.text : (done ? Theme.text-dim : Theme.text-faint);
-                font-size: 12px;
+                font-size: Design.font-helper;
                 font-weight: active ? 600 : 500;
             }
         }
@@ -104,7 +105,7 @@ component Stepper inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 Rectangle {
-                    height: 1px;
+                    height: Design.border-thin;
                     background: 1 < root.current ? Theme.accent : Theme.border;
                 }
             }
@@ -115,7 +116,7 @@ component Stepper inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 Rectangle {
-                    height: 1px;
+                    height: Design.border-thin;
                     background: 2 < root.current ? Theme.accent : Theme.border;
                 }
             }
@@ -126,7 +127,7 @@ component Stepper inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 Rectangle {
-                    height: 1px;
+                    height: Design.border-thin;
                     background: 3 < root.current ? Theme.accent : Theme.border;
                 }
             }
@@ -180,7 +181,7 @@ component DiscoveryRow inherits Rectangle {
                         : root.tv.vendor == "sony" ? "SY"
                         : "MK";
                     color: white;
-                    font-size: 11px;
+                    font-size: Design.font-mini;
                     font-weight: 700;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -198,27 +199,27 @@ component DiscoveryRow inherits Rectangle {
             Text {
                 text: root.tv.name == "" ? root.tv.address : root.tv.name;
                 color: root.selected ? Theme.row-selected-text : Theme.text;
-                font-size: 13px;
+                font-size: Design.font-body;
                 font-weight: root.selected ? 600 : 500;
                 overflow: elide;
             }
             HorizontalLayout {
-                spacing: 8px;
+                spacing: Design.gap-stack;
                 Text {
                     text: root.tv.address;
                     color: Theme.text-dim;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                     font-family: "ui-monospace, monospace";
                 }
                 if root.tv.hw-model != "": Text {
                     text: "·";
                     color: Theme.text-faint;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                 }
                 if root.tv.hw-model != "": Text {
                     text: root.tv.hw-model;
                     color: Theme.text-faint;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                 }
             }
         }
@@ -266,7 +267,7 @@ component StepDiscover {
 
         // Section heading
         VerticalLayout {
-            spacing: 4px;
+            spacing: Design.gap-form;
             Text {
                 text: "Find your TV";
                 color: Theme.text;
@@ -276,7 +277,7 @@ component StepDiscover {
             Text {
                 text: "Searching the local network for compatible TVs.";
                 color: Theme.text-dim;
-                font-size: 12.5px;
+                font-size: Design.font-meta;
             }
         }
 
@@ -284,30 +285,30 @@ component StepDiscover {
         if root.error-message != "": Rectangle {
             background: Theme.danger-soft;
             border-color: Theme.danger;
-            border-width: 1px;
+            border-width: Design.border-thin;
             border-radius: 5px;
             HorizontalLayout {
                 width: 100%;
                 padding: 10px;
-                spacing: 8px;
+                spacing: Design.gap-stack;
                 Text {
                     text: "Discovery failed";
                     color: Theme.danger-text;
-                    font-size: 13px;
+                    font-size: Design.font-body;
                     font-weight: 600;
                     width: 130px;
                 }
                 Text {
                     text: root.error-message;
                     color: Theme.text;
-                    font-size: 12px;
+                    font-size: Design.font-helper;
                     horizontal-stretch: 1;
                     wrap: word-wrap;
                 }
             }
         }
         if root.error-message == "": HorizontalLayout {
-            spacing: 8px;
+            spacing: Design.gap-stack;
             alignment: start;
             Rectangle {
                 width: 8px;
@@ -323,7 +324,7 @@ component StepDiscover {
                         ? "No TVs found. Make sure your TV is on the same network."
                         : "Found " + root.discovered.length + " " + (root.discovered.length == 1 ? "TV" : "TVs") + ".");
                 color: Theme.text-dim;
-                font-size: 12px;
+                font-size: Design.font-helper;
                 vertical-alignment: center;
             }
         }
@@ -332,7 +333,7 @@ component StepDiscover {
         if root.discovered.length > 0: Rectangle {
             background: Theme.surface;
             border-color: Theme.border;
-            border-width: 1px;
+            border-width: Design.border-thin;
             border-radius: 5px;
             ScrollView {
                 width: 100%;
@@ -351,14 +352,14 @@ component StepDiscover {
         if root.discovered.length == 0 && root.error-message == "": Rectangle {
             background: Theme.surface2;
             border-color: Theme.border-strong;
-            border-width: 1px;
-            border-radius: 6px;
+            border-width: Design.border-thin;
+            border-radius: Design.radius-card;
             height: 160px;
             VerticalLayout {
                 width: 100%;
                 height: 100%;
                 alignment: center;
-                spacing: 6px;
+                spacing: Design.gap-tight;
                 HorizontalLayout {
                     alignment: center;
                     Text {
@@ -373,7 +374,7 @@ component StepDiscover {
                     Text {
                         text: "LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.";
                         color: Theme.text-dim;
-                        font-size: 12px;
+                        font-size: Design.font-helper;
                         horizontal-alignment: center;
                         wrap: word-wrap;
                     }
@@ -387,8 +388,8 @@ component StepDiscover {
         Rectangle {
             background: Theme.surface;
             border-color: Theme.border;
-            border-width: 1px;
-            border-radius: 6px;
+            border-width: Design.border-thin;
+            border-radius: Design.radius-card;
 
             VerticalLayout {
                 width: 100%;
@@ -398,7 +399,7 @@ component StepDiscover {
                 Text {
                     text: "Don't see your TV? Add it manually";
                     color: Theme.text;
-                    font-size: 13px;
+                    font-size: Design.font-body;
                     font-weight: 600;
                 }
 
@@ -413,11 +414,11 @@ component StepDiscover {
                     // running daemon — no hardcoded list.
                     VerticalLayout {
                         horizontal-stretch: 1;
-                        spacing: 4px;
+                        spacing: Design.gap-form;
                         Text {
                             text: "Vendor";
                             color: Theme.text;
-                            font-size: 12px;
+                            font-size: Design.font-helper;
                             font-weight: 500;
                         }
                         // ≤ 1 vendor: static chip (no point in a
@@ -428,9 +429,9 @@ component StepDiscover {
                         if root.supported-vendors.length <= 1: Rectangle {
                             background: Theme.surface;
                             border-color: Theme.border-strong;
-                            border-width: 1px;
-                            border-radius: 4px;
-                            min-height: 32px;
+                            border-width: Design.border-thin;
+                            border-radius: Design.radius-control;
+                            min-height: Design.size-input;
                             HorizontalLayout {
                                 width: 100%;
                                 height: 100%;
@@ -441,7 +442,7 @@ component StepDiscover {
                                         ? root.supported-vendors[0].name
                                         : root.vendor-display(root.manual-vendor);
                                     color: Theme.text;
-                                    font-size: 13px;
+                                    font-size: Design.font-body;
                                     vertical-alignment: center;
                                 }
                             }
@@ -455,11 +456,11 @@ component StepDiscover {
 
                     VerticalLayout {
                         horizontal-stretch: 2;
-                        spacing: 4px;
+                        spacing: Design.gap-form;
                         Text {
                             text: "IP address";
                             color: Theme.text;
-                            font-size: 12px;
+                            font-size: Design.font-helper;
                             font-weight: 500;
                         }
                         ThemedTextInput {
@@ -472,11 +473,11 @@ component StepDiscover {
 
                     VerticalLayout {
                         horizontal-stretch: 2;
-                        spacing: 4px;
+                        spacing: Design.gap-form;
                         Text {
                             text: "MAC (optional)";
                             color: Theme.text;
-                            font-size: 12px;
+                            font-size: Design.font-helper;
                             font-weight: 500;
                         }
                         ThemedTextInput {
@@ -500,7 +501,7 @@ component StepDiscover {
                 Text {
                     text: "MAC enables Wake-on-LAN — without it the daemon can't power this TV on from deep standby.";
                     color: Theme.text-faint;
-                    font-size: 11px;
+                    font-size: Design.font-mini;
                     wrap: word-wrap;
                 }
             }
@@ -530,11 +531,11 @@ component StepConfigure {
       : selected-vendor;
 
     VerticalLayout {
-        spacing: 14px;
+        spacing: Design.gap-row;
 
         // Section heading
         VerticalLayout {
-            spacing: 4px;
+            spacing: Design.gap-form;
             Text {
                 text: "Configure this TV";
                 color: Theme.text;
@@ -544,17 +545,17 @@ component StepConfigure {
             Text {
                 text: "Set how tisvlay should refer to and automate this device.";
                 color: Theme.text-dim;
-                font-size: 12.5px;
+                font-size: Design.font-meta;
             }
         }
 
         // Friendly name
         VerticalLayout {
-            spacing: 4px;
+            spacing: Design.gap-form;
             Text {
                 text: "Friendly name";
                 color: Theme.text;
-                font-size: 12.5px;
+                font-size: Design.font-meta;
                 font-weight: 500;
             }
             ThemedTextInput {
@@ -565,21 +566,21 @@ component StepConfigure {
             Text {
                 text: "Shown in the TVs pane, tray menu, and CLI.";
                 color: Theme.text-faint;
-                font-size: 11px;
+                font-size: Design.font-mini;
             }
         }
 
         // Vendor (read-only display)
         VerticalLayout {
-            spacing: 4px;
+            spacing: Design.gap-form;
             Text {
                 text: "Vendor";
                 color: Theme.text;
-                font-size: 12.5px;
+                font-size: Design.font-meta;
                 font-weight: 500;
             }
             HorizontalLayout {
-                spacing: 8px;
+                spacing: Design.gap-stack;
                 alignment: start;
                 VerticalLayout {
                     alignment: center;
@@ -594,7 +595,7 @@ component StepConfigure {
                         text: root.selected-address
                             + (root.selected-hw-model != "" ? (" · " + root.selected-hw-model) : "");
                         color: Theme.text-dim;
-                        font-size: 12px;
+                        font-size: Design.font-helper;
                         font-family: "ui-monospace, monospace";
                     }
                 }
@@ -605,11 +606,11 @@ component StepConfigure {
         // the field is always visible. The dropdown uses the platform
         // style; that's acceptable since it's only briefly visible.
         VerticalLayout {
-            spacing: 4px;
+            spacing: Design.gap-form;
             Text {
                 text: "Initial system profile";
                 color: Theme.text;
-                font-size: 12.5px;
+                font-size: Design.font-meta;
                 font-weight: 500;
             }
             ThemedSelect {
@@ -622,7 +623,7 @@ component StepConfigure {
             Text {
                 text: "Drives boot/shutdown/sleep behavior. You can change this later.";
                 color: Theme.text-faint;
-                font-size: 11px;
+                font-size: Design.font-mini;
             }
         }
 
@@ -630,12 +631,12 @@ component StepConfigure {
         Rectangle {
             background: Theme.surface2;
             border-color: Theme.border;
-            border-width: 1px;
+            border-width: Design.border-thin;
             border-radius: 5px;
             VerticalLayout {
                 width: 100%;
                 padding: 12px;
-                spacing: 6px;
+                spacing: Design.gap-tight;
 
                 ThemedCheckBox {
                     label: "Managed by tisvlay";
@@ -645,7 +646,7 @@ component StepConfigure {
                 Text {
                     text: "The daemon will power-cycle this TV in response to desktop session events (lock, unlock, sleep, shutdown). Untick to keep it paired but ignored by automation.";
                     color: Theme.text-dim;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                     wrap: word-wrap;
                 }
             }
@@ -663,8 +664,8 @@ component StepPair {
     Rectangle {
         background: Theme.surface2;
         border-color: Theme.border;
-        border-width: 1px;
-        border-radius: 6px;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
         height: 320px;
 
         VerticalLayout {
@@ -687,7 +688,7 @@ component StepPair {
                     border-color: root.phase == "complete" ? Theme.success
                                 : root.phase == "failed" ? Theme.danger
                                 : Theme.accent;
-                    border-width: 1px;
+                    border-width: Design.border-thin;
                     Text {
                         text: root.phase == "complete" ? "✓"
                             : root.phase == "failed" ? "✕"
@@ -707,7 +708,7 @@ component StepPair {
 
             // Heading + body text
             VerticalLayout {
-                spacing: 6px;
+                spacing: Design.gap-tight;
                 HorizontalLayout {
                     alignment: center;
                     Text {
@@ -732,7 +733,7 @@ component StepPair {
                                     ? "The prompt was rejected, or the request timed out."
                                     : "Use the magic remote (or the directional pad) to choose Accept on the TV.");
                         color: root.phase == "failed" ? Theme.danger-text : Theme.text-dim;
-                        font-size: 12.5px;
+                        font-size: Design.font-meta;
                         horizontal-alignment: center;
                         wrap: word-wrap;
                     }
@@ -742,7 +743,7 @@ component StepPair {
             // Phase-specific actions
             if root.phase == "failed": HorizontalLayout {
                 alignment: center;
-                spacing: 8px;
+                spacing: Design.gap-stack;
                 Btn {
                     text: "Retry pairing";
                     variant: "accent";
@@ -766,8 +767,8 @@ component StepDone {
     Rectangle {
         background: Theme.surface2;
         border-color: Theme.border;
-        border-width: 1px;
-        border-radius: 6px;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
         height: 320px;
 
         VerticalLayout {
@@ -785,7 +786,7 @@ component StepDone {
                     border-radius: 32px;
                     background: Theme.success-soft;
                     border-color: Theme.success;
-                    border-width: 1px;
+                    border-width: Design.border-thin;
                     Text {
                         text: "✓";
                         color: Theme.success-text;
@@ -800,13 +801,13 @@ component StepDone {
             }
 
             VerticalLayout {
-                spacing: 6px;
+                spacing: Design.gap-tight;
                 HorizontalLayout {
                     alignment: center;
                     Text {
                         text: (root.tv-name == "" ? "TV" : root.tv-name) + " is ready.";
                         color: Theme.text;
-                        font-size: 18px;
+                        font-size: Design.font-section;
                         font-weight: 600;
                     }
                 }
@@ -815,7 +816,7 @@ component StepDone {
                     Text {
                         text: "The new TV will appear selected in the TVs pane. Boot, sleep, and session events follow the default profile until you change it.";
                         color: Theme.text-dim;
-                        font-size: 13px;
+                        font-size: Design.font-body;
                         horizontal-alignment: center;
                         wrap: word-wrap;
                     }
@@ -824,11 +825,11 @@ component StepDone {
 
             HorizontalLayout {
                 alignment: center;
-                spacing: 14px;
+                spacing: Design.gap-row;
                 Text {
                     text: "Vendor: ";
                     color: Theme.text-faint;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                 }
                 Text {
                     text: root.tv-vendor == "lg" ? "LG WebOS"
@@ -836,29 +837,29 @@ component StepDone {
                         : root.tv-vendor == "sony" ? "Sony"
                         : root.tv-vendor;
                     color: Theme.text-dim;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                     font-weight: 600;
                 }
                 Text {
                     text: "·";
                     color: Theme.text-faint;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                 }
                 Text {
                     text: root.tv-address;
                     color: Theme.text-dim;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                     font-family: "ui-monospace, monospace";
                 }
                 Text {
                     text: "·";
                     color: Theme.text-faint;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                 }
                 Text {
                     text: root.managed ? "Managed" : "Unmanaged";
                     color: Theme.text-dim;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                 }
             }
         }
@@ -951,7 +952,7 @@ export component PairingWizard inherits Rectangle {
             VerticalLayout {
                 width: 100%;
                 padding: 20px;
-                spacing: 16px;
+                spacing: Design.gap-pane;
 
                 if root.current-step == 1: StepDiscover {
                     discovered: root.discovered;
@@ -1004,7 +1005,7 @@ export component PairingWizard inherits Rectangle {
 
             Rectangle {
                 y: 0;
-                height: 1px;
+                height: Design.border-thin;
                 background: Theme.border;
             }
 
@@ -1012,7 +1013,7 @@ export component PairingWizard inherits Rectangle {
                 width: 100%;
                 height: 100%;
                 padding: 12px;
-                spacing: 8px;
+                spacing: Design.gap-stack;
                 alignment: stretch;
 
                 if root.current-step != 4: Btn {

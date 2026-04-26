@@ -6,6 +6,7 @@
 
 import { Palette } from "std-widgets.slint";
 import { Theme, AppearanceMode } from "../theme.slint";
+import { Design } from "../design.slint";
 import { Group, ThemedSelect } from "../widgets.slint";
 
 export component SettingsPane inherits Rectangle {
@@ -38,17 +39,17 @@ export component SettingsPane inherits Rectangle {
     VerticalLayout {
         width: 100%;
         height: 100%;
-        padding-left: 24px;
-        padding-right: 24px;
-        padding-top: 28px;
-        padding-bottom: 24px;
+        padding-left: Design.pad-pane;
+        padding-right: Design.pad-pane;
+        padding-top: Design.pad-pane-top;
+        padding-bottom: Design.pad-pane;
         spacing: 18px;
         alignment: start;
 
         Text {
             text: "Settings";
             color: Theme.text;
-            font-size: 22px;
+            font-size: Design.font-title-2;
             font-weight: 700;
         }
 
@@ -61,7 +62,7 @@ export component SettingsPane inherits Rectangle {
 
                 HorizontalLayout {
                     width: 100%;
-                    spacing: 14px;
+                    spacing: Design.gap-row;
                     alignment: stretch;
 
                     VerticalLayout {
@@ -70,7 +71,7 @@ export component SettingsPane inherits Rectangle {
                         Text {
                             text: "Theme";
                             color: Theme.text;
-                            font-size: 13px;
+                            font-size: Design.font-body;
                         }
                     }
 
@@ -100,7 +101,7 @@ export component SettingsPane inherits Rectangle {
                             ? "Following your desktop setting (currently: light)."
                           : "Following your desktop setting (no preference detected — defaulting to light).";
                         color: Theme.text-faint;
-                        font-size: 11.5px;
+                        font-size: Design.font-caption;
                         wrap: word-wrap;
                     }
                 }

@@ -1,5 +1,6 @@
 import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
 import { Group } from "tvs_pane.slint";
 
 component StatusLine {
@@ -7,7 +8,7 @@ component StatusLine {
     in property <string> label;
 
     HorizontalLayout {
-        spacing: 8px;
+        spacing: Design.gap-stack;
         alignment: start;
 
         VerticalLayout {
@@ -29,7 +30,7 @@ component StatusLine {
             Text {
                 text: root.label + ": " + (root.ok ? "connected" : "offline");
                 color: root.ok ? Theme.success-text : Theme.danger-text;
-                font-size: 13px;
+                font-size: Design.font-body;
             }
         }
     }
@@ -44,23 +45,23 @@ export component AboutPane inherits Rectangle {
     ScrollView {
         VerticalLayout {
             width: 100%;
-            padding-left: 24px;
-            padding-right: 24px;
-            padding-top: 28px;
-            padding-bottom: 24px;
+            padding-left: Design.pad-pane;
+            padding-right: Design.pad-pane;
+            padding-top: Design.pad-pane-top;
+            padding-bottom: Design.pad-pane;
             spacing: 18px;
 
             // -- Title block --
             VerticalLayout {
-                spacing: 6px;
+                spacing: Design.gap-tight;
                 Text {
                     text: "tisvlay";
-                    font-size: 28px;
+                    font-size: Design.font-title-1;
                     font-weight: 700;
                     color: Theme.text;
                 }
                 Text {
-                    text: "Multi-vendor TV control for Linux desktops.";
+                    text: "TV Display control for Linux";
                     color: Theme.text-dim;
                     font-size: 14px;
                 }
@@ -82,16 +83,16 @@ export component AboutPane inherits Rectangle {
 
             // -- Footer --
             VerticalLayout {
-                spacing: 4px;
+                spacing: Design.gap-form;
                 Text {
                     text: "Apache-2.0";
                     color: Theme.text-faint;
-                    font-size: 12px;
+                    font-size: Design.font-helper;
                 }
                 Text {
                     text: "https://github.com/ruffsl/tisvlay";
                     color: Theme.text-faint;
-                    font-size: 12px;
+                    font-size: Design.font-helper;
                     font-family: "ui-monospace, monospace";
                 }
             }

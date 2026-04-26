@@ -1,5 +1,6 @@
 import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
 import { Theme, AppearanceMode } from "theme.slint";
+import { Design } from "design.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
@@ -21,7 +22,7 @@ component SidebarItem inherits Rectangle {
     in property <bool> selected;
     callback clicked();
 
-    height: 36px;
+    height: Design.size-sidebar-item;
     background: selected ? Theme.sidebar-selected
               : (touch.has-hover ? Theme.sidebar-hover : transparent);
     border-radius: 5px;
@@ -29,7 +30,7 @@ component SidebarItem inherits Rectangle {
     Text {
         text: label;
         color: selected ? white : Theme.sidebar-text;
-        font-size: 13px;
+        font-size: Design.font-body;
         font-weight: selected ? 600 : 500;
         x: 12px;
         vertical-alignment: center;
@@ -126,11 +127,11 @@ export component AppWindow inherits Window {
 
         // Sidebar
         Rectangle {
-            width: 180px;
+            width: Design.width-sidebar;
             background: Theme.sidebar;
 
             VerticalBox {
-                padding: 8px;
+                padding: Design.gap-stack;
                 spacing: 2px;
 
                 Text {
@@ -140,7 +141,7 @@ export component AppWindow inherits Window {
                     color: white;
                     letter-spacing: 0.2px;
                     horizontal-alignment: left;
-                    height: 36px;
+                    height: Design.size-sidebar-item;
                     vertical-alignment: center;
                 }
 
@@ -176,13 +177,13 @@ export component AppWindow inherits Window {
                 Text {
                     text: root.daemon-available ? "● Daemon" : "○ Daemon";
                     color: root.daemon-available ? Theme.success : Theme.danger;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                     horizontal-alignment: left;
                 }
                 Text {
                     text: root.session-available ? "● Session" : "○ Session";
                     color: root.session-available ? Theme.success : Theme.danger;
-                    font-size: 11.5px;
+                    font-size: Design.font-caption;
                     horizontal-alignment: left;
                 }
             }

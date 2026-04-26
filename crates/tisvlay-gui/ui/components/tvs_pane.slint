@@ -9,6 +9,7 @@
 
 import { ListView, ScrollView, VerticalBox, HorizontalBox, Slider, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
 import { Btn, Chip, Group, ThemedSelect } from "../widgets.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "pairing_wizard.slint";
 
@@ -66,7 +67,7 @@ component VendorTile inherits Rectangle {
               : is-samsung ? #1428a0
               : is-sony ? #111111
               : Theme.chip;
-    border-width: is-known ? 0 : 1px;
+    border-width: is-known ? 0 : Design.border-thin;
     border-color: Theme.border;
 
     Text {
@@ -96,11 +97,11 @@ component VendorTile inherits Rectangle {
 component FormRow {
     in property <string> label;
     in property <string> helper;
-    in property <length> label-width: 140px;
+    in property <length> label-width: Design.width-label-col;
 
     HorizontalLayout {
         width: 100%;
-        spacing: 14px;
+        spacing: Design.gap-row;
 
         VerticalLayout {
             width: root.label-width;
@@ -108,29 +109,34 @@ component FormRow {
             Text {
                 text: root.label;
                 color: Theme.text;
-                font-size: 13px;
+                font-size: Design.font-body;
                 vertical-alignment: top;
             }
         }
 
-        // Bind width explicitly. `horizontal-stretch: 1` here
-        // miscalculates: Slint allocates `parent.width - spacing` to the
-        // stretch column without subtracting the fixed-width label, so
-        // the right column ends up `label-width` over budget. Computing
-        // the width directly bypasses that.
         VerticalLayout {
-            width: parent.width - root.label-width - 14px;
-            spacing: 4px;
+            horizontal-stretch: 1;
+            spacing: Design.gap-form;
 
+            // No `width: 100%` here. Verified via minimal repro
+            // (HorizontalLayout/VerticalLayout chain, MCP element
+            // tree): a `width: 100%` binding sets `min_percent: 100`,
+            // which the parent layout's `box_layout_info_ortho` merge
+            // bubbles up to the wrapping VL, then `solve_box_layout`
+            // converts back to absolute via `min_percent * content_size
+            // / 100` — yielding an effective min equal to the full
+            // row width. The right column then claims the whole row,
+            // overshooting by exactly the label-width. Layouts already
+            // fill their parent's available width by default, so the
+            // explicit `width: 100%` is both unnecessary and harmful.
             HorizontalLayout {
-                width: 100%;
                 @children
             }
 
             if root.helper != "": Text {
                 text: root.helper;
                 color: Theme.text-faint;
-                font-size: 11px;
+                font-size: Design.font-mini;
                 wrap: word-wrap;
             }
         }
@@ -166,11 +172,11 @@ component TvListRow inherits Rectangle {
         alignment: start;
 
         VerticalLayout {
-            width: 28px;
+            width: Design.size-tile-sm;
             alignment: center;
             VendorTile {
                 vendor: root.tv.vendor;
-                tile-size: 28px;
+                tile-size: Design.size-tile-sm;
             }
         }
 
@@ -182,20 +188,20 @@ component TvListRow inherits Rectangle {
             Text {
                 text: root.tv.name;
                 color: root.selected ? Theme.row-selected-text : Theme.text;
-                font-size: 13px;
+                font-size: Design.font-body;
                 font-weight: root.selected ? 600 : 500;
                 overflow: elide;
             }
 
             HorizontalLayout {
-                spacing: 6px;
+                spacing: Design.gap-tight;
                 alignment: start;
 
                 // Connection status dot.
                 Rectangle {
                     y: (parent.height - self.height) / 2;
-                    width: 6px;
-                    height: 6px;
+                    width: Design.size-status-dot;
+                    height: Design.size-status-dot;
                     border-radius: 3px;
                     background: root.tv.connected ? Theme.success : Theme.text-faint;
                 }
@@ -203,12 +209,12 @@ component TvListRow inherits Rectangle {
                     text: !root.tv.connected ? "Standby"
                         : (root.tv.is-screen-on ? "On" : "Screen off");
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Design.font-mini;
                 }
                 if !root.tv.managed: Text {
                     text: "· unmanaged";
                     color: Theme.warn-text;
-                    font-size: 11px;
+                    font-size: Design.font-mini;
                 }
             }
         }
@@ -217,7 +223,7 @@ component TvListRow inherits Rectangle {
     // Bottom 1px separator.
     Rectangle {
         y: parent.height - 1px;
-        height: 1px;
+        height: Design.border-thin;
         background: Theme.border;
     }
 
@@ -233,13 +239,13 @@ component TvList inherits Rectangle {
     callback request-pair();
     callback reload-config();
 
-    width: 260px;
+    width: Design.width-master;
     background: Theme.surface-alt;
 
     // Right separator.
     Rectangle {
         x: parent.width - 1px;
-        width: 1px;
+        width: Design.border-thin;
         background: Theme.border;
     }
 
@@ -255,7 +261,7 @@ component TvList inherits Rectangle {
             // Bottom separator.
             Rectangle {
                 y: parent.height - 1px;
-                height: 1px;
+                height: Design.border-thin;
                 background: Theme.border;
             }
 
@@ -263,8 +269,8 @@ component TvList inherits Rectangle {
                 width: 100%;
                 height: 100%;
                 padding-left: 12px;
-                padding-right: 8px;
-                spacing: 8px;
+                padding-right: Design.gap-stack;
+                spacing: Design.gap-stack;
                 alignment: stretch;
 
                 VerticalLayout {
@@ -275,7 +281,7 @@ component TvList inherits Rectangle {
                             ? "1 CONFIGURED"
                             : root.tvs.length + " CONFIGURED";
                         color: Theme.text-dim;
-                        font-size: 11px;
+                        font-size: Design.font-mini;
                         font-weight: 600;
                         letter-spacing: 0.6px;
                     }
@@ -317,11 +323,11 @@ component TvList inherits Rectangle {
             VerticalLayout {
                 width: 100%;
                 alignment: center;
-                padding: 16px;
+                padding: Design.gap-pane;
                 Text {
                     text: "Daemon offline";
                     color: Theme.danger-text;
-                    font-size: 13px;
+                    font-size: Design.font-body;
                     horizontal-alignment: center;
                 }
             }
@@ -331,11 +337,11 @@ component TvList inherits Rectangle {
             VerticalLayout {
                 width: 100%;
                 alignment: center;
-                padding: 16px;
+                padding: Design.gap-pane;
                 Text {
                     text: "No TVs configured";
                     color: Theme.text-faint;
-                    font-size: 13px;
+                    font-size: Design.font-body;
                     horizontal-alignment: center;
                 }
             }
@@ -356,14 +362,14 @@ component TvList inherits Rectangle {
 
             Rectangle {
                 y: 0;
-                height: 1px;
+                height: Design.border-thin;
                 background: Theme.border;
             }
 
             HorizontalLayout {
                 width: 100%;
                 height: 100%;
-                padding: 8px;
+                padding: Design.gap-stack;
                 Btn {
                     text: "Reload config";
                     clicked => { root.reload-config(); }
@@ -384,9 +390,9 @@ component LabeledRow {
 
     HorizontalLayout {
         width: 100%;
-        spacing: 8px;
-        padding-top: 4px;
-        padding-bottom: 4px;
+        spacing: Design.gap-stack;
+        padding-top: Design.gap-form;
+        padding-bottom: Design.gap-form;
 
         VerticalLayout {
             width: 140px;
@@ -394,7 +400,7 @@ component LabeledRow {
             Text {
                 text: root.label;
                 color: Theme.text-dim;
-                font-size: 12.5px;
+                font-size: Design.font-meta;
             }
         }
 
@@ -404,7 +410,7 @@ component LabeledRow {
             Text {
                 text: root.value == "" ? "—" : root.value;
                 color: Theme.text;
-                font-size: 12.5px;
+                font-size: Design.font-meta;
                 font-family: root.mono ? "ui-monospace, monospace" : "";
                 overflow: elide;
             }
@@ -422,37 +428,37 @@ component TvDetailHeader inherits Rectangle {
     // Bottom separator.
     Rectangle {
         y: parent.height - 1px;
-        height: 1px;
+        height: Design.border-thin;
         background: Theme.border;
     }
 
     header-layout := HorizontalLayout {
         width: 100%;
-        padding-left: 24px;
-        padding-right: 24px;
+        padding-left: Design.pad-pane;
+        padding-right: Design.pad-pane;
         padding-top: 18px;
-        padding-bottom: 14px;
-        spacing: 14px;
+        padding-bottom: Design.gap-row;
+        spacing: Design.gap-row;
         alignment: stretch;
 
         VerticalLayout {
-            width: 40px;
+            width: Design.size-tile-md;
             alignment: center;
             VendorTile {
                 vendor: root.tv.vendor;
-                tile-size: 40px;
+                tile-size: Design.size-tile-md;
             }
         }
 
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
-            spacing: 4px;
+            spacing: Design.gap-form;
 
             Text {
                 text: root.tv.name;
                 color: Theme.text;
-                font-size: 20px;
+                font-size: Design.font-title-3;
                 font-weight: 700;
                 overflow: elide;
             }
@@ -462,18 +468,18 @@ component TvDetailHeader inherits Rectangle {
                 Text {
                     text: root.tv.ip == "" ? "—" : root.tv.ip;
                     color: Theme.text-dim;
-                    font-size: 12px;
+                    font-size: Design.font-helper;
                     font-family: "ui-monospace, monospace";
                 }
                 Text {
                     text: "·";
                     color: Theme.text-dim;
-                    font-size: 12px;
+                    font-size: Design.font-helper;
                 }
                 Text {
                     text: root.tv.hw-model == "" ? "—" : root.tv.hw-model;
                     color: Theme.text-dim;
-                    font-size: 12px;
+                    font-size: Design.font-helper;
                 }
             }
         }
@@ -482,7 +488,7 @@ component TvDetailHeader inherits Rectangle {
         VerticalLayout {
             alignment: center;
             HorizontalLayout {
-                spacing: 6px;
+                spacing: Design.gap-tight;
                 alignment: end;
                 Chip {
                     label: root.tv.connected ? "Connected" : "Disconnected";
@@ -540,18 +546,18 @@ component TvDetail inherits Rectangle {
             viewport-width: self.visible-width;
             VerticalLayout {
                 width: 100%;
-                padding-left: 24px;
-                padding-right: 24px;
+                padding-left: Design.pad-pane;
+                padding-right: Design.pad-pane;
                 padding-top: 20px;
-                padding-bottom: 24px;
-                spacing: 16px;
+                padding-bottom: Design.pad-pane;
+                spacing: Design.gap-pane;
 
                 // -- Power --
                 Group {
                     title: "POWER";
 
                     HorizontalLayout {
-                        spacing: 14px;
+                        spacing: Design.gap-row;
                         alignment: stretch;
 
                         Btn {
@@ -584,7 +590,7 @@ component TvDetail inherits Rectangle {
                                 color: root.tv.power-cycle-phase == "failed" ? Theme.danger-text
                                      : root.tv.power-cycle-phase == "connected" ? Theme.success-text
                                      : Theme.text-dim;
-                                font-size: 12px;
+                                font-size: Design.font-helper;
                             }
                         }
                     }
@@ -596,9 +602,8 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: "Volume";
-                        label-width: 110px;
                         HorizontalLayout {
-                            spacing: 14px;
+                            spacing: Design.gap-row;
                             Slider {
                                 horizontal-stretch: 1;
                                 minimum: 0;
@@ -608,10 +613,10 @@ component TvDetail inherits Rectangle {
                                 changed(v) => { root.set-volume(round(v)); }
                             }
                             Text {
-                                width: 36px;
+                                width: Design.width-readout-col;
                                 text: root.tv.connected ? root.tv.volume : "—";
                                 color: root.tv.connected ? Theme.text : Theme.text-faint;
-                                font-size: 13px;
+                                font-size: Design.font-body;
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
                             }
@@ -620,14 +625,14 @@ component TvDetail inherits Rectangle {
 
                     HorizontalLayout {
                         width: 100%;
-                        spacing: 14px;
+                        spacing: Design.gap-row;
                         VerticalLayout {
-                            width: 110px;
+                            width: Design.width-label-col;
                             alignment: center;
                             Text {
                                 text: "Mute";
                                 color: Theme.text;
-                                font-size: 13px;
+                                font-size: Design.font-body;
                             }
                         }
                         VerticalLayout {
@@ -648,9 +653,8 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: "Backlight";
-                        label-width: 110px;
                         HorizontalLayout {
-                            spacing: 14px;
+                            spacing: Design.gap-row;
                             Slider {
                                 horizontal-stretch: 1;
                                 minimum: 0;
@@ -660,10 +664,10 @@ component TvDetail inherits Rectangle {
                                 changed(v) => { root.set-backlight(round(v)); }
                             }
                             Text {
-                                width: 36px;
+                                width: Design.width-readout-col;
                                 text: root.tv.connected ? root.tv.backlight : "—";
                                 color: root.tv.connected ? Theme.text : Theme.text-faint;
-                                font-size: 13px;
+                                font-size: Design.font-body;
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
                             }
@@ -672,7 +676,6 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: "Screen";
-                        label-width: 110px;
                         helper: "Blanks the panel without powering off (OLED-safe, instant resume).";
                         HorizontalLayout {
                             alignment: start;
@@ -694,14 +697,14 @@ component TvDetail inherits Rectangle {
 
                     HorizontalLayout {
                         width: 100%;
-                        spacing: 14px;
+                        spacing: Design.gap-row;
                         VerticalLayout {
-                            width: 110px;
+                            width: Design.width-label-col;
                             alignment: center;
                             Text {
                                 text: "Current";
                                 color: Theme.text;
-                                font-size: 13px;
+                                font-size: Design.font-body;
                             }
                         }
                         VerticalLayout {
@@ -741,7 +744,7 @@ component TvDetail inherits Rectangle {
                                 Text {
                                     text: "● automated now";
                                     color: Theme.accent;
-                                    font-size: 11.5px;
+                                    font-size: Design.font-caption;
                                     font-weight: 500;
                                 }
                             }
@@ -801,7 +804,7 @@ component TvDetail inherits Rectangle {
                     title: "DANGER ZONE";
 
                     HorizontalLayout {
-                        spacing: 14px;
+                        spacing: Design.gap-row;
                         alignment: stretch;
                         VerticalLayout {
                             horizontal-stretch: 1;
@@ -809,7 +812,7 @@ component TvDetail inherits Rectangle {
                             Text {
                                 text: "Removes this TV from the daemon's configuration. Pairing must be redone.";
                                 color: Theme.text-dim;
-                                font-size: 12.5px;
+                                font-size: Design.font-meta;
                                 wrap: word-wrap;
                             }
                         }
@@ -835,7 +838,7 @@ component TvDetailEmpty inherits Rectangle {
         width: 100%;
         height: 100%;
         alignment: center;
-        spacing: 8px;
+        spacing: Design.gap-stack;
 
         HorizontalLayout {
             alignment: center;
@@ -851,7 +854,7 @@ component TvDetailEmpty inherits Rectangle {
             Text {
                 text: "Pick a TV from the list, or pair a new one with the + button.";
                 color: Theme.text-dim;
-                font-size: 12.5px;
+                font-size: Design.font-meta;
                 horizontal-alignment: center;
             }
         }
@@ -881,9 +884,9 @@ component ConfirmDialog inherits Rectangle {
 
     Rectangle {
         background: Theme.surface;
-        border-radius: 6px;
+        border-radius: Design.radius-card;
         border-color: Theme.border;
-        border-width: 1px;
+        border-width: Design.border-thin;
         width: 380px;
         height: 170px;
         x: (parent.width - self.width) / 2;
@@ -900,18 +903,18 @@ component ConfirmDialog inherits Rectangle {
             Text {
                 text: root.title;
                 color: Theme.text;
-                font-size: 16px;
+                font-size: Design.font-title-3;
                 font-weight: 700;
             }
             Text {
                 text: root.message;
                 color: Theme.text-dim;
-                font-size: 13px;
+                font-size: Design.font-body;
                 wrap: word-wrap;
             }
             Rectangle { vertical-stretch: 1; }
             HorizontalLayout {
-                spacing: 8px;
+                spacing: Design.gap-stack;
                 alignment: end;
                 Btn {
                     text: "Cancel";
