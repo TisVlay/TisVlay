@@ -15,11 +15,7 @@ use tisvlay_harness::daemon::{TestDaemon, mock_tv_config};
 
 /// Build a config where the TV uses the "default" system profile and
 /// the system profile has `automate_when` overridden.
-fn config_with_automate_when(
-    tv_id: &str,
-    primary_input: &str,
-    when: AutomateWhen,
-) -> SystemConfig {
+fn config_with_automate_when(tv_id: &str, primary_input: &str, when: AutomateWhen) -> SystemConfig {
     let mut config = mock_tv_config(tv_id, true, Some(primary_input));
     config.system.profiles.insert(
         "default".to_string(),

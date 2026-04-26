@@ -111,6 +111,6 @@ pub use dbus_paths::{
 
 #[cfg(feature = "dbus")]
 pub use dbus_client::{
-    BusKind, DaemonClient, ServiceEvent, SessionClient, StateEvent, StateWatcher,
+    BusKind, DaemonClient, RefreshTrigger, ServiceEvent, SessionClient, StateEvent, StateWatcher,
     StateWatcherConfig, TvInfo, TvStateChange, add_signal_match, subscribe_signals, watch_service,
 };

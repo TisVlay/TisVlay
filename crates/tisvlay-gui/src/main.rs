@@ -23,7 +23,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{DaemonClient, PowerCyclePhase, SessionClient, StateEvent, StateWatcher};
+use tisvlay_core::{
+    DaemonClient, PowerCyclePhase, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
+};
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
 
@@ -147,14 +149,19 @@ fn register_callbacks(
     app.on_set_volume(move |tv_id, value| {
         let d = d.clone();
         let senders = senders.clone();
-        coalesce_send(senders, tv_id.to_string(), value.clamp(0, 100) as u8, move |id, v| {
-            let d = d.clone();
-            async move {
-                if let Err(e) = d.set_volume(&id, v).await {
-                    warn!(tv_id = %id, error = %e, "set_volume failed");
+        coalesce_send(
+            senders,
+            tv_id.to_string(),
+            value.clamp(0, 100) as u8,
+            move |id, v| {
+                let d = d.clone();
+                async move {
+                    if let Err(e) = d.set_volume(&id, v).await {
+                        warn!(tv_id = %id, error = %e, "set_volume failed");
+                    }
                 }
-            }
-        });
+            },
+        );
     });
 
     let d = daemon.clone();
@@ -173,14 +180,19 @@ fn register_callbacks(
     app.on_set_backlight(move |tv_id, value| {
         let d = d.clone();
         let senders = senders.clone();
-        coalesce_send(senders, tv_id.to_string(), value.clamp(0, 100) as u8, move |id, v| {
-            let d = d.clone();
-            async move {
-                if let Err(e) = d.set_backlight(&id, v).await {
-                    warn!(tv_id = %id, error = %e, "set_backlight failed");
+        coalesce_send(
+            senders,
+            tv_id.to_string(),
+            value.clamp(0, 100) as u8,
+            move |id, v| {
+                let d = d.clone();
+                async move {
+                    if let Err(e) = d.set_backlight(&id, v).await {
+                        warn!(tv_id = %id, error = %e, "set_backlight failed");
+                    }
                 }
-            }
-        });
+            },
+        );
     });
 
     let d = daemon.clone();
@@ -915,36 +927,19 @@ async fn watch_state(
         }
     };
 
-    // Detach refresh work from the signal-drain loop. If we awaited
-    // `refresh(...).await` directly here, the loop would not call
-    // `watcher.next()` again until the refresh finishes — meaning
-    // zbus's signal_stream stops being drained, the bounded channel
-    // fills, the I/O task blocks pushing, and method-call replies
-    // queue behind unread signal frames in the kernel recv buffer.
-    // Result: outstanding GUI commands hang waiting for replies that
-    // are buried under thousands of unread signals (e.g., during a
-    // self-induced flood from a fast slider drag echoing back many
-    // PropertiesChanged events).
-    //
-    // Fix: spawn refresh as a separate task and dedupe via an
-    // AtomicBool. The watcher loop returns to `next()` immediately,
-    // so signal_stream stays drained regardless of refresh latency.
-    // At most one refresh is in flight; signals that arrive while a
-    // refresh is running collapse into a single trailing refresh
-    // when the in-flight one releases the flag.
-    let refresh_in_flight = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    let trigger_refresh = |daemon: Arc<DaemonClient>,
-                          session: Arc<RwLock<Option<SessionClient>>>,
-                          app_weak: slint::Weak<AppWindow>,
-                          flag: Arc<std::sync::atomic::AtomicBool>| {
-        use std::sync::atomic::Ordering;
-        if flag.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        tokio::spawn(async move {
-            refresh(&daemon, &session, &app_weak).await;
-            flag.store(false, Ordering::Relaxed);
+    // `watcher.next() → refresh.await` inline halts signal_stream
+    // draining and wedges the connection under flood. See
+    // `RefreshTrigger`'s docstring for the bug history.
+    let trigger = RefreshTrigger::new();
+    let trigger_refresh = || {
+        let daemon = daemon.clone();
+        let session = session.clone();
+        let app_weak = app_weak.clone();
+        trigger.fire(move || {
+            let daemon = daemon.clone();
+            let session = session.clone();
+            let app_weak = app_weak.clone();
+            async move { refresh(&daemon, &session, &app_weak).await }
         });
     };
 
@@ -958,12 +953,7 @@ async fn watch_state(
             | StateEvent::DaemonAppeared
             | StateEvent::SessionProfileChanged
             | StateEvent::FallbackPoll => {
-                trigger_refresh(
-                    daemon.clone(),
-                    session.clone(),
-                    app_weak.clone(),
-                    refresh_in_flight.clone(),
-                );
+                trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
                 let cb_weak = app_weak.clone();
@@ -987,12 +977,7 @@ async fn watch_state(
                         }
                     })
                     .ok();
-                    trigger_refresh(
-                        daemon.clone(),
-                        session.clone(),
-                        app_weak.clone(),
-                        refresh_in_flight.clone(),
-                    );
+                    trigger_refresh();
                 }
             }
             StateEvent::SessionDisappeared => {
@@ -1004,12 +989,7 @@ async fn watch_state(
                     }
                 })
                 .ok();
-                trigger_refresh(
-                    daemon.clone(),
-                    session.clone(),
-                    app_weak.clone(),
-                    refresh_in_flight.clone(),
-                );
+                trigger_refresh();
             }
         }
     }
@@ -1135,16 +1115,12 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
         })
         .collect();
     sync_vec_model(&app.get_tvs(), tvs, |m| app.set_tvs(m));
-    sync_vec_model(
-        &app.get_system_profiles(),
-        snapshot.system_profiles,
-        |m| app.set_system_profiles(m),
-    );
-    sync_vec_model(
-        &app.get_user_profiles(),
-        snapshot.user_profiles,
-        |m| app.set_user_profiles(m),
-    );
+    sync_vec_model(&app.get_system_profiles(), snapshot.system_profiles, |m| {
+        app.set_system_profiles(m)
+    });
+    sync_vec_model(&app.get_user_profiles(), snapshot.user_profiles, |m| {
+        app.set_user_profiles(m)
+    });
 }
 
 /// Replace a `ModelRc` content **in place** when it's backed by a

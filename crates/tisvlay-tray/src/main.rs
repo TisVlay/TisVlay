@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use state::fetch_all_state;
-use tisvlay_core::{DaemonClient, SessionClient, StateEvent, StateWatcher};
+use tisvlay_core::{DaemonClient, RefreshTrigger, SessionClient, StateEvent, StateWatcher};
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
 /// tisvlay system tray - TV control from your taskbar.
@@ -194,36 +194,19 @@ async fn watch_state(
         }
     };
 
-    // Detach refresh work from the signal-drain loop. If we awaited
-    // `refresh_state(...).await` directly here, the loop would not
-    // call `watcher.next()` again until the refresh finishes —
-    // meaning zbus's signal_stream stops being drained, the bounded
-    // channel fills, the I/O task blocks, and eventually method-call
-    // replies queue behind unread signal frames in the kernel recv
-    // buffer. Result: outstanding tray commands hang waiting for
-    // replies that are buried under thousands of signals.
-    //
-    // Fix: spawn refresh as a separate task and dedupe via an
-    // AtomicBool. The watcher loop returns to `next()` immediately,
-    // so signal_stream stays drained regardless of refresh latency.
-    // At most one refresh is in flight; signals that arrive while a
-    // refresh is running collapse into a single "trailing refresh"
-    // by re-arming the flag at the end of each task.
-    let refresh_in_flight = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    let trigger_refresh = |daemon: Arc<DaemonClient>,
-                          session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
-                          handle: ksni::Handle<TisvlayTray>,
-                          flag: Arc<std::sync::atomic::AtomicBool>| {
-        use std::sync::atomic::Ordering;
-        // Skip if a refresh is already in flight; the in-progress
-        // one will pick up the latest state when it completes.
-        if flag.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        tokio::spawn(async move {
-            refresh_state(&daemon, &session, &handle).await;
-            flag.store(false, Ordering::Relaxed);
+    // `watcher.next() → refresh.await` inline halts signal_stream
+    // draining and wedges the connection under flood. See
+    // `RefreshTrigger`'s docstring for the bug history.
+    let trigger = RefreshTrigger::new();
+    let trigger_refresh = || {
+        let daemon = daemon.clone();
+        let session = session.clone();
+        let handle = handle.clone();
+        trigger.fire(move || {
+            let daemon = daemon.clone();
+            let session = session.clone();
+            let handle = handle.clone();
+            async move { refresh_state(&daemon, &session, &handle).await }
         });
     };
 
@@ -241,12 +224,7 @@ async fn watch_state(
             | StateEvent::DaemonAppeared
             | StateEvent::SessionProfileChanged
             | StateEvent::FallbackPoll => {
-                trigger_refresh(
-                    daemon.clone(),
-                    session.clone(),
-                    handle.clone(),
-                    refresh_in_flight.clone(),
-                );
+                trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
                 handle
@@ -260,23 +238,13 @@ async fn watch_state(
                 if let Ok(client) = SessionClient::new().await {
                     if client.is_available().await {
                         *session.write().await = Some(client);
-                        trigger_refresh(
-                            daemon.clone(),
-                            session.clone(),
-                            handle.clone(),
-                            refresh_in_flight.clone(),
-                        );
+                        trigger_refresh();
                     }
                 }
             }
             StateEvent::SessionDisappeared => {
                 *session.write().await = None;
-                trigger_refresh(
-                    daemon.clone(),
-                    session.clone(),
-                    handle.clone(),
-                    refresh_in_flight.clone(),
-                );
+                trigger_refresh();
             }
         }
     }
