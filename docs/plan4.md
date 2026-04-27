@@ -1,5 +1,22 @@
 # Plan 4 — Slint architecture sweep
 
+> **Status (in progress):** Phases 1 and 2 shipped. Phase 3 is
+> partial — style stayed on `fluent` (default, no `with_style`
+> override) after a cosmic + qt experiment loop; cosmic looked
+> acceptable but no clearer win than fluent, and qt added a hard
+> Qt6 runtime dep we don't want for shipping (recorded in commit
+> `f22e54b` + revert `dd6fb74` for future reference). With fluent
+> as the chosen target, an empirical wrapper-by-wrapper test
+> showed `ThemedCheckBox` / `ThemedSelect` / `ThemedTextInput`
+> were leftover from an older Slint state and unnecessary on
+> Slint 1.16 + KDE Plasma. Dropped CheckBox / Select wrappers
+> directly; replaced TextInput with a thin `LineEditField`
+> wrapper that overlays a higher-contrast placeholder (Slint's
+> `LineEdit` doesn't expose `placeholder-color`).
+>
+> Still open: Phase 3's `Btn` experiment + `theme.slint` audit,
+> and Phases 4-7. See per-phase Status notes below.
+
 A full pass through the GUI's Slint setup against Slint's own
 documented patterns. Driven by the realization (during the
 convergence-gating work) that several pieces of our initial setup
@@ -63,6 +80,15 @@ to polish (4-7). Each is independent — partial completion is fine.
 - **Animation feel**: decide during execution; pure polish.
 
 ## Phase 1 — Convergence gating in Rust
+
+> **Status (done):** Shipped. Helpers split into per-file
+> modules (`refresh_trigger.rs`, `coalescer.rs`, `reconciler.rs`)
+> in `tisvlay-core`. `ReconcilerMap<K, V>` factored. Tray
+> migrated; GUI gained a symmetric `Reconcilers` struct threaded
+> through `register_callbacks` / `initial_fetch_and_watch` /
+> `watch_state` / `refresh`. `OptimisticSlider` simplified to a
+> thin view (passthrough `changed model-value => display`).
+> Commit `5a8724f`.
 
 ### Why
 
@@ -221,6 +247,17 @@ single implementation across both consumers.
 
 ## Phase 2 — `global Daemon { ... }` for cross-pane callbacks
 
+> **Status (done):** Shipped across two commits — the global
+> hoist (`c87211c`) plus an idiomatic-Rust follow-up (`4bf7820`)
+> that bound `app.global::<X>()` once per scope rather than at
+> every call site. Three globals files created
+> (`ui/globals/daemon.slint`, `ui/globals/pairing_wizard.slint`,
+> `ui/globals/settings.slint`); the visual `PairingWizard`
+> Rectangle component renamed to `PairingWizardPane` to
+> disambiguate from the same-named global. AppWindow shed ~30
+> callbacks + 19 wizard-state properties; TvsPane / TvDetail /
+> wizard pane shed all forwarders.
+
 ### Why
 
 `AppWindow` declares ~12 callbacks (`set-volume`, `set-backlight`,
@@ -335,6 +372,41 @@ to keep concerns separated.
 ```
 
 ## Phase 3 — Lean on DE / `Palette`, drop custom theme
+
+> **Status (partial):** Style-switch experiment didn't go as
+> originally planned, but the underlying goal — drop the
+> Themed* wrappers — was largely achieved on the existing
+> default style.
+>
+> **Style outcome**: tried `cosmic` (looked acceptable on KDE
+> Plasma but not clearly better than fluent), then tried `qt`
+> (looked nice but adds a hard `qt6.qtbase` + `qt6.qtwayland`
+> runtime dependency, breaks our musl-static GUI packaging
+> path, and would require Qt6 declared as `Depends` in every
+> distro package — tracked in commit `f22e54b` and revert
+> `dd6fb74` for a future revisit). Settled on **fluent**
+> (Slint's default; no `with_style` override in `build.rs`).
+>
+> **Wrapper outcome**: empirically tested wrapper-by-wrapper
+> against current Slint 1.16 + fluent + KDE Plasma. The
+> "fluent washes out on unfocused windows" rationale that
+> motivated the original wrappers no longer holds. Dropped:
+>
+> - `ThemedCheckBox` → std-widgets `CheckBox` (1 site).
+> - `ThemedSelect` → std-widgets `ComboBox` (7 sites). The
+>   wrapper's `placeholder` property became a `current-value:
+>   foo == "" ? "default" : foo` ternary at each call site.
+> - `ThemedTextInput` → new `LineEditField` thin wrapper.
+>   `LineEdit` exposes `placeholder-text` but not
+>   `placeholder-color`; fluent's hard-coded `text-secondary`
+>   placeholder (~60% black) reads as "same color" as typed
+>   text. `LineEditField` suppresses fluent's placeholder
+>   (passes empty `placeholder-text:` to inner `LineEdit`) and
+>   overlays its own `Text` at `Theme.text-faint`. Also
+>   forwards `font-family` so IP / MAC inputs stay monospace.
+>
+> **Still open**: `Btn` swap experiment + `theme.slint`
+> brush-by-brush audit. Notes below.
 
 ### Why
 
@@ -625,43 +697,64 @@ transitions are animated. Slint makes animations cheap.
 
 ## Cleanup checklist
 
-Phase 1:
-- [ ] Move `RefreshTrigger` from `dbus_client.rs` into
+Phase 1 — done:
+- [x] Move `RefreshTrigger` from `dbus_client.rs` into
   `tisvlay-core/src/refresh_trigger.rs`.
-- [ ] Move `Coalescer<K, V>` (with its tests) into
+- [x] Move `Coalescer<K, V>` (with its tests) into
   `tisvlay-core/src/coalescer.rs`.
-- [ ] Move `Reconciler<V>` (with its tests) into
+- [x] Move `Reconciler<V>` (with its tests) into
   `tisvlay-core/src/reconciler.rs` and add `ReconcilerMap<K, V>`
   alongside.
-- [ ] Update `lib.rs` to declare the new modules + keep public
+- [x] Update `lib.rs` to declare the new modules + keep public
   re-exports unchanged.
-- [ ] Delete `OptimisticSlider`'s `last-sent`, `pending`, gating
+- [x] Delete `OptimisticSlider`'s `last-sent`, `pending`, gating
   if-else block. Add a tight comment noting Rust owns the gate.
-- [ ] Replace `ScrollReconcilers` struct in the tray with two
+- [x] Replace `ScrollReconcilers` struct in the tray with two
   `ReconcilerMap<String, u8>` instances (volume + backlight). The
-  named struct goes away.
+  named struct went to a small `Reconcilers` bundle struct that
+  holds the two maps.
 
-Phase 2:
-- [ ] Create `ui/globals/daemon.slint`,
+Phase 2 — done:
+- [x] Create `ui/globals/daemon.slint`,
   `ui/globals/pairing_wizard.slint`, `ui/globals/settings.slint`.
-- [ ] Delete the AppWindow callback declarations replaced by
+- [x] Rename the visual `PairingWizard` Rectangle component to
+  `PairingWizardPane` to free the name for the global.
+- [x] Move struct types (`WizardDiscoveredTv`, `VendorOption`)
+  into `ui/globals/pairing_wizard.slint` so the dependency
+  direction stays one-way (component imports global, never
+  reverse).
+- [x] Delete the AppWindow callback declarations replaced by
   globals.
-- [ ] Delete the per-pane callback re-exports + forwarders
-  (TvsPane / TvDetail / PairingWizard pane).
+- [x] Delete the per-pane callback re-exports + forwarders
+  (TvsPane / TvDetail / PairingWizardPane).
+- [x] Idiomatic Rust: bind `app.global::<X>()` once per scope
+  rather than at every call site (follow-up commit
+  `4bf7820`).
 
-Phase 3 (conditional on cosmic success):
-- [ ] Switch build-time style to `cosmic` in
-  `tisvlay-gui/build.rs`.
-- [ ] Delete `ThemedTextInput`, `ThemedCheckBox`, `ThemedSelect`
-  from `widgets.slint`. Migrate call sites to std-widgets
-  `LineEdit` / `CheckBox` / `ComboBox`.
-- [ ] Delete `Btn` if cosmic's `Button` is acceptable in all
-  three variants; otherwise keep `Btn` for the danger variant.
+Phase 3 — partial:
+- [x] Try `SLINT_STYLE=cosmic`, decide whether to commit.
+  Outcome: ok-but-not-clearly-better; stayed on fluent.
+- [x] Try `qt` style. Outcome: looked nice but Qt6 runtime
+  dep + musl-static break ruled it out for shipping (commit
+  `f22e54b` + revert `dd6fb74` preserved as record).
+- [x] Delete `ThemedCheckBox` from `widgets.slint`; migrate
+  the 1 call site to std-widgets `CheckBox`.
+- [x] Delete `ThemedSelect` from `widgets.slint`; migrate the
+  7 call sites to std-widgets `ComboBox`. Placeholder via
+  `current-value` ternary at each site.
+- [x] Replace `ThemedTextInput` with `LineEditField` (thin
+  wrapper around std `LineEdit` with overlaid high-contrast
+  placeholder, supports `font-family` for IP/MAC monospace).
+- [ ] `Btn` swap experiment: 5 of 6 sites map cleanly to
+  std-widgets `Button` (`primary: variant == "accent"`). The
+  6th is `variant: "danger"` (Remove TV) — `Button` has no
+  danger variant. Decide whether to keep `Btn` for danger
+  alone or for all variants.
 - [ ] Audit `theme.slint` brush-by-brush: replace
   surface/text/accent/etc. with `Palette.*` references at call
-  sites; delete the corresponding brushes from `Theme`.
-- [ ] `theme.slint` shrinks to project-specific tokens only
-  (chip palettes, status semantic colors).
+  sites where they line up; delete the corresponding brushes
+  from `Theme`. Keep what genuinely doesn't fit `Palette`
+  (status colors, chip palettes).
 
 Phase 4:
 - [ ] `rg -n "changed " crates/tisvlay-gui/ui/` and convert each
@@ -737,31 +830,38 @@ For Phase 1 specifically: replay the QA scenarios from `plan3.md`:
 
 ## Commit strategy
 
-Suggested split (one phase ≈ one commit, with optional
-consolidation):
+Original plan was one commit per phase. Actual pattern diverged:
 
-| Commit | Phases | Notes |
-|--------|--------|-------|
-| 1 | Phase 1 | `ReconcilerMap` + GUI gating in Rust |
-| 2 | Phase 2 | `global Daemon` + callback hoist |
-| 3 | Phase 3 | Style experiment (conditional commit) |
-| 4 | Phases 4-7 | Polish bundle (computed bindings, on_ui, palette, animations) |
+| Commit(s) | Phase | Notes |
+|-----------|-------|-------|
+| `5a8724f` | Phase 1 | `ReconcilerMap` + GUI gating in Rust |
+| `c87211c`, `4bf7820` | Phase 2 | Globals hoist + idiomatic-Rust follow-up |
+| `f22e54b`, `dd6fb74`, plus wrapper-drop commits | Phase 3 | Qt experiment + revert (kept for record), then incremental wrapper drops |
+| TBD | Phases 4-7 | Polish bundle (computed bindings, on_ui, palette, animations) |
 
-Phases 1 and 2 have moderate blast radius and benefit from being
-separate code-review surfaces. Phase 3 is conditional (commit only
-if cosmic looks good). Phases 4-7 are small and naturally bundle.
+Phases 1 and 2 stayed close to the original "one commit per phase"
+ideal. Phase 3 split into many small commits because the experiment
+itself (cosmic → qt → revert → wrapper teardown) was iterative
+rather than a single decision. Phases 4-7 are small and still
+naturally bundle.
 
 If a phase reveals unexpected cost or design questions, stop and
 return to this plan rather than carry on into the next phase.
 
 ## Open questions (defer to execution)
 
-- **Phase 3 outcome**: only worth doing if `cosmic` actually looks
-  good on KDE. The 15-minute experiment is the gate. If
-  `cosmic` doesn't satisfy and `qt` would help (it follows Qt's
-  desktop palette directly, but adds a Qt build dep), evaluate
-  that as a fallback. If neither, abandon the phase, keep the
-  Themed wrappers, document why in code.
+- **Phase 3 leftovers**: `Btn` swap is not obviously a win — 5/6
+  sites map cleanly to std `Button` via `primary: variant ==
+  "accent"`, but the danger-variant Remove TV button has no
+  std-widgets equivalent. Either keep `Btn` for all variants
+  (consistency) or for danger alone (mostly-stock). Decide
+  empirically when sitting in front of the GUI.
+
+- **theme.slint audit**: mostly mechanical, but the rendered
+  result depends on whether `Palette.background` etc. exactly
+  match what we currently render. May reveal cases where the
+  custom token was load-bearing (e.g. row-hover, accent-soft for
+  selection backgrounds) and not just a duplicate of `Palette`.
 
 - **Phase 7 timing**: which animations actually feel good?
   Subjective. Worth a quick playthrough with
