@@ -31,6 +31,113 @@ use crate::state::{StateSnapshot, fetch_state};
 
 slint::include_modules!();
 
+/// Detect the user's freedesktop icon theme name. KDE writes its
+/// choice to `~/.config/kdeglobals` `[Icons] Theme=...`; GNOME / etc.
+/// keep theirs in dconf which we don't link. Returns `None` if the
+/// file isn't present or the key isn't found — caller falls back
+/// through the hardcoded theme list.
+fn detect_icon_theme() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let path = std::path::PathBuf::from(home).join(".config/kdeglobals");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let mut in_icons_section = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "[Icons]" {
+            in_icons_section = true;
+        } else if line.starts_with('[') {
+            in_icons_section = false;
+        } else if in_icons_section && let Some(value) = line.strip_prefix("Theme=") {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Resolve a freedesktop icon name (with fallbacks) and load it as a
+/// Slint `Image`. The crate's default theme is `hicolor`, which on
+/// NixOS / minimal distros ships zero icons — so we explicitly try
+/// the user's chosen theme (read from `~/.config/kdeglobals` on
+/// KDE), then `breeze` / `Adwaita` / `hicolor` in turn.
+///
+/// Size 22 because Breeze's "actions" / "devices" categories ship
+/// 16/22/24/32/64 buckets unevenly — 22 is the most universally
+/// populated and Slint downscales cleanly to the rendered 16×16.
+///
+/// Pre-patches the SVG to swap `currentColor` for an explicit
+/// `#ffffff` before handing it to Slint: Breeze's symbolic icons
+/// rely on a `<style> .ColorScheme-Text { color:#... }` cascade
+/// that usvg's default options (which Slint uses) don't resolve,
+/// and the fill renders transparent. With an explicit color, the
+/// silhouette is solid white and `Image.colorize` re-tints it to
+/// whatever brush the call site binds.
+///
+/// Returns the default empty image on total miss; Slint draws
+/// nothing for an empty source so the SidebarItem layout degrades
+/// gracefully to label-only.
+fn load_themed_icon(names: &[&str]) -> slint::Image {
+    let user_theme = detect_icon_theme();
+    let themes: Vec<&str> = user_theme
+        .as_deref()
+        .into_iter()
+        .chain(["breeze", "Adwaita", "hicolor"])
+        .collect();
+
+    for name in names {
+        for theme in &themes {
+            let Some(path) = freedesktop_icons::lookup(name)
+                .with_size(22)
+                .with_theme(theme)
+                .with_cache()
+                .find()
+            else {
+                continue;
+            };
+            // Breeze's symbolic SVGs use `fill:currentColor` with a
+            // `<style> .ColorScheme-Text { color:#... }` cascade.
+            // usvg's default options (which Slint hands to resvg)
+            // don't resolve `currentColor` in this form, so the
+            // path renders transparent and `Image.colorize` has
+            // nothing to tint. Pre-patching the source to swap
+            // `currentColor` for an explicit color gives resvg a
+            // literal silhouette; `colorize` then re-tints to
+            // `tint` at the call site.
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
+            let patched = text.replace("currentColor", "#ffffff");
+            match slint::Image::load_from_svg_data(patched.as_bytes()) {
+                Ok(img) => {
+                    debug!(
+                        icon = name,
+                        theme = theme,
+                        path = %path.display(),
+                        "icon loaded",
+                    );
+                    return img;
+                }
+                Err(e) => {
+                    warn!(
+                        icon = name,
+                        theme = theme,
+                        path = %path.display(),
+                        error = ?e,
+                        "found path but Slint couldn't load patched SVG",
+                    );
+                }
+            }
+        }
+    }
+    warn!(
+        ?names,
+        "no fallback resolved across user / breeze / Adwaita / hicolor"
+    );
+    slint::Image::default()
+}
+
 /// Marshal a UI-touching closure onto the Slint event loop. Clones
 /// the weak ref internally so callers can pass it by reference; if
 /// the `AppWindow` has been dropped by the time the closure runs,
@@ -105,6 +212,29 @@ fn main() -> Result<()> {
     let _enter = rt.enter();
 
     let app = AppWindow::new()?;
+
+    // Resolve sidebar icons against the user's freedesktop icon
+    // theme. Mirrors the tray's approach: by-name lookup with theme
+    // cascade + hicolor fallback, so the sidebar feels native on
+    // Breeze / Adwaita / etc. without us shipping our own glyphs.
+    // Missing names render as empty (Slint draws nothing for an
+    // empty image source); the label still shows.
+    app.set_tvs_icon(load_themed_icon(&[
+        "video-television",
+        "video-display",
+        "tv",
+    ]));
+    app.set_profiles_icon(load_themed_icon(&[
+        "system-users",
+        "preferences-desktop-user",
+    ]));
+    app.set_session_icon(load_themed_icon(&["clock", "appointment-new"]));
+    app.set_settings_icon(load_themed_icon(&[
+        "configure",
+        "settings-configure",
+        "preferences-system",
+    ]));
+    app.set_about_icon(load_themed_icon(&["help-about", "dialog-information"]));
 
     // Build clients eagerly (synchronously, via block_on) so callbacks
     // can capture them at registration time. This briefly blocks the

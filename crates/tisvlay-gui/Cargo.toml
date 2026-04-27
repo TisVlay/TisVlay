@@ -36,6 +36,11 @@ zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
+# Resolve sidebar icon names against the user's freedesktop icon
+# theme (Breeze on KDE Plasma, Adwaita on GNOME, hicolor as
+# fallback). Same pattern the tray already uses, just done in-
+# process here because Slint has no built-in icon-theme resolver.
+freedesktop-icons = "0.4"
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection
 # during dev. Pinned to the exact slint version because the backend
