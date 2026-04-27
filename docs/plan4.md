@@ -1,7 +1,7 @@
 # Plan 4 — Slint architecture sweep
 
-> **Status (in progress):** Phases 1, 2, and 3 shipped. Phase
-> 3 went further than the original "cosmic vs fluent" framing:
+> **Status (done):** All seven phases shipped. Phase 3 went
+> further than the original "cosmic vs fluent" framing:
 > after a cosmic + qt experiment loop (cosmic was acceptable
 > but not clearly better, qt added a hard Qt6 runtime dep —
 > recorded in commit `f22e54b` + revert `dd6fb74`), fluent
@@ -16,11 +16,15 @@
 > be a visual-identity choice rather than mechanical, so
 > Theme stays.
 >
-> Still open: Phase 7. (Phase 4 was a survey — no conversions
-> needed; Phase 5 added the `on_ui` helper and migrated 12
-> call sites; Phase 6 pivoted — instead of writing
+> All phases shipped. Phase 4 was a survey (no conversions
+> needed). Phase 5 added the `on_ui` helper + 12 call-site
+> migrations. Phase 6 pivoted — instead of writing
 > `Palette.color-scheme` ourselves, dropped the user toggle
-> entirely so we always follow the live portal value.)
+> entirely so we always follow the live portal value. Phase 7
+> added 150ms hover fades on six surfaces, the `PulseDot`
+> radar-ping (`tv-pulse`), the `ScanLine` sweep (`tv-scan`),
+> and the std-widgets `Spinner` (`tv-spin`) per the per-the-
+> motion-spec rules in `.claude/ui/pairing-wizard-motion.md`.
 
 A full pass through the GUI's Slint setup against Slint's own
 documented patterns. Driven by the realization (during the
@@ -756,6 +760,58 @@ let portal-driven `system` mode just leave it untouched.
 
 ## Phase 7 — Animations
 
+> **Status (done):** Two animation passes:
+>
+> 1. **Hover transitions** (`animate background { duration:
+>    150ms; }`, matching std-widgets fluent's internal
+>    animation) on six sites: SidebarItem, the sidebar Reload
+>    button, DiscoveryRow (wizard list), TvListRow (TVs pane
+>    list), the "+" pair-new-TV button in the TVs pane header,
+>    and `DangerBtn` (which also animates `border-color`).
+>
+> 2. **`PulseDot` widget**, mirroring the design's `tv-pulse`
+>    (radar-ping liveness signal — see
+>    `.claude/ui/pairing-wizard-motion.md` § 1). Implemented
+>    as a 10×10 layout: a solid 6×6 inner dot (still) over an
+>    animated 10×10 outer disc that scales 0.6× → 2.4× while
+>    fading 0.7 → 0 on a 1.4s ease-out loop. Placed at the
+>    discovery "Scanning via SSDP — found N…" status row.
+>    (Initial pass had this as a plain opacity-fade on the
+>    bare dot; corrected to the proper radar-ping per the
+>    motion spec.)
+>
+> 3. **`SpinnerArc` widget** — the design's `tv-spin` is a
+>    track ring with a single accent-colored top quarter
+>    rotating linearly at 0.9s/revolution; std-widgets'
+>    `Spinner` is the Material-style growing/shrinking arc
+>    (visually busier and not what the spec asks for).
+>    Custom port: a Rectangle for the still neutral track +
+>    a Path with a 90° arc that rotates via `transform-
+>    rotation: (360deg * animation-tick() / 900ms).mod(360deg)`.
+>    Used (48×48) in the pair-step status area for any
+>    in-flight phase. On `complete`/`failed`, the still ✓ /
+>    ✕ circle renders instead — *"stillness on resolution
+>    states is its own design choice"* per the motion spec.
+>
+> 4. **`ScanLine` widget**, mirroring the design's `tv-scan`
+>    keyframe (`left -40% → 100%` / 1.6s ease-in-out, § 3).
+>    Slint port: 2px-tall track + 40%-wide accent gradient
+>    sweep, smooth-step eased via `phase * phase * (3 - 2*
+>    phase)` on a unit phase from `(animation-tick() /
+>    1600ms).mod(1)`. Placed in three spots per the design:
+>    bottom of the discovery results list (gated on
+>    `streaming`), under the empty "Searching your network…"
+>    panel (gated on `streaming`), and inside the pair-step
+>    in-flight card (gated off on `complete` / `failed`).
+>
+> Stillness preserved per the motion spec on the stepper
+> progress bar (was never animated), the pair-step ✓ / ✕ icons
+> on terminal phases, and the Step 4 confirmation. `fadein-row`
+> (staged list entrance) skipped — our daemon emits all
+> discovered TVs in a single burst rather than streaming, so
+> there's no per-row enter timing to choreograph. ConfirmDialog
+> open/close fade skipped (low frequency, no design call-out).
+
 ### Why
 
 Pure polish. None of our hovers, dialog opens, or wizard step
@@ -894,10 +950,33 @@ Phase 6 — done (pivoted to "no toggle"):
 - [x] Drop `appearance-mode <=> Theme.mode` and
   `AppearanceMode` import/export in `main.slint`.
 
-Phase 7:
-- [ ] Hover transitions on Btn / Chip / row backgrounds.
-- [ ] Dialog open/close fade.
-- [ ] Smoke-test with `SLINT_SLOW_ANIMATIONS=4`.
+Phase 7 — done:
+- [x] Hover transitions on hover-state backgrounds (6 sites:
+  SidebarItem, sidebar Reload, DiscoveryRow, TvListRow, "+"
+  pair button, DangerBtn). 150ms fade matching fluent
+  Button's internal animation. `Chip` is passive (no hover
+  state) — skipped.
+- [x] Implement `PulseDot` widget (radar-ping per the
+  motion spec's `tv-pulse`: solid inner dot + outer disc
+  scaling 0.6× → 2.4× and fading 0.7 → 0 on 1.4s ease-out)
+  and use it at the discovery "Scanning via SSDP" status
+  row.
+- [x] Implement `SpinnerArc` widget (track ring + 90°
+  rotating top arc at 0.9s/rev linear, per the motion
+  spec's `tv-spin`). Used at 48×48 in the pair-step status
+  area for any in-flight phase; std-widgets' Material-style
+  Spinner doesn't match the spec's simpler track-with-
+  rotating-quarter look. Terminal `complete` / `failed`
+  phases keep the still ✓ / ✕ circle.
+- [ ] Dialog open/close fade — skipped; ConfirmDialog isn't
+  on a frequent-use path and the trigger pattern needs visual
+  validation. Filed as future polish.
+- [x] Add `ScanLine` widget (40%-wide accent gradient
+  sweep on a 1.6s smooth-step loop, mirrors the design
+  handoff's CSS `tv-scan` keyframe). Placed in the
+  discovery results footer, the empty/searching state, and
+  the pair-step in-progress card.
+- [ ] Smoke-test with `SLINT_SLOW_ANIMATIONS=4` — user QA.
 
 Cross-cutting:
 - [ ] Update `crates/tisvlay-gui/ui/main.slint` doc-comment

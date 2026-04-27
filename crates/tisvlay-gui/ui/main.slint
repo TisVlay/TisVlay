@@ -28,6 +28,7 @@ component SidebarItem inherits Rectangle {
     background: selected ? Theme.sidebar-selected
               : (touch.has-hover ? Theme.sidebar-hover : transparent);
     border-radius: 5px;
+    animate background { duration: 150ms; }
 
     Text {
         text: label;
@@ -131,6 +132,7 @@ export component AppWindow inherits Window {
                         ? Theme.sidebar-hover
                         : transparent;
                     border-radius: 5px;
+                    animate background { duration: 150ms; }
 
                     HorizontalLayout {
                         width: 100%;

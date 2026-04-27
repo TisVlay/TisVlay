@@ -16,7 +16,7 @@ import { Button, CheckBox, ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
-import { Chip, LineEditField } from "../widgets.slint";
+import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc } from "../widgets.slint";
 
 // =============================================================================
 // Stepper — 4 numbered circles with labels, connected by lines.
@@ -137,6 +137,7 @@ component DiscoveryRow inherits Rectangle {
     height: 56px;
     background: selected ? Theme.row-selected
               : (touch.has-hover ? Theme.row-hover : Theme.surface);
+    animate background { duration: 150ms; }
 
     Rectangle {
         x: 0;
@@ -299,12 +300,18 @@ component StepDiscover {
         if root.error-message == "": HorizontalLayout {
             spacing: Design.gap-stack;
             alignment: start;
-            Rectangle {
-                width: 8px;
-                height: 8px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 4px;
-                background: root.streaming ? Theme.accent : Theme.text-faint;
+            // Radar PulseDot while scanning, plain still dot otherwise.
+            // The `tv-pulse` keyframe is the design's blessed liveness
+            // signal — see `.claude/ui/pairing-wizard-motion.md` § 1.
+            VerticalLayout {
+                alignment: center;
+                if root.streaming: PulseDot {}
+                if !root.streaming: Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.text-faint;
+                }
             }
             Text {
                 text: root.streaming
@@ -324,16 +331,26 @@ component StepDiscover {
             border-color: Theme.border;
             border-width: Design.border-thin;
             border-radius: 5px;
-            ScrollView {
+            VerticalLayout {
                 width: 100%;
-                height: 240px;
-                VerticalLayout {
+                ScrollView {
                     width: 100%;
-                    for tv[i] in root.discovered: DiscoveryRow {
-                        tv: tv;
-                        selected: i == root.selected-index;
-                        clicked => { root.selection-changed(i); }
+                    height: 240px;
+                    VerticalLayout {
+                        width: 100%;
+                        for tv[i] in root.discovered: DiscoveryRow {
+                            tv: tv;
+                            selected: i == root.selected-index;
+                            clicked => { root.selection-changed(i); }
+                        }
                     }
+                }
+                if root.streaming: HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 6px;
+                    padding-bottom: 8px;
+                    ScanLine {}
                 }
             }
         }
@@ -366,6 +383,13 @@ component StepDiscover {
                         font-size: Design.font-helper;
                         horizontal-alignment: center;
                         wrap: word-wrap;
+                    }
+                }
+                if root.streaming: HorizontalLayout {
+                    alignment: center;
+                    padding-top: Design.gap-stack;
+                    ScanLine {
+                        width: 240px;
                     }
                 }
             }
@@ -662,27 +686,24 @@ component StepPair {
             spacing: 18px;
             alignment: center;
 
-            // Status icon
+            // Status icon. Terminal phases (complete / failed) render
+            // as still ✓ / ✕ in a soft-tinted circle — per
+            // `.claude/ui/pairing-wizard-motion.md`, *"stillness on
+            // resolution states is its own design choice"*. Anything
+            // else is in-flight and gets the std-widgets `Spinner`
+            // (the `tv-spin` indeterminate-progress role).
             HorizontalLayout {
                 alignment: center;
-                Rectangle {
+                if root.phase == "complete" || root.phase == "failed": Rectangle {
                     width: 56px;
                     height: 56px;
                     border-radius: 28px;
-                    background: root.phase == "complete" ? Theme.success-soft
-                              : root.phase == "failed" ? Theme.danger-soft
-                              : Theme.accent-soft;
-                    border-color: root.phase == "complete" ? Theme.success
-                                : root.phase == "failed" ? Theme.danger
-                                : Theme.accent;
+                    background: root.phase == "complete" ? Theme.success-soft : Theme.danger-soft;
+                    border-color: root.phase == "complete" ? Theme.success : Theme.danger;
                     border-width: Design.border-thin;
                     Text {
-                        text: root.phase == "complete" ? "✓"
-                            : root.phase == "failed" ? "✕"
-                            : "…";
-                        color: root.phase == "complete" ? Theme.success-text
-                             : root.phase == "failed" ? Theme.danger-text
-                             : Theme.accent;
+                        text: root.phase == "complete" ? "✓" : "✕";
+                        color: root.phase == "complete" ? Theme.success-text : Theme.danger-text;
                         font-size: 28px;
                         font-weight: 700;
                         horizontal-alignment: center;
@@ -690,6 +711,10 @@ component StepPair {
                         width: 100%;
                         height: 100%;
                     }
+                }
+                if root.phase != "complete" && root.phase != "failed": SpinnerArc {
+                    width: 48px;
+                    height: 48px;
                 }
             }
 
@@ -723,6 +748,13 @@ component StepPair {
                         font-size: Design.font-meta;
                         horizontal-alignment: center;
                         wrap: word-wrap;
+                    }
+                }
+                if root.phase != "complete" && root.phase != "failed": HorizontalLayout {
+                    alignment: center;
+                    padding-top: Design.gap-stack;
+                    ScanLine {
+                        width: 220px;
                     }
                 }
             }

@@ -157,6 +157,7 @@ component TvListRow inherits Rectangle {
     height: 64px;
     background: selected ? Theme.row-selected
               : (touch.has-hover ? Theme.row-hover : transparent);
+    animate background { duration: 150ms; }
 
     // 3px left accent stripe when selected.
     Rectangle {
@@ -301,6 +302,7 @@ component TvList inherits Rectangle {
                     background: !root.daemon-available
                         ? Theme.text-faint
                         : (pair-touch.has-hover ? #2c8fc4 : Theme.accent);
+                    animate background { duration: 150ms; }
 
                     Text {
                         text: "+";

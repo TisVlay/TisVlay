@@ -89,6 +89,7 @@ export component DangerBtn inherits Rectangle {
         : Theme.danger;
     border-width: Design.border-thin;
     border-radius: Design.radius-control;
+    animate background, border-color { duration: 150ms; }
 
     HorizontalLayout {
         width: 100%;
@@ -300,5 +301,136 @@ export component Group {
                 @children
             }
         }
+    }
+}
+
+// =============================================================================
+// SpinnerArc — track ring + rotating top-quarter arc (`tv-spin`).
+// =============================================================================
+//
+// Mirrors the design handoff's `Spinner` (CSS: full neutral border,
+// `border-top-color: accent`, `tv-spin 0.9s linear infinite`). Visual:
+// a still grey ring with one accent-colored quarter at the top,
+// rotating 360° every 0.9s linearly. See
+// `.claude/ui/pairing-wizard-motion.md` § 2 (`tv-spin`).
+//
+// Slint's std-widgets `Spinner` uses a Material-style growing/
+// shrinking arc with two simultaneous animations — visually busier
+// and not what the design calls for. This is the simple
+// fixed-arc-rotating variant.
+
+export component SpinnerArc inherits Rectangle {
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // Track ring — neutral, still.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: self.width / 2;
+        border-width: 2.5px;
+        border-color: Theme.border;
+    }
+
+    // Rotating top-quarter arc — accent, ~0.9s/rev linear.
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        stroke: Theme.accent;
+        stroke-width: 2.5px;
+        fill: transparent;
+        transform-rotation: (360deg * animation-tick() / 900ms).mod(360deg);
+
+        // 90° arc spanning from 12 o'clock to 3 o'clock. Radius 47
+        // sits the arc curve atop the 2.5px-wide track ring.
+        MoveTo { x: 50; y: 3; }
+        ArcTo {
+            radius-x: 47;
+            radius-y: 47;
+            x: 97;
+            y: 50;
+            sweep: true;
+        }
+    }
+}
+
+// =============================================================================
+// PulseDot — radar-ping liveness indicator (10×10).
+// =============================================================================
+//
+// Mirrors the design handoff's `PulseDot` component
+// (`.claude/ui/design_handoff_tisvlay_gui/wizard-components.jsx`)
+// and `tv-pulse` keyframe: a solid 6×6 dot in front of an animated
+// 10×10 disc that scales 0.6 → 2.4 while fading 0.7 → 0 on a 1.4s
+// ease-out loop. Communicates ambient liveness ("the system is
+// listening") without consuming attention. See
+// `.claude/ui/pairing-wizard-motion.md` § 1 for the canonical motion
+// values.
+
+export component PulseDot inherits Rectangle {
+    width: 10px;
+    height: 10px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // Radar ring — scales out from 0.6× to 2.4× while fading.
+    // `transform-scale` extends the rendering beyond the 10×10
+    // layout bounds; that's intentional (the ring radiates).
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.accent;
+        // Ease-out approximation: t * (2 - t) gives natural decay.
+        property <float> phase: (animation-tick() / 1400ms).mod(1);
+        property <float> eased: phase * (2.0 - phase);
+        transform-scale: 0.6 + 1.8 * eased;
+        opacity: 0.7 * (1.0 - eased);
+    }
+
+    // Solid inner dot — still, on top of the radar ring.
+    Rectangle {
+        x: 2px;
+        y: 2px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.accent;
+    }
+}
+
+// =============================================================================
+// ScanLine — horizontal "we're working on it" sweep indicator.
+// =============================================================================
+//
+// 2px-tall track with a 40%-wide accent gradient that sweeps left to
+// right on a 1.6s ease-in-out loop. Matches the design handoff's
+// `tv-scan` CSS keyframe (`left: -40% → 100%`) — see
+// `.claude/ui/design_handoff_tisvlay_gui/wizard-components.jsx`
+// `ScanLine` and the `@keyframes tv-scan` block in `Pairing
+// Wizard.html`. Used during discovery scanning and the pair-step
+// "registering" phase.
+
+export component ScanLine inherits Rectangle {
+    height: 2px;
+    background: Theme.surface2;
+    border-radius: 1px;
+    clip: true;
+
+    Rectangle {
+        width: parent.width * 0.4;
+        height: parent.height;
+        // Smooth-step easing on a unit phase (Slint analogue of CSS
+        // `ease-in-out`); sweep range is `-self.width → parent.width`
+        // so the highlight enters from off-left and exits off-right
+        // before snapping back at the cycle boundary.
+        property <float> phase: (animation-tick() / 1600ms).mod(1);
+        property <float> eased: phase * phase * (3.0 - 2.0 * phase);
+        x: -self.width + (parent.width + self.width) * eased;
+        background: @linear-gradient(90deg, transparent 0%, Theme.accent 50%, transparent 100%);
     }
 }
