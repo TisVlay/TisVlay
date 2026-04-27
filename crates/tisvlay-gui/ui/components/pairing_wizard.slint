@@ -12,11 +12,11 @@
 // callback interfaces and the outer pane forwards them to the
 // global.
 
-import { ScrollView } from "std-widgets.slint";
+import { CheckBox, ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
-import { Chip, Btn, ThemedTextInput, ThemedCheckBox, ThemedSelect } from "../widgets.slint";
+import { Chip, Btn, LineEditField } from "../widgets.slint";
 
 // =============================================================================
 // Stepper — 4 numbered circles with labels, connected by lines.
@@ -411,10 +411,10 @@ component StepDiscover {
                             font-weight: 500;
                         }
                         // ≤ 1 vendor: static chip (no point in a
-                        // single-option dropdown). > 1: real
-                        // ThemedSelect; the manual-vendor-edited
-                        // callback fires with the selected display
-                        // name, and Rust resolves it to the vendor id.
+                        // single-option dropdown). > 1: ComboBox; the
+                        // manual-vendor-edited callback fires with the
+                        // selected display name, and Rust resolves it
+                        // to the vendor id.
                         if root.supported-vendors.length <= 1: Rectangle {
                             background: Theme.surface;
                             border-color: Theme.border-strong;
@@ -436,7 +436,7 @@ component StepDiscover {
                                 }
                             }
                         }
-                        if root.supported-vendors.length > 1: ThemedSelect {
+                        if root.supported-vendors.length > 1: ComboBox {
                             model: root.supported-vendor-names;
                             current-value: root.vendor-display(root.manual-vendor);
                             selected(v) => { root.manual-vendor-edited(v); }
@@ -452,9 +452,9 @@ component StepDiscover {
                             font-size: Design.font-helper;
                             font-weight: 500;
                         }
-                        ThemedTextInput {
-                            placeholder: "192.168.1.100";
-                            mono: true;
+                        LineEditField {
+                            placeholder-text: "192.168.1.100";
+                            font-family: "ui-monospace, monospace";
                             text <=> root.manual-ip;
                             edited(v) => { root.manual-ip-edited(v); }
                         }
@@ -469,9 +469,9 @@ component StepDiscover {
                             font-size: Design.font-helper;
                             font-weight: 500;
                         }
-                        ThemedTextInput {
-                            placeholder: "AA:BB:CC:DD:EE:FF";
-                            mono: true;
+                        LineEditField {
+                            placeholder-text: "AA:BB:CC:DD:EE:FF";
+                            font-family: "ui-monospace, monospace";
                             text <=> root.manual-mac;
                             edited(v) => { root.manual-mac-edited(v); }
                         }
@@ -547,8 +547,8 @@ component StepConfigure {
                 font-size: Design.font-meta;
                 font-weight: 500;
             }
-            ThemedTextInput {
-                placeholder: "e.g. Living Room G4";
+            LineEditField {
+                placeholder-text: "e.g. Living Room G4";
                 text <=> root.tv-name;
                 edited(value) => { root.name-edited(value); }
             }
@@ -602,11 +602,10 @@ component StepConfigure {
                 font-size: Design.font-meta;
                 font-weight: 500;
             }
-            ThemedSelect {
+            ComboBox {
                 model: root.system-profiles;
-                current-value: root.system-profile;
+                current-value: root.system-profile == "" ? "default" : root.system-profile;
                 enabled: root.system-profiles.length > 0;
-                placeholder: "default";
                 selected(v) => { root.profile-selected(v); }
             }
             Text {
@@ -627,10 +626,10 @@ component StepConfigure {
                 padding: 12px;
                 spacing: Design.gap-tight;
 
-                ThemedCheckBox {
-                    label: "Managed by TisVlay";
+                CheckBox {
+                    text: "Managed by TisVlay";
                     checked: root.managed;
-                    toggled(v) => { root.managed-toggled(v); }
+                    toggled => { root.managed-toggled(self.checked); }
                 }
                 Text {
                     text: "The daemon will power-cycle this TV in response to desktop session events (lock, unlock, sleep, shutdown). Untick to keep it paired but ignored by automation.";

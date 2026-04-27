@@ -572,7 +572,7 @@ fn register_callbacks(
 
     // Manual-entry: edits flush back via two-way binding; the explicit
     // edited callbacks are wire-only no-ops to satisfy LineEdit.
-    // The ThemedSelect emits the *display name* (e.g. "LG WebOS").
+    // The vendor ComboBox emits the *display name* (e.g. "LG WebOS").
     // Resolve back to the canonical vendor id by looking up in
     // `wizard_supported_vendors`.
     let app_weak = app.as_weak();

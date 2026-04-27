@@ -5,11 +5,11 @@
 // preview and fires `Settings.appearance-mode-changed` (global
 // callback) so Rust writes the choice to disk.
 
-import { Palette } from "std-widgets.slint";
+import { ComboBox, Palette } from "std-widgets.slint";
 import { Theme, AppearanceMode } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Settings } from "../globals/settings.slint";
-import { Group, ThemedSelect } from "../widgets.slint";
+import { Group } from "../widgets.slint";
 
 export component SettingsPane inherits Rectangle {
     property <[string]> mode-options: ["System", "Light", "Dark"];
@@ -78,7 +78,7 @@ export component SettingsPane inherits Rectangle {
                     HorizontalLayout {
                         horizontal-stretch: 1;
                         alignment: start;
-                        ThemedSelect {
+                        ComboBox {
                             min-width: 200px;
                             max-width: 220px;
                             model: root.mode-options;

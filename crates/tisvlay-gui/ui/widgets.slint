@@ -4,7 +4,7 @@
 // themed colors, not raw hex values. Add a primitive here when it's
 // needed by ≥ 2 panes; pane-specific helpers stay in their pane.
 
-import { Slider } from "std-widgets.slint";
+import { LineEdit, Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 
@@ -141,234 +141,70 @@ export component Btn inherits Rectangle {
 }
 
 // =============================================================================
-// ThemedTextInput — themed line-input.
+// LineEditField — std-widgets LineEdit with a higher-contrast placeholder.
 // =============================================================================
 //
-// Slint's std-widgets `LineEdit` defers to the platform style; on
-// Fluent + unfocused windows the border / placeholder render at very
-// low contrast. We wrap Slint's native `TextInput` element in a
-// themed Rectangle so the frame is always visible regardless of focus
-// state.
+// Slint's `LineEdit` exposes `placeholder-text` but not
+// `placeholder-color`; the fluent style renders the placeholder at
+// `FluentPalette.text-secondary` (~60% black on white), which is
+// only ~30% lighter than entered text and reads as "same color"
+// to most users — easy to mistake an empty field for one
+// containing pre-entered text.
+//
+// This wrapper keeps the std-widgets LineEdit (clear icon,
+// password toggle, focus border, accessibility hookups all
+// preserved) but suppresses its built-in placeholder by passing
+// `placeholder-text: ""`, then overlays our own Text with
+// `Theme.text-faint` — a clearly faded color (well-tuned for
+// both light and dark) that makes empty fields visually distinct
+// from filled ones.
 
-export component ThemedTextInput inherits Rectangle {
-    in property <string> placeholder;
-    in-out property <string> text;
-    in property <bool> mono: false;
+export component LineEditField inherits Rectangle {
+    in property <string> placeholder-text;
+    in-out property <string> text <=> inner.text;
+    in property <bool> enabled <=> inner.enabled;
+    /// Optional CSS-style font-family list (e.g.
+    /// `"ui-monospace, monospace"`) — useful for IP / MAC entry.
+    in property <string> font-family <=> inner.font-family;
     callback edited(string);
+    callback accepted(string);
 
-    background: Theme.surface;
-    border-color: edit.has-focus ? Theme.accent : Theme.border-strong;
-    border-width: Design.border-thin;
-    border-radius: Design.radius-control;
-    min-height: Design.size-input;
     horizontal-stretch: 1;
+    min-height: inner.min-height;
 
-    HorizontalLayout {
+    inner := LineEdit {
+        // Bind to fill the wrapper Rectangle. Without this the
+        // LineEdit sits at its preferred size (~32px) anchored at
+        // (0,0) instead of stretching to whatever slot the outer
+        // layout grants the wrapper.
         width: 100%;
         height: 100%;
-        padding-left: 10px;
-        padding-right: 10px;
-
-        edit := TextInput {
-            text <=> root.text;
-            color: Theme.text;
-            font-size: Design.font-body;
-            font-family: root.mono ? "ui-monospace, monospace" : "";
-            single-line: true;
-            vertical-alignment: center;
-            edited => { root.edited(self.text); }
-        }
+        // Suppress fluent's subtle built-in placeholder; we render
+        // our own with a stronger contrast below.
+        placeholder-text: "";
+        edited(v) => { root.edited(v); }
+        accepted(v) => { root.accepted(v); }
     }
 
-    // Placeholder shown when empty and not focused.
-    if root.text == "" && !edit.has-focus: Text {
-        text: root.placeholder;
+    // Overlay placeholder. Visible only when the field is empty
+    // and unfocused (matches the standard "placeholder hides on
+    // input or focus" pattern). Text without a TouchArea doesn't
+    // intercept clicks, so the underlying LineEdit still receives
+    // focus on click.
+    //
+    // x=13px matches fluent's 12px LineEdit padding plus a 1px
+    // optical adjustment so the placeholder sits exactly where
+    // typed text would appear. y centers within the wrapper.
+    if root.text == "" && !inner.has-focus: Text {
+        x: 13px;
+        y: (parent.height - self.height) / 2;
+        text: root.placeholder-text;
         color: Theme.text-faint;
         font-size: Design.font-body;
-        font-family: root.mono ? "ui-monospace, monospace" : "";
-        x: 10px;
-        vertical-alignment: center;
-        height: 100%;
+        font-family: root.font-family;
     }
 }
 
-// =============================================================================
-// ThemedCheckBox — themed checkbox with custom-painted box + label.
-// =============================================================================
-//
-// Slint's std-widgets `CheckBox` is platform-styled and washes out on
-// unfocused Fluent. Drives every visual from `Theme.*`.
-
-export component ThemedCheckBox inherits Rectangle {
-    in property <bool> checked;
-    in property <string> label;
-    in property <bool> enabled: true;
-    callback toggled(bool);
-
-    min-height: 22px;
-
-    HorizontalLayout {
-        width: 100%;
-        height: 100%;
-        spacing: Design.gap-stack;
-        alignment: start;
-
-        // Box
-        VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: 3px;
-                border-width: 1.5px;
-                border-color: !root.enabled
-                    ? Theme.border
-                    : (root.checked ? Theme.accent : Theme.border-strong);
-                background: !root.enabled
-                    ? Theme.surface2
-                    : (root.checked ? Theme.accent : Theme.surface);
-
-                if root.checked: Text {
-                    // Unicode check; Path would be cleaner but this is
-                    // good enough at 18px.
-                    text: "✓";
-                    color: white;
-                    font-size: 14px;
-                    font-weight: 700;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    width: 100%;
-                    height: 100%;
-                }
-            }
-        }
-
-        // Label
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: root.label;
-                color: root.enabled ? Theme.text : Theme.text-faint;
-                font-size: Design.font-body;
-            }
-        }
-    }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.toggled(!root.checked); }
-    }
-}
-
-// =============================================================================
-// ThemedSelect — themed dropdown.
-// =============================================================================
-//
-// Slint's std-widgets `ComboBox` washes out the same way. We render
-// the trigger ourselves and use a `PopupWindow` for the dropdown
-// list, so colors stay tied to `Theme.*`.
-
-export component ThemedSelect inherits Rectangle {
-    in property <[string]> model;
-    in-out property <string> current-value;
-    in property <bool> enabled: true;
-    in property <string> placeholder: "—";
-    callback selected(string);
-
-    background: Theme.surface;
-    border-color: trigger.has-hover && root.enabled
-        ? Theme.accent
-        : Theme.border-strong;
-    border-width: Design.border-thin;
-    border-radius: Design.radius-control;
-    min-height: Design.size-input;
-    horizontal-stretch: 1;
-
-    HorizontalLayout {
-        width: 100%;
-        height: 100%;
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: Design.gap-tight;
-
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: root.current-value == "" ? root.placeholder : root.current-value;
-                color: !root.enabled
-                    ? Theme.text-faint
-                    : (root.current-value == "" ? Theme.text-faint : Theme.text);
-                font-size: Design.font-body;
-                overflow: elide;
-            }
-        }
-
-        VerticalLayout {
-            alignment: center;
-            Text {
-                text: "▾";
-                color: Theme.text-dim;
-                font-size: Design.font-mini;
-            }
-        }
-    }
-
-    trigger := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
-        clicked => { popup.show(); }
-    }
-
-    popup := PopupWindow {
-        x: 0;
-        y: parent.height + 2px;
-        width: parent.width;
-
-        Rectangle {
-            background: Theme.surface;
-            border-color: Theme.border;
-            border-width: Design.border-thin;
-            border-radius: Design.radius-control;
-
-            VerticalLayout {
-                width: 100%;
-                padding-top: Design.gap-form;
-                padding-bottom: Design.gap-form;
-
-                for opt in root.model: Rectangle {
-                    height: 30px;
-                    background: opt-touch.has-hover ? Theme.row-hover : transparent;
-                    HorizontalLayout {
-                        width: 100%;
-                        height: 100%;
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        VerticalLayout {
-                            alignment: center;
-                            Text {
-                                text: opt;
-                                color: opt == root.current-value
-                                    ? Theme.row-selected-text
-                                    : Theme.text;
-                                font-size: Design.font-body;
-                                font-weight: opt == root.current-value ? 600 : 400;
-                            }
-                        }
-                    }
-                    opt-touch := TouchArea {
-                        clicked => {
-                            root.current-value = opt;
-                            root.selected(opt);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 // =============================================================================
 // OptimisticSlider — slider + readout that tracks user intent.
@@ -398,8 +234,8 @@ export component ThemedSelect inherits Rectangle {
 // Use for any value mirrored on the daemon as a numeric property and
 // driven via a "live preview" slider thumb (volume, backlight,
 // future contrast / brightness / color balance). For discrete
-// selection inputs use ThemedSelect — the flicker pattern doesn't
-// apply.
+// selection inputs use std-widgets `ComboBox` — the flicker pattern
+// doesn't apply.
 
 export component OptimisticSlider {
     /// Gated authoritative value from the model (Rust drives it
