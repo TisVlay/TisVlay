@@ -16,9 +16,11 @@
 > be a visual-identity choice rather than mechanical, so
 > Theme stays.
 >
-> Still open: Phases 6-7. (Phase 4 was a survey — no
-> conversions needed; Phase 5 added the `on_ui` helper and
-> migrated 12 call sites; see per-phase notes.)
+> Still open: Phase 7. (Phase 4 was a survey — no conversions
+> needed; Phase 5 added the `on_ui` helper and migrated 12
+> call sites; Phase 6 pivoted — instead of writing
+> `Palette.color-scheme` ourselves, dropped the user toggle
+> entirely so we always follow the live portal value.)
 
 A full pass through the GUI's Slint setup against Slint's own
 documented patterns. Driven by the realization (during the
@@ -678,6 +680,49 @@ None — pure refactor.
 
 ## Phase 6 — `Palette.color-scheme` direct write
 
+> **Status (done — pivoted):** The original plan was to *drop
+> the enum, write `Palette.color-scheme` directly, let System
+> fall through to the portal*. Walking the Slint internals
+> (`fluent/styling.slint`, `cosmic/styling.slint`,
+> `color-scheme.slint`, `winit/winitwindowadapter.rs`) showed
+> that path has a real gap: writing `ColorScheme.unknown` makes
+> std-widgets fall back to `SlintInternal.color-scheme` (per
+> PR slint-ui/slint#4701's design intent), but reading
+> `Palette.color-scheme` returns `unknown`, not the resolved
+> portal value. `SlintInternal` is closed off to user code
+> (issue slint-ui/slint#3793), so our `Theme.dark-mode` can't
+> mirror that fallback. The Slint 2.0 plan
+> (slint-ui/slint#3023) confirms `Palette.color-scheme ==
+> ColorScheme.dark` *is* the canonical user-facing API — the
+> read gap is unfiled.
+>
+> Pivoted to a stronger simplification: **dropped the user-
+> facing toggle entirely.** No `AppearanceMode` enum, no
+> `Theme.mode` property, no `Settings` global, no `gui.toml`
+> persistence. The app always follows the desktop's
+> color-scheme via `Palette.color-scheme`, which Slint's winit
+> backend keeps live-synced with `xdg-desktop-portal`'s
+> `org.freedesktop.appearance.color-scheme` (PR
+> slint-ui/slint#7137). `Theme.dark-mode` collapses to a
+> one-line alias `Palette.color-scheme == ColorScheme.dark`.
+>
+> Tradeoff: users can't override the desktop's choice from
+> within the app. They get whatever KDE / GNOME / etc. report,
+> live. For an app that's already a system-integration
+> daemon's chrome, that's the right call.
+>
+> Removed: `theme.slint::AppearanceMode`, `Theme.mode`,
+> `globals/settings.slint`, `Settings.appearance-mode-changed`,
+> the appearance Group in `settings_pane.slint`,
+> `gui_config.rs` (entire file), `set_appearance_mode` initial
+> push + on-change registration in `main.rs`,
+> `config_to_slint_mode` / `slint_to_config_mode` mappers, the
+> `AppearanceMode <=> Theme.mode` indirection in `main.slint`.
+>
+> Latent rendering bug from the parallel-state era is also
+> gone: std-widgets and themed surfaces now always agree
+> because they both read the same `Palette.color-scheme`.
+
 ### Why
 
 We currently track `AppearanceMode` (System / Light / Dark) as an
@@ -825,11 +870,29 @@ Phase 5 — done:
 - [x] Migrate every `slint::invoke_from_event_loop(... upgrade()
   ...)` site to use it (12 call sites).
 
-Phase 6:
-- [ ] Drop `AppearanceMode` enum + Rust mapper functions
-  (`config_to_slint_mode`, `slint_to_config_mode`).
-- [ ] Settings pane writes `Palette.color-scheme` directly.
-- [ ] Verify System mode round-trip works after a forced toggle.
+Phase 6 — done (pivoted to "no toggle"):
+- [x] Verify System mode round-trip works after a forced
+  toggle. Outcome: doesn't — once `Palette.color-scheme` is
+  written, the initial portal binding is broken and there's
+  no public way to re-establish it.
+- [x] Pivot: drop the user-facing toggle entirely. App
+  follows `Palette.color-scheme` (live from xdg portal) and
+  has no override.
+- [x] Drop `AppearanceMode` enum from `theme.slint`,
+  `Theme.mode`, derived dark-mode branching.
+- [x] `Theme.dark-mode` collapses to a one-line alias
+  `Palette.color-scheme == ColorScheme.dark`.
+- [x] Drop `globals/settings.slint` (was a single empty
+  callback after the toggle removal).
+- [x] Drop appearance Group from `settings_pane.slint`;
+  pane now shows a placeholder for future settings.
+- [x] Drop `gui_config.rs`, `mod gui_config`, `GuiConfig`
+  load/save plumbing in `main.rs`.
+- [x] Drop `config_to_slint_mode` / `slint_to_config_mode`
+  mappers + `set_appearance_mode` initial push +
+  `on_appearance_mode_changed` registration.
+- [x] Drop `appearance-mode <=> Theme.mode` and
+  `AppearanceMode` import/export in `main.slint`.
 
 Phase 7:
 - [ ] Hover transitions on Btn / Chip / row backgrounds.

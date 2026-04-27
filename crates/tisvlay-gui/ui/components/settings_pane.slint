@@ -1,39 +1,16 @@
-// User-visible settings.
+// Settings pane.
 //
-// Currently: appearance only. Persistence is owned by Rust
-// (`src/gui_config.rs`); this pane drives `Theme.mode` for live
-// preview and fires `Settings.appearance-mode-changed` (global
-// callback) so Rust writes the choice to disk.
+// Currently empty — the only setting we used to expose
+// (light/dark/system) was removed in favor of always following the
+// desktop's color-scheme via `Palette.color-scheme` (driven live by
+// xdg-desktop-portal). Keeping the pane shell so the sidebar entry
+// has a target; future settings (e.g. "show tray notifications",
+// "default startup pane") can land here without re-plumbing.
 
-import { ComboBox, Palette } from "std-widgets.slint";
-import { Theme, AppearanceMode } from "../theme.slint";
+import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { Settings } from "../globals/settings.slint";
-import { Group } from "../widgets.slint";
 
 export component SettingsPane inherits Rectangle {
-    property <[string]> mode-options: ["System", "Light", "Dark"];
-
-    function mode-label(m: AppearanceMode) -> string {
-        if (m == AppearanceMode.light) {
-            return "Light";
-        }
-        if (m == AppearanceMode.dark) {
-            return "Dark";
-        }
-        return "System";
-    }
-
-    function label-mode(s: string) -> AppearanceMode {
-        if (s == "Light") {
-            return AppearanceMode.light;
-        }
-        if (s == "Dark") {
-            return AppearanceMode.dark;
-        }
-        return AppearanceMode.system;
-    }
-
     background: Theme.surface-alt;
 
     VerticalLayout {
@@ -53,62 +30,13 @@ export component SettingsPane inherits Rectangle {
             font-weight: 700;
         }
 
-        Group {
-            title: "APPEARANCE";
-
-            VerticalLayout {
-                width: 100%;
-                spacing: 10px;
-
-                HorizontalLayout {
-                    width: 100%;
-                    spacing: Design.gap-row;
-                    alignment: stretch;
-
-                    VerticalLayout {
-                        width: 140px;
-                        alignment: center;
-                        Text {
-                            text: "Theme";
-                            color: Theme.text;
-                            font-size: Design.font-body;
-                        }
-                    }
-
-                    HorizontalLayout {
-                        horizontal-stretch: 1;
-                        alignment: start;
-                        ComboBox {
-                            min-width: 200px;
-                            max-width: 220px;
-                            model: root.mode-options;
-                            current-value: root.mode-label(Theme.mode);
-                            selected(label) => {
-                                Theme.mode = root.label-mode(label);
-                                Settings.appearance-mode-changed(root.label-mode(label));
-                            }
-                        }
-                    }
-                }
-
-                if Theme.mode == AppearanceMode.system: HorizontalLayout {
-                    width: 100%;
-                    padding-left: 154px;
-                    Text {
-                        text: Palette.color-scheme == ColorScheme.dark
-                            ? "Following your desktop setting (currently: dark)."
-                          : Palette.color-scheme == ColorScheme.light
-                            ? "Following your desktop setting (currently: light)."
-                          : "Following your desktop setting (no preference detected — defaulting to light).";
-                        color: Theme.text-faint;
-                        font-size: Design.font-caption;
-                        wrap: word-wrap;
-                    }
-                }
-            }
+        Text {
+            text: "No user-facing settings yet. Appearance follows your desktop's color-scheme automatically.";
+            color: Theme.text-dim;
+            font-size: Design.font-body;
+            wrap: word-wrap;
         }
 
-        // Spacer pushes content to the top.
         Rectangle { vertical-stretch: 1; }
     }
 }

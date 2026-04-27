@@ -1,16 +1,15 @@
 import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
-import { Theme, AppearanceMode } from "theme.slint";
+import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 import { Daemon } from "globals/daemon.slint";
 import { PairingWizard } from "globals/pairing_wizard.slint";
-import { Settings } from "globals/settings.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
 import { AboutPane } from "components/about_pane.slint";
 
-export { TvViewModel, Theme, AppearanceMode, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard, Settings }
+export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard }
 
 export enum Pane {
     tvs,
@@ -63,16 +62,10 @@ export component AppWindow inherits Window {
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
 
-    // Appearance mode is bound to `Theme.mode` two-ways. Rust seeds
-    // it from `gui.toml` at startup; the Settings pane writes it
-    // via `Settings.appearance-mode-changed`, which Rust persists.
-    // (Phase 6 of plan4 may collapse this further.)
-    in-out property <AppearanceMode> appearance-mode <=> Theme.mode;
-
     // Daemon callbacks moved to `Daemon` global (globals/daemon.slint).
     // Wizard callbacks + state moved to `PairingWizard` global
-    // (globals/pairing_wizard.slint). Settings notifications moved to
-    // `Settings` global (globals/settings.slint).
+    // (globals/pairing_wizard.slint). Appearance follows
+    // `Palette.color-scheme` directly — no app-level setting.
 
     HorizontalBox {
         padding: 0;
