@@ -64,14 +64,6 @@ fn detect_icon_theme() -> Option<String> {
 /// 16/22/24/32/64 buckets unevenly — 22 is the most universally
 /// populated and Slint downscales cleanly to the rendered 16×16.
 ///
-/// Pre-patches the SVG to swap `currentColor` for an explicit
-/// `#ffffff` before handing it to Slint: Breeze's symbolic icons
-/// rely on a `<style> .ColorScheme-Text { color:#... }` cascade
-/// that usvg's default options (which Slint uses) don't resolve,
-/// and the fill renders transparent. With an explicit color, the
-/// silhouette is solid white and `Image.colorize` re-tints it to
-/// whatever brush the call site binds.
-///
 /// Returns the default empty image on total miss; Slint draws
 /// nothing for an empty source so the SidebarItem layout degrades
 /// gracefully to label-only.
@@ -93,23 +85,7 @@ fn load_themed_icon(names: &[&str]) -> slint::Image {
             else {
                 continue;
             };
-            // Breeze's symbolic SVGs use `fill:currentColor` with a
-            // `<style> .ColorScheme-Text { color:#... }` cascade.
-            // usvg's default options (which Slint hands to resvg)
-            // don't resolve `currentColor` in this form, so the
-            // path renders transparent and `Image.colorize` has
-            // nothing to tint. Pre-patching the source to swap
-            // `currentColor` for an explicit color gives resvg a
-            // literal silhouette; `colorize` then re-tints to
-            // `tint` at the call site.
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            let patched = text.replace("currentColor", "#ffffff");
-            match slint::Image::load_from_svg_data(patched.as_bytes()) {
+            match slint::Image::load_from_path(&path) {
                 Ok(img) => {
                     debug!(
                         icon = name,
@@ -125,7 +101,7 @@ fn load_themed_icon(names: &[&str]) -> slint::Image {
                         theme = theme,
                         path = %path.display(),
                         error = ?e,
-                        "found path but Slint couldn't load patched SVG",
+                        "found path but Slint couldn't load",
                     );
                 }
             }
