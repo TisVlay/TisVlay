@@ -1,21 +1,22 @@
 # Plan 4 — Slint architecture sweep
 
-> **Status (in progress):** Phases 1 and 2 shipped. Phase 3 is
-> partial — style stayed on `fluent` (default, no `with_style`
-> override) after a cosmic + qt experiment loop; cosmic looked
-> acceptable but no clearer win than fluent, and qt added a hard
-> Qt6 runtime dep we don't want for shipping (recorded in commit
-> `f22e54b` + revert `dd6fb74` for future reference). With fluent
-> as the chosen target, an empirical wrapper-by-wrapper test
-> showed `ThemedCheckBox` / `ThemedSelect` / `ThemedTextInput`
-> were leftover from an older Slint state and unnecessary on
-> Slint 1.16 + KDE Plasma. Dropped CheckBox / Select wrappers
-> directly; replaced TextInput with a thin `LineEditField`
-> wrapper that overlays a higher-contrast placeholder (Slint's
-> `LineEdit` doesn't expose `placeholder-color`).
+> **Status (in progress):** Phases 1, 2, and 3 shipped. Phase
+> 3 went further than the original "cosmic vs fluent" framing:
+> after a cosmic + qt experiment loop (cosmic was acceptable
+> but not clearly better, qt added a hard Qt6 runtime dep —
+> recorded in commit `f22e54b` + revert `dd6fb74`), fluent
+> stayed the default. An empirical wrapper-by-wrapper test
+> dropped `ThemedCheckBox` / `ThemedSelect` / `ThemedTextInput`
+> in favor of std-widgets, replaced `Btn` (default + accent
+> sites) with std-widgets `Button` and renamed the surviving
+> red-only widget to `DangerBtn`, and added a thin
+> `LineEditField` wrapper to fix std `LineEdit`'s
+> low-contrast placeholder. The `theme.slint` audit pruned 3
+> dead tokens; the broader Theme→Palette swap turned out to
+> be a visual-identity choice rather than mechanical, so
+> Theme stays.
 >
-> Still open: Phase 3's `theme.slint` audit, and Phases 4-7.
-> See per-phase Status notes below.
+> Still open: Phases 4-7.
 
 A full pass through the GUI's Slint setup against Slint's own
 documented patterns. Driven by the realization (during the
@@ -416,8 +417,19 @@ to keep concerns separated.
 > intent). Variant logic in the wrapper collapsed: dropped
 > `variant` / `is-accent` / `is-filled` branches.
 >
-> **Still open**: `theme.slint` brush-by-brush audit. Notes
-> below.
+> **theme.slint outcome**: audited. Pruned 3 dead tokens
+> (`bg`, `accent-pressed`, `track`). The contemplated
+> mechanical swap (`Theme.text` → `Palette.foreground`,
+> `Theme.border` → `Palette.border`, `Theme.accent` →
+> `Palette.accent-background`, `Theme.surface-alt` →
+> `Palette.alternate-background`) turned out to be a
+> visual-identity decision rather than a refactor: each
+> mapping has materially different rendering (alpha vs
+> solid borders, softer grey-blue text vs near-black,
+> fluent's accent vs Breeze blue). Theme stays — the
+> remaining tokens are domain-specific (3-tier surface
+> stack, 3-tier text hierarchy, chip / status / sidebar /
+> row state, Breeze accent) and not duplicates of Palette.
 
 ### Why
 
@@ -765,11 +777,19 @@ Phase 3 — partial:
   destructive in `ConfirmDialog`. Side-by-side rendering
   in the ConfirmDialog (std `Button` Cancel + `DangerBtn`
   Remove) verified visually on KDE Plasma.
-- [ ] Audit `theme.slint` brush-by-brush: replace
-  surface/text/accent/etc. with `Palette.*` references at call
-  sites where they line up; delete the corresponding brushes
-  from `Theme`. Keep what genuinely doesn't fit `Palette`
-  (status colors, chip palettes).
+- [x] Audit `theme.slint` brush-by-brush. Dropped 3 dead
+  tokens (`bg`, `accent-pressed`, `track`). The broader swap
+  to `Palette.*` was evaluated and deliberately not done:
+  `Palette.foreground` (`#000000E6` / `#FFFFFF`) vs
+  `Theme.text` (softer grey-blue), `Palette.border` (alpha)
+  vs `Theme.border` (solid grey), `Palette.accent-background`
+  (fluent's blue) vs `Theme.accent` (hard-coded Breeze blue),
+  and `Palette.alternate-background` vs `Theme.surface-alt`
+  all differ enough to be visual-identity changes, not
+  mechanical refactors. What remains in `Theme` is doing
+  real work: 3-tier surface stack, 3-tier text hierarchy,
+  domain tokens (chip / status / sidebar / row state), and
+  the Breeze accent identity.
 
 Phase 4:
 - [ ] `rg -n "changed " crates/tisvlay-gui/ui/` and convert each

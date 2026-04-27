@@ -33,7 +33,6 @@ export global Theme {
       : Palette.color-scheme == ColorScheme.dark;
 
     // -- Surfaces --
-    out property <brush> bg: dark-mode ? #1b1e23 : #fbfbfc;
     out property <brush> surface: dark-mode ? #232730 : #ffffff;
     out property <brush> surface2: dark-mode ? #2b2f39 : #f4f5f7;
     out property <brush> surface-alt: dark-mode ? #262a33 : #f9fafb;
@@ -57,10 +56,6 @@ export global Theme {
     // -- Accent (Breeze blue, theme-stable) --
     out property <brush> accent: #3daee9;
     out property <brush> accent-soft: dark-mode ? #1c3a4d : #e3f3fc;
-    /// Hover/pressed state for filled accent buttons. Light-mode →
-    /// darker accent (still keeps white text legible); dark-mode →
-    /// slightly lighter so the bg shifts visibly against the surface.
-    out property <brush> accent-pressed: dark-mode ? #5dc4f5 : #2c8fc4;
 
     // -- Status colors --
     out property <brush> success: dark-mode ? #34d399 : #10b981;
@@ -87,7 +82,4 @@ export global Theme {
     out property <brush> row-hover: dark-mode ? #2b2f39 : #f4f5f7;
     out property <brush> row-selected: dark-mode ? #1c3a4d : #e3f3fc;
     out property <brush> row-selected-text: dark-mode ? #a5d8f0 : #0e6e9c;
-
-    // -- Misc --
-    out property <brush> track: dark-mode ? #383d48 : #e1e4ea;
 }
