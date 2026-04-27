@@ -36,6 +36,7 @@
         "rustup",
         "serde",
         "SIGPIPE",
+        "slint",
         "socat",
         "SSAP",
         "ssdp",
