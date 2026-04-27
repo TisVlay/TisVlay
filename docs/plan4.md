@@ -978,16 +978,21 @@ Phase 7 — done:
   the pair-step in-progress card.
 - [ ] Smoke-test with `SLINT_SLOW_ANIMATIONS=4` — user QA.
 
-Cross-cutting:
-- [ ] Update `crates/tisvlay-gui/ui/main.slint` doc-comment
-  describing the AppWindow surface — should reflect the new
-  globals-callback model.
-- [ ] Sweep `docs/design.md` for any GUI-architecture
-  paragraphs (probably none, but check).
-- [ ] Sweep `.claude/CLAUDE.md` for stale GUI patterns (callback
-  examples, theme references).
-- [ ] Close out `plan4.md` with a status header when done
-  (matching the pattern of `plan2.md` / `plan3.md`).
+Cross-cutting — done:
+- [x] Add a top-of-file doc-comment to
+  `crates/tisvlay-gui/ui/main.slint` describing the post-sweep
+  architecture (globals callbacks, Palette-driven theming,
+  Rust-side gating, animation reference).
+- [x] Sweep `docs/design.md`. Nothing stale at the level it
+  describes — the GUI Configuration "future work" framing is
+  still accurate (M1 shipped read-only view; richer
+  configuration UI is genuinely still pending). plan4 was
+  internal refactoring, not new user features.
+- [x] Sweep `.claude/CLAUDE.md`. Same conclusion — the GUI
+  references stay at the level of "Slint-based settings
+  window" and don't pin specifics that the sweep changed.
+- [x] Close out `plan4.md` with a status header (this file
+  now opens with `Status (done)`).
 
 ## What to keep (rationale)
 

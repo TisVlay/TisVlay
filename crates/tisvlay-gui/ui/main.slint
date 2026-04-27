@@ -1,3 +1,18 @@
+// AppWindow root.
+//
+// Architecture (post plan4 sweep):
+//   - Cross-pane callbacks live on globals (`Daemon`,
+//     `PairingWizard`) — components call e.g. `Daemon.set-volume(...)`
+//     directly instead of forwarding through every parent.
+//   - Theming follows `Palette.color-scheme` (live xdg-desktop-portal),
+//     no app-level appearance toggle.
+//   - Convergence gating for slider values lives in Rust
+//     (`tisvlay-core::ReconcilerMap`); Slint stays a thin view.
+//   - Animations: see `widgets.slint` (`PulseDot`, `SpinnerArc`,
+//     `ScanLine`) and the per-call-site `animate background { ... }`
+//     hover transitions, all aligned with
+//     `.claude/ui/pairing-wizard-motion.md`.
+
 import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
