@@ -7,15 +7,15 @@
 // plus a handful of bespoke primitives below (Chip, VendorTile, Group,
 // FormRow) — no exotic styling.
 
-import { ComboBox, ListView, ScrollView, VerticalBox, HorizontalBox, Switch } from "std-widgets.slint";
+import { Button, ComboBox, ListView, ScrollView, VerticalBox, HorizontalBox, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
-import { Btn, Chip, Group, OptimisticSlider } from "../widgets.slint";
+import { DangerBtn, Chip, Group, OptimisticSlider } from "../widgets.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 
-export { WizardDiscoveredTv, VendorOption, Btn, Chip, Group }
+export { WizardDiscoveredTv, VendorOption, DangerBtn, Chip, Group }
 
 export struct TvViewModel {
     id: string,
@@ -538,9 +538,9 @@ component TvDetail inherits Rectangle {
                         spacing: Design.gap-row;
                         alignment: stretch;
 
-                        Btn {
+                        Button {
                             text: root.tv.connected ? "Power off" : "Power on";
-                            variant: root.tv.connected ? "default" : "accent";
+                            primary: !root.tv.connected;
                             // Disable while a power-cycle is in flight (any
                             // non-empty phase that isn't "connected" / "failed").
                             enabled: root.tv.power-cycle-phase == ""
@@ -766,9 +766,8 @@ component TvDetail inherits Rectangle {
                         }
                         VerticalLayout {
                             alignment: center;
-                            Btn {
+                            DangerBtn {
                                 text: "Remove TV";
-                                variant: "danger";
                                 clicked => { root.request-remove(); }
                             }
                         }
@@ -864,13 +863,12 @@ component ConfirmDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: Design.gap-stack;
                 alignment: end;
-                Btn {
+                Button {
                     text: "Cancel";
                     clicked => { root.cancelled(); }
                 }
-                Btn {
+                DangerBtn {
                     text: root.confirm-label;
-                    variant: "danger";
                     clicked => { root.confirmed(); }
                 }
             }

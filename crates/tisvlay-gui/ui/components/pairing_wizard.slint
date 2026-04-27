@@ -12,11 +12,11 @@
 // callback interfaces and the outer pane forwards them to the
 // global.
 
-import { CheckBox, ComboBox, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
-import { Chip, Btn, LineEditField } from "../widgets.slint";
+import { Chip, LineEditField } from "../widgets.slint";
 
 // =============================================================================
 // Stepper — 4 numbered circles with labels, connected by lines.
@@ -479,9 +479,8 @@ component StepDiscover {
 
                     VerticalLayout {
                         alignment: end;
-                        Btn {
+                        Button {
                             text: "Add manually";
-                            variant: "default";
                             enabled: root.manual-ip != "";
                             clicked => { root.manual-add(); }
                         }
@@ -732,12 +731,12 @@ component StepPair {
             if root.phase == "failed": HorizontalLayout {
                 alignment: center;
                 spacing: Design.gap-stack;
-                Btn {
+                Button {
                     text: "Retry pairing";
-                    variant: "accent";
+                    primary: true;
                     clicked => { root.retry(); }
                 }
-                Btn {
+                Button {
                     text: "Back to discovery";
                     clicked => { root.back-to-discovery(); }
                 }
@@ -973,18 +972,18 @@ export component PairingWizardPane inherits Rectangle {
                 spacing: Design.gap-stack;
                 alignment: stretch;
 
-                if PairingWizard.step != 4: Btn {
+                if PairingWizard.step != 4: Button {
                     text: "Cancel";
                     clicked => { PairingWizard.cancel(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                if PairingWizard.step == 2 || (PairingWizard.step == 3 && PairingWizard.pair-phase != "awaiting_tv" && PairingWizard.pair-phase != "awaiting_input"): Btn {
+                if PairingWizard.step == 2 || (PairingWizard.step == 3 && PairingWizard.pair-phase != "awaiting_tv" && PairingWizard.pair-phase != "awaiting_input"): Button {
                     text: "Back";
                     clicked => { PairingWizard.step-back(); }
                 }
-                Btn {
+                Button {
                     text: root.next-label;
-                    variant: "accent";
+                    primary: true;
                     enabled: root.next-enabled;
                     clicked => {
                         if (PairingWizard.step == 4) {

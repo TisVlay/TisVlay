@@ -14,8 +14,8 @@
 > wrapper that overlays a higher-contrast placeholder (Slint's
 > `LineEdit` doesn't expose `placeholder-color`).
 >
-> Still open: Phase 3's `Btn` experiment + `theme.slint` audit,
-> and Phases 4-7. See per-phase Status notes below.
+> Still open: Phase 3's `theme.slint` audit, and Phases 4-7.
+> See per-phase Status notes below.
 
 A full pass through the GUI's Slint setup against Slint's own
 documented patterns. Driven by the realization (during the
@@ -405,8 +405,19 @@ to keep concerns separated.
 >   overlays its own `Text` at `Theme.text-faint`. Also
 >   forwards `font-family` so IP / MAC inputs stay monospace.
 >
-> **Still open**: `Btn` swap experiment + `theme.slint`
-> brush-by-brush audit. Notes below.
+> **Btn outcome**: 8 of 10 sites (default + accent) swapped
+> to std-widgets `Button`; the 2 danger sites (Remove TV,
+> confirm-destroy in `ConfirmDialog`) kept on a renamed
+> `DangerBtn` since std `Button` has no danger variant. The
+> ConfirmDialog's std `Button` Cancel sitting next to a
+> `DangerBtn` Remove looks consistent on KDE Plasma; both
+> render at 32px height, 4px border-radius, with the danger
+> button distinguishable by color alone (which is the
+> intent). Variant logic in the wrapper collapsed: dropped
+> `variant` / `is-accent` / `is-filled` branches.
+>
+> **Still open**: `theme.slint` brush-by-brush audit. Notes
+> below.
 
 ### Why
 
@@ -745,11 +756,15 @@ Phase 3 — partial:
 - [x] Replace `ThemedTextInput` with `LineEditField` (thin
   wrapper around std `LineEdit` with overlaid high-contrast
   placeholder, supports `font-family` for IP/MAC monospace).
-- [ ] `Btn` swap experiment: 5 of 6 sites map cleanly to
-  std-widgets `Button` (`primary: variant == "accent"`). The
-  6th is `variant: "danger"` (Remove TV) — `Button` has no
-  danger variant. Decide whether to keep `Btn` for danger
-  alone or for all variants.
+- [x] `Btn` swap experiment: 8 default/accent sites swapped to
+  std-widgets `Button` (`primary: !connected` for the dynamic
+  Power on/off site, `primary: true` for explicit accent).
+  `Btn` renamed to `DangerBtn` and trimmed to a single-purpose
+  red button (drops the `variant` property + `is-accent` /
+  `is-filled` branches). 2 call sites: Remove TV + confirm
+  destructive in `ConfirmDialog`. Side-by-side rendering
+  in the ConfirmDialog (std `Button` Cancel + `DangerBtn`
+  Remove) verified visually on KDE Plasma.
 - [ ] Audit `theme.slint` brush-by-brush: replace
   surface/text/accent/etc. with `Palette.*` references at call
   sites where they line up; delete the corresponding brushes

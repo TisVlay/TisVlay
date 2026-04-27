@@ -59,40 +59,20 @@ export component Chip inherits Rectangle {
 }
 
 // =============================================================================
-// Btn — themed button with explicit colors per variant + state.
+// DangerBtn — destructive-action button (red bg, white text).
 // =============================================================================
 //
-// Slint's std-widgets `Button` defers to the platform style (Fluent on
-// Linux). On unfocused windows + disabled state, that combination
-// produces text contrast far below the design's mockups. This widget
-// drives every color from `Theme.*` directly so the rendering is
-// stable across focus states.
-//
-// `variant` selects the palette:
-//   "default" — light bg, border, dark text  (Cancel / Back)
-//   "accent"  — accent bg, white text         (Next / Pair / Close)
-//   "danger"  — danger bg, white text         (Remove TV)
+// Std-widgets `Button` has `primary: bool` for accent emphasis but no
+// danger variant. We keep this one custom button for actions like
+// "Remove TV" / confirm-destroy where the user needs a visible
+// "this is destructive" cue. Defaults & accent buttons use std
+// `Button` directly.
 
-export component Btn inherits Rectangle {
+export component DangerBtn inherits Rectangle {
     in property <string> text;
-    /// One of: "default", "accent", "danger".
-    in property <string> variant: "default";
     in property <bool> enabled: true;
     in property <length> min-button-width: 80px;
     callback clicked();
-
-    property <bool> is-accent: variant == "accent";
-    property <bool> is-danger: variant == "danger";
-    property <bool> is-filled: is-accent || is-danger;
-
-    // Manually compute resolved colors for clarity at the bind sites.
-    property <brush> filled-bg: is-danger ? Theme.danger : Theme.accent;
-    // Filled buttons darken slightly on hover instead of falling
-    // through to `accent-soft` — the soft variant is meant for
-    // selection backgrounds (dark text on light bg), not for filled
-    // hover states (which keep white text and need a darker bg to
-    // stay legible).
-    property <brush> filled-bg-hover: is-danger ? Theme.danger-pressed : Theme.accent-pressed;
 
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -101,16 +81,12 @@ export component Btn inherits Rectangle {
 
     background: !enabled
         ? Theme.surface2
-        : is-filled
-            ? (touch.has-hover ? filled-bg-hover : filled-bg)
-            : (touch.pressed ? Theme.surface2
-              : touch.has-hover ? Theme.row-hover
-              : Theme.surface);
+        : touch.has-hover ? Theme.danger-pressed
+        : Theme.danger;
     border-color: !enabled
         ? Theme.border
-        : is-filled
-            ? (touch.has-hover ? filled-bg-hover : filled-bg)
-            : Theme.border-strong;
+        : touch.has-hover ? Theme.danger-pressed
+        : Theme.danger;
     border-width: Design.border-thin;
     border-radius: Design.radius-control;
 
@@ -122,11 +98,7 @@ export component Btn inherits Rectangle {
         alignment: center;
         Text {
             text: root.text;
-            color: !root.enabled
-                ? Theme.text-faint
-                : root.is-filled
-                    ? white
-                    : Theme.text;
+            color: !root.enabled ? Theme.text-faint : white;
             font-size: Design.font-body;
             font-weight: 500;
             vertical-alignment: center;
