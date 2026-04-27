@@ -16,7 +16,9 @@
 > be a visual-identity choice rather than mechanical, so
 > Theme stays.
 >
-> Still open: Phases 4-7.
+> Still open: Phases 6-7. (Phase 4 was a survey — no
+> conversions needed; Phase 5 added the `on_ui` helper and
+> migrated 12 call sites; see per-phase notes.)
 
 A full pass through the GUI's Slint setup against Slint's own
 documented patterns. Driven by the realization (during the
@@ -565,6 +567,20 @@ branching.
 
 ## Phase 4 — Computed bindings replace `changed` handlers
 
+> **Status (done):** Survey-only outcome. The codebase has
+> exactly one property `changed` handler — the documented
+> passthrough `changed model-value => { display = model-value;
+> }` in `OptimisticSlider`, which restores the `<=>` binding
+> broken by user drag and explicitly cannot be a computed
+> binding (covered by inline rationale at `widgets.slint:231`
+> and Phase 1's notes). All other `changed` matches in `rg`
+> are either (a) `Slider`'s built-in `changed(value)` callback
+> (side-effect forwarding to `committed` — legitimate use of
+> `changed`), or (b) callback declarations / invocations with
+> `-changed` in the name (e.g. `selection-changed`,
+> `appearance-mode-changed`). No conversions made; no code
+> change.
+
 ### Why
 
 [Slint properties guide](../libs/slint/docs/astro/src/content/docs/guide/language/coding/properties.mdx)
@@ -604,6 +620,13 @@ construction (computed binding has the same value as the imperative
 assignment).
 
 ## Phase 5 — `on_ui` helper
+
+> **Status (done):** Helper added near the top of
+> `tisvlay-gui/src/main.rs`. Takes `&Weak<AppWindow>` (clones
+> internally) so callers don't need to clone before calling.
+> Migrated all 12 `invoke_from_event_loop(move || { if let
+> Some(app) = ...upgrade() { ... } })` sites in `main.rs` —
+> the wrapper hides the clone + upgrade + `.ok()` boilerplate.
 
 ### Why
 
@@ -791,14 +814,16 @@ Phase 3 — partial:
   domain tokens (chip / status / sidebar / row state), and
   the Breeze accent identity.
 
-Phase 4:
-- [ ] `rg -n "changed " crates/tisvlay-gui/ui/` and convert each
-  pure-derive site to an `out property` computed binding.
+Phase 4 — done:
+- [x] Surveyed `rg -n "changed " crates/tisvlay-gui/ui/`. Only
+  one property `changed` handler exists (the documented
+  `OptimisticSlider` passthrough). No pure-derive sites to
+  convert.
 
-Phase 5:
-- [ ] Add `on_ui` helper near top of `main.rs`.
-- [ ] Migrate every `slint::invoke_from_event_loop(... upgrade()
-  ...)` site to use it.
+Phase 5 — done:
+- [x] Add `on_ui` helper near top of `main.rs`.
+- [x] Migrate every `slint::invoke_from_event_loop(... upgrade()
+  ...)` site to use it (12 call sites).
 
 Phase 6:
 - [ ] Drop `AppearanceMode` enum + Rust mapper functions

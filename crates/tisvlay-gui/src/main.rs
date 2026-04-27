@@ -33,6 +33,23 @@ use crate::state::{StateSnapshot, fetch_state};
 
 slint::include_modules!();
 
+/// Marshal a UI-touching closure onto the Slint event loop. Clones
+/// the weak ref internally so callers can pass it by reference; if
+/// the `AppWindow` has been dropped by the time the closure runs,
+/// it is silently skipped.
+fn on_ui<F>(weak: &slint::Weak<AppWindow>, f: F)
+where
+    F: FnOnce(AppWindow) + Send + 'static,
+{
+    let weak = weak.clone();
+    slint::invoke_from_event_loop(move || {
+        if let Some(app) = weak.upgrade() {
+            f(app);
+        }
+    })
+    .ok();
+}
+
 /// Per-(tv_id, property) reconciler maps for ramping TV-state values.
 /// User input dispatches through `volume.dispatch` / `backlight.dispatch`
 /// before the daemon write; the refresh path observes every fetched
@@ -709,27 +726,19 @@ async fn run_wizard_discovery(daemon: Arc<DaemonClient>, app_weak: slint::Weak<A
                     hw_model: SharedString::from(hw_id.model.unwrap_or_default()),
                 })
                 .collect();
-            let app_weak = app_weak.clone();
-            slint::invoke_from_event_loop(move || {
-                if let Some(app) = app_weak.upgrade() {
-                    let wizard = app.global::<PairingWizard>();
-                    wizard.set_discovered(ModelRc::new(VecModel::from(rows)));
-                    wizard.set_discovery_streaming(false);
-                }
-            })
-            .ok();
+            on_ui(&app_weak, move |app| {
+                let wizard = app.global::<PairingWizard>();
+                wizard.set_discovered(ModelRc::new(VecModel::from(rows)));
+                wizard.set_discovery_streaming(false);
+            });
         }
         Err(e) => {
             let msg = format!("{e}");
-            let app_weak = app_weak.clone();
-            slint::invoke_from_event_loop(move || {
-                if let Some(app) = app_weak.upgrade() {
-                    let wizard = app.global::<PairingWizard>();
-                    wizard.set_discovery_streaming(false);
-                    wizard.set_discovery_error(SharedString::from(msg));
-                }
-            })
-            .ok();
+            on_ui(&app_weak, move |app| {
+                let wizard = app.global::<PairingWizard>();
+                wizard.set_discovery_streaming(false);
+                wizard.set_discovery_error(SharedString::from(msg));
+            });
         }
     }
 }
@@ -777,15 +786,11 @@ async fn run_wizard_pair(
     let drainer = tokio::spawn(async move {
         let mut s = std::pin::pin!(stream);
         while let Some((_tv_id, phase, message)) = s.next().await {
-            let drainer_weak = drainer_weak.clone();
-            slint::invoke_from_event_loop(move || {
-                if let Some(app) = drainer_weak.upgrade() {
-                    let wizard = app.global::<PairingWizard>();
-                    wizard.set_pair_phase(SharedString::from(phase));
-                    wizard.set_pair_message(SharedString::from(message));
-                }
-            })
-            .ok();
+            on_ui(&drainer_weak, move |app| {
+                let wizard = app.global::<PairingWizard>();
+                wizard.set_pair_phase(SharedString::from(phase));
+                wizard.set_pair_message(SharedString::from(message));
+            });
         }
     });
 
@@ -793,25 +798,21 @@ async fn run_wizard_pair(
     let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
     drainer.abort();
 
-    let app_weak = app_weak.clone();
-    slint::invoke_from_event_loop(move || {
-        if let Some(app) = app_weak.upgrade() {
-            let wizard = app.global::<PairingWizard>();
-            match result {
-                Ok(_tv_id) => {
-                    wizard.set_pair_phase("complete".into());
-                    if wizard.get_pair_message().is_empty() {
-                        wizard.set_pair_message("Client key stored.".into());
-                    }
-                }
-                Err(e) => {
-                    wizard.set_pair_phase("failed".into());
-                    wizard.set_pair_message(SharedString::from(format!("{e}")));
+    on_ui(&app_weak, move |app| {
+        let wizard = app.global::<PairingWizard>();
+        match result {
+            Ok(_tv_id) => {
+                wizard.set_pair_phase("complete".into());
+                if wizard.get_pair_message().is_empty() {
+                    wizard.set_pair_message("Client key stored.".into());
                 }
             }
+            Err(e) => {
+                wizard.set_pair_phase("failed".into());
+                wizard.set_pair_message(SharedString::from(format!("{e}")));
+            }
         }
-    })
-    .ok();
+    });
 }
 
 /// Fallback pair flow when the PairingProgress subscription fails to
@@ -828,23 +829,19 @@ async fn run_pair_no_progress(
 ) {
     let config_json = build_pairing_config_json(&address, wake_id.as_deref());
     let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
-    let app_weak = app_weak.clone();
-    slint::invoke_from_event_loop(move || {
-        if let Some(app) = app_weak.upgrade() {
-            let wizard = app.global::<PairingWizard>();
-            match result {
-                Ok(_) => {
-                    wizard.set_pair_phase("complete".into());
-                    wizard.set_pair_message("Paired successfully.".into());
-                }
-                Err(e) => {
-                    wizard.set_pair_phase("failed".into());
-                    wizard.set_pair_message(SharedString::from(format!("{e}")));
-                }
+    on_ui(&app_weak, move |app| {
+        let wizard = app.global::<PairingWizard>();
+        match result {
+            Ok(_) => {
+                wizard.set_pair_phase("complete".into());
+                wizard.set_pair_message("Paired successfully.".into());
+            }
+            Err(e) => {
+                wizard.set_pair_phase("failed".into());
+                wizard.set_pair_message(SharedString::from(format!("{e}")));
             }
         }
-    })
-    .ok();
+    });
 }
 
 /// Subscribe to PowerCycleProgress for `tv_id`, fire `power_on`, and
@@ -886,12 +883,8 @@ fn update_power_cycle_phase(
     tv_id: &str,
     phase: Option<PowerCyclePhase>,
 ) {
-    let app_weak = app_weak.clone();
     let tv_id = tv_id.to_string();
-    slint::invoke_from_event_loop(move || {
-        let Some(app) = app_weak.upgrade() else {
-            return;
-        };
+    on_ui(app_weak, move |app| {
         let model = app.get_tvs();
         for i in 0..model.row_count() {
             let Some(mut row) = model.row_data(i) else {
@@ -907,8 +900,7 @@ fn update_power_cycle_phase(
             model.set_row_data(i, row);
             break;
         }
-    })
-    .ok();
+    });
 }
 
 async fn initial_fetch_and_watch(
@@ -938,32 +930,28 @@ async fn initial_fetch_and_watch(
         "Fetched supported vendors from daemon"
     );
 
-    let app_weak_init = app_weak.clone();
     let initial_daemon_available = initial_snapshot.is_some();
-    slint::invoke_from_event_loop(move || {
-        if let Some(app) = app_weak_init.upgrade() {
-            let wizard = app.global::<PairingWizard>();
-            if let Some(snapshot) = initial_snapshot {
-                push_snapshot(&app, snapshot);
-            }
-            let names: Vec<SharedString> = vendor_pairs
-                .iter()
-                .map(|(_, name)| SharedString::from(name.as_str()))
-                .collect();
-            let vendors: Vec<VendorOption> = vendor_pairs
-                .into_iter()
-                .map(|(id, name)| VendorOption {
-                    id: SharedString::from(id),
-                    name: SharedString::from(name),
-                })
-                .collect();
-            wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
-            wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
-            app.set_daemon_available(initial_daemon_available);
-            app.set_session_available(initial_session_available);
+    on_ui(&app_weak, move |app| {
+        let wizard = app.global::<PairingWizard>();
+        if let Some(snapshot) = initial_snapshot {
+            push_snapshot(&app, snapshot);
         }
-    })
-    .ok();
+        let names: Vec<SharedString> = vendor_pairs
+            .iter()
+            .map(|(_, name)| SharedString::from(name.as_str()))
+            .collect();
+        let vendors: Vec<VendorOption> = vendor_pairs
+            .into_iter()
+            .map(|(id, name)| VendorOption {
+                id: SharedString::from(id),
+                name: SharedString::from(name),
+            })
+            .collect();
+        wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
+        wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
+        app.set_daemon_available(initial_daemon_available);
+        app.set_session_available(initial_session_available);
+    });
 
     watch_state(daemon, session, reconcilers, app_weak).await;
 }
@@ -1035,39 +1023,27 @@ async fn watch_state(
                 trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
-                let cb_weak = app_weak.clone();
-                slint::invoke_from_event_loop(move || {
-                    if let Some(app) = cb_weak.upgrade() {
-                        app.set_daemon_available(false);
-                        app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
-                    }
-                })
-                .ok();
+                on_ui(&app_weak, move |app| {
+                    app.set_daemon_available(false);
+                    app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
+                });
             }
             StateEvent::SessionAppeared => {
                 if let Ok(client) = SessionClient::new().await
                     && client.is_available().await
                 {
                     *session.write().await = Some(client);
-                    let cb_weak = app_weak.clone();
-                    slint::invoke_from_event_loop(move || {
-                        if let Some(app) = cb_weak.upgrade() {
-                            app.set_session_available(true);
-                        }
-                    })
-                    .ok();
+                    on_ui(&app_weak, move |app| {
+                        app.set_session_available(true);
+                    });
                     trigger_refresh();
                 }
             }
             StateEvent::SessionDisappeared => {
                 *session.write().await = None;
-                let cb_weak = app_weak.clone();
-                slint::invoke_from_event_loop(move || {
-                    if let Some(app) = cb_weak.upgrade() {
-                        app.set_session_available(false);
-                    }
-                })
-                .ok();
+                on_ui(&app_weak, move |app| {
+                    app.set_session_available(false);
+                });
                 trigger_refresh();
             }
         }
@@ -1084,24 +1060,16 @@ async fn refresh(
     match fetch_state(daemon, session_ref.as_ref()).await {
         Ok(mut snapshot) => {
             reconcilers.reconcile(&mut snapshot);
-            let app_weak = app_weak.clone();
-            slint::invoke_from_event_loop(move || {
-                if let Some(app) = app_weak.upgrade() {
-                    push_snapshot(&app, snapshot);
-                    app.set_daemon_available(true);
-                }
-            })
-            .ok();
+            on_ui(app_weak, move |app| {
+                push_snapshot(&app, snapshot);
+                app.set_daemon_available(true);
+            });
         }
         Err(e) => {
             debug!(error = %e, "State refresh failed");
-            let app_weak = app_weak.clone();
-            slint::invoke_from_event_loop(move || {
-                if let Some(app) = app_weak.upgrade() {
-                    app.set_daemon_available(false);
-                }
-            })
-            .ok();
+            on_ui(app_weak, move |app| {
+                app.set_daemon_available(false);
+            });
         }
     }
 }
