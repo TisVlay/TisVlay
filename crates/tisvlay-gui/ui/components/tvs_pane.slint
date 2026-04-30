@@ -12,6 +12,7 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
+import { Icons } from "../globals/icons.slint";
 import { DangerBtn, Chip, Group, OptimisticSlider, CopyBtn } from "../widgets.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 
@@ -551,6 +552,8 @@ component TvDetail inherits Rectangle {
 
                         Button {
                             text: root.tv.connected ? "Power off" : "Power on";
+                            icon: Icons.shutdown;
+                            colorize-icon: true;
                             primary: !root.tv.connected;
                             // Disable while a power-cycle is in flight (any
                             // non-empty phase that isn't "connected" / "failed").
@@ -597,15 +600,6 @@ component TvDetail inherits Rectangle {
                                     toggled => { Daemon.set-managed(root.tv.id, self.checked); }
                                 }
                             }
-                            // if root.tv.automated: VerticalLayout {
-                            //     alignment: center;
-                            //     Text {
-                            //         text: "● automated now";
-                            //         color: Theme.accent;
-                            //         font-size: Design.font-caption;
-                            //         font-weight: 500;
-                            //     }
-                            // }
                         }
                     }
                 }

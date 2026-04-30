@@ -272,6 +272,11 @@ fn main() -> Result<()> {
     ]));
     app.set_about_icon(load_themed_icon(&["help-about", "dialog-information"]));
 
+    // Action-glyph icons resolved from the user's freedesktop theme
+    // and pushed onto the `Icons` global for any pane to reach.
+    let icons = app.global::<Icons>();
+    icons.set_shutdown(load_themed_icon(&["system-shutdown"]));
+
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing
     // helper, so we route the Slint-side `Clipboard.copy(value)`
