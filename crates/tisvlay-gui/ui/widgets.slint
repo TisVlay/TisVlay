@@ -59,14 +59,19 @@ export component Chip inherits Rectangle {
 }
 
 // =============================================================================
-// DangerBtn — destructive-action button (red bg, white text).
+// DangerBtn — destructive-action button (accent fill, white text).
 // =============================================================================
 //
-// Std-widgets `Button` has `primary: bool` for accent emphasis but no
-// danger variant. We keep this one custom button for actions like
-// "Remove TV" / confirm-destroy where the user needs a visible
-// "this is destructive" cue. Defaults & accent buttons use std
-// `Button` directly.
+// Originally used `Theme.danger` (red) to signal "this is
+// destructive", but Plasma users now expect their DE-chosen accent
+// to drive filled buttons consistently — a red button next to
+// otherwise-accent-tinted UI looks alien. We rely on placement
+// (right side, after a Cancel) and explicit wording to convey
+// destructive intent, matching the std-widgets `Button { primary }`
+// look. Kept as a separate component so call sites are
+// self-documenting (`DangerBtn { text: "Remove TV" }` reads
+// destructive-by-name, even though the rendering matches a primary
+// button).
 
 export component DangerBtn inherits Rectangle {
     in property <string> text;
@@ -81,12 +86,12 @@ export component DangerBtn inherits Rectangle {
 
     background: !enabled
         ? Theme.surface2
-        : touch.has-hover ? Theme.danger-pressed
-        : Theme.danger;
+        : touch.has-hover ? Theme.accent-pressed
+        : Theme.accent;
     border-color: !enabled
         ? Theme.border
-        : touch.has-hover ? Theme.danger-pressed
-        : Theme.danger;
+        : touch.has-hover ? Theme.accent-pressed
+        : Theme.accent;
     border-width: Design.border-thin;
     border-radius: Design.radius-control;
     animate background, border-color { duration: 150ms; }
