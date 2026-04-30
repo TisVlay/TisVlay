@@ -219,7 +219,7 @@ component TvListRow inherits Rectangle {
                         : (root.tv.automated ? "Automated" : "Managed");
                     color: !root.tv.managed
                         ? Theme.warn-text
-                        : (root.tv.automated ? Theme.success-text : Theme.accent);
+                        : (root.tv.automated ? Theme.success-text : Theme.info-text);
                     font-size: Design.font-mini;
                 }
             }
@@ -487,7 +487,7 @@ component TvDetailHeader inherits Rectangle {
                         : (root.tv.automated ? "Automated" : "Managed");
                     tone: !root.tv.managed
                         ? "warn"
-                        : (root.tv.automated ? "success" : "accent");
+                        : (root.tv.automated ? "success" : "info");
                 }
             }
         }

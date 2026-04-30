@@ -16,23 +16,23 @@ import { Design } from "design.slint";
 
 export component Chip inherits Rectangle {
     in property <string> label;
-    /// One of: "neutral", "success", "danger", "warn", "accent".
+    /// One of: "neutral", "success", "danger", "warn", "info".
     in property <string> tone: "neutral";
 
     property <brush> bg-color: tone == "success" ? Theme.success-soft
                               : tone == "danger" ? Theme.danger-soft
                               : tone == "warn" ? Theme.warn-soft
-                              : tone == "accent" ? Theme.accent-soft
+                              : tone == "info" ? Theme.info-soft
                               : Theme.chip;
     property <brush> fg-color: tone == "success" ? Theme.success-text
                               : tone == "danger" ? Theme.danger-text
                               : tone == "warn" ? Theme.warn-text
-                              : tone == "accent" ? Theme.accent
+                              : tone == "info" ? Theme.info-text
                               : Theme.chip-text;
     property <brush> br-color: tone == "success" ? Theme.success
                               : tone == "danger" ? Theme.danger
                               : tone == "warn" ? Theme.warn
-                              : tone == "accent" ? Theme.accent
+                              : tone == "info" ? Theme.info
                               : Theme.chip-border;
 
     background: bg-color;
