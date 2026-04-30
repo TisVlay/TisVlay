@@ -99,6 +99,7 @@ cov-ratchet lines=cov_baseline_lines: _cov-collect
 _daemon_log := "debug,zbus=warn,rustls=warn,tungstenite=warn"
 _session_log := "debug,zbus=warn"
 _tray_log := "debug,zbus=warn,ksni=warn"
+_gui_log := "debug,zbus=warn,slint=warn,winit=warn"
 
 # Start the daemon on the session bus (dev mode)
 [group('dev')]
@@ -131,12 +132,23 @@ tray-start:
 tray-start-system:
     RUST_LOG="{{ _tray_log }}" cargo run --bin tisvlay-tray
 
+# Start the GUI on the user session bus (paired with `daemon-start`)
+[group('dev')]
+gui-start:
+    RUST_LOG="{{ _gui_log }}" cargo run --bin tisvlay-gui -- --user
+
+# Start the GUI on the system bus
+[group('dev')]
+gui-start-system:
+    RUST_LOG="{{ _gui_log }}" cargo run --bin tisvlay-gui
+
 # Kill all running dev processes
 [group('dev')]
 stop-all:
     -pkill -f 'target/debug/tisvlayd'
     -pkill -f 'target/debug/tisvlay-session'
     -pkill -f 'target/debug/tisvlay-tray'
+    -pkill -f 'target/debug/tisvlay-gui'
     @echo "All stopped"
 
 # Show CLI status (manual smoke test)

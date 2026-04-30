@@ -74,14 +74,38 @@
             }
         },
         {
+            "label": "gui: start",
+            "type": "shell",
+            "command": "just gui-start",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "tisvlay"
+            }
+        },
+        {
+            "label": "gui: start (system bus)",
+            "type": "shell",
+            "command": "just gui-start-system",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "tisvlay"
+            }
+        },
+        {
             "label": "all: start",
-            "dependsOn": ["daemon: start", "session: start", "tray: start"],
+            "dependsOn": ["daemon: start", "session: start", "tray: start", "gui: start"],
             "dependsOrder": "parallel",
             "problemMatcher": []
         },
         {
             "label": "all: start (system bus)",
-            "dependsOn": ["daemon: start (system bus)", "session: start (system bus)", "tray: start (system bus)"],
+            "dependsOn": ["daemon: start (system bus)", "session: start (system bus)", "tray: start (system bus)", "gui: start (system bus)"],
             "dependsOrder": "parallel",
             "problemMatcher": []
         },
