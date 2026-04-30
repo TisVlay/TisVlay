@@ -301,7 +301,7 @@ component TvList inherits Rectangle {
                     border-radius: 12px;
                     background: !root.daemon-available
                         ? Theme.text-faint
-                        : (pair-touch.has-hover ? #2c8fc4 : Theme.accent);
+                        : (pair-touch.has-hover ? Theme.accent-pressed : Theme.accent);
                     animate background { duration: 150ms; }
 
                     Text {

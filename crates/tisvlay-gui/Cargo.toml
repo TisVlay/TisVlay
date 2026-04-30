@@ -41,6 +41,12 @@ clap = { workspace = true }
 # fallback). Same pattern the tray already uses, just done in-
 # process here because Slint has no built-in icon-theme resolver.
 freedesktop-icons = "0.4"
+# xdg-desktop-portal client. Only the `settings` portal is needed
+# (live `org.freedesktop.appearance.accent-color` for the user's
+# DE-chosen accent on KDE 6 / GNOME 46+ / Cosmic / Elementary).
+# Default features only pull in the tokio runtime selector — every
+# portal is opt-in, so this stays minimal.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection
 # during dev. Pinned to the exact slint version because the backend
