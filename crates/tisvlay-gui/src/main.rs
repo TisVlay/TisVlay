@@ -272,6 +272,23 @@ fn main() -> Result<()> {
     ]));
     app.set_about_icon(load_themed_icon(&["help-about", "dialog-information"]));
 
+    // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
+    // `Platform::set_clipboard_text` for backends but no app-facing
+    // helper, so we route the Slint-side `Clipboard.copy(value)`
+    // callback through `arboard`. Failures (no display server,
+    // sandbox without clipboard access) log a warning — the button
+    // appears to do nothing rather than panicking.
+    let clipboard = app.global::<Clipboard>();
+    clipboard.set_copy_icon(load_themed_icon(&["edit-copy"]));
+    clipboard.on_copy(|value| match arboard::Clipboard::new() {
+        Ok(mut cb) => {
+            if let Err(e) = cb.set_text(value.to_string()) {
+                warn!(error = %e, "clipboard write failed");
+            }
+        }
+        Err(e) => warn!(error = %e, "couldn't open clipboard"),
+    });
+
     // Build clients eagerly (synchronously, via block_on) so callbacks
     // can capture them at registration time. This briefly blocks the
     // main thread before `app.run()`, which is fine — these are local

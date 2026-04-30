@@ -7,6 +7,7 @@
 import { LineEdit, Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
+import { Clipboard } from "globals/clipboard.slint";
 
 // =============================================================================
 // Chip — small status pill (Connected, Managed, Unmanaged, etc.).
@@ -437,5 +438,44 @@ export component ScanLine inherits Rectangle {
         property <float> eased: phase * phase * (3.0 - 2.0 * phase);
         x: -self.width + (parent.width + self.width) * eased;
         background: @linear-gradient(90deg, transparent 0%, Theme.accent 50%, transparent 100%);
+    }
+}
+
+// =============================================================================
+// CopyBtn — square ghost button that copies a string to the clipboard.
+// =============================================================================
+//
+// Used next to read-only identifier values (TV ID, serial, MAC, …)
+// where the user might want to copy the value into another tool.
+// Glyph comes from `Clipboard.copy-icon` (Rust resolves it against
+// the freedesktop `edit-copy` name); when missing, the button still
+// renders a (mostly-blank) hit target so the action stays
+// reachable. Click fires `Clipboard.copy(value)` — Rust handles
+// the actual platform clipboard write.
+
+export component CopyBtn inherits Rectangle {
+    in property <string> value;
+
+    width: 24px;
+    height: 24px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    background: touch.has-hover ? Theme.row-hover : transparent;
+    border-radius: Design.radius-control;
+    animate background { duration: 150ms; }
+
+    Image {
+        source: Clipboard.copy-icon;
+        width: 14px;
+        height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        colorize: touch.has-hover ? Theme.text : Theme.text-dim;
+        opacity: touch.has-hover ? 1.0 : 0.7;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Clipboard.copy(root.value); }
     }
 }

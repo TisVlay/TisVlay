@@ -12,7 +12,7 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
-import { DangerBtn, Chip, Group, OptimisticSlider } from "../widgets.slint";
+import { DangerBtn, Chip, Group, OptimisticSlider, CopyBtn } from "../widgets.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 
 export { WizardDiscoveredTv, VendorOption, DangerBtn, Chip, Group }
@@ -399,6 +399,15 @@ component LabeledRow {
                 overflow: elide;
             }
         }
+
+        // Copy button — only when there's a real value to copy
+        // ("—" placeholder for empty fields gets nothing).
+        if root.value != "": VerticalLayout {
+            alignment: center;
+            CopyBtn {
+                value: root.value;
+            }
+        }
     }
 }
 
@@ -738,9 +747,9 @@ component TvDetail inherits Rectangle {
                     }
                 }
 
-                // -- Hardware identity --
+                // -- Info --
                 Group {
-                    title: "HARDWARE IDENTITY";
+                    title: "INFO";
 
                     LabeledRow { label: "TV ID"; value: root.tv.id; mono: true; }
                     LabeledRow { label: "Manufacturer"; value: root.tv.hw-manufacturer; }
