@@ -1802,6 +1802,7 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
             ip: raw.ip,
             connected: raw.connected,
             power_state: raw.power_state,
+            supports_wake: raw.supports_wake,
             is_screen_on: raw.is_screen_on,
             volume: raw.volume,
             muted: raw.muted,

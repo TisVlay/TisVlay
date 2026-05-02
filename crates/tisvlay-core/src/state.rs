@@ -7,16 +7,29 @@ use std::collections::HashMap;
 /// Phases a power-on (wake-and-connect) flow walks through.
 ///
 /// Emitted as a `(s)` D-Bus signal on `Tv1.Power.PowerCycleProgress`
-/// so GUIs can show staged feedback ("Sending wake-up..." → "Connecting..."
-/// → "Connected" / "Failed") instead of a single 5-30 s spinner. The
-/// backend's WoL packet send and connect-retry loop are atomic from
-/// the manager's view, so `WolSent` and `Connecting` fire back-to-back
-/// just before the manager calls `wake_and_connect_tv`; `Connected`
-/// or `Failed` fires after.
+/// so GUIs can show staged feedback ("Sending wake-up..." →
+/// "Connecting..." → "Connected" / "Failed") instead of a single
+/// 5-30 s spinner.
+///
+/// The manager picks one of two paths up front:
+///
+/// - **Direct-connect** (TV reachable already; just lost the WS):
+///   skip WoL, emit `DirectConnect` → `Connecting` → `Connected`.
+/// - **Wake-on-LAN** (TV in deep standby): emit `WolSent` →
+///   `Connecting` → `Connected`. The backend's WoL send + connect
+///   retry loop is atomic from the manager's view, so `WolSent`
+///   and `Connecting` fire back-to-back just before the call.
+///
+/// Either path terminates in `Connected` on success or `Failed` on
+/// failure. The wire string is stable; new phases get appended (not
+/// renumbered) so old clients keep working.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerCyclePhase {
     /// Wake-on-LAN packet has been (or is about to be) sent.
     WolSent,
+    /// Skipping WoL — TV reachable, going straight to connect.
+    /// Mutually exclusive with `WolSent` for a given power-on flow.
+    DirectConnect,
     /// Manager is attempting to establish a connection to the TV.
     Connecting,
     /// Connection succeeded; the TV is online.
@@ -30,6 +43,7 @@ impl PowerCyclePhase {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::WolSent => "wol_sent",
+            Self::DirectConnect => "direct_connect",
             Self::Connecting => "connecting",
             Self::Connected => "connected",
             Self::Failed => "failed",

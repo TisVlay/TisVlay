@@ -1,15 +1,17 @@
 # Plan 5 — Power-cycle robustness, MAC capture, vendor-agnostic config
 
-> **Status (in progress):** Phases 0, 1, 2, 3, 4 (Power), and 5
-> shipped. The office-TV silent-fail bug's full repair chain is
-> live end-to-end: typed errors surface; daemon ARPs the MAC
-> from the kernel after each SSDP hit and stuffs it into
-> `vendor_data`; the GUI wizard's step-2 form renders the LG
-> schema dynamically with autofill from `vendor_data`,
-> client-side validation lifecycle, server-side error routing,
-> and a Kirigami inline-error surface on the TVs pane. Phase 6
-> (smart Power button + connect-first PowerOn) is the last
-> remaining piece.
+> **Status (complete):** All in-scope phases shipped. The
+> office-TV silent-fail bug's full repair chain is live end-to-end:
+> typed errors surface; daemon ARPs the MAC from the kernel after
+> each SSDP hit and stuffs it into `vendor_data`; the GUI wizard's
+> step-2 form renders the LG schema dynamically with autofill from
+> `vendor_data`, client-side validation lifecycle, server-side
+> error routing, and a Kirigami inline-error surface on the TVs
+> pane. PowerOn probes direct-connect first and only falls through
+> to WoL when the TV is unreachable; the Power-on button disables
+> with an explanation when the TV is offline AND has no wake
+> method. Out-of-scope follow-ups (Phase 7 "Open logs", Phase 8
+> "Edit TV properties") are filed for future PRs.
 >
 > | Phase | Done | Commits |
 > |---|---|---|
@@ -26,10 +28,11 @@
 > | **3** — daemon enriches discovery with ARP-resolved MAC | ✅ | (ARP enrichment commit) |
 > | **2** — wizard renders dynamically (autofill from `vendor_data`) | ✅ | (schema-driven wizard commit) |
 > | **2** — per-field validation lifecycle + server-side routing | ✅ | (validation lifecycle commit) |
-> | **5** — Kirigami `InlineError` widget + `Errors` global | ✅ | (this commit) |
-> | **6** — smart Power button + connect-first | ⏳ next | |
+> | **5** — Kirigami `InlineError` widget + `Errors` global | ✅ | (Kirigami inline-error commit) |
+> | **6** — smart Power button + connect-first | ✅ | (this commit) |
+> | **4** — `PowerCyclePhase::DirectConnect` | ✅ | (this commit; landed alongside Phase 6) |
 > | **4b** — `Pairing` / `Config` / `Connection` typed errors | partial (Config only); rest deferred | |
-> | **4** — `PowerCyclePhase::DirectConnect` + typed `Failed` | deferred to Phase 6 | |
+> | **4** — typed `Failed { reason }` payload | deferred — `Failed` still wire-format `(s)`; carries no typed reason yet | |
 >
 > Original plan body below — references to "draft" / "open
 > questions" predate the resolved-question rounds; treat the

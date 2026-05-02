@@ -248,10 +248,18 @@ trait TisvlayTvPower {
     #[zbus(property)]
     fn power_state(&self) -> zbus::Result<String>;
 
+    /// Whether the vendor backend can wake the TV from standby.
+    /// Surfaces enough info for clients to gate the Power-on button
+    /// on `Connected || SupportsWake` — true means there's at least
+    /// one viable path to bring the TV online.
+    #[zbus(property)]
+    fn supports_wake(&self) -> zbus::Result<bool>;
+
     /// Phase transitions during a power-on flow.
     ///
-    /// Phase string is one of `wol_sent`, `connecting`, `connected`,
-    /// `failed` — see [`crate::PowerCyclePhase`] for the typed shape.
+    /// Phase string is one of `wol_sent`, `direct_connect`,
+    /// `connecting`, `connected`, `failed` — see
+    /// [`crate::PowerCyclePhase`] for the typed shape.
     #[zbus(signal)]
     fn power_cycle_progress(&self, phase: String) -> zbus::Result<()>;
 }
@@ -484,6 +492,10 @@ pub struct TvInfo {
     // State from sub-interface properties
     /// Power state (e.g., "active", "standby", "screen_off", "unknown").
     pub power_state: String,
+    /// Whether the vendor backend can wake the TV from standby.
+    /// Surfaced from `Tv1.Power.SupportsWake` so GUIs gate the
+    /// Power-on button on `connected || supports_wake`.
+    pub supports_wake: bool,
     /// Whether the screen is on (not blanked).
     pub is_screen_on: bool,
     /// Current volume level (0-100).
@@ -811,6 +823,7 @@ impl DaemonClient {
 
             // Extract state from sub-interfaces
             let power_state = get_sub_str("org.tisvlay.Tv1.Power", "PowerState", "unknown");
+            let supports_wake = get_sub_bool("org.tisvlay.Tv1.Power", "SupportsWake", false);
             let is_screen_on = get_sub_bool("org.tisvlay.Tv1.Screen", "IsScreenOn", true);
             let volume = get_sub_u8("org.tisvlay.Tv1.Volume", "Volume");
             let muted = get_sub_bool("org.tisvlay.Tv1.Volume", "Muted", false);
@@ -852,6 +865,7 @@ impl DaemonClient {
                 desktop,
                 path: path.as_str().to_string(),
                 power_state,
+                supports_wake,
                 is_screen_on,
                 volume,
                 muted,
@@ -1025,6 +1039,7 @@ impl DaemonClient {
             let args = sig.args().ok()?;
             match args.phase.as_str() {
                 "wol_sent" => Some(crate::PowerCyclePhase::WolSent),
+                "direct_connect" => Some(crate::PowerCyclePhase::DirectConnect),
                 "connecting" => Some(crate::PowerCyclePhase::Connecting),
                 "connected" => Some(crate::PowerCyclePhase::Connected),
                 "failed" => Some(crate::PowerCyclePhase::Failed),

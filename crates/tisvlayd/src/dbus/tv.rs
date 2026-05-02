@@ -218,6 +218,12 @@ pub struct TvPowerService {
 
     // Cached state
     pub(crate) power_state: String,
+    /// Whether the vendor backend can wake the TV from standby
+    /// (e.g. LG: has a MAC for WoL). GUIs use this to disable the
+    /// Power-on button when both `Connected == false` and
+    /// `SupportsWake == false` — the only state where Power-on
+    /// has no path to succeed.
+    pub(crate) supports_wake: bool,
 }
 
 #[interface(name = "org.tisvlay.Tv1.Power")]
@@ -246,12 +252,24 @@ impl TvPowerService {
         &self.power_state
     }
 
+    /// Whether the vendor backend can wake the TV from standby.
+    /// Reflects whether `power_on()` has a viable path when the TV
+    /// is currently offline; GUIs gate the Power-on button on
+    /// `Connected || SupportsWake`.
+    #[zbus(property)]
+    fn supports_wake(&self) -> bool {
+        self.supports_wake
+    }
+
     /// Phase transitions during a power-on flow.
     ///
-    /// Emitted as the manager walks through wake-on-LAN and connect
-    /// retry. Phase values: `wol_sent`, `connecting`, `connected`,
-    /// `failed` (see [`tisvlay_core::PowerCyclePhase`]). GUIs subscribe
-    /// to render staged feedback during the 5-30 s wake window.
+    /// Emitted as the manager walks through either the wake-on-LAN
+    /// path (`wol_sent` → `connecting` → `connected` / `failed`) or
+    /// the direct-connect path when the TV is already reachable
+    /// (`direct_connect` → `connecting` → `connected` / `failed`).
+    /// GUIs subscribe to render staged feedback during the 5-30 s
+    /// wake window or the much-shorter direct-connect window.
+    /// See [`tisvlay_core::PowerCyclePhase`] for the typed shape.
     #[zbus(signal)]
     pub async fn power_cycle_progress(emitter: &SignalEmitter<'_>, phase: &str)
     -> zbus::Result<()>;
@@ -572,6 +590,8 @@ pub async fn register_tv_interfaces(
         )
         .await?;
 
+    let supports_wake = manager.supports_wake(&tv_id).await;
+
     object_server
         .at(
             path,
@@ -579,6 +599,7 @@ pub async fn register_tv_interfaces(
                 tv_id: tv_id.clone(),
                 manager: manager.clone(),
                 power_state,
+                supports_wake,
             },
         )
         .await?;

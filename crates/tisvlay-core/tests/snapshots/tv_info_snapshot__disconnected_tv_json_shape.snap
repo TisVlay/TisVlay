@@ -22,6 +22,7 @@ expression: sample_disconnected()
   },
   "path": "/org/tisvlay/Tv/guest_room",
   "power_state": "unknown",
+  "supports_wake": false,
   "is_screen_on": true,
   "volume": 0,
   "muted": false,

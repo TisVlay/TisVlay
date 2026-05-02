@@ -876,6 +876,21 @@ impl TvManager {
             .collect()
     }
 
+    /// Whether this TV's vendor backend can wake the TV from
+    /// standby (e.g. has a MAC for Wake-on-LAN). Read at D-Bus
+    /// interface registration time and cached on
+    /// `Tv1.Power.SupportsWake`; the GUI uses it to gate the
+    /// Power-on button when the TV is offline AND can't be woken.
+    pub async fn supports_wake(&self, tv_id: &str) -> bool {
+        match self.get_tv(tv_id).await {
+            Ok(tv_arc) => {
+                let tv = tv_arc.lock().await;
+                self.registry.supports_wake(&tv.config)
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Check if a TV is connected.
     pub async fn is_connected(&self, tv_id: &str) -> bool {
         match self.get_tv(tv_id).await {
@@ -1205,40 +1220,34 @@ impl TvManager {
     // Power Control
     // -------------------------------------------------------------------------
 
-    /// Power on a TV using Wake-on-LAN.
+    /// Power on a TV — probe-first, with WoL fallback.
     ///
-    /// The backend owns all transport-specific retry logic (WoL resend,
-    /// boot wait, connect retry) via `wake_and_connect()`.
+    /// Picks one of two paths based on whether the TV is reachable:
+    ///
+    /// - **Direct connect** (TV already up; we just lost the WS):
+    ///   skip the magic packet entirely, go straight to connect.
+    ///   Emits `DirectConnect` → `Connecting` → `Connected`. Common
+    ///   case after a NIC flap, route change, or backgrounded TV
+    ///   that's still in `Active`.
+    /// - **Wake-on-LAN** (TV in deep standby): magic packet, then
+    ///   the backend's connect-retry loop. Emits `WolSent` →
+    ///   `Connecting` → `Connected`.
+    ///
+    /// The probe is "did `connect()` succeed?" — backends own the
+    /// transport-specific retry timing, so a fast-failing connect
+    /// here means "TV not reachable at all", and we fall through to
+    /// the wake path. If neither path is available (no wake method
+    /// AND not reachable), surface a typed
+    /// [`PowerError::NoMacConfigured`] so the GUI's inline-error
+    /// surface can render an actionable message.
     pub async fn power_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let tv_arc = self.get_tv(tv_id).await?;
 
-        // Read config and clear state under per-TV lock
-        let config = {
+        let (config, supports_wake) = {
             let mut tv = tv_arc.lock().await;
-
-            if !self.registry.supports_wake(&tv.config) {
-                // Surface the silent-fail. Without this, the only
-                // evidence is the D-Bus method's Err return — which
-                // the GUI's `warn!` log buries in journald and the
-                // user never sees. Emitting `Failed` lets the GUI's
-                // phase consumer transition out of the "in-flight"
-                // spinner state (and Phase 5 will render a typed
-                // error message in the inline-error surface).
-                warn!(
-                    tv_id = %tv_id,
-                    "PowerOn requested but TV has no wake method configured \
-                     (LG: missing MAC address; pair the TV again or edit \
-                     the config to add a MAC)",
-                );
-                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Failed);
-                return Err(TvManagerError::Power {
-                    tv_id: tv_id.to_string(),
-                    kind: tisvlay_core::errors::PowerError::NoMacConfigured,
-                });
-            }
-
+            let supports_wake = self.registry.supports_wake(&tv.config);
             let display_addr = self.registry.display_address(&tv.config);
-            info!(tv_id = %tv_id, address = %display_addr, "Waking TV");
+            info!(tv_id = %tv_id, address = %display_addr, supports_wake, "PowerOn requested");
 
             // Drop any stale connection and clear the powered-off flag
             tv.powered_off = false;
@@ -1247,44 +1256,87 @@ impl TvManager {
                 let _ = conn.close().await;
             }
 
-            tv.config.clone()
+            (tv.config.clone(), supports_wake)
         };
 
-        // The backend's wake_and_connect is atomic from our view; it
-        // sends the WoL packet, then loops on connect attempts. Emit
-        // both `WolSent` and `Connecting` upfront so the GUI sees the
-        // staged transition; the actual time spent is in connect retry.
-        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::WolSent);
-        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connecting);
+        // Probe direct-connect first. The backend's `connect()` is
+        // expected to fail fast when the TV isn't reachable (no
+        // open port, no route) — slow only on retry-on-success
+        // paths, which we sidestep by calling raw `connect_tv`
+        // instead of `wake_and_connect_tv`.
+        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::DirectConnect);
+        let direct_result = self.registry.connect_tv(&config).await;
 
-        // Backend handles wake + boot wait + connect retry (no lock held)
-        let result = self.registry.wake_and_connect_tv(&config).await;
+        let connection = match direct_result {
+            Ok(conn) => {
+                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connecting);
+                debug!(tv_id = %tv_id, "Direct connect succeeded; skipping WoL");
+                conn
+            }
+            Err(probe_err) => {
+                debug!(
+                    tv_id = %tv_id,
+                    error = %probe_err,
+                    "Direct-connect probe failed; falling back to WoL"
+                );
+                if !supports_wake {
+                    // No wake method AND TV not reachable. Without
+                    // this, the only evidence the user gets is a
+                    // D-Bus method `Err` return — buried in journald
+                    // by the GUI's `warn!`. Emitting `Failed` lets
+                    // the phase consumer transition out of the
+                    // in-flight spinner; the typed `PowerError`
+                    // routes through the GUI's inline-error surface.
+                    warn!(
+                        tv_id = %tv_id,
+                        "PowerOn requested but TV is unreachable AND has \
+                         no wake method configured (LG: missing MAC; pair \
+                         the TV again or edit config to add a MAC)",
+                    );
+                    self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Failed);
+                    let mut tv = tv_arc.lock().await;
+                    tv.reconnecting = false;
+                    return Err(TvManagerError::Power {
+                        tv_id: tv_id.to_string(),
+                        kind: tisvlay_core::errors::PowerError::NoMacConfigured,
+                    });
+                }
+
+                // Fall through: WoL path. Emit WolSent before kicking
+                // off the wake; the backend's WoL send + connect
+                // retry loop is atomic from our view, so Connecting
+                // fires immediately after.
+                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::WolSent);
+                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connecting);
+                match self.registry.wake_and_connect_tv(&config).await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        let mut tv = tv_arc.lock().await;
+                        tv.reconnecting = false;
+                        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Failed);
+                        return Err(TvManagerError::WakeFailed {
+                            tv_id: tv_id.to_string(),
+                            source: e,
+                        });
+                    }
+                }
+            }
+        };
 
         // Store the connection and subscribe to state updates
         {
             let mut tv = tv_arc.lock().await;
             tv.reconnecting = false;
-            match result {
-                Ok(connection) => {
-                    tv.connection = Some(connection);
-                    if let Some(conn) = tv.connection.as_mut() {
-                        self.try_subscribe_state(tv_id, conn.as_mut()).await;
-                    }
-                }
-                Err(e) => {
-                    self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Failed);
-                    return Err(TvManagerError::WakeFailed {
-                        tv_id: tv_id.to_string(),
-                        source: e,
-                    });
-                }
+            tv.connection = Some(connection);
+            if let Some(conn) = tv.connection.as_mut() {
+                self.try_subscribe_state(tv_id, conn.as_mut()).await;
             }
         }
 
         self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connected);
         self.emit_connection_changed(tv_id, true);
         self.resolve_monitored_interface(tv_id).await;
-        info!(tv_id = %tv_id, "TV is online after WoL");
+        info!(tv_id = %tv_id, "TV is online");
         Ok(())
     }
 

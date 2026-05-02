@@ -22,6 +22,7 @@ expression: sample_connected()
   },
   "path": "/org/tisvlay/Tv/living_room",
   "power_state": "active",
+  "supports_wake": true,
   "is_screen_on": true,
   "volume": 30,
   "muted": false,

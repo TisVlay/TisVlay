@@ -26,6 +26,12 @@ export struct TvViewModel {
     ip: string,
     connected: bool,
     power-state: string,
+    /// Whether the vendor backend can wake the TV from standby
+    /// (LG: has a MAC). The Power-on button is disabled when both
+    /// `connected == false` AND `supports-wake == false` — that's
+    /// the only state where Power-on has no path to succeed.
+    /// Sourced from `Tv1.Power.SupportsWake` D-Bus property.
+    supports-wake: bool,
     is-screen-on: bool,
     volume: int,
     muted: bool,
@@ -43,7 +49,8 @@ export struct TvViewModel {
     desktop-connector: string,
     /// Empty when no power-on is in flight; otherwise the latest
     /// phase string from `Tv1.Power.PowerCycleProgress`
-    /// ("wol_sent" / "connecting" / "connected" / "failed").
+    /// ("wol_sent" / "direct_connect" / "connecting" / "connected"
+    /// / "failed").
     power-cycle-phase: string,
 }
 
@@ -547,20 +554,31 @@ component TvDetail inherits Rectangle {
                 Group {
                     title: @tr("STATUS");
 
-                    HorizontalLayout {
+                    power-row := HorizontalLayout {
                         spacing: Design.gap-row;
                         alignment: stretch;
+
+                        // Power-on has two viable paths: direct-connect
+                        // (TV reachable already) or Wake-on-LAN (TV in
+                        // standby + we have a MAC). When the TV is
+                        // offline AND the backend can't wake it, neither
+                        // path works — disable the button and tell the
+                        // user why. Today this manifests for LG TVs
+                        // discovered before the ARP-enrichment fix that
+                        // never captured a MAC.
+                        property <bool> power-cycle-in-flight:
+                               root.tv.power-cycle-phase != ""
+                            && root.tv.power-cycle-phase != "connected"
+                            && root.tv.power-cycle-phase != "failed";
+                        property <bool> can-power-on:
+                            root.tv.connected || root.tv.supports-wake;
 
                         Button {
                             text: root.tv.connected ? @tr("Power off") : @tr("Power on");
                             icon: Icons.shutdown;
                             colorize-icon: true;
                             primary: !root.tv.connected;
-                            // Disable while a power-cycle is in flight (any
-                            // non-empty phase that isn't "connected" / "failed").
-                            enabled: root.tv.power-cycle-phase == ""
-                                  || root.tv.power-cycle-phase == "connected"
-                                  || root.tv.power-cycle-phase == "failed";
+                            enabled: !power-row.power-cycle-in-flight && power-row.can-power-on;
                             clicked => {
                                 if (root.tv.connected) {
                                     Daemon.power-off(root.tv.id);
@@ -574,16 +592,21 @@ component TvDetail inherits Rectangle {
                             alignment: center;
                             Text {
                                 text: root.tv.power-cycle-phase == "wol_sent" ? @tr("Sending wake-up…")
+                                    : root.tv.power-cycle-phase == "direct_connect" ? @tr("Reconnecting…")
                                     : root.tv.power-cycle-phase == "connecting" ? @tr("Connecting…")
                                     : root.tv.power-cycle-phase == "connected" ? @tr("Connected")
                                     : root.tv.power-cycle-phase == "failed" ? @tr("Wake failed")
                                     : root.tv.connected
                                         ? @tr("Power state: {}", root.tv.power-state)
-                                        : @tr("Wake this TV with WoL and reconnect.");
+                                        : !power-row.can-power-on
+                                            ? @tr("Wake-on-LAN unavailable — no MAC configured. Pair the TV again or edit the config to add one.")
+                                            : @tr("Reconnect, or wake from standby with WoL.");
                                 color: root.tv.power-cycle-phase == "failed" ? Theme.danger-text
                                      : root.tv.power-cycle-phase == "connected" ? Theme.success-text
+                                     : (!power-row.can-power-on && !root.tv.connected) ? Theme.warn-text
                                      : Theme.text-dim;
                                 font-size: Design.font-helper;
+                                wrap: word-wrap;
                             }
                         }
                     }
