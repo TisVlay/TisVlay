@@ -12,10 +12,12 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
+import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
-import { DangerBtn, Chip, Group, InlineError, OptimisticSlider, CopyBtn } from "../widgets.slint";
+import { DangerBtn, Chip, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField } from "../widgets.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
+import { SchemaForm } from "schema_form.slint";
 
 export { WizardDiscoveredTv, VendorOption, DangerBtn, Chip, Group }
 
@@ -531,6 +533,12 @@ component TvDetail inherits Rectangle {
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
 
+    /// True when the INFO group should render the edit form for
+    /// this specific TV. Tracks `EditPane.tv-uuid` against this
+    /// pane's TV — only one TV is edited at a time, so all other
+    /// `TvDetail` instances stay in view mode regardless of state.
+    property <bool> in-edit-mode: EditPane.tv-uuid == root.tv.uuid;
+
     /// Local — fires when the user hits "Remove TV". TvsPane catches
     /// this and shows the confirm-remove dialog (which calls
     /// `Daemon.remove-tv(...)` on confirm). All other writes go
@@ -780,19 +788,84 @@ component TvDetail inherits Rectangle {
                 }
 
                 // -- Info --
+                //
+                // Address-book contact pattern: a small pencil in the
+                // header flips name + vendor `UserInput` rows to
+                // editable inputs (Cancel / Save bar replaces the
+                // pencil). Read-only identity rows (TV ID, hardware,
+                // DRM connector) and `Diagnostic` vendor rows stay
+                // visible and uneditable in both modes — backend-
+                // discovered values can only be refreshed via re-pair.
                 Group {
                     title: @tr("INFO");
+
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: Design.gap-form;
+                        if !root.in-edit-mode: IconBtn {
+                            source: Icons.edit;
+                            clicked => { EditPane.start(root.tv.uuid); }
+                        }
+                        if root.in-edit-mode: IconBtn {
+                            source: Icons.cancel;
+                            enabled: !EditPane.saving;
+                            clicked => { EditPane.cancel(); }
+                        }
+                        if root.in-edit-mode: IconBtn {
+                            source: Icons.save;
+                            enabled: EditPane.valid && !EditPane.saving;
+                            clicked => { EditPane.save(); }
+                        }
+                    }
+
+                    if root.in-edit-mode && EditPane.error != "": InlineError {
+                        title: @tr("Couldn't save TV config");
+                        message: EditPane.error;
+                        dismissable: false;
+                    }
+
+                    // Editable rows in edit mode: friendly name +
+                    // vendor `UserInput` schema fields (LG: IP, MAC).
+                    // The schema form is the same component the
+                    // pairing wizard uses, so per-field validation +
+                    // server-side error routing are shared.
+                    if root.in-edit-mode: VerticalLayout {
+                        spacing: Design.gap-row;
+
+                        VerticalLayout {
+                            spacing: Design.gap-form;
+                            Text {
+                                text: @tr("Friendly name");
+                                color: Theme.text;
+                                font-size: Design.font-meta;
+                                font-weight: 500;
+                            }
+                            LineEditField {
+                                placeholder-text: @tr("e.g. Living Room G4");
+                                text <=> EditPane.name;
+                                edited(v) => { EditPane.name-edited(v); }
+                            }
+                        }
+
+                        SchemaForm {
+                            schema-fields: EditPane.fields;
+                            value-edited(i, v) => { EditPane.field-edited(i, v); }
+                        }
+                    }
 
                     LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
                     // Vendor-specific rows (LG: IP + MAC; future backends:
                     // serial port, API endpoint, …). Backend declines to
-                    // surface secrets — LG omits `client_key` and
-                    // `scheme`. Rendered monospaced since these are
-                    // typically machine identifiers.
-                    for entry in root.tv.vendor-info: LabeledRow {
-                        label: entry.label;
-                        value: entry.value;
-                        mono: true;
+                    // surface secrets — LG omits `client_key`. In edit
+                    // mode, the `UserInput` subset (IP, MAC) is moved
+                    // into the schema form above; only `Diagnostic`
+                    // rows (LG: scheme) remain here.
+                    if !root.in-edit-mode: VerticalLayout {
+                        for entry in root.tv.vendor-info: LabeledRow {
+                            label: entry.label;
+                            value: entry.value;
+                            mono: true;
+                        }
                     }
                     LabeledRow { label: @tr("Manufacturer"); value: root.tv.hw-manufacturer; }
                     LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }

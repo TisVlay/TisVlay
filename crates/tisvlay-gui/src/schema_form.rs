@@ -199,6 +199,54 @@ pub(crate) fn autofill_schema(
         .collect()
 }
 
+/// Build an [`AutofilledRow`] list by projecting current values from
+/// a `Tv1.GetConfig` JSON payload through a schema.
+///
+/// Mirrors [`autofill_schema`] but the value source is the daemon's
+/// existing config rather than a freshly-discovered TV: each
+/// schema field looks itself up in the supplied object by `name`,
+/// falling back to the field's `default` when absent. Used by the
+/// TVs pane's edit-pencil flow to prefill the form with the TV's
+/// current values before the user makes any changes.
+pub(crate) fn prefill_schema_from_config(
+    schema: &[PairingField],
+    config: &serde_json::Value,
+) -> Vec<AutofilledRow> {
+    let table = config.as_object();
+    schema
+        .iter()
+        .map(|f| {
+            // Coerce the JSON scalar to a string for the form's
+            // `value` slot. Numbers/bools get their natural string
+            // repr so an `int`/`port`/`bool` field round-trips
+            // cleanly through the same widget that handles user
+            // input. Missing or null falls through to the field's
+            // declared default.
+            let value = table
+                .and_then(|t| t.get(&f.name))
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Null => String::new(),
+                    other => other.to_string(),
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| f.default.clone());
+            AutofilledRow {
+                name: f.name.clone(),
+                label: f.label.clone(),
+                helper: f.helper.clone(),
+                field_type: f.field_type.as_str().to_string(),
+                required: f.required,
+                placeholder: f.placeholder.clone(),
+                options: f.options.clone(),
+                value,
+            }
+        })
+        .collect()
+}
+
 /// Build a config-payload JSON object from the schema-fields model.
 /// Walks each row, drops empty optional fields, and emits
 /// `{ <name>: <value>, ... }` matching the schema's `name` keys.

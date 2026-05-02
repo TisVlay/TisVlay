@@ -18,7 +18,7 @@ mod state;
 
 use schema_form::{
     AutofilledRow, autofill_schema, build_config_json_from_schema, compute_schema_valid,
-    parse_field_type, validate_value,
+    parse_field_type, prefill_schema_from_config, validate_value,
 };
 
 use std::collections::HashMap;
@@ -399,6 +399,14 @@ fn main() -> Result<()> {
     // and pushed onto the `Icons` global for any pane to reach.
     let icons = app.global::<Icons>();
     icons.set_shutdown(load_themed_icon(&["system-shutdown"]));
+    icons.set_edit(load_themed_icon(&["document-edit", "edit"]));
+    // `dialog-ok-apply` is the Breeze/Adwaita name for the
+    // checkmark used as a "commit" affordance; `dialog-ok` is the
+    // older fallback. `window-close` is the most reliable X glyph
+    // across themes (`dialog-cancel` exists but is sometimes a
+    // colored stop-sign which reads as destructive).
+    icons.set_save(load_themed_icon(&["dialog-ok-apply", "dialog-ok"]));
+    icons.set_cancel(load_themed_icon(&["window-close", "dialog-cancel"]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing
@@ -499,6 +507,7 @@ fn register_callbacks(
     // can't outlive the function scope).
     let daemon_global = app.global::<Daemon>();
     let wizard = app.global::<PairingWizard>();
+    let edit_pane = app.global::<EditPane>();
     let errors_global = app.global::<Errors>();
     // Inline-error action callback. v1 has no contextual actions
     // wired — `kind`-based routing lands once the recovery flows
@@ -1052,6 +1061,199 @@ fn register_callbacks(
         wizard.set_schema_valid(compute_schema_valid(&model));
     });
 
+    // ---------------------------------------------------------------------
+    // EditPane lifecycle — TVs-pane INFO-group edit-mode toggle.
+    // ---------------------------------------------------------------------
+    //
+    // `start(uuid)` fetches the TV's pairing schema + current config in
+    // parallel, builds an [`AutofilledRow`] list with the existing
+    // values prefilled, and pushes the result onto the global so the
+    // matching `TvDetail` flips into edit mode. `save()` collects the
+    // draft into a JSON patch and routes through `Tv1.UpdateConfig`;
+    // server-side per-field validation errors are routed back to the
+    // originating row so the user sees them inline. `cancel()` discards
+    // the draft.
+    let app_weak = app.as_weak();
+    let d = daemon.clone();
+    edit_pane.on_start(move |uuid| {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        // Resolve vendor + name from the in-memory TV list — avoids a
+        // second `list_tvs` round-trip on the daemon when the GUI
+        // already has the value.
+        let Some((vendor, name)) = app
+            .get_tvs()
+            .iter()
+            .find_map(|tv| (tv.uuid == uuid).then(|| (tv.vendor.to_string(), tv.name.to_string())))
+        else {
+            warn!(tv_uuid = %uuid, "EditPane.start: TV not in current list");
+            return;
+        };
+
+        // Reset the edit pane to a clean draft state, then populate
+        // tv_uuid LAST inside the async task so the form doesn't flash
+        // a half-loaded view.
+        let edit_pane = app.global::<EditPane>();
+        edit_pane.set_error(SharedString::default());
+        edit_pane.set_saving(false);
+        edit_pane.set_name(SharedString::from(name.as_str()));
+
+        let app_weak = app.as_weak();
+        let d = d.clone();
+        let uuid_owned = uuid.to_string();
+        tokio::spawn(async move {
+            // Pairing schema is the `UserInput` projection of
+            // `config_schema()` — exactly the editable subset we want.
+            let schema = match d.get_pairing_schema(&vendor).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(vendor = %vendor, error = %e, "EditPane.start: GetPairingSchema failed");
+                    publish_edit_error(&app_weak, format!("{e:#}"));
+                    return;
+                }
+            };
+
+            let config_json_str = match d.get_tv_config(&uuid_owned).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(tv_uuid = %uuid_owned, error = %e, "EditPane.start: GetConfig failed");
+                    publish_edit_error(&app_weak, format!("{e:#}"));
+                    return;
+                }
+            };
+            let config_json: serde_json::Value = serde_json::from_str(&config_json_str)
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+            let raw_rows = prefill_schema_from_config(&schema, &config_json);
+            on_ui(&app_weak, move |app| {
+                let edit_pane = app.global::<EditPane>();
+                let rows: Vec<PairingFieldRow> = raw_rows
+                    .into_iter()
+                    .map(AutofilledRow::into_slint)
+                    .collect();
+                let model: ModelRc<PairingFieldRow> = ModelRc::new(VecModel::from(rows));
+                let valid = compute_schema_valid(&model);
+                edit_pane.set_fields(model);
+                edit_pane.set_valid(valid);
+                edit_pane.set_tv_uuid(SharedString::from(uuid_owned.as_str()));
+            });
+        });
+    });
+
+    let app_weak = app.as_weak();
+    edit_pane.on_cancel(move || {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let edit_pane = app.global::<EditPane>();
+        edit_pane.set_tv_uuid(SharedString::default());
+        edit_pane.set_name(SharedString::default());
+        edit_pane.set_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
+        edit_pane.set_error(SharedString::default());
+        edit_pane.set_saving(false);
+        edit_pane.set_valid(false);
+    });
+
+    let app_weak = app.as_weak();
+    edit_pane.on_name_edited(move |new_name| {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let edit_pane = app.global::<EditPane>();
+        edit_pane.set_name(new_name);
+        edit_pane.set_valid(compute_edit_valid(&edit_pane));
+    });
+
+    let app_weak = app.as_weak();
+    edit_pane.on_field_edited(move |i, v| {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let edit_pane = app.global::<EditPane>();
+        let model = edit_pane.get_fields();
+        let Some(mut row) = model.row_data(i as usize) else {
+            return;
+        };
+        let options: Vec<String> = (0..row.options.row_count())
+            .filter_map(|k| row.options.row_data(k).map(|s| s.to_string()))
+            .collect();
+        let (state, error) = validate_value(
+            &row.name,
+            parse_field_type(&row.field_type),
+            row.required,
+            &options,
+            &v,
+        );
+        row.value = v;
+        row.state = SharedString::from(state);
+        row.error = SharedString::from(error);
+        if let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() {
+            vec_model.set_row_data(i as usize, row);
+        }
+        edit_pane.set_valid(compute_edit_valid(&edit_pane));
+    });
+
+    let app_weak = app.as_weak();
+    let d = daemon.clone();
+    edit_pane.on_save(move || {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let edit_pane = app.global::<EditPane>();
+        let tv_uuid = edit_pane.get_tv_uuid().to_string();
+        if tv_uuid.is_empty() {
+            return;
+        }
+        let name = edit_pane.get_name().to_string();
+        let vendor_patch = build_config_json_from_schema(&edit_pane.get_fields());
+        // Merge name into the vendor-fields patch. `build_config_…`
+        // emits a top-level JSON object, so parse + insert + re-serialize.
+        let mut patch: serde_json::Value =
+            serde_json::from_str(&vendor_patch).unwrap_or(serde_json::json!({}));
+        if let Some(obj) = patch.as_object_mut() {
+            obj.insert("name".to_string(), serde_json::Value::String(name));
+        }
+        let patch_str = patch.to_string();
+
+        edit_pane.set_saving(true);
+        edit_pane.set_error(SharedString::default());
+
+        let app_weak = app.as_weak();
+        let d = d.clone();
+        tokio::spawn(async move {
+            let result = d.update_tv_config(&tv_uuid, &patch_str).await;
+            on_ui(&app_weak, move |app| {
+                let edit_pane = app.global::<EditPane>();
+                edit_pane.set_saving(false);
+                match result {
+                    Ok(()) => {
+                        // Success: clear edit state so the view flips
+                        // back to read-only. The TV's PropertiesChanged
+                        // signals will push the new values into the
+                        // visible labels.
+                        edit_pane.set_tv_uuid(SharedString::default());
+                        edit_pane.set_name(SharedString::default());
+                        edit_pane.set_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
+                        edit_pane.set_error(SharedString::default());
+                    }
+                    Err(e) => {
+                        // Per-field validation errors get routed back
+                        // to the originating row so the user can fix
+                        // them in place. Non-field errors fall through
+                        // to the generic banner.
+                        if let Some((field, reason)) = extract_invalid_vendor_config(&e) {
+                            let model = edit_pane.get_fields();
+                            mark_edit_field_invalid(&edit_pane, &model, &field, &reason);
+                        } else {
+                            edit_pane.set_error(SharedString::from(format!("{e:#}")));
+                        }
+                    }
+                }
+            });
+        });
+    });
+
     // Manual-add: synthesize an entry from the user's typed vendor +
     // IP, append it to the Rust source-of-truth + Slint model, select
     // it, and advance to Configure where the schema-driven form takes
@@ -1339,6 +1541,59 @@ fn publish_pair_outcome(
 /// found (so the caller can route back to step 2); false means
 /// the daemon flagged a field name we don't have, and the caller
 /// should fall through to a generic pair-failed surface.
+/// True iff every editable input in the EditPane currently passes
+/// validation. The Save button binds `enabled` to this.
+///
+/// Both legs matter: an empty `name` is rejected even though there's
+/// no schema row for it (TVs always have a friendly name), and any
+/// invalid / required-but-empty schema row fails the same way it
+/// does in the wizard.
+fn compute_edit_valid(edit_pane: &EditPane<'_>) -> bool {
+    !edit_pane.get_name().is_empty() && compute_schema_valid(&edit_pane.get_fields())
+}
+
+/// Route a server-side per-field validation error back to the
+/// originating row in the edit pane's schema-fields model.
+///
+/// Mirrors [`mark_field_invalid`] for the wizard side. Returns true
+/// if the field name matched a row (so the caller can suppress the
+/// generic error banner). On a name-mismatch returns false and the
+/// caller falls through to the generic surface.
+fn mark_edit_field_invalid(
+    edit_pane: &EditPane<'_>,
+    model: &ModelRc<PairingFieldRow>,
+    field: &str,
+    reason: &str,
+) -> bool {
+    let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() else {
+        return false;
+    };
+    for i in 0..model.row_count() {
+        let Some(mut row) = model.row_data(i) else {
+            continue;
+        };
+        if row.name == field {
+            row.state = SharedString::from("invalid");
+            row.error = SharedString::from(reason);
+            vec_model.set_row_data(i, row);
+            edit_pane.set_valid(compute_edit_valid(edit_pane));
+            return true;
+        }
+    }
+    false
+}
+
+/// Push a generic edit-mode error message onto the EditPane banner
+/// from a worker thread. Called when the prefetch flow (GetPairingSchema
+/// / GetConfig) fails before the form is even populated.
+fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: String) {
+    on_ui(app_weak, move |app| {
+        let edit_pane = app.global::<EditPane>();
+        edit_pane.set_error(SharedString::from(message));
+        edit_pane.set_saving(false);
+    });
+}
+
 fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> bool {
     let model = wizard.get_schema_fields();
     let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() else {
