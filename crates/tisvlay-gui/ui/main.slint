@@ -144,31 +144,31 @@ export component AppWindow inherits Window {
 
                 SidebarItem {
                     icon: root.tvs-icon;
-                    label: "TVs";
+                    label: @tr("TVs");
                     selected: root.active-pane == Pane.tvs;
                     clicked => { root.active-pane = Pane.tvs; }
                 }
                 SidebarItem {
                     icon: root.profiles-icon;
-                    label: "Profiles";
+                    label: @tr("Profiles");
                     selected: root.active-pane == Pane.profiles;
                     clicked => { root.active-pane = Pane.profiles; }
                 }
                 SidebarItem {
                     icon: root.session-icon;
-                    label: "Session";
+                    label: @tr("Session");
                     selected: root.active-pane == Pane.session;
                     clicked => { root.active-pane = Pane.session; }
                 }
                 SidebarItem {
                     icon: root.settings-icon;
-                    label: "Settings";
+                    label: @tr("Settings");
                     selected: root.active-pane == Pane.settings;
                     clicked => { root.active-pane = Pane.settings; }
                 }
                 SidebarItem {
                     icon: root.about-icon;
-                    label: "About";
+                    label: @tr("About");
                     selected: root.active-pane == Pane.about;
                     clicked => { root.active-pane = Pane.about; }
                 }
@@ -208,7 +208,7 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             Text {
-                                text: "Reload";
+                                text: @tr("Reload");
                                 color: root.daemon-available
                                     ? Theme.sidebar-text
                                     : Theme.sidebar-text-dim;
@@ -225,13 +225,13 @@ export component AppWindow inherits Window {
                 }
 
                 Text {
-                    text: root.daemon-available ? "● Daemon" : "○ Daemon";
+                    text: (root.daemon-available ? "● " : "○ ") + @tr("Daemon");
                     color: root.daemon-available ? Theme.success : Theme.danger;
                     font-size: Design.font-caption;
                     horizontal-alignment: left;
                 }
                 Text {
-                    text: root.session-available ? "● Session" : "○ Session";
+                    text: (root.session-available ? "● " : "○ ") + @tr("Session");
                     color: root.session-available ? Theme.success : Theme.danger;
                     font-size: Design.font-caption;
                     horizontal-alignment: left;

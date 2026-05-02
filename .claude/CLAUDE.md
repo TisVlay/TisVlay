@@ -257,6 +257,50 @@ just package-deb  # build the .deb package
 `just` is provided by the Nix dev shell. Outside Nix, install with
 `cargo install just` or your distro package manager.
 
+## Internationalization (i18n)
+
+`tisvlay-gui` is wired for translation from day one via gettext, even
+though only English ships at v1. Architecture:
+
+- **Slint strings** wrap literals with `@tr("…")` in every `.slint` file.
+  The `slint = { features = ["gettext"] }` feature flag activates Slint's
+  built-in gettext lookup; `slint::init_translations!(…)` in `main.rs`
+  registers the `lang/<locale>/LC_MESSAGES/tisvlay-gui.mo` directory.
+- **Rust user-facing strings** (errors that surface to the UI, schema
+  field labels pushed from vendor backends, etc.) wrap literals with
+  `gettextrs::gettext("…")`. They share the same gettext catalog as
+  Slint's `@tr` — one `.mo` per locale serves both layers.
+- Vendor backend crates (`tisvlay-lg`, future `tisvlay-samsung`) own
+  their own user-facing strings and will eventually ship per-vendor
+  `.mo` files.
+
+### Workflow
+
+```bash
+just i18n-extract   # rebuild crates/tisvlay-gui/lang/tisvlay-gui.pot
+just i18n-update    # merge the refreshed .pot into existing per-locale .po
+```
+
+Run `i18n-extract` whenever you add or change user-facing strings;
+review the resulting `.pot` diff and commit. Translators add a new
+locale via `msginit -i tisvlay-gui.pot -l fr_FR -o
+crates/tisvlay-gui/lang/fr/LC_MESSAGES/tisvlay-gui.po` and translate
+the `msgstr ""` lines. `cargo build` regenerates `.mo` files at compile
+time; missing `.mo` falls back to literal source strings (English).
+
+### What to translate vs not
+
+- **Translate**: button labels, pane headers, status text, helper
+  copy, error messages.
+- **Don't translate**: brand names (`"TisVlay"`, vendor names like
+  `"LG WebOS"`), machine identifiers (`"awaiting_tv"`, `"lg"`,
+  `"system-shutdown"`), Unicode glyphs (`"●"`, `"·"`, `"—"`, `"↻"`),
+  technical placeholders (`"192.168.1.100"`, `"AA:BB:CC:DD:EE:FF"`),
+  font-family CSS values, file paths, URLs.
+
+`gettext` (xgettext, msgfmt, msgmerge, msginit) and
+`slint-tr-extractor` are provided by the Nix dev shell.
+
 ## Linting & CI
 
 All checks are defined in `prek.toml`, which dispatches to `just` recipes.

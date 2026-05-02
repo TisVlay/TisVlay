@@ -31,7 +31,7 @@ directories = { workspace = true }
 # to spawn its blocking I/O work from there. Re-enabling accessibility
 # requires running zbus on async-io rather than tokio (workspace-wide
 # decision), or configuring accesskit to share our tokio runtime.
-slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "compat-1-2", "renderer-femtovg"] }
+slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "compat-1-2", "renderer-femtovg", "gettext"] }
 zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -52,6 +52,13 @@ ashpd = { version = "0.13", default-features = false, features = ["tokio", "sett
 # trait method but no public app-facing helper, so we go through
 # `arboard` (the de facto Rust clipboard crate).
 arboard = { version = "3", default-features = false }
+# Localization for Rust-side dynamic strings (errors that surface
+# to the user, schema labels pushed from vendor backends, etc.).
+# Slint's `@tr()` macro covers literal strings inside `.slint`
+# files; everything else routes through gettext-rs's `tr!` to
+# share the same `.po`/`.mo` catalogs and slint's
+# `init_translations!` directory layout.
+gettext-rs = "0.7"
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection
 # during dev. Pinned to the exact slint version because the backend

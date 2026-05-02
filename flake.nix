@@ -90,6 +90,13 @@
               tcpdump
               wakeonlan
               rust
+              # i18n tooling. `gettext` provides xgettext / msgfmt /
+              # msgmerge for building .pot / .po / .mo from Rust + Slint
+              # source. `slint-tr-extractor` walks .slint files and
+              # emits the equivalent .pot for `@tr()` literals; the
+              # justfile recipe combines both into a single catalog.
+              gettext
+              slint-tr-extractor
             ] ++ slintRuntimeLibs;
 
             # Tell cargo where to find the musl linker

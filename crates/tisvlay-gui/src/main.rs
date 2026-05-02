@@ -19,6 +19,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+// Rust-side counterpart to Slint's `@tr()` macro. Uses the same
+// gettext catalog (`init_translations!` sets up the lookup paths
+// process-wide); call sites that push user-facing strings into
+// Slint properties (e.g. wizard pair-flow messages) wrap their
+// literals with `gettext("…")` so the slint-tr-extractor and
+// xgettext both find the same source-of-truth in the .pot file.
+use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
     Coalescer, DaemonClient, PowerCyclePhase, ReconcilerMap, RefreshTrigger, SessionClient,
@@ -232,6 +239,17 @@ struct Args {
 
 fn main() -> Result<()> {
     tisvlay_core::logging::init(&["tisvlay_gui=info", "zbus=warn", "slint=warn"])?;
+
+    // Localization. `init_translations!` registers `<crate>.mo` lookup
+    // under `<dir>/<locale>/LC_MESSAGES/` for both Slint's `@tr()`
+    // calls and our Rust-side `gettextrs::gettext()` calls — they
+    // share the same gettext catalog. The `lang/` directory is
+    // resolved relative to `CARGO_MANIFEST_DIR` at compile time;
+    // for installed binaries the system loader falls back to
+    // `/usr/share/locale/<locale>/LC_MESSAGES/tisvlay-gui.mo`. v1
+    // ships English only — every `@tr("…")` and `gettext("…")`
+    // returns the literal in the absence of a matching catalog.
+    slint::init_translations!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang"));
 
     let args = Args::parse();
     info!("tisvlay-gui starting");
@@ -981,7 +999,7 @@ async fn run_wizard_pair(
             Ok(_tv_id) => {
                 wizard.set_pair_phase("complete".into());
                 if wizard.get_pair_message().is_empty() {
-                    wizard.set_pair_message("Client key stored.".into());
+                    wizard.set_pair_message(gettext("Client key stored.").into());
                 }
             }
             Err(e) => {
@@ -1011,7 +1029,7 @@ async fn run_pair_no_progress(
         match result {
             Ok(_) => {
                 wizard.set_pair_phase("complete".into());
-                wizard.set_pair_message("Paired successfully.".into());
+                wizard.set_pair_message(gettext("Paired successfully.").into());
             }
             Err(e) => {
                 wizard.set_pair_phase("failed".into());

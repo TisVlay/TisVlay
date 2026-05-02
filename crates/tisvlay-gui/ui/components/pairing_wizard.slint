@@ -88,7 +88,7 @@ component Stepper inherits Rectangle {
         spacing: 12px;
         alignment: stretch;
 
-        StepperItem { step: 1; label: "Discover"; current: root.current; }
+        StepperItem { step: 1; label: @tr("Discover"); current: root.current; }
         Rectangle {
             horizontal-stretch: 1;
             VerticalLayout {
@@ -99,7 +99,7 @@ component Stepper inherits Rectangle {
                 }
             }
         }
-        StepperItem { step: 2; label: "Configure"; current: root.current; }
+        StepperItem { step: 2; label: @tr("Configure"); current: root.current; }
         Rectangle {
             horizontal-stretch: 1;
             VerticalLayout {
@@ -110,7 +110,7 @@ component Stepper inherits Rectangle {
                 }
             }
         }
-        StepperItem { step: 3; label: "Pair"; current: root.current; }
+        StepperItem { step: 3; label: @tr("Pair"); current: root.current; }
         Rectangle {
             horizontal-stretch: 1;
             VerticalLayout {
@@ -121,7 +121,7 @@ component Stepper inherits Rectangle {
                 }
             }
         }
-        StepperItem { step: 4; label: "Done"; current: root.current; }
+        StepperItem { step: 4; label: @tr("Done"); current: root.current; }
     }
 }
 
@@ -259,13 +259,13 @@ component StepDiscover {
         VerticalLayout {
             spacing: Design.gap-form;
             Text {
-                text: "Find your TV";
+                text: @tr("Find your TV");
                 color: Theme.text;
                 font-size: 16px;
                 font-weight: 600;
             }
             Text {
-                text: "Searching the local network for compatible TVs.";
+                text: @tr("Searching the local network for compatible TVs.");
                 color: Theme.text-dim;
                 font-size: Design.font-meta;
             }
@@ -282,7 +282,7 @@ component StepDiscover {
                 padding: 10px;
                 spacing: Design.gap-stack;
                 Text {
-                    text: "Discovery failed";
+                    text: @tr("Discovery failed");
                     color: Theme.danger-text;
                     font-size: Design.font-body;
                     font-weight: 600;
@@ -315,10 +315,10 @@ component StepDiscover {
             }
             Text {
                 text: root.streaming
-                    ? ("Scanning via SSDP — found " + root.discovered.length + ", listening for more…")
+                    ? @tr("Scanning via SSDP — found {}, listening for more…", root.discovered.length)
                     : (root.discovered.length == 0
-                        ? "No TVs found. Make sure your TV is on the same network."
-                        : "Found " + root.discovered.length + " " + (root.discovered.length == 1 ? "TV" : "TVs") + ".");
+                        ? @tr("No TVs found. Make sure your TV is on the same network.")
+                        : @tr("Found {} TV" | "Found {} TVs" % root.discovered.length, root.discovered.length));
                 color: Theme.text-dim;
                 font-size: Design.font-helper;
                 vertical-alignment: center;
@@ -369,7 +369,7 @@ component StepDiscover {
                 HorizontalLayout {
                     alignment: center;
                     Text {
-                        text: root.streaming ? "Searching your network…" : "No TVs found yet";
+                        text: root.streaming ? @tr("Searching your network…") : @tr("No TVs found yet");
                         color: Theme.text;
                         font-size: 14px;
                         font-weight: 600;
@@ -378,7 +378,7 @@ component StepDiscover {
                 HorizontalLayout {
                     alignment: center;
                     Text {
-                        text: "LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.";
+                        text: @tr("LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.");
                         color: Theme.text-dim;
                         font-size: Design.font-helper;
                         horizontal-alignment: center;
@@ -410,7 +410,7 @@ component StepDiscover {
                 spacing: 12px;
 
                 Text {
-                    text: "Don't see your TV? Add it manually";
+                    text: @tr("Don't see your TV? Add it manually");
                     color: Theme.text;
                     font-size: Design.font-body;
                     font-weight: 600;
@@ -429,7 +429,7 @@ component StepDiscover {
                         horizontal-stretch: 1;
                         spacing: Design.gap-form;
                         Text {
-                            text: "Vendor";
+                            text: @tr("Vendor");
                             color: Theme.text;
                             font-size: Design.font-helper;
                             font-weight: 500;
@@ -471,7 +471,7 @@ component StepDiscover {
                         horizontal-stretch: 2;
                         spacing: Design.gap-form;
                         Text {
-                            text: "IP address";
+                            text: @tr("IP address");
                             color: Theme.text;
                             font-size: Design.font-helper;
                             font-weight: 500;
@@ -488,7 +488,7 @@ component StepDiscover {
                         horizontal-stretch: 2;
                         spacing: Design.gap-form;
                         Text {
-                            text: "MAC (optional)";
+                            text: @tr("MAC (optional)");
                             color: Theme.text;
                             font-size: Design.font-helper;
                             font-weight: 500;
@@ -504,14 +504,14 @@ component StepDiscover {
                     VerticalLayout {
                         alignment: end;
                         Button {
-                            text: "Add manually";
+                            text: @tr("Add manually");
                             enabled: root.manual-ip != "";
                             clicked => { root.manual-add(); }
                         }
                     }
                 }
                 Text {
-                    text: "MAC enables Wake-on-LAN — without it the daemon can't power this TV on from deep standby.";
+                    text: @tr("MAC enables Wake-on-LAN — without it the daemon can't power this TV on from deep standby.");
                     color: Theme.text-faint;
                     font-size: Design.font-mini;
                     wrap: word-wrap;
@@ -549,13 +549,13 @@ component StepConfigure {
         VerticalLayout {
             spacing: Design.gap-form;
             Text {
-                text: "Configure this TV";
+                text: @tr("Configure this TV");
                 color: Theme.text;
                 font-size: 16px;
                 font-weight: 600;
             }
             Text {
-                text: "Set how TisVlay should refer to and automate this device.";
+                text: @tr("Set how TisVlay should refer to and automate this device.");
                 color: Theme.text-dim;
                 font-size: Design.font-meta;
             }
@@ -565,18 +565,18 @@ component StepConfigure {
         VerticalLayout {
             spacing: Design.gap-form;
             Text {
-                text: "Friendly name";
+                text: @tr("Friendly name");
                 color: Theme.text;
                 font-size: Design.font-meta;
                 font-weight: 500;
             }
             LineEditField {
-                placeholder-text: "e.g. Living Room G4";
+                placeholder-text: @tr("e.g. Living Room G4");
                 text <=> root.tv-name;
                 edited(value) => { root.name-edited(value); }
             }
             Text {
-                text: "Shown in the TVs pane, tray menu, and CLI.";
+                text: @tr("Shown in the TVs pane, tray menu, and CLI.");
                 color: Theme.text-faint;
                 font-size: Design.font-mini;
             }
@@ -586,7 +586,7 @@ component StepConfigure {
         VerticalLayout {
             spacing: Design.gap-form;
             Text {
-                text: "Vendor";
+                text: @tr("Vendor");
                 color: Theme.text;
                 font-size: Design.font-meta;
                 font-weight: 500;
@@ -620,7 +620,7 @@ component StepConfigure {
         VerticalLayout {
             spacing: Design.gap-form;
             Text {
-                text: "Initial system profile";
+                text: @tr("Initial system profile");
                 color: Theme.text;
                 font-size: Design.font-meta;
                 font-weight: 500;
@@ -632,7 +632,7 @@ component StepConfigure {
                 selected(v) => { root.profile-selected(v); }
             }
             Text {
-                text: "Drives boot/shutdown/sleep behavior. You can change this later.";
+                text: @tr("Drives boot/shutdown/sleep behavior. You can change this later.");
                 color: Theme.text-faint;
                 font-size: Design.font-mini;
             }
@@ -650,12 +650,12 @@ component StepConfigure {
                 spacing: Design.gap-tight;
 
                 CheckBox {
-                    text: "Managed by TisVlay";
+                    text: @tr("Managed by TisVlay");
                     checked: root.managed;
                     toggled => { root.managed-toggled(self.checked); }
                 }
                 Text {
-                    text: "The daemon will power-cycle this TV in response to desktop session events (lock, unlock, sleep, shutdown). Untick to keep it paired but ignored by automation.";
+                    text: @tr("The daemon will power-cycle this TV in response to desktop session events (lock, unlock, sleep, shutdown). Untick to keep it paired but ignored by automation.");
                     color: Theme.text-dim;
                     font-size: Design.font-caption;
                     wrap: word-wrap;
@@ -724,11 +724,11 @@ component StepPair {
                 HorizontalLayout {
                     alignment: center;
                     Text {
-                        text: root.phase == "complete" ? "Paired successfully"
-                            : root.phase == "failed" ? "Pairing failed"
-                            : root.phase == "awaiting_tv" ? "Confirm the prompt on your TV"
-                            : root.phase == "awaiting_input" ? "Awaiting input on the TV"
-                            : "Connecting to the TV…";
+                        text: root.phase == "complete" ? @tr("Paired successfully")
+                            : root.phase == "failed" ? @tr("Pairing failed")
+                            : root.phase == "awaiting_tv" ? @tr("Confirm the prompt on your TV")
+                            : root.phase == "awaiting_input" ? @tr("Awaiting input on the TV")
+                            : @tr("Connecting to the TV…");
                         color: Theme.text;
                         font-size: 15px;
                         font-weight: 600;
@@ -737,13 +737,17 @@ component StepPair {
                 HorizontalLayout {
                     alignment: center;
                     Text {
+                        // `root.message` is set from Rust (see Phase 5 of plan5
+                        // — typed errors flow into a localized string there);
+                        // it's already translated by the time it reaches us.
+                        // The fallback strings below are static, so wrap them.
                         text: root.message != ""
                             ? root.message
                             : (root.phase == "complete"
-                                ? "Client key stored. TisVlay can now control this TV."
+                                ? @tr("Client key stored. TisVlay can now control this TV.")
                                 : root.phase == "failed"
-                                    ? "The prompt was rejected, or the request timed out."
-                                    : "Use the magic remote (or the directional pad) to choose Accept on the TV.");
+                                    ? @tr("The prompt was rejected, or the request timed out.")
+                                    : @tr("Use the magic remote (or the directional pad) to choose Accept on the TV."));
                         color: root.phase == "failed" ? Theme.danger-text : Theme.text-dim;
                         font-size: Design.font-meta;
                         horizontal-alignment: center;
@@ -764,12 +768,12 @@ component StepPair {
                 alignment: center;
                 spacing: Design.gap-stack;
                 Button {
-                    text: "Retry pairing";
+                    text: @tr("Retry pairing");
                     primary: true;
                     clicked => { root.retry(); }
                 }
                 Button {
-                    text: "Back to discovery";
+                    text: @tr("Back to discovery");
                     clicked => { root.back-to-discovery(); }
                 }
             }
@@ -824,7 +828,7 @@ component StepDone {
                 HorizontalLayout {
                     alignment: center;
                     Text {
-                        text: (root.tv-name == "" ? "TV" : root.tv-name) + " is ready.";
+                        text: @tr("{} is ready.", root.tv-name == "" ? @tr("TV") : root.tv-name);
                         color: Theme.text;
                         font-size: Design.font-section;
                         font-weight: 600;
@@ -833,7 +837,7 @@ component StepDone {
                 HorizontalLayout {
                     alignment: center;
                     Text {
-                        text: "The new TV will appear selected in the TVs pane. Boot, sleep, and session events follow the default profile until you change it.";
+                        text: @tr("The new TV will appear selected in the TVs pane. Boot, sleep, and session events follow the default profile until you change it.");
                         color: Theme.text-dim;
                         font-size: Design.font-body;
                         horizontal-alignment: center;
@@ -846,11 +850,14 @@ component StepDone {
                 alignment: center;
                 spacing: Design.gap-row;
                 Text {
-                    text: "Vendor: ";
+                    text: @tr("Vendor: ");
                     color: Theme.text-faint;
                     font-size: Design.font-caption;
                 }
                 Text {
+                    // Vendor display names — brand names, intentionally
+                    // not translated. The `tv-vendor` value itself is a
+                    // machine identifier (`"lg"` etc.).
                     text: root.tv-vendor == "lg" ? "LG WebOS"
                         : root.tv-vendor == "samsung" ? "Samsung"
                         : root.tv-vendor == "sony" ? "Sony"
@@ -876,7 +883,7 @@ component StepDone {
                     font-size: Design.font-caption;
                 }
                 Text {
-                    text: root.managed ? "Managed" : "Unmanaged";
+                    text: root.managed ? @tr("Managed") : @tr("Unmanaged");
                     color: Theme.text-dim;
                     font-size: Design.font-caption;
                 }
@@ -921,10 +928,10 @@ export component PairingWizardPane inherits Rectangle {
       : false;
 
     property <string> next-label:
-        PairingWizard.step == 2 ? "Pair"
-      : PairingWizard.step == 3 ? "Next"
-      : PairingWizard.step == 4 ? "Close"
-      : "Next";
+        PairingWizard.step == 2 ? @tr("Pair")
+      : PairingWizard.step == 3 ? @tr("Next")
+      : PairingWizard.step == 4 ? @tr("Close")
+      : @tr("Next");
 
     VerticalLayout {
         width: 100%;
@@ -1005,12 +1012,12 @@ export component PairingWizardPane inherits Rectangle {
                 alignment: stretch;
 
                 if PairingWizard.step != 4: Button {
-                    text: "Cancel";
+                    text: @tr("Cancel");
                     clicked => { PairingWizard.cancel(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
                 if PairingWizard.step == 2 || (PairingWizard.step == 3 && PairingWizard.pair-phase != "awaiting_tv" && PairingWizard.pair-phase != "awaiting_input"): Button {
-                    text: "Back";
+                    text: @tr("Back");
                     clicked => { PairingWizard.step-back(); }
                 }
                 Button {

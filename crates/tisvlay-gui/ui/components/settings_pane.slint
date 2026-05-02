@@ -24,14 +24,14 @@ export component SettingsPane inherits Rectangle {
         alignment: start;
 
         Text {
-            text: "Settings";
+            text: @tr("Settings");
             color: Theme.text;
             font-size: Design.font-title-2;
             font-weight: 700;
         }
 
         Text {
-            text: "No user-facing settings yet. Appearance follows your desktop's color-scheme automatically.";
+            text: @tr("No user-facing settings yet. Appearance follows your desktop's color-scheme automatically.");
             color: Theme.text-dim;
             font-size: Design.font-body;
             wrap: word-wrap;
