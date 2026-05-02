@@ -1,18 +1,21 @@
-//! Regression: `RemoveTv` over D-Bus with a UUID-typed TV ID.
+//! Regression: removing a UUID-keyed TV through the GUI/CLI surface
+//! must not silently miss the daemon's in-memory TV map.
 //!
 //! After the Phase 8.1 UUID identity migration, every TV's canonical
 //! ID is a hyphenated UUID v4 (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
-//! D-Bus path components forbid hyphens, so [`tv_path`] sanitizes
-//! `-` → `_` on the way to the wire — and the daemon's `RemoveTv`
-//! handler must reverse that on the way back, otherwise it looks up
-//! the underscored form against an `IndexMap` keyed by the canonical
-//! hyphenated UUID and returns `TvNotFound`.
+//! D-Bus path components forbid hyphens, so an early implementation
+//! that took the path on `Manager1.RemoveTv(o)` and stripped the
+//! prefix — without reversing the `-` → `_` sanitization that
+//! [`tv_path`] applies — looked up the underscored form against an
+//! `IndexMap` keyed by the hyphenated UUID and returned `TvNotFound`.
+//! Pre-8.1 sanitized-name IDs had no hyphens so the round-trip was
+//! lossless and the bug was invisible.
 //!
-//! Pre-8.1 sanitized-name IDs (`living_room`, `office`) had no
-//! hyphens so the round-trip was lossless and the bug was invisible.
-//! This test exercises the full GUI/CLI removal flow:
-//! `DaemonClient::remove_tv(uuid)` → `tv_path(uuid)` (mangled wire form)
-//! → daemon `RemoveTv` handler → daemon's TV map.
+//! The fix routed removal through a per-object `Tv1.Remove()` method,
+//! which gives the daemon's handler `&self.tv_id` directly. This
+//! test guards the public client surface so the regression can't
+//! sneak back regardless of which D-Bus shape `DaemonClient::remove_tv`
+//! ends up using.
 //!
 //! [`tv_path`]: tisvlay_core::tv_path
 

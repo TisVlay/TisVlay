@@ -42,25 +42,6 @@ pub fn tv_path(tv_id: &str) -> String {
     format!("{}/{}", TV_BASE_PATH, sanitized)
 }
 
-/// Recover a TV ID from its D-Bus object path component.
-///
-/// Reverse of [`tv_path`]: strips the [`TV_BASE_PATH`] prefix and
-/// converts underscores back to hyphens. Since Phase 8.1, every TV
-/// ID is a hyphenated UUID v4, and the only character `tv_path()`
-/// rewrites for those is `-` → `_`. Returns `None` if `path` does
-/// not begin with `TV_BASE_PATH/`.
-///
-/// Note: the underscore↔hyphen mapping is one-way ambiguous in
-/// general (a pre-UUID slug like `living_room` would round-trip
-/// to `living-room`), but post-8.1 there are no such legacy IDs —
-/// the daemon's in-memory map keys all parse as `Uuid::parse_str`,
-/// and a malformed path component just falls through to a
-/// `TvNotFound` lookup miss.
-pub fn tv_id_from_path(path: &str) -> Option<String> {
-    let component = path.strip_prefix(&format!("{}/", TV_BASE_PATH))?;
-    Some(component.replace('_', "-"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,33 +88,5 @@ mod tests {
             let path = tv_path(&tv_id);
             prop_assert_eq!(path, format!("{}/{}", TV_BASE_PATH, tv_id));
         }
-
-        /// Hyphenated UUIDs must round-trip cleanly through
-        /// `tv_path` → `tv_id_from_path`. This is the post-8.1
-        /// canonical TV-ID format; if this regresses, `RemoveTv`
-        /// (which decodes paths back to TV IDs) lookups silently
-        /// miss the in-memory `IndexMap` keyed by canonical UUID.
-        #[test]
-        fn uuid_round_trips_through_tv_path(
-            uuid in "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-        ) {
-            let path = tv_path(&uuid);
-            prop_assert_eq!(tv_id_from_path(&path), Some(uuid));
-        }
-    }
-
-    #[test]
-    fn tv_id_from_path_rejects_unrelated_path() {
-        assert_eq!(tv_id_from_path("/org/tisvlay/Manager"), None);
-        assert_eq!(tv_id_from_path("/org/tisvlay"), None);
-        assert_eq!(tv_id_from_path(""), None);
-    }
-
-    #[test]
-    fn tv_id_from_path_recovers_canonical_uuid() {
-        let uuid = "02bdc699-a075-4f20-92c4-b6fd4a0955f7";
-        let path = tv_path(uuid);
-        assert_eq!(path, "/org/tisvlay/Tv/02bdc699_a075_4f20_92c4_b6fd4a0955f7");
-        assert_eq!(tv_id_from_path(&path), Some(uuid.to_string()));
     }
 }

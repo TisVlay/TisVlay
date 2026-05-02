@@ -128,9 +128,6 @@ trait TisvlayManager {
         managed: bool,
     ) -> zbus::Result<(OwnedObjectPath, String)>;
 
-    /// Remove a TV.
-    fn remove_tv(&self, tv_path: &OwnedObjectPath) -> zbus::Result<()>;
-
     /// Reload configuration.
     fn reload_config(&self) -> zbus::Result<()>;
 
@@ -228,6 +225,13 @@ trait TisvlayTv {
 
     /// Force reconnection.
     fn reconnect(&self) -> zbus::Result<()>;
+
+    /// Remove this TV from the daemon's configuration.
+    ///
+    /// Drops the in-memory entry, deletes from the config file,
+    /// and unregisters every `Tv1.*` interface at this path so
+    /// `ObjectManager.InterfacesRemoved` fires for watchers.
+    fn remove(&self) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -981,21 +985,18 @@ impl DaemonClient {
     }
 
     /// Remove a TV from configuration.
+    ///
+    /// Routes through the per-object `Tv1.Remove()` method so the
+    /// daemon's handler has `&self.tv_id` directly — no path
+    /// decoding, no hyphen/underscore mangling. The daemon
+    /// unregisters every `Tv1.*` interface at this path as part
+    /// of the call; we drop the proxy cache entry on success.
     pub async fn remove_tv(&self, tv_id: &str) -> Result<()> {
-        debug!(tv_id = %tv_id, "Removing TV via daemon");
-        let path = tv_path(tv_id);
-        let obj_path = OwnedObjectPath::try_from(path).context("Invalid TV path")?;
-        self.manager
-            .remove_tv(&obj_path)
-            .await
-            .with_context(|| format!("Failed to remove TV: {}", tv_id))?;
+        self.with_proxies(tv_id, "remove", |p| Box::pin(p.base.remove()))
+            .await?;
 
-        // Remove from cache
-        {
-            let mut cache = self.tv_proxies.write().await;
-            cache.remove(tv_id);
-        }
-
+        let mut cache = self.tv_proxies.write().await;
+        cache.remove(tv_id);
         Ok(())
     }
 

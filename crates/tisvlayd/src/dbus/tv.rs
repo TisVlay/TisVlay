@@ -12,7 +12,8 @@ use crate::dbus::DaemonError;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
 use tisvlay_core::TvState;
-use tracing::info;
+use tisvlay_core::dbus_paths::tv_path;
+use tracing::{info, warn};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
 
@@ -218,6 +219,35 @@ impl TvService {
             .reconnect(&self.tv_id)
             .await
             .map_err(DaemonError::from)
+    }
+
+    /// Remove this TV from the daemon's configuration.
+    ///
+    /// Drops the in-memory TV map entry, deletes the entry from the
+    /// on-disk config file, and unregisters every `Tv1.*` interface
+    /// at this object path so `ObjectManager.InterfacesRemoved`
+    /// fires for clients watching the surface.
+    ///
+    /// Lives on `Tv1` rather than `Manager1` so the handler has
+    /// `&self.tv_id` directly — no `object_path → tv_id` decoding,
+    /// no path-component sanitization to undo. zbus keeps `self`
+    /// alive for the duration of the call even though the
+    /// interface is being unregistered as part of it.
+    async fn remove(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), DaemonError> {
+        info!(tv_id = %self.tv_id, "D-Bus: Remove");
+        self.manager
+            .remove_tv(&self.tv_id)
+            .await
+            .map_err(DaemonError::from)?;
+
+        let path = tv_path(&self.tv_id);
+        if let Err(e) = unregister_tv_interfaces(connection, &path).await {
+            warn!(tv_id = %self.tv_id, error = %e, "Failed to unregister D-Bus interfaces for TV");
+        }
+        Ok(())
     }
 }
 
