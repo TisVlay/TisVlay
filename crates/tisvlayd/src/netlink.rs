@@ -11,9 +11,11 @@
 
 use futures_util::TryStreamExt;
 use netlink_packet_route::link::LinkAttribute;
+use netlink_packet_route::neighbour::{NeighbourAddress, NeighbourAttribute, NeighbourState};
 use netlink_packet_route::route::RouteAttribute;
-use rtnetlink::{RouteMessageBuilder, new_connection};
+use rtnetlink::{IpVersion, RouteMessageBuilder, new_connection};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use tisvlay_core::MacAddress;
 use tracing::{debug, info, trace, warn};
 
 /// Resolve which network interface routes traffic to the given IP.
@@ -126,6 +128,92 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
     }
 
     debug!(ip = %ip, "No route found");
+    None
+}
+
+/// Look up the MAC address for the given IP from the kernel
+/// neighbour table (equivalent to `ip neighbour show | grep <ip>`).
+///
+/// Used by discovery enrichment: SSDP gives us the TV's IP; the
+/// kernel has typically already cached the MAC from the SSDP
+/// response itself, so a netlink dump is sufficient — no active
+/// ARP probe required. Returns `None` when:
+///
+/// - the IP isn't in the table at all (cross-VLAN, wrong subnet),
+/// - the entry exists but is in a state with no link-layer
+///   address yet (`Incomplete`, `Failed`, `None`),
+/// - the netlink connection couldn't be opened (no kernel support
+///   / restricted environment).
+///
+/// Callers should treat `None` as "fall back to asking the user
+/// for a MAC" rather than as a hard failure.
+pub async fn arp_lookup(ip: IpAddr) -> Option<MacAddress> {
+    let (connection, handle, _) = match new_connection() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "Failed to create netlink connection for ARP lookup");
+            return None;
+        }
+    };
+
+    let conn_task = tokio::spawn(connection);
+    let result = neighbour_lookup(&handle, ip).await;
+    conn_task.abort();
+    result
+}
+
+async fn neighbour_lookup(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<MacAddress> {
+    let ip_version = match ip {
+        IpAddr::V4(_) => IpVersion::V4,
+        IpAddr::V6(_) => IpVersion::V6,
+    };
+
+    let mut neighbours = handle.neighbours().get().set_family(ip_version).execute();
+
+    while let Ok(Some(msg)) = neighbours.try_next().await {
+        // Skip entries that have no resolved link-layer address.
+        match msg.header.state {
+            NeighbourState::Reachable
+            | NeighbourState::Stale
+            | NeighbourState::Permanent
+            | NeighbourState::Probe
+            | NeighbourState::Delay
+            | NeighbourState::Noarp => {}
+            _ => continue,
+        }
+
+        let mut dest: Option<IpAddr> = None;
+        let mut lladdr: Option<[u8; 6]> = None;
+        for attr in &msg.attributes {
+            match attr {
+                NeighbourAttribute::Destination(NeighbourAddress::Inet(v4)) => {
+                    dest = Some(IpAddr::V4(*v4));
+                }
+                NeighbourAttribute::Destination(NeighbourAddress::Inet6(v6)) => {
+                    dest = Some(IpAddr::V6(*v6));
+                }
+                NeighbourAttribute::LinkLocalAddress(bytes) if bytes.len() == 6 => {
+                    let mut m = [0u8; 6];
+                    m.copy_from_slice(bytes);
+                    lladdr = Some(m);
+                }
+                _ => {}
+            }
+        }
+
+        if dest != Some(ip) {
+            continue;
+        }
+
+        let bytes = lladdr?;
+        let mac_str = format!(
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+        );
+        return MacAddress::parse(&mac_str).ok();
+    }
+
+    debug!(ip = %ip, "No neighbour entry with link-layer address found");
     None
 }
 
