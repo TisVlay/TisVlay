@@ -100,6 +100,25 @@ impl ManagerService {
             .collect()
     }
 
+    /// Get the pairing-form schema for a vendor backend.
+    ///
+    /// Returns a JSON-serialized `Vec<PairingField>` describing the
+    /// fields the GUI's wizard should render. JSON-on-D-Bus follows
+    /// the same convention `AddTv`'s `config_json` uses (per
+    /// commit `7b7bf81`); the typed Rust shape lives in
+    /// `tisvlay_core::pairing_schema`.
+    fn get_pairing_schema(&self, vendor: &str) -> Result<String, DaemonError> {
+        debug!(vendor = %vendor, "D-Bus: GetPairingSchema");
+        let connector = self
+            .registry
+            .get(vendor)
+            .ok_or_else(|| DaemonError::UnknownVendor(vendor.to_string()))?;
+        let schema = connector.connector.pairing_schema();
+        serde_json::to_string(&schema).map_err(|e| {
+            DaemonError::OperationFailed(format!("Failed to serialize pairing schema: {}", e))
+        })
+    }
+
     /// Add a new TV.
     ///
     /// Starts pairing with the TV using the provided vendor config JSON.

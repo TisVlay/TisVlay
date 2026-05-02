@@ -94,6 +94,14 @@ trait TisvlayManager {
     /// Returns: [(vendor_id, vendor_name)]
     fn get_supported_vendors(&self) -> zbus::Result<Vec<(String, String)>>;
 
+    /// Get the pairing-form schema for a vendor.
+    ///
+    /// Returns a JSON-serialized `Vec<PairingField>` describing the
+    /// fields the wizard should render (and the daemon expects in
+    /// the matching `add_tv` call's `config_json`). See
+    /// [`crate::pairing_schema`] for the field shape.
+    fn get_pairing_schema(&self, vendor: &str) -> zbus::Result<String>;
+
     /// Add a TV.
     /// config_json: vendor-specific connection parameters as JSON
     /// managed: whether the TV participates in automation
@@ -874,6 +882,21 @@ impl DaemonClient {
             .get_supported_vendors()
             .await
             .context("Failed to get supported vendors")
+    }
+
+    /// Get the pairing-form schema for a vendor.
+    ///
+    /// Returns the typed [`PairingField`] list the wizard should
+    /// render. The daemon serializes it as JSON over D-Bus
+    /// (matching the `config_json` convention on `AddTv`); this
+    /// wrapper deserializes back into typed Rust on the client.
+    pub async fn get_pairing_schema(&self, vendor: &str) -> Result<Vec<crate::PairingField>> {
+        let json = self
+            .manager
+            .get_pairing_schema(vendor)
+            .await
+            .context("Failed to get pairing schema")?;
+        serde_json::from_str(&json).context("Failed to parse pairing schema JSON")
     }
 
     /// Pair/add a new TV.
