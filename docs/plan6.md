@@ -1,11 +1,25 @@
 # Plan 6 — Edit TV properties from the GUI
 
-> **Status:** Draft. Builds on plan5's schema architecture
-> (`config_schema` + `FieldVisibility`) which gave us the
-> declarative metadata to drive an edit form for free. This plan
-> adds the editing pathway end-to-end: daemon RPCs, atomicity,
-> GUI shape, and the architectural cleanup that surfaced when
-> we noticed `Tv1.Address` is a leaky vendor abstraction.
+> **Status:** Draft v1 — major architectural questions resolved
+> (UUID migration, drop `Tv1.Address` cleanly, atomic-batch edit
+> UX), `SetTvOption` retirement leaning resolved with research
+> captured for one more review pass. Builds on plan5's schema
+> architecture (`config_schema` + `FieldVisibility`) which gave
+> us the declarative metadata to drive an edit form for free.
+> This plan adds the editing pathway end-to-end: daemon RPCs,
+> atomicity, GUI shape, identity model, and the architectural
+> cleanup that surfaced when we noticed `Tv1.Address` is a leaky
+> vendor abstraction.
+>
+> | Decision | Status | Section |
+> |---|---|---|
+> | UUID identity model + rename `Tv1.Id` → `Tv1.Uuid` | ✅ resolved | Identity model |
+> | Drop `Tv1.Address` cleanly; no scalar replacement | ✅ resolved | Drop `Tv1.Address` |
+> | Atomic batch edit; pencil-toggle UX | ✅ resolved (chat Q2) | UX shape |
+> | Accept config + reflect connection status on side-effect failure | ✅ resolved (chat Q4) | Atomicity |
+> | Drop `SetTvOption`; route everything through `UpdateTvConfig` | leaning | `SetTvOption` retirement |
+> | Edit-mode scope (INFO-only vs duplicate inline controls) | open ❓v1 Q4 | Open questions |
+> | Validation timing (save-gated vs server-error fallback) | open ❓v1 Q5 | Open questions |
 
 ## Bug recap (motivation)
 
@@ -41,7 +55,7 @@ atomically with their side effects.
 
 ## Core architectural decisions
 
-### ID vs name — research and recommendation ❓v1 Q1
+### Identity model: UUID + display name ✅ resolved (was Q1)
 
 Most mature CRUD systems separate identity from display:
 
@@ -59,72 +73,102 @@ renameable display field**. Git's the exception (no separate
 identity layer) and pays for it with a dedicated rename command
 that touches every reference.
 
-For tisvlay, three viable shapes:
+**Resolution:** migrate `tv.config.id` from "sanitized name" to
+**UUID** (RFC 4122). Reasons:
 
-- **(a) Immutable ID.** ID is sanitized name at creation, never
-  changes after. CLI accepts `name | id` for lookups (NetworkManager
-  pattern). The user's "intuitive CLI" goal still holds — fresh
-  pairings get the friendly ID; renames stop being CLI-visible.
-  Pros: stable references everywhere (D-Bus paths, profile
-  assignments, scripts, cron jobs). No collision-on-rename
-  problem. Cons: ID drifts from name over time.
-- **(b) Atomic rename-with-name.** ID = sanitized name; rename
-  updates both. All references migrate atomically. Pros: most
-  user-intuitive, ID always matches the visible name. Cons: have
-  to coordinate atomic update across D-Bus paths, profile keys,
-  in-flight subscriptions, GUI selection state, tray cache. Plus
-  collision handling (rename "Office" → "Living Room" when a
-  Living Room TV already exists).
-- **(c) Hybrid: immutable ID, de-emphasized in UI.** Same as (a)
-  but the GUI never surfaces the ID as a primary user-facing
-  thing — it's a "machine identifier" in the INFO pane only.
-  Most users won't notice the drift; power users see the
-  stable handle.
+1. **D-Bus path correctness.** D-Bus path components match
+   `[A-Za-z0-9_]+` per spec — no hyphens, no Unicode. Sanitized
+   names from arbitrary user input ("客厅电视", "Sala de estar")
+   collapse to nothing useful or awkward placeholders. UUID
+   sidesteps the question.
+2. **i18n correctness.** Same root cause: the sanitized-name
+   approach silently restricts users to ASCII names. UUIDs free
+   the `name` field to be anything Unicode permits.
+3. **Stable cross-references.** Profile assignments
+   (`profile.tv.<key>`), the daemon's `IndexMap<id, …>`, scripts,
+   cron jobs — all keep working through renames.
+4. **NetworkManager precedent.** Same problem space, same
+   answer.
 
-**Recommendation: (a) with (c)'s UX polish.** Matches what every
-mature daemon-style app does. Avoids the rename-coordination
-mess entirely. The only loss is the rare power-user scenario
-where they want to rename in the GUI and have their `cron` job
-that runs `tisvlay tvs power-on office` keep working — for that,
-NetworkManager's pattern of "CLI accepts name OR id" handles
-both cases without the daemon-side complexity.
+**Concrete shape:**
 
-For collision: (a) means renames never produce a collision (only
-new pairings can collide, and that's already handled by
-`ConfigError::DuplicateTvId`).
+- Generate a UUID at TV creation; store as `tv.config.uuid`.
+- D-Bus path becomes `/org/tisvlay/Tv/<uuid_underscored>`
+  (UUID hyphens swapped for underscores for D-Bus spec
+  compliance).
+- Cross-references in config (profile assignments,
+  `primary_input` keying) use UUID.
+- Rename `Tv1.Id` → `Tv1.Uuid` to make the abstraction
+  unambiguous. `Tv1.Name` stays as user-facing display.
+- CLI accepts `name | uuid` for lookups (NetworkManager's
+  `nmcli connection up <name|uuid>` pattern). Names primary —
+  `tisvlay tvs power-on Office` still works — UUID is the
+  ambiguity-breaker.
 
-Open as **❓v1 Q1**: confirm (a) + (c), or pursue (b)?
+**Migration:** existing configs use sanitized-name IDs. One-shot
+config-load migration: detect the absence of `uuid`, generate
+one, write the migrated config back, log the change. Daemon
+keeps the old `id` field as a deprecated alias for one release
+to avoid breaking external scripts mid-flight.
 
-### `Tv1.Address` is leaky ❓v1 Q2
+**No collision problem.** Renames update only `name`; UUID
+stays. Two TVs with the same name is fine (UUIDs disambiguate);
+the GUI/CLI surfaces a warning if a name is ambiguous.
 
-`Tv1.Address` exposes the LG-specific IP as a top-level cross-vendor
-property. This was fine when LG was the only backend; now that the
-schema-driven `Tv1.VendorInfo` exists (carrying the same IP under
-its proper label), `Tv1.Address` is redundant — and worse, it's a
-shape that future non-IP backends (USB-CEC at `/dev/ttyUSB0`,
+For advanced users wanting to manually edit IDs: they already
+own the config file. Editing `~/.config/tisvlay/config.toml` to
+swap `uuid` values is supported the same way it always has
+been — daemon picks up the new value on `ReloadConfig`.
+
+### Drop `Tv1.Address` entirely ✅ resolved (was Q2)
+
+`Tv1.Address` exposes the LG-specific IP as a top-level
+cross-vendor property. Fine when LG was the only backend; now
+that schema-driven `Tv1.VendorInfo` carries the same IP under
+its proper label, `Tv1.Address` is redundant — and worse, it's a
+shape future non-IP backends (USB-CEC at `/dev/ttyUSB0`,
 Bluetooth at `XX:XX:XX:XX:XX:XX`) would have to shoehorn into.
 
-The cleanup:
+**Resolution:** drop `Tv1.Address` cleanly. **No replacement
+scalar** — no `Tv1.URI`, no `Tv1.Locator`, no `Tv1.Description`.
+GUI's spatial hint reads `Tv1.VendorInfo[0]` (first entry) for
+the "Office — 192.168.1.170" header treatment. Backend orders
+its `config_schema` so the most informative field comes first;
+LG's order is `[ip, mac, client_key, scheme]` — `ip` is first
+in vendor_info → still surfaces as the spatial hint.
 
-- Drop the `address` field from `TvService` and the `Tv1.Address`
-  D-Bus property.
-- Drop `TvInfo.address` from the GUI client.
-- Display sites that currently read `address` switch to reading
-  the relevant entry from `vendor_info` (already plumbed
-  end-to-end in the prior commit).
+**Why no replacement scalar:** any top-level `Tv1.X: s` property
+forces a "vendor-agnostic naming" decision (URI? Locator?
+Description?) that's always slightly wrong for some backend.
+Convention via `vendor_info` ordering is implicit but
+vendor-honest — backend decides what's most informative for *its*
+transport and puts it first.
 
-`DiscoveredTv.address` is a parallel concern — pre-pair display
-identifier returned from each vendor's discovery flow. It's
-typed as a String not "IP" so the abstraction is technically
-clean, but the field name is misleading. Two options:
+If "implicit ordering" turns out fragile in practice, the
+explicit alternative is a `primary: bool` flag on `PairingField`
+(adds one more axis to a struct that's already at 13 fields, but
+unambiguous). Defer until a backend hits a case the convention
+doesn't cover.
 
-- Keep `DiscoveredTv.address` (it's a UI string, not an IP).
-- Rename to `display_id` or `display_string` to make the
-  abstraction explicit.
+**`DiscoveredTv.address`** stays — it's a string used pre-pair
+when no `vendor_info` exists yet (discovery results haven't
+been promoted to a paired TV). Field name is slightly
+misleading (some future backend's `address` might not be an IP)
+but it's clearly a String not an `IpAddr`; consumers treat it
+as opaque display text. Renaming for cosmetics isn't worth the
+churn.
 
-Open as **❓v1 Q2**: drop `Tv1.Address` cleanly (no
-backward-compat — the project has no live consumers); rename or
-keep `DiscoveredTv.address` as-is?
+**Cleanup touches:**
+
+- `TvService.address` cached field — drop.
+- `Tv1.Address` D-Bus property + proxy — drop.
+- `TvInfo.address` in `dbus_client.rs` — drop.
+- `TvConnector::display_address(vendor_config) -> String` —
+  drop. Daemon's log-formatter switches to "first entry of
+  `display_info(vendor_config)`" when it needs a one-liner.
+- Every read site (TVs pane header, tray menu) — switch to
+  `vendor_info` lookups, or stay on `DiscoveredTv.address` for
+  the pre-pair case.
 
 ### Atomicity & failure modes (resolved Q4)
 
@@ -201,28 +245,147 @@ Returns the current vendor + top-level config as JSON, with
 existing top-level properties, but a single RPC is simpler for
 the modal/edit-mode flow.)
 
-### Existing methods that overlap
+### `SetTvOption` retirement (research, leaning resolved)
 
-`Manager1.SetTvOption(tv_id, key, value)` already handles
-top-level edits per-field. `UpdateTvConfig` is its batch +
-vendor-aware sibling. We can either:
+`Manager1.SetTvOption(tv_id, key, value)` — the existing
+stringly-typed dispatcher — has accumulated meaningful design
+churn. Worth tracing before deciding what to do with it.
 
-- Keep both (per-field for tray/CLI quick edits; batch for
-  GUI's edit mode).
-- Deprecate `SetTvOption` and route everything through
-  `UpdateTvConfig`.
+**Git history of `SetTvOption`:**
 
-Open as **❓v1 Q3**: keep both, or migrate to `UpdateTvConfig`
-exclusively?
+- **Commit `2e88717` (Phase 5A)** introduced it for the
+  `managed` flag. Initial keys: `hdmi_input`,
+  `only_when_active`, `managed`, `name`. The shape — `(tv_id,
+  key, value)` strings — was chosen for parity with how
+  `tisvlay-cli` dispatched config edits at the time.
+- **Subsequent commits** drifted the supported-keys list:
+  - `hdmi_input` → `primary_input` (rename, when input
+    handling generalized).
+  - `only_when_active` → dropped (replaced by
+    `automate_when` resolved through profiles).
+  - `profile.system` added (per-TV profile assignment).
+  - Each rename / addition required: a new dispatch arm in
+    `apply_tv_option`, a doc-comment update on the D-Bus
+    method, and a synchronization between `tv.config` writes
+    and disk persistence.
+- The doc comment (`Supported keys: …`) drifted out of date
+  twice in history; clients reading the introspection saw
+  fields that no longer existed. No machine-checkable contract
+  between the daemon's accepted-keys list and what was
+  introspected.
+
+The pattern: **every editable field is a per-commit decision
+that touches the dispatch + doc + tests**, with nothing
+schema-driven.
+
+**D-Bus / freedesktop precedent for batch-vs-per-field:**
+
+| Project | Pattern | Notes |
+|---|---|---|
+| **NetworkManager** `Settings.Connection.Update(settings: a{sa{sv}})` | atomic blob | Settings is a dict-of-dicts (vendor groups under outer key). Replaces full settings, OR `UpdateUnsaved` for in-memory only. **No per-property setter exists.** |
+| **systemd** `Manager.SetUnitProperties(name, runtime: b, properties: a(sv))` | batch list | Hybrid: explicit `(name, variant)` tuples, no JSON. Atomicity via the array. **No `SetUnitProperty` singular variant.** |
+| **BlueZ** `Adapter1`, `Device1` | per-property via `org.freedesktop.DBus.Properties.Set` | Standard. No batch update. Each property auto-emits `PropertiesChanged` on Set. |
+| **UPower** `Device` | per-property via Properties.Set | Same as BlueZ. |
+| **GNOME / GSettings** | per-key `Set(key, variant)` | Settings backend; not directly comparable but same shape. |
+
+**The split that matters:** projects that treat their state as
+a structured object with vendor-extensible fields (NetworkManager
+connections, systemd unit properties) chose **batch**. Projects
+that treat their state as a flat property bag of independent
+scalars (BlueZ, UPower) chose **per-property via standard
+Properties.Set**.
+
+tisvlay's TV config is the structured-object case: vendor
+fields plus top-level fields, with atomicity required for the
+GUI's edit-pencil flow. So the batch precedent applies.
+
+**tisvlay's existing convention for *live state*:** typed
+methods, not Properties.Set. Per commit `87714ad` (`refactor(daemon):
+writable state via methods, properties read-only`), live state
+(`Volume`, `Backlight`, `Screen`, `Mute`) uses
+`SetVolume(y)`/`SetBacklight(y)`/`SetScreen(b)`/`SetMuted(b)`
+methods with read-only properties as cached mirrors. The
+commit message explicitly cites UPower / GNOME settings / BlueZ
+/ NetworkManager precedent and zbus's screen-brightness
+example, plus a concrete reason: typed methods avoid the
+auto-emit-on-Set vs. state_forwarder race that motivated
+earlier "drop pre-cache" workarounds.
+
+That decision was deliberate and well-grounded. It tells us
+**tisvlay's standing convention is "typed methods, not
+Properties.Set"** — but it was made for *live runtime state*,
+where the property count is bounded (Volume / Backlight /
+Screen / Mute / current input switch), and where each setter
+has a clear typed signature.
+
+**Config state is a different shape:**
+
+- Vendor-extensible (LG: ip, mac; future Samsung: api_key;
+  USB-CEC: serial_port, baud_rate).
+- Atomicity matters (edit pencil saves all-or-nothing).
+- Schema-driven (we already declare it via
+  `TvConnector::config_schema`).
+
+Typed methods for config state would mean per-vendor
+sub-interfaces (`Tv1.Lg.SetIp`, `Tv1.Lg.SetMac`) — leaks
+vendor semantics back into the D-Bus surface that we just
+spent plan5 + plan6 cleaning up. Per-property `Properties.Set`
+loses the atomicity. Stringly-typed `SetTvOption` is the
+churn-prone shape we have.
+
+**Leading recommendation: drop `SetTvOption`, route everything
+through `UpdateTvConfig(tv_id, json_patch)`.**
+
+Rationale:
+
+1. **Symmetry with profile CRUD.** plan.md's M3.5 already
+   commits to `Manager1.UpdateSystemProfile(name, json)` and
+   `Session1.UpdateUserProfile(name, json)`. Both blob-JSON.
+   TV config matching that shape gives one CRUD pattern across
+   the daemon.
+2. **Schema-driven.** Adding a new editable field requires
+   updating only `config_schema` — no D-Bus method changes, no
+   dispatch-arm additions. The historical churn around
+   `SetTvOption` keys becomes structurally impossible.
+3. **NetworkManager precedent** for vendor-extensible
+   structured state.
+4. **Atomicity.** GUI edit-pencil flow saves multiple fields
+   together; per-field calls don't compose cleanly.
+
+**Trade-off:** loses the introspection ergonomics of
+"`busctl introspect` shows me each setter's signature." Mitigated
+by `Manager1.GetPairingSchema(vendor)` already exposing the
+schema as JSON for tooling that wants typed metadata; the
+analogous `GetTvConfigSchema(tv_id)` (or just reusing the
+existing endpoint) covers the edit case.
+
+**Live state (Volume / Backlight / Screen / Mute) keeps its
+typed-method pattern unchanged** — different problem space,
+the 87714ad rationale still applies.
+
+**Status: leaning resolved, kept open as ❓v1 Q3** for one more
+review pass. Worth verifying:
+
+- Is there a freedesktop project that *did* go vendor-extensible
+  + per-property and made it work cleanly? (The ones surveyed
+  above don't, but the survey isn't exhaustive.)
+- Does zbus have idiom support for "list typed setters from a
+  schema" that would make per-property setters less painful
+  than they look? (Spot-check: zbus's procedural macro generates
+  one method per `#[zbus(property)]`; nothing dynamic.)
+- Are there CLI ergonomics arguments for keeping `SetTvOption`
+  as a thin wrapper for `tisvlay tvs set <key>=<value>`-style
+  shorthand? (Could be a CLI-only concern; CLI can build the
+  JSON internally without exposing per-field D-Bus methods.)
 
 ## Side effects per field
 
 | Field | Effect |
 |---|---|
-| `name` | `Tv1.Name` PropertiesChanged. ID stays (per Q1 rec). Tray menu refreshes. Trivial. |
-| `system_profile` | Already wired via `SetTvOption`. Re-resolve any session bindings. |
-| `primary_input` | Already wired. Affects `Tv1.Automated` recomputation. |
-| `managed` | Already wired. Lifecycle automation respects new flag. |
+| `name` | `Tv1.Name` PropertiesChanged. UUID stays (per Q1 resolution). Tray menu refreshes. Trivial. |
+| `system_profile` | Re-resolve any session bindings. Currently wired via `SetTvOption`; routes through `UpdateTvConfig` after Q3 retirement. |
+| `primary_input` | Affects `Tv1.Automated` recomputation. Same routing change as above. |
+| `managed` | Lifecycle automation respects new flag. Same routing change. |
 | `ip` (vendor) | Connection drops. Daemon reconnects with new IP. NIC route re-resolves. Subscriptions re-bring-up (parallelized — fast). |
 | `mac` (vendor) | No connection break. `Tv1.Power.SupportsWake` recomputes. Power-on button enables/disables. |
 
@@ -232,34 +395,57 @@ edit-applied → drop-and-reconnect path.
 
 ## Refactoring needs
 
-1. **Hoist `SchemaForm` from `pairing_wizard.slint`.** The
+1. **Migrate `id` → `uuid`.** New `tv.config.uuid` field
+   (RFC 4122). D-Bus path becomes
+   `/org/tisvlay/Tv/<uuid_underscored>`. Cross-references in
+   config (profile assignments, primary_input keying) use
+   UUID. Rename `Tv1.Id` → `Tv1.Uuid`. One-shot config-load
+   migration for existing sanitized-name IDs (generate UUID,
+   write back, log). Touches every site that handles
+   `tv_id` strings: pairing wizard, CLI lookups, tray menu,
+   GUI selection state, profile assignment, D-Bus paths.
+
+2. **Drop `Tv1.Address` and `TvConnector::display_address`.**
+   Per Q2 above. Touches:
+   - `TvService.address` cached field
+   - `Tv1.Address` D-Bus property + proxy
+   - `TvInfo.address` field
+   - Every read site (tray, GUI header) — switch to
+     `vendor_info[0]` for the spatial hint, or stay on
+     `DiscoveredTv.address` for the pre-pair case
+   - `TvConnector::display_address` trait method — drop.
+     Replace internal log-formatter callers with "first
+     entry of `display_info(vendor_config)`".
+
+3. **Drop `Manager1.SetTvOption`.** Per Q3. All callers
+   (tray, CLI, GUI) switch to `Manager1.UpdateTvConfig`. The
+   existing `apply_tv_option` helper in `tv_manager.rs` stays
+   internal — `update_tv_config` calls it for the top-level
+   fields it knows about (name, managed, system_profile,
+   primary_input).
+
+4. **Hoist `SchemaForm` from `pairing_wizard.slint`.** The
    `for f in schema-fields: FieldRenderer { ... }` loop, the
    per-field validation lifecycle, the "Pair" button gating —
    all of it works for the edit pane unchanged. Extract to a
    shared component so wizard and edit pane both consume it.
 
-2. **Hoist Rust validation helpers.** `autofill_schema`,
+5. **Hoist Rust validation helpers.** `autofill_schema`,
    `validate_value`, `compute_schema_valid`,
    `build_config_json_from_schema`,
    `parse_field_type` currently live in
    `tisvlay-gui/src/main.rs`. Move to a shared module
-   (`tisvlay-gui/src/schema_form.rs`?) so the edit flow doesn't
-   duplicate them.
+   (`tisvlay-gui/src/schema_form.rs`?) so the edit flow
+   doesn't duplicate them.
 
-3. **Drop `Tv1.Address`** (per Q2 above). Touches:
-   - `TvService.address` cached field
-   - `Tv1.Address` D-Bus property + proxy
-   - `TvInfo.address` field
-   - Every read site (tray, GUI header). Most should switch to
-     `vendor_info` lookups; some (the wizard's discovered-list)
-     stay on `DiscoveredTv.address`.
+6. **`TvManager::update_tv_config(tv_id, json_patch)`** —
+   new method coordinating: validate against `config_schema`,
+   apply (top-level via `apply_tv_option`, vendor via
+   merge-into-`tv.config.vendor`), persist to disk,
+   re-register D-Bus interfaces, trigger reconnect if vendor
+   fields changed.
 
-4. **`TvManager::update_tv_config(tv_id, json_patch)`** —
-   new method coordinating the steps above. Implementation
-   reuses existing primitives (`set_tv_option` for top-level,
-   `wake_and_connect` for reconnect).
-
-5. **`TvManager::get_tv_config_json(tv_id)`** — assembles the
+7. **`TvManager::get_tv_config_json(tv_id)`** — assembles the
    prefill payload by walking `config_schema` and reading
    current values from `tv.config`. Strips `Secret`.
 
@@ -267,43 +453,56 @@ edit-applied → drop-and-reconnect path.
 
 Suggested order, smallest reviewable units first:
 
-- **Phase 8.0 — Drop `Tv1.Address`.** Pure refactor, no UX
-  change. Everywhere that displayed `address` switches to
-  reading `vendor_info` (or stays on `DiscoveredTv.address` for
-  the pre-pair case). Frees the next phases from working
+- **Phase 8.0 — Drop `Tv1.Address` + `display_address`.** Pure
+  refactor, no UX change. Everywhere that displayed `address`
+  switches to reading `vendor_info` (or stays on
+  `DiscoveredTv.address` for the pre-pair case). Drops the
+  trait method too. Frees the next phases from working
   around the leaky abstraction.
-- **Phase 8.1 — Extract `SchemaForm` + Rust validation
+- **Phase 8.1 — UUID migration.** Introduce `tv.config.uuid`,
+  switch D-Bus paths, rename `Tv1.Id` → `Tv1.Uuid`, add
+  config-load migration for legacy sanitized-name IDs. CLI
+  gains name/UUID dual-lookup. No behavior change beyond the
+  ID rename; all existing functionality continues working.
+  Largest phase (touches every `tv_id` site).
+- **Phase 8.2 — Extract `SchemaForm` + Rust validation
   helpers.** Pure refactor. Wizard keeps working unchanged;
   shared infrastructure ready for edit pane.
-- **Phase 8.2 — Daemon RPCs.**
-  `Manager1.UpdateTvConfig(tv_id, json)` +
-  `Manager1.GetTvConfig(tv_id)`. Server-side validation +
+- **Phase 8.3 — Daemon `UpdateTvConfig` + `GetTvConfig`.**
+  Adds the new methods with server-side schema validation +
   atomicity + side-effect handling. Test via `busctl` before
   any GUI work.
-- **Phase 8.3 — GUI edit-mode toggle.** Pencil icon in INFO
-  group → row inputs + Cancel/Save. Reuses Phase 8.1 components.
-  Wired to Phase 8.2 RPCs.
-- **Phase 8.4 — Side-effect polish.** Reconnect-on-IP-change
+- **Phase 8.4 — Drop `SetTvOption`, migrate callers.** Tray,
+  CLI, GUI all switch to `UpdateTvConfig`. Daemon removes
+  the dispatcher. Reviewable as a single coordinated change
+  since we have no backward-compat constraint.
+- **Phase 8.5 — GUI edit-mode toggle.** Pencil icon in INFO
+  group → row inputs + Cancel/Save. Reuses Phase 8.2
+  components. Wired to Phase 8.3 RPCs.
+- **Phase 8.6 — Side-effect polish.** Reconnect-on-IP-change
   flow, `SupportsWake` refresh, status indicator surfaces a
   brief "applying…" / "connection lost" state during
   edit-with-side-effect.
-- **Phase 8.5 (optional)** — CLI `tisvlay tvs <id|name> set
-  <field>=<value>` shorthand wrapping `UpdateTvConfig`. Mirrors
-  NetworkManager's `nmcli connection modify`.
+- **Phase 8.7 (optional)** — CLI `tisvlay tvs <name|uuid>
+  set <field>=<value>` shorthand wrapping `UpdateTvConfig`.
+  Mirrors NetworkManager's `nmcli connection modify`.
 
 ## Open questions
 
-- **❓v1 Q1 — ID strategy.** Confirm immutable ID + dual-lookup
-  CLI (a + c), or pursue atomic rename-with-name (b)?
-- **❓v1 Q2 — `Tv1.Address` cleanup.** Drop now (Phase 8.0), or
-  keep as a deprecated shim while migrating? `DiscoveredTv.address`
-  — keep, rename, or generalize?
-- **❓v1 Q3 — `SetTvOption` future.** Keep both `SetTvOption` and
-  `UpdateTvConfig`, or migrate to one path?
+- **✅ Q1 — ID strategy.** Resolved: UUID + dual-lookup CLI.
+  Rename `Tv1.Id` → `Tv1.Uuid`. One-shot config-load
+  migration for legacy IDs. See "Identity model" section.
+- **✅ Q2 — `Tv1.Address` cleanup.** Resolved: drop cleanly,
+  no replacement scalar. GUI reads `vendor_info[0]` for the
+  spatial hint. `DiscoveredTv.address` stays as-is.
+- **❓v1 Q3 — `SetTvOption` retirement.** Leaning resolved
+  (drop, migrate to `UpdateTvConfig`); kept open for one more
+  research pass. See "SetTvOption retirement" section above.
+  Worth confirming before Phase 8.4 lands.
 - **❓v1 Q4 — Edit-mode scope.** INFO group's pencil icon —
-  edits only the INFO-group fields (TV ID excluded; name +
-  vendor fields), or also pulls in fields currently inline
-  elsewhere on the detail page (System profile, Primary input,
+  edits only the INFO-group fields (Name, vendor UserInput
+  fields), or also pulls in fields currently inline elsewhere
+  on the detail page (System profile, Primary input,
   Managed)? My take: keep inline controls where they are;
   edit mode covers fields that don't have a dedicated control
   yet (name + vendor fields). User's own answer in chat
