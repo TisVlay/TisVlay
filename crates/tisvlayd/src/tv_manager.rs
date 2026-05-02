@@ -53,9 +53,17 @@ pub enum TvManagerError {
         source: tisvlay_core::Error,
     },
 
-    /// Wake not supported for this TV.
-    #[error("Wake not supported for TV: {0}")]
-    WakeNotSupported(String),
+    /// Power-cycle failure with a typed reason. Carries the
+    /// per-domain `PowerError` so consumers (D-Bus error
+    /// mapping, GUI inline-error surface, tray) can route on a
+    /// stable [`PowerErrorCode`](tisvlay_core::errors::PowerErrorCode)
+    /// rather than parsing a free-form string.
+    #[error("Power-cycle failure on TV {tv_id}: {kind}")]
+    Power {
+        tv_id: String,
+        #[source]
+        kind: tisvlay_core::errors::PowerError,
+    },
 
     /// Pairing failed.
     #[error("Pairing failed: {0}")]
@@ -1223,7 +1231,10 @@ impl TvManager {
                      the config to add a MAC)",
                 );
                 self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Failed);
-                return Err(TvManagerError::WakeNotSupported(tv_id.to_string()));
+                return Err(TvManagerError::Power {
+                    tv_id: tv_id.to_string(),
+                    kind: tisvlay_core::errors::PowerError::NoMacConfigured,
+                });
             }
 
             let display_addr = self.registry.display_address(&tv.config);
