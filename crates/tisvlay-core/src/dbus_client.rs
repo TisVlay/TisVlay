@@ -16,7 +16,7 @@
 //!     // List all configured TVs
 //!     let tvs = client.list_tvs().await?;
 //!     for tv in &tvs {
-//!         println!("{}: {} ({}) - {}", tv.id, tv.name, tv.address,
+//!         println!("{}: {} - {}", tv.id, tv.name,
 //!             if tv.connected { "connected" } else { "disconnected" });
 //!     }
 //!
@@ -190,10 +190,6 @@ trait TisvlayTv {
     /// TV vendor ID.
     #[zbus(property)]
     fn vendor(&self) -> zbus::Result<String>;
-
-    /// TV address (transport-agnostic display address).
-    #[zbus(property)]
-    fn address(&self) -> zbus::Result<String>;
 
     /// Whether the TV is currently connected.
     #[zbus(property)]
@@ -467,8 +463,6 @@ pub struct TvInfo {
     pub id: String,
     /// Display name.
     pub name: String,
-    /// Transport-agnostic display address (e.g. IP, serial port, CEC address).
-    pub address: String,
     /// Vendor ID.
     pub vendor: String,
     /// Whether connected.
@@ -782,7 +776,6 @@ impl DaemonClient {
 
             let id = get_str("Id");
             let name = get_str("Name");
-            let address = get_str("Address");
             let vendor = get_str("Vendor");
             let connected = get_bool("Connected", false);
             let managed = get_bool("Managed", true);
@@ -869,7 +862,6 @@ impl DaemonClient {
             tvs.push(TvInfo {
                 id,
                 name,
-                address,
                 vendor,
                 connected,
                 managed,

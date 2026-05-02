@@ -5,7 +5,6 @@ expression: sample_disconnected()
 {
   "id": "guest_room",
   "name": "Guest Room",
-  "address": "192.168.1.101",
   "vendor": "lg",
   "connected": false,
   "managed": false,

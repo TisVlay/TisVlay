@@ -98,11 +98,20 @@ pub(crate) async fn fetch_state(
             .map(|(id, _)| SharedString::from(id.as_str()))
             .collect();
 
+        // Spatial hint shown alongside the name — backend's primary
+        // diagnostic descriptor (LG: IP; future Bluetooth: MAC; etc.).
+        // First non-Secret entry of `Tv1.VendorInfo` by convention.
+        let primary_descriptor = tv
+            .vendor_info
+            .first()
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+
         models.push(TvViewRaw {
             id: SharedString::from(tv.id),
             name: SharedString::from(tv.name),
             vendor: SharedString::from(tv.vendor),
-            ip: SharedString::from(tv.address),
+            ip: SharedString::from(primary_descriptor),
             connected: tv.connected,
             power_state: SharedString::from(tv.power_state),
             supports_wake: tv.supports_wake,

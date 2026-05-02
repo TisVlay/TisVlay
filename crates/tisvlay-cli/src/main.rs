@@ -245,9 +245,17 @@ async fn main() -> Result<()> {
                         "disconnected"
                     };
                     let managed = if tv.managed { "" } else { " [unmanaged]" };
+                    // Show backend's primary diagnostic descriptor
+                    // (LG: IP address; future: serial port, etc.) —
+                    // first non-Secret entry of `Tv1.VendorInfo`.
+                    let descriptor = tv
+                        .vendor_info
+                        .first()
+                        .map(|(_, v)| v.as_str())
+                        .unwrap_or("?");
                     println!(
                         "  {} - {} ({}) [{}] <{}>{}{}",
-                        tv.id, tv.name, tv.address, status, tv.vendor, managed, default
+                        tv.id, tv.name, descriptor, status, tv.vendor, managed, default
                     );
                 }
             }
@@ -537,7 +545,10 @@ fn print_tv_status(tv: &TvInfo, user_profile: Option<&str>) {
     let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
     println!("TV: {} ({})", tv.id, tv.name);
     println!("  Vendor: {}", tv.vendor);
-    println!("  Address: {}", tv.address);
+    // Vendor diagnostic info (LG: IP + MAC; future: serial port, …)
+    for (label, value) in &tv.vendor_info {
+        println!("  {}: {}", label, value);
+    }
     println!("Managed: {}", tv.managed);
     println!("  Automated: {}", tv.automated);
     println!("Profile:");

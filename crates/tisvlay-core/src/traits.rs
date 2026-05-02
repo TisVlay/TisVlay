@@ -320,12 +320,6 @@ pub trait TvConnector: Send + Sync {
     /// The connector deserializes it into its own config type internally.
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>>;
 
-    /// Human-readable address for logging and UI.
-    ///
-    /// Returns a transport-appropriate string, e.g. "192.168.1.100" for IP,
-    /// "/dev/ttyUSB0" for serial, "cec:0" for HDMI-CEC.
-    fn display_address(&self, vendor_config: &toml::Value) -> String;
-
     /// Vendor-specific connection info for the GUI's INFO pane.
     ///
     /// Returns ordered `(label, value)` pairs the user might care

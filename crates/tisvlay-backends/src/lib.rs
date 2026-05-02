@@ -153,18 +153,6 @@ impl BackendRegistry {
         connector.connect(vendor_config).await
     }
 
-    /// Get a human-readable display address for a TV.
-    pub fn display_address(&self, tv_config: &TvConfig) -> String {
-        self.get_connector(&tv_config.vendor)
-            .ok()
-            .and_then(|c| {
-                tv_config
-                    .get_raw_vendor_value()
-                    .map(|v| c.display_address(v))
-            })
-            .unwrap_or_else(|| "unknown".to_string())
-    }
-
     /// Vendor-specific diagnostic info to surface in the GUI's
     /// INFO pane (IP, MAC, etc.). See
     /// [`TvConnector::display_info`] for the backend's contract.
@@ -175,6 +163,23 @@ impl BackendRegistry {
             .ok()
             .and_then(|c| tv_config.get_raw_vendor_value().map(|v| c.display_info(v)))
             .unwrap_or_default()
+    }
+
+    /// Backend's primary descriptor — the value of the first
+    /// non-`Secret` `display_info` entry. Convention: backends
+    /// order their `config_schema` so the most informative field
+    /// (LG: ip; future Bluetooth: MAC; USB-CEC: serial port)
+    /// comes first. Used by daemon-internal log formatters and
+    /// route resolution where a single transport-appropriate
+    /// string is needed.
+    ///
+    /// Returns `None` when the backend declines to surface any
+    /// diagnostic info (mock, future minimal backends).
+    pub fn primary_descriptor(&self, tv_config: &TvConfig) -> Option<String> {
+        self.display_info(tv_config)
+            .into_iter()
+            .next()
+            .map(|(_, value)| value)
     }
 
     /// Get the transport type for a TV's backend.

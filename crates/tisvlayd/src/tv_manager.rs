@@ -165,8 +165,6 @@ pub enum StateChangeEvent {
 #[derive(Debug, Clone)]
 pub struct TvInfo {
     pub name: String,
-    /// Display address (extracted from vendor-specific config via connector).
-    pub address: String,
     pub vendor: String,
     pub managed: bool,
 }
@@ -497,7 +495,10 @@ impl TvManager {
             return;
         }
 
-        let address = self.registry.display_address(&config);
+        let Some(address) = self.registry.primary_descriptor(&config) else {
+            debug!(tv_id = %tv_id, "Backend exposed no primary descriptor for route resolution");
+            return;
+        };
         let ip: std::net::IpAddr = match address.parse() {
             Ok(ip) => ip,
             Err(_) => {
@@ -661,10 +662,10 @@ impl TvManager {
                         Err(_) => continue,
                     };
                     let tv = tv_arc.lock().await;
-                    self.registry.display_address(&tv.config)
+                    self.registry.primary_descriptor(&tv.config)
                 };
 
-                info!(tv_id = %tv_id, address = %display_addr, "Warm restart: connecting to TV");
+                info!(tv_id = %tv_id, address = ?display_addr, "Warm restart: connecting to TV");
 
                 match self.reconnect(tv_id).await {
                     Ok(()) => info!(tv_id = %tv_id, "Warm restart: connected"),
@@ -872,10 +873,8 @@ impl TvManager {
     pub async fn get_tv_info(&self, tv_id: &str) -> Option<TvInfo> {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
         let tv = tv_arc.lock().await;
-        let address = self.registry.display_address(&tv.config);
         Some(TvInfo {
             name: tv.config.name.clone(),
-            address,
             vendor: tv.config.vendor.clone(),
             managed: tv.config.managed,
         })
@@ -1029,8 +1028,8 @@ impl TvManager {
             tv.config.clone()
         };
 
-        let display_addr = self.registry.display_address(&config);
-        info!(tv_id = %tv_id, address = %display_addr, vendor = %config.vendor, "Reconnecting to TV");
+        let display_addr = self.registry.primary_descriptor(&config);
+        info!(tv_id = %tv_id, address = ?display_addr, vendor = %config.vendor, "Reconnecting to TV");
 
         // Connect without holding the lock — backends may retry for
         // seconds (LG: 5 attempts × ~10s each).
@@ -1193,8 +1192,8 @@ impl TvManager {
                 return Err(TvManagerError::PoweredOff(tv_id.to_string()));
             }
 
-            let display_addr = self.registry.display_address(&tv.config);
-            info!(tv_id = %tv_id, address = %display_addr, vendor = %tv.config.vendor, "Connecting to TV");
+            let display_addr = self.registry.primary_descriptor(&tv.config);
+            info!(tv_id = %tv_id, address = ?display_addr, vendor = %tv.config.vendor, "Connecting to TV");
 
             let connection = self.registry.connect_tv(&tv.config).await.map_err(|e| {
                 TvManagerError::ConnectionFailed {
@@ -1212,14 +1211,13 @@ impl TvManager {
                 .registry
                 .transport_for(&tv.config)
                 .is_network_dependent()
+                && let Some(address) = self.registry.primary_descriptor(&tv.config)
+                && let Ok(ip) = address.parse::<std::net::IpAddr>()
             {
-                let address = self.registry.display_address(&tv.config);
-                if let Ok(ip) = address.parse::<std::net::IpAddr>() {
-                    let interface = crate::netlink::resolve_interface_for_ip(ip).await;
-                    if tv.monitored_interface != interface {
-                        debug!(tv_id = %tv_id, interface = ?interface, "Monitored interface resolved");
-                        tv.monitored_interface = interface;
-                    }
+                let interface = crate::netlink::resolve_interface_for_ip(ip).await;
+                if tv.monitored_interface != interface {
+                    debug!(tv_id = %tv_id, interface = ?interface, "Monitored interface resolved");
+                    tv.monitored_interface = interface;
                 }
             }
 
@@ -1284,10 +1282,10 @@ impl TvManager {
             let mut tv = tv_arc.lock().await;
             let supports_wake = self.registry.supports_wake(&tv.config);
             let was_powered_off = tv.powered_off;
-            let display_addr = self.registry.display_address(&tv.config);
+            let display_addr = self.registry.primary_descriptor(&tv.config);
             info!(
                 tv_id = %tv_id,
-                address = %display_addr,
+                address = ?display_addr,
                 supports_wake,
                 was_powered_off,
                 "PowerOn requested",

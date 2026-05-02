@@ -97,12 +97,6 @@ impl TvConnector for MockConnector {
         Ok(Box::new(MockConnection::new(&config, hardware_id)))
     }
 
-    fn display_address(&self, vendor_config: &toml::Value) -> String {
-        parse_config(vendor_config)
-            .map(|c| c.address)
-            .unwrap_or_else(|_| "mock://<invalid-config>".to_string())
-    }
-
     fn supports_wake(&self, _vendor_config: &toml::Value) -> bool {
         // Mock TVs are always reachable — "wake" is a no-op that returns
         // immediately, so we claim wake support.

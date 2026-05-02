@@ -28,7 +28,6 @@ pub struct TvService {
     // Cached identity/config (set at registration, updated on config reload)
     pub(crate) name: String,
     pub(crate) vendor: String,
-    pub(crate) address: String,
     pub(crate) managed: bool,
     pub(crate) system_profile: String,
     pub(crate) primary_input: String,
@@ -79,12 +78,6 @@ impl TvService {
     #[zbus(property(emits_changed_signal = "const"))]
     fn vendor(&self) -> &str {
         &self.vendor
-    }
-
-    /// TV display address (vendor-specific, e.g. IP address, serial port path).
-    #[zbus(property(emits_changed_signal = "const"))]
-    fn address(&self) -> &str {
-        &self.address
     }
 
     /// Vendor-specific diagnostic info as ordered `(label, value)`
@@ -541,11 +534,11 @@ pub async fn register_tv_interfaces(
     initial_state: Option<&TvState>,
 ) -> zbus::Result<()> {
     // Fetch config-based properties for initial cache
-    let (name, vendor, address, managed) = manager
+    let (name, vendor, managed) = manager
         .get_tv_info(&tv_id)
         .await
-        .map(|info| (info.name, info.vendor, info.address, info.managed))
-        .unwrap_or_else(|| (String::new(), String::new(), String::new(), true));
+        .map(|info| (info.name, info.vendor, info.managed))
+        .unwrap_or_else(|| (String::new(), String::new(), true));
     let system_profile = manager
         .get_tv_system_profile(&tv_id)
         .await
@@ -602,7 +595,6 @@ pub async fn register_tv_interfaces(
                 manager: manager.clone(),
                 name,
                 vendor,
-                address,
                 managed,
                 system_profile,
                 primary_input,

@@ -5,7 +5,6 @@ expression: sample_connected()
 {
   "id": "living_room",
   "name": "Living Room G4",
-  "address": "192.168.1.100",
   "vendor": "lg",
   "connected": true,
   "managed": true,

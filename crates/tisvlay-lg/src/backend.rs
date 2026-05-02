@@ -501,12 +501,6 @@ impl TvConnector for LgConnector {
         Ok(Box::new(LgConnection::new(client, config, hardware_id)))
     }
 
-    fn display_address(&self, vendor_config: &toml::Value) -> String {
-        parse_config(vendor_config)
-            .map(|c| c.ip)
-            .unwrap_or_else(|_| "unknown".to_string())
-    }
-
     fn supports_wake(&self, vendor_config: &toml::Value) -> bool {
         parse_config(vendor_config)
             .map(|c| c.mac.is_some())

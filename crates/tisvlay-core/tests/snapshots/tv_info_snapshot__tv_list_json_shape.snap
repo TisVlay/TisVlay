@@ -6,7 +6,6 @@ expression: "vec![sample_connected(), sample_disconnected()]"
   {
     "id": "living_room",
     "name": "Living Room G4",
-    "address": "192.168.1.100",
     "vendor": "lg",
     "connected": true,
     "managed": true,
@@ -57,7 +56,6 @@ expression: "vec![sample_connected(), sample_disconnected()]"
   {
     "id": "guest_room",
     "name": "Guest Room",
-    "address": "192.168.1.101",
     "vendor": "lg",
     "connected": false,
     "managed": false,

@@ -24,7 +24,6 @@ fn sample_connected() -> TvInfo {
     TvInfo {
         id: "living_room".to_string(),
         name: "Living Room G4".to_string(),
-        address: "192.168.1.100".to_string(),
         vendor: "lg".to_string(),
         connected: true,
         managed: true,
@@ -60,7 +59,6 @@ fn sample_disconnected() -> TvInfo {
     TvInfo {
         id: "guest_room".to_string(),
         name: "Guest Room".to_string(),
-        address: "192.168.1.101".to_string(),
         vendor: "lg".to_string(),
         connected: false,
         managed: false,
