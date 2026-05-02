@@ -1209,6 +1209,20 @@ impl TvManager {
             let mut tv = tv_arc.lock().await;
 
             if !self.registry.supports_wake(&tv.config) {
+                // Surface the silent-fail. Without this, the only
+                // evidence is the D-Bus method's Err return — which
+                // the GUI's `warn!` log buries in journald and the
+                // user never sees. Emitting `Failed` lets the GUI's
+                // phase consumer transition out of the "in-flight"
+                // spinner state (and Phase 5 will render a typed
+                // error message in the inline-error surface).
+                warn!(
+                    tv_id = %tv_id,
+                    "PowerOn requested but TV has no wake method configured \
+                     (LG: missing MAC address; pair the TV again or edit \
+                     the config to add a MAC)",
+                );
+                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Failed);
                 return Err(TvManagerError::WakeNotSupported(tv_id.to_string()));
             }
 
