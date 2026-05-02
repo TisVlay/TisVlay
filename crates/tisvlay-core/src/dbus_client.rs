@@ -220,6 +220,12 @@ trait TisvlayTv {
     #[zbus(property)]
     fn hardware_id(&self) -> zbus::Result<(String, String, String)>;
 
+    /// Vendor-specific diagnostic info as ordered `(label, value)`
+    /// pairs (IP, MAC, serial port, etc.). Backends populate this
+    /// via `TvConnector::display_info`. Excludes secrets.
+    #[zbus(property)]
+    fn vendor_info(&self) -> zbus::Result<Vec<(String, String)>>;
+
     /// Capabilities supported by this TV.
     #[zbus(property)]
     fn capabilities(&self) -> zbus::Result<Vec<String>>;
@@ -482,6 +488,10 @@ pub struct TvInfo {
     pub primary_input: String,
     /// Vendor-reported hardware identity (manufacturer / model / serial).
     pub hardware_id: crate::HardwareId,
+    /// Vendor-specific diagnostic info as ordered `(label, value)`
+    /// pairs (IP, MAC, serial port, etc.). Surfaces what the
+    /// backend's `display_info` exposes — no secrets.
+    pub vendor_info: Vec<(String, String)>,
     /// Desktop-side identity from the daemon's in-process DRM-EDID
     /// probe. Empty strings until `tisvlayd` matches a connector for
     /// this TV (typically on the first `ConnectionChanged(true)`).
@@ -794,6 +804,11 @@ impl DaemonClient {
                 .map(crate::HardwareId::from_dbus_tuple)
                 .unwrap_or_default();
 
+            let vendor_info: Vec<(String, String)> = props
+                .get("VendorInfo")
+                .and_then(|v: &OwnedValue| <Vec<(String, String)>>::try_from(v.clone()).ok())
+                .unwrap_or_default();
+
             // Helper to extract properties from a sub-interface.
             let get_iface_props = |iface_name: &str| -> Option<&HashMap<String, OwnedValue>> {
                 ifaces
@@ -862,6 +877,7 @@ impl DaemonClient {
                 system_profile,
                 primary_input,
                 hardware_id,
+                vendor_info,
                 desktop,
                 path: path.as_str().to_string(),
                 power_state,

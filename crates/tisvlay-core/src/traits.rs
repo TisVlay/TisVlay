@@ -326,6 +326,28 @@ pub trait TvConnector: Send + Sync {
     /// "/dev/ttyUSB0" for serial, "cec:0" for HDMI-CEC.
     fn display_address(&self, vendor_config: &toml::Value) -> String;
 
+    /// Vendor-specific connection info for the GUI's INFO pane.
+    ///
+    /// Returns ordered `(label, value)` pairs the user might care
+    /// about for diagnosis — IP, MAC, serial port, etc. Display
+    /// order is preserved. Backends should:
+    ///
+    /// - **Skip secrets** — never include client keys, OAuth
+    ///   tokens, PSKs, or anything that would compromise pairing
+    ///   if leaked. The pane treats this as user-visible.
+    /// - **Skip empty values** — elide entries when a field isn't
+    ///   set rather than emit a row with a blank value.
+    /// - **Use friendly labels** — `"IP address"`, not `"ip"`.
+    ///   Labels eventually flow through gettext per the i18n
+    ///   architecture; v1 ships English literals.
+    ///
+    /// The default returns an empty vec so backends without
+    /// diagnostically-useful vendor info keep the pane showing
+    /// only the cross-vendor identity columns.
+    fn display_info(&self, _vendor_config: &toml::Value) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// Whether this transport supports waking the device from standby.
     ///
     /// For example, IP-based backends may support Wake-on-LAN if a MAC

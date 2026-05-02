@@ -507,6 +507,20 @@ impl TvConnector for LgConnector {
             .unwrap_or_else(|_| "unknown".to_string())
     }
 
+    fn display_info(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
+        let Ok(config) = parse_config(vendor_config) else {
+            return Vec::new();
+        };
+        let mut info = vec![("IP address".to_string(), config.ip)];
+        if let Some(mac) = config.mac {
+            info.push(("MAC address".to_string(), mac));
+        }
+        // `client_key` and `scheme` are intentionally omitted —
+        // the former is sensitive, the latter is internal
+        // optimization rather than user-facing diagnosis.
+        info
+    }
+
     fn supports_wake(&self, vendor_config: &toml::Value) -> bool {
         parse_config(vendor_config)
             .map(|c| c.mac.is_some())

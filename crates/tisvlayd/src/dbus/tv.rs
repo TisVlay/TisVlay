@@ -33,6 +33,11 @@ pub struct TvService {
     pub(crate) system_profile: String,
     pub(crate) primary_input: String,
     pub(crate) automate_when: tisvlay_core::AutomateWhen,
+    /// Vendor-specific diagnostic info — `(label, value)` pairs
+    /// from the backend's `display_info`. Surfaced to the GUI's
+    /// INFO pane via `Tv1.VendorInfo`. Empty for backends that
+    /// decline to expose any.
+    pub(crate) vendor_info: Vec<(String, String)>,
 
     // Cached runtime state (updated by subscription pushes)
     pub(crate) connected: bool,
@@ -80,6 +85,22 @@ impl TvService {
     #[zbus(property(emits_changed_signal = "const"))]
     fn address(&self) -> &str {
         &self.address
+    }
+
+    /// Vendor-specific diagnostic info as ordered `(label, value)`
+    /// pairs the GUI's INFO pane renders alongside the cross-vendor
+    /// identity columns. LG returns IP + MAC; future backends
+    /// surface their own (USB-CEC: serial port; Samsung: API
+    /// endpoint URL; etc.). Secrets like client_keys are
+    /// intentionally excluded by the backends.
+    ///
+    /// Set at interface-registration time and re-set on config
+    /// reload — values come from `LgVendorConfig` and friends, not
+    /// live state, so a `const`-style signal would be a lie when
+    /// the user re-pairs.
+    #[zbus(property)]
+    fn vendor_info(&self) -> Vec<(String, String)> {
+        self.vendor_info.clone()
     }
 
     /// Whether the TV is currently connected.
@@ -571,6 +592,8 @@ pub async fn register_tv_interfaces(
 
     let object_server = connection.object_server();
 
+    let vendor_info = manager.vendor_info(&tv_id).await;
+
     object_server
         .at(
             path,
@@ -584,6 +607,7 @@ pub async fn register_tv_interfaces(
                 system_profile,
                 primary_input,
                 automate_when,
+                vendor_info,
                 connected,
                 current_input: current_input.clone(),
             },

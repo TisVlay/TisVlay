@@ -32,6 +32,10 @@ fn sample_connected() -> TvInfo {
         system_profile: "default".to_string(),
         primary_input: "HDMI_1".to_string(),
         hardware_id: HardwareId::new(Some("GSM"), Some("OLED65G4SUB"), Some("serial-1")),
+        vendor_info: vec![
+            ("IP address".to_string(), "192.168.1.100".to_string()),
+            ("MAC address".to_string(), "AA:BB:CC:DD:EE:FF".to_string()),
+        ],
         desktop: DesktopMapping {
             connector: "HDMI-A-2".to_string(),
         },
@@ -64,6 +68,7 @@ fn sample_disconnected() -> TvInfo {
         system_profile: "guest".to_string(),
         primary_input: String::new(),
         hardware_id: HardwareId::default(),
+        vendor_info: Vec::new(),
         desktop: DesktopMapping::default(),
         path: "/org/tisvlay/Tv/guest_room".to_string(),
         power_state: "unknown".to_string(),

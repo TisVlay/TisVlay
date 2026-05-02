@@ -1816,6 +1816,15 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
             hw_model: raw.hw_model,
             hw_serial: raw.hw_serial,
             desktop_connector: raw.desktop_connector,
+            vendor_info: ModelRc::new(VecModel::from(
+                raw.vendor_info
+                    .into_iter()
+                    .map(|(label, value)| VendorInfoRow {
+                        label: SharedString::from(label),
+                        value: SharedString::from(value),
+                    })
+                    .collect::<Vec<_>>(),
+            )),
             // Phase is purely GUI-side state. Refreshes reset it; any
             // concurrent in-flight power-on task overwrites later.
             power_cycle_phase: SharedString::default(),

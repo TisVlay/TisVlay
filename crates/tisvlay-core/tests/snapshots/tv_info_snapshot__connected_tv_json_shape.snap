@@ -17,6 +17,16 @@ expression: sample_connected()
     "model": "OLED65G4SUB",
     "serial": "serial-1"
   },
+  "vendor_info": [
+    [
+      "IP address",
+      "192.168.1.100"
+    ],
+    [
+      "MAC address",
+      "AA:BB:CC:DD:EE:FF"
+    ]
+  ],
   "desktop": {
     "connector": "HDMI-A-2"
   },

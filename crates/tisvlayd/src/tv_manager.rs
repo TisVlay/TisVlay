@@ -889,6 +889,20 @@ impl TvManager {
             .collect()
     }
 
+    /// Vendor-specific diagnostic info for this TV (IP, MAC, etc.).
+    /// Read at D-Bus interface registration time and cached on
+    /// `Tv1.VendorInfo`. Empty when the backend declines to surface
+    /// any vendor-specific info or the TV isn't found.
+    pub async fn vendor_info(&self, tv_id: &str) -> Vec<(String, String)> {
+        match self.get_tv(tv_id).await {
+            Ok(tv_arc) => {
+                let tv = tv_arc.lock().await;
+                self.registry.display_info(&tv.config)
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Whether this TV's vendor backend can wake the TV from
     /// standby (e.g. has a MAC for Wake-on-LAN). Read at D-Bus
     /// interface registration time and cached on

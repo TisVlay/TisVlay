@@ -165,6 +165,18 @@ impl BackendRegistry {
             .unwrap_or_else(|| "unknown".to_string())
     }
 
+    /// Vendor-specific diagnostic info to surface in the GUI's
+    /// INFO pane (IP, MAC, etc.). See
+    /// [`TvConnector::display_info`] for the backend's contract.
+    /// Returns an empty vec for unknown vendors or backends that
+    /// don't implement it.
+    pub fn display_info(&self, tv_config: &TvConfig) -> Vec<(String, String)> {
+        self.get_connector(&tv_config.vendor)
+            .ok()
+            .and_then(|c| tv_config.get_raw_vendor_value().map(|v| c.display_info(v)))
+            .unwrap_or_default()
+    }
+
     /// Get the transport type for a TV's backend.
     ///
     /// Returns `Transport::Network` if the vendor is unknown (safe default —

@@ -37,6 +37,12 @@ pub(crate) struct TvViewRaw {
     pub hw_model: SharedString,
     pub hw_serial: SharedString,
     pub desktop_connector: SharedString,
+    /// Vendor-specific diagnostic rows from `Tv1.VendorInfo`.
+    /// Plain `Vec<(String, String)>` here so the snapshot crosses
+    /// the tokio→Slint thread boundary as `Send`; the conversion
+    /// to `[VendorInfoRow]` (a `ModelRc`-backed list) happens
+    /// inside the event-loop closure in `main.rs`.
+    pub vendor_info: Vec<(String, String)>,
 }
 
 /// Snapshot of fetched state for one refresh pass.
@@ -115,6 +121,7 @@ pub(crate) async fn fetch_state(
             hw_model: SharedString::from(tv.hardware_id.model.unwrap_or_default()),
             hw_serial: SharedString::from(tv.hardware_id.serial.unwrap_or_default()),
             desktop_connector: SharedString::from(tv.desktop.connector),
+            vendor_info: tv.vendor_info,
         });
     }
 

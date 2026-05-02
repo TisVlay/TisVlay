@@ -19,6 +19,15 @@ import { PairingWizardPane } from "pairing_wizard.slint";
 
 export { WizardDiscoveredTv, VendorOption, DangerBtn, Chip, Group }
 
+/// One vendor-specific diagnostic row from `Tv1.VendorInfo`.
+/// Rendered in the TVs pane's INFO group alongside the cross-vendor
+/// identity columns (TV ID, manufacturer, model, …). Backends
+/// decide what to surface; LG returns IP + MAC.
+export struct VendorInfoRow {
+    label: string,
+    value: string,
+}
+
 export struct TvViewModel {
     id: string,
     name: string,
@@ -47,6 +56,11 @@ export struct TvViewModel {
     hw-model: string,
     hw-serial: string,
     desktop-connector: string,
+    /// Vendor-specific `(label, value)` rows from
+    /// `Tv1.VendorInfo` — appended to the INFO group below the
+    /// cross-vendor identity rows. Empty for backends that don't
+    /// surface any vendor info.
+    vendor-info: [VendorInfoRow],
     /// Empty when no power-on is in flight; otherwise the latest
     /// phase string from `Tv1.Power.PowerCycleProgress`
     /// ("wol_sent" / "direct_connect" / "connecting" / "connected"
@@ -770,6 +784,16 @@ component TvDetail inherits Rectangle {
                     title: @tr("INFO");
 
                     LabeledRow { label: @tr("TV ID"); value: root.tv.id; mono: true; }
+                    // Vendor-specific rows (LG: IP + MAC; future backends:
+                    // serial port, API endpoint, …). Backend declines to
+                    // surface secrets — LG omits `client_key` and
+                    // `scheme`. Rendered monospaced since these are
+                    // typically machine identifiers.
+                    for entry in root.tv.vendor-info: LabeledRow {
+                        label: entry.label;
+                        value: entry.value;
+                        mono: true;
+                    }
                     LabeledRow { label: @tr("Manufacturer"); value: root.tv.hw-manufacturer; }
                     LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }
                     LabeledRow { label: @tr("Serial"); value: root.tv.hw-serial; mono: true; }
