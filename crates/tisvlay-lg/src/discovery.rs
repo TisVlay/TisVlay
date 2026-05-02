@@ -126,6 +126,7 @@ fn parse_response(resp: &ssdp_client::SearchResponse) -> Option<DiscoveredTv> {
         hardware_id,
         vendor: crate::VENDOR_ID.to_string(),
         location: location.to_string(),
+        vendor_data: std::collections::HashMap::new(),
     })
 }
 
@@ -193,6 +194,7 @@ mod tests {
             hardware_id: None,
             vendor: "lg".to_string(),
             location: String::new(),
+            vendor_data: std::collections::HashMap::new(),
         };
         assert!(has_dlna_name(&with_dlna));
 

@@ -164,6 +164,22 @@ pub struct DiscoveredTv {
     /// Location URL for device description (vendor-specific).
     #[serde(default)]
     pub location: String,
+    /// Vendor-specific discovery data, free-form `key → value` map.
+    ///
+    /// Carries any extra fields the discovery channel was able to
+    /// gather beyond the structured columns above — populated either
+    /// by the vendor backend itself or by a post-discovery enrichment
+    /// step (see [`crate::network::arp_lookup`] which the daemon
+    /// uses to fill `vendor_data["mac"]` from the kernel neighbour
+    /// table after each SSDP hit).
+    ///
+    /// Consumers match these entries against the vendor's pairing
+    /// schema's `autofill: "discovery.<key>"` directives — when a
+    /// `PairingField` declares `autofill = "discovery.mac"` and
+    /// `vendor_data["mac"]` is populated, the wizard pre-fills the
+    /// field with that value.
+    #[serde(default)]
+    pub vendor_data: HashMap<String, String>,
 }
 
 impl DiscoveredTv {
@@ -181,7 +197,18 @@ impl DiscoveredTv {
             hardware_id: None,
             vendor: vendor.into(),
             location: String::new(),
+            vendor_data: HashMap::new(),
         }
+    }
+
+    /// Insert a `key → value` entry into [`Self::vendor_data`].
+    pub fn with_vendor_data(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.vendor_data.insert(key.into(), value.into());
+        self
     }
 
     /// Attach a hardware identity to this discovery entry.
