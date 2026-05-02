@@ -1000,6 +1000,35 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// Subscribe to structural changes in the daemon's TV list.
+    ///
+    /// Returns a stream that yields `()` whenever the daemon's
+    /// `ObjectManager` emits `InterfacesAdded` or `InterfacesRemoved`
+    /// — i.e. whenever a TV is paired or removed. The stream
+    /// intentionally does not carry diff information so subscribers
+    /// always reconcile against the daemon's authoritative
+    /// `list_tvs()` rather than against a wire-format payload that
+    /// could drift from the underlying state.
+    ///
+    /// Used by `tisvlay-session` to prune orphan `[[tv]]` profile
+    /// assignments from user config when the corresponding TV is
+    /// unpaired.
+    pub async fn tv_list_change_stream(&self) -> Result<impl Stream<Item = ()> + Send + 'static> {
+        let rule = format!(
+            "type='signal',sender='{}',interface='org.freedesktop.DBus.ObjectManager',path='{}'",
+            DAEMON_SERVICE, OBJECT_MANAGER_PATH,
+        );
+        let raw = subscribe_signals(&self.connection, &rule)
+            .await
+            .context("Failed to subscribe to ObjectManager signals on daemon")?;
+        Ok(raw.filter_map(|msg_result| async move {
+            let msg = msg_result.ok()?;
+            let header = msg.header();
+            let member = header.member()?.to_string();
+            (member == "InterfacesAdded" || member == "InterfacesRemoved").then_some(())
+        }))
+    }
+
     // -------------------------------------------------------------------------
     // Power Control
     // -------------------------------------------------------------------------

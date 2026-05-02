@@ -5649,6 +5649,7 @@ name = "tisvlay-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "tempfile",
  "tisvlay-backends",
  "tisvlay-core",

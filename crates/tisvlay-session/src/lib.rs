@@ -13,6 +13,7 @@ pub mod wayland_idle;
 pub mod __internals {
     pub use crate::SessionState;
     pub use crate::event_handler;
+    pub use crate::reconcile_user_config_orphans;
     pub use crate::session_dbus::register_session_dbus_on;
     pub use crate::session_monitor::SessionEvent;
 }
@@ -179,6 +180,70 @@ impl SessionState {
             .filter(|&t| t > 0)
             .min()
             .unwrap_or(0)
+    }
+}
+
+/// Drop user-config `[[tv]]` entries whose UUID is no longer in the
+/// daemon's TV list, persisting the pruned config to disk.
+///
+/// Called from a task that watches `DaemonClient::tv_list_change_stream`:
+/// when the daemon unregisters a TV's `Tv1.*` interfaces (via
+/// `Tv1.Remove()`), this reconciles the user's `[[tv]] uuid = "…" →
+/// profile.user = "…"` assignments against the new authoritative
+/// list. Without it, removing a TV from the GUI/CLI leaves orphan
+/// entries the session warns about but never cleans up.
+///
+/// Uses the daemon's `list_tvs()` as the source of truth rather than
+/// the signal payload itself — the signal carries an object path
+/// component (underscored UUID) that would need decoding back to
+/// the canonical form, and the daemon's list is the only place the
+/// canonical UUID set lives without ambiguity.
+///
+/// On any error fetching the daemon's list (network, daemon
+/// unavailable, etc.) this is a no-op so a transient failure
+/// doesn't accidentally prune the user's assignments.
+pub async fn reconcile_user_config_orphans(
+    state: &Arc<RwLock<SessionState>>,
+    daemon: &DaemonClient,
+    config_path: Option<&PathBuf>,
+) {
+    let current_uuids: HashSet<String> = match daemon.list_tvs().await {
+        Ok(tvs) => tvs.into_iter().map(|t| t.uuid).collect(),
+        Err(e) => {
+            warn!(error = %e, "Failed to query daemon TV list; skipping orphan prune");
+            return;
+        }
+    };
+
+    let mut s = state.write().await;
+    let before = s.user_config.tv.len();
+    s.user_config.tv.retain(|t| current_uuids.contains(&t.uuid));
+    let pruned = before - s.user_config.tv.len();
+
+    // Always refresh the cached daemon view, even if no orphans were
+    // pruned — a TV pairing also fires this signal, and the session's
+    // tv_ids/profiles caches need to grow accordingly.
+    s.tv_ids = current_uuids.iter().cloned().collect();
+    s.profiles.retain(|tv_id, _| current_uuids.contains(tv_id));
+
+    if pruned == 0 {
+        return;
+    }
+
+    let save_result = match config_path {
+        Some(path) => s.user_config.save_to(path),
+        None => s.user_config.save(),
+    };
+    match save_result {
+        Ok(()) => info!(
+            pruned = pruned,
+            "Pruned orphan TV assignments from user config"
+        ),
+        Err(e) => warn!(
+            error = %e,
+            pruned = pruned,
+            "Pruned orphan TV assignments in memory but failed to persist user config"
+        ),
     }
 }
 
