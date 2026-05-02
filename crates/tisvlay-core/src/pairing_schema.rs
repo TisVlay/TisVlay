@@ -44,6 +44,33 @@
 
 use serde::{Deserialize, Serialize};
 
+/// How a vendor-config field flows through the system.
+///
+/// One axis of metadata that lets the framework decide what's safe
+/// to do with each field: include in the pairing form, surface in
+/// diagnostics, redact entirely. Backends mark each field once on
+/// the schema; the framework projects the right view per use case.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FieldVisibility {
+    /// User types it during pairing (`ip`, `mac`). Shown in the
+    /// pairing wizard, surfaced in the INFO pane, editable in the
+    /// future edit-properties pane. The default — backends without
+    /// a reason to mark otherwise get this implicitly.
+    #[default]
+    UserInput,
+    /// Backend-discovered during pairing or connection
+    /// (`scheme` for LG, hypothetical Samsung capability strings).
+    /// Surfaced in the INFO pane for diagnosis but never editable
+    /// — re-pair to refresh.
+    Diagnostic,
+    /// Sensitive backend-discovered value (`client_key`, OAuth
+    /// tokens, PSKs). Never displayed, never sent to the GUI's
+    /// `display_info` projection. The default `display_info`
+    /// implementation skips these unconditionally.
+    Secret,
+}
+
 /// Input type for a [`PairingField`]. The wizard picks the right
 /// Slint widget based on this; the daemon's submit-validation also
 /// dispatches on it for canonical format checks (IP / MAC / port
@@ -169,6 +196,14 @@ pub struct PairingField {
     /// feedback in the form-validation lifecycle.
     #[serde(default)]
     pub validation: Option<String>,
+
+    /// Where the value comes from + whether it's safe to display.
+    /// Drives projection: pairing wizard shows `UserInput` only,
+    /// `display_info` shows `UserInput + Diagnostic`, future edit
+    /// pane edits `UserInput`. Defaults to `UserInput` so existing
+    /// pairing-form fields don't need to opt in.
+    #[serde(default)]
+    pub visibility: FieldVisibility,
 }
 
 impl PairingField {

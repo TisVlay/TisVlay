@@ -507,20 +507,6 @@ impl TvConnector for LgConnector {
             .unwrap_or_else(|_| "unknown".to_string())
     }
 
-    fn display_info(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
-        let Ok(config) = parse_config(vendor_config) else {
-            return Vec::new();
-        };
-        let mut info = vec![("IP address".to_string(), config.ip)];
-        if let Some(mac) = config.mac {
-            info.push(("MAC address".to_string(), mac));
-        }
-        // `client_key` and `scheme` are intentionally omitted —
-        // the former is sensitive, the latter is internal
-        // optimization rather than user-facing diagnosis.
-        info
-    }
-
     fn supports_wake(&self, vendor_config: &toml::Value) -> bool {
         parse_config(vendor_config)
             .map(|c| c.mac.is_some())
@@ -691,12 +677,14 @@ impl TvConnector for LgConnector {
             .map_err(|e| Error::backend("lg", format!("Failed to serialize config: {}", e)))
     }
 
-    fn pairing_schema(&self) -> Vec<tisvlay_core::PairingField> {
-        use tisvlay_core::{PairingField, PairingFieldType};
-        // Two user-input fields. The third LG config field —
-        // `client_key` — isn't here because the WebOS pairing
-        // handshake produces it (see `build_config_from_pairing`).
-        // Wizard never asks the user for it.
+    fn config_schema(&self) -> Vec<tisvlay_core::PairingField> {
+        use tisvlay_core::{FieldVisibility, PairingField, PairingFieldType};
+        // Full persisted-config shape. Visibility tags drive
+        // projection: wizard sees `UserInput` only; INFO pane
+        // sees `UserInput + Diagnostic`; nothing ever sees
+        // `Secret`. Adding a new field here automatically reaches
+        // every consumer (or doesn't, depending on its tag) — no
+        // separate `display_info` to keep in sync.
         vec![
             PairingField {
                 name: "ip".into(),
@@ -726,6 +714,32 @@ impl TvConnector for LgConnector {
                 // table after SSDP yields the IP and stuffs it into
                 // `vendor_data["mac"]`.
                 autofill: "discovery.mac".into(),
+                ..Default::default()
+            },
+            PairingField {
+                name: "client_key".into(),
+                label: "Client key".into(),
+                helper: "Authentication token issued by the TV during \
+                         the pairing handshake."
+                    .into(),
+                field_type: PairingFieldType::Password,
+                // Backend-discovered (`build_config_from_pairing`
+                // writes it). Never displayed; never editable —
+                // re-pair to refresh.
+                visibility: FieldVisibility::Secret,
+                ..Default::default()
+            },
+            PairingField {
+                name: "scheme".into(),
+                label: "WebSocket scheme".into(),
+                helper: "Captured at pair time — `wss` (port 3001 + TLS) \
+                         or `ws` (port 3000, plain). Re-pair to refresh."
+                    .into(),
+                field_type: PairingFieldType::Select,
+                options: vec!["wss".into(), "ws".into()],
+                // Useful for diagnosis ("which port is the daemon
+                // talking to?") but not user-editable.
+                visibility: FieldVisibility::Diagnostic,
                 ..Default::default()
             },
         ]

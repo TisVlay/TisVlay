@@ -330,22 +330,31 @@ pub trait TvConnector: Send + Sync {
     ///
     /// Returns ordered `(label, value)` pairs the user might care
     /// about for diagnosis — IP, MAC, serial port, etc. Display
-    /// order is preserved. Backends should:
+    /// order is preserved.
     ///
-    /// - **Skip secrets** — never include client keys, OAuth
-    ///   tokens, PSKs, or anything that would compromise pairing
-    ///   if leaked. The pane treats this as user-visible.
-    /// - **Skip empty values** — elide entries when a field isn't
-    ///   set rather than emit a row with a blank value.
-    /// - **Use friendly labels** — `"IP address"`, not `"ip"`.
-    ///   Labels eventually flow through gettext per the i18n
-    ///   architecture; v1 ships English literals.
+    /// **Default impl** walks [`config_schema`](Self::config_schema)
+    /// and emits a row per field whose
+    /// [`visibility`](crate::FieldVisibility) is `UserInput` or
+    /// `Diagnostic`. `Secret` fields are skipped — backends opt
+    /// fields out of display by marking them
+    /// [`FieldVisibility::Secret`] in their schema rather than
+    /// hand-rolling exclusion logic here. Empty values are elided.
     ///
-    /// The default returns an empty vec so backends without
-    /// diagnostically-useful vendor info keep the pane showing
-    /// only the cross-vendor identity columns.
-    fn display_info(&self, _vendor_config: &toml::Value) -> Vec<(String, String)> {
-        Vec::new()
+    /// Backends only need to override this when the schema-driven
+    /// projection isn't enough (e.g. the field's wire form needs
+    /// reformatting before display — `0xFFEE...` → `FF:EE:...`).
+    fn display_info(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
+        self.config_schema()
+            .into_iter()
+            .filter(|f| f.visibility != crate::FieldVisibility::Secret)
+            .filter_map(|f| {
+                let value = toml_field_as_string(vendor_config, &f.name)?;
+                if value.is_empty() {
+                    return None;
+                }
+                Some((f.label, value))
+            })
+            .collect()
     }
 
     /// Whether this transport supports waking the device from standby.
@@ -394,6 +403,27 @@ pub trait TvConnector: Send + Sync {
         credentials: &crate::Credentials,
     ) -> Result<toml::Value>;
 
+    /// Full persisted-config schema — every field that lives in
+    /// the vendor's TOML config, with a
+    /// [`visibility`](crate::FieldVisibility) tag per field.
+    /// Canonical source of truth for the schema views below.
+    ///
+    /// The framework projects this into:
+    /// - **Pairing wizard** ([`pairing_schema`](Self::pairing_schema)):
+    ///   `UserInput` fields only.
+    /// - **INFO pane** ([`display_info`](Self::display_info)):
+    ///   `UserInput + Diagnostic`, skips `Secret`.
+    /// - **Edit pane** (future): `UserInput` only.
+    ///
+    /// Default impl returns an empty list — backends that haven't
+    /// migrated to schema-driven config keep their previous
+    /// behavior (no display_info, no edit support). Override to
+    /// describe the full vendor-config shape and tag each field's
+    /// visibility; the framework handles projection from there.
+    fn config_schema(&self) -> Vec<crate::PairingField> {
+        Vec::new()
+    }
+
     /// Pairing form schema — declares the input fields the user
     /// must provide before pairing can start.
     ///
@@ -404,12 +434,35 @@ pub trait TvConnector: Send + Sync {
     /// [`pairing_schema`](crate::pairing_schema) for the field
     /// vocabulary.
     ///
-    /// Default impl returns an empty list — backends that haven't
-    /// migrated to schema-driven pairing fall back to the legacy
-    /// hardcoded wizard form. Once all in-tree backends define
-    /// schemas the default impl will be removed.
+    /// Default impl filters [`config_schema`](Self::config_schema)
+    /// to `UserInput`-visibility fields. Backends that override
+    /// `config_schema` get this projection for free; backends that
+    /// haven't migrated can still override this directly.
     fn pairing_schema(&self) -> Vec<crate::PairingField> {
-        Vec::new()
+        self.config_schema()
+            .into_iter()
+            .filter(|f| f.visibility == crate::FieldVisibility::UserInput)
+            .collect()
+    }
+}
+
+/// Look up a field on a TOML table by name and stringify its
+/// scalar value. Returns `None` for missing keys, `null`, or
+/// container types (arrays / tables). Used by the default
+/// [`TvConnector::display_info`] impl to project values out of a
+/// `vendor_config` for display.
+fn toml_field_as_string(value: &toml::Value, name: &str) -> Option<String> {
+    let table = value.as_table()?;
+    match table.get(name)? {
+        toml::Value::String(s) => Some(s.clone()),
+        toml::Value::Integer(i) => Some(i.to_string()),
+        toml::Value::Boolean(b) => Some(b.to_string()),
+        toml::Value::Float(f) => Some(f.to_string()),
+        toml::Value::Datetime(d) => Some(d.to_string()),
+        // Arrays / tables aren't meaningful as a single display
+        // row — skip silently. Backends needing structured
+        // display can override `display_info` directly.
+        toml::Value::Array(_) | toml::Value::Table(_) => None,
     }
 }
 

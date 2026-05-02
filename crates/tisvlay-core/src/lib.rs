@@ -86,7 +86,7 @@ pub use pairing::{
     Credentials, InputType, PairingCommand, PairingError, PairingErrorCode, PairingSession,
     PairingState,
 };
-pub use pairing_schema::{PairingField, PairingFieldType};
+pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 
 // Configuration
 pub use config::{

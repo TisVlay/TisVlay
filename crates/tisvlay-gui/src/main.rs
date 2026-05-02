@@ -386,6 +386,7 @@ fn validate_value(
         autofill: String::new(),
         options: options.to_vec(),
         validation: None,
+        visibility: Default::default(),
     };
     match field.validate(value) {
         Ok(()) => ("valid", String::new()),
