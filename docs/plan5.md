@@ -1,288 +1,567 @@
-# Plan 5 — Power-cycle robustness + MAC capture in pairing
+# Plan 5 — Power-cycle robustness, MAC capture, vendor-agnostic config
 
-> **Status (drafting):** This plan addresses a concrete bug
-> hit during dev: the office TV was paired via the GUI's SSDP
-> discovery flow, which captured IP but not MAC. Subsequent
-> `Power off` worked; `Power on` then silently no-op'd
-> (`WakeNotSupported`), and the daemon then refused to
-> auto-reconnect when the TV was woken manually
-> (`powered_off=true` gate). This plan fixes that and
-> related rough edges in the power-cycle UX.
+> **Status (drafting v2):** Round 2 incorporating user
+> answers + external research (NetworkManager, ModemManager,
+> Home Assistant config flows, KDE Kirigami inline messages,
+> NN/g & Smashing Magazine on form-validation UX).
 >
-> Open questions are flagged inline as **❓**. Answer them
-> before execution.
+> This plan grew in scope from "fix the office-TV WoL bug" to
+> "establish a clean architecture for vendor-specific
+> configuration over D-Bus + a clean error vocabulary + a
+> better-grounded UI for both." The bug fix is still the
+> driving motivation; the rest falls out as the principled
+> answers.
+>
+> Open questions are tagged **❓v2** for new ones in this
+> revision. v1 questions that are now resolved are tagged
+> **✅ resolved** with the answer inline.
 
-## Motivation
+## Bug recap (unchanged from v1)
 
-Concrete sequence that surfaced the bugs (29 Apr 2026):
+Office TV paired via SSDP captured IP but not MAC →
+`LgBackend::supports_wake()` returns `false` →
+`tv_manager::power_on()` returns `WakeNotSupported` silently
+(no log past `D-Bus: PowerOn`, no `Failed` phase emit, no
+visible GUI error) → `powered_off=true` traps the TV until
+daemon restart or manual config edit.
 
-1. Office TV paired via GUI → SSDP-discovered, picked from
-   list, `Pair` clicked, success.
-2. Resulting `[tv.lg]` block in `daemon.toml`:
-   ```toml
-   [tv.lg]
-   client_key = "..."
-   ip = "192.168.1.170"
-   # no mac
-   ```
-3. User clicks `Power off` — works (TV off, daemon sets
-   `powered_off=true`).
-4. User clicks `Power on` six times. Daemon receives all six
-   D-Bus calls, logs `D-Bus: PowerOn`, then silence —
-   `power_on()` returns `WakeNotSupported` immediately at
-   `tv_manager.rs:1211` because `LgBackend::supports_wake()`
-   returns `false` when `mac.is_none()`. No `warn!`, no
-   `PowerCyclePhase::Failed` emit, just an Err propagated
-   to the GUI which logs it at `warn!` (invisible to the
-   user) and clears the spinner.
-5. User turns TV on with the remote. Daemon's auto-reconnect
-   paths
-   ([tv_manager.rs:513](../crates/tisvlayd/src/tv_manager.rs#L513),
-   [1092](../crates/tisvlayd/src/tv_manager.rs#L1092),
-   [1142](../crates/tisvlayd/src/tv_manager.rs#L1142))
-   bail out because `powered_off=true`. TV stays disconnected.
+## Scope (revised)
 
-The only ways out today: edit `daemon.toml` to add MAC + reload,
-or restart the daemon (`powered_off` resets to `false` on TV
-load).
+| # | Item | Effort | Phase order |
+|---|---|---|---|
+| 1 | Vendor-specific config schema over D-Bus | medium-large | last (architecture-shaping) |
+| 2 | Pairing wizard renders schema dynamically | medium | with 1 |
+| 3 | MAC discovery via ARP + auto-fill | small | early |
+| 4 | Daemon error vocabulary + phase accuracy | small | early |
+| 5 | GUI inline error surface (Kirigami pattern) | small-medium | with 4 |
+| 6 | Power-button UX for unreachable / no-wake | small | with 4-5 |
+| 7 | "Open logs" affordance in About pane | small | last |
+| 8 | Future: edit TV properties in detail pane | — | not in this plan |
 
-## Scope
+## Design decisions (resolved from v1)
 
-Four items, ordered by leverage:
+### Phase emit accuracy ✅ (was Q7)
 
-| # | Item | Effort |
+User: *"don't send misleading signals … no backwards
+compatibility requirements, refactor as needed."*
+
+Resolution: add a `PowerCyclePhase::DirectConnect` variant
+for the direct-connect-no-WoL path. The phase enum becomes:
+
+| Phase | Meaning |
+|---|---|
+| `WolSent` | Magic packet on the wire |
+| `DirectConnect` | Skipping WoL, going straight to TCP connect |
+| `Connecting` | TCP / WS handshake in progress |
+| `Connected` | Live + subscribed |
+| `Failed` | Generic terminal failure (deprecated in favor of `Failed { reason }` carrying a typed error) |
+
+Refactor consumers in tray + GUI accordingly.
+
+### Toast position / convention ✅ (was Q4)
+
+User: *"Following current conventions in KDE apps sounds
+fine."*
+
+Resolution: use **Kirigami inline-message** convention.
+KDE's [inline messages](https://develop.kde.org/docs/getting-started/kirigami/components-inlinemessages/)
+have four types (info / positive / warning / error), are
+**sticky by default** (no auto-dismiss), have an optional
+close button, can carry actions. Placed inline within the
+content area (typically right under the pane header or right
+above the offending control).
+
+This swings my v1 recommendation: I had said "bottom-floating
+toast, auto-dismiss" but that's a Material/web idiom, not a
+KDE one. KDE's convention is more deliberate — the message
+sticks until the user dismisses it or the underlying state
+changes. For an error like "Power-on failed: no MAC
+configured," sticky is correct (you want the user to see and
+act).
+
+### Toast scope ✅ (was Q5)
+
+User: *"User-initiated errors only seems reasonable, but
+perhaps we should also consider … direct users to journald
+logs."*
+
+Resolution: **user-initiated errors only** for the inline
+message; auto-reconnect / background failures stay in
+journald with an "Open logs" affordance in About (see Phase 7
+below).
+
+### Wizard policy for empty MAC ✅ (was Q2)
+
+User: *"there must be a more generalizable approach … web
+forms often have a 'this field is required' asterisk and a
+lifecycle of validation."*
+
+Resolution: build the wizard form on a **field-validation
+lifecycle** modeled on the form-UX literature (NN/g,
+Smashing Magazine). Per-field validation states:
+
+| State | Trigger | UI |
 |---|---|---|
-| 1 | Capture MAC during SSDP pairing | medium |
-| 2 | Daemon: emit `Failed` + log on `WakeNotSupported` | small |
-| 3 | GUI: surface daemon errors visibly to the user | small-medium |
-| 4 | Recovery path for already-paired TVs lacking MAC | small-medium |
+| Pristine | Field never touched | Neutral |
+| Editing | User typing | No premature error (avoid the "required" splash before the user has a chance to type) |
+| Touched-empty | Lost focus while empty + required | `*` mark turns red; helper text becomes error: "MAC address required" |
+| Invalid | Lost focus with non-matching value | Red border + helper text describes expected format ("Six hex pairs separated by colons or hyphens") |
+| Valid | Lost focus with valid value | Green checkmark or just neutral border (positive validation per Baymard) |
 
-Items 1 + 4 together cover both new pairings and the existing
-no-MAC office TV. Item 2 fixes the silent-fail. Item 3 makes
-similar errors visible going forward.
+Form `Next` button disables until all required fields are
+valid. This is the same pattern Home Assistant's config_flow
+uses, NetworkManager's nm-connection-editor uses, and
+NN/g recommends.
 
-## Phase 1 — Capture MAC during SSDP pairing
+This subsumes the simple "required asterisk" pattern and
+generalizes to any vendor backend's required fields.
+
+## Phase 4 — Daemon error vocabulary
 
 ### Why
 
-SSDP responses don't carry MAC directly (SSDP runs over UDP
-multicast and the application-layer payload is just the device
-description URL). MAC has to come from a separate channel:
+Fixing only `WakeNotSupported` is myopic. Every place the
+daemon currently returns a generic `Err` should map to a
+typed error with a stable D-Bus error name. Following
+[ModemManager's convention](https://www.freedesktop.org/software/ModemManager/doc/latest/ModemManager/ModemManager-Errors.html):
 
-- **ARP table lookup** for the discovered IP. Works on the
-  same L2 segment. Fast (kernel-local, no network round-trip
-  beyond an initial ARP ping if entry is stale).
-- **Device description XML** (the `LOCATION` URL the SSDP
-  response points at). Some manufacturers include MAC in the
-  XML; LG WebOS does not in our limited testing — we'd have
-  to check Samsung / Sony separately.
-- **TV's WebSocket handshake**: the LG WebOS pairing handshake
-  exchanges metadata that includes a device id, but not MAC.
-  Same for vendor protocols generally.
+- A small **core** enum: `Failed`, `Cancelled`,
+  `Unsupported`, `Unauthorized`, `InvalidArgs`,
+  `InProgress`, `WrongState`, `NotFound`, `Retry`.
+- Domain-specific enums layered on top, like
+  `PowerError`, `PairingError`, `ConnectionError`,
+  `ConfigError`. Each variant maps to:
+  - A unique D-Bus error name
+    (`org.tisvlay.Tv1.Power.NoMacConfigured`).
+  - A short identifier (`power.no-mac`) for client-side
+    routing.
+  - A human-readable default message.
 
-ARP is the universal fallback. It only works when the GUI host
-is on the same L2 segment as the TV — typical home setup,
-breaks down in segmented VLAN environments. Acceptable for v1.
+### Concrete error variants we can foresee
+
+Distilled from the existing codebase + the user's research
+prompt + similar projects (HA, NM, MM):
+
+**Power errors**
+- `NoMacConfigured` — "TV has no MAC address configured;
+  WoL is unavailable."
+- `WolSendFailed { source }` — "Couldn't send the
+  Wake-on-LAN packet (network unreachable, …)"
+- `WakeTimeout` — "Sent WoL but TV didn't come up within
+  the wait window."
+- `ConnectTimeout` — "TV reachable but not accepting our
+  connection (firewall? wrong port?)"
+- `AlreadyOn` / `AlreadyOff` — wrong-state recovery hints.
+
+**Pairing errors**
+- `Rejected` — TV said no.
+- `Timeout` — User didn't accept the prompt in time.
+- `WrongCredentials` — Stale client key.
+- `BackendNotRegistered` — Vendor name doesn't map to a
+  known backend.
+
+**Config errors**
+- `InvalidVendorConfig { field, reason }` — Schema
+  validation failed (covers the MAC-format check, IP
+  format, port range, etc.).
+- `DuplicateTvId`.
+- `InvalidProfileReference`.
+
+**Connection errors**
+- `Unreachable` — Carrier down / route missing.
+- `AuthRejected` — TV revoked our key.
+
+❓**v2 Q1**: This taxonomy mirrors ModemManager's grouping
+(core + domain-specific). Would you prefer:
+- **(a)** core + domain enums, each domain in its own file
+  (`tisvlay-core/src/errors/power.rs`, `pairing.rs`,
+  `config.rs`, `connection.rs`)
+- **(b)** flat single enum `TisVlayError` with all variants
+- I'd lean (a) — matches ModemManager, keeps each domain's
+  vocabulary under the team that owns that subsystem (e.g.
+  `tisvlay-lg` could even define vendor-specific subtypes
+  later).
+
+### Steps (Phase 4)
+
+1. Define error enums + their D-Bus mapping in
+   `tisvlay-core/src/errors/`.
+2. Replace ad-hoc `anyhow::anyhow!()` and string errors in
+   `tv_manager.rs`, `dbus/tv.rs`, vendor backends with the
+   typed variants.
+3. Each error converts to a D-Bus error via `From<…> for
+   zbus::fdo::Error` (or a custom `DaemonError`-style
+   wrapper).
+4. `tv_manager::power_on` specifically: emit
+   `PowerCyclePhase::Failed { reason: PowerError }` on the
+   error path before returning, then `warn!` the typed
+   error so journald has the structured fields.
+
+## Phase 5 — GUI inline error surface
+
+### Why
+
+Mirror Kirigami's inline-message pattern in Slint. Each
+pane gets a slot near the top for an `InlineError`
+component. Rust pushes errors into a per-pane property when
+a user-initiated action fails.
 
 ### Steps
 
-1. **Backend trait surface**: extend `DiscoveredTv` with
-   `mac: Option<String>`. The LG `discover` impl populates it
-   from an ARP table read after collecting the IP. (Linux: read
-   `/proc/net/arp`; or use `nl80211` / `rtnetlink` for proper
-   neighbor-table query — the daemon already pulls in
-   `netlink-packet-route` for carrier monitoring, so this
-   route is consistent.)
+1. New `InlineError` widget in `widgets.slint`:
+   - 4 tones (info / positive / warning / error)
+   - Icon (freedesktop `dialog-error` / `dialog-warning` /
+     etc., resolved via the same theme lookup)
+   - Title + message (rich text? probably plain)
+   - Optional action button slot
+   - Close (X) button on the right
+   - Animates in (slide-down) when bound to non-empty
+     content; stays sticky.
+2. New `Errors` global with one slot per pane (`tvs:
+   ErrorState`, `pairing: ErrorState`, etc.) where
+   `ErrorState` is a struct `{ kind: string, message:
+   string, action-label: string }`. Empty when no error.
+3. Rust callback wiring: every `Daemon.power-on(...)`,
+   `set_volume`, `set_managed`, etc. that returns an error
+   pushes a typed message into the relevant `Errors.tvs`
+   slot via `on_ui`.
+4. The "Open logs" link (Phase 7) becomes a default action
+   button on `Errors.kind == "internal"` errors.
 
-2. **D-Bus wire change** on `Manager1.DiscoverTvs` and
-   `Manager1.DiscoveryFound`. Current return tuple is
-   `(s, s, s, (s,s,s), s)`. Either:
-   - **Option A**: add a 6th `s` for MAC. Compact, minor
-     shape change.
-   - **Option B**: replace the inner `(sss)` hardware-id tuple
-     with `(ssss)` adding MAC. Co-locates identifiers.
-   - **Option C**: switch to a dict / struct with named fields.
-     Future-proof against more discovery fields.
+❓**v2 Q2**: For errors that are **expected and
+recoverable** (no MAC configured), the inline-message
+should probably also link to the **fix**, not just describe
+the error. e.g. error message: "Office has no MAC
+configured. Wake-on-LAN won't work." + action button:
+"Edit MAC". Ties Phase 5 to the future "edit TV properties"
+work (Phase 8). Should we ship Phase 5 with edit-actions
+stubbed out (button visible but disabled with "coming
+soon"), or wait until edit-properties lands? I'd lean
+**stub-then-fill**.
 
-   ❓ **Question 1**: Which option? I'd lean **A** — minimal
-   churn for one-field addition. **C** is over-engineering
-   unless we expect more discovery fields soon.
-
-3. **Wizard data model**: extend
-   `WizardDiscoveredTv` (in `globals/pairing_wizard.slint`)
-   with a `mac: string` field. The discovery row layout
-   gains an optional inline "MAC: AA:BB:CC:DD:EE:FF" caption
-   when present.
-
-4. **Wizard configure step**: add a "MAC address" form row,
-   auto-filled from discovery, editable. Helper text:
-   "Required for Wake-on-LAN. Auto-filled when discovered;
-   leave blank if your TV doesn't support WoL."
-
-   ❓ **Question 2**: Should empty MAC be **blocked** at the
-   wizard's Next button (i.e. require MAC), **warned**
-   (allow but with a "you won't be able to wake this TV"
-   note), or **silently allowed**? My recommendation: warn
-   but allow. Some users genuinely have TVs that don't
-   support WoL, or want to manage them manually.
-
-5. **Manual-entry path**: the wizard's "Add manually" form
-   already has a MAC field per the design handoff. Verify
-   it's wired to the daemon. Apply the same warn-on-empty
-   policy.
-
-## Phase 2 — Daemon: emit `Failed` + log on `WakeNotSupported`
+## Phase 6 — Power-button UX for unreachable / no-wake
 
 ### Why
 
-Currently `power_on()` returns `Err(WakeNotSupported)` without
-logging or emitting a `PowerCyclePhase::Failed`. The GUI sees
-the error via D-Bus, logs it at `warn!` (not visible), and
-clears the spinner — the user sees "click did nothing."
+User asked to think through three scenarios:
+
+**(i) TV unreachable + no MAC** → Power-on can't possibly
+work. Today: button enabled, click does nothing. Better:
+button **disabled with tooltip** "Wake-on-LAN unavailable
+— this TV has no MAC address configured. Pair the TV again
+or edit the TV settings to add a MAC."
+
+**(ii) TV reachable + connection lost** → Power-on
+shouldn't WoL; should reconnect. Today: PowerOn() WoLs and
+attempts connect. Better: PowerOn() probes connectivity
+first; if reachable, skip WoL and emit `DirectConnect`
+phase. If unreachable AND we have MAC, fall through to
+WoL.
+
+**(iii) "I want to verify TV is off without turning it
+on"** → Currently no path. The power-state property
+already exists on D-Bus; we could add a small **status
+refresh** action that does a non-side-effect probe (TCP
+SYN to the TV's port; if the connection establishes, the
+TV is on; close immediately). Could be triggered manually
+by a "Check status" button or automatically on pane focus.
+
+❓**v2 Q3**: For (iii), separate "Check status" button OR
+auto-probe on pane focus OR don't bother (let the existing
+state-watcher loop pick it up)? My take: the existing
+state-watcher already does periodic refresh; we don't need
+a manual button unless the period is too long. Worth
+checking the actual cadence first — what's the
+`signal_debounce` / fallback poll interval today? If it's
+≥ 30s, a "Check status" button is justified; if it's
+~5s, the auto-loop is enough.
+
+❓**v2 Q4**: For (ii), should `PowerOn` be the SAME button
+that does the right thing depending on state, or split
+into two buttons — `Power on` (forces WoL+connect) and
+`Reconnect` (forces direct connect)? The Home Assistant
+pattern leans toward "one button does the right thing
+based on current state." My take: **one smart button**.
+Rename if we add (iii) — i.e. the button could read "Wake
+TV", "Reconnect", or "Power off" depending on
+`(connected, powered_off, supports_wake)` triplet. Adds
+clarity without adding click count.
+
+### Steps (Phase 6)
+
+1. `tv_manager::power_on` rewrites:
+   - Probe direct connect first (small timeout, e.g. 1s)
+   - On success: `DirectConnect` phase, register
+     connection, emit `Connected`, done.
+   - On probe failure + `supports_wake`: WoL path as
+     today.
+   - On probe failure + `!supports_wake`: emit `Failed {
+     PowerError::NoMacConfigured }`, return.
+2. GUI Power button:
+   - Label: "Power on" / "Power off" / "Reconnect" based
+     on triplet (depends on Q4 outcome).
+   - `enabled: connected || supports_wake` — disabled when
+     both off and no wake method.
+   - Tooltip when disabled: explanation message.
+3. `powered_off` flag semantics review: it should remain a
+   *hint* for auto-reconnect ("user explicitly powered
+   off, don't fight them") but not gate user-initiated
+   actions. Cleared on successful PowerOn whether via WoL
+   or direct.
+
+## Phase 7 — "Open logs" affordance
+
+### Why
+
+Surface journald to advanced users / when something goes
+sideways. User asked about a URI handler.
+
+### Research result
+
+There's no standard `journal://` URI scheme. Options:
+
+- **(a)** Spawn `ksystemlog` directly via xdg-open. KSystemLog
+  is the KDE journal viewer but has limited CLI filtering —
+  it'd open with no filter, user has to filter manually.
+- **(b)** Spawn a terminal with `journalctl -u tisvlayd -f`
+  pre-typed. Requires picking a terminal (`xdg-terminal-exec`
+  is a freedesktop spec but spotty).
+- **(c)** Copy-to-clipboard a `journalctl` command with a
+  toast saying "Open a terminal and paste."
+- **(d)** Embed a small log viewer inside the GUI (read
+  systemd journal via `systemd::journal::Journal::open` or
+  shell out + parse).
+
+Tradeoffs:
+- (a) has best UX when KSystemLog is installed; degrades on
+  GNOME / minimal installs.
+- (b) is most accurate but UX is fragile.
+- (c) is simplest and degradation-friendly.
+- (d) is most polished but a sizable engineering chunk.
+
+❓**v2 Q5**: Pick one. My recommendation: **(a) with (c) as
+fallback** — try `xdg-open` on `kde-systemlog`-something /
+the desktop file; on failure, fall back to copy-to-clipboard
+with the journalctl command. Defer (d) until we have a real
+need (debugging support stories).
+
+❓**v2 Q6**: Should the "Open logs" button be in the About
+pane (one-off place) or attached to inline-error messages
+as the action button (every error gets a "View logs" jump)?
+My take: **both**. About pane has the always-on shortcut;
+errors with `kind == "internal"` get a contextual action.
+
+## Phase 1 — MAC discovery via ARP
+
+### Why (research-grounded)
+
+Researched: SSDP responses don't include MAC. NetworkManager
+populates MAC for ethernet/wifi via netlink (already a dep
+in this workspace via `rtnetlink`). Same approach works for
+us — after SSDP gives us an IP, do a netlink neighbor lookup
+to fetch MAC.
 
 ### Steps
 
-1. In
-   [`tv_manager::power_on`](../crates/tisvlayd/src/tv_manager.rs#L1211),
-   before returning `WakeNotSupported`:
-   - `warn!(tv_id = %tv_id, "PowerOn requested but TV has no
-     MAC configured — can't wake via WoL");`
-   - `self.emit_power_cycle_phase(tv_id,
-     PowerCyclePhase::Failed);` so the GUI's spinner
-     transitions to a visible Failed state instead of just
-     clearing.
+1. Add a `tisvlay-core::network` helper:
+   `arp_lookup(ip: IpAddr) -> Option<MacAddr>` using
+   `rtnetlink::NeighbourGetRequest`. Returns `None` when
+   the neighbor table doesn't have an entry (cross-VLAN,
+   wrong subnet) — caller falls back to "ask the user."
+2. `LgDiscovery::discover_tvs` populates `mac` field on
+   `DiscoveredTv` after each SSDP hit, by calling the
+   helper. ARP lookup is fast (kernel-local) — no need for
+   a parallelized fan-out.
+3. Wire format change on Discovery's D-Bus return — see
+   Phase 2 below for the right shape.
 
-   ❓ **Question 3**: Should `PowerCyclePhase` get a new
-   variant `WakeNotSupported` distinct from `Failed`?
-   Distinguishes "we tried and the TV didn't wake" from "we
-   couldn't even try". My take: stick with `Failed` — the
-   GUI surface in plan 3 below carries a separate error
-   message anyway, so the phase enum doesn't need to encode
-   the cause.
+## Phase 2 — Pairing wizard renders config schema dynamically
 
-## Phase 3 — GUI: surface daemon errors visibly
+### Why (research-grounded)
 
-### Why
+This is the big architectural piece. Looking at how peer
+projects handle multi-vendor / multi-transport config:
 
-Right now any daemon error path beyond pairing's progress
-stream falls into Rust's `match result { Err(e) => warn!(…) }`
-and never reaches the user. Power-cycle, set-volume,
-set-input, set-managed, etc. all silently fail.
+**[NetworkManager](https://manpages.debian.org/testing/network-manager/nm-settings-dbus.5.en.html)**:
+connection settings are a `a{sa{sv}}` dict-of-dicts. The
+outer key is the connection type (`802-3-ethernet`,
+`802-11-wireless`, `bluetooth`). Type-specific groups only
+appear when the type is set. Clients (nmcli, GNOME
+Settings) consult schema docs to know what fields apply per
+type.
 
-### Steps
+**[Home Assistant config flows](https://developers.home-assistant.io/docs/data_entry_flow_index/)**:
+each integration declares a schema (voluptuous) describing
+the form fields per step. The frontend renders the form
+dynamically from the schema. Validation happens server-side;
+errors come back keyed by field name with a translation key.
 
-1. Add a `LastError` global in `ui/globals/last_error.slint`:
-   ```slint
-   export global LastError {
-       in property <string> message;
-       in property <string> kind;     // "power" | "config" | …
-       in-out property <bool> visible;
-   }
-   ```
+The TisVlay parallel: **the daemon should publish a config
+schema per backend over D-Bus, and the wizard should render
+form fields dynamically.** This solves not just the MAC
+issue but every vendor field — Samsung's API key, Sony's
+PSK, USB-CEC's serial port, etc.
 
-2. Toast component at the bottom of `AppWindow` (above the
-   status footer). Renders when `LastError.visible == true`,
-   auto-dismisses after ~5s (`Timer { interval: 5s; }`),
-   click-to-dismiss.
+### Schema shape
 
-3. Rust: `register_callbacks` error paths push into
-   `LastError` (via `on_ui` helper) instead of just
-   `warn!`-ing. Keep the `warn!` for journald correlation.
+Borrowing from HA + NetworkManager:
 
-   ❓ **Question 4**: Toast position — bottom-of-window
-   floating above content (current convention in KDE
-   apps), or inline below the pane header? My take:
-   bottom-floating, auto-dismiss. Less intrusive.
+```idl
+struct ConfigField {
+    name: string,       // "ip", "mac", "client_key", "tty"
+    label: string,      // "IP address", "MAC address"
+    helper: string,     // "Required for Wake-on-LAN."
+    field_type: string, // "string" | "ip" | "mac" | "port" | "select" | "bool"
+    required: bool,
+    placeholder: string,
+    default: string,
+    autofill: string,   // "discovery.address", "discovery.mac" — name of a discovery field
+    options: array<string>, // for "select" field-type
+    validation: string, // optional regex; daemon also validates server-side
+}
 
-   ❓ **Question 5**: Scope — surface ALL daemon errors via
-   this mechanism, or just the user-initiated ones from
-   button clicks? Auto-reconnect failures could spam the
-   toast. My take: only user-initiated. Auto-reconnect
-   failures stay in journald; toast is for "I clicked a
-   thing and it didn't work."
+method GetVendorConfigSchema(vendor_id: string) -> Vec<ConfigField>
+```
 
-## Phase 4 — Recovery path for already-paired TVs lacking MAC
+The wizard renders a `for field in schema: <FieldRenderer
+field=... />` loop. `FieldRenderer` switches on
+`field.field_type` to pick the right Slint widget
+(LineEdit, ComboBox, Switch, etc.).
 
-### Why
+### Discovery wire format
 
-Even after Phase 1 ships, the user's existing office TV (and
-any other previously-paired TV) still has no MAC. They need
-either a way to add MAC post-hoc, or a way to power-on without
-WoL when the TV is already reachable.
+Tied to schema: discovery results carry a
+`vendor_data: a{ss}` map of free-form vendor-specific data
+(the daemon's discovery code knows what fields the schema
+declares; populates the matching ones). The wizard's
+schema renderer auto-fills any field whose
+`autofill: "discovery.<key>"` matches a populated entry.
 
-### Steps — pick one approach (or combine):
+This reframes v1's Q1 ("how to add MAC to discovery")
+entirely — the answer is "add it as a `vendor_data` entry
+under `mac`" and the rest is generic.
 
-**Approach A: "Connect" button in TV detail.** A second action
-button next to "Power on/off" that's visible when
-`powered_off=true` AND we have a `connected=false` TV. Calls
-a new `Tv1.Power.Connect` D-Bus method that does direct TCP
-connect (skips WoL) and clears `powered_off` on success. UX
-is explicit but adds a button + a method.
+❓**v2 Q7**: This is a substantial refactor (D-Bus wire
+break, schema definitions per backend, dynamic Slint form
+rendering). Three options:
 
-**Approach B: Make `power_on` connect-first.** Change the
-semantics: try a direct connect; if that fails, fall back to
-WoL. If neither works, return `Failed`. Reduces button count.
-Side effect: `powered_off` becomes a soft hint, not a gate
-(or we keep it gating auto-reconnect but not user-initiated
-PowerOn).
+- **(a) Full schema-driven now** — implement Phase 2 in
+  full, ~200-400 LoC across daemon + GUI, plus per-backend
+  schema definitions. Sets up clean architecture before
+  more vendors land.
+- **(b) Hardcode + plan for refactor** — keep the wizard
+  hardcoded for v1 (LG-specific fields), document that
+  schema-driven rendering is the long-term direction, ship
+  Phases 4-7 first to fix the bug. Refactor wizard later
+  when adding Samsung/Sony.
+- **(c) Hybrid** — define the schema types and the
+  `GetVendorConfigSchema` D-Bus method now, but the wizard
+  still uses hardcoded LG layout. Schema is consumed by
+  validation logic only. Future PRs add dynamic rendering.
 
-**Approach C: "Edit MAC" affordance.** Edit-in-place pencil
-icon next to the MAC display in TV detail. Click → inline
-input → save → daemon writes the toml. Doesn't help for
-ARP-table-impossible deployments but helps everyone else.
-Could ship alongside A or B.
+My take: **(b)**. The architectural value of (a) is real
+but the bug is hurting the user *now*. (b) gets the bug
+fixed in days, not weeks. Defer (a) to when we add a
+second vendor and it'll motivate itself.
 
-❓ **Question 6**: Pick one or combine. My recommendation:
-**B + C**. B fixes the silent-trap regardless of MAC; C
-gives users a clean way to backfill MAC for WoL. A is
-nice but redundant if B is in place.
+❓**v2 Q8**: If we go (b), what *minimum* changes happen to
+the wizard now?
+- Add MAC field (auto-filled from discovery's ARP lookup,
+  editable, validated as MAC format)
+- Mark fields as required-or-optional with red asterisks
+- Per-field validation on blur (per the form-UX research)
+- "Next" button disabled until required fields valid
 
-❓ **Question 7**: When `power_on` succeeds via direct connect
-(no WoL), should it still emit `PowerCyclePhase::WolSent`
-followed by `Connecting` followed by `Connected`? Or skip
-to `Connecting` → `Connected` directly? My take: skip WolSent
-so the GUI doesn't claim it sent a WoL it didn't.
+That's ~50 LoC of Slint + ~30 LoC of Rust validation.
+Compared to (a) it's a 4-5× smaller delta and addresses
+the bug. Worth committing to (b) as the path forward?
 
-## Out of scope
+## Phase 3 — MAC discovery via ARP
 
-- Discovery for TVs not on the same L2 segment as the GUI
-  host (cross-VLAN). Requires either a daemon-side ARP probe
-  + multicast routing or vendor-protocol metadata exchange.
-  Defer to a future plan.
-- Per-vendor MAC-discovery quirks (Samsung / Sony might
-  expose MAC in their description XML — worth checking
-  during Phase 1 implementation but not promised).
-- Background reachability probes (TCP ping every N seconds
-  to surface "TV is back" automatically). Mentioned by
-  user as a possible direction in the original triage but
-  not in this plan's scope.
+(See Phase 1 above. Numbered 1 in the order list, named
+Phase 3 here for chronology with the rest of the plan
+sequence.)
+
+## Phase 8 — Edit TV properties (deferred / future)
+
+User: *"I'd eventually like to enable users to edit TV
+properties such as MAC address, IP address, and even Name
+(that could then update the sanitized ID)…"*
+
+This is its own can of worms (atomic config rewrites,
+ID-renaming touching every cross-reference, GUI editing
+chrome). Out of scope here. Filed in todo.md as a
+follow-up.
+
+## Suggested execution sequence
+
+If user picks (b) for Q7:
+
+1. **Phase 4** (error vocab) — typed errors, accurate phase
+   emit. Smallest, foundational.
+2. **Phase 5** (inline-error UI) — surfaces errors visibly.
+   Bug becomes self-explanatory to the user even before any
+   recovery mechanism.
+3. **Phase 6** (smart Power button + connect-first) — fixes
+   the bug end-to-end. User can recover the office TV.
+4. **Phase 3** (MAC discovery via ARP) + minimum wizard
+   updates from Q8 — fixes future pairings.
+5. **Phase 7** (open logs) — polish.
+6. **Phase 8** (edit TV properties) — separate plan.
+7. **Phase 1+2** (full schema-driven config) — when adding
+   the second vendor.
 
 ## Open questions (consolidated)
 
-1. **D-Bus wire format for added MAC field**: A (extra
-   trailing `s`), B (extend hardware-id tuple to `(ssss)`),
-   or C (switch to dict / struct)?
-2. **Wizard policy for empty MAC**: block / warn / allow
-   silently?
-3. **`PowerCyclePhase::WakeNotSupported` variant**: add
-   distinct variant or fold into `Failed`?
-4. **Toast position**: bottom-floating or inline?
-5. **Toast scope**: all daemon errors or only user-initiated?
-6. **Recovery approach**: A (Connect button), B (PowerOn
-   connect-first), C (Edit MAC), or a combination?
-7. **Phase emit when PowerOn succeeds via direct connect**:
-   include WolSent or skip it?
+**v2 (new)**:
+- **Q1**: Error enum layout — per-domain files vs flat enum?
+  (My pick: per-domain, ModemManager-style.)
+- **Q2**: Inline-error action buttons — stub now or wait
+  until edit-properties lands? (My pick: stub now, fill
+  later.)
+- **Q3**: "Check status" button vs rely on existing
+  state-watcher refresh? (Depends on current cadence; need
+  to check.)
+- **Q4**: One smart Power button vs split Power+Reconnect?
+  (My pick: one smart button.)
+- **Q5**: Open-logs implementation — KSystemLog spawn vs
+  copy-to-clipboard vs in-app viewer? (My pick: KSystemLog
+  with copy-to-clipboard fallback.)
+- **Q6**: Open-logs button placement — About-only vs also
+  on inline-error actions? (My pick: both.)
+- **Q7**: Schema-driven config — full now (a), defer (b),
+  or hybrid (c)? (My pick: b.)
+- **Q8**: If (b), confirm minimum wizard updates for v1.
 
-## Dependencies between phases
+**v1 (resolved)**:
+- ✅ Wire-format option for MAC field — moot under schema
+  approach (Phase 2 reframes); resolved as "vendor_data
+  map" if we go (a) or (c), or just an extra field on the
+  current tuple if we go (b).
+- ✅ Empty-MAC policy — built into the form-validation
+  lifecycle; required fields driven by schema (or
+  hardcoded under (b)).
+- ✅ `WakeNotSupported` variant — yes, distinct (per Phase
+  4 vocabulary).
+- ✅ Toast position — Kirigami inline-message, sticky.
+- ✅ Toast scope — user-initiated only.
+- ✅ Recovery approach — connect-first PowerOn (Phase 6),
+  with edit-MAC deferred to Phase 8.
+- ✅ Phase emit accuracy — refactor; add `DirectConnect`,
+  drop bare `Failed` for typed `Failed { reason }`.
 
-- Phase 2 is independent and small — could land first as a
-  hotfix.
-- Phase 3 (toast UI) is a prerequisite for Phase 2 actually
-  being user-visible. Can land in either order; Phase 2
-  alone improves journald visibility.
-- Phase 1 (capture MAC) is independent of 2/3.
-- Phase 4 (recovery) builds on Phase 2 (Failed phase)
-  and Phase 3 (error toast for the still-failing case).
+## References
 
-Sequence I'd suggest absent other input: 2 → 3 → 4B → 4C →
-1. Each step makes the next observable / verifiable.
+- [NetworkManager nm-settings-dbus(5)](https://manpages.debian.org/testing/network-manager/nm-settings-dbus.5.en.html)
+  — dict-of-dicts settings, type-keyed groups
+- [Home Assistant Data Entry Flow](https://developers.home-assistant.io/docs/data_entry_flow_index/)
+  — per-step schema, server-side validation, frontend
+  renders dynamically
+- [ModemManager Errors reference](https://www.freedesktop.org/software/ModemManager/doc/latest/ModemManager/ModemManager-Errors.html)
+  — core + domain enums, stable D-Bus error names
+- [Kirigami inline messages](https://develop.kde.org/docs/getting-started/kirigami/components-inlinemessages/)
+  — sticky, 4 types, optional close, optional actions
+- [Smashing Magazine: Live validation UX](https://www.smashingmagazine.com/2022/09/inline-validation-web-forms-ux/)
+  — avoid premature validation, validate on blur
+- [NN/g: Marking Required Fields](https://www.nngroup.com/articles/required-fields/)
+  — red asterisk convention
