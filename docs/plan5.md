@@ -1,6 +1,35 @@
 # Plan 5 — Power-cycle robustness, MAC capture, vendor-agnostic config
 
-> **Status (drafting v2):** Round 2 incorporating user
+> **Status (in progress):** Phase 0 (i18n scaffold) shipped.
+> Phase 4 (typed errors + bug-fix surfacing) shipped for the
+> Power domain — the office-TV silent-fail bug is now visible.
+> Phase 1 (schema architecture) in flight — types + trait
+> method landed; LG impl + D-Bus method are next. Phases 3, 2,
+> 5, 6 not yet started.
+>
+> | Phase | Done | Commits |
+> |---|---|---|
+> | **0** — i18n scaffold | ✅ | `bcd39b7` |
+> | **4a** — bug-fix surfacing in PowerOn | ✅ | `dcba418` |
+> | **4b** — `PowerError` + per-domain skeleton | ✅ partial (Power only) | `dac954f` |
+> | **4b** — adopt `PowerError` in `TvManagerError` + `DaemonError` | ✅ | `9bfc2b3` |
+> | **1** — schema types + `TvConnector::pairing_schema()` | ✅ | `50947dc` |
+> | **1** — LG `pairing_schema()` impl | ⏳ next | |
+> | **1** — `Manager1.GetPairingSchema(vendor)` D-Bus method | ⏳ | |
+> | **1** — schema-driven `AddTv` validation | ⏳ | |
+> | **3** — MAC discovery via ARP (`vendor_data` map) | ⏳ | |
+> | **2** — wizard renders dynamically | ⏳ | |
+> | **5** — Kirigami inline-error surface | ⏳ | |
+> | **6** — smart Power button + connect-first | ⏳ | |
+> | **4b** — `Pairing` / `Config` / `Connection` typed errors | deferred to as-needed | |
+> | **4** — `PowerCyclePhase::DirectConnect` + typed `Failed` | deferred to Phase 6 | |
+>
+> Original plan body below — references to "draft" / "open
+> questions" predate the resolved-question rounds; treat the
+> `✅ resolved` markers + this status block as authoritative.
+
+## Status (drafting v2 — historical, see Status block above for current)
+> Round 2 incorporating user
 > answers + external research (NetworkManager, ModemManager,
 > Home Assistant config flows, KDE Kirigami inline messages,
 > NN/g & Smashing Magazine on form-validation UX).
