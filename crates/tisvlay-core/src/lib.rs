@@ -49,6 +49,7 @@ mod config;
 pub mod dbus_paths;
 mod desktop;
 mod error;
+pub mod errors;
 mod hardware_id;
 mod pairing;
 mod reconciler;
