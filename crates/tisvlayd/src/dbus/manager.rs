@@ -3,6 +3,7 @@
 //! Implements `org.tisvlay.Manager1` for TV discovery and management.
 
 use crate::dbus::{DaemonError, register_tv_interfaces};
+use crate::json_toml::json_to_toml;
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
 use std::collections::HashMap;
@@ -379,35 +380,4 @@ impl ManagerService {
         vendor: &str,
         vendor_data: HashMap<String, String>,
     ) -> zbus::Result<()>;
-}
-
-/// Convert a serde_json::Value to a toml::Value.
-fn json_to_toml(json: &serde_json::Value) -> Result<toml::Value, String> {
-    match json {
-        serde_json::Value::Null => {
-            Err("JSON null values are not supported in TOML config".to_string())
-        }
-        serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(toml::Value::Integer(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(toml::Value::Float(f))
-            } else {
-                Err("Unsupported number type".to_string())
-            }
-        }
-        serde_json::Value::String(s) => Ok(toml::Value::String(s.clone())),
-        serde_json::Value::Array(arr) => {
-            let values: Result<Vec<toml::Value>, String> = arr.iter().map(json_to_toml).collect();
-            Ok(toml::Value::Array(values?))
-        }
-        serde_json::Value::Object(obj) => {
-            let mut table = toml::map::Map::new();
-            for (key, value) in obj {
-                table.insert(key.clone(), json_to_toml(value)?);
-            }
-            Ok(toml::Value::Table(table))
-        }
-    }
 }

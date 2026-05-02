@@ -232,6 +232,15 @@ trait TisvlayTv {
     /// and unregisters every `Tv1.*` interface at this path so
     /// `ObjectManager.InterfacesRemoved` fires for watchers.
     fn remove(&self) -> zbus::Result<()>;
+
+    /// Return the current TV config as a JSON string for prefilling
+    /// the edit pane. Top-level fields + non-`Secret` vendor fields.
+    fn get_config(&self) -> zbus::Result<String>;
+
+    /// Apply a JSON patch to this TV's config atomically.
+    /// Server-side schema-validated. Vendor changes trigger a
+    /// reconnect.
+    fn update_config(&self, json_patch: &str) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -998,6 +1007,27 @@ impl DaemonClient {
         let mut cache = self.tv_proxies.write().await;
         cache.remove(tv_id);
         Ok(())
+    }
+
+    /// Fetch a TV's config as JSON (top-level + non-`Secret` vendor
+    /// fields). Used by the GUI's edit pane to prefill its form.
+    pub async fn get_tv_config(&self, tv_id: &str) -> Result<String> {
+        self.with_proxies(tv_id, "get config", |p| Box::pin(p.base.get_config()))
+            .await
+    }
+
+    /// Apply a JSON patch atomically to a TV's config. Routes
+    /// through the per-object `Tv1.UpdateConfig` method; the
+    /// daemon validates each field server-side against the
+    /// vendor's `config_schema`, persists to disk, and triggers a
+    /// reconnect if any vendor field changed.
+    pub async fn update_tv_config(&self, tv_id: &str, json_patch: &str) -> Result<()> {
+        let patch = json_patch.to_string();
+        self.with_proxies(tv_id, "update config", move |p| {
+            let patch = patch.clone();
+            Box::pin(async move { p.base.update_config(&patch).await })
+        })
+        .await
     }
 
     /// Subscribe to structural changes in the daemon's TV list.

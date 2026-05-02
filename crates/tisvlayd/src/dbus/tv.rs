@@ -249,6 +249,41 @@ impl TvService {
         }
         Ok(())
     }
+
+    /// Return the current TV config as a JSON string suitable for
+    /// prefilling the GUI's edit pane. Top-level fields (`name`,
+    /// `managed`, `system_profile`, `primary_input`) are merged
+    /// with vendor-config fields filtered to non-`Secret`
+    /// visibilities. The reply mirrors the keys
+    /// [`Tv1::update_config`] accepts so the GUI can round-trip
+    /// the same payload shape it submits.
+    async fn get_config(&self) -> Result<String, DaemonError> {
+        info!(tv_id = %self.tv_id, "D-Bus: GetConfig");
+        self.manager
+            .get_tv_config_json(&self.tv_id)
+            .await
+            .map_err(DaemonError::from)
+    }
+
+    /// Apply a JSON patch to this TV's config atomically.
+    ///
+    /// Schema-validated server-side: each vendor field passes
+    /// through `PairingField::validate` (same checks as `AddTv`),
+    /// `Diagnostic` / `Secret` fields are rejected as not-editable,
+    /// and unknown keys are surfaced as errors rather than silently
+    /// ignored. Top-level fields (`name`, `managed`,
+    /// `system_profile`, `primary_input`) are accepted in the same
+    /// patch — atomicity covers in-memory + disk persistence.
+    ///
+    /// Vendor field changes drop the live connection and trigger a
+    /// reconnect with the new parameters.
+    async fn update_config(&self, json_patch: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %self.tv_id, "D-Bus: UpdateConfig");
+        self.manager
+            .update_tv_config(&self.tv_id, json_patch)
+            .await
+            .map_err(DaemonError::from)
+    }
 }
 
 // =============================================================================

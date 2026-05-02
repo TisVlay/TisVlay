@@ -24,8 +24,8 @@ use std::time::Duration;
 /// here.
 const DIRECT_CONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 use tisvlay_core::{
-    Capabilities, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection, TvConfig,
-    TvConnection, TvState, UserProfileConfig, UserSection,
+    Capabilities, FieldVisibility, ResolvedSystemProfile, SessionAction, SystemConfig,
+    SystemSection, TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -1764,6 +1764,301 @@ impl TvManager {
             value: value.to_string(),
         });
         info!(tv_id = %tv_id, key = %key, value = %value, "TV option updated");
+        Ok(())
+    }
+
+    /// Render the current TV config as a JSON object suitable for
+    /// prefilling the GUI's edit pane.
+    ///
+    /// The payload mirrors the keys the schema-driven form expects:
+    /// top-level `name` / `managed` / `system_profile` /
+    /// `primary_input` keys (mapped from `tv.config.profile.system`
+    /// for the system-profile key) plus every vendor-config field
+    /// from the connector's `config_schema()` filtered to non-`Secret`
+    /// visibilities. `Secret` fields (LG `client_key` etc.) are
+    /// stripped server-side so they can never reach the GUI even
+    /// if a future schema slip-up forgets to mark a field.
+    pub async fn get_tv_config_json(&self, tv_id: &str) -> Result<String, TvManagerError> {
+        let tv_arc = self.get_tv(tv_id).await?;
+        let tv = tv_arc.lock().await;
+        let config = &tv.config;
+
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "name".to_string(),
+            serde_json::Value::String(config.name.clone()),
+        );
+        obj.insert(
+            "managed".to_string(),
+            serde_json::Value::Bool(config.managed),
+        );
+        obj.insert(
+            "system_profile".to_string(),
+            serde_json::Value::String(config.profile.system.clone()),
+        );
+        if let Some(ref pi) = config.primary_input {
+            obj.insert(
+                "primary_input".to_string(),
+                serde_json::Value::String(pi.clone()),
+            );
+        }
+
+        let connector = self
+            .registry
+            .get_connector(&config.vendor)
+            .map_err(|e| TvManagerError::ConfigError(format!("Unknown vendor: {}", e)))?;
+        let schema = connector.config_schema();
+        let vendor_table = config.get_raw_vendor_value().and_then(|v| v.as_table());
+
+        for field in &schema {
+            if field.visibility == FieldVisibility::Secret {
+                continue;
+            }
+            if let Some(value) = vendor_table.and_then(|t| t.get(&field.name)) {
+                obj.insert(field.name.clone(), crate::json_toml::toml_to_json(value));
+            }
+        }
+
+        serde_json::to_string(&serde_json::Value::Object(obj))
+            .map_err(|e| TvManagerError::ConfigError(format!("Serialize config: {}", e)))
+    }
+
+    /// Apply a JSON patch atomically to a TV's config.
+    ///
+    /// Accepted top-level keys: `name`, `managed`, `system_profile`,
+    /// `primary_input` (mirrors the keys `set_tv_option` accepts;
+    /// `system_profile` maps to the internal `profile.system` slot).
+    /// All other keys are interpreted as vendor-config fields and
+    /// must be `UserInput`-visibility entries in the connector's
+    /// `config_schema()`. `Secret` and `Diagnostic` keys are
+    /// rejected — defense in depth, the daemon never trusts a
+    /// client to filter on visibility for it.
+    ///
+    /// Each vendor field is canonically validated server-side via
+    /// `PairingField::validate` (same checks `AddTv` runs at pair
+    /// time), so a field that passes here passes there. Validation
+    /// errors map to `ConfigError::InvalidVendorConfig { field,
+    /// reason }` so the GUI's existing inline-error routing handles
+    /// them unchanged.
+    ///
+    /// Vendor patches are merged into the existing
+    /// `vendor_config[vendor]` table — keys not in the patch keep
+    /// their current values. After persisting, if any vendor field
+    /// changed the connection is dropped and the daemon reconnects
+    /// (covers IP changes; `mac` changes don't break the connection
+    /// but the reconnect is harmless).
+    pub async fn update_tv_config(
+        self: &Arc<Self>,
+        tv_id: &str,
+        json_patch: &str,
+    ) -> Result<(), TvManagerError> {
+        const TOP_LEVEL_KEYS: &[&str] = &["name", "managed", "system_profile", "primary_input"];
+
+        let patch: serde_json::Value = serde_json::from_str(json_patch)
+            .map_err(|e| TvManagerError::ConfigError(format!("Invalid JSON patch: {}", e)))?;
+        let patch_obj = patch.as_object().ok_or_else(|| {
+            TvManagerError::ConfigError("patch must be a JSON object".to_string())
+        })?;
+
+        let tv_arc = self.get_tv(tv_id).await?;
+        let vendor = {
+            let tv = tv_arc.lock().await;
+            tv.config.vendor.clone()
+        };
+
+        let connector = self
+            .registry
+            .get_connector(&vendor)
+            .map_err(|e| TvManagerError::ConfigError(format!("Unknown vendor: {}", e)))?;
+        let schema = connector.config_schema();
+
+        // Sort patches into top-level + vendor buckets, validating
+        // along the way so we reject a malformed patch before
+        // touching disk or in-memory state.
+        let mut top_level: Vec<(String, String)> = Vec::new();
+        let mut vendor_patches: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+
+        for (key, value) in patch_obj {
+            if TOP_LEVEL_KEYS.contains(&key.as_str()) {
+                let str_value = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Null => String::new(),
+                    _ => {
+                        return Err(TvManagerError::ConfigError(format!(
+                            "Invalid value type for top-level field '{}'",
+                            key
+                        )));
+                    }
+                };
+                if key == "system_profile" {
+                    let system = self.system_section.read().await;
+                    if !system.profiles.contains_key(&str_value) {
+                        return Err(TvManagerError::ConfigError(format!(
+                            "Unknown system profile: {}",
+                            str_value
+                        )));
+                    }
+                }
+                top_level.push((key.clone(), str_value));
+                continue;
+            }
+
+            let field = schema.iter().find(|f| f.name == *key).ok_or_else(|| {
+                TvManagerError::ConfigError(format!(
+                    "Field '{}' is not in the {} config schema",
+                    key, vendor
+                ))
+            })?;
+            if field.visibility != FieldVisibility::UserInput {
+                return Err(TvManagerError::ConfigError(format!(
+                    "Field '{}' is not editable (visibility = {:?})",
+                    key, field.visibility
+                )));
+            }
+            let str_value = match value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            field.validate(&str_value).map_err(|e| {
+                TvManagerError::ConfigError(format!("Validation failed for field '{}': {}", key, e))
+            })?;
+            vendor_patches.insert(key.clone(), value.clone());
+        }
+
+        // Apply to in-memory config under the per-TV lock.
+        let mut managed_changed_to: Option<bool> = None;
+        let mut system_profile_changed = false;
+        {
+            let mut tv = tv_arc.lock().await;
+            for (key, value) in &top_level {
+                let internal_key = if key == "system_profile" {
+                    "profile.system"
+                } else {
+                    key.as_str()
+                };
+                apply_tv_option(&mut tv.config, internal_key, value)?;
+                if key == "system_profile" {
+                    system_profile_changed = true;
+                }
+                if key == "managed" {
+                    if let Ok(b) = value.parse::<bool>() {
+                        managed_changed_to = Some(b);
+                    }
+                }
+            }
+            for (key, value) in &vendor_patches {
+                let toml_value =
+                    crate::json_toml::json_to_toml(value).map_err(TvManagerError::ConfigError)?;
+                let entry = tv
+                    .config
+                    .vendor_config
+                    .entry(vendor.clone())
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                if let toml::Value::Table(table) = entry {
+                    table.insert(key.clone(), toml_value);
+                }
+            }
+            if system_profile_changed {
+                let system = self.system_section.read().await;
+                tv.system_profile = system.resolve_profile(&tv.config.profile.system);
+            }
+        }
+
+        // Mirror managed flag onto the outer per-TV tuple so
+        // automation gating sees the new value without a reload.
+        if let Some(b) = managed_changed_to {
+            let mut tvs = self.tvs.write().await;
+            if let Some((flag, _)) = tvs.get_mut(tv_id) {
+                *flag = b;
+            }
+        }
+
+        // Persist to disk: load → patch the matching `[[tv]]` →
+        // save. Same disk-write-lock + spawn_blocking pattern the
+        // rest of `tv_manager` uses.
+        let config_path = self.config_path.clone();
+        let tv_id_owned = tv_id.to_string();
+        let top_level_owned = top_level.clone();
+        let vendor_patches_owned = vendor_patches.clone();
+        let vendor_owned = vendor.clone();
+        let _disk_lock = self.disk_write_lock.lock().await;
+        tokio::task::spawn_blocking(move || -> Result<(), TvManagerError> {
+            let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
+                TvManagerError::ConfigError(format!("Failed to load config: {}", e))
+            })?;
+            let tv = config
+                .find_tv_mut(&tv_id_owned)
+                .ok_or_else(|| TvManagerError::TvNotFound(tv_id_owned.clone()))?;
+            for (key, value) in &top_level_owned {
+                let internal_key = if key == "system_profile" {
+                    "profile.system"
+                } else {
+                    key.as_str()
+                };
+                apply_tv_option(tv, internal_key, value)?;
+            }
+            for (key, value) in &vendor_patches_owned {
+                let toml_value =
+                    crate::json_toml::json_to_toml(value).map_err(TvManagerError::ConfigError)?;
+                let entry = tv
+                    .vendor_config
+                    .entry(vendor_owned.clone())
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                if let toml::Value::Table(table) = entry {
+                    table.insert(key.clone(), toml_value);
+                }
+            }
+            config
+                .save_to(&config_path)
+                .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
+        })
+        .await
+        .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
+        drop(_disk_lock);
+
+        // Emit per-key OptionChanged events so `state_forwarder`
+        // refreshes the cached fields on the per-TV `Tv1` interface
+        // (managed / name / system_profile / primary_input). Without
+        // these the in-memory daemon state is correct but D-Bus
+        // property reads return the stale cached value until the
+        // next config reload.
+        for (key, value) in &top_level {
+            let internal_key = if key == "system_profile" {
+                "profile.system"
+            } else {
+                key.as_str()
+            };
+            self.emit_state_change(StateChangeEvent::OptionChanged {
+                tv_id: tv_id.to_string(),
+                key: internal_key.to_string(),
+                value: value.clone(),
+            });
+        }
+
+        // Vendor-field changes invalidate the live connection (IP
+        // moved, port changed, etc.). Drop + reconnect; the next
+        // command goes over the new transport.
+        if !vendor_patches.is_empty() {
+            if let Err(e) = self.reconnect(tv_id).await {
+                warn!(
+                    tv_id = %tv_id,
+                    error = %e,
+                    "Failed to reconnect after vendor config update; subsequent commands will retry"
+                );
+            }
+        }
+
+        info!(
+            tv_id = %tv_id,
+            top_level_changed = top_level.len(),
+            vendor_changed = vendor_patches.len(),
+            "TV config updated"
+        );
         Ok(())
     }
 
