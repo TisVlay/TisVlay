@@ -493,47 +493,163 @@ ID-renaming touching every cross-reference, GUI editing
 chrome). Out of scope here. Filed in todo.md as a
 follow-up.
 
-## Suggested execution sequence
+## Suggested execution sequence (v3)
 
-If user picks (b) for Q7:
+User picked **Q7 = (a) full schema-driven** + dropped
+"Open logs" via Q5.
 
-1. **Phase 4** (error vocab) — typed errors, accurate phase
-   emit. Smallest, foundational.
-2. **Phase 5** (inline-error UI) — surfaces errors visibly.
-   Bug becomes self-explanatory to the user even before any
-   recovery mechanism.
-3. **Phase 6** (smart Power button + connect-first) — fixes
-   the bug end-to-end. User can recover the office TV.
-4. **Phase 3** (MAC discovery via ARP) + minimum wizard
-   updates from Q8 — fixes future pairings.
-5. **Phase 7** (open logs) — polish.
-6. **Phase 8** (edit TV properties) — separate plan.
-7. **Phase 1+2** (full schema-driven config) — when adding
-   the second vendor.
+1. **Phase 4** — typed errors (`tisvlay-core/src/errors/`),
+   accurate phase emit (`PowerCyclePhase::DirectConnect`,
+   typed `Failed { reason }`). Foundation; everything else
+   uses these.
+2. **Phase 1** — vendor config schema:
+   - Schema types in `tisvlay-core` (`PairingField`,
+     `FieldType`, `Validation`).
+   - `TvConnector::pairing_schema()` trait method.
+   - LG impl: declares fields (`ip`, `mac`, … with
+     autofill keys).
+   - `Manager1.GetPairingSchema(vendor) -> JSON-string`
+     D-Bus method (per v3 Q1).
+   - `Manager1.AddTv` gains schema-driven validation;
+     returns `ConfigError::InvalidVendorConfig { field,
+     reason }` on failure.
+3. **Phase 3** — MAC discovery via ARP. Discovery wire
+   format gains `vendor_data: a{ss}` map. LG discovery
+   populates `vendor_data["mac"]` via `rtnetlink`
+   neighbor lookup after each SSDP hit.
+4. **Phase 2** — pairing wizard renders dynamically:
+   - Vendor-combo selection triggers
+     `GetPairingSchema(vendor)` fetch.
+   - `for field in schema: FieldRenderer { field; ... }`
+     loop renders.
+   - Per-field validation lifecycle (pristine → editing →
+     touched-empty → invalid → valid).
+   - Auto-fill from `vendor_data` based on
+     `field.autofill`.
+5. **Phase 5** — Kirigami `InlineError` widget +
+   `Errors` global with per-pane slots; user-initiated
+   error paths in `register_callbacks` push typed
+   messages.
+6. **Phase 6** — smart Power button (label adapts;
+   `enabled` reflects `(connected, powered_off,
+   supports_wake)`); `tv_manager::power_on` rewritten:
+   probe direct connect first, fall back to WoL,
+   `Failed { NoMacConfigured }` when neither works.
+
+Out of this plan:
+- **Phase 7** (open logs) — dropped (deferred to future
+  PR).
+- **Phase 8** (edit TV properties) — deferred to its own
+  plan.
 
 ## Open questions (consolidated)
 
-**v2 (new)**:
-- **Q1**: Error enum layout — per-domain files vs flat enum?
-  (My pick: per-domain, ModemManager-style.)
-- **Q2**: Inline-error action buttons — stub now or wait
-  until edit-properties lands? (My pick: stub now, fill
-  later.)
-- **Q3**: "Check status" button vs rely on existing
-  state-watcher refresh? (Depends on current cadence; need
-  to check.)
-- **Q4**: One smart Power button vs split Power+Reconnect?
-  (My pick: one smart button.)
-- **Q5**: Open-logs implementation — KSystemLog spawn vs
-  copy-to-clipboard vs in-app viewer? (My pick: KSystemLog
-  with copy-to-clipboard fallback.)
-- **Q6**: Open-logs button placement — About-only vs also
-  on inline-error actions? (My pick: both.)
-- **Q7**: Schema-driven config — full now (a), defer (b),
-  or hybrid (c)? (My pick: b.)
-- **Q8**: If (b), confirm minimum wizard updates for v1.
+**v2 (resolved)**:
+- ✅ **Q1**: Per-domain error enums (ModemManager-style),
+  files under `tisvlay-core/src/errors/` — vendor crates
+  can later add their own subtypes (`tisvlay-lg/src/errors.rs`).
+- ✅ **Q2**: Stub-then-fill — inline-error action buttons
+  land with placeholder behavior; the actual "Edit MAC" /
+  similar fillers come later.
+- ✅ **Q3**: Investigated rather than answered. Default
+  `fallback_poll_interval = 30s` (`dbus_client.rs:1364`)
+  applies to GUI + tray. After Phase 6's smart Power
+  button, the existing 30s poll + the explicit
+  "ensure connected" click cover the user's scenarios —
+  no separate "Check status" button.
+- ✅ **Q4**: One smart button. Label adapts to
+  `(connected, powered_off, supports_wake)`.
+- ✅ **Q5**: Defer "Open logs" entirely to a future PR.
+  Drop Phase 7 from this plan.
+- ✅ **Q6**: N/A given Q5.
+- ✅ **Q7**: Full schema-driven (option a). Project not
+  yet released, no live users; pay the architectural cost
+  now to avoid a future refactor.
+- ✅ **Q8**: N/A given Q7.
 
-**v1 (resolved)**:
+**v3 (new — fall-out from Q7=a)**:
+
+The schema-driven approach forces a few design choices.
+
+- **v3 Q1**: D-Bus shape for the schema.
+  - **(a)** Typed struct: `Manager1.GetPairingSchema(vendor: s)
+    -> Vec<ConfigField>` where `ConfigField` is a
+    fixed-shape struct (`(s, s, s, s, b, s, s, s, as, s)`
+    or named via zbus typed marshalling). Rigorous; harder
+    to evolve without API breaks.
+  - **(b)** JSON string: `-> s` containing serde-encoded
+    schema. Loose; trivial to extend; clients use serde to
+    deserialize.
+  - My pick: **(b) JSON string**. Schema evolution (new
+    field types, optional metadata) doesn't require D-Bus
+    signature changes. Both ends of the wire are Rust today
+    and can share a typed schema struct via
+    `tisvlay-core::pairing_schema` regardless of the wire
+    format. Slint-side rendering is the same either way.
+
+- **v3 Q2**: Pairing schema vs full config schema —
+  separate D-Bus methods or one shared method?
+  - **(a) Two methods**: `GetPairingSchema(vendor)` returns
+    only the user-input fields the wizard needs;
+    `GetConfigSchema(vendor)` returns the full editable
+    schema (used by future "edit TV properties" UX).
+  - **(b) One method, mark fields as
+    `pairing_input: bool`**: caller filters as needed.
+  - My pick: **(a) two methods**. Pairing schema and full
+    schema have genuinely different field sets (e.g.
+    `client_key` is computed by pairing, not user-entered;
+    `id` derives from name). Keeping them separate avoids
+    encoding "field is for-pairing" as a flag everyone has
+    to remember to filter. Phase 8 work adds
+    `GetConfigSchema` — for *now*, ship only `GetPairingSchema`.
+
+- **v3 Q3**: Localization. HA's config_flow uses keyed
+  translation strings for labels, helpers, errors. We
+  could:
+  - **(a)** Plain strings now, refactor later when
+    localization lands.
+  - **(b)** Schema fields carry `translation_key: string`
+    from day one; daemon also returns a translation table
+    in the user's locale.
+  - My pick: **(a) plain strings**. No localization
+    plumbing exists in TisVlay yet. Adding it via the
+    schema would be premature. The schema struct's plain
+    fields can be retrofitted to keyed lookup later by
+    swapping the daemon's source from
+    `format!("...")` to a translation lookup, with no
+    wire-format change if we go JSON (Q1=b).
+
+- **v3 Q4**: Field types vocabulary. Proposed canonical
+  list:
+  - `string` — plain single-line text
+  - `password` — masked input
+  - `ip` — IPv4/IPv6, format-validated
+  - `mac` — `XX:XX:XX:XX:XX:XX` or `XX-XX-...`
+  - `port` — 1..=65535 number input
+  - `int` — generic signed integer with optional `min`/`max`
+  - `bool` — checkbox
+  - `select` — dropdown with `options: Vec<String>`
+  - `path` — filesystem path (e.g., serial `/dev/ttyUSB0`)
+  - Confirm? Anything I'm missing for known-future
+    backends (Samsung tokens, Sony PSK, USB serial)?
+
+- **v3 Q5**: Where does the schema live in the trait
+  surface?
+  - **(a)** New method on `TvConnector`:
+    `fn pairing_schema(&self) -> Vec<PairingField>;`
+  - **(b)** Separate trait `PairingSchemaProvider` only
+    backends that support pairing implement.
+  - My pick: **(a)**. Every backend that supports pairing
+    needs one; current `TvConnector::start_pairing`
+    already exists, so adding `pairing_schema` co-locates
+    them.
+
+- **v3 Q6**: How does the wizard handle backends that
+  declare zero pairing fields (e.g., a hypothetical
+  "discovered devices auto-pair without input" backend)?
+  My pick: trivial — schema is empty, wizard skips the
+  Configure step and goes straight to Pair. No special-
+  casing needed.
 - ✅ Wire-format option for MAC field — moot under schema
   approach (Phase 2 reframes); resolved as "vendor_data
   map" if we go (a) or (c), or just an extra field on the
