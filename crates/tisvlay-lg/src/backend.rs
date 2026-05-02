@@ -124,9 +124,13 @@ impl LgConnection {
         };
 
         if needs_reconnect {
-            info!(ip = %self.config.ip, "Reconnecting to LG TV");
-            let client =
-                WebOsClient::connect(&self.config.ip, self.config.client_key.clone()).await?;
+            info!(ip = %self.config.ip, scheme = %self.config.scheme, "Reconnecting to LG TV");
+            let client = WebOsClient::connect_with_scheme(
+                &self.config.ip,
+                self.config.scheme,
+                self.config.client_key.clone(),
+            )
+            .await?;
             self.client = Some(client);
 
             // Best-effort identity refresh on fresh connect. Runs once
@@ -466,39 +470,35 @@ impl TvConnector for LgConnector {
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
         let config = parse_config(vendor_config)?;
 
-        debug!(ip = %config.ip, has_key = config.client_key.is_some(), "Connecting to LG TV");
+        debug!(
+            ip = %config.ip,
+            has_key = config.client_key.is_some(),
+            scheme = %config.scheme,
+            "Connecting to LG TV"
+        );
 
-        // Retry on connection reset — the TV only allows one SSAP WebSocket
-        // session at a time. If a previous daemon's session is still alive
-        // (e.g., after daemon restart), the TV resets the new connection.
-        // The stale session typically drops within a few seconds.
-        let mut last_err = None;
-        for attempt in 1..=5u32 {
-            match WebOsClient::connect(&config.ip, config.client_key.clone()).await {
-                Ok(mut client) => {
-                    // Best-effort identity fetch right after connect. Lets the
-                    // daemon's `Tv1.HardwareId` property be populated on the
-                    // first registration, before any user interaction.
-                    let hardware_id = match client.get_hardware_id().await {
-                        Ok(id) => {
-                            debug!(ip = %config.ip, ?id, "fetched LG hardware identity");
-                            Some(id)
-                        }
-                        Err(e) => {
-                            debug!(ip = %config.ip, error = %e, "getSystemInfo failed");
-                            None
-                        }
-                    };
-                    return Ok(Box::new(LgConnection::new(client, config, hardware_id)));
-                }
-                Err(e) => {
-                    debug!(ip = %config.ip, attempt, error = %e, "LG TV not ready, retrying");
-                    last_err = Some(e);
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
+        // Single attempt — fail-fast contract. Stale-session
+        // takeover and other "TV not ready yet" cases are handled
+        // by `wake_and_connect`'s outer retry loop, which is the
+        // only retry layer.
+        let mut client =
+            WebOsClient::connect_with_scheme(&config.ip, config.scheme, config.client_key.clone())
+                .await?;
+
+        // Best-effort identity fetch right after connect. Lets the
+        // daemon's `Tv1.HardwareId` property be populated on the
+        // first registration, before any user interaction.
+        let hardware_id = match client.get_hardware_id().await {
+            Ok(id) => {
+                debug!(ip = %config.ip, ?id, "fetched LG hardware identity");
+                Some(id)
             }
-        }
-        Err(last_err.unwrap())
+            Err(e) => {
+                debug!(ip = %config.ip, error = %e, "getSystemInfo failed");
+                None
+            }
+        };
+        Ok(Box::new(LgConnection::new(client, config, hardware_id)))
     }
 
     fn display_address(&self, vendor_config: &toml::Value) -> String {
@@ -603,10 +603,15 @@ impl TvConnector for LgConnector {
                     match result {
                         Ok(client) => {
                             if let Some(key) = client.client_key() {
-                                info!(ip = %ip, "LG TV pairing successful");
-                                let _ = state_tx.send(PairingState::complete(
-                                    Credentials::with_type(key, "client_key"),
-                                ));
+                                let scheme = client.scheme().unwrap_or_default();
+                                info!(ip = %ip, %scheme, "LG TV pairing successful");
+                                // Capture which scheme connected so
+                                // subsequent reconnects skip the
+                                // wss→ws fallback (see
+                                // `LgVendorConfig.scheme`).
+                                let creds = Credentials::with_type(key, "client_key")
+                                    .with_extra("scheme", scheme.as_str());
+                                let _ = state_tx.send(PairingState::complete(creds));
                             } else {
                                 warn!(ip = %ip, "LG TV connected but no client key received");
                                 let _ = state_tx.send(PairingState::failed(
@@ -659,6 +664,15 @@ impl TvConnector for LgConnector {
     ) -> Result<toml::Value> {
         let mut config = parse_config(pairing_params)?;
         config.client_key = Some(credentials.data.clone());
+        // Persist the working WebSocket scheme captured during the
+        // pairing handshake — `connect()` reads this on reconnects
+        // to skip the wss→ws fallback. Pairing always populates
+        // this; reject if it's missing rather than silently
+        // defaulting (would mask a bug in the pairing flow).
+        let scheme = credentials.extra.get("scheme").ok_or_else(|| {
+            Error::backend("lg", "pairing credentials missing `scheme` — internal bug")
+        })?;
+        config.scheme = scheme.parse()?;
         toml::Value::try_from(&config)
             .map_err(|e| Error::backend("lg", format!("Failed to serialize config: {}", e)))
     }
@@ -924,13 +938,15 @@ mod tests {
     fn build_config_from_pairing_stores_key() {
         let connector = LgConnector::new();
         let params = toml::Value::try_from(LgVendorConfig::new("192.168.1.100")).unwrap();
-        let creds = Credentials::with_type("my-client-key", "client_key");
+        let creds =
+            Credentials::with_type("my-client-key", "client_key").with_extra("scheme", "wss");
         let result = connector
             .build_config_from_pairing(&params, &creds)
             .unwrap();
         let config: LgVendorConfig = result.try_into().unwrap();
         assert_eq!(config.ip, "192.168.1.100");
         assert_eq!(config.client_key.as_deref(), Some("my-client-key"));
+        assert_eq!(config.scheme, crate::config::WebOsScheme::Wss);
     }
 
     #[test]
@@ -939,13 +955,14 @@ mod tests {
         let params =
             toml::Value::try_from(LgVendorConfig::with_mac("10.0.0.1", "AA:BB:CC:DD:EE:FF"))
                 .unwrap();
-        let creds = Credentials::with_type("key", "client_key");
+        let creds = Credentials::with_type("key", "client_key").with_extra("scheme", "ws");
         let result = connector
             .build_config_from_pairing(&params, &creds)
             .unwrap();
         let config: LgVendorConfig = result.try_into().unwrap();
         assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
         assert_eq!(config.client_key.as_deref(), Some("key"));
+        assert_eq!(config.scheme, crate::config::WebOsScheme::Ws);
     }
 
     // -----------------------------------------------------------------------

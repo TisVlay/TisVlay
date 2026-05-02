@@ -1,6 +1,59 @@
 //! LG WebOS specific configuration.
 
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+use tisvlay_core::Error;
+
+/// WebSocket scheme an LG TV speaks.
+///
+/// `Wss` (port 3001 + TLS with self-signed cert) is the modern
+/// firmware default; `Ws` (port 3000, plain) is older firmware that
+/// shipped before LG's TLS rollout. Pairing probes both via
+/// [`Connection::connect`](crate::connection::Connection::connect)
+/// and persists the working one into [`LgVendorConfig::scheme`] so
+/// post-pairing reconnects dispatch directly without the fallback
+/// round-trip.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebOsScheme {
+    /// Secure WebSocket on port 3001 (TLS with self-signed cert).
+    /// Default for modern firmware.
+    #[default]
+    Wss,
+    /// Plain WebSocket on port 3000. Older firmware only.
+    Ws,
+}
+
+impl WebOsScheme {
+    /// Stable lowercase identifier — matches the serde rename and
+    /// the URL scheme component (`"wss"` / `"ws"`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Wss => "wss",
+            Self::Ws => "ws",
+        }
+    }
+}
+
+impl std::fmt::Display for WebOsScheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for WebOsScheme {
+    type Err = Error;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "wss" => Ok(Self::Wss),
+            "ws" => Ok(Self::Ws),
+            other => Err(Error::backend(
+                "lg",
+                format!("Unknown WebSocket scheme: {other}"),
+            )),
+        }
+    }
+}
 
 /// LG WebOS vendor-specific configuration.
 ///
@@ -52,6 +105,16 @@ pub struct LgVendorConfig {
     /// powered on via Wake-on-LAN.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_input: Option<String>,
+
+    /// WebSocket scheme this TV speaks. Captured at pair-time and
+    /// persisted so reconnects dispatch directly to the right
+    /// scheme without probing — saves a TLS handshake per connect
+    /// for ws-only TVs and skips a wss→ws fallback round-trip for
+    /// wss-capable ones. Defaults to [`WebOsScheme::Wss`] when
+    /// absent so configs that pre-date this field deserialize
+    /// without surprise (re-pair if your TV is `ws`-only).
+    #[serde(default)]
+    pub scheme: WebOsScheme,
 }
 
 impl LgVendorConfig {
@@ -62,6 +125,7 @@ impl LgVendorConfig {
             mac: None,
             client_key: None,
             default_input: None,
+            scheme: WebOsScheme::default(),
         }
     }
 
@@ -72,6 +136,7 @@ impl LgVendorConfig {
             mac: Some(mac.into()),
             client_key: None,
             default_input: None,
+            scheme: WebOsScheme::default(),
         }
     }
 
@@ -142,6 +207,7 @@ mod tests {
             mac: Some("AA:BB:CC:DD:EE:FF".to_string()),
             client_key: Some("key123".to_string()),
             default_input: Some("HDMI_2".to_string()),
+            scheme: WebOsScheme::Ws,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: LgVendorConfig = toml::from_str(&toml_str).unwrap();
@@ -155,6 +221,16 @@ mod tests {
         assert!(!toml_str.contains("mac"));
         assert!(!toml_str.contains("client_key"));
         assert!(!toml_str.contains("default_input"));
+    }
+
+    #[test]
+    fn scheme_defaults_when_absent() {
+        let toml_str = r#"
+            ip = "192.168.1.100"
+            client_key = "abc123"
+        "#;
+        let config: LgVendorConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.scheme, WebOsScheme::Wss);
     }
 
     #[test]

@@ -35,14 +35,38 @@ impl std::fmt::Debug for WebOsClient {
 }
 
 impl WebOsClient {
-    /// Connect to a TV and register.
+    /// Connect to a TV and register, trying `wss://` first and
+    /// falling back to `ws://`. Used during pairing and for legacy
+    /// configs that haven't yet recorded which scheme the TV speaks.
     ///
-    /// If `client_key` is provided, attempts to reconnect with existing pairing.
-    /// If `None` or the key is invalid, a pairing prompt will be shown on the TV.
+    /// If `client_key` is provided, attempts to reconnect with
+    /// existing pairing. If `None` or the key is invalid, a pairing
+    /// prompt will be shown on the TV.
     pub async fn connect(host: &str, client_key: Option<String>) -> Result<Self> {
         let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
         let conn = Connection::connect(host, connect_timeout).await?;
+        Self::register_on(conn, client_key).await
+    }
 
+    /// Connect via a known [`WebOsScheme`] and register. Used on
+    /// reconnects when the pairing flow has already recorded which
+    /// scheme the TV speaks into `LgVendorConfig.scheme` — single
+    /// dispatch, no fallback round-trip.
+    pub async fn connect_with_scheme(
+        host: &str,
+        scheme: crate::config::WebOsScheme,
+        client_key: Option<String>,
+    ) -> Result<Self> {
+        use crate::config::WebOsScheme;
+        let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
+        let conn = match scheme {
+            WebOsScheme::Wss => Connection::connect_wss(host, connect_timeout).await?,
+            WebOsScheme::Ws => Connection::connect_ws(host, connect_timeout).await?,
+        };
+        Self::register_on(conn, client_key).await
+    }
+
+    async fn register_on(conn: Connection, client_key: Option<String>) -> Result<Self> {
         let mut client = Self {
             conn: Some(conn),
             client_key: client_key.clone(),
@@ -177,6 +201,15 @@ impl WebOsClient {
     /// Get the client key (for saving to config).
     pub fn client_key(&self) -> Option<&str> {
         self.client_key.as_deref()
+    }
+
+    /// WebSocket scheme the underlying connection succeeded over.
+    /// Returns `None` when the connection is closed. Read by the
+    /// pairing flow so the working scheme can be persisted to
+    /// `LgVendorConfig.scheme` and skip the wss→ws fallback on
+    /// subsequent reconnects.
+    pub(crate) fn scheme(&self) -> Option<crate::config::WebOsScheme> {
+        self.conn.as_ref().map(|c| c.scheme())
     }
 
     /// Generate the next request ID.

@@ -6,6 +6,7 @@
 //! while subscription updates and unsolicited messages are forwarded to
 //! a shared `mpsc` channel.
 
+use crate::config::WebOsScheme;
 use crate::endpoints::{WS_PORT, WSS_PORT};
 use crate::protocol::{Request, Response};
 use futures_util::stream::{SplitSink, SplitStream};
@@ -46,6 +47,10 @@ pub(crate) struct Connection {
     subscription_rx: Option<mpsc::UnboundedReceiver<Response>>,
     /// Handle to the background reader task.
     reader_handle: tokio::task::JoinHandle<()>,
+    /// WebSocket scheme this connection succeeded over. Persisted
+    /// into `LgVendorConfig.scheme` after pairing so subsequent
+    /// reconnects skip the wss→ws fallback path.
+    scheme: WebOsScheme,
 }
 
 /// Custom certificate verifier that accepts any certificate.
@@ -101,7 +106,13 @@ impl rustls::client::danger::ServerCertVerifier for InsecureCertVerifier {
 }
 
 impl Connection {
-    /// Connect to a TV, trying wss:// first, then ws://.
+    /// Connect to a TV during pairing — probes `wss://` first, then
+    /// `ws://`. Pairing is the only call site that doesn't yet know
+    /// which scheme the TV speaks; everywhere else dispatches
+    /// directly to [`connect_wss`](Self::connect_wss) or
+    /// [`connect_ws`](Self::connect_ws) using the value cached on
+    /// `LgVendorConfig.scheme`. Single-attempt only — retries belong
+    /// in `LgConnector::wake_and_connect`.
     pub(crate) async fn connect(host: &str, connect_timeout: Duration) -> Result<Self> {
         // Try secure connection first (port 3001)
         match Self::connect_wss(host, connect_timeout).await {
@@ -121,13 +132,22 @@ impl Connection {
     /// Connect using secure WebSocket (wss://).
     pub(crate) async fn connect_wss(host: &str, connect_timeout: Duration) -> Result<Self> {
         let url = format!("wss://{}:{}", host, WSS_PORT);
-        Self::connect_url_tls(&url, connect_timeout).await
+        let mut conn = Self::connect_url_tls(&url, connect_timeout).await?;
+        conn.scheme = WebOsScheme::Wss;
+        Ok(conn)
     }
 
     /// Connect using insecure WebSocket (ws://).
     pub(crate) async fn connect_ws(host: &str, connect_timeout: Duration) -> Result<Self> {
         let url = format!("ws://{}:{}", host, WS_PORT);
-        Self::connect_url_plain(&url, connect_timeout).await
+        let mut conn = Self::connect_url_plain(&url, connect_timeout).await?;
+        conn.scheme = WebOsScheme::Ws;
+        Ok(conn)
+    }
+
+    /// WebSocket scheme this connection succeeded over.
+    pub(crate) fn scheme(&self) -> WebOsScheme {
+        self.scheme
     }
 
     /// Create a `Connection` from a raw `WsStream` by splitting it and
@@ -150,6 +170,10 @@ impl Connection {
             pending,
             subscription_rx: Some(subscription_rx),
             reader_handle,
+            // Overwritten by `connect_wss` / `connect_ws` after the
+            // raw stream is built; the test-only `connect_url_plain`
+            // path inherits this default since it always uses ws://.
+            scheme: WebOsScheme::Ws,
         }
     }
 
