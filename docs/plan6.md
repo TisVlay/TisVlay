@@ -1,15 +1,13 @@
 # Plan 6 — Edit TV properties from the GUI
 
-> **Status:** Draft v2 — all v1 architectural questions
-> resolved. UUID v4 confirmed as the identity model (matches
-> NetworkManager). `SetTvOption` retirement resolved by
-> ModemManager + zbus research. New ❓v2 Q6 surfaced from the
-> ModemManager survey: should the new `UpdateTvConfig` wire
-> format be `a{sv}` (freedesktop precedent) or JSON-string
-> (consistency with existing tisvlay surface)? Builds on
-> plan5's schema architecture (`config_schema` +
-> `FieldVisibility`) which gave us the declarative metadata to
-> drive an edit form for free.
+> **Status:** Draft v2 — all open questions resolved. UUID
+> v4 identity (matches NetworkManager); `SetTvOption`
+> retired in favor of `UpdateTvConfig`; wire format stays
+> JSON-string (option b) with the `a{sv}` migration
+> deliberately deferred until feature-completeness reduces
+> surface churn. Builds on plan5's schema architecture
+> (`config_schema` + `FieldVisibility`) which gave us the
+> declarative metadata to drive an edit form for free.
 >
 > | Decision | Status | Section |
 > |---|---|---|
@@ -22,7 +20,7 @@
 > | Validation timing: save-button-gated like wizard | ✅ resolved | (chat) |
 > | No config-load migration; regenerate sample configs directly | ✅ resolved | Identity model |
 > | Atomic config writes via tempfile + rename | ✅ resolved | Identity model |
-> | Wire format for `UpdateTvConfig`: `a{sv}` vs JSON-string | open ❓v2 Q6 | Open questions |
+> | Wire format for `UpdateTvConfig`: JSON-string (defer `a{sv}` migration) | ✅ resolved | Open questions / Deferred |
 
 ## Bug recap (motivation)
 
@@ -548,56 +546,43 @@ Suggested order, smallest reviewable units first:
   inline on the originating field for cases the client
   validator can't catch.
 
-**v2 (post-research):**
+**v2 (resolved):**
 
-- **❓v2 Q6 — `UpdateTvConfig` wire format: `a{sv}` or JSON?**
-  ModemManager research surfaced freedesktop precedent for
-  `a{sv}` (D-Bus variant dict): NetworkManager
-  `Settings.Connection.Update(a{sa{sv}})`, ModemManager
-  `Modem.Simple.Connect(a{sv})` and
-  `Modem3gpp.ProfileManager.Set(a{sv})`, systemd
-  `Manager.SetUnitProperties(a(sv))`. tisvlay's existing
-  `Manager1.AddTv(config_json: s)` chose JSON-string
-  deliberately (plan5 v3 Q1) for consistency across
-  `GetPairingSchema` (returns JSON), `ListSystemProfiles`
-  (returns JSON pairs), etc.
+- **✅ Q6** — `UpdateTvConfig(tv_id: s, json: s) -> ()` (option
+  **b**). Keep the JSON-string convention established by
+  `AddTv` (plan5 v3 Q1), `GetPairingSchema`, and
+  `ListSystemProfiles`. Defer the all-in `a{sv}` migration
+  (option c) until feature-completeness reduces the rate of
+  surface churn — the freedesktop-convention benefit grows
+  with introspection consumers and multi-vendor pressure,
+  neither of which exists today. See "Deferred to a future
+  PR" below.
 
-  Three options:
+  Brief rationale for the deferral over committing to (c)
+  now: `a{sv}` is the architecturally correct end-state, but
+  none of its concrete benefits (introspection by external
+  tooling, native bus-level type checks, multi-vendor symmetry
+  pressure) materialize at the project's current stage. The
+  cost of locking in (c) now is migrating `AddTv` callers
+  during peak-development churn; the cost of locking in (b)
+  now is a future wire-flip whose blast radius grows with each
+  shipped consumer. Revisit when the second vendor backend is
+  in flight and the multi-vendor case becomes concrete.
 
-  - **(a) `UpdateTvConfig(tv_id: s, config: a{sv}) -> ()`** —
-    matches MM/NM/systemd precedent. Native D-Bus types,
-    free type-checking at the bus layer, introspection-friendly.
-    Inconsistent with `AddTv`'s JSON shape unless we also
-    migrate `AddTv`. Vendor configs are flat enough that
-    `a{sv}` works without nested-variant gymnastics.
-  - **(b) `UpdateTvConfig(tv_id: s, json: s) -> ()`** —
-    matches existing tisvlay surface. JSON cleanly handles
-    nested structure if any backend ever needs it. Loses
-    introspection at the bus layer — clients have to know
-    the schema.
-  - **(c) `UpdateTvConfig(tv_id: s, config: a{sv}) -> ()`
-    AND migrate `AddTv` → `a{sv}`.** Consistent with
-    freedesktop, consistent across our own surface. Largest
-    wire-break, but we have no backward-compat constraint.
-    `GetPairingSchema` stays JSON since the schema itself is
-    a structured object, not a key-value config.
+## Deferred to a future PR
 
-  My lean: **(c)** — go all-in on `a{sv}` for vendor-config
-  surfaces (`AddTv` + `UpdateTvConfig`), keep JSON for
-  schema-shaped surfaces (`GetPairingSchema`,
-  `ListSystemProfiles`). Rationale: the inconsistency in (a)
-  is a smell; (b) walks away from the freedesktop precedent
-  for no real benefit; (c) lands the right shape across the
-  whole D-Bus surface in one stroke.
-
-  The cost of (c) is changing `Manager1.AddTv` and the
-  pairing-wizard's `build_config_json_from_schema` helper to
-  build a `HashMap<String, Value>` instead of a JSON string.
-  Mostly mechanical — zbus's `zvariant::Value` types map
-  cleanly from the schema's `field_type`.
-
-  Worth confirming before Phase 8.3 (the daemon RPC) lands,
-  since the wire format affects every consumer.
+- **`a{sv}` wire-format migration for vendor-config surfaces.**
+  The architecturally cleaner end-state per Q6 — migrate
+  `Manager1.AddTv` and `Manager1.UpdateTvConfig` from
+  `config_json: s` to `config: a{sv}`. Triggers for
+  reconsidering: (1) a second vendor backend lands and the
+  multi-vendor introspection argument becomes concrete,
+  (2) external tools (third-party clients, monitoring
+  scripts) start consuming the D-Bus surface and the typed
+  introspection becomes user-visible, (3) a vendor config
+  needs nested structure that a{sv} would handle awkwardly
+  but JSON would handle cleanly (which would *strengthen*
+  the case for staying on JSON, not weaken it).
 - **❓v1 Q5 — Validation timing.** Save-button-disabled-until-valid
   (matches the wizard's "Pair" button gating), or save-attempt-then-show-server-errors?
   My take: same as wizard — Save disabled while any required
