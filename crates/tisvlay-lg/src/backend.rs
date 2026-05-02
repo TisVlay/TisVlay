@@ -662,6 +662,47 @@ impl TvConnector for LgConnector {
         toml::Value::try_from(&config)
             .map_err(|e| Error::backend("lg", format!("Failed to serialize config: {}", e)))
     }
+
+    fn pairing_schema(&self) -> Vec<tisvlay_core::PairingField> {
+        use tisvlay_core::{PairingField, PairingFieldType};
+        // Two user-input fields. The third LG config field —
+        // `client_key` — isn't here because the WebOS pairing
+        // handshake produces it (see `build_config_from_pairing`).
+        // Wizard never asks the user for it.
+        vec![
+            PairingField {
+                name: "ip".into(),
+                label: "IP address".into(),
+                helper: "LAN address of the TV's WebOS interface.".into(),
+                field_type: PairingFieldType::Ip,
+                required: true,
+                placeholder: "192.168.1.100".into(),
+                // SSDP discovery yields IP under `vendor_data["ip"]`
+                // (see Phase 3 — once `vendor_data` ships, this
+                // autofill key matches).
+                autofill: "discovery.ip".into(),
+                ..Default::default()
+            },
+            PairingField {
+                name: "mac".into(),
+                label: "MAC address".into(),
+                helper: "Required for Wake-on-LAN — without it the daemon \
+                         can't power this TV on from deep standby."
+                    .into(),
+                field_type: PairingFieldType::Mac,
+                // Optional at the schema level; the wizard surfaces a
+                // warning when empty (per the form-validation
+                // lifecycle in plan5.md), but lets the user proceed
+                // since some setups manage power externally.
+                required: false,
+                placeholder: "AA:BB:CC:DD:EE:FF".into(),
+                // ARP-resolved by the daemon after SSDP yields the IP
+                // (Phase 3 of plan5).
+                autofill: "discovery.mac".into(),
+                ..Default::default()
+            },
+        ]
+    }
 }
 
 /// LG-specific network discovery.
