@@ -1,25 +1,28 @@
 # Plan 6 — Edit TV properties from the GUI
 
-> **Status:** Draft v1 — major architectural questions resolved
-> (UUID migration, drop `Tv1.Address` cleanly, atomic-batch edit
-> UX), `SetTvOption` retirement leaning resolved with research
-> captured for one more review pass. Builds on plan5's schema
-> architecture (`config_schema` + `FieldVisibility`) which gave
-> us the declarative metadata to drive an edit form for free.
-> This plan adds the editing pathway end-to-end: daemon RPCs,
-> atomicity, GUI shape, identity model, and the architectural
-> cleanup that surfaced when we noticed `Tv1.Address` is a leaky
-> vendor abstraction.
+> **Status:** Draft v2 — all v1 architectural questions
+> resolved. UUID v4 confirmed as the identity model (matches
+> NetworkManager). `SetTvOption` retirement resolved by
+> ModemManager + zbus research. New ❓v2 Q6 surfaced from the
+> ModemManager survey: should the new `UpdateTvConfig` wire
+> format be `a{sv}` (freedesktop precedent) or JSON-string
+> (consistency with existing tisvlay surface)? Builds on
+> plan5's schema architecture (`config_schema` +
+> `FieldVisibility`) which gave us the declarative metadata to
+> drive an edit form for free.
 >
 > | Decision | Status | Section |
 > |---|---|---|
-> | UUID identity model + rename `Tv1.Id` → `Tv1.Uuid` | ✅ resolved | Identity model |
+> | UUID v4 identity model + rename `Tv1.Id` → `Tv1.Uuid` | ✅ resolved | Identity model |
 > | Drop `Tv1.Address` cleanly; no scalar replacement | ✅ resolved | Drop `Tv1.Address` |
-> | Atomic batch edit; pencil-toggle UX | ✅ resolved (chat Q2) | UX shape |
-> | Accept config + reflect connection status on side-effect failure | ✅ resolved (chat Q4) | Atomicity |
-> | Drop `SetTvOption`; route everything through `UpdateTvConfig` | leaning | `SetTvOption` retirement |
-> | Edit-mode scope (INFO-only vs duplicate inline controls) | open ❓v1 Q4 | Open questions |
-> | Validation timing (save-gated vs server-error fallback) | open ❓v1 Q5 | Open questions |
+> | Atomic batch edit; pencil-toggle UX | ✅ resolved | UX shape |
+> | Accept config + reflect connection status on side-effect failure | ✅ resolved | Atomicity |
+> | Drop `SetTvOption`; route everything through `UpdateTvConfig` | ✅ resolved | `SetTvOption` retirement |
+> | Edit-mode scope: INFO-only modal | ✅ resolved | (chat) |
+> | Validation timing: save-button-gated like wizard | ✅ resolved | (chat) |
+> | No config-load migration; regenerate sample configs directly | ✅ resolved | Identity model |
+> | Atomic config writes via tempfile + rename | ✅ resolved | Identity model |
+> | Wire format for `UpdateTvConfig`: `a{sv}` vs JSON-string | open ❓v2 Q6 | Open questions |
 
 ## Bug recap (motivation)
 
@@ -93,9 +96,23 @@ that touches every reference.
 **Concrete shape:**
 
 - Generate a UUID at TV creation; store as `tv.config.uuid`.
-- D-Bus path becomes `/org/tisvlay/Tv/<uuid_underscored>`
-  (UUID hyphens swapped for underscores for D-Bus spec
-  compliance).
+  Use **UUID v4** (random) — matches NetworkManager's
+  `nm_uuid_generate_random()` (`src/libnm-glib-aux/nm-uuid.c`),
+  matches the `uuid` crate maintainers' guidance for stable
+  opaque keys, no clock dependency, no distributed-ordering
+  need. v7 (timestamp-sortable, RFC 9562) buys nothing here
+  and adds a wall-clock footgun at first-pair time. v5
+  (namespace+name) would either collide or churn against MAC
+  randomization.
+- Cargo: `uuid = { version = "1", features = ["v4", "serde"] }`.
+- TOML/JSON storage uses canonical hyphenated form
+  (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+- D-Bus path uses underscores (D-Bus path components match
+  `[A-Za-z0-9_]+` per spec). Conversion happens at
+  path-construction sites only — the existing `tv_path()`
+  helper in `tisvlay-core::dbus_paths` already does
+  alphanumeric-or-underscore sanitization, so it
+  hyphen-to-underscore-converts a UUID for free.
 - Cross-references in config (profile assignments,
   `primary_input` keying) use UUID.
 - Rename `Tv1.Id` → `Tv1.Uuid` to make the abstraction
@@ -105,11 +122,19 @@ that touches every reference.
   `tisvlay tvs power-on Office` still works — UUID is the
   ambiguity-breaker.
 
-**Migration:** existing configs use sanitized-name IDs. One-shot
-config-load migration: detect the absence of `uuid`, generate
-one, write the migrated config back, log the change. Daemon
-keeps the old `id` field as a deprecated alias for one release
-to avoid breaking external scripts mid-flight.
+**No migration path needed.** The project has no live external
+users; sample configs in `docs/configs/` get regenerated as
+part of the phase. Existing developer-machine configs require
+re-pairing or a manual edit to add `uuid` fields. This shrinks
+Phase 8.1's scope substantially — no detect-and-rewrite logic
+in the daemon's config loader.
+
+**Atomic config persistence.** When the daemon does need to
+write the config back (e.g. `pair_tv` adds a new entry, or
+`UpdateTvConfig` mutates one), use write-to-tempfile +
+`rename(2)` for atomic replacement. Standard pattern; avoids
+"crash mid-write left the config half-rewritten" reasoning
+about partial states.
 
 **No collision problem.** Renames update only `name`; UUID
 stays. Two TVs with the same name is fine (UUIDs disambiguate);
@@ -363,20 +388,31 @@ existing endpoint) covers the edit case.
 typed-method pattern unchanged** — different problem space,
 the 87714ad rationale still applies.
 
-**Status: leaning resolved, kept open as ❓v1 Q3** for one more
-review pass. Worth verifying:
+**Status: ✅ resolved.** Research pass confirmed the batch
+recommendation:
 
-- Is there a freedesktop project that *did* go vendor-extensible
-  + per-property and made it work cleanly? (The ones surveyed
-  above don't, but the survey isn't exhaustive.)
-- Does zbus have idiom support for "list typed setters from a
-  schema" that would make per-property setters less painful
-  than they look? (Spot-check: zbus's procedural macro generates
-  one method per `#[zbus(property)]`; nothing dynamic.)
-- Are there CLI ergonomics arguments for keeping `SetTvOption`
-  as a thin wrapper for `tisvlay tvs set <key>=<value>`-style
-  shorthand? (Could be a CLI-only concern; CLI can build the
-  JSON internally without exposing per-field D-Bus methods.)
+- **ModemManager** (the closest tisvlay analog — vendor-extensible
+  cellular modems with per-vendor config) uses **batch `a{sv}`**
+  pervasively: `Modem.Simple.Connect(properties: a{sv})`,
+  `Modem3gpp.ProfileManager.Set(properties: a{sv})`,
+  `Modem3gpp.SetInitialEpsBearerSettings(a{sv})`. No use of
+  `org.freedesktop.DBus.Properties.Set` for vendor-extensible
+  config; properties are read-only. ProfileManager is the
+  closest analog to TV config and uses dict-of-variants.
+- **zbus dynamic `Properties.Set`** is technically possible
+  via the low-level `zbus::object_server::Interface` trait
+  (which exposes `set(property_name, value, ...)` with
+  string-name dispatch), but zbus docs explicitly discourage
+  manual `Interface` impls — the `#[interface]` macro is the
+  supported path. No examples in the zbus repo of schema-driven
+  dynamic property dispatch. Confirmed off-idiom.
+
+The ModemManager research **also surfaces a wire-format
+question**: freedesktop precedent is `a{sv}` (D-Bus variant
+dict), not JSON-string. tisvlay's existing `AddTv(config_json:
+s)` chose JSON-string deliberately (plan5 v3 Q1) for
+consistency across the existing surface. Open as **❓v2 Q6**
+in the post-research questions section below.
 
 ## Side effects per field
 
@@ -459,12 +495,16 @@ Suggested order, smallest reviewable units first:
   `DiscoveredTv.address` for the pre-pair case). Drops the
   trait method too. Frees the next phases from working
   around the leaky abstraction.
-- **Phase 8.1 — UUID migration.** Introduce `tv.config.uuid`,
-  switch D-Bus paths, rename `Tv1.Id` → `Tv1.Uuid`, add
-  config-load migration for legacy sanitized-name IDs. CLI
-  gains name/UUID dual-lookup. No behavior change beyond the
-  ID rename; all existing functionality continues working.
-  Largest phase (touches every `tv_id` site).
+- **Phase 8.1 — UUID identity.** Introduce `tv.config.uuid`
+  (v4, generated at pair time via the `uuid` crate), switch
+  D-Bus paths, rename `Tv1.Id` → `Tv1.Uuid`. CLI gains
+  name/UUID dual-lookup. Sample configs in `docs/configs/`
+  regenerated as part of the phase — no daemon-side migration
+  logic since we have no live external users. Atomic config
+  writes (tempfile + rename) land here too. Touches every
+  `tv_id` string site (pairing wizard, tray menu, profile
+  assignment, GUI selection state) but the per-site changes
+  are mostly mechanical.
 - **Phase 8.2 — Extract `SchemaForm` + Rust validation
   helpers.** Pure refactor. Wizard keeps working unchanged;
   shared infrastructure ready for edit pane.
@@ -489,24 +529,75 @@ Suggested order, smallest reviewable units first:
 
 ## Open questions
 
-- **✅ Q1 — ID strategy.** Resolved: UUID + dual-lookup CLI.
-  Rename `Tv1.Id` → `Tv1.Uuid`. One-shot config-load
-  migration for legacy IDs. See "Identity model" section.
-- **✅ Q2 — `Tv1.Address` cleanup.** Resolved: drop cleanly,
-  no replacement scalar. GUI reads `vendor_info[0]` for the
-  spatial hint. `DiscoveredTv.address` stays as-is.
-- **❓v1 Q3 — `SetTvOption` retirement.** Leaning resolved
-  (drop, migrate to `UpdateTvConfig`); kept open for one more
-  research pass. See "SetTvOption retirement" section above.
-  Worth confirming before Phase 8.4 lands.
-- **❓v1 Q4 — Edit-mode scope.** INFO group's pencil icon —
-  edits only the INFO-group fields (Name, vendor UserInput
-  fields), or also pulls in fields currently inline elsewhere
-  on the detail page (System profile, Primary input,
-  Managed)? My take: keep inline controls where they are;
-  edit mode covers fields that don't have a dedicated control
-  yet (name + vendor fields). User's own answer in chat
-  ("don't duplicate fields") aligns.
+**v1 (resolved):**
+
+- **✅ Q1** — UUID v4 identity model. Rename `Tv1.Id` →
+  `Tv1.Uuid`. No config-load migration; sample configs
+  updated directly. See "Identity model" section.
+- **✅ Q2** — Drop `Tv1.Address` cleanly, no replacement
+  scalar. GUI reads `vendor_info[0]` for the spatial hint.
+  `DiscoveredTv.address` stays as-is.
+- **✅ Q3** — Drop `SetTvOption`; route everything through
+  `UpdateTvConfig`. ModemManager + zbus research confirmed
+  batch is the right pattern. See "SetTvOption retirement".
+- **✅ Q4** — Edit-mode covers Name + vendor UserInput
+  fields only. Inline controls (System profile, Primary
+  input, Managed) stay where they are.
+- **✅ Q5** — Save-button-gated validation, same as the
+  wizard's "Pair" button gating. Server-side errors surface
+  inline on the originating field for cases the client
+  validator can't catch.
+
+**v2 (post-research):**
+
+- **❓v2 Q6 — `UpdateTvConfig` wire format: `a{sv}` or JSON?**
+  ModemManager research surfaced freedesktop precedent for
+  `a{sv}` (D-Bus variant dict): NetworkManager
+  `Settings.Connection.Update(a{sa{sv}})`, ModemManager
+  `Modem.Simple.Connect(a{sv})` and
+  `Modem3gpp.ProfileManager.Set(a{sv})`, systemd
+  `Manager.SetUnitProperties(a(sv))`. tisvlay's existing
+  `Manager1.AddTv(config_json: s)` chose JSON-string
+  deliberately (plan5 v3 Q1) for consistency across
+  `GetPairingSchema` (returns JSON), `ListSystemProfiles`
+  (returns JSON pairs), etc.
+
+  Three options:
+
+  - **(a) `UpdateTvConfig(tv_id: s, config: a{sv}) -> ()`** —
+    matches MM/NM/systemd precedent. Native D-Bus types,
+    free type-checking at the bus layer, introspection-friendly.
+    Inconsistent with `AddTv`'s JSON shape unless we also
+    migrate `AddTv`. Vendor configs are flat enough that
+    `a{sv}` works without nested-variant gymnastics.
+  - **(b) `UpdateTvConfig(tv_id: s, json: s) -> ()`** —
+    matches existing tisvlay surface. JSON cleanly handles
+    nested structure if any backend ever needs it. Loses
+    introspection at the bus layer — clients have to know
+    the schema.
+  - **(c) `UpdateTvConfig(tv_id: s, config: a{sv}) -> ()`
+    AND migrate `AddTv` → `a{sv}`.** Consistent with
+    freedesktop, consistent across our own surface. Largest
+    wire-break, but we have no backward-compat constraint.
+    `GetPairingSchema` stays JSON since the schema itself is
+    a structured object, not a key-value config.
+
+  My lean: **(c)** — go all-in on `a{sv}` for vendor-config
+  surfaces (`AddTv` + `UpdateTvConfig`), keep JSON for
+  schema-shaped surfaces (`GetPairingSchema`,
+  `ListSystemProfiles`). Rationale: the inconsistency in (a)
+  is a smell; (b) walks away from the freedesktop precedent
+  for no real benefit; (c) lands the right shape across the
+  whole D-Bus surface in one stroke.
+
+  The cost of (c) is changing `Manager1.AddTv` and the
+  pairing-wizard's `build_config_json_from_schema` helper to
+  build a `HashMap<String, Value>` instead of a JSON string.
+  Mostly mechanical — zbus's `zvariant::Value` types map
+  cleanly from the schema's `field_type`.
+
+  Worth confirming before Phase 8.3 (the daemon RPC) lands,
+  since the wire format affects every consumer.
 - **❓v1 Q5 — Validation timing.** Save-button-disabled-until-valid
   (matches the wizard's "Pair" button gating), or save-attempt-then-show-server-errors?
   My take: same as wizard — Save disabled while any required
