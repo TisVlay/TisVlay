@@ -1,17 +1,18 @@
 # Plan 6 — Edit TV properties from the GUI
 
-> **Status:** Draft v2 — all open questions resolved. UUID
-> v4 identity (matches NetworkManager); `SetTvOption`
-> retired in favor of `Tv1.UpdateConfig`; wire format stays
-> JSON-string (option b) with the `a{sv}` migration
-> deliberately deferred until feature-completeness reduces
-> surface churn. Edit/query methods live on `Tv1` (per-object,
-> NetworkManager-style) rather than `Manager1`, matching the
-> `Tv1.Remove` decision so no D-Bus method takes a `tv_id`
-> argument that would have to round-trip through path-component
-> sanitization. Builds on plan5's schema architecture
-> (`config_schema` + `FieldVisibility`) which gave us the
-> declarative metadata to drive an edit form for free.
+> **Status:** Implemented through Phase 8.6 (status-indicator
+> polish only partially). Phase 8.7 (CLI shorthand) remains
+> optional and not yet started. UUID v4 identity (matches
+> NetworkManager); `SetTvOption` retired in favor of
+> `Tv1.UpdateConfig`; wire format stays JSON-string (option b)
+> with the `a{sv}` migration deliberately deferred until
+> feature-completeness reduces surface churn. Edit/query methods
+> live on `Tv1` (per-object, NetworkManager-style) rather than
+> `Manager1`, matching the `Tv1.Remove` decision so no D-Bus
+> method takes a `tv_id` argument that would have to round-trip
+> through path-component sanitization. Builds on plan5's schema
+> architecture (`config_schema` + `FieldVisibility`) which gave
+> us the declarative metadata to drive an edit form for free.
 >
 > | Decision | Status | Section |
 > |---|---|---|
@@ -498,46 +499,103 @@ edit-applied → drop-and-reconnect path.
 
 ## Phases
 
-Suggested order, smallest reviewable units first:
+Suggested order, smallest reviewable units first.
 
-- **Phase 8.0 — Drop `Tv1.Address` + `display_address`.** Pure
-  refactor, no UX change. Everywhere that displayed `address`
-  switches to reading `vendor_info` (or stays on
-  `DiscoveredTv.address` for the pre-pair case). Drops the
-  trait method too. Frees the next phases from working
+- **✅ Phase 8.0 — Drop `Tv1.Address` + `display_address`.**
+  Pure refactor, no UX change. Everywhere that displayed
+  `address` switched to reading `vendor_info` (or stayed on
+  `DiscoveredTv.address` for the pre-pair case). Dropped the
+  trait method too. Freed the next phases from working
   around the leaky abstraction.
-- **Phase 8.1 — UUID identity.** Introduce `tv.config.uuid`
-  (v4, generated at pair time via the `uuid` crate), switch
-  D-Bus paths, rename `Tv1.Id` → `Tv1.Uuid`. CLI gains
-  name/UUID dual-lookup. Sample configs in `docs/configs/`
-  regenerated as part of the phase — no daemon-side migration
-  logic since we have no live external users. Atomic config
-  writes (tempfile + rename) land here too. Touches every
-  `tv_id` string site (pairing wizard, tray menu, profile
-  assignment, GUI selection state) but the per-site changes
-  are mostly mechanical.
-- **Phase 8.2 — Extract `SchemaForm` + Rust validation
-  helpers.** Pure refactor. Wizard keeps working unchanged;
-  shared infrastructure ready for edit pane.
-- **Phase 8.3 — Daemon `Tv1.UpdateConfig` + `Tv1.GetConfig`.**
-  Adds the new methods with server-side schema validation +
-  atomicity + side-effect handling. Per-object surface (no
-  `tv_id` argument) so the handler reads `&self.tv_id` and
-  never decodes a path. Test via `busctl` before any GUI work.
-- **Phase 8.4 — Drop `SetTvOption`, migrate callers.** Tray,
-  CLI, GUI all switch to `Tv1.UpdateConfig`. Daemon removes
-  the dispatcher. Reviewable as a single coordinated change
-  since we have no backward-compat constraint.
-- **Phase 8.5 — GUI edit-mode toggle.** Pencil icon in INFO
-  group → row inputs + Cancel/Save. Reuses Phase 8.2
-  components. Wired to Phase 8.3 RPCs.
-- **Phase 8.6 — Side-effect polish.** Reconnect-on-IP-change
-  flow, `SupportsWake` refresh, status indicator surfaces a
-  brief "applying…" / "connection lost" state during
-  edit-with-side-effect.
-- **Phase 8.7 (optional)** — CLI `tisvlay tvs <name|uuid>
-  set <field>=<value>` shorthand wrapping `Tv1.UpdateConfig`.
-  Mirrors NetworkManager's `nmcli connection modify`.
+- **✅ Phase 8.1 — UUID identity.** `TvConfig.uuid` is now a
+  typed `Uuid` (v4, generated at pair time via the `uuid`
+  crate). D-Bus paths use the underscored UUID component;
+  `Tv1.Id` renamed to `Tv1.Uuid`. Sample configs in
+  `docs/configs/` regenerated directly — no daemon-side
+  migration logic since we have no live external users.
+  Touched every `tv_id` string site across the workspace.
+  CLI dual-lookup (name | uuid) was deferred from this phase
+  and folded into the optional Phase 8.7 below; atomic config
+  writes are a remaining micro-task (still using sync writes
+  today, addressed when the first stress-tested write site
+  needs the guarantee).
+- **✅ Phase 8.2 — Extract `SchemaForm` + Rust validation
+  helpers.** Pure refactor. Wizard kept working unchanged;
+  the new shared infrastructure (Slint `SchemaForm` +
+  `crates/tisvlay-gui/src/schema_form.rs`) is what Phase 8.5
+  consumed.
+- **✅ Phase 8.3 — Daemon `Tv1.UpdateConfig` + `Tv1.GetConfig`.**
+  Per-object methods on the per-TV interface so handlers read
+  `&self.tv_id` directly — eliminates the path-decoding bug
+  class that bit `Manager1.RemoveTv` (see fix below in the
+  ancillary commits). Server-side schema validation +
+  atomicity + reconnect-on-vendor-change all wired here. The
+  same per-object reasoning got retroactively applied to
+  `Tv1.Remove` (replacing `Manager1.RemoveTv`), and the
+  earlier `tv_id_from_path` spot-fix was retired.
+- **✅ Phase 8.4 — Drop `SetTvOption`, migrate callers.** Tray,
+  CLI, GUI now route through either the per-property `Tv1.*`
+  setters (single-field flips) or `Tv1.UpdateConfig`
+  (multi-field atomic batch). `DaemonClient` gained typed
+  convenience wrappers (`set_tv_name`, `set_tv_managed`,
+  `set_tv_system_profile`, `set_tv_primary_input`) over the
+  property setters. The daemon-internal `manager.set_tv_option`
+  helper survived as `pub(crate)` for the per-property
+  setters' shared "validate + apply + persist + emit
+  OptionChanged" plumbing.
+- **✅ Phase 8.5 — GUI edit-mode toggle.** Pencil icon on the
+  INFO group's title row (no inline action row in the card
+  body) flips name + vendor `UserInput` rows to editable
+  inputs. ✓/✗ icon-buttons replace the pencil while editing;
+  the save button swaps in a `SpinnerArc` while
+  `EditPane.saving` is true. Reuses the Phase 8.2 `SchemaForm`
+  + validation helpers. Routes through Phase 8.3 RPCs:
+  prefill via `Tv1.GetConfig`, submit via `Tv1.UpdateConfig`.
+  Server-side per-field validation errors are routed back to
+  the originating row inline.
+- **✅ Phase 8.6 — Side-effect polish (partial).**
+  Reconnect-on-IP-change flow already wired in
+  `update_tv_config`. `SupportsWake` + `VendorInfo` cached-
+  property refresh added via a new
+  `StateChangeEvent::TvVendorConfigChanged` event +
+  `state_forwarder::refresh_tv_vendor_state` handler — the
+  Power-on button now correctly enables when the user adds a
+  MAC via the edit pane. Save-button spinner indicates
+  in-flight saves. **Deferred:** an explicit "(reconnecting
+  after edit…)" status banner during the post-edit reconnect
+  window — the existing `Tv1.Connected` chip flicker
+  communicates the same state and a banner felt heavy for a
+  sub-second round-trip. Revisit if user feedback shows the
+  flicker is missed.
+- **Phase 8.7 (optional, not started)** — CLI
+  `tisvlay tvs <name|uuid> set <field>=<value>` shorthand
+  wrapping `Tv1.UpdateConfig`. Includes the name/UUID
+  dual-lookup originally scoped under Phase 8.1. Mirrors
+  NetworkManager's `nmcli connection modify`.
+
+### Ancillary commits (off the original phase list)
+
+The architectural decisions below surfaced during
+implementation and reshaped the original plan:
+
+- **`bb243bd fix(daemon): reverse path-component sanitization in RemoveTv`** —
+  spot-fix that exposed the path-decoding bug class. Retired
+  by the next commit.
+- **`2837098 refactor: move RemoveTv from Manager1 to per-object Tv1.Remove`** —
+  established the per-object precedent later applied to
+  `Tv1.{UpdateConfig,GetConfig}` in Phase 8.3.
+- **`cfbf636 feat(session): prune orphan [[tv]] entries on TV removal`** —
+  session-side reactive cleanup of user-config TV
+  assignments when a TV is removed. Surfaced during 8.1
+  testing where pair-then-unpair cycles accumulated orphan
+  `[[tv]] uuid = "…"` entries.
+- **`43c69bc chore(gui): rename stale TvViewModel.ip → primary_descriptor`** —
+  Phase 8.0 follow-up, caught a stale field name that
+  pre-dated the `vendor_info[0]` switch.
+- **`2cd0b0d refactor(gui): inline INFO group so action icons sit on the title row`** —
+  Phase 8.5 UX polish, address-book contact pattern.
+- **`b4d1b7b feat(gui): swap save icon for SpinnerArc while EditPane.saving`** —
+  Phase 8.6 UX polish for the save button's in-flight state.
 
 ## Open questions
 
