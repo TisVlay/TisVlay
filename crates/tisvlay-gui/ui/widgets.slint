@@ -674,34 +674,50 @@ export component CopyBtn inherits Rectangle {
 // callback. `enabled = false` dims the glyph and disables the
 // pointer interaction so disabled-Save during an in-flight write
 // reads as inert without changing the layout.
+//
+// `loading = true` swaps the icon for a `SpinnerArc` in the same
+// slot. Standard "the thing I clicked is processing" pattern
+// (GitHub, Notion, GNOME Contacts) — no layout shift, the spinner
+// motion communicates the wait. Click is blocked while spinning
+// so a double-tap can't fire two saves in flight.
 
 export component IconBtn inherits Rectangle {
     in property <image> source;
     in property <bool> enabled: true;
+    in property <bool> loading: false;
     callback clicked();
+
+    property <bool> interactive: root.enabled && !root.loading;
 
     width: 24px;
     height: 24px;
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    background: touch.has-hover && root.enabled ? Theme.row-hover : transparent;
+    background: touch.has-hover && root.interactive ? Theme.row-hover : transparent;
     border-radius: Design.radius-control;
     animate background { duration: 150ms; }
-    opacity: root.enabled ? 1.0 : 0.4;
+    opacity: root.enabled || root.loading ? 1.0 : 0.4;
 
-    Image {
+    if !root.loading: Image {
         source: root.source;
         width: 14px;
         height: 14px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        colorize: touch.has-hover && root.enabled ? Theme.text : Theme.text-dim;
+        colorize: touch.has-hover && root.interactive ? Theme.text : Theme.text-dim;
         opacity: touch.has-hover ? 1.0 : 0.7;
     }
 
+    if root.loading: SpinnerArc {
+        width: 14px;
+        height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
     touch := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
+        enabled: root.interactive;
+        mouse-cursor: root.interactive ? pointer : default;
         clicked => { root.clicked(); }
     }
 }

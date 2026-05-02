@@ -837,7 +837,8 @@ component TvDetail inherits Rectangle {
                         }
                         if root.in-edit-mode: IconBtn {
                             source: Icons.save;
-                            enabled: EditPane.valid && !EditPane.saving;
+                            enabled: EditPane.valid;
+                            loading: EditPane.saving;
                             clicked => { EditPane.save(); }
                         }
                     }
