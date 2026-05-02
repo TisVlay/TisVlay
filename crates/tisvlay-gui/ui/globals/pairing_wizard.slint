@@ -26,7 +26,8 @@ export struct VendorOption {
 
 // One row in the dynamic pairing-form schema. Mirrors
 // `tisvlay_core::pairing_schema::PairingField` plus a `value` slot
-// for the user's current input. The wizard's step-2 form renders
+// for the user's current input and per-row validation state.
+// The wizard's step-2 form renders
 // `for row in PairingWizard.schema-fields: FieldRenderer { row; ... }`.
 //
 // `field-type` is the kebab-case wire string from
@@ -38,6 +39,15 @@ export struct VendorOption {
 // — Slint can't mutate struct fields inside a `[T]` directly, so
 // edits round-trip through Rust which writes the new row back into
 // the model.
+//
+// `state` is the field's lifecycle position:
+//   "pristine" — never edited, no opinion (initial blank fields)
+//   "valid"    — current `value` parses correctly per `field-type`
+//   "invalid"  — current `value` fails canonical validation
+// `error` is a human-readable failure reason, populated either by
+// client-side validation or by routing a server-side
+// `ConfigInvalidVendorConfig` D-Bus error back to the row whose
+// `name` matches.
 export struct PairingFieldRow {
     name: string,
     label: string,
@@ -47,6 +57,8 @@ export struct PairingFieldRow {
     placeholder: string,
     options: [string],
     value: string,
+    state: string,
+    error: string,
 }
 
 export global PairingWizard {
@@ -81,6 +93,13 @@ export global PairingWizard {
     /// — Slint emits it when a `FieldRenderer`'s value changes;
     /// Rust mutates the model row in place.
     in-out property <[PairingFieldRow]> schema-fields;
+    /// Whether every required schema field currently has a non-empty
+    /// value AND no field is in `state == "invalid"`. Computed
+    /// Rust-side on each `field-value-edited` (Slint can't fold over
+    /// a `[T]` model from a property expression). Step 2's `Pair`
+    /// button binds `enabled` to this — disabled until the user has
+    /// filled (or autofill provided) all required fields.
+    in-out property <bool> schema-valid;
     callback field-value-edited(int, string);
 
     // -- Two-way: Rust seeds, the wizard's controls write back --

@@ -76,7 +76,18 @@ component FieldRenderer {
             selected(v) => { root.value-edited(v); }
         }
 
-        if root.field.helper != "": Text {
+        // Helper / error text. `error` (typed validation failure
+        // — client-side from `PairingField::validate` or
+        // server-side from a `ConfigInvalidVendorConfig` D-Bus
+        // error) replaces the default helper when set, with a
+        // danger tone so it reads as the field-level message.
+        if root.field.error != "": Text {
+            text: root.field.error;
+            color: Theme.danger-text;
+            font-size: Design.font-mini;
+            wrap: word-wrap;
+        }
+        if root.field.error == "" && root.field.helper != "": Text {
             text: root.field.helper;
             color: Theme.text-faint;
             font-size: Design.font-mini;
@@ -998,7 +1009,7 @@ export component PairingWizardPane inherits Rectangle {
     // Whether the primary action button is enabled at the current step.
     property <bool> next-enabled:
         PairingWizard.step == 1 ? PairingWizard.selected-index >= 0
-      : PairingWizard.step == 2 ? PairingWizard.tv-name != ""
+      : PairingWizard.step == 2 ? PairingWizard.tv-name != "" && PairingWizard.schema-valid
       : PairingWizard.step == 3 ? PairingWizard.pair-phase == "complete"
       : PairingWizard.step == 4 ? true
       : false;

@@ -29,8 +29,8 @@ use clap::Parser;
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
-    Coalescer, DaemonClient, PairingField, PowerCyclePhase, ReconcilerMap, RefreshTrigger,
-    SessionClient, StateEvent, StateWatcher,
+    Coalescer, DaemonClient, PairingField, PairingFieldType, PowerCyclePhase, ReconcilerMap,
+    RefreshTrigger, SessionClient, StateEvent, StateWatcher,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -293,6 +293,13 @@ struct AutofilledRow {
 
 impl AutofilledRow {
     fn into_slint(self) -> PairingFieldRow {
+        let (state, error) = validate_value(
+            &self.name,
+            parse_field_type(&self.field_type),
+            self.required,
+            &self.options,
+            &self.value,
+        );
         PairingFieldRow {
             name: SharedString::from(self.name),
             label: SharedString::from(self.label),
@@ -307,6 +314,118 @@ impl AutofilledRow {
                     .collect::<Vec<_>>(),
             )),
             value: SharedString::from(self.value),
+            state: SharedString::from(state),
+            error: SharedString::from(error),
+        }
+    }
+}
+
+/// Resolve a kebab-case `field-type` wire string back to its typed
+/// [`PairingFieldType`]. Falls back to `String` for unknown values
+/// — keeps the wizard rendering through a forward-compat schema
+/// that introduces a new variant before we've taught the GUI about
+/// it. The validator just treats it as plain text.
+fn parse_field_type(s: &str) -> PairingFieldType {
+    match s {
+        "password" => PairingFieldType::Password,
+        "ip" => PairingFieldType::Ip,
+        "mac" => PairingFieldType::Mac,
+        "port" => PairingFieldType::Port,
+        "int" => PairingFieldType::Int,
+        "bool" => PairingFieldType::Bool,
+        "select" => PairingFieldType::Select,
+        "path" => PairingFieldType::Path,
+        _ => PairingFieldType::String,
+    }
+}
+
+/// Compute `(state, error)` for one row's `value` by reusing the
+/// daemon's canonical [`PairingField::validate`] — same checks the
+/// daemon will run server-side, so a value that passes here also
+/// passes in `Manager1.AddTv`. Empty + non-required → "pristine"
+/// (no opinion yet); otherwise validation routes us into "valid"
+/// or "invalid".
+fn validate_value(
+    name: &str,
+    field_type: PairingFieldType,
+    required: bool,
+    options: &[String],
+    value: &str,
+) -> (&'static str, String) {
+    if value.is_empty() && !required {
+        return ("pristine", String::new());
+    }
+    let field = PairingField {
+        name: name.to_string(),
+        label: String::new(),
+        helper: String::new(),
+        translation_key: None,
+        field_type,
+        required,
+        placeholder: String::new(),
+        default: String::new(),
+        autofill: String::new(),
+        options: options.to_vec(),
+        validation: None,
+    };
+    match field.validate(value) {
+        Ok(()) => ("valid", String::new()),
+        Err(tisvlay_core::errors::ConfigError::InvalidVendorConfig { reason, .. }) => {
+            ("invalid", reason)
+        }
+        Err(other) => ("invalid", other.to_string()),
+    }
+}
+
+/// Walk the schema-fields model and decide whether the wizard's
+/// `Pair` button should enable. True iff every required field has a
+/// non-empty value AND no field is in `state == "invalid"`.
+fn compute_schema_valid(model: &ModelRc<PairingFieldRow>) -> bool {
+    for i in 0..model.row_count() {
+        let Some(row) = model.row_data(i) else {
+            continue;
+        };
+        if row.state == "invalid" {
+            return false;
+        }
+        if row.required && row.value.is_empty() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Parse a `ConfigInvalidVendorConfig` D-Bus error message into
+/// `(field_name, reason)`. The daemon emits the message as
+/// `"<field>: <reason>"` (per `DaemonError::ConfigInvalidVendorConfig`
+/// in `tisvlayd::dbus::mod`); split on the first `": "` so reasons
+/// carrying further colons (e.g. IPv6 addresses) stay intact in the
+/// reason half.
+fn parse_invalid_vendor_config(msg: &str) -> Option<(String, String)> {
+    let (field, reason) = msg.split_once(": ")?;
+    if field.is_empty() {
+        return None;
+    }
+    Some((field.to_string(), reason.to_string()))
+}
+
+/// Inspect an `anyhow::Error` chain for the daemon's typed
+/// `org.tisvlay.Error.ConfigInvalidVendorConfig` D-Bus error and,
+/// if found, extract the `(field, reason)` pair. Returns `None`
+/// for any other error (network, pairing-rejected, etc.) so callers
+/// can fall back to surface the message in the wizard's generic
+/// pair-failed slot.
+fn extract_invalid_vendor_config(err: &anyhow::Error) -> Option<(String, String)> {
+    let mut cur: &dyn std::error::Error = err.as_ref();
+    loop {
+        if let Some(zbus::Error::MethodError(name, detail, _)) = cur.downcast_ref::<zbus::Error>()
+            && name.as_str() == "org.tisvlay.Error.ConfigInvalidVendorConfig"
+        {
+            return parse_invalid_vendor_config(detail.as_deref().unwrap_or(""));
+        }
+        match cur.source() {
+            Some(s) => cur = s,
+            None => return None,
         }
     }
 }
@@ -807,6 +926,7 @@ fn register_callbacks(
                 // Clear stale schema rows from a prior session so the
                 // form starts blank if the fetch is slow.
                 wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
+                wizard.set_schema_valid(false);
                 wizard.set_step(2);
 
                 let d = d.clone();
@@ -969,7 +1089,8 @@ fn register_callbacks(
     // Field-edit writeback for the dynamic step-2 form. Slint can't
     // mutate struct fields inside a `[T]` model directly, so each
     // row's `FieldRenderer.value-edited(v)` round-trips through Rust
-    // which writes the new value back into `schema-fields[i]`.
+    // which re-validates the new value, writes the row back, and
+    // recomputes `schema-valid` for the Pair button gate.
     let app_weak = app.as_weak();
     wizard.on_field_value_edited(move |i, v| {
         let Some(app) = app_weak.upgrade() else {
@@ -980,10 +1101,23 @@ fn register_callbacks(
         let Some(mut row) = model.row_data(i as usize) else {
             return;
         };
+        let options: Vec<String> = (0..row.options.row_count())
+            .filter_map(|k| row.options.row_data(k).map(|s| s.to_string()))
+            .collect();
+        let (state, error) = validate_value(
+            &row.name,
+            parse_field_type(&row.field_type),
+            row.required,
+            &options,
+            &v,
+        );
         row.value = v;
+        row.state = SharedString::from(state);
+        row.error = SharedString::from(error);
         if let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() {
             vec_model.set_row_data(i as usize, row);
         }
+        wizard.set_schema_valid(compute_schema_valid(&model));
     });
 
     // Manual-add: synthesize an entry from the user's typed vendor +
@@ -1042,6 +1176,7 @@ fn register_callbacks(
             wizard.set_system_profile("default".into());
         }
         wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
+        wizard.set_schema_valid(false);
         wizard.set_step(2);
 
         let d = d.clone();
@@ -1072,6 +1207,7 @@ fn reset_wizard(app: &AppWindow) {
     wizard.set_pair_message(SharedString::default());
     wizard.set_discovered(ModelRc::new(VecModel::<WizardDiscoveredTv>::default()));
     wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
+    wizard.set_schema_valid(false);
 }
 
 /// Drive a single discovery scan and stream results into the wizard's
@@ -1183,7 +1319,10 @@ async fn fetch_and_publish_schema(
                     .into_iter()
                     .map(AutofilledRow::into_slint)
                     .collect();
-                wizard.set_schema_fields(ModelRc::new(VecModel::from(rows)));
+                let model: ModelRc<PairingFieldRow> = ModelRc::new(VecModel::from(rows));
+                let valid = compute_schema_valid(&model);
+                wizard.set_schema_fields(model);
+                wizard.set_schema_valid(valid);
             });
         }
         Err(e) => {
@@ -1237,21 +1376,7 @@ async fn run_wizard_pair(
     let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
     drainer.abort();
 
-    on_ui(&app_weak, move |app| {
-        let wizard = app.global::<PairingWizard>();
-        match result {
-            Ok(_tv_id) => {
-                wizard.set_pair_phase("complete".into());
-                if wizard.get_pair_message().is_empty() {
-                    wizard.set_pair_message(gettext("Client key stored.").into());
-                }
-            }
-            Err(e) => {
-                wizard.set_pair_phase("failed".into());
-                wizard.set_pair_message(SharedString::from(format!("{e}")));
-            }
-        }
-    });
+    publish_pair_outcome(app_weak, result, true);
 }
 
 /// Fallback pair flow when the PairingProgress subscription fails to
@@ -1266,19 +1391,76 @@ async fn run_pair_no_progress(
     managed: bool,
 ) {
     let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
+    publish_pair_outcome(app_weak, result, false);
+}
+
+/// Push the pair-flow outcome into the wizard. Routes typed
+/// per-field errors (`org.tisvlay.Error.ConfigInvalidVendorConfig`)
+/// back to the originating schema row so the user sees the inline
+/// red-text error directly under the offending field, then bounces
+/// back to step 2 for correction. Anything else surfaces as a
+/// generic step-3 failure.
+fn publish_pair_outcome(
+    app_weak: slint::Weak<AppWindow>,
+    result: Result<String, anyhow::Error>,
+    had_progress_stream: bool,
+) {
     on_ui(&app_weak, move |app| {
         let wizard = app.global::<PairingWizard>();
         match result {
             Ok(_) => {
                 wizard.set_pair_phase("complete".into());
-                wizard.set_pair_message(gettext("Paired successfully.").into());
+                if wizard.get_pair_message().is_empty() {
+                    let msg = if had_progress_stream {
+                        gettext("Client key stored.")
+                    } else {
+                        gettext("Paired successfully.")
+                    };
+                    wizard.set_pair_message(SharedString::from(msg));
+                }
             }
             Err(e) => {
+                if let Some((field, reason)) = extract_invalid_vendor_config(&e) {
+                    if mark_field_invalid(&wizard, &field, &reason) {
+                        // Field-level routing succeeded — bounce
+                        // back to step 2 so the inline error sits
+                        // under the offending widget.
+                        wizard.set_step(2);
+                        wizard.set_pair_phase(SharedString::default());
+                        wizard.set_pair_message(SharedString::default());
+                        return;
+                    }
+                }
                 wizard.set_pair_phase("failed".into());
                 wizard.set_pair_message(SharedString::from(format!("{e}")));
             }
         }
     });
+}
+
+/// Find the schema row whose `name` matches and mark it invalid
+/// with the given reason. Returns true if a matching row was
+/// found (so the caller can route back to step 2); false means
+/// the daemon flagged a field name we don't have, and the caller
+/// should fall through to a generic pair-failed surface.
+fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> bool {
+    let model = wizard.get_schema_fields();
+    let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() else {
+        return false;
+    };
+    for i in 0..model.row_count() {
+        let Some(mut row) = model.row_data(i) else {
+            continue;
+        };
+        if row.name == field {
+            row.state = SharedString::from("invalid");
+            row.error = SharedString::from(reason);
+            vec_model.set_row_data(i, row);
+            wizard.set_schema_valid(compute_schema_valid(&model));
+            return true;
+        }
+    }
+    false
 }
 
 /// Subscribe to PowerCycleProgress for `tv_id`, fire `power_on`, and
