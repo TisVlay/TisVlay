@@ -78,8 +78,11 @@ impl TestSession {
     async fn build(tv_id: &str, config_path: Option<std::path::PathBuf>) -> anyhow::Result<Self> {
         let daemon = TestDaemon::with_one_mock_tv(tv_id).await?;
 
-        // Connect the daemon and reconnect so the TV is online.
-        daemon.manager().reconnect(tv_id).await?;
+        // Connect the daemon and reconnect so the TV is online. The
+        // daemon keys TVs by UUID, so translate the fixture name to
+        // its derived UUID first.
+        let tv_uuid = crate::daemon::test_tv_uuid(tv_id).to_string();
+        daemon.manager().reconnect(&tv_uuid).await?;
 
         let bus = tisvlay_test::PrivateBus::shared();
 

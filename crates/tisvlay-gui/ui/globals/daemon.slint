@@ -6,7 +6,7 @@
 export global Daemon {
     // -- Per-TV writable state (D-Bus methods on Tv1.Volume /
     //    Tv1.Backlight / Tv1.Screen). The dispatch path is:
-    //    OptimisticSlider.committed → Daemon.set-volume(tv.id, v) →
+    //    OptimisticSlider.committed → Daemon.set-volume(tv.uuid, v) →
     //    Rust → coalescer → reconciler.dispatch + daemon write. --
     callback set-volume(string, int);
     callback set-mute(string, bool);

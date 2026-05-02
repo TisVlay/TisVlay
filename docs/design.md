@@ -305,7 +305,7 @@ on_idle_timeout = "none"
 on_idle_resume = "screen_on"     # action when activity resumes after idle
 
 [[tv]]
-id = "living-room"
+uuid = "11111111-1111-4111-8111-111111111111"  # RFC 4122 v4, opaque, immutable
 name = "Living Room G4"
 vendor = "lg"
 primary_input = "HDMI_1"         # which input this PC uses (vendor-agnostic)
@@ -313,7 +313,7 @@ managed = true                   # participates in automation (boot WoL, session
 profile.system = "default"       # which system profile this TV uses
 
 [[tv]]
-id = "guest-room"
+uuid = "22222222-2222-4222-8222-222222222222"
 name = "Guest Room"
 vendor = "lg"
 managed = true
@@ -343,9 +343,9 @@ on_session_lock = "none"          # don't interrupt gameplay
 idle_timeout_seconds = 0
 on_idle_resume = "none"
 
-# Per-TV user profile assignments (TV IDs from system config)
+# Per-TV user profile assignments — `uuid` matches the system config.
 [[tv]]
-id = "living-room"
+uuid = "11111111-1111-4111-8111-111111111111"
 profile.user = "gaming"
 
 # guest-room inherits user.profiles.default (no override)

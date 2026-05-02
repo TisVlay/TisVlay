@@ -217,7 +217,7 @@ impl ManagerService {
 
         let manager = &self.manager;
         let tv_id = manager
-            .pair_tv(name, vendor, vendor_config, None, managed)
+            .pair_tv(name, vendor, vendor_config, managed)
             .await
             .map_err(DaemonError::from)?;
 

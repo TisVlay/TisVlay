@@ -11,6 +11,19 @@ use tisvlay_core::DaemonClient;
 use tisvlay_harness::daemon::TestDaemon;
 use tisvlay_test::PrivateBus;
 
+/// Redact non-deterministic values (UUIDs from pair, ephemeral private-bus
+/// socket paths) so snapshots stay stable across runs.
+fn redactions() -> insta::Settings {
+    let mut s = insta::Settings::clone_current();
+    s.add_filter(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        "<UUID>",
+    );
+    s.add_filter(r"unix:path=[^,]+", "unix:path=<BUS_SOCKET>");
+    s.add_filter(r"guid=[0-9a-f]+", "guid=<GUID>");
+    s
+}
+
 /// Path to the compiled `tisvlay` binary under the test profile.
 fn cli_bin() -> std::path::PathBuf {
     // `env!("CARGO_BIN_EXE_tisvlay")` is only available in the same
@@ -33,17 +46,19 @@ async fn pair_happy_path_output() {
     let (daemon, bus_addr) = empty_daemon_on_bus().await;
     daemon.handle().simulate_user_accept("mock://living_room");
 
-    assert_cmd_snapshot!(
-        Command::new(cli_bin())
-            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-            .arg("--user")
-            .arg("pair")
-            .arg("mock://living_room")
-            .arg("--vendor")
-            .arg("mock")
-            .arg("--name")
-            .arg("Living Room")
-    );
+    redactions().bind(|| {
+        assert_cmd_snapshot!(
+            Command::new(cli_bin())
+                .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+                .arg("--user")
+                .arg("pair")
+                .arg("mock://living_room")
+                .arg("--vendor")
+                .arg("mock")
+                .arg("--name")
+                .arg("Living Room")
+        );
+    });
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -51,19 +66,21 @@ async fn pair_with_wake_id_output() {
     let (daemon, bus_addr) = empty_daemon_on_bus().await;
     daemon.handle().simulate_user_accept("mock://living_room");
 
-    assert_cmd_snapshot!(
-        Command::new(cli_bin())
-            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-            .arg("--user")
-            .arg("pair")
-            .arg("mock://living_room")
-            .arg("--vendor")
-            .arg("mock")
-            .arg("--name")
-            .arg("Living Room")
-            .arg("--wake-id")
-            .arg("AA:BB:CC:DD:EE:FF")
-    );
+    redactions().bind(|| {
+        assert_cmd_snapshot!(
+            Command::new(cli_bin())
+                .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+                .arg("--user")
+                .arg("pair")
+                .arg("mock://living_room")
+                .arg("--vendor")
+                .arg("mock")
+                .arg("--name")
+                .arg("Living Room")
+                .arg("--wake-id")
+                .arg("AA:BB:CC:DD:EE:FF")
+        );
+    });
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -71,17 +88,19 @@ async fn pair_rejected_output() {
     let (daemon, bus_addr) = empty_daemon_on_bus().await;
     daemon.handle().simulate_user_reject("mock://denied");
 
-    assert_cmd_snapshot!(
-        Command::new(cli_bin())
-            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-            .arg("--user")
-            .arg("pair")
-            .arg("mock://denied")
-            .arg("--vendor")
-            .arg("mock")
-            .arg("--name")
-            .arg("Denied TV")
-    );
+    redactions().bind(|| {
+        assert_cmd_snapshot!(
+            Command::new(cli_bin())
+                .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+                .arg("--user")
+                .arg("pair")
+                .arg("mock://denied")
+                .arg("--vendor")
+                .arg("mock")
+                .arg("--name")
+                .arg("Denied TV")
+        );
+    });
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -89,15 +108,17 @@ async fn pair_without_name_uses_address() {
     let (daemon, bus_addr) = empty_daemon_on_bus().await;
     daemon.handle().simulate_user_accept("mock://office");
 
-    assert_cmd_snapshot!(
-        Command::new(cli_bin())
-            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-            .arg("--user")
-            .arg("pair")
-            .arg("mock://office")
-            .arg("--vendor")
-            .arg("mock")
-    );
+    redactions().bind(|| {
+        assert_cmd_snapshot!(
+            Command::new(cli_bin())
+                .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+                .arg("--user")
+                .arg("pair")
+                .arg("mock://office")
+                .arg("--vendor")
+                .arg("mock")
+        );
+    });
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -115,10 +136,12 @@ async fn list_after_pair_output() {
         .await
         .unwrap();
 
-    assert_cmd_snapshot!(
-        Command::new(cli_bin())
-            .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
-            .arg("--user")
-            .arg("list")
-    );
+    redactions().bind(|| {
+        assert_cmd_snapshot!(
+            Command::new(cli_bin())
+                .env("DBUS_SESSION_BUS_ADDRESS", &bus_addr)
+                .arg("--user")
+                .arg("list")
+        );
+    });
 }

@@ -221,7 +221,7 @@ Each test gets its own `(registry, handle)` pair — parallel by construction.
 
 ```toml
 [[tv]]
-id = "dev_mock"
+uuid = "00000000-0000-4000-8000-000000000001"
 name = "Mock Living Room"
 vendor = "mock"
 managed = true

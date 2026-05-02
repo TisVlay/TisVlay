@@ -29,7 +29,7 @@ export struct VendorInfoRow {
 }
 
 export struct TvViewModel {
-    id: string,
+    uuid: string,
     name: string,
     vendor: string,
     ip: string,
@@ -595,9 +595,9 @@ component TvDetail inherits Rectangle {
                             enabled: !power-row.power-cycle-in-flight && power-row.can-power-on;
                             clicked => {
                                 if (root.tv.connected) {
-                                    Daemon.power-off(root.tv.id);
+                                    Daemon.power-off(root.tv.uuid);
                                 } else {
-                                    Daemon.power-on(root.tv.id);
+                                    Daemon.power-on(root.tv.uuid);
                                 }
                             }
                         }
@@ -635,7 +635,7 @@ component TvDetail inherits Rectangle {
                                 alignment: center;
                                 Switch {
                                     checked: root.tv.managed;
-                                    toggled => { Daemon.set-managed(root.tv.id, self.checked); }
+                                    toggled => { Daemon.set-managed(root.tv.uuid, self.checked); }
                                 }
                             }
                         }
@@ -653,7 +653,7 @@ component TvDetail inherits Rectangle {
                             model: root.system-profiles;
                             current-value: root.tv.system-profile == "" ? "default" : root.tv.system-profile;
                             enabled: root.system-profiles.length > 0;
-                            selected(v) => { Daemon.set-system-profile(root.tv.id, v); }
+                            selected(v) => { Daemon.set-system-profile(root.tv.uuid, v); }
                         }
                     }
 
@@ -664,7 +664,7 @@ component TvDetail inherits Rectangle {
                             model: root.user-profiles;
                             current-value: root.tv.user-profile == "" ? "default" : root.tv.user-profile;
                             enabled: root.user-profiles.length > 0;
-                            selected(v) => { Daemon.set-user-profile(root.tv.id, v); }
+                            selected(v) => { Daemon.set-user-profile(root.tv.uuid, v); }
                         }
                     }
                 }
@@ -679,7 +679,7 @@ component TvDetail inherits Rectangle {
                             model-value: root.tv.volume;
                             enabled: root.tv.connected && !root.tv.muted;
                             value-visible: root.tv.connected;
-                            committed(v) => { Daemon.set-volume(root.tv.id, v); }
+                            committed(v) => { Daemon.set-volume(root.tv.uuid, v); }
                         }
                     }
 
@@ -701,7 +701,7 @@ component TvDetail inherits Rectangle {
                             Switch {
                                 checked: root.tv.muted;
                                 enabled: root.tv.connected;
-                                toggled => { Daemon.set-mute(root.tv.id, self.checked); }
+                                toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
                             }
                         }
                     }
@@ -717,7 +717,7 @@ component TvDetail inherits Rectangle {
                             model-value: root.tv.backlight;
                             enabled: root.tv.connected;
                             value-visible: root.tv.connected;
-                            committed(v) => { Daemon.set-backlight(root.tv.id, v); }
+                            committed(v) => { Daemon.set-backlight(root.tv.uuid, v); }
                         }
                     }
 
@@ -731,7 +731,7 @@ component TvDetail inherits Rectangle {
                                 Switch {
                                     checked: root.tv.is-screen-on;
                                     enabled: root.tv.connected;
-                                    toggled => { Daemon.set-screen(root.tv.id, self.checked); }
+                                    toggled => { Daemon.set-screen(root.tv.uuid, self.checked); }
                                 }
                             }
                         }
@@ -762,7 +762,7 @@ component TvDetail inherits Rectangle {
                                 current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
                                 enabled: root.tv.connected
                                       && root.tv.available-input-ids.length > 0;
-                                selected(v) => { Daemon.switch-input(root.tv.id, v); }
+                                selected(v) => { Daemon.switch-input(root.tv.uuid, v); }
                             }
                         }
                     }
@@ -774,7 +774,7 @@ component TvDetail inherits Rectangle {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input == "" ? "—" : root.tv.primary-input;
                             enabled: root.tv.available-input-ids.length > 0;
-                            selected(v) => { Daemon.set-primary-input(root.tv.id, v); }
+                            selected(v) => { Daemon.set-primary-input(root.tv.uuid, v); }
                         }
                     }
                 }
@@ -783,7 +783,7 @@ component TvDetail inherits Rectangle {
                 Group {
                     title: @tr("INFO");
 
-                    LabeledRow { label: @tr("TV ID"); value: root.tv.id; mono: true; }
+                    LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
                     // Vendor-specific rows (LG: IP + MAC; future backends:
                     // serial port, API endpoint, …). Backend declines to
                     // surface secrets — LG omits `client_key` and
@@ -1020,7 +1020,7 @@ export component TvsPane {
                     user-profiles: root.user-profiles;
 
                     request-remove => {
-                        root.pending-remove-id = tv.id;
+                        root.pending-remove-id = tv.uuid;
                         root.pending-remove-name = tv.name;
                     }
                 }

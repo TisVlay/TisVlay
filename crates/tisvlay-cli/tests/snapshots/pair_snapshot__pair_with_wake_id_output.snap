@@ -13,13 +13,13 @@ info:
     - "--wake-id"
     - "AA:BB:CC:DD:EE:FF"
   env:
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/nix-shell.3WsadU/tisvlay-test-bus-OgW6OZ/bus.sock,guid=43595f25ba97f259e85ec51e69dbdefb"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-SgeCx8/bus.sock,guid=67028e98637215376307f0fe69f652a1"
 ---
 success: true
 exit_code: 0
 ----- stdout -----
 Connecting to TV at mock://living_room...
 Please accept the pairing request on your TV.
-TV 'Living Room' paired successfully with ID: living_room
+TV 'Living Room' paired successfully with ID: <UUID>
 
 ----- stderr -----

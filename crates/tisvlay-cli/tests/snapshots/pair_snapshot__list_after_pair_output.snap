@@ -6,12 +6,12 @@ info:
     - "--user"
     - list
   env:
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/nix-shell.XxB4ix/tisvlay-test-bus-YxVA77/bus.sock,guid=7892aab36cb4976bc0ee891e69f64a5a"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-Y269s6/bus.sock,guid=91da99e145804cfe2c5425a469f652a1"
 ---
 success: true
 exit_code: 0
 ----- stdout -----
 Configured TVs:
-  bedroom - Bedroom (?) [connected] <mock> (default)
+  <UUID> - Bedroom (?) [connected] <mock> (default)
 
 ----- stderr -----

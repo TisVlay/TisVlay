@@ -50,7 +50,7 @@ impl SessionState {
             .list_tvs()
             .await
             .context("Failed to get TV list from daemon")?;
-        let tv_ids: Vec<String> = tv_infos.iter().map(|t| t.id.clone()).collect();
+        let tv_ids: Vec<String> = tv_infos.iter().map(|t| t.uuid.clone()).collect();
 
         // Query daemon for admin baseline user profile
         let admin_user_default = match daemon.get_user_profile_default().await {
@@ -128,9 +128,9 @@ impl SessionState {
 
         // Validate TV references in user config
         for tv_entry in &user_config.tv {
-            if !tv_ids.contains(&tv_entry.id) {
+            if !tv_ids.contains(&tv_entry.uuid) {
                 warn!(
-                    tv_id = %tv_entry.id,
+                    tv_id = %tv_entry.uuid,
                     "User config references unknown TV (not in daemon's TV list)"
                 );
             }
@@ -139,7 +139,7 @@ impl SessionState {
         // Resolve user profiles for each TV.
         let mut profiles = HashMap::new();
         for tv_info in &tv_infos {
-            let tv_id = &tv_info.id;
+            let tv_id = &tv_info.uuid;
 
             let resolved = user_config.resolve_user_profile(tv_id, &admin_user_default);
             debug!(
@@ -236,7 +236,7 @@ pub async fn event_handler(
             Ok(tvs) => tvs
                 .into_iter()
                 .filter(|t| t.automated)
-                .map(|t| t.id)
+                .map(|t| t.uuid)
                 .collect(),
             Err(e) => {
                 warn!(error = %e, "Failed to query automated TVs; skipping event dispatch");

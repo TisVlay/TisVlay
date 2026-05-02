@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use tisvlay_core::{Coalescer, DaemonClient, Reconciler, SystemConfig, TvConfig};
-use tisvlay_harness::daemon::TestDaemon;
+use tisvlay_harness::daemon::{TestDaemon, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 
 async fn settle() {
@@ -54,7 +54,7 @@ fn config_with_slow_backlight_ramp(
     intermediates: &[u8],
     delay_ms: u64,
 ) -> SystemConfig {
-    let mut tv = TvConfig::new(tv_id, tv_id, "mock", true);
+    let mut tv = TvConfig::with_uuid(test_tv_uuid(tv_id), tv_id, "mock", true);
     let mut vendor_table = toml::value::Table::new();
     vendor_table.insert(
         "address".to_string(),
@@ -90,14 +90,15 @@ fn config_with_slow_backlight_ramp(
 /// Mirrors what the tray's `watch_state` does when refreshing
 /// `CachedTvState.backlight` on each daemon signal.
 async fn spawn_backlight_observer(
-    tv_id: &str,
+    tv_uuid: &str,
     reconciler: Reconciler<u8>,
 ) -> tokio::task::JoinHandle<()> {
     let conn = PrivateBus::shared()
         .connect()
         .await
         .expect("observer bus conn");
-    let path = format!("/org/tisvlay/Tv/{}", tv_id);
+    // D-Bus path component swaps hyphens for underscores.
+    let path = format!("/org/tisvlay/Tv/{}", tv_uuid.replace('-', "_"));
     let proxy = zbus::fdo::PropertiesProxy::builder(&conn)
         .destination("org.tisvlay.Daemon")
         .expect("destination")
@@ -132,11 +133,12 @@ async fn back_scroll_during_backlight_ramp_lands_near_user_intent() {
     // Ramp with 50ms per step: pushes 10, 20, 30, 40 then 50, total
     // ~200ms ramp time. Long enough that we can reliably interleave
     // a mid-ramp back scroll without timing flakiness.
+    let scroll_uuid = test_tv_uuid("scroll_tv").to_string();
     let config = config_with_slow_backlight_ramp("scroll_tv", 0, &[10, 20, 30, 40], 50);
     let daemon = TestDaemon::with_config(config).await.expect("daemon");
     daemon
         .manager()
-        .reconnect("scroll_tv")
+        .reconnect(&scroll_uuid)
         .await
         .expect("reconnect");
     settle().await;
@@ -147,7 +149,7 @@ async fn back_scroll_during_backlight_ramp_lands_near_user_intent() {
     // Mirrors the tray's `watch_state` → cache-refresh path, but
     // routed through `Reconciler::observe` instead of overwriting a
     // raw cache. Drops mid-ramp values while a dispatch is pending.
-    let observer = spawn_backlight_observer("scroll_tv", reconciler.clone()).await;
+    let observer = spawn_backlight_observer(&scroll_uuid, reconciler.clone()).await;
 
     // Mirrors the tray's scroll-dispatch path: sum-merge `Coalescer`
     // with an apply that computes `current() + delta`, dispatches the
@@ -175,7 +177,7 @@ async fn back_scroll_during_backlight_ramp_lands_near_user_intent() {
     // Phase 1: fast forward burst — 50 events of +1, coalesce to +50.
     // ------------------------------------------------------------------
     for _ in 0..50 {
-        coalescer.fire("scroll_tv".to_string(), 1);
+        coalescer.fire(scroll_uuid.clone(), 1);
     }
 
     // Wait a chunk of the ramp so observations are arriving. With a
@@ -192,7 +194,7 @@ async fn back_scroll_during_backlight_ramp_lands_near_user_intent() {
     // `reconciler.current()`, which the gate keeps at 50 throughout
     // the ramp.
     // ------------------------------------------------------------------
-    coalescer.fire("scroll_tv".to_string(), -2);
+    coalescer.fire(scroll_uuid.clone(), -2);
 
     // Wait for the second ramp to finish.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -200,7 +202,7 @@ async fn back_scroll_during_backlight_ramp_lands_near_user_intent() {
     let final_state = dc.list_tvs().await.expect("list_tvs");
     let final_bl = final_state
         .iter()
-        .find(|t| t.id == "scroll_tv")
+        .find(|t| t.name == "scroll_tv")
         .expect("tv present")
         .backlight;
 

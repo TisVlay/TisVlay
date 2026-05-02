@@ -50,9 +50,10 @@ impl TvService {
     // Properties
     // -------------------------------------------------------------------------
 
-    /// TV identifier.
+    /// TV UUID (RFC 4122). Stable, opaque, generated once at pair time.
+    /// `Tv1.Name` is the user-facing label; this is the immutable handle.
     #[zbus(property(emits_changed_signal = "const"))]
-    fn id(&self) -> &str {
+    fn uuid(&self) -> &str {
         &self.tv_id
     }
 

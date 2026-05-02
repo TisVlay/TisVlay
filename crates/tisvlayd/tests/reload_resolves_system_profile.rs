@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use tisvlay_core::{AutomateWhen, SessionAction, SystemConfig, SystemProfileConfig};
-use tisvlay_harness::daemon::{TestDaemon, mock_tv_config};
+use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 
 /// Build a config where the TV uses the "default" system profile and
 /// the system profile has `automate_when` overridden.
@@ -33,8 +33,8 @@ fn config_with_automate_when(tv_id: &str, primary_input: &str, when: AutomateWhe
 /// `manager.get_tv_automate_when()` — that reads the in-memory
 /// resolved profile; this reads the cached D-Bus field that
 /// `state_forwarder` is responsible for keeping in sync.
-async fn dbus_automate_when(daemon: &TestDaemon, tv_id: &str) -> String {
-    let path = format!("/org/tisvlay/Tv/{}", tv_id);
+async fn dbus_automate_when(daemon: &TestDaemon, tv_uuid: &str) -> String {
+    let path = format!("/org/tisvlay/Tv/{}", tv_uuid.replace('-', "_"));
     let proxy = zbus::fdo::PropertiesProxy::builder(daemon.connection())
         .destination("org.tisvlay.Daemon")
         .expect("destination")
@@ -57,16 +57,17 @@ async fn reload_picks_up_automate_when_change_on_shared_profile() {
     // Initial: system profile says Always — TV is automated regardless
     // of input. Primary set to HDMI_2 so the post-reload OnPrimary
     // policy will not match (mock starts on HDMI_1).
+    let tv_uuid = test_tv_uuid("reload_when").to_string();
     let initial = config_with_automate_when("reload_when", "HDMI_2", AutomateWhen::Always);
     let daemon = TestDaemon::with_config(initial).await.expect("daemon");
 
     assert_eq!(
-        daemon.manager().get_tv_automate_when("reload_when").await,
+        daemon.manager().get_tv_automate_when(&tv_uuid).await,
         Some(AutomateWhen::Always),
         "sanity: TV should resolve to Always on initial load",
     );
     assert_eq!(
-        dbus_automate_when(&daemon, "reload_when").await,
+        dbus_automate_when(&daemon, &tv_uuid).await,
         "always",
         "sanity: D-Bus AutomateWhen should report 'always' on initial load",
     );
@@ -89,13 +90,13 @@ async fn reload_picks_up_automate_when_change_on_shared_profile() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     assert_eq!(
-        daemon.manager().get_tv_automate_when("reload_when").await,
+        daemon.manager().get_tv_automate_when(&tv_uuid).await,
         Some(AutomateWhen::OnPrimary),
         "after reload, TV's resolved system profile should reflect the \
          updated automate_when in `[system.profiles.default]`",
     );
     assert_eq!(
-        dbus_automate_when(&daemon, "reload_when").await,
+        dbus_automate_when(&daemon, &tv_uuid).await,
         "on_primary",
         "after reload, D-Bus AutomateWhen on Tv1 should reflect the updated \
          system profile — the GUI reads this property to render the \

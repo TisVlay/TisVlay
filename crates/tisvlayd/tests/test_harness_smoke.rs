@@ -14,7 +14,7 @@
 #![cfg(feature = "mock")]
 
 use tisvlay_core::DaemonClient;
-use tisvlay_harness::daemon::TestDaemon;
+use tisvlay_harness::daemon::{TestDaemon, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 
 #[tokio::test]
@@ -37,7 +37,8 @@ async fn harness_registers_full_dbus_surface_for_one_mock_tv() {
 
     let tvs = client.list_tvs().await.expect("list_tvs");
     assert_eq!(tvs.len(), 1, "exactly one configured TV");
-    assert_eq!(tvs[0].id, "living_room");
+    assert_eq!(tvs[0].uuid, test_tv_uuid("living_room").to_string());
+    assert_eq!(tvs[0].name, "living_room");
     assert_eq!(tvs[0].vendor, "mock");
     // Newly built daemon hasn't connected to any TV yet — connection
     // happens lazily on the first command — so Connected starts false.

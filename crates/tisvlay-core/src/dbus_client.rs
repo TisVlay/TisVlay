@@ -16,13 +16,13 @@
 //!     // List all configured TVs
 //!     let tvs = client.list_tvs().await?;
 //!     for tv in &tvs {
-//!         println!("{}: {} - {}", tv.id, tv.name,
+//!         println!("{}: {} - {}", tv.uuid, tv.name,
 //!             if tv.connected { "connected" } else { "disconnected" });
 //!     }
 //!
 //!     // Turn off screen on first TV
 //!     if let Some(tv) = tvs.first() {
-//!         client.screen_off(&tv.id).await?;
+//!         client.screen_off(&tv.uuid).await?;
 //!     }
 //!
 //!     Ok(())
@@ -175,9 +175,9 @@ trait TisvlayManager {
 /// D-Bus proxy for the base TV interface.
 #[proxy(interface = "org.tisvlay.Tv1", default_service = "org.tisvlay.Daemon")]
 trait TisvlayTv {
-    /// TV identifier.
+    /// TV UUID (RFC 4122). Stable, opaque handle generated at pair time.
     #[zbus(property)]
-    fn id(&self) -> zbus::Result<String>;
+    fn uuid(&self) -> zbus::Result<String>;
 
     /// TV display name.
     #[zbus(property)]
@@ -459,8 +459,8 @@ pub async fn watch_service(
 /// defaults (power_state="unknown", volume=0, etc.).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TvInfo {
-    /// TV identifier.
-    pub id: String,
+    /// TV UUID (RFC 4122). Stable opaque handle generated at pair time.
+    pub uuid: String,
     /// Display name.
     pub name: String,
     /// Vendor ID.
@@ -774,7 +774,7 @@ impl DaemonClient {
                     })
             };
 
-            let id = get_str("Id");
+            let uuid = get_str("Uuid");
             let name = get_str("Name");
             let vendor = get_str("Vendor");
             let connected = get_bool("Connected", false);
@@ -854,13 +854,13 @@ impl DaemonClient {
                 );
             }
 
-            if id.is_empty() {
-                warn!(path = %path, "TV object returned by daemon has empty Id, skipping");
+            if uuid.is_empty() {
+                warn!(path = %path, "TV object returned by daemon has empty Uuid, skipping");
                 continue;
             }
 
             tvs.push(TvInfo {
-                id,
+                uuid,
                 name,
                 vendor,
                 connected,

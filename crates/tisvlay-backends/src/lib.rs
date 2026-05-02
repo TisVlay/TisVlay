@@ -147,7 +147,7 @@ impl BackendRegistry {
         let vendor_config = tv_config.get_raw_vendor_value().ok_or_else(|| {
             tisvlay_core::Error::backend(
                 &tv_config.vendor,
-                format!("No vendor config for TV '{}'", tv_config.id),
+                format!("No vendor config for TV '{}'", tv_config.uuid),
             )
         })?;
         connector.connect(vendor_config).await
@@ -215,7 +215,7 @@ impl BackendRegistry {
         let vendor_config = tv_config.get_raw_vendor_value().ok_or_else(|| {
             tisvlay_core::Error::backend(
                 &tv_config.vendor,
-                format!("No vendor config for TV '{}'", tv_config.id),
+                format!("No vendor config for TV '{}'", tv_config.uuid),
             )
         })?;
         connector.wake(vendor_config).await
@@ -233,7 +233,7 @@ impl BackendRegistry {
         let vendor_config = tv_config.get_raw_vendor_value().ok_or_else(|| {
             tisvlay_core::Error::backend(
                 &tv_config.vendor,
-                format!("No vendor config for TV '{}'", tv_config.id),
+                format!("No vendor config for TV '{}'", tv_config.uuid),
             )
         })?;
         connector.wake_and_connect(vendor_config).await

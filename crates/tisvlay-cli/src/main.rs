@@ -255,7 +255,7 @@ async fn main() -> Result<()> {
                         .unwrap_or("?");
                     println!(
                         "  {} - {} ({}) [{}] <{}>{}{}",
-                        tv.id, tv.name, descriptor, status, tv.vendor, managed, default
+                        tv.uuid, tv.name, descriptor, status, tv.vendor, managed, default
                     );
                 }
             }
@@ -297,7 +297,7 @@ async fn main() -> Result<()> {
                     let tvs = client.list_tvs().await?;
                     let managed = tvs
                         .iter()
-                        .find(|t| t.id == tv_id)
+                        .find(|t| t.uuid == tv_id)
                         .map(|t| t.managed)
                         .unwrap_or(true);
                     println!("Managed: {}", managed);
@@ -363,7 +363,7 @@ async fn main() -> Result<()> {
                     let tvs = client.list_tvs().await?;
                     let system_profile = tvs
                         .iter()
-                        .find(|t| t.id == tv_id)
+                        .find(|t| t.uuid == tv_id)
                         .map(|t| t.system_profile.as_str())
                         .unwrap_or("default");
                     println!("TV '{}' system profile: {}", tv_id, system_profile);
@@ -465,7 +465,7 @@ async fn main() -> Result<()> {
                 MuteState::Off => false,
                 MuteState::Toggle => {
                     let tvs = client.list_tvs().await?;
-                    let tv = tvs.iter().find(|t| t.id == tv_id);
+                    let tv = tvs.iter().find(|t| t.uuid == tv_id);
                     !tv.map(|t| t.muted).unwrap_or(false)
                 }
             };
@@ -492,7 +492,7 @@ async fn main() -> Result<()> {
             let tvs = client.list_tvs().await?;
             let tv = tvs
                 .iter()
-                .find(|t| t.id == tv_id)
+                .find(|t| t.uuid == tv_id)
                 .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
             // Try to get user profile from session service (optional)
             let user_profile = match SessionClient::new().await {
@@ -536,14 +536,14 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
             if tvs.is_empty() {
                 anyhow::bail!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
             }
-            Ok(tvs[0].id.clone())
+            Ok(tvs[0].uuid.clone())
         }
     }
 }
 
 fn print_tv_status(tv: &TvInfo, user_profile: Option<&str>) {
     let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
-    println!("TV: {} ({})", tv.id, tv.name);
+    println!("TV: {} ({})", tv.uuid, tv.name);
     println!("  Vendor: {}", tv.vendor);
     // Vendor diagnostic info (LG: IP + MAC; future: serial port, …)
     for (label, value) in &tv.vendor_info {

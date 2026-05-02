@@ -42,11 +42,24 @@ use tisvlayd::__internals::{
 };
 use tokio::task::JoinHandle;
 use tracing::instrument;
+use uuid::Uuid;
+
+/// Derive a stable UUID from a test fixture identifier so that
+/// `mock_tv_config("living_room", ..)` produces the same UUID every
+/// run. Tests rely on this for reproducible D-Bus paths and config
+/// fixtures.
+pub fn test_tv_uuid(tv_id: &str) -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, tv_id.as_bytes())
+}
 
 /// Build a minimal `TvConfig` for a mock TV with standard vendor
 /// config. Use this in tests that construct a `SystemConfig` by hand.
+///
+/// `tv_id` is a human-readable test fixture name (e.g. `"living_room"`)
+/// used as the TV's `name` and to derive a deterministic UUID via
+/// [`test_tv_uuid`].
 pub fn mock_tv_config(tv_id: &str, managed: bool, primary_input: Option<&str>) -> SystemConfig {
-    let mut tv = TvConfig::new(tv_id, tv_id, "mock", managed);
+    let mut tv = TvConfig::with_uuid(test_tv_uuid(tv_id), tv_id, "mock", managed);
     if let Some(input) = primary_input {
         tv = tv.with_primary_input(input);
     }

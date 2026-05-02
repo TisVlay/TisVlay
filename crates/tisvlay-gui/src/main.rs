@@ -239,11 +239,11 @@ impl Reconcilers {
     /// `invoke_from_event_loop` push.
     fn reconcile(&self, snapshot: &mut StateSnapshot) {
         for tv in &mut snapshot.tvs {
-            let id = tv.id.to_string();
-            tv.volume = self.volume.observe(&id, tv.volume.clamp(0, 100) as u8) as i32;
+            let uuid = tv.uuid.to_string();
+            tv.volume = self.volume.observe(&uuid, tv.volume.clamp(0, 100) as u8) as i32;
             tv.backlight = self
                 .backlight
-                .observe(&id, tv.backlight.clamp(0, 100) as u8) as i32;
+                .observe(&uuid, tv.backlight.clamp(0, 100) as u8) as i32;
         }
     }
 }
@@ -1603,7 +1603,7 @@ fn update_power_cycle_phase(
             let Some(mut row) = model.row_data(i) else {
                 continue;
             };
-            if row.id != tv_id {
+            if row.uuid != tv_id {
                 continue;
             }
             row.power_cycle_phase = match phase {
@@ -1795,7 +1795,7 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
         .tvs
         .into_iter()
         .map(|raw| TvViewModel {
-            id: raw.id,
+            uuid: raw.uuid,
             name: raw.name,
             vendor: raw.vendor,
             ip: raw.ip,

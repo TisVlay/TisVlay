@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use tisvlay_core::{DaemonClient, SystemConfig, TvConfig};
-use tisvlay_harness::daemon::TestDaemon;
+use tisvlay_harness::daemon::{TestDaemon, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 
 async fn settle() {
@@ -43,7 +43,7 @@ async fn client() -> DaemonClient {
 /// Build a `SystemConfig` with one mock TV configured to ramp backlight
 /// through `intermediates` before settling at the target.
 fn config_with_backlight_ramp(tv_id: &str, initial: u8, intermediates: &[u8]) -> SystemConfig {
-    let mut tv = TvConfig::new(tv_id, tv_id, "mock", true);
+    let mut tv = TvConfig::with_uuid(test_tv_uuid(tv_id), tv_id, "mock", true);
     let mut vendor_table = toml::value::Table::new();
     vendor_table.insert(
         "address".to_string(),
@@ -75,10 +75,10 @@ fn config_with_backlight_ramp(tv_id: &str, initial: u8, intermediates: &[u8]) ->
 /// `window`.
 async fn collect_backlight_emits(
     conn: &zbus::Connection,
-    tv_id: &str,
+    tv_uuid: &str,
     window: Duration,
 ) -> Vec<u8> {
-    let path = format!("/org/tisvlay/Tv/{}", tv_id);
+    let path = format!("/org/tisvlay/Tv/{}", tv_uuid.replace('-', "_"));
     let proxy = zbus::fdo::PropertiesProxy::builder(conn)
         .destination("org.tisvlay.Daemon")
         .expect("destination")
@@ -125,12 +125,13 @@ async fn collect_backlight_emits(
 async fn set_backlight_emits_only_subscription_driven_values_during_ramp() {
     // Initial backlight 50; setBacklight(75) drives the mock to push
     // 60, 70, then 75 via subscription — modeling a TV that ramps.
+    let ramp_uuid = test_tv_uuid("ramp_tv").to_string();
     let config = config_with_backlight_ramp("ramp_tv", 50, &[60, 70]);
     let daemon = TestDaemon::with_config(config).await.expect("daemon");
 
     daemon
         .manager()
-        .reconnect("ramp_tv")
+        .reconnect(&ramp_uuid)
         .await
         .expect("reconnect");
     settle().await;
@@ -143,8 +144,9 @@ async fn set_backlight_emits_only_subscription_driven_values_during_ramp() {
 
     // Fire the set on a separate task so the listener task starts
     // collecting first. The collector closes itself after the deadline.
+    let listen_uuid = ramp_uuid.clone();
     let collector = tokio::spawn(async move {
-        collect_backlight_emits(&listen_conn, "ramp_tv", Duration::from_millis(200)).await
+        collect_backlight_emits(&listen_conn, &listen_uuid, Duration::from_millis(200)).await
     });
 
     // Tiny pause so the subscriber's match rule is registered before
@@ -153,7 +155,7 @@ async fn set_backlight_emits_only_subscription_driven_values_during_ramp() {
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let dc = client().await;
-    dc.set_backlight("ramp_tv", 75)
+    dc.set_backlight(&ramp_uuid, 75)
         .await
         .expect("set_backlight");
 

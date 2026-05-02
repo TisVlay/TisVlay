@@ -36,7 +36,7 @@
 //!     let daemon = DaemonClient::new_system().await?;
 //!     let tvs = daemon.list_tvs().await?;
 //!     for tv in &tvs {
-//!         println!("{}: {} ({})", tv.id, tv.name, if tv.connected { "connected" } else { "offline" });
+//!         println!("{}: {} ({})", tv.uuid, tv.name, if tv.connected { "connected" } else { "offline" });
 //!     }
 //!     Ok(())
 //! }
@@ -92,8 +92,7 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 pub use config::{
     AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
     SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, is_valid_tv_id,
-    tv_id_from_name,
+    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment,
 };
 
 // State

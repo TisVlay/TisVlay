@@ -15,7 +15,7 @@ use tracing::debug;
 /// Converted to the Slint-generated `TvViewModel` inside the event
 /// loop, where `ModelRc::new` is allowed.
 pub(crate) struct TvViewRaw {
-    pub id: SharedString,
+    pub uuid: SharedString,
     pub name: SharedString,
     pub vendor: SharedString,
     pub ip: SharedString,
@@ -88,7 +88,11 @@ pub(crate) async fn fetch_state(
     let mut models = Vec::with_capacity(tvs.len());
     for tv in tvs {
         let user_profile = match session {
-            Some(s) => s.get_tv_user_profile(&tv.id).await.ok().unwrap_or_default(),
+            Some(s) => s
+                .get_tv_user_profile(&tv.uuid)
+                .await
+                .ok()
+                .unwrap_or_default(),
             None => String::new(),
         };
 
@@ -108,7 +112,7 @@ pub(crate) async fn fetch_state(
             .unwrap_or_default();
 
         models.push(TvViewRaw {
-            id: SharedString::from(tv.id),
+            uuid: SharedString::from(tv.uuid),
             name: SharedString::from(tv.name),
             vendor: SharedString::from(tv.vendor),
             ip: SharedString::from(primary_descriptor),

@@ -417,7 +417,7 @@ impl TvManager {
         for tv_config in &config.tv {
             let system_profile = config.resolve_system_profile(tv_config);
             tvs.insert(
-                tv_config.id.clone(),
+                tv_config.uuid.to_string(),
                 (
                     tv_config.managed,
                     Arc::new(Mutex::new(ManagedTv::new(
@@ -1522,18 +1522,16 @@ impl TvManager {
         name: &str,
         vendor: &str,
         vendor_config: toml::Value,
-        id: Option<&str>,
         managed: bool,
     ) -> Result<String, TvManagerError> {
         info!(name = %name, vendor = %vendor, "Pairing TV");
 
-        // Generate ID upfront so PairingProgress signals can carry a
-        // stable identifier even before the connection is established.
-        // Uses tv_id_from_name() which produces D-Bus-safe IDs
-        // (alphanumeric + underscore only).
-        let tv_id = id
-            .map(String::from)
-            .unwrap_or_else(|| tisvlay_core::tv_id_from_name(name));
+        // Generate a fresh UUID v4 upfront so PairingProgress signals
+        // can carry a stable identifier even before the connection is
+        // established. Decoupled from `name` so renames don't churn
+        // cross-references.
+        let uuid = uuid::Uuid::new_v4();
+        let tv_id = uuid.to_string();
 
         // Start pairing via registry
         let mut session = self
@@ -1580,8 +1578,10 @@ impl TvManager {
             .build_config_from_pairing(vendor, &vendor_config, &credentials)
             .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
-        // Create TV config with vendor-specific connection parameters
-        let mut tv_config = TvConfig::new(&tv_id, name, vendor, managed);
+        // Create TV config with vendor-specific connection parameters.
+        // The UUID was generated upfront so the persisted config
+        // matches the identifier emitted in PairingProgress signals.
+        let mut tv_config = TvConfig::with_uuid(uuid, name, vendor, managed);
 
         // Store the vendor config
         tv_config
@@ -1784,7 +1784,7 @@ impl TvManager {
         .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
 
         let new_ids: std::collections::HashSet<_> =
-            new_config.tv.iter().map(|t| t.id.clone()).collect();
+            new_config.tv.iter().map(|t| t.uuid.to_string()).collect();
 
         // Phase 1: update the IndexMap under write lock (map mutations only — no I/O).
         // Collect Arcs for removed TVs and existing TVs that need config updates.
@@ -1808,18 +1808,19 @@ impl TvManager {
 
             // Add or update TVs from new config
             for tv_config in new_config.tv {
-                if let Some((managed_flag, tv_arc)) = tvs.get_mut(&tv_config.id) {
+                let tv_id = tv_config.uuid.to_string();
+                if let Some((managed_flag, tv_arc)) = tvs.get_mut(&tv_id) {
                     // Existing TV: update outer managed flag immediately under the write
                     // lock, then defer the rest of the config update to Phase 2.
                     *managed_flag = tv_config.managed;
                     to_update.push((tv_arc.clone(), Some(tv_config)));
                 } else {
                     // New TV: add to map immediately (no connection to close).
-                    info!(tv_id = %tv_config.id, "Adding new TV from config");
+                    info!(tv_id = %tv_id, "Adding new TV from config");
                     let system_profile =
                         new_config.system.resolve_profile(&tv_config.profile.system);
                     tvs.insert(
-                        tv_config.id.clone(),
+                        tv_id,
                         (
                             tv_config.managed,
                             Arc::new(Mutex::new(ManagedTv::new(tv_config, system_profile))),
@@ -1847,7 +1848,7 @@ impl TvManager {
                     let connection_changed = tv.config.vendor != tv_config.vendor
                         || tv.config.vendor_config != tv_config.vendor_config;
                     if connection_changed {
-                        info!(tv_id = %tv_config.id, "Updating TV config (will reconnect)");
+                        info!(tv_id = %tv_config.uuid, "Updating TV config (will reconnect)");
                         if let Some(mut conn) = tv.connection.take() {
                             let _ = conn.close().await;
                         }
@@ -1932,8 +1933,13 @@ mod tests {
         tv_id: &str,
         connection: Option<Box<dyn TvConnection>>,
     ) -> Arc<RwLock<IndexMap<String, TvEntry>>> {
+        // Derive a stable UUID from the human-readable test id so the
+        // `TvConfig` field is well-typed, but key the in-memory map by
+        // `tv_id` itself — tests assert on this string and don't care
+        // about the config's internal UUID.
+        let uuid = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, tv_id.as_bytes());
         let mut tv = ManagedTv::new(
-            TvConfig::new(tv_id, tv_id, "fake", true),
+            TvConfig::with_uuid(uuid, tv_id, "fake", true),
             ResolvedSystemProfile::default(),
         );
         tv.connection = connection;

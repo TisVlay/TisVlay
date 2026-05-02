@@ -4,7 +4,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
 ---
 [
   {
-    "id": "living_room",
+    "uuid": "11111111-1111-1111-1111-111111111111",
     "name": "Living Room G4",
     "vendor": "lg",
     "connected": true,
@@ -30,7 +30,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     "desktop": {
       "connector": "HDMI-A-2"
     },
-    "path": "/org/tisvlay/Tv/living_room",
+    "path": "/org/tisvlay/Tv/11111111_1111_1111_1111_111111111111",
     "power_state": "active",
     "supports_wake": true,
     "is_screen_on": true,
@@ -54,7 +54,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     ]
   },
   {
-    "id": "guest_room",
+    "uuid": "22222222-2222-2222-2222-222222222222",
     "name": "Guest Room",
     "vendor": "lg",
     "connected": false,
@@ -71,7 +71,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     "desktop": {
       "connector": ""
     },
-    "path": "/org/tisvlay/Tv/guest_room",
+    "path": "/org/tisvlay/Tv/22222222_2222_2222_2222_222222222222",
     "power_state": "unknown",
     "supports_wake": false,
     "is_screen_on": true,

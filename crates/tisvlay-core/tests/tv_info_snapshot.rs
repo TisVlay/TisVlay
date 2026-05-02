@@ -22,7 +22,7 @@ use tisvlay_core::{DesktopMapping, HardwareId, TvInfo};
 /// A minimal TvInfo for a connected, managed TV with a few inputs.
 fn sample_connected() -> TvInfo {
     TvInfo {
-        id: "living_room".to_string(),
+        uuid: "11111111-1111-1111-1111-111111111111".to_string(),
         name: "Living Room G4".to_string(),
         vendor: "lg".to_string(),
         connected: true,
@@ -38,7 +38,7 @@ fn sample_connected() -> TvInfo {
         desktop: DesktopMapping {
             connector: "HDMI-A-2".to_string(),
         },
-        path: "/org/tisvlay/Tv/living_room".to_string(),
+        path: "/org/tisvlay/Tv/11111111_1111_1111_1111_111111111111".to_string(),
         power_state: "active".to_string(),
         supports_wake: true,
         is_screen_on: true,
@@ -57,7 +57,7 @@ fn sample_connected() -> TvInfo {
 /// A disconnected, unmanaged TV — state fields have default values.
 fn sample_disconnected() -> TvInfo {
     TvInfo {
-        id: "guest_room".to_string(),
+        uuid: "22222222-2222-2222-2222-222222222222".to_string(),
         name: "Guest Room".to_string(),
         vendor: "lg".to_string(),
         connected: false,
@@ -68,7 +68,7 @@ fn sample_disconnected() -> TvInfo {
         hardware_id: HardwareId::default(),
         vendor_info: Vec::new(),
         desktop: DesktopMapping::default(),
-        path: "/org/tisvlay/Tv/guest_room".to_string(),
+        path: "/org/tisvlay/Tv/22222222_2222_2222_2222_222222222222".to_string(),
         power_state: "unknown".to_string(),
         supports_wake: false,
         is_screen_on: true,

@@ -3,7 +3,7 @@ source: crates/tisvlay-core/tests/tv_info_snapshot.rs
 expression: sample_connected()
 ---
 {
-  "id": "living_room",
+  "uuid": "11111111-1111-1111-1111-111111111111",
   "name": "Living Room G4",
   "vendor": "lg",
   "connected": true,
@@ -29,7 +29,7 @@ expression: sample_connected()
   "desktop": {
     "connector": "HDMI-A-2"
   },
-  "path": "/org/tisvlay/Tv/living_room",
+  "path": "/org/tisvlay/Tv/11111111_1111_1111_1111_111111111111",
   "power_state": "active",
   "supports_wake": true,
   "is_screen_on": true,
