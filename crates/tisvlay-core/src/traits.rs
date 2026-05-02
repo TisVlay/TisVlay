@@ -371,6 +371,24 @@ pub trait TvConnector: Send + Sync {
         pairing_params: &toml::Value,
         credentials: &crate::Credentials,
     ) -> Result<toml::Value>;
+
+    /// Pairing form schema — declares the input fields the user
+    /// must provide before pairing can start.
+    ///
+    /// The daemon exposes this over D-Bus
+    /// (`Manager1.GetPairingSchema(vendor)`) as JSON; the GUI's
+    /// pairing wizard renders the form dynamically from the
+    /// returned [`PairingField`] list. See
+    /// [`pairing_schema`](crate::pairing_schema) for the field
+    /// vocabulary.
+    ///
+    /// Default impl returns an empty list — backends that haven't
+    /// migrated to schema-driven pairing fall back to the legacy
+    /// hardcoded wizard form. Once all in-tree backends define
+    /// schemas the default impl will be removed.
+    fn pairing_schema(&self) -> Vec<crate::PairingField> {
+        Vec::new()
+    }
 }
 
 /// Discovery of TVs on the network.

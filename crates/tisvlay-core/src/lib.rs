@@ -52,6 +52,7 @@ mod error;
 pub mod errors;
 mod hardware_id;
 mod pairing;
+mod pairing_schema;
 mod reconciler;
 mod refresh_trigger;
 mod state;
@@ -85,6 +86,7 @@ pub use pairing::{
     Credentials, InputType, PairingCommand, PairingError, PairingErrorCode, PairingSession,
     PairingState,
 };
+pub use pairing_schema::{PairingField, PairingFieldType};
 
 // Configuration
 pub use config::{
