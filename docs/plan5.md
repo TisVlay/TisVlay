@@ -1,6 +1,6 @@
 # Plan 5 — Power-cycle robustness, MAC capture, vendor-agnostic config
 
-> **Status (complete):** All in-scope phases shipped. The
+> **Status (mostly complete; one refinement queued):** The
 > office-TV silent-fail bug's full repair chain is live end-to-end:
 > typed errors surface; daemon ARPs the MAC from the kernel after
 > each SSDP hit and stuffs it into `vendor_data`; the GUI wizard's
@@ -10,7 +10,16 @@
 > pane. PowerOn probes direct-connect first and only falls through
 > to WoL when the TV is unreachable; the Power-on button disables
 > with an explanation when the TV is offline AND has no wake
-> method. Out-of-scope follow-ups (Phase 7 "Open logs", Phase 8
+> method.
+>
+> Real-world testing on `feat/gui` surfaced two refinements past
+> the original plan: the LG backend's `connect()` was burning
+> ~25 s in nested retry loops on cold TVs (now fixed — see
+> "Phase 6 follow-ups" section below), and the direct-connect
+> probe still costs a 5 s TLS handshake timeout when the TV was
+> just powered off (queued).
+>
+> Out-of-scope follow-ups (Phase 7 "Open logs", Phase 8
 > "Edit TV properties") are filed for future PRs.
 >
 > | Phase | Done | Commits |
@@ -26,17 +35,101 @@
 > | **3** — `vendor_data` field on `DiscoveredTv` | ✅ | `b7c718b` |
 > | **3** — `netlink::arp_lookup` helper | ✅ | `141cf43` |
 > | **3** — daemon enriches discovery with ARP-resolved MAC | ✅ | (ARP enrichment commit) |
-> | **2** — wizard renders dynamically (autofill from `vendor_data`) | ✅ | (schema-driven wizard commit) |
-> | **2** — per-field validation lifecycle + server-side routing | ✅ | (validation lifecycle commit) |
-> | **5** — Kirigami `InlineError` widget + `Errors` global | ✅ | (Kirigami inline-error commit) |
-> | **6** — smart Power button + connect-first | ✅ | (this commit) |
-> | **4** — `PowerCyclePhase::DirectConnect` | ✅ | (this commit; landed alongside Phase 6) |
+> | **2** — wizard renders dynamically (autofill from `vendor_data`) | ✅ | `f50df5a` |
+> | **2** — per-field validation lifecycle + server-side routing | ✅ | `34d2b06` |
+> | **5** — Kirigami `InlineError` widget + `Errors` global | ✅ | `a9d4b2a` |
+> | **6** — smart Power button + connect-first | ✅ | `f18cd40` |
+> | **4** — `PowerCyclePhase::DirectConnect` | ✅ | `f18cd40` (landed alongside Phase 6) |
+> | **6.1** — LG `connect()` contract fix + scheme caching | ✅ | `20cb57f` |
+> | **6.2** — daemon `power_on` probe heuristic (timeout + skip-when-off) | ⏳ queued | |
 > | **4b** — `Pairing` / `Config` / `Connection` typed errors | partial (Config only); rest deferred | |
 > | **4** — typed `Failed { reason }` payload | deferred — `Failed` still wire-format `(s)`; carries no typed reason yet | |
 >
 > Original plan body below — references to "draft" / "open
 > questions" predate the resolved-question rounds; treat the
 > `✅ resolved` markers + this status block as authoritative.
+
+## Phase 6 follow-ups (integration-testing refinements)
+
+These didn't appear in the original plan — they emerged from
+journal analysis of a slow power-cycle (~45 s observed) after
+Phase 6 landed on `feat/gui`. Both refinements are part of the
+same in-flight branch as the rest of plan5; documented here so
+the trail isn't lost when the work eventually merges.
+
+### Phase 6.1 — LG `connect()` contract fix + scheme caching ✅
+
+**Problem.** Phase 6's direct-connect probe was designed
+assuming `TvConnector::connect()` fails fast on a single
+attempt. The LG backend violated that: `LgConnector::connect`
+wrapped a 5×retry loop with 1 s sleeps, each iteration calling
+`Connection::connect` which itself probed `wss://` then fell
+back to `ws://`. On a cold TV (just powered off, WS service
+spinning down), each TLS-handshake-then-WS-close cycle cost
+~5 s, and the outer loop burned all 25 s before giving up. The
+daemon's probe never got the fast-fail it needed.
+
+**Fix (commit `20cb57f`).**
+- New typed `WebOsScheme { Wss, Ws }` enum on
+  `LgVendorConfig.scheme`. The pairing handshake captures
+  whichever scheme connected and persists it alongside
+  `client_key`. Subsequent reconnects dispatch directly to
+  that scheme via `WebOsClient::connect_with_scheme`, skipping
+  the wss→ws fallback round-trip.
+- Cross-vendor plumbing: `Credentials` gained a free-form
+  `extra: HashMap<String, String>` for vendor-discovered
+  metadata captured at pair time. Future Samsung / Sony
+  backends can use the same slot for refresh URLs, capability
+  strings, etc.
+- Dropped the 5×retry-with-sleep loop in `LgConnector::connect`.
+  It was duplicating `wake_and_connect`'s outer retry loop —
+  now there's exactly one retry layer (in `wake_and_connect`).
+- Documents the trait contract: **`TvConnector::connect()` is
+  a single attempt; retry semantics belong in
+  `wake_and_connect()`**.
+
+**Result.** Power-on time on a cold-cycle dropped from ~45 s
+to ~21 s. Each "TV not ready yet" connect attempt now fails
+in <1 s instead of burning 5 s in fallback × retry; the WoL
+loop probes aggressively without churning.
+
+### Phase 6.2 — daemon `power_on` probe heuristic ⏳ queued
+
+**Problem.** Even with the LG fix, the direct-connect probe
+still costs ~5 s of TLS-handshake-timeout when the TV is
+fully powered off — because the probe genuinely tries to
+connect and the kernel waits for either a SYN/ACK or the
+default timeout. On a "user just hit Power Off" sequence,
+this is wasted budget: we *know* the TV is off.
+
+**Fix (queued).** Two daemon-side adjustments to
+`tv_manager::power_on`:
+
+1. **Skip the probe when we know the TV is off.** Read
+   `tv.powered_off` (already daemon-tracked) and the
+   last-known cached `power_state`. If either says the TV is
+   in standby / unknown, go straight to the WoL path —
+   emit `WolSent → Connecting → Connected` without the
+   `DirectConnect` phase. Saves ~5 s on the user-explicit
+   power-cycle case.
+
+2. **Time-bound the probe (~2 s) for the genuine
+   "lost the connection" case.** Wrap `connect_tv` in a
+   `tokio::time::timeout`. With Phase 6.1's fast-fail
+   `connect()`, healthy reconnects complete in <500 ms; the
+   timeout is belt-and-suspenders for misbehaving networks
+   (firewall blackholes, etc.) where a TLS handshake hangs
+   without RST.
+
+Vendor-agnostic by design: both adjustments live on
+`tv_manager`, no trait changes. The "what's a healthy probe
+duration" is a daemon UX property, not a transport one.
+
+**Estimated impact.** User-explicit power-cycle drops to
+~16 s (subscription overhead + actual TV boot time only).
+Reconnect-after-network-flap stays sub-second when the TV is
+reachable, gives up in 2 s when it isn't — instead of taking
+the full `CONNECT_MS` budget.
 
 ## Status (drafting v2 — historical, see Status block above for current)
 > Round 2 incorporating user

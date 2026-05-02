@@ -10,6 +10,17 @@ use crate::registry::BackendRegistry;
 use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// How long the direct-connect probe in [`TvManager::power_on`]
+/// waits before giving up and falling through to Wake-on-LAN.
+///
+/// With the LG backend's fast-fail `connect()` contract (Phase 6.1
+/// of plan5), healthy reconnects complete in <500 ms. This cap is
+/// belt-and-suspenders for misbehaving networks (firewall
+/// blackholes, hung TLS handshakes) where a connect would
+/// otherwise stall on the kernel's multi-second handshake budget.
+const DIRECT_CONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 use tisvlay_core::{
     Capabilities, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection, TvConfig,
     TvConnection, TvState, UserProfileConfig, UserSection,
@@ -1233,21 +1244,38 @@ impl TvManager {
     ///   the backend's connect-retry loop. Emits `WolSent` →
     ///   `Connecting` → `Connected`.
     ///
-    /// The probe is "did `connect()` succeed?" — backends own the
+    /// The probe is "did `connect()` succeed within
+    /// [`DIRECT_CONNECT_PROBE_TIMEOUT`]?" — backends own the
     /// transport-specific retry timing, so a fast-failing connect
     /// here means "TV not reachable at all", and we fall through to
-    /// the wake path. If neither path is available (no wake method
-    /// AND not reachable), surface a typed
+    /// the wake path. The timeout caps misbehaving networks
+    /// (firewall blackholes etc.) so the user doesn't pay the
+    /// kernel's TCP/TLS handshake-stall budget.
+    ///
+    /// Skips the probe entirely when `was_powered_off` is set:
+    /// the user just hit Power Off seconds ago and we *know* the
+    /// TV is in standby, so a probe would always fail and burn
+    /// the timeout for nothing. Goes straight to WoL.
+    ///
+    /// If neither path is available (no wake method AND not
+    /// reachable), surfaces a typed
     /// [`PowerError::NoMacConfigured`] so the GUI's inline-error
     /// surface can render an actionable message.
     pub async fn power_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let tv_arc = self.get_tv(tv_id).await?;
 
-        let (config, supports_wake) = {
+        let (config, supports_wake, was_powered_off) = {
             let mut tv = tv_arc.lock().await;
             let supports_wake = self.registry.supports_wake(&tv.config);
+            let was_powered_off = tv.powered_off;
             let display_addr = self.registry.display_address(&tv.config);
-            info!(tv_id = %tv_id, address = %display_addr, supports_wake, "PowerOn requested");
+            info!(
+                tv_id = %tv_id,
+                address = %display_addr,
+                supports_wake,
+                was_powered_off,
+                "PowerOn requested",
+            );
 
             // Drop any stale connection and clear the powered-off flag
             tv.powered_off = false;
@@ -1256,16 +1284,40 @@ impl TvManager {
                 let _ = conn.close().await;
             }
 
-            (tv.config.clone(), supports_wake)
+            (tv.config.clone(), supports_wake, was_powered_off)
         };
 
-        // Probe direct-connect first. The backend's `connect()` is
-        // expected to fail fast when the TV isn't reachable (no
-        // open port, no route) — slow only on retry-on-success
-        // paths, which we sidestep by calling raw `connect_tv`
-        // instead of `wake_and_connect_tv`.
-        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::DirectConnect);
-        let direct_result = self.registry.connect_tv(&config).await;
+        // Heuristic: skip the direct-connect probe when we *know*
+        // the TV is in standby. The user just hit Power Off seconds
+        // ago — a probe is guaranteed to fail and would just burn
+        // the connect timeout. Only skip when we have a wake method;
+        // otherwise we'd return immediately with no recovery path.
+        let should_probe = !(was_powered_off && supports_wake);
+
+        // Probe direct-connect first (when `should_probe`). Wrapped
+        // in a 2 s timeout so misbehaving networks (firewall
+        // blackholes, hung TLS handshakes) can't burn the kernel's
+        // multi-second handshake-stall budget. With the LG backend
+        // contract fix from Phase 6.1, healthy probes complete in
+        // <500 ms; this is belt-and-suspenders.
+        let direct_result = if should_probe {
+            self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::DirectConnect);
+            match tokio::time::timeout(
+                DIRECT_CONNECT_PROBE_TIMEOUT,
+                self.registry.connect_tv(&config),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(|e| format!("{e}")),
+                Err(_elapsed) => Err(format!(
+                    "probe timed out after {:?}",
+                    DIRECT_CONNECT_PROBE_TIMEOUT
+                )),
+            }
+        } else {
+            debug!(tv_id = %tv_id, "Skipping direct-connect probe; TV was just powered off");
+            Err("powered_off hint; skipping probe".to_string())
+        };
 
         let connection = match direct_result {
             Ok(conn) => {
@@ -1277,7 +1329,7 @@ impl TvManager {
                 debug!(
                     tv_id = %tv_id,
                     error = %probe_err,
-                    "Direct-connect probe failed; falling back to WoL"
+                    "Direct-connect probe skipped/failed; falling back to WoL"
                 );
                 if !supports_wake {
                     // No wake method AND TV not reachable. Without
