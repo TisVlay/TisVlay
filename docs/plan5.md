@@ -496,8 +496,27 @@ follow-up.
 ## Suggested execution sequence (v3)
 
 User picked **Q7 = (a) full schema-driven** + dropped
-"Open logs" via Q5.
+"Open logs" via Q5 + **localization plumbing from day one**
+via v3 Q3.
 
+0. **Phase 0 — i18n scaffold** (new):
+   - Enable `slint = { features = ["gettext"] }` in
+     `tisvlay-gui/Cargo.toml`.
+   - Add `gettext-rs` for Rust-side dynamic strings.
+   - Wrap all existing literal `.slint` strings with
+     `@tr("...")` (mostly a sweep through panes / widgets).
+   - Wrap Rust user-facing strings with `tr!` (errors,
+     log messages that surface to UI — NOT internal
+     debug logs).
+   - Build pipeline: `slint-tr-extractor` invocation
+     wired through `build.rs` or `just i18n-extract`,
+     `lang/` directory layout, `init_translations!()` at
+     startup.
+   - Commit empty `<crate>.pot` (template) so future
+     translators have a starting point. v1 ships only
+     English (`lang/en/LC_MESSAGES/`).
+   - No actual translations yet — but every string is
+     ready to be translated without further refactoring.
 1. **Phase 4** — typed errors (`tisvlay-core/src/errors/`),
    accurate phase emit (`PowerCyclePhase::DirectConnect`,
    typed `Failed { reason }`). Foundation; everything else
@@ -567,89 +586,80 @@ Out of this plan:
   now to avoid a future refactor.
 - ✅ **Q8**: N/A given Q7.
 
-**v3 (new — fall-out from Q7=a)**:
+**v3 (resolved)**:
+- ✅ **Q1**: JSON-string over D-Bus.
+  Investigated git history: `Manager1.AddTv` already takes
+  `config_json: String` as of commit `7b7bf81`
+  (Jan 2026 vendor-agnostic refactor), and the profile
+  APIs return JSON strings too. So the JSON-on-D-Bus
+  pattern is **established**, not a switch. Schema method
+  fits the same idiom.
+- ✅ **Q2**: Two methods. `GetPairingSchema(vendor)` now;
+  `GetConfigSchema(vendor)` deferred to the edit-TV PR
+  (Phase 8).
+- ✅ **Q3**: **Localization plumbing scaffolded from day
+  one**, even though only English ships at v1.
+  - Slint side: enable `slint = { features = ["gettext"] }`,
+    wrap literal strings in `.slint` files with `@tr("...")`,
+    set up the `slint-tr-extractor` → `.pot` → `.po` →
+    `.mo` build pipeline, `init_translations!` macro at
+    startup, `lang/<locale>/LC_MESSAGES/<crate>.mo` layout
+    convention (per [Slint docs](https://docs.slint.dev/latest/docs/slint/guide/development/translations/)).
+  - Rust dynamic strings (errors, schema labels): use
+    `gettext-rs` crate (Slint's own internals already use
+    it; matches Linux ecosystem convention; user wanted
+    to *learn* about localization → mainstream gettext is
+    the right starting point).
+  - Schema struct includes a
+    `translation_key: Option<String>` field on each
+    `PairingField` so the daemon can carry a key alongside
+    the literal English label. v1 GUI uses the literal
+    label; future PRs swap to a `gettext` lookup keyed by
+    `translation_key` with the literal as fallback.
+  - Vendor crates own their schema strings. `tisvlay-lg`
+    will eventually ship `tisvlay-lg/lang/<locale>/...`.
+- ✅ **Q4**: Field types vocabulary accepted: `string`,
+  `password`, `ip`, `mac`, `port`, `int`, `bool`, `select`,
+  `path`. Extend later as backends need it.
+- ✅ **Q5**: Extend `TvConnector` trait.
+  `fn pairing_schema(&self) -> Vec<PairingField>;`
+- ✅ **Q6**: Empty schema → wizard skips the Configure
+  step. No special-casing.
+
+**v4 (new — minor decisions surfacing as v3 resolved)**:
 
 The schema-driven approach forces a few design choices.
 
-- **v3 Q1**: D-Bus shape for the schema.
-  - **(a)** Typed struct: `Manager1.GetPairingSchema(vendor: s)
-    -> Vec<ConfigField>` where `ConfigField` is a
-    fixed-shape struct (`(s, s, s, s, b, s, s, s, as, s)`
-    or named via zbus typed marshalling). Rigorous; harder
-    to evolve without API breaks.
-  - **(b)** JSON string: `-> s` containing serde-encoded
-    schema. Loose; trivial to extend; clients use serde to
-    deserialize.
-  - My pick: **(b) JSON string**. Schema evolution (new
-    field types, optional metadata) doesn't require D-Bus
-    signature changes. Both ends of the wire are Rust today
-    and can share a typed schema struct via
-    `tisvlay-core::pairing_schema` regardless of the wire
-    format. Slint-side rendering is the same either way.
+- **v4 Q1**: Power button label naming for the
+  "disconnected, can wake" state — "Power on" or "Wake TV"?
+  HA uses "Turn on" generically; KDE Connect uses "Power
+  on." The user has been using "Power on/off" consistently.
+  My pick: keep "Power on" — it's the established TisVlay
+  vocabulary, and "Wake TV" implies physical-act (remote)
+  whereas "Power on" implies logical-act (state). For the
+  reconnect-no-WoL case ("connected=false, but TV likely
+  reachable"): same button, since the smart logic figures
+  out which path to take. Confirm?
 
-- **v3 Q2**: Pairing schema vs full config schema —
-  separate D-Bus methods or one shared method?
-  - **(a) Two methods**: `GetPairingSchema(vendor)` returns
-    only the user-input fields the wizard needs;
-    `GetConfigSchema(vendor)` returns the full editable
-    schema (used by future "edit TV properties" UX).
-  - **(b) One method, mark fields as
-    `pairing_input: bool`**: caller filters as needed.
-  - My pick: **(a) two methods**. Pairing schema and full
-    schema have genuinely different field sets (e.g.
-    `client_key` is computed by pairing, not user-entered;
-    `id` derives from name). Keeping them separate avoids
-    encoding "field is for-pairing" as a flag everyone has
-    to remember to filter. Phase 8 work adds
-    `GetConfigSchema` — for *now*, ship only `GetPairingSchema`.
+- **v4 Q2**: Validation error mapping — when the daemon
+  rejects pairing input because field `mac` is invalid,
+  the error carries `field: "mac"` (the schema's `name`
+  identifier, machine-readable). The GUI maps `"mac"` back
+  to the schema field's localized `label` for display.
+  Confirm? (Alternative: daemon sends the localized label
+  directly, but then a different-locale GUI couldn't
+  re-localize.)
 
-- **v3 Q3**: Localization. HA's config_flow uses keyed
-  translation strings for labels, helpers, errors. We
-  could:
-  - **(a)** Plain strings now, refactor later when
-    localization lands.
-  - **(b)** Schema fields carry `translation_key: string`
-    from day one; daemon also returns a translation table
-    in the user's locale.
-  - My pick: **(a) plain strings**. No localization
-    plumbing exists in TisVlay yet. Adding it via the
-    schema would be premature. The schema struct's plain
-    fields can be retrofitted to keyed lookup later by
-    swapping the daemon's source from
-    `format!("...")` to a translation lookup, with no
-    wire-format change if we go JSON (Q1=b).
-
-- **v3 Q4**: Field types vocabulary. Proposed canonical
-  list:
-  - `string` — plain single-line text
-  - `password` — masked input
-  - `ip` — IPv4/IPv6, format-validated
-  - `mac` — `XX:XX:XX:XX:XX:XX` or `XX-XX-...`
-  - `port` — 1..=65535 number input
-  - `int` — generic signed integer with optional `min`/`max`
-  - `bool` — checkbox
-  - `select` — dropdown with `options: Vec<String>`
-  - `path` — filesystem path (e.g., serial `/dev/ttyUSB0`)
-  - Confirm? Anything I'm missing for known-future
-    backends (Samsung tokens, Sony PSK, USB serial)?
-
-- **v3 Q5**: Where does the schema live in the trait
-  surface?
-  - **(a)** New method on `TvConnector`:
-    `fn pairing_schema(&self) -> Vec<PairingField>;`
-  - **(b)** Separate trait `PairingSchemaProvider` only
-    backends that support pairing implement.
-  - My pick: **(a)**. Every backend that supports pairing
-    needs one; current `TvConnector::start_pairing`
-    already exists, so adding `pairing_schema` co-locates
-    them.
-
-- **v3 Q6**: How does the wizard handle backends that
-  declare zero pairing fields (e.g., a hypothetical
-  "discovered devices auto-pair without input" backend)?
-  My pick: trivial — schema is empty, wizard skips the
-  Configure step and goes straight to Pair. No special-
-  casing needed.
+- **v4 Q3**: Build pipeline integration — adding
+  `slint-tr-extractor` to the build means a new build
+  step (extract POT, merge with existing POs). Should we
+  add a `just i18n-extract` recipe + commit the resulting
+  `.pot`/`.po`/`.mo` files to the repo, or generate them
+  at build time only? My pick: commit `.pot` (template,
+  source-of-truth for translators) and `.po` (per-locale
+  translations); generate `.mo` at build time from `.po`
+  via `slint_build` (or a small `build.rs` step). Standard
+  gettext convention.
 - ✅ Wire-format option for MAC field — moot under schema
   approach (Phase 2 reframes); resolved as "vendor_data
   map" if we go (a) or (c), or just an extra field on the
