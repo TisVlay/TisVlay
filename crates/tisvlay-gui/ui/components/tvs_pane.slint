@@ -32,7 +32,7 @@ export struct TvViewModel {
     uuid: string,
     name: string,
     vendor: string,
-    ip: string,
+    primary-descriptor: string,
     connected: bool,
     power-state: string,
     /// Whether the vendor backend can wake the TV from standby
@@ -482,7 +482,7 @@ component TvDetailHeader inherits Rectangle {
                 spacing: 10px;
                 alignment: start;
                 Text {
-                    text: root.tv.ip == "" ? "—" : root.tv.ip;
+                    text: root.tv.primary-descriptor == "" ? "—" : root.tv.primary-descriptor;
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
                     font-family: "ui-monospace, monospace";

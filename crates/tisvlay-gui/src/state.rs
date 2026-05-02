@@ -18,7 +18,11 @@ pub(crate) struct TvViewRaw {
     pub uuid: SharedString,
     pub name: SharedString,
     pub vendor: SharedString,
-    pub ip: SharedString,
+    /// Backend's primary diagnostic descriptor — first non-Secret entry
+    /// of `Tv1.VendorInfo`. LG: IP address. Future Bluetooth: MAC.
+    /// Future USB-CEC: serial-port path. Rendered as the small
+    /// monospace hint beside the TV name in the master list.
+    pub primary_descriptor: SharedString,
     pub connected: bool,
     pub power_state: SharedString,
     pub supports_wake: bool,
@@ -102,9 +106,6 @@ pub(crate) async fn fetch_state(
             .map(|(id, _)| SharedString::from(id.as_str()))
             .collect();
 
-        // Spatial hint shown alongside the name — backend's primary
-        // diagnostic descriptor (LG: IP; future Bluetooth: MAC; etc.).
-        // First non-Secret entry of `Tv1.VendorInfo` by convention.
         let primary_descriptor = tv
             .vendor_info
             .first()
@@ -115,7 +116,7 @@ pub(crate) async fn fetch_state(
             uuid: SharedString::from(tv.uuid),
             name: SharedString::from(tv.name),
             vendor: SharedString::from(tv.vendor),
-            ip: SharedString::from(primary_descriptor),
+            primary_descriptor: SharedString::from(primary_descriptor),
             connected: tv.connected,
             power_state: SharedString::from(tv.power_state),
             supports_wake: tv.supports_wake,

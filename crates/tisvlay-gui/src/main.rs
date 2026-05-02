@@ -1798,7 +1798,7 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
             uuid: raw.uuid,
             name: raw.name,
             vendor: raw.vendor,
-            ip: raw.ip,
+            primary_descriptor: raw.primary_descriptor,
             connected: raw.connected,
             power_state: raw.power_state,
             supports_wake: raw.supports_wake,
