@@ -215,6 +215,12 @@ pub async fn state_change_forwarder(
                 // their connector and any removed TVs drop theirs.
                 refresh_desktop_mapping(&manager).await;
             }
+            StateChangeEvent::TvVendorConfigChanged { ref tv_id } => {
+                let path = tv_path(tv_id);
+                debug!(tv_id = %tv_id, "Forwarding vendor config change to D-Bus");
+                let object_server = connection.object_server();
+                refresh_tv_vendor_state(object_server, &path, tv_id, &manager).await;
+            }
             StateChangeEvent::InterfaceDown { ref interface } => {
                 debug!(interface = %interface, "Interface carrier down: disconnecting affected TVs");
                 manager.disconnect_tvs_on_interface(interface).await;
@@ -359,6 +365,46 @@ async fn update_tv_cached_state(object_server: &zbus::ObjectServer, path: &str, 
                     .await
                     .ok();
             }
+        }
+    }
+}
+
+/// Refresh cached per-TV properties that derive from the vendor
+/// config — `Tv1.VendorInfo` (the label/value projection from the
+/// connector's `display_info`) and `Tv1.Power.SupportsWake` (LG:
+/// depends on MAC presence). Triggered by
+/// [`StateChangeEvent::TvVendorConfigChanged`] after
+/// `Tv1.UpdateConfig` writes vendor patches.
+///
+/// Without this resync, editing IP or MAC via the GUI's edit pane
+/// updates the on-disk config + reconnects the transport, but the
+/// D-Bus property cache stays at the old values until daemon
+/// restart — the user sees the old MAC in the INFO group and
+/// (worse) the Power-on button stays disabled if `SupportsWake`
+/// flipped from false → true.
+async fn refresh_tv_vendor_state(
+    object_server: &zbus::ObjectServer,
+    path: &str,
+    tv_id: &str,
+    manager: &Arc<TvManager>,
+) {
+    let vendor_info = manager.vendor_info(tv_id).await;
+    if let Ok(iface_ref) = object_server.interface::<_, TvService>(path).await {
+        let mut iface = iface_ref.get_mut().await;
+        let emitter = iface_ref.signal_emitter();
+        if iface.vendor_info != vendor_info {
+            iface.vendor_info = vendor_info;
+            iface.vendor_info_changed(emitter).await.ok();
+        }
+    }
+
+    let supports_wake = manager.supports_wake(tv_id).await;
+    if let Ok(iface_ref) = object_server.interface::<_, TvPowerService>(path).await {
+        let mut iface = iface_ref.get_mut().await;
+        let emitter = iface_ref.signal_emitter();
+        if iface.supports_wake != supports_wake {
+            iface.supports_wake = supports_wake;
+            iface.supports_wake_changed(emitter).await.ok();
         }
     }
 }

@@ -117,6 +117,17 @@ pub enum StateChangeEvent {
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
+    /// A TV's vendor-specific config was edited (`Tv1.UpdateConfig`
+    /// touched at least one schema field).
+    ///
+    /// The forwarder refreshes per-TV cached properties that derive
+    /// from the vendor config — `Tv1.VendorInfo` (label/value
+    /// projection) and `Tv1.Power.SupportsWake` (LG: depends on
+    /// MAC presence). The connection itself drops and reconnects
+    /// inside `update_tv_config` so the new transport is picked up
+    /// independently; this event handles the cached-property
+    /// resync that has no other trigger.
+    TvVendorConfigChanged { tv_id: String },
     /// A network interface's carrier went up (cable plugged in, link established).
     ///
     /// From kernel netlink RTMGRP_LINK. Triggers reconnection for TVs
@@ -2048,8 +2059,17 @@ impl TvManager {
 
         // Vendor-field changes invalidate the live connection (IP
         // moved, port changed, etc.). Drop + reconnect; the next
-        // command goes over the new transport.
+        // command goes over the new transport. Also fire a
+        // `TvVendorConfigChanged` event so the forwarder refreshes
+        // per-TV cached properties that derive from vendor config —
+        // `Tv1.VendorInfo` (label/value projection) and
+        // `Tv1.Power.SupportsWake` (depends on MAC presence). The
+        // forwarder is responsible for the property refresh; the
+        // reconnect handles transport semantics independently.
         if !vendor_patches.is_empty() {
+            self.emit_state_change(StateChangeEvent::TvVendorConfigChanged {
+                tv_id: tv_id.to_string(),
+            });
             if let Err(e) = self.reconnect(tv_id).await {
                 warn!(
                     tv_id = %tv_id,

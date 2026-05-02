@@ -165,6 +165,60 @@ async fn update_config_rejects_unknown_system_profile() {
 }
 
 #[tokio::test]
+async fn vendor_field_change_refreshes_cached_vendor_info() {
+    // Regression: editing a vendor field via `Tv1.UpdateConfig`
+    // writes the on-disk config and reconnects the transport,
+    // but the per-TV D-Bus property cache (`Tv1.VendorInfo`,
+    // `Tv1.Power.SupportsWake`) used to stay at the old values
+    // until daemon restart. The `TvVendorConfigChanged` event +
+    // `refresh_tv_vendor_state` forwarder handler now keep them
+    // in sync.
+    let (daemon, client) = empty_daemon().await;
+    let tv_id = pair_one(&daemon, &client, "mock://before_edit").await;
+    settle().await;
+
+    let initial = client.list_tvs().await.unwrap();
+    let initial_descriptors: Vec<String> = initial
+        .iter()
+        .find(|t| t.uuid == tv_id)
+        .unwrap()
+        .vendor_info
+        .iter()
+        .map(|(_, v)| v.clone())
+        .collect();
+    assert!(
+        initial_descriptors
+            .iter()
+            .any(|v| v == "mock://before_edit"),
+        "sanity: vendor_info should carry the original address; got {initial_descriptors:?}"
+    );
+
+    let patch = serde_json::json!({ "address": "mock://after_edit" }).to_string();
+    client.update_tv_config(&tv_id, &patch).await.unwrap();
+    settle().await;
+
+    let updated = client.list_tvs().await.unwrap();
+    let updated_descriptors: Vec<String> = updated
+        .iter()
+        .find(|t| t.uuid == tv_id)
+        .unwrap()
+        .vendor_info
+        .iter()
+        .map(|(_, v)| v.clone())
+        .collect();
+    assert!(
+        updated_descriptors.iter().any(|v| v == "mock://after_edit"),
+        "vendor_info should reflect the updated address; got {updated_descriptors:?}"
+    );
+    assert!(
+        !updated_descriptors
+            .iter()
+            .any(|v| v == "mock://before_edit"),
+        "vendor_info should no longer carry the stale original address; got {updated_descriptors:?}"
+    );
+}
+
+#[tokio::test]
 async fn update_config_is_atomic_on_validation_failure() {
     // If any field in a multi-field patch fails validation, no
     // changes should land — neither in memory nor on disk. Otherwise
