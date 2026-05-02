@@ -79,6 +79,26 @@ pub enum PairingFieldType {
     Path,
 }
 
+impl PairingFieldType {
+    /// Wire-format kebab-case identifier (`"mac"`, `"ip"`,
+    /// `"select"`, …) — the same string `serde` emits for this
+    /// variant. Useful for sending to non-Rust UI layers (Slint
+    /// can't read serde tags directly).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Password => "password",
+            Self::Ip => "ip",
+            Self::Mac => "mac",
+            Self::Port => "port",
+            Self::Int => "int",
+            Self::Bool => "bool",
+            Self::Select => "select",
+            Self::Path => "path",
+        }
+    }
+}
+
 /// Single field in a pairing form.
 ///
 /// Fields default to `required: false`, `field_type: String`, and

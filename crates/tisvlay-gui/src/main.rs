@@ -15,7 +15,8 @@
 
 mod state;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -28,8 +29,8 @@ use clap::Parser;
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
-    Coalescer, DaemonClient, PowerCyclePhase, ReconcilerMap, RefreshTrigger, SessionClient,
-    StateEvent, StateWatcher,
+    Coalescer, DaemonClient, PairingField, PowerCyclePhase, ReconcilerMap, RefreshTrigger,
+    SessionClient, StateEvent, StateWatcher,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -228,6 +229,132 @@ impl Reconcilers {
     }
 }
 
+/// One row of the pairing-wizard's discovery list, owned Rust-side.
+///
+/// The wizard's Slint model (`[WizardDiscoveredTv]`) is a derived
+/// view over a `Vec<WizardEntry>`. Slint structs can't carry a map,
+/// so `vendor_data` lives here and the Slint side renders only the
+/// scalar columns (id / name / vendor / address / hw_model). When
+/// the user advances to step 2 the Rust side reads `vendor_data`
+/// out of the selected entry and seeds the schema-driven form's
+/// autofill values.
+#[derive(Clone, Debug, Default)]
+struct WizardEntry {
+    id: String,
+    name: String,
+    vendor: String,
+    address: String,
+    hw_model: String,
+    vendor_data: HashMap<String, String>,
+}
+
+impl WizardEntry {
+    fn to_slint(&self) -> WizardDiscoveredTv {
+        WizardDiscoveredTv {
+            id: SharedString::from(self.id.as_str()),
+            name: SharedString::from(self.name.as_str()),
+            vendor: SharedString::from(self.vendor.as_str()),
+            address: SharedString::from(self.address.as_str()),
+            hw_model: SharedString::from(self.hw_model.as_str()),
+        }
+    }
+}
+
+/// Shared sidecar holding the wizard's discovery results with full
+/// `vendor_data`. Cloned into every closure that mutates or reads
+/// the discovery list. Reset to empty whenever the wizard reopens.
+type WizardEntries = Arc<Mutex<Vec<WizardEntry>>>;
+
+/// Push `entries` into the wizard's `discovered` Slint model.
+/// Caller has already locked + mutated `entries`; this just rebuilds
+/// the visible view from the updated source-of-truth.
+fn publish_wizard_entries(wizard: &PairingWizard<'_>, entries: &[WizardEntry]) {
+    let rows: Vec<WizardDiscoveredTv> = entries.iter().map(WizardEntry::to_slint).collect();
+    wizard.set_discovered(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Plain-data carrier for an autofilled schema row.
+///
+/// `Send` (unlike `PairingFieldRow`, whose `options: ModelRc<…>`
+/// holds a non-`Send` `Rc`), so workers can build the autofilled
+/// list off the Slint thread. The conversion to `PairingFieldRow`
+/// happens inside `on_ui` once we're back on the event-loop thread.
+#[derive(Clone, Debug)]
+struct AutofilledRow {
+    name: String,
+    label: String,
+    helper: String,
+    field_type: String,
+    required: bool,
+    placeholder: String,
+    options: Vec<String>,
+    value: String,
+}
+
+impl AutofilledRow {
+    fn into_slint(self) -> PairingFieldRow {
+        PairingFieldRow {
+            name: SharedString::from(self.name),
+            label: SharedString::from(self.label),
+            helper: SharedString::from(self.helper),
+            field_type: SharedString::from(self.field_type),
+            required: self.required,
+            placeholder: SharedString::from(self.placeholder),
+            options: ModelRc::new(VecModel::from(
+                self.options
+                    .into_iter()
+                    .map(SharedString::from)
+                    .collect::<Vec<_>>(),
+            )),
+            value: SharedString::from(self.value),
+        }
+    }
+}
+
+/// Build an [`AutofilledRow`] for each schema field, applying
+/// autofill from the entry's `vendor_data` (and the entry's
+/// `address` as a default for the conventional `ip` field — SSDP
+/// gives us an IP and the daemon-side `LgVendorConfig` accepts
+/// `address` as an alias for `ip`, so seeding either works).
+///
+/// Autofill rule mirrors plan5: a field's `autofill = "discovery.<key>"`
+/// resolves to `entry.vendor_data[<key>]`. Missing entries fall
+/// back to the field's `default`. The user can still edit the
+/// pre-filled value before submitting.
+fn autofill_schema(schema: &[PairingField], entry: &WizardEntry) -> Vec<AutofilledRow> {
+    schema
+        .iter()
+        .map(|f| {
+            let mut value = f.default.clone();
+            if let Some(key) = f.autofill.strip_prefix("discovery.") {
+                if let Some(v) = entry.vendor_data.get(key) {
+                    value = v.clone();
+                } else if (key == "ip" || key == "address") && !entry.address.is_empty() {
+                    value = entry.address.clone();
+                }
+            }
+            // Conventional fallback: a field literally named "ip" /
+            // "address" gets the entry's address even without an
+            // explicit `autofill` directive — IP-addressed backends
+            // discovered via SSDP should never make the user retype
+            // what we just received from the device.
+            if value.is_empty() && (f.name == "ip" || f.name == "address") {
+                value = entry.address.clone();
+            }
+            AutofilledRow {
+                name: f.name.clone(),
+                label: f.label.clone(),
+                helper: f.helper.clone(),
+                field_type: f.field_type.as_str().to_string(),
+                required: f.required,
+                placeholder: f.placeholder.clone(),
+                options: f.options.clone(),
+                value,
+            }
+        })
+        .collect()
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "tisvlay-gui", version, about)]
 struct Args {
@@ -342,9 +469,20 @@ fn main() -> Result<()> {
     // (state watcher → fetch → reconciler.observe → Slint model).
     let reconcilers = Reconcilers::default();
 
+    // Source-of-truth for the wizard's discovery list. Slint sees
+    // a derived `[WizardDiscoveredTv]` model; Rust reads
+    // `vendor_data` and other map-typed columns from this.
+    let wizard_entries: WizardEntries = Arc::new(Mutex::new(Vec::new()));
+
     // Wire callbacks before the event loop starts so they're ready when
     // the user interacts with controls.
-    register_callbacks(&app, daemon.clone(), session.clone(), reconcilers.clone());
+    register_callbacks(
+        &app,
+        daemon.clone(),
+        session.clone(),
+        reconcilers.clone(),
+        wizard_entries.clone(),
+    );
 
     // Background watcher: refresh on every signal-driven state change.
     let app_weak = app.as_weak();
@@ -375,6 +513,7 @@ fn register_callbacks(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
     reconcilers: Reconcilers,
+    wizard_entries: WizardEntries,
 ) {
     // Slint global handles. Bound once for the registration phase;
     // closures captured by `move` re-acquire from the upgraded
@@ -588,8 +727,10 @@ fn register_callbacks(
     // Open wizard + start discovery.
     let d = daemon.clone();
     let app_weak = app.as_weak();
+    let we = wizard_entries.clone();
     daemon_global.on_request_pair(move || {
         let d = d.clone();
+        let we = we.clone();
         let app_weak = app_weak.clone();
         // Reset wizard state on the Slint side first so the user sees
         // the wizard immediately, then kick off discovery.
@@ -600,8 +741,14 @@ fn register_callbacks(
             wizard.set_step(1);
             wizard.set_discovery_streaming(true);
         }
+        // Clear the Rust-owned source-of-truth too — the Slint model
+        // gets cleared by `reset_wizard`, but the sidecar lives
+        // outside Slint and must be reset in lockstep.
+        if let Ok(mut e) = we.lock() {
+            e.clear();
+        }
         tokio::spawn(async move {
-            run_wizard_discovery(d, app_weak).await;
+            run_wizard_discovery(d, we, app_weak).await;
         });
     });
 
@@ -616,6 +763,7 @@ fn register_callbacks(
     // Step transitions. Driven entirely from Slint property reads.
     let d = daemon.clone();
     let app_weak = app.as_weak();
+    let we = wizard_entries.clone();
     wizard.on_step_next(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -625,50 +773,61 @@ fn register_callbacks(
         info!(step, "wizard: step-next fired");
         match step {
             1 => {
-                // Discover → Configure: copy selected TV's vendor /
-                // address / model and a default name into the
-                // wizard's AppWindow-level fields, then advance.
+                // Discover → Configure: copy the selected entry's
+                // metadata into the AppWindow-level fields and kick
+                // off a schema fetch. The schema-driven form for
+                // step 2 lands when the daemon RPC returns; until
+                // then the form renders empty (typically <100 ms).
                 let i = wizard.get_selected_index();
                 if i < 0 {
                     return;
                 }
-                let model = wizard.get_discovered();
-                if let Some(tv) = model.row_data(i as usize) {
-                    if wizard.get_tv_name().is_empty() {
-                        let default = if tv.name.is_empty() {
-                            tv.address.clone()
-                        } else {
-                            tv.name.clone()
-                        };
-                        wizard.set_tv_name(default);
-                    }
-                    wizard.set_selected_vendor(tv.vendor);
-                    wizard.set_selected_address(tv.address);
-                    wizard.set_selected_hw_model(tv.hw_model);
+                let entry = we
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.get(i as usize).cloned());
+                let Some(entry) = entry else {
+                    return;
+                };
+
+                if wizard.get_tv_name().is_empty() {
+                    let default = if entry.name.is_empty() {
+                        entry.address.clone()
+                    } else {
+                        entry.name.clone()
+                    };
+                    wizard.set_tv_name(SharedString::from(default));
                 }
+                wizard.set_selected_vendor(SharedString::from(entry.vendor.as_str()));
+                wizard.set_selected_address(SharedString::from(entry.address.as_str()));
+                wizard.set_selected_hw_model(SharedString::from(entry.hw_model.as_str()));
                 if wizard.get_system_profile().is_empty() {
                     wizard.set_system_profile("default".into());
                 }
+                // Clear stale schema rows from a prior session so the
+                // form starts blank if the fetch is slow.
+                wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
                 wizard.set_step(2);
+
+                let d = d.clone();
+                let app_weak = app.as_weak();
+                let vendor = entry.vendor.clone();
+                tokio::spawn(async move {
+                    fetch_and_publish_schema(d, app_weak, vendor, entry).await;
+                });
             }
             2 => {
-                // Configure → Pair: kick off pair_tv with collected fields.
+                // Configure → Pair: kick off pair_tv. Collected
+                // pairing-form values come from the dynamic
+                // `schema-fields` model; the daemon then validates
+                // each field server-side per
+                // `Manager1.AddTv` (see plan5 phase 1).
                 let name = wizard.get_tv_name().to_string();
                 if name.is_empty() {
                     return;
                 }
-                let i = wizard.get_selected_index();
-                if i < 0 {
-                    return;
-                }
-                let model = wizard.get_discovered();
-                let Some(tv) = model.row_data(i as usize) else {
-                    return;
-                };
-                let vendor = tv.vendor.to_string();
-                let address = tv.address.to_string();
-                let mac = wizard.get_manual_mac().to_string();
-                let wake_id = if mac.is_empty() { None } else { Some(mac) };
+                let vendor = wizard.get_selected_vendor().to_string();
+                let config_json = build_config_json_from_schema(&wizard.get_schema_fields());
                 let managed = wizard.get_managed();
 
                 wizard.set_step(3);
@@ -678,7 +837,7 @@ fn register_callbacks(
                 let d = d.clone();
                 let app_weak = app.as_weak();
                 tokio::spawn(async move {
-                    run_wizard_pair(d, app_weak, name, vendor, address, wake_id, managed).await;
+                    run_wizard_pair(d, app_weak, name, vendor, config_json, managed).await;
                 });
             }
             // Pair → Done. Only allowed when pair_phase == "complete".
@@ -720,18 +879,11 @@ fn register_callbacks(
         };
         let wizard = app.global::<PairingWizard>();
         let name = wizard.get_tv_name().to_string();
-        let i = wizard.get_selected_index();
-        if i < 0 || name.is_empty() {
+        if name.is_empty() {
             return;
         }
-        let model = wizard.get_discovered();
-        let Some(tv) = model.row_data(i as usize) else {
-            return;
-        };
-        let vendor = tv.vendor.to_string();
-        let address = tv.address.to_string();
-        let mac = wizard.get_manual_mac().to_string();
-        let wake_id = if mac.is_empty() { None } else { Some(mac) };
+        let vendor = wizard.get_selected_vendor().to_string();
+        let config_json = build_config_json_from_schema(&wizard.get_schema_fields());
         let managed = wizard.get_managed();
 
         wizard.set_pair_phase(SharedString::default());
@@ -740,7 +892,7 @@ fn register_callbacks(
         let d = d.clone();
         let app_weak = app.as_weak();
         tokio::spawn(async move {
-            run_wizard_pair(d, app_weak, name, vendor, address, wake_id, managed).await;
+            run_wizard_pair(d, app_weak, name, vendor, config_json, managed).await;
         });
     });
 
@@ -813,19 +965,34 @@ fn register_callbacks(
             wizard.set_manual_ip(v);
         }
     });
+
+    // Field-edit writeback for the dynamic step-2 form. Slint can't
+    // mutate struct fields inside a `[T]` model directly, so each
+    // row's `FieldRenderer.value-edited(v)` round-trips through Rust
+    // which writes the new value back into `schema-fields[i]`.
     let app_weak = app.as_weak();
-    wizard.on_manual_mac_edited(move |v| {
-        if let Some(app) = app_weak.upgrade() {
-            let wizard = app.global::<PairingWizard>();
-            wizard.set_manual_mac(v);
+    wizard.on_field_value_edited(move |i, v| {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let wizard = app.global::<PairingWizard>();
+        let model = wizard.get_schema_fields();
+        let Some(mut row) = model.row_data(i as usize) else {
+            return;
+        };
+        row.value = v;
+        if let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() {
+            vec_model.set_row_data(i as usize, row);
         }
     });
 
-    // Manual-add: synthesize a discovered-TV row from the user's
-    // typed vendor + IP, append it to the wizard model, select it,
-    // and advance to Configure. From step 2 on the flow is identical
-    // to the SSDP path.
+    // Manual-add: synthesize an entry from the user's typed vendor +
+    // IP, append it to the Rust source-of-truth + Slint model, select
+    // it, and advance to Configure where the schema-driven form takes
+    // over. From step 2 on the flow is identical to the SSDP path.
     let app_weak = app.as_weak();
+    let we = wizard_entries.clone();
+    let d = daemon.clone();
     wizard.on_manual_add(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -844,34 +1011,44 @@ fn register_callbacks(
         }
         info!(vendor = %vendor, ip = %ip, "wizard: manual add");
 
-        let synthetic = WizardDiscoveredTv {
-            id: SharedString::default(),
-            name: SharedString::default(),
-            vendor: SharedString::from(vendor.clone()),
-            address: SharedString::from(ip.clone()),
-            hw_model: SharedString::default(),
+        let entry = WizardEntry {
+            id: String::new(),
+            name: String::new(),
+            vendor: vendor.clone(),
+            address: ip.clone(),
+            hw_model: String::new(),
+            vendor_data: HashMap::new(),
         };
 
-        // Append to existing list (or create a fresh one) so any
-        // already-discovered TVs aren't lost.
-        let model = wizard.get_discovered();
-        let mut rows: Vec<WizardDiscoveredTv> = (0..model.row_count())
-            .filter_map(|i| model.row_data(i))
-            .collect();
-        rows.push(synthetic);
-        let new_index = (rows.len() - 1) as i32;
-        wizard.set_discovered(ModelRc::new(VecModel::from(rows)));
+        // Append to both the Rust-owned source-of-truth and the
+        // Slint model so the new row participates in selection /
+        // step transitions like a discovered one.
+        let new_index = if let Ok(mut entries) = we.lock() {
+            entries.push(entry.clone());
+            let idx = (entries.len() - 1) as i32;
+            publish_wizard_entries(&wizard, &entries);
+            idx
+        } else {
+            return;
+        };
         wizard.set_selected_index(new_index);
-        // Also publish individual selected-* fields so the wizard
-        // doesn't have to round-trip through model row indexing for
-        // step 2's vendor / address display.
-        wizard.set_selected_vendor(SharedString::from(vendor));
-        wizard.set_selected_address(SharedString::from(ip));
+        wizard.set_selected_vendor(SharedString::from(vendor.as_str()));
+        wizard.set_selected_address(SharedString::from(ip.as_str()));
         wizard.set_selected_hw_model(SharedString::default());
+        if wizard.get_tv_name().is_empty() {
+            wizard.set_tv_name(SharedString::from(ip.as_str()));
+        }
         if wizard.get_system_profile().is_empty() {
             wizard.set_system_profile("default".into());
         }
+        wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
         wizard.set_step(2);
+
+        let d = d.clone();
+        let app_weak = app.as_weak();
+        tokio::spawn(async move {
+            fetch_and_publish_schema(d, app_weak, vendor, entry).await;
+        });
     });
 }
 
@@ -886,7 +1063,6 @@ fn reset_wizard(app: &AppWindow) {
     wizard.set_managed(true);
     wizard.set_manual_vendor("lg".into());
     wizard.set_manual_ip(SharedString::default());
-    wizard.set_manual_mac(SharedString::default());
     wizard.set_selected_vendor(SharedString::default());
     wizard.set_selected_address(SharedString::default());
     wizard.set_selected_hw_model(SharedString::default());
@@ -895,6 +1071,7 @@ fn reset_wizard(app: &AppWindow) {
     wizard.set_pair_phase(SharedString::default());
     wizard.set_pair_message(SharedString::default());
     wizard.set_discovered(ModelRc::new(VecModel::<WizardDiscoveredTv>::default()));
+    wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
 }
 
 /// Drive a single discovery scan and stream results into the wizard's
@@ -902,7 +1079,11 @@ fn reset_wizard(app: &AppWindow) {
 /// before invoking `discover_tvs` so signals emitted during the call
 /// are captured. v1: the daemon emits in a burst right before the
 /// RPC returns, but the subscription pattern is forward-compatible.
-async fn run_wizard_discovery(daemon: Arc<DaemonClient>, app_weak: slint::Weak<AppWindow>) {
+async fn run_wizard_discovery(
+    daemon: Arc<DaemonClient>,
+    wizard_entries: WizardEntries,
+    app_weak: slint::Weak<AppWindow>,
+) {
     // v1: the daemon currently emits DiscoveryFound signals in a burst
     // right before discover_tvs returns, so subscribing here adds no
     // streaming benefit yet — we just take the synchronous RPC return.
@@ -911,28 +1092,27 @@ async fn run_wizard_discovery(daemon: Arc<DaemonClient>, app_weak: slint::Weak<A
     // DaemonClient; the wire shape is forward-compatible).
     match daemon.discover_tvs(5000).await {
         Ok(tvs) => {
-            // `vendor_data` (sixth tuple element) carries autofill keys
-            // matching the vendor's pairing schema — most importantly
-            // `vendor_data["mac"]` from the daemon's ARP enrichment for
-            // IP-addressed backends. The wizard's static layout doesn't
-            // consume it yet; that hookup arrives with the schema-driven
-            // form renderer, which feeds discovery autofill into each
-            // PairingField whose `autofill = "discovery.<key>"` matches.
-            let rows: Vec<WizardDiscoveredTv> = tvs
+            let entries: Vec<WizardEntry> = tvs
                 .into_iter()
                 .map(
-                    |(id, name, address, hw_id, vendor, _vendor_data)| WizardDiscoveredTv {
-                        id: SharedString::from(id),
-                        name: SharedString::from(name),
-                        vendor: SharedString::from(vendor),
-                        address: SharedString::from(address),
-                        hw_model: SharedString::from(hw_id.model.unwrap_or_default()),
+                    |(id, name, address, hw_id, vendor, vendor_data)| WizardEntry {
+                        id,
+                        name,
+                        vendor,
+                        address,
+                        hw_model: hw_id.model.unwrap_or_default(),
+                        vendor_data,
                     },
                 )
                 .collect();
+            // Replace the Rust-owned source-of-truth before Slint sees
+            // anything — the Slint view is derived from it.
+            if let Ok(mut e) = wizard_entries.lock() {
+                *e = entries.clone();
+            }
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
-                wizard.set_discovered(ModelRc::new(VecModel::from(rows)));
+                publish_wizard_entries(&wizard, &entries);
                 wizard.set_discovery_streaming(false);
             });
         }
@@ -947,17 +1127,74 @@ async fn run_wizard_discovery(daemon: Arc<DaemonClient>, app_weak: slint::Weak<A
     }
 }
 
-/// Build vendor-agnostic config JSON for pairing via daemon.
+/// Build the pairing config JSON from the wizard's dynamic
+/// `schema-fields` model. Walks each row, drops empty optional
+/// fields, and emits `{ <name>: <value>, ... }` matching the
+/// vendor's pairing-form schema's `name` keys. The daemon then
+/// validates each value server-side via `Manager1.AddTv`.
 ///
-/// Matches the CLI's `build_pairing_config_json` shape: each vendor
-/// connector accepts `address` and `wake_id` via serde aliases
-/// alongside its native field names. Empty `wake_id` → field omitted.
-fn build_pairing_config_json(address: &str, wake_id: Option<&str>) -> String {
-    let mut config = serde_json::json!({ "address": address });
-    if let Some(wid) = wake_id.filter(|s| !s.is_empty()) {
-        config["wake_id"] = serde_json::Value::String(wid.to_string());
+/// Bool fields convert to JSON booleans; numeric fields (port /
+/// int) convert to JSON numbers when parseable, falling back to
+/// string. Strings (including ip / mac / password / path) stay
+/// strings.
+fn build_config_json_from_schema(model: &ModelRc<PairingFieldRow>) -> String {
+    let mut obj = serde_json::Map::new();
+    for i in 0..model.row_count() {
+        let Some(row) = model.row_data(i) else {
+            continue;
+        };
+        let value = row.value.to_string();
+        // Skip empty optional fields so the daemon's schema
+        // validator treats them as absent (not as "" — that's a
+        // typed required-field failure for required fields).
+        if value.is_empty() && !row.required {
+            continue;
+        }
+        let json_val = match row.field_type.as_str() {
+            "bool" => serde_json::Value::Bool(value == "true"),
+            "port" | "int" => value
+                .parse::<i64>()
+                .map(serde_json::Value::from)
+                .unwrap_or_else(|_| serde_json::Value::String(value)),
+            _ => serde_json::Value::String(value),
+        };
+        obj.insert(row.name.to_string(), json_val);
     }
-    config.to_string()
+    serde_json::Value::Object(obj).to_string()
+}
+
+/// Fetch the vendor's pairing-form schema and publish autofilled
+/// rows into the wizard's `schema-fields` model. Failure leaves
+/// the model empty and surfaces the error in `discovery-error`
+/// (the closest existing inline-message slot until phase 5 lands
+/// the dedicated `Errors.pairing` channel).
+async fn fetch_and_publish_schema(
+    daemon: Arc<DaemonClient>,
+    app_weak: slint::Weak<AppWindow>,
+    vendor: String,
+    entry: WizardEntry,
+) {
+    match daemon.get_pairing_schema(&vendor).await {
+        Ok(schema) => {
+            let raw_rows = autofill_schema(&schema, &entry);
+            on_ui(&app_weak, move |app| {
+                let wizard = app.global::<PairingWizard>();
+                let rows: Vec<PairingFieldRow> = raw_rows
+                    .into_iter()
+                    .map(AutofilledRow::into_slint)
+                    .collect();
+                wizard.set_schema_fields(ModelRc::new(VecModel::from(rows)));
+            });
+        }
+        Err(e) => {
+            warn!(vendor = %vendor, error = %e, "GetPairingSchema failed");
+            let msg = format!("{e}");
+            on_ui(&app_weak, move |app| {
+                let wizard = app.global::<PairingWizard>();
+                wizard.set_discovery_error(SharedString::from(msg));
+            });
+        }
+    }
 }
 
 /// Run a `pair_tv` call with live progress updates streamed into the
@@ -968,8 +1205,7 @@ async fn run_wizard_pair(
     app_weak: slint::Weak<AppWindow>,
     name: String,
     vendor: String,
-    address: String,
-    wake_id: Option<String>,
+    config_json: String,
     managed: bool,
 ) {
     use futures_util::StreamExt;
@@ -981,7 +1217,7 @@ async fn run_wizard_pair(
         Err(e) => {
             warn!(error = %e, "PairingProgress subscribe failed; falling back to phase-less pair");
             // Fall through and just call pair_tv without progress updates.
-            run_pair_no_progress(daemon, app_weak, name, vendor, address, wake_id, managed).await;
+            run_pair_no_progress(daemon, app_weak, name, vendor, config_json, managed).await;
             return;
         }
     };
@@ -998,7 +1234,6 @@ async fn run_wizard_pair(
         }
     });
 
-    let config_json = build_pairing_config_json(&address, wake_id.as_deref());
     let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
     drainer.abort();
 
@@ -1027,11 +1262,9 @@ async fn run_pair_no_progress(
     app_weak: slint::Weak<AppWindow>,
     name: String,
     vendor: String,
-    address: String,
-    wake_id: Option<String>,
+    config_json: String,
     managed: bool,
 ) {
-    let config_json = build_pairing_config_json(&address, wake_id.as_deref());
     let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
     on_ui(&app_weak, move |app| {
         let wizard = app.global::<PairingWizard>();

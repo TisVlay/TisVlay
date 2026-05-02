@@ -24,6 +24,31 @@ export struct VendorOption {
     name: string,
 }
 
+// One row in the dynamic pairing-form schema. Mirrors
+// `tisvlay_core::pairing_schema::PairingField` plus a `value` slot
+// for the user's current input. The wizard's step-2 form renders
+// `for row in PairingWizard.schema-fields: FieldRenderer { row; ... }`.
+//
+// `field-type` is the kebab-case wire string from
+// `PairingFieldType` ("string" / "password" / "ip" / "mac" / "port" /
+// "int" / "bool" / "select" / "path"); `FieldRenderer` switches on
+// this to pick the right widget.
+//
+// `value` is two-way synced via `PairingWizard.field-value-edited`
+// — Slint can't mutate struct fields inside a `[T]` directly, so
+// edits round-trip through Rust which writes the new row back into
+// the model.
+export struct PairingFieldRow {
+    name: string,
+    label: string,
+    helper: string,
+    field-type: string,
+    required: bool,
+    placeholder: string,
+    options: [string],
+    value: string,
+}
+
 export global PairingWizard {
     // -- Driven from Rust --
     /// Whether the wizard is currently displayed. Set true on
@@ -47,6 +72,17 @@ export global PairingWizard {
     in-out property <string> selected-address;
     in-out property <string> selected-hw-model;
 
+    /// Dynamic pairing-form schema for the currently-selected vendor.
+    /// Populated by Rust on entry to step 2 by fetching
+    /// `Manager1.GetPairingSchema(vendor)` and applying autofill
+    /// from each row's `vendor_data` map (per
+    /// `PairingField::autofill = "discovery.<key>"`).
+    /// `field-value-edited(index, value)` is the writeback channel
+    /// — Slint emits it when a `FieldRenderer`'s value changes;
+    /// Rust mutates the model row in place.
+    in-out property <[PairingFieldRow]> schema-fields;
+    callback field-value-edited(int, string);
+
     // -- Two-way: Rust seeds, the wizard's controls write back --
     in-out property <int> selected-index: -1;
     in-out property <string> tv-name;
@@ -54,7 +90,6 @@ export global PairingWizard {
     in-out property <bool> managed: true;
     in-out property <string> manual-vendor: "lg";
     in-out property <string> manual-ip;
-    in-out property <string> manual-mac;
 
     // -- Callbacks --
     callback cancel();
@@ -69,6 +104,5 @@ export global PairingWizard {
     callback managed-toggled(bool);
     callback manual-vendor-edited(string);
     callback manual-ip-edited(string);
-    callback manual-mac-edited(string);
     callback manual-add();
 }

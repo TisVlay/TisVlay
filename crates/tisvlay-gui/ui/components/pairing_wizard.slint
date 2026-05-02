@@ -12,11 +12,78 @@
 // callback interfaces and the outer pane forwards them to the
 // global.
 
-import { Button, CheckBox, ComboBox, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
+import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc } from "../widgets.slint";
+
+// =============================================================================
+// FieldRenderer — renders one row of the dynamic pairing-form schema.
+// =============================================================================
+//
+// Switches on `row.field-type` (kebab-case wire string from
+// `tisvlay_core::pairing_schema::PairingFieldType`) to pick the right
+// widget. All edits round-trip through `value-edited(string)` —
+// Slint can't mutate struct fields inside a `[T]` list, so the parent
+// (`StepConfigure`) emits an indexed writeback to Rust which mutates
+// the model row.
+//
+// Only renders the input control + optional helper. The label is
+// rendered by the parent layout so all fields have visually-aligned
+// labels (matching the existing TisVlay form-label rhythm).
+component FieldRenderer {
+    in property <PairingFieldRow> field;
+    callback value-edited(string);
+
+    property <bool> is-line-edit:
+           root.field.field-type == "string"
+        || root.field.field-type == "ip"
+        || root.field.field-type == "mac"
+        || root.field.field-type == "port"
+        || root.field.field-type == "int"
+        || root.field.field-type == "path";
+
+    property <bool> is-mono:
+           root.field.field-type == "ip"
+        || root.field.field-type == "mac"
+        || root.field.field-type == "path";
+
+    VerticalLayout {
+        spacing: Design.gap-form;
+
+        // Input control (label is rendered by parent so all rows align).
+        if root.is-line-edit: LineEditField {
+            placeholder-text: root.field.placeholder;
+            text: root.field.value;
+            font-family: root.is-mono ? "ui-monospace, monospace" : "";
+            edited(v) => { root.value-edited(v); }
+        }
+        if root.field.field-type == "password": LineEdit {
+            placeholder-text: root.field.placeholder;
+            text: root.field.value;
+            input-type: password;
+            edited(v) => { root.value-edited(v); }
+        }
+        if root.field.field-type == "bool": CheckBox {
+            text: root.field.label;
+            checked: root.field.value == "true";
+            toggled => { root.value-edited(self.checked ? "true" : "false"); }
+        }
+        if root.field.field-type == "select": ComboBox {
+            model: root.field.options;
+            current-value: root.field.value;
+            selected(v) => { root.value-edited(v); }
+        }
+
+        if root.field.helper != "": Text {
+            text: root.field.helper;
+            color: Theme.text-faint;
+            font-size: Design.font-mini;
+            wrap: word-wrap;
+        }
+    }
+}
 
 // =============================================================================
 // Stepper — 4 numbered circles with labels, connected by lines.
@@ -235,11 +302,9 @@ component StepDiscover {
     in-out property <int> selected-index;
     in-out property <string> manual-vendor;
     in-out property <string> manual-ip;
-    in-out property <string> manual-mac;
     callback selection-changed(int);
     callback manual-vendor-edited(string);
     callback manual-ip-edited(string);
-    callback manual-mac-edited(string);
     callback manual-add();
 
     // Display name for the currently-selected vendor id. Falls back to
@@ -485,33 +550,20 @@ component StepDiscover {
                     }
 
                     VerticalLayout {
-                        horizontal-stretch: 2;
-                        spacing: Design.gap-form;
-                        Text {
-                            text: @tr("MAC (optional)");
-                            color: Theme.text;
-                            font-size: Design.font-helper;
-                            font-weight: 500;
-                        }
-                        LineEditField {
-                            placeholder-text: "AA:BB:CC:DD:EE:FF";
-                            font-family: "ui-monospace, monospace";
-                            text <=> root.manual-mac;
-                            edited(v) => { root.manual-mac-edited(v); }
-                        }
-                    }
-
-                    VerticalLayout {
                         alignment: end;
                         Button {
-                            text: @tr("Add manually");
+                            text: @tr("Continue");
                             enabled: root.manual-ip != "";
                             clicked => { root.manual-add(); }
                         }
                     }
                 }
                 Text {
-                    text: @tr("MAC enables Wake-on-LAN — without it the daemon can't power this TV on from deep standby.");
+                    // Vendor-specific extras (MAC for Wake-on-LAN, API
+                    // keys, ports, etc.) are filled in the next step
+                    // from the vendor's pairing schema; we just need
+                    // enough here to identify the TV.
+                    text: @tr("You'll fill the rest (MAC, etc.) in the next step.");
                     color: Theme.text-faint;
                     font-size: Design.font-mini;
                     wrap: word-wrap;
@@ -532,9 +584,15 @@ component StepConfigure {
     in-out property <string> system-profile;
     in-out property <bool> managed;
     in property <[string]> system-profiles;
+    /// Vendor's pairing-form schema rows (driven by Rust through
+    /// `Manager1.GetPairingSchema`, autofilled from the selected
+    /// TV's `vendor_data`). Empty schema → the field-renderer block
+    /// disappears and the user just confirms name/profile/managed.
+    in property <[PairingFieldRow]> schema-fields;
     callback name-edited(string);
     callback profile-selected(string);
     callback managed-toggled(bool);
+    callback field-value-edited(int, string);
 
     property <string> vendor-display:
         selected-vendor == "lg" ? "LG WebOS"
@@ -611,6 +669,24 @@ component StepConfigure {
                         font-family: "ui-monospace, monospace";
                     }
                 }
+            }
+        }
+
+        // Vendor pairing-form schema (dynamic — driven by
+        // `Manager1.GetPairingSchema`). Bool fields render their own
+        // label inside the checkbox; the rest get a label rendered
+        // above the input here so all rows have a consistent rhythm.
+        for f[i] in root.schema-fields: VerticalLayout {
+            spacing: Design.gap-form;
+            if f.field-type != "bool": Text {
+                text: f.required ? f.label + " *" : f.label;
+                color: Theme.text;
+                font-size: Design.font-meta;
+                font-weight: 500;
+            }
+            FieldRenderer {
+                field: f;
+                value-edited(v) => { root.field-value-edited(i, v); }
             }
         }
 
@@ -958,11 +1034,9 @@ export component PairingWizardPane inherits Rectangle {
                     selected-index: PairingWizard.selected-index;
                     manual-vendor <=> PairingWizard.manual-vendor;
                     manual-ip <=> PairingWizard.manual-ip;
-                    manual-mac <=> PairingWizard.manual-mac;
                     selection-changed(i) => { PairingWizard.selected-changed(i); }
                     manual-vendor-edited(v) => { PairingWizard.manual-vendor-edited(v); }
                     manual-ip-edited(v) => { PairingWizard.manual-ip-edited(v); }
-                    manual-mac-edited(v) => { PairingWizard.manual-mac-edited(v); }
                     manual-add => { PairingWizard.manual-add(); }
                 }
                 if PairingWizard.step == 2: StepConfigure {
@@ -973,9 +1047,11 @@ export component PairingWizardPane inherits Rectangle {
                     system-profile: PairingWizard.system-profile;
                     managed: PairingWizard.managed;
                     system-profiles: root.system-profiles;
+                    schema-fields: PairingWizard.schema-fields;
                     name-edited(v) => { PairingWizard.name-edited(v); }
                     profile-selected(v) => { PairingWizard.profile-selected(v); }
                     managed-toggled(v) => { PairingWizard.managed-toggled(v); }
+                    field-value-edited(i, v) => { PairingWizard.field-value-edited(i, v); }
                 }
                 if PairingWizard.step == 3: StepPair {
                     phase: PairingWizard.pair-phase;
