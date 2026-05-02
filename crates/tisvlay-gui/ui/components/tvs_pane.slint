@@ -789,19 +789,43 @@ component TvDetail inherits Rectangle {
 
                 // -- Info --
                 //
-                // Address-book contact pattern: a small pencil in the
-                // header flips name + vendor `UserInput` rows to
-                // editable inputs (Cancel / Save bar replaces the
-                // pencil). Read-only identity rows (TV ID, hardware,
-                // DRM connector) and `Diagnostic` vendor rows stay
-                // visible and uneditable in both modes — backend-
-                // discovered values can only be refreshed via re-pair.
-                Group {
-                    title: @tr("INFO");
+                // Address-book contact pattern: a small pencil on the
+                // INFO header line flips Name + vendor `UserInput`
+                // rows to editable inputs; ✓/✗ replace the pencil
+                // while editing. Read-only identity rows (TV ID,
+                // hardware, DRM connector) and `Diagnostic` vendor
+                // rows stay visible and uneditable in both modes —
+                // backend-discovered values can only be refreshed
+                // via re-pair.
+                //
+                // Inlines the `Group` widget's title-row + card
+                // structure rather than wrapping `Group` so the
+                // action icons can sit on the title row itself
+                // (Slint v1 has no multi-`@children` slot, so a
+                // generic `Group { actions: ... }` API isn't
+                // available).
+                VerticalLayout {
+                    spacing: 0;
 
+                    // Title row — same styling as `Group`'s title,
+                    // plus right-aligned action icons.
                     HorizontalLayout {
-                        alignment: end;
+                        padding-left: 2px;
+                        padding-bottom: Design.gap-stack;
                         spacing: Design.gap-form;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: @tr("INFO");
+                                color: Theme.text-dim;
+                                font-size: Design.font-mini;
+                                font-weight: 600;
+                                letter-spacing: 0.6px;
+                            }
+                        }
+                        // Spacer pushes action icons to the right.
+                        Rectangle { horizontal-stretch: 1; }
                         if !root.in-edit-mode: IconBtn {
                             source: Icons.edit;
                             clicked => { EditPane.start(root.tv.uuid); }
@@ -818,59 +842,79 @@ component TvDetail inherits Rectangle {
                         }
                     }
 
-                    if root.in-edit-mode && EditPane.error != "": InlineError {
-                        title: @tr("Couldn't save TV config");
-                        message: EditPane.error;
-                        dismissable: false;
-                    }
-
-                    // Editable rows in edit mode: friendly name +
-                    // vendor `UserInput` schema fields (LG: IP, MAC).
-                    // The schema form is the same component the
-                    // pairing wizard uses, so per-field validation +
-                    // server-side error routing are shared.
-                    if root.in-edit-mode: VerticalLayout {
-                        spacing: Design.gap-row;
+                    // Card — same surface treatment as `Group`'s
+                    // body, with the edit form / read-only rows.
+                    Rectangle {
+                        background: Theme.surface;
+                        border-color: Theme.border;
+                        border-width: Design.border-thin;
+                        border-radius: Design.radius-card;
 
                         VerticalLayout {
-                            spacing: Design.gap-form;
-                            Text {
-                                text: @tr("Friendly name");
-                                color: Theme.text;
-                                font-size: Design.font-meta;
-                                font-weight: 500;
-                            }
-                            LineEditField {
-                                placeholder-text: @tr("e.g. Living Room G4");
-                                text <=> EditPane.name;
-                                edited(v) => { EditPane.name-edited(v); }
-                            }
-                        }
+                            width: 100%;
+                            padding: Design.pad-card;
+                            spacing: 12px;
 
-                        SchemaForm {
-                            schema-fields: EditPane.fields;
-                            value-edited(i, v) => { EditPane.field-edited(i, v); }
+                            if root.in-edit-mode && EditPane.error != "": InlineError {
+                                title: @tr("Couldn't save TV config");
+                                message: EditPane.error;
+                                dismissable: false;
+                            }
+
+                            // Editable rows in edit mode: friendly
+                            // name + vendor `UserInput` schema
+                            // fields (LG: IP, MAC). The schema form
+                            // is the same component the pairing
+                            // wizard uses, so per-field validation
+                            // + server-side error routing are
+                            // shared.
+                            if root.in-edit-mode: VerticalLayout {
+                                spacing: Design.gap-row;
+
+                                VerticalLayout {
+                                    spacing: Design.gap-form;
+                                    Text {
+                                        text: @tr("Friendly name");
+                                        color: Theme.text;
+                                        font-size: Design.font-meta;
+                                        font-weight: 500;
+                                    }
+                                    LineEditField {
+                                        placeholder-text: @tr("e.g. Living Room G4");
+                                        text <=> EditPane.name;
+                                        edited(v) => { EditPane.name-edited(v); }
+                                    }
+                                }
+
+                                SchemaForm {
+                                    schema-fields: EditPane.fields;
+                                    value-edited(i, v) => { EditPane.field-edited(i, v); }
+                                }
+                            }
+
+                            LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
+                            // Vendor-specific rows (LG: IP + MAC;
+                            // future backends: serial port, API
+                            // endpoint, …). Backend declines to
+                            // surface secrets — LG omits
+                            // `client_key`. In edit mode, the
+                            // `UserInput` subset (IP, MAC) is moved
+                            // into the schema form above; only
+                            // `Diagnostic` rows (LG: scheme) remain
+                            // here.
+                            if !root.in-edit-mode: VerticalLayout {
+                                for entry in root.tv.vendor-info: LabeledRow {
+                                    label: entry.label;
+                                    value: entry.value;
+                                    mono: true;
+                                }
+                            }
+                            LabeledRow { label: @tr("Manufacturer"); value: root.tv.hw-manufacturer; }
+                            LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }
+                            LabeledRow { label: @tr("Serial"); value: root.tv.hw-serial; mono: true; }
+                            LabeledRow { label: @tr("DRM connector"); value: root.tv.desktop-connector; mono: true; }
                         }
                     }
-
-                    LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
-                    // Vendor-specific rows (LG: IP + MAC; future backends:
-                    // serial port, API endpoint, …). Backend declines to
-                    // surface secrets — LG omits `client_key`. In edit
-                    // mode, the `UserInput` subset (IP, MAC) is moved
-                    // into the schema form above; only `Diagnostic`
-                    // rows (LG: scheme) remain here.
-                    if !root.in-edit-mode: VerticalLayout {
-                        for entry in root.tv.vendor-info: LabeledRow {
-                            label: entry.label;
-                            value: entry.value;
-                            mono: true;
-                        }
-                    }
-                    LabeledRow { label: @tr("Manufacturer"); value: root.tv.hw-manufacturer; }
-                    LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }
-                    LabeledRow { label: @tr("Serial"); value: root.tv.hw-serial; mono: true; }
-                    LabeledRow { label: @tr("DRM connector"); value: root.tv.desktop-connector; mono: true; }
                 }
 
                 // -- Danger zone --
