@@ -13,7 +13,8 @@ import { Design } from "../design.slint";
 import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { Icons } from "../globals/icons.slint";
-import { DangerBtn, Chip, Group, OptimisticSlider, CopyBtn } from "../widgets.slint";
+import { DangerBtn, Chip, Group, InlineError, OptimisticSlider, CopyBtn } from "../widgets.slint";
+import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 
 export { WizardDiscoveredTv, VendorOption, DangerBtn, Chip, Group }
@@ -908,42 +909,73 @@ export component TvsPane {
         system-profiles: root.system-profiles;
     }
 
-    if !PairingWizard.active: HorizontalLayout {
+    if !PairingWizard.active: VerticalLayout {
         width: 100%;
         height: 100%;
         spacing: 0;
 
-        TvList {
-            tvs: root.tvs;
-            daemon-available: root.daemon-available;
-            selected-index <=> root.selected-index;
+        // Pane-level inline error surface (Kirigami inline-message
+        // pattern). Rust pushes failed user-initiated daemon
+        // callbacks here via `Errors.tvs`; the widget is sticky
+        // until the user dismisses or the slot clears.
+        if Errors.tvs.title != "" || Errors.tvs.message != "": Rectangle {
+            background: Theme.surface-alt;
+            HorizontalLayout {
+                width: 100%;
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 12px;
+                padding-bottom: 0;
+                InlineError {
+                    tone: Errors.tvs.tone == "" ? "error" : Errors.tvs.tone;
+                    title: Errors.tvs.title;
+                    message: Errors.tvs.message;
+                    action-label: Errors.tvs.action-label;
+                    action-clicked => { Errors.tvs-action(); }
+                    dismissed => {
+                        Errors.tvs = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                    }
+                }
+            }
         }
 
-        // Detail column — fills remaining width.
-        Rectangle {
-            horizontal-stretch: 1;
-            background: Theme.surface-alt;
+        HorizontalLayout {
+            width: 100%;
+            spacing: 0;
+            vertical-stretch: 1;
 
-            // Empty placeholder when no TV selected.
-            if root.selected-index < 0 || root.selected-index >= root.tvs.length: TvDetailEmpty {
-                width: 100%;
-                height: 100%;
+            TvList {
+                tvs: root.tvs;
+                daemon-available: root.daemon-available;
+                selected-index <=> root.selected-index;
             }
 
-            // One TvDetail per TV, only the selected one is visible. Keeps
-            // per-TV state (slider scroll position, etc.) intact when
-            // switching selections.
-            for tv[i] in root.tvs: TvDetail {
-                width: parent.width;
-                height: parent.height;
-                visible: i == root.selected-index;
-                tv: tv;
-                system-profiles: root.system-profiles;
-                user-profiles: root.user-profiles;
+            // Detail column — fills remaining width.
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.surface-alt;
 
-                request-remove => {
-                    root.pending-remove-id = tv.id;
-                    root.pending-remove-name = tv.name;
+                // Empty placeholder when no TV selected.
+                if root.selected-index < 0 || root.selected-index >= root.tvs.length: TvDetailEmpty {
+                    width: 100%;
+                    height: 100%;
+                }
+
+                // One TvDetail per TV, only the selected one is visible. Keeps
+                // per-TV state (slider scroll position, etc.) intact when
+                // switching selections.
+                for tv[i] in root.tvs: TvDetail {
+                    width: parent.width;
+                    height: parent.height;
+                    visible: i == root.selected-index;
+                    tv: tv;
+                    system-profiles: root.system-profiles;
+                    user-profiles: root.user-profiles;
+
+                    request-remove => {
+                        root.pending-remove-id = tv.id;
+                        root.pending-remove-name = tv.name;
+                    }
                 }
             }
         }

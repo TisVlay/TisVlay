@@ -186,6 +186,187 @@ export component LineEditField inherits Rectangle {
 
 
 // =============================================================================
+// InlineError — Kirigami-style sticky inline message.
+// =============================================================================
+//
+// Modeled on KDE Kirigami's [InlineMessage][1] — sticky by default
+// (no auto-dismiss), four tones (info / positive / warning /
+// error), optional action button on the right plus a close X.
+// Visible iff `message != ""`; dismissed when the user clicks
+// close or when Rust clears the slot (e.g. on retry success).
+//
+// Used by panes via the `Errors` global (one slot per pane). A
+// failed user-initiated daemon callback pushes a typed message
+// into `Errors.<pane>` and this widget renders it directly under
+// the pane's header. Sticky placement matches KDE convention so
+// users have time to read & act before dismissing.
+//
+// [1]: https://develop.kde.org/docs/getting-started/kirigami/components-inlinemessages/
+
+export component InlineError inherits Rectangle {
+    /// "info" | "success" | "warn" | "error". Drives both the
+    /// background tint and the leading glyph. Defaults to error
+    /// since user-initiated-action failures are the dominant case.
+    in property <string> tone: "error";
+    /// Headline (e.g. "Power-on failed"). Empty hides the message
+    /// entirely (the parent layout collapses).
+    in property <string> title;
+    /// Detail text (the underlying typed reason).
+    in property <string> message;
+    /// Optional action label (e.g. "Retry", "Edit MAC"). Empty
+    /// hides the action button.
+    in property <string> action-label;
+    /// Whether to show the trailing close (×) button. Off only
+    /// when the message is non-dismissable (e.g. a fatal pane
+    /// state). Defaults to on, matching Kirigami.
+    in property <bool> dismissable: true;
+    callback action-clicked();
+    callback dismissed();
+
+    property <bool> visible-content: root.title != "" || root.message != "";
+
+    property <brush> bg-color:
+          tone == "success" ? Theme.success-soft
+        : tone == "warn"    ? Theme.warn-soft
+        : tone == "info"    ? Theme.info-soft
+        : Theme.danger-soft;
+    property <brush> border-c:
+          tone == "success" ? Theme.success
+        : tone == "warn"    ? Theme.warn
+        : tone == "info"    ? Theme.info
+        : Theme.danger;
+    property <brush> text-c:
+          tone == "success" ? Theme.success-text
+        : tone == "warn"    ? Theme.warn-text
+        : tone == "info"    ? Theme.info-text
+        : Theme.danger-text;
+    property <string> glyph:
+          tone == "success" ? "✓"
+        : tone == "warn"    ? "!"
+        : tone == "info"    ? "i"
+        : "⚠";
+
+    height: visible-content ? content.preferred-height : 0;
+    background: bg-color;
+    border-color: border-c;
+    border-width: visible-content ? Design.border-thin : 0;
+    border-radius: Design.radius-card;
+    visible: visible-content;
+    animate height { duration: 150ms; easing: ease-out; }
+
+    content := HorizontalLayout {
+        width: 100%;
+        padding: 12px;
+        spacing: Design.gap-row;
+        alignment: stretch;
+
+        // Leading icon — uses a glyph instead of a freedesktop
+        // image so the inline message renders identically without
+        // an icon-theme dependency. Tone matches the border.
+        VerticalLayout {
+            alignment: start;
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: root.border-c;
+                Text {
+                    text: root.glyph;
+                    color: white;
+                    font-size: Design.font-helper;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+
+        // Title + body — vertically centered when there's no body.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-tight;
+            if root.title != "": Text {
+                text: root.title;
+                color: root.text-c;
+                font-size: Design.font-body;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            if root.message != "": Text {
+                text: root.message;
+                color: Theme.text;
+                font-size: Design.font-helper;
+                wrap: word-wrap;
+            }
+        }
+
+        // Optional action button (e.g. "Retry"). Tinted to match
+        // the inline message's tone so it's clearly the message's
+        // own affordance, not a generic page-level button.
+        if root.action-label != "": VerticalLayout {
+            alignment: center;
+            Rectangle {
+                background: action-touch.has-hover ? root.border-c : transparent;
+                border-color: root.border-c;
+                border-width: Design.border-thin;
+                border-radius: Design.radius-control;
+                min-height: Design.size-input;
+                min-width: 80px;
+                animate background { duration: 120ms; }
+                HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding-left: Design.gap-row;
+                    padding-right: Design.gap-row;
+                    alignment: center;
+                    Text {
+                        text: root.action-label;
+                        color: action-touch.has-hover ? white : root.text-c;
+                        font-size: Design.font-helper;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+                action-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.action-clicked(); }
+                }
+            }
+        }
+
+        // Trailing close (×). 24-px hit target keeps the click
+        // accessible without the glyph itself being oversized.
+        if root.dismissable: VerticalLayout {
+            alignment: start;
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 12px;
+                background: close-touch.has-hover ? root.border-c : transparent;
+                animate background { duration: 120ms; }
+                Text {
+                    text: "×";
+                    color: close-touch.has-hover ? white : root.text-c;
+                    font-size: Design.font-section;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+                close-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.dismissed(); }
+                }
+            }
+        }
+    }
+}
+
+
+// =============================================================================
 // OptimisticSlider — slider + readout that tracks user intent.
 // =============================================================================
 //

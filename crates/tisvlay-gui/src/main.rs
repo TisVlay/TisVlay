@@ -139,6 +139,25 @@ where
     .ok();
 }
 
+/// Push a user-initiated daemon-callback failure into the TVs
+/// pane's inline-error slot (see `Errors.tvs` global). The widget
+/// is sticky until dismissed, mirroring KDE's Kirigami inline-message
+/// convention. Background failures (state-watcher reconnects, etc.)
+/// are *not* routed here — they live in journald instead, since
+/// surfacing every transient flap would drown the user.
+fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: String) {
+    on_ui(app_weak, move |app| {
+        let errors = app.global::<Errors>();
+        errors.set_tvs(ErrorState {
+            kind: SharedString::default(),
+            tone: SharedString::from("error"),
+            title: SharedString::from(title),
+            message: SharedString::from(message),
+            action_label: SharedString::default(),
+        });
+    });
+}
+
 /// Convert the portal's RGB tuple (each in `[0, 1]`) into a Slint
 /// color, or `None` if any component is out of range — the
 /// xdg-desktop-portal Settings spec says out-of-range values should
@@ -640,6 +659,15 @@ fn register_callbacks(
     // can't outlive the function scope).
     let daemon_global = app.global::<Daemon>();
     let wizard = app.global::<PairingWizard>();
+    let errors_global = app.global::<Errors>();
+    // Inline-error action callback. v1 has no contextual actions
+    // wired (the stub-then-fill pattern from plan5 v2 Q2 — `kind`
+    // routing lands when the recovery flows do, e.g. "Edit MAC"
+    // tied to phase 8's edit-properties pane). Register a no-op
+    // so the Slint side has a handler bound; the close X is the
+    // only dismiss path users see today.
+    errors_global.on_tvs_action(|| {});
+    errors_global.on_pairing_action(|| {});
 
     // Slider drags coalesce per TV via `Coalescer`: each `changed(v)`
     // tick fires into the per-TV worker, which drains-keep-latest
@@ -651,13 +679,17 @@ fn register_callbacks(
     let volume_coalescer: Coalescer<String, u8> = Coalescer::new(|_, new| new, {
         let d = daemon.clone();
         let recs = reconcilers.clone();
+        let app_weak = app.as_weak();
         move |id: String, v: u8| {
             let d = d.clone();
             let recs = recs.clone();
+            let app_weak = app_weak.clone();
             async move {
                 recs.volume.dispatch(&id, v);
                 if let Err(e) = d.set_volume(&id, v).await {
-                    warn!(tv_id = %id, error = %e, "set_volume failed");
+                    let msg = format!("{e}");
+                    warn!(tv_id = %id, error = %msg, "set_volume failed");
+                    push_tvs_error(&app_weak, gettext("Couldn't change volume"), msg);
                 }
             }
         }
@@ -665,13 +697,17 @@ fn register_callbacks(
     let backlight_coalescer: Coalescer<String, u8> = Coalescer::new(|_, new| new, {
         let d = daemon.clone();
         let recs = reconcilers.clone();
+        let app_weak = app.as_weak();
         move |id: String, v: u8| {
             let d = d.clone();
             let recs = recs.clone();
+            let app_weak = app_weak.clone();
             async move {
                 recs.backlight.dispatch(&id, v);
                 if let Err(e) = d.set_backlight(&id, v).await {
-                    warn!(tv_id = %id, error = %e, "set_backlight failed");
+                    let msg = format!("{e}");
+                    warn!(tv_id = %id, error = %msg, "set_backlight failed");
+                    push_tvs_error(&app_weak, gettext("Couldn't change backlight"), msg);
                 }
             }
         }
@@ -683,12 +719,16 @@ fn register_callbacks(
     });
 
     let d = daemon.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_set_mute(move |tv_id, muted| {
         let d = d.clone();
+        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = d.set_mute(&tv_id, muted).await {
-                warn!(tv_id = %tv_id, error = %e, "set_mute failed");
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, error = %msg, "set_mute failed");
+                push_tvs_error(&app_weak, gettext("Couldn't change mute"), msg);
             }
         });
     });
@@ -699,8 +739,10 @@ fn register_callbacks(
     });
 
     let d = daemon.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_set_screen(move |tv_id, on| {
         let d = d.clone();
+        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             let result = if on {
@@ -709,19 +751,33 @@ fn register_callbacks(
                 d.screen_off(&tv_id).await
             };
             if let Err(e) = result {
-                warn!(tv_id = %tv_id, on, error = %e, "set_is_screen_on failed");
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, on, error = %msg, "set_is_screen_on failed");
+                push_tvs_error(
+                    &app_weak,
+                    if on {
+                        gettext("Couldn't turn screen on")
+                    } else {
+                        gettext("Couldn't turn screen off")
+                    },
+                    msg,
+                );
             }
         });
     });
 
     let d = daemon.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_switch_input(move |tv_id, input_id| {
         let d = d.clone();
+        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         let input_id = input_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = d.switch_input(&tv_id, &input_id).await {
-                warn!(tv_id = %tv_id, input = %input_id, error = %e, "switch_input failed");
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, input = %input_id, error = %msg, "switch_input failed");
+                push_tvs_error(&app_weak, gettext("Couldn't switch input"), msg);
             }
         });
     });
@@ -737,50 +793,66 @@ fn register_callbacks(
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = run_power_on_with_progress(d, app_weak, tv_id.clone()).await {
-                warn!(tv_id = %tv_id, error = %e, "power_on failed");
+            if let Err(e) = run_power_on_with_progress(d, app_weak.clone(), tv_id.clone()).await {
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, error = %msg, "power_on failed");
+                push_tvs_error(&app_weak, gettext("Power on failed"), msg);
             }
         });
     });
 
     let d = daemon.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_power_off(move |tv_id| {
         let d = d.clone();
+        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = d.power_off(&tv_id).await {
-                warn!(tv_id = %tv_id, error = %e, "power_off failed");
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, error = %msg, "power_off failed");
+                push_tvs_error(&app_weak, gettext("Power off failed"), msg);
             }
         });
     });
 
     let d = daemon.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_set_managed(move |tv_id, managed| {
         let d = d.clone();
+        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             let value = if managed { "true" } else { "false" };
             if let Err(e) = d.set_tv_option(&tv_id, "managed", value).await {
-                warn!(tv_id = %tv_id, managed, error = %e, "set_managed failed");
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, managed, error = %msg, "set_managed failed");
+                push_tvs_error(&app_weak, gettext("Couldn't update managed"), msg);
             }
         });
     });
 
     let d = daemon.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_set_system_profile(move |tv_id, profile| {
         let d = d.clone();
+        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         let profile = profile.to_string();
         tokio::spawn(async move {
             if let Err(e) = d.set_tv_system_profile(&tv_id, &profile).await {
-                warn!(tv_id = %tv_id, profile = %profile, error = %e, "set_system_profile failed");
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, profile = %profile, error = %msg, "set_system_profile failed");
+                push_tvs_error(&app_weak, gettext("Couldn't change system profile"), msg);
             }
         });
     });
 
     let s = session.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_set_user_profile(move |tv_id, profile| {
         let s = s.clone();
+        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         let profile = profile.to_string();
         tokio::spawn(async move {
@@ -788,53 +860,76 @@ fn register_callbacks(
             match session_ref.as_ref() {
                 Some(client) => {
                     if let Err(e) = client.set_tv_user_profile(&tv_id, &profile).await {
-                        warn!(tv_id = %tv_id, profile = %profile, error = %e, "set_user_profile failed");
+                        let msg = format!("{e}");
+                        warn!(tv_id = %tv_id, profile = %profile, error = %msg, "set_user_profile failed");
+                        push_tvs_error(&app_weak, gettext("Couldn't change user profile"), msg);
                     }
                 }
                 None => {
                     warn!(tv_id = %tv_id, "set_user_profile: session service unavailable");
+                    push_tvs_error(
+                        &app_weak,
+                        gettext("Session service unavailable"),
+                        gettext(
+                            "User-profile assignments require the per-user tisvlay-session service.",
+                        ),
+                    );
                 }
             }
         });
     });
 
     let d = daemon.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_set_primary_input(move |tv_id, input| {
         let d = d.clone();
+        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         let input = input.to_string();
         tokio::spawn(async move {
             if let Err(e) = d.set_tv_option(&tv_id, "primary_input", &input).await {
-                warn!(tv_id = %tv_id, input = %input, error = %e, "set_primary_input failed");
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, input = %input, error = %msg, "set_primary_input failed");
+                push_tvs_error(&app_weak, gettext("Couldn't change primary input"), msg);
             }
         });
     });
 
     let d = daemon.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_remove_tv(move |tv_id| {
         let d = d.clone();
+        let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = d.remove_tv(&tv_id).await {
-                warn!(tv_id = %tv_id, error = %e, "remove_tv failed");
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, error = %msg, "remove_tv failed");
+                push_tvs_error(&app_weak, gettext("Couldn't remove TV"), msg);
             }
         });
     });
 
     let d = daemon.clone();
     let s = session.clone();
+    let app_weak = app.as_weak();
     daemon_global.on_reload_config(move || {
         let d = d.clone();
         let s = s.clone();
+        let app_weak = app_weak.clone();
         tokio::spawn(async move {
             if let Err(e) = d.reload_config().await {
-                warn!(error = %e, "daemon reload_config failed");
+                let msg = format!("{e}");
+                warn!(error = %msg, "daemon reload_config failed");
+                push_tvs_error(&app_weak, gettext("Reload config failed"), msg);
             }
             let session_ref = s.read().await;
             if let Some(client) = session_ref.as_ref()
                 && let Err(e) = client.reload_config().await
             {
-                warn!(error = %e, "session reload_config failed");
+                let msg = format!("{e}");
+                warn!(error = %msg, "session reload_config failed");
+                push_tvs_error(&app_weak, gettext("Reload session config failed"), msg);
             }
         });
     });

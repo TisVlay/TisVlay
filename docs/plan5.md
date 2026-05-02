@@ -1,10 +1,15 @@
 # Plan 5 — Power-cycle robustness, MAC capture, vendor-agnostic config
 
-> **Status (in progress):** Phases 0, 4 (Power), and 1 shipped.
-> Pairing schema architecture (types + LG impl +
-> `GetPairingSchema` D-Bus method + schema-driven `AddTv`
-> validation) is live. Phase 3 (MAC discovery via ARP) in
-> flight next. Phases 2, 5, 6 not yet started.
+> **Status (in progress):** Phases 0, 1, 2, 3, 4 (Power), and 5
+> shipped. The office-TV silent-fail bug's full repair chain is
+> live end-to-end: typed errors surface; daemon ARPs the MAC
+> from the kernel after each SSDP hit and stuffs it into
+> `vendor_data`; the GUI wizard's step-2 form renders the LG
+> schema dynamically with autofill from `vendor_data`,
+> client-side validation lifecycle, server-side error routing,
+> and a Kirigami inline-error surface on the TVs pane. Phase 6
+> (smart Power button + connect-first PowerOn) is the last
+> remaining piece.
 >
 > | Phase | Done | Commits |
 > |---|---|---|
@@ -16,10 +21,13 @@
 > | **1** — LG `pairing_schema()` impl | ✅ | `8c3bafa` |
 > | **1** — `Manager1.GetPairingSchema(vendor)` D-Bus method | ✅ | `d4c739e` |
 > | **1** — schema-driven `AddTv` validation | ✅ | `7fd59b7` |
-> | **3** — MAC discovery via ARP (`vendor_data` map) | ⏳ next | |
-> | **2** — wizard renders dynamically | ⏳ | |
-> | **5** — Kirigami inline-error surface | ⏳ | |
-> | **6** — smart Power button + connect-first | ⏳ | |
+> | **3** — `vendor_data` field on `DiscoveredTv` | ✅ | `b7c718b` |
+> | **3** — `netlink::arp_lookup` helper | ✅ | `141cf43` |
+> | **3** — daemon enriches discovery with ARP-resolved MAC | ✅ | (ARP enrichment commit) |
+> | **2** — wizard renders dynamically (autofill from `vendor_data`) | ✅ | (schema-driven wizard commit) |
+> | **2** — per-field validation lifecycle + server-side routing | ✅ | (validation lifecycle commit) |
+> | **5** — Kirigami `InlineError` widget + `Errors` global | ✅ | (this commit) |
+> | **6** — smart Power button + connect-first | ⏳ next | |
 > | **4b** — `Pairing` / `Config` / `Connection` typed errors | partial (Config only); rest deferred | |
 > | **4** — `PowerCyclePhase::DirectConnect` + typed `Failed` | deferred to Phase 6 | |
 >
