@@ -22,6 +22,8 @@
 //! [1]: ../../../docs/plan5.md
 //! [2]: https://www.freedesktop.org/software/ModemManager/doc/latest/ModemManager/ModemManager-Errors.html
 
+pub mod config;
 pub mod power;
 
+pub use config::{ConfigError, ConfigErrorCode};
 pub use power::{PowerError, PowerErrorCode};

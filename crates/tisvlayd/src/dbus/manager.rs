@@ -137,14 +137,38 @@ impl ManagerService {
     ) -> Result<(ObjectPath<'static>, String), DaemonError> {
         info!(name = %name, vendor = %vendor, managed = %managed, "D-Bus: AddTv");
 
-        // Verify vendor is supported
-        if self.registry.get(vendor).is_none() {
-            return Err(DaemonError::UnknownVendor(vendor.to_string()));
-        }
+        // Verify vendor is supported.
+        let backend = self
+            .registry
+            .get(vendor)
+            .ok_or_else(|| DaemonError::UnknownVendor(vendor.to_string()))?;
 
         // Parse JSON config to serde_json::Value, then convert to toml::Value
         let json_value: serde_json::Value = serde_json::from_str(config_json)
             .map_err(|e| DaemonError::OperationFailed(format!("Invalid config JSON: {}", e)))?;
+
+        // Schema-driven validation. Each pairing field declared by
+        // the backend is canonically validated server-side before
+        // pairing kicks off — see `PairingField::validate`. Failure
+        // returns a typed `ConfigError::InvalidVendorConfig`
+        // mapping to a `org.tisvlay.Error.ConfigInvalidVendorConfig`
+        // D-Bus error so the GUI can surface a per-field message.
+        let json_obj = json_value.as_object().ok_or_else(|| {
+            DaemonError::OperationFailed("config_json must be a JSON object".to_string())
+        })?;
+        for field in backend.connector.pairing_schema() {
+            // Coerce JSON → string for the validator. Numbers + bools
+            // get their natural string repr so a port submitted as
+            // `3001` (number) validates the same as `"3001"` (string).
+            let value = match json_obj.get(&field.name) {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(serde_json::Value::Number(n)) => n.to_string(),
+                Some(serde_json::Value::Bool(b)) => b.to_string(),
+                Some(serde_json::Value::Null) | None => String::new(),
+                Some(other) => other.to_string(),
+            };
+            field.validate(&value).map_err(DaemonError::from)?;
+        }
 
         let vendor_config = json_to_toml(&json_value).map_err(|e| {
             DaemonError::OperationFailed(format!("Failed to convert config: {}", e))

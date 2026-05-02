@@ -154,6 +154,87 @@ pub struct PairingField {
     pub validation: Option<String>,
 }
 
+impl PairingField {
+    /// Server-side canonical validation of a submitted value.
+    ///
+    /// Checks `required` + the type-specific format (IP / MAC /
+    /// port-range / select-options). Empty `value` means
+    /// "user left the field blank"; the JSON-on-the-wire shape
+    /// (`Manager1.AddTv` config_json) typically simply omits
+    /// optional fields, so callers should pass `""` for absent
+    /// values.
+    ///
+    /// Returns `Ok(())` on success, or a typed
+    /// [`InvalidVendorConfig`](crate::errors::ConfigError::InvalidVendorConfig)
+    /// carrying this field's `name` and a human-readable reason.
+    pub fn validate(&self, value: &str) -> Result<(), crate::errors::ConfigError> {
+        let invalid = |reason: &str| crate::errors::ConfigError::InvalidVendorConfig {
+            field: self.name.clone(),
+            reason: reason.to_string(),
+        };
+
+        if value.is_empty() {
+            return if self.required {
+                Err(invalid("required"))
+            } else {
+                Ok(())
+            };
+        }
+
+        match self.field_type {
+            // No format constraints beyond non-empty (already checked).
+            PairingFieldType::String
+            | PairingFieldType::Password
+            | PairingFieldType::Path
+            | PairingFieldType::Bool
+            | PairingFieldType::Int => Ok(()),
+            PairingFieldType::Ip => value
+                .parse::<std::net::IpAddr>()
+                .map(|_| ())
+                .map_err(|_| invalid("must be a valid IPv4 or IPv6 address")),
+            PairingFieldType::Mac => {
+                if is_valid_mac(value) {
+                    Ok(())
+                } else {
+                    Err(invalid(
+                        "must be six hex pairs separated by colons or hyphens",
+                    ))
+                }
+            }
+            PairingFieldType::Port => value
+                .parse::<u16>()
+                .map(|p| if p == 0 { Err(()) } else { Ok(()) })
+                .map_err(|_| ())
+                .and_then(|r| r)
+                .map_err(|_| invalid("must be a number between 1 and 65535")),
+            PairingFieldType::Select => {
+                if self.options.iter().any(|opt| opt == value) {
+                    Ok(())
+                } else {
+                    Err(invalid("must be one of the available options"))
+                }
+            }
+        }
+    }
+}
+
+/// Format check for `XX:XX:XX:XX:XX:XX` or `XX-XX-XX-XX-XX-XX`.
+/// Six hex pairs separated by `:` or `-` (mixed not allowed).
+fn is_valid_mac(s: &str) -> bool {
+    let sep = if s.contains(':') {
+        ':'
+    } else if s.contains('-') {
+        '-'
+    } else {
+        return false;
+    };
+    let parts: Vec<&str> = s.split(sep).collect();
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +245,88 @@ mod tests {
         assert_eq!(json, "\"mac\"");
         let json = serde_json::to_string(&PairingFieldType::Select).unwrap();
         assert_eq!(json, "\"select\"");
+    }
+
+    #[test]
+    fn validate_required_empty_rejects() {
+        let f = PairingField {
+            name: "ip".into(),
+            label: "IP".into(),
+            field_type: PairingFieldType::Ip,
+            required: true,
+            ..Default::default()
+        };
+        let err = f.validate("").unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("ip"));
+        assert!(s.contains("required"));
+    }
+
+    #[test]
+    fn validate_optional_empty_passes() {
+        let f = PairingField {
+            name: "mac".into(),
+            label: "MAC".into(),
+            field_type: PairingFieldType::Mac,
+            required: false,
+            ..Default::default()
+        };
+        assert!(f.validate("").is_ok());
+    }
+
+    #[test]
+    fn validate_ip_format() {
+        let f = PairingField {
+            name: "ip".into(),
+            field_type: PairingFieldType::Ip,
+            required: true,
+            ..Default::default()
+        };
+        assert!(f.validate("192.168.1.100").is_ok());
+        assert!(f.validate("::1").is_ok());
+        assert!(f.validate("not.an.ip").is_err());
+    }
+
+    #[test]
+    fn validate_mac_format() {
+        let f = PairingField {
+            name: "mac".into(),
+            field_type: PairingFieldType::Mac,
+            required: true,
+            ..Default::default()
+        };
+        assert!(f.validate("AA:BB:CC:DD:EE:FF").is_ok());
+        assert!(f.validate("aa-bb-cc-dd-ee-ff").is_ok());
+        assert!(f.validate("AA:BB:CC:DD:EE").is_err()); // five pairs
+        assert!(f.validate("ZZ:BB:CC:DD:EE:FF").is_err()); // non-hex
+    }
+
+    #[test]
+    fn validate_port_range() {
+        let f = PairingField {
+            name: "port".into(),
+            field_type: PairingFieldType::Port,
+            required: true,
+            ..Default::default()
+        };
+        assert!(f.validate("3001").is_ok());
+        assert!(f.validate("65535").is_ok());
+        assert!(f.validate("0").is_err());
+        assert!(f.validate("70000").is_err());
+        assert!(f.validate("hello").is_err());
+    }
+
+    #[test]
+    fn validate_select_options() {
+        let f = PairingField {
+            name: "color".into(),
+            field_type: PairingFieldType::Select,
+            required: true,
+            options: vec!["red".into(), "green".into(), "blue".into()],
+            ..Default::default()
+        };
+        assert!(f.validate("green").is_ok());
+        assert!(f.validate("yellow").is_err());
     }
 
     #[test]

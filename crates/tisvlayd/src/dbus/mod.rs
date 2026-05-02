@@ -63,6 +63,31 @@ pub enum DaemonError {
     PowerAlreadyOn(String),
     /// TV is already powered off.
     PowerAlreadyOff(String),
+
+    // -- Config (typed; mirrors `errors::ConfigErrorCode`) --
+    /// Schema-validated field has an invalid or missing value.
+    /// Message format: `"<field>: <reason>"` so clients can split
+    /// on `": "` to recover the schema-field name for routing.
+    ConfigInvalidVendorConfig(String),
+    /// New TV's id collides with an existing one.
+    ConfigDuplicateTvId(String),
+    /// TV references a profile name that doesn't exist.
+    ConfigInvalidProfileReference(String),
+}
+
+impl From<tisvlay_core::errors::ConfigError> for DaemonError {
+    fn from(e: tisvlay_core::errors::ConfigError) -> Self {
+        use tisvlay_core::errors::ConfigError;
+        match e {
+            ConfigError::InvalidVendorConfig { field, reason } => {
+                DaemonError::ConfigInvalidVendorConfig(format!("{}: {}", field, reason))
+            }
+            ConfigError::DuplicateTvId(id) => DaemonError::ConfigDuplicateTvId(id),
+            ConfigError::InvalidProfileReference(name) => {
+                DaemonError::ConfigInvalidProfileReference(name)
+            }
+        }
+    }
 }
 
 impl From<TvManagerError> for DaemonError {
