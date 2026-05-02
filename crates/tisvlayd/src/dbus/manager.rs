@@ -7,7 +7,7 @@ use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tisvlay_core::dbus_paths::tv_path;
+use tisvlay_core::dbus_paths::{tv_id_from_path, tv_path};
 
 use tracing::{debug, info, warn};
 use zbus::interface;
@@ -248,16 +248,18 @@ impl ManagerService {
         #[zbus(connection)] connection: &zbus::Connection,
         tv_path: ObjectPath<'_>,
     ) -> Result<(), DaemonError> {
-        // Extract TV ID from path
+        // Decode the path back to the canonical (hyphenated) UUID
+        // that keys the in-memory TV map. `tv_path()` rewrote `-`
+        // to `_` on the way out (D-Bus path components forbid `-`);
+        // `tv_id_from_path` is its inverse.
         let path_str = tv_path.as_str();
-        let tv_id = path_str
-            .strip_prefix("/org/tisvlay/Tv/")
+        let tv_id = tv_id_from_path(path_str)
             .ok_or_else(|| DaemonError::TvNotFound(format!("Invalid path: {}", path_str)))?;
 
         info!(tv_id = %tv_id, "D-Bus: RemoveTv");
 
         let manager = &self.manager;
-        manager.remove_tv(tv_id).await.map_err(DaemonError::from)?;
+        manager.remove_tv(&tv_id).await.map_err(DaemonError::from)?;
 
         // Unregister D-Bus interfaces for the removed TV.
         if let Err(e) = unregister_tv_interfaces(connection, path_str).await {
