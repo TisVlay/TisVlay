@@ -13,7 +13,13 @@
 // generated UI scaffolding.
 #![allow(unreachable_pub, missing_debug_implementations)]
 
+mod schema_form;
 mod state;
+
+use schema_form::{
+    AutofilledRow, autofill_schema, build_config_json_from_schema, compute_schema_valid,
+    parse_field_type, validate_value,
+};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -29,8 +35,8 @@ use clap::Parser;
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
-    Coalescer, DaemonClient, PairingField, PairingFieldType, PowerCyclePhase, ReconcilerMap,
-    RefreshTrigger, SessionClient, StateEvent, StateWatcher,
+    Coalescer, DaemonClient, PowerCyclePhase, ReconcilerMap, RefreshTrigger, SessionClient,
+    StateEvent, StateWatcher,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -292,129 +298,6 @@ fn publish_wizard_entries(wizard: &PairingWizard<'_>, entries: &[WizardEntry]) {
     wizard.set_discovered(ModelRc::new(VecModel::from(rows)));
 }
 
-/// Plain-data carrier for an autofilled schema row.
-///
-/// `Send` (unlike `PairingFieldRow`, whose `options: ModelRc<…>`
-/// holds a non-`Send` `Rc`), so workers can build the autofilled
-/// list off the Slint thread. The conversion to `PairingFieldRow`
-/// happens inside `on_ui` once we're back on the event-loop thread.
-#[derive(Clone, Debug)]
-struct AutofilledRow {
-    name: String,
-    label: String,
-    helper: String,
-    field_type: String,
-    required: bool,
-    placeholder: String,
-    options: Vec<String>,
-    value: String,
-}
-
-impl AutofilledRow {
-    fn into_slint(self) -> PairingFieldRow {
-        let (state, error) = validate_value(
-            &self.name,
-            parse_field_type(&self.field_type),
-            self.required,
-            &self.options,
-            &self.value,
-        );
-        PairingFieldRow {
-            name: SharedString::from(self.name),
-            label: SharedString::from(self.label),
-            helper: SharedString::from(self.helper),
-            field_type: SharedString::from(self.field_type),
-            required: self.required,
-            placeholder: SharedString::from(self.placeholder),
-            options: ModelRc::new(VecModel::from(
-                self.options
-                    .into_iter()
-                    .map(SharedString::from)
-                    .collect::<Vec<_>>(),
-            )),
-            value: SharedString::from(self.value),
-            state: SharedString::from(state),
-            error: SharedString::from(error),
-        }
-    }
-}
-
-/// Resolve a kebab-case `field-type` wire string back to its typed
-/// [`PairingFieldType`]. Falls back to `String` for unknown values
-/// — keeps the wizard rendering through a forward-compat schema
-/// that introduces a new variant before we've taught the GUI about
-/// it. The validator just treats it as plain text.
-fn parse_field_type(s: &str) -> PairingFieldType {
-    match s {
-        "password" => PairingFieldType::Password,
-        "ip" => PairingFieldType::Ip,
-        "mac" => PairingFieldType::Mac,
-        "port" => PairingFieldType::Port,
-        "int" => PairingFieldType::Int,
-        "bool" => PairingFieldType::Bool,
-        "select" => PairingFieldType::Select,
-        "path" => PairingFieldType::Path,
-        _ => PairingFieldType::String,
-    }
-}
-
-/// Compute `(state, error)` for one row's `value` by reusing the
-/// daemon's canonical [`PairingField::validate`] — same checks the
-/// daemon will run server-side, so a value that passes here also
-/// passes in `Manager1.AddTv`. Empty + non-required → "pristine"
-/// (no opinion yet); otherwise validation routes us into "valid"
-/// or "invalid".
-fn validate_value(
-    name: &str,
-    field_type: PairingFieldType,
-    required: bool,
-    options: &[String],
-    value: &str,
-) -> (&'static str, String) {
-    if value.is_empty() && !required {
-        return ("pristine", String::new());
-    }
-    let field = PairingField {
-        name: name.to_string(),
-        label: String::new(),
-        helper: String::new(),
-        translation_key: None,
-        field_type,
-        required,
-        placeholder: String::new(),
-        default: String::new(),
-        autofill: String::new(),
-        options: options.to_vec(),
-        validation: None,
-        visibility: Default::default(),
-    };
-    match field.validate(value) {
-        Ok(()) => ("valid", String::new()),
-        Err(tisvlay_core::errors::ConfigError::InvalidVendorConfig { reason, .. }) => {
-            ("invalid", reason)
-        }
-        Err(other) => ("invalid", other.to_string()),
-    }
-}
-
-/// Walk the schema-fields model and decide whether the wizard's
-/// `Pair` button should enable. True iff every required field has a
-/// non-empty value AND no field is in `state == "invalid"`.
-fn compute_schema_valid(model: &ModelRc<PairingFieldRow>) -> bool {
-    for i in 0..model.row_count() {
-        let Some(row) = model.row_data(i) else {
-            continue;
-        };
-        if row.state == "invalid" {
-            return false;
-        }
-        if row.required && row.value.is_empty() {
-            return false;
-        }
-    }
-    true
-}
-
 /// Parse a `ConfigInvalidVendorConfig` D-Bus error message into
 /// `(field_name, reason)`. The daemon emits the message as
 /// `"<field>: <reason>"` (per `DaemonError::ConfigInvalidVendorConfig`
@@ -448,50 +331,6 @@ fn extract_invalid_vendor_config(err: &anyhow::Error) -> Option<(String, String)
             None => return None,
         }
     }
-}
-
-/// Build an [`AutofilledRow`] for each schema field, applying
-/// autofill from the entry's `vendor_data` (and the entry's
-/// `address` as a default for the conventional `ip` field — SSDP
-/// gives us an IP and the daemon-side `LgVendorConfig` accepts
-/// `address` as an alias for `ip`, so seeding either works).
-///
-/// Autofill rule mirrors plan5: a field's `autofill = "discovery.<key>"`
-/// resolves to `entry.vendor_data[<key>]`. Missing entries fall
-/// back to the field's `default`. The user can still edit the
-/// pre-filled value before submitting.
-fn autofill_schema(schema: &[PairingField], entry: &WizardEntry) -> Vec<AutofilledRow> {
-    schema
-        .iter()
-        .map(|f| {
-            let mut value = f.default.clone();
-            if let Some(key) = f.autofill.strip_prefix("discovery.") {
-                if let Some(v) = entry.vendor_data.get(key) {
-                    value = v.clone();
-                } else if (key == "ip" || key == "address") && !entry.address.is_empty() {
-                    value = entry.address.clone();
-                }
-            }
-            // Conventional fallback: a field literally named "ip" /
-            // "address" gets the entry's address even without an
-            // explicit `autofill` directive — IP-addressed backends
-            // discovered via SSDP should never make the user retype
-            // what we just received from the device.
-            if value.is_empty() && (f.name == "ip" || f.name == "address") {
-                value = entry.address.clone();
-            }
-            AutofilledRow {
-                name: f.name.clone(),
-                label: f.label.clone(),
-                helper: f.helper.clone(),
-                field_type: f.field_type.as_str().to_string(),
-                required: f.required,
-                placeholder: f.placeholder.clone(),
-                options: f.options.clone(),
-                value,
-            }
-        })
-        .collect()
 }
 
 #[derive(Parser, Debug)]
@@ -1357,42 +1196,6 @@ async fn run_wizard_discovery(
     }
 }
 
-/// Build the pairing config JSON from the wizard's dynamic
-/// `schema-fields` model. Walks each row, drops empty optional
-/// fields, and emits `{ <name>: <value>, ... }` matching the
-/// vendor's pairing-form schema's `name` keys. The daemon then
-/// validates each value server-side via `Manager1.AddTv`.
-///
-/// Bool fields convert to JSON booleans; numeric fields (port /
-/// int) convert to JSON numbers when parseable, falling back to
-/// string. Strings (including ip / mac / password / path) stay
-/// strings.
-fn build_config_json_from_schema(model: &ModelRc<PairingFieldRow>) -> String {
-    let mut obj = serde_json::Map::new();
-    for i in 0..model.row_count() {
-        let Some(row) = model.row_data(i) else {
-            continue;
-        };
-        let value = row.value.to_string();
-        // Skip empty optional fields so the daemon's schema
-        // validator treats them as absent (not as "" — that's a
-        // typed required-field failure for required fields).
-        if value.is_empty() && !row.required {
-            continue;
-        }
-        let json_val = match row.field_type.as_str() {
-            "bool" => serde_json::Value::Bool(value == "true"),
-            "port" | "int" => value
-                .parse::<i64>()
-                .map(serde_json::Value::from)
-                .unwrap_or_else(|_| serde_json::Value::String(value)),
-            _ => serde_json::Value::String(value),
-        };
-        obj.insert(row.name.to_string(), json_val);
-    }
-    serde_json::Value::Object(obj).to_string()
-}
-
 /// Fetch the vendor's pairing-form schema and publish autofilled
 /// rows into the wizard's `schema-fields` model. Failure leaves
 /// the model empty and surfaces the error in `discovery-error`
@@ -1406,7 +1209,7 @@ async fn fetch_and_publish_schema(
 ) {
     match daemon.get_pairing_schema(&vendor).await {
         Ok(schema) => {
-            let raw_rows = autofill_schema(&schema, &entry);
+            let raw_rows = autofill_schema(&schema, &entry.vendor_data, &entry.address);
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
                 let rows: Vec<PairingFieldRow> = raw_rows
