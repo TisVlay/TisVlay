@@ -626,7 +626,19 @@ Out of this plan:
 - ✅ **Q6**: Empty schema → wizard skips the Configure
   step. No special-casing.
 
-**v4 (new — minor decisions surfacing as v3 resolved)**:
+**v4 (resolved)**:
+- ✅ **Q1**: Power button label stays "Power on" / "Power
+  off" — established TisVlay vocabulary; smart logic
+  picks WoL vs direct-connect path internally.
+- ✅ **Q2**: Validation errors carry machine-readable
+  `field: "mac"` (the schema's `name` identifier); GUI
+  maps to the localized `label` for display. Daemon
+  stays locale-agnostic.
+- ✅ **Q3**: Commit `.pot` + `.po` to git; generate `.mo`
+  at build time via `slint_build` / `build.rs`. Standard
+  gettext convention.
+
+**v4 (original — preserved for context)**:
 
 The schema-driven approach forces a few design choices.
 
