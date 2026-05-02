@@ -2,10 +2,14 @@
 
 > **Status:** Draft v2 — all open questions resolved. UUID
 > v4 identity (matches NetworkManager); `SetTvOption`
-> retired in favor of `UpdateTvConfig`; wire format stays
+> retired in favor of `Tv1.UpdateConfig`; wire format stays
 > JSON-string (option b) with the `a{sv}` migration
 > deliberately deferred until feature-completeness reduces
-> surface churn. Builds on plan5's schema architecture
+> surface churn. Edit/query methods live on `Tv1` (per-object,
+> NetworkManager-style) rather than `Manager1`, matching the
+> `Tv1.Remove` decision so no D-Bus method takes a `tv_id`
+> argument that would have to round-trip through path-component
+> sanitization. Builds on plan5's schema architecture
 > (`config_schema` + `FieldVisibility`) which gave us the
 > declarative metadata to drive an edit form for free.
 >
@@ -15,12 +19,13 @@
 > | Drop `Tv1.Address` cleanly; no scalar replacement | ✅ resolved | Drop `Tv1.Address` |
 > | Atomic batch edit; pencil-toggle UX | ✅ resolved | UX shape |
 > | Accept config + reflect connection status on side-effect failure | ✅ resolved | Atomicity |
-> | Drop `SetTvOption`; route everything through `UpdateTvConfig` | ✅ resolved | `SetTvOption` retirement |
+> | Drop `SetTvOption`; route everything through `Tv1.UpdateConfig` | ✅ resolved | `SetTvOption` retirement |
+> | Per-object `Tv1.{UpdateConfig,GetConfig,Remove}` (no `Manager1.*(tv_id)`) | ✅ resolved | D-Bus surface |
 > | Edit-mode scope: INFO-only modal | ✅ resolved | (chat) |
 > | Validation timing: save-button-gated like wizard | ✅ resolved | (chat) |
 > | No config-load migration; regenerate sample configs directly | ✅ resolved | Identity model |
 > | Atomic config writes via tempfile + rename | ✅ resolved | Identity model |
-> | Wire format for `UpdateTvConfig`: JSON-string (defer `a{sv}` migration) | ✅ resolved | Open questions / Deferred |
+> | Wire format for `Tv1.UpdateConfig`: JSON-string (defer `a{sv}` migration) | ✅ resolved | Open questions / Deferred |
 
 ## Bug recap (motivation)
 
@@ -47,8 +52,8 @@ atomically with their side effects.
 | # | Item | Effort |
 |---|---|---|
 | 1 | Stop leaking vendor-specific IP into `Tv1.Address` | medium |
-| 2 | Daemon `Manager1.UpdateTvConfig(tv_id, json_patch)` + atomicity | medium |
-| 3 | Daemon `Manager1.GetTvConfig(tv_id)` for prefilling the edit form | small |
+| 2 | Daemon `Tv1.UpdateConfig(json_patch)` + atomicity | medium |
+| 3 | Daemon `Tv1.GetConfig()` for prefilling the edit form | small |
 | 4 | Extract `SchemaForm` + validation lifecycle from the wizard | small-medium |
 | 5 | GUI edit-mode toggle in the TVs detail INFO group | medium |
 | 6 | Side-effect polish: IP-change reconnect flow, MAC `SupportsWake` refresh | small |
@@ -129,7 +134,7 @@ in the daemon's config loader.
 
 **Atomic config persistence.** When the daemon does need to
 write the config back (e.g. `pair_tv` adds a new entry, or
-`UpdateTvConfig` mutates one), use write-to-tempfile +
+`Tv1.UpdateConfig` mutates one), use write-to-tempfile +
 `rename(2)` for atomic replacement. Standard pattern; avoids
 "crash mid-write left the config half-rewritten" reasoning
 about partial states.
@@ -232,7 +237,7 @@ User-confirmed: edit-pencil icon in the INFO group's title
 bar. Click → writable rows become text inputs (per-row
 validation lifecycle — same component as the wizard). The
 pencil swaps for Cancel / Save buttons. Submit collects all
-edits into one batch patch and calls `Manager1.UpdateTvConfig`.
+edits into one batch patch and calls `Tv1.UpdateConfig`.
 
 Mirrors the address-book-contact "edit mode" pattern.
 
@@ -241,7 +246,15 @@ connector, scheme) stay as labels even in edit mode.
 
 ## D-Bus surface
 
-### `Manager1.UpdateTvConfig(tv_id: s, json_patch: s) -> ()`
+Edit/query methods live on the per-TV `Tv1` interface rather than
+`Manager1`. Same reasoning as `Tv1.Remove()`: the impl already
+carries `&self.tv_id`, so the handler never decodes a path back
+to a domain ID — eliminating the whole class of bug we hit when
+UUID hyphens round-tripped through `tv_path()`'s `_` sanitization.
+`AddTv` stays on `Manager1` (the object doesn't exist yet at pair
+time, so there's no per-object surface to put it on).
+
+### `Tv1.UpdateConfig(json_patch: s) -> ()`
 
 Takes a JSON object whose keys are field names from the TV's
 `config_schema` (filtered to `UserInput && !secret`). Top-level
@@ -259,7 +272,7 @@ Error: `ConfigError::InvalidVendorConfig { field, reason }` —
 same shape as `AddTv` so the GUI's existing inline-error
 routing works unchanged.
 
-### `Manager1.GetTvConfig(tv_id: s) -> s`
+### `Tv1.GetConfig() -> s`
 
 Returns the current vendor + top-level config as JSON, with
 `Secret` fields stripped. Edit form prefills from this.
@@ -357,7 +370,7 @@ loses the atomicity. Stringly-typed `SetTvOption` is the
 churn-prone shape we have.
 
 **Leading recommendation: drop `SetTvOption`, route everything
-through `UpdateTvConfig(tv_id, json_patch)`.**
+through `Tv1.UpdateConfig(json_patch)`.**
 
 Rationale:
 
@@ -378,9 +391,9 @@ Rationale:
 **Trade-off:** loses the introspection ergonomics of
 "`busctl introspect` shows me each setter's signature." Mitigated
 by `Manager1.GetPairingSchema(vendor)` already exposing the
-schema as JSON for tooling that wants typed metadata; the
-analogous `GetTvConfigSchema(tv_id)` (or just reusing the
-existing endpoint) covers the edit case.
+schema as JSON for tooling that wants typed metadata; an
+analogous `Tv1.GetConfigSchema()` (or just reusing the existing
+endpoint) covers the edit case.
 
 **Live state (Volume / Backlight / Screen / Mute) keeps its
 typed-method pattern unchanged** — different problem space,
@@ -417,7 +430,7 @@ in the post-research questions section below.
 | Field | Effect |
 |---|---|
 | `name` | `Tv1.Name` PropertiesChanged. UUID stays (per Q1 resolution). Tray menu refreshes. Trivial. |
-| `system_profile` | Re-resolve any session bindings. Currently wired via `SetTvOption`; routes through `UpdateTvConfig` after Q3 retirement. |
+| `system_profile` | Re-resolve any session bindings. Currently wired via `SetTvOption`; routes through `Tv1.UpdateConfig` after Q3 retirement. |
 | `primary_input` | Affects `Tv1.Automated` recomputation. Same routing change as above. |
 | `managed` | Lifecycle automation respects new flag. Same routing change. |
 | `ip` (vendor) | Connection drops. Daemon reconnects with new IP. NIC route re-resolves. Subscriptions re-bring-up (parallelized — fast). |
@@ -452,7 +465,7 @@ edit-applied → drop-and-reconnect path.
      entry of `display_info(vendor_config)`".
 
 3. **Drop `Manager1.SetTvOption`.** Per Q3. All callers
-   (tray, CLI, GUI) switch to `Manager1.UpdateTvConfig`. The
+   (tray, CLI, GUI) switch to `Tv1.UpdateConfig`. The
    existing `apply_tv_option` helper in `tv_manager.rs` stays
    internal — `update_tv_config` calls it for the top-level
    fields it knows about (name, managed, system_profile,
@@ -506,12 +519,13 @@ Suggested order, smallest reviewable units first:
 - **Phase 8.2 — Extract `SchemaForm` + Rust validation
   helpers.** Pure refactor. Wizard keeps working unchanged;
   shared infrastructure ready for edit pane.
-- **Phase 8.3 — Daemon `UpdateTvConfig` + `GetTvConfig`.**
+- **Phase 8.3 — Daemon `Tv1.UpdateConfig` + `Tv1.GetConfig`.**
   Adds the new methods with server-side schema validation +
-  atomicity + side-effect handling. Test via `busctl` before
-  any GUI work.
+  atomicity + side-effect handling. Per-object surface (no
+  `tv_id` argument) so the handler reads `&self.tv_id` and
+  never decodes a path. Test via `busctl` before any GUI work.
 - **Phase 8.4 — Drop `SetTvOption`, migrate callers.** Tray,
-  CLI, GUI all switch to `UpdateTvConfig`. Daemon removes
+  CLI, GUI all switch to `Tv1.UpdateConfig`. Daemon removes
   the dispatcher. Reviewable as a single coordinated change
   since we have no backward-compat constraint.
 - **Phase 8.5 — GUI edit-mode toggle.** Pencil icon in INFO
@@ -522,7 +536,7 @@ Suggested order, smallest reviewable units first:
   brief "applying…" / "connection lost" state during
   edit-with-side-effect.
 - **Phase 8.7 (optional)** — CLI `tisvlay tvs <name|uuid>
-  set <field>=<value>` shorthand wrapping `UpdateTvConfig`.
+  set <field>=<value>` shorthand wrapping `Tv1.UpdateConfig`.
   Mirrors NetworkManager's `nmcli connection modify`.
 
 ## Open questions
@@ -536,7 +550,7 @@ Suggested order, smallest reviewable units first:
   scalar. GUI reads `vendor_info[0]` for the spatial hint.
   `DiscoveredTv.address` stays as-is.
 - **✅ Q3** — Drop `SetTvOption`; route everything through
-  `UpdateTvConfig`. ModemManager + zbus research confirmed
+  `Tv1.UpdateConfig`. ModemManager + zbus research confirmed
   batch is the right pattern. See "SetTvOption retirement".
 - **✅ Q4** — Edit-mode covers Name + vendor UserInput
   fields only. Inline controls (System profile, Primary
@@ -548,7 +562,7 @@ Suggested order, smallest reviewable units first:
 
 **v2 (resolved):**
 
-- **✅ Q6** — `UpdateTvConfig(tv_id: s, json: s) -> ()` (option
+- **✅ Q6** — `Tv1.UpdateConfig(json: s) -> ()` (option
   **b**). Keep the JSON-string convention established by
   `AddTv` (plan5 v3 Q1), `GetPairingSchema`, and
   `ListSystemProfiles`. Defer the all-in `a{sv}` migration
@@ -573,7 +587,7 @@ Suggested order, smallest reviewable units first:
 
 - **`a{sv}` wire-format migration for vendor-config surfaces.**
   The architecturally cleaner end-state per Q6 — migrate
-  `Manager1.AddTv` and `Manager1.UpdateTvConfig` from
+  `Manager1.AddTv` and `Tv1.UpdateConfig` from
   `config_json: s` to `config: a{sv}`. Triggers for
   reconsidering: (1) a second vendor backend lands and the
   multi-vendor introspection argument becomes concrete,
