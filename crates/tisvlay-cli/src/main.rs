@@ -304,9 +304,7 @@ async fn main() -> Result<()> {
                 }
                 Some(state) => {
                     let managed = matches!(state, ManageState::True);
-                    client
-                        .set_tv_option(&tv_id, "managed", if managed { "true" } else { "false" })
-                        .await?;
+                    client.set_tv_managed(&tv_id, managed).await?;
                     println!("Managed: {}", managed);
                 }
             }

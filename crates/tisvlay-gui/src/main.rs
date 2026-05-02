@@ -662,8 +662,7 @@ fn register_callbacks(
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
         tokio::spawn(async move {
-            let value = if managed { "true" } else { "false" };
-            if let Err(e) = d.set_tv_option(&tv_id, "managed", value).await {
+            if let Err(e) = d.set_tv_managed(&tv_id, managed).await {
                 let msg = format!("{e}");
                 warn!(tv_id = %tv_id, managed, error = %msg, "set_managed failed");
                 push_tvs_error(&app_weak, gettext("Couldn't update managed"), msg);
@@ -726,7 +725,7 @@ fn register_callbacks(
         let tv_id = tv_id.to_string();
         let input = input.to_string();
         tokio::spawn(async move {
-            if let Err(e) = d.set_tv_option(&tv_id, "primary_input", &input).await {
+            if let Err(e) = d.set_tv_primary_input(&tv_id, &input).await {
                 let msg = format!("{e}");
                 warn!(tv_id = %tv_id, input = %input, error = %msg, "set_primary_input failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change primary input"), msg);

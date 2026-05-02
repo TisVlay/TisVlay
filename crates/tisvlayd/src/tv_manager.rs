@@ -1691,12 +1691,18 @@ impl TvManager {
         .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))?
     }
 
-    /// Set a system-level TV option and persist to disk.
+    /// Set a single top-level TV option and persist to disk.
     ///
-    /// Applies the change to the in-memory TV config first (which also validates
-    /// the TV ID and key), then persists via `spawn_blocking` to avoid blocking
-    /// the async executor on disk I/O.
-    pub async fn set_tv_option(
+    /// Crate-internal helper: the per-property `Tv1.{Name,Managed,
+    /// SystemProfile,PrimaryInput}` writable handlers route through
+    /// here for single-field flips. Multi-field atomic edits go via
+    /// [`update_tv_config`](Self::update_tv_config) instead.
+    ///
+    /// Applies the change to the in-memory TV config first (which
+    /// also validates the TV ID and key), then persists via
+    /// `spawn_blocking` to avoid blocking the async executor on
+    /// disk I/O.
+    pub(crate) async fn set_tv_option(
         &self,
         tv_id: &str,
         key: &str,
@@ -1726,7 +1732,7 @@ impl TvManager {
             }
         } // per-TV lock released before I/O
 
-        // Keep the outer managed flag in sync when toggled via SetTvOption.
+        // Keep the outer managed flag in sync when this helper toggles `managed`.
         if key == "managed" {
             if let Ok(managed_val) = value.parse::<bool>() {
                 let mut tvs = self.tvs.write().await;

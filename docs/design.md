@@ -181,17 +181,19 @@ See `crates/tisvlayd/src/dbus/` for the implementation.
 org.tisvlay.Daemon  (system bus; session bus in dev)
 ├── /org/tisvlay                    ObjectManager
 ├── /org/tisvlay/Manager            org.tisvlay.Manager1
-│   ├── Methods:  ListSystemProfiles, GetUserProfileDefault, ListUserProfiles,
-│   │             ReloadConfig, AddTv, RemoveTv, SetTvOption, DiscoverTvs
-│   └── Signals:  TvAdded, TvRemoved, ConfigReloaded
-└── /org/tisvlay/Tv/{id}            org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
-    │                               Tv1.Volume, Tv1.Backlight, Tv1.Input
+│   ├── Methods:  GetSupportedVendors, GetPairingSchema, AddTv,
+│   │             ReloadConfig, ListSystemProfiles,
+│   │             GetUserProfileDefault, ListUserProfiles, DiscoverTvs
+│   └── Signals:  ConfigReloaded
+└── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
+    │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
     ├── Properties (rw): Name, Managed, SystemProfile, PrimaryInput,
     │                     IsScreenOn, Volume, Muted, Backlight
-    ├── Properties (ro): Id, Vendor, Address, Connected, Capabilities,
-    │                     AutomateWhen, Automated, PowerState,
-    │                     CurrentInput, AvailableInputs
-    ├── Methods:  Reconnect, PowerOn, PowerOff, SwitchInput
+    ├── Properties (ro): Uuid, Vendor, Connected, Capabilities,
+    │                     VendorInfo, AutomateWhen, Automated,
+    │                     PowerState, CurrentInput, AvailableInputs
+    ├── Methods:  Reconnect, Remove, GetConfig, UpdateConfig,
+    │             PowerOn, PowerOff, SwitchInput
     └── Signals:  (standard PropertiesChanged only)
 
 org.tisvlay.Session  (session bus)
@@ -215,16 +217,27 @@ org.tisvlay.Session  (session bus)
 
 Methods:
 - `GetSupportedVendors() → a(ss)` — list `(vendor_id, vendor_name)` pairs
-- `AddTv(name: s, vendor: s, config_json: s, managed: b) → o` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation
-- `RemoveTv(tv_id: s)` — remove TV from config
+- `GetPairingSchema(vendor: s) → s` — JSON-serialized `Vec<PairingField>` describing the pairing-form fields the GUI should render for the given vendor
+- `AddTv(name: s, vendor: s, config_json: s, managed: b) → (os)` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation. Returns `(object_path, tv_uuid)`. Per-TV lifecycle (`Remove`, `GetConfig`, `UpdateConfig`) lives on `Tv1` after pair.
 - `ReloadConfig()` — reload config from disk
-- `SetTvOption(tv_id: s, key: s, value: s)` — update a system-level TV field (`primary_input`, `managed`, `name`, `profile.system`); saves to disk and applies immediately
 - `ListSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
 - `GetUserProfileDefault() → s` — admin baseline user profile as JSON; used by session services to inherit defaults
 - `ListUserProfiles() → a(ss)` — all user profiles (admin-defined) as `(name, json)` pairs
 - `DiscoverTvs(timeout_ms: u) → a(sssss)` — SSDP discovery, returns `(id, name, address, hardware_id, vendor)` tuples. Only available when compiled with the `discovery` feature.
 
-Signals: `TvAdded(tv_path: o)`, `TvRemoved(tv_path: o)`
+Signals: `ConfigReloaded`, `PairingProgress`, `DiscoveryFound`. (Per-TV add/remove fires standard `ObjectManager.InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay`.)
+
+### org.tisvlay.Tv1 (per-TV lifecycle)
+
+The per-TV `Tv1` interface owns the methods that take a TV identifier — they read `&self.tv_id` directly from the interface impl rather than decoding it from a path argument, which avoided a class of `tv_path()` round-trip bugs around UUID hyphens.
+
+Methods:
+- `Reconnect()` — drop and re-establish the connection
+- `Remove()` — drop the TV from in-memory + on-disk config and unregister every `Tv1.*` interface at this path (fires `ObjectManager.InterfacesRemoved`)
+- `GetConfig() → s` — return current config (top-level + non-`Secret` vendor fields) as a JSON object suitable for prefilling an edit form
+- `UpdateConfig(json_patch: s)` — atomic batch edit. Top-level keys (`name`, `managed`, `system_profile`, `primary_input`) plus any `UserInput`-visibility vendor schema field. Server-side schema-validated; vendor-field changes drop and reconnect. `Diagnostic`/`Secret` keys are rejected.
+
+Single-field edits also flow through the per-property `Properties.Set` path — `Tv1.Name`, `Tv1.Managed`, `Tv1.SystemProfile`, `Tv1.PrimaryInput`, `Tv1.IsScreenOn`, `Tv1.Volume`, `Tv1.Muted`, `Tv1.Backlight` — which routes through the same internal helpers as `UpdateConfig` for top-level fields.
 
 ### org.tisvlay.Session1 (Session Service)
 

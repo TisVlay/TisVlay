@@ -254,17 +254,6 @@ impl ManagerService {
     // System Config Management
     // -------------------------------------------------------------------------
 
-    /// Set a system-level TV option.
-    ///
-    /// Supported keys: `primary_input`, `managed`, `name`, `profile.system`.
-    async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<(), DaemonError> {
-        info!(tv_id = %tv_id, key = %key, value = %value, "D-Bus: SetTvOption");
-        self.manager
-            .set_tv_option(tv_id, key, value)
-            .await
-            .map_err(DaemonError::from)
-    }
-
     /// Get the admin baseline for user profiles as JSON.
     ///
     /// Returns the `[profiles.default]` from the system config.

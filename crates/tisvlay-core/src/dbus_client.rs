@@ -140,9 +140,6 @@ trait TisvlayManager {
     /// Get all system profiles as (name, json) pairs.
     fn list_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Set a system-level TV option.
-    fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> zbus::Result<()>;
-
     /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
     /// `awaiting_input`, `complete`, `failed`. See
     /// [`tisvlay_core::PairingState`] for the canonical enum.
@@ -207,6 +204,15 @@ trait TisvlayTv {
     /// Set the system profile for this TV.
     #[zbus(property)]
     fn set_system_profile(&self, profile: &str) -> zbus::Result<()>;
+
+    /// The HDMI input the controlling PC is plugged into. Drives
+    /// `Tv1.Automated` recomputation.
+    #[zbus(property)]
+    fn primary_input(&self) -> zbus::Result<String>;
+
+    /// Set the primary input for this TV.
+    #[zbus(property)]
+    fn set_primary_input(&self, input: &str) -> zbus::Result<()>;
 
     /// Vendor-reported hardware identity: `(manufacturer, model, serial)`.
     /// Empty strings represent unknown fields.
@@ -1339,23 +1345,57 @@ impl DaemonClient {
             .context("Failed to list system profiles from daemon")
     }
 
-    /// Set the system profile for a TV.
+    /// Set a TV's friendly name.
     ///
-    /// Convenience wrapper around `set_tv_option(tv_id, "profile.system", name)`.
-    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
-        self.set_tv_option(tv_id, "profile.system", profile_name)
-            .await
+    /// Routes through the per-object `Tv1.Name` writable property
+    /// (`Properties.Set`). Use [`update_tv_config`](Self::update_tv_config)
+    /// when changing multiple fields atomically; this single-field
+    /// helper has the lighter-weight wire format for inline controls
+    /// (rename in the TVs pane header, etc.).
+    pub async fn set_tv_name(&self, tv_id: &str, name: &str) -> Result<()> {
+        let name = name.to_string();
+        self.with_proxies(tv_id, "set name", move |p| {
+            let name = name.clone();
+            Box::pin(async move { p.base.set_name(&name).await })
+        })
+        .await
     }
 
-    /// Set a system-level TV option.
+    /// Toggle whether a TV participates in managed automation.
     ///
-    /// Supported keys: `primary_input`, `managed`, `name`, `profile.system`.
-    pub async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<()> {
-        debug!(tv_id = %tv_id, key = %key, value = %value, "Calling SetTvOption on daemon");
-        self.manager
-            .set_tv_option(tv_id, key, value)
-            .await
-            .with_context(|| format!("Failed to set TV option: {} {}={}", tv_id, key, value))
+    /// Routes through the per-object `Tv1.Managed` writable property.
+    pub async fn set_tv_managed(&self, tv_id: &str, managed: bool) -> Result<()> {
+        self.with_proxies(tv_id, "set managed", move |p| {
+            Box::pin(p.base.set_managed(managed))
+        })
+        .await
+    }
+
+    /// Set the system profile for a TV (e.g. `"default"`, `"guest"`).
+    ///
+    /// Routes through the per-object `Tv1.SystemProfile` writable
+    /// property.
+    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
+        let profile_name = profile_name.to_string();
+        self.with_proxies(tv_id, "set system profile", move |p| {
+            let profile_name = profile_name.clone();
+            Box::pin(async move { p.base.set_system_profile(&profile_name).await })
+        })
+        .await
+    }
+
+    /// Set a TV's primary input — the HDMI port the controlling PC
+    /// is plugged into. Drives `Tv1.Automated` recomputation.
+    ///
+    /// Routes through the per-object `Tv1.PrimaryInput` writable
+    /// property.
+    pub async fn set_tv_primary_input(&self, tv_id: &str, input: &str) -> Result<()> {
+        let input = input.to_string();
+        self.with_proxies(tv_id, "set primary input", move |p| {
+            let input = input.clone();
+            Box::pin(async move { p.base.set_primary_input(&input).await })
+        })
+        .await
     }
 }
 

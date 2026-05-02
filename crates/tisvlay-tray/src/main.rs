@@ -417,7 +417,7 @@ async fn process_commands(
                 }
             }
             TrayCommand::SetSystemProfile(id, profile) => {
-                if let Err(e) = daemon.set_tv_option(&id, "profile.system", &profile).await {
+                if let Err(e) = daemon.set_tv_system_profile(&id, &profile).await {
                     warn!(tv_id = %id, profile = %profile, error = %e, "Set system profile failed");
                 }
             }
@@ -456,15 +456,13 @@ async fn process_commands(
                 }
             }
             TrayCommand::SetManaged(id, managed) => {
-                if let Err(e) = daemon
-                    .set_tv_option(&id, "managed", if managed { "true" } else { "false" })
-                    .await
-                {
+                if let Err(e) = daemon.set_tv_managed(&id, managed).await {
                     warn!(tv_id = %id, managed = %managed, error = %e, "Set managed failed");
                 }
                 // No need to notify the session service: it queries the daemon's managed
-                // set live on each event, and set_tv_option updates in-memory state
-                // synchronously before returning, so the next event dispatch picks it up.
+                // set live on each event, and the per-property setter updates in-memory
+                // state synchronously before returning, so the next event dispatch picks
+                // up the new value.
             }
         }
 
