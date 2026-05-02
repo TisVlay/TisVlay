@@ -5,6 +5,7 @@
 use crate::dbus::{DaemonError, register_tv_interfaces, unregister_tv_interfaces};
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tisvlay_core::dbus_paths::tv_path;
 
@@ -37,15 +38,30 @@ impl ManagerService {
 
     /// Discover available TVs using all registered backends.
     ///
-    /// Returns: Array of `(id, name, address, (manufacturer, model, serial), vendor)`
-    /// tuples. The nested `(sss)` carries the discovered hardware identity
-    /// with empty strings for unknown fields.
+    /// Returns: Array of `(id, name, address, (manufacturer, model, serial),
+    /// vendor, vendor_data)` tuples. The nested `(sss)` carries the
+    /// discovered hardware identity with empty strings for unknown fields.
+    /// The trailing `a{ss}` is a free-form `key → value` map of
+    /// vendor-specific discovery data — currently used to carry the
+    /// kernel-resolved MAC (`vendor_data["mac"]`) for IP-addressed
+    /// backends, with autofill keys matching each vendor's pairing-form
+    /// schema.
     #[cfg(feature = "discovery")]
     async fn discover_tvs(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         timeout_ms: u32,
-    ) -> Result<Vec<(String, String, String, (String, String, String), String)>, DaemonError> {
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            (String, String, String),
+            String,
+            HashMap<String, String>,
+        )>,
+        DaemonError,
+    > {
         info!(timeout_ms = timeout_ms, "D-Bus: DiscoverTvs");
 
         let tvs = self
@@ -54,11 +70,35 @@ impl ManagerService {
             .await
             .map_err(DaemonError::from)?;
 
-        let results = tvs
+        // Discovery enrichment: for IP-addressed TVs whose vendor backend
+        // didn't already provide a MAC, fill `vendor_data["mac"]` from
+        // the kernel neighbour table. SSDP responses themselves prime the
+        // ARP cache, so a passive lookup is usually enough — see
+        // `crate::netlink::arp_lookup`.
+        let mut enriched = Vec::with_capacity(tvs.len());
+        for mut tv in tvs {
+            if !tv.vendor_data.contains_key("mac") {
+                if let Ok(ip) = tv.address.parse::<std::net::IpAddr>() {
+                    if let Some(mac) = crate::netlink::arp_lookup(ip).await {
+                        tv.vendor_data.insert("mac".to_string(), mac.to_string());
+                    }
+                }
+            }
+            enriched.push(tv);
+        }
+
+        let results = enriched
             .into_iter()
             .map(|tv| {
                 let hardware_id = tv.hardware_id.unwrap_or_default().to_dbus_tuple();
-                (tv.id, tv.name, tv.address, hardware_id, tv.vendor)
+                (
+                    tv.id,
+                    tv.name,
+                    tv.address,
+                    hardware_id,
+                    tv.vendor,
+                    tv.vendor_data,
+                )
             })
             .collect::<Vec<_>>();
 
@@ -74,6 +114,7 @@ impl ManagerService {
                 &tv.2,
                 (&tv.3.0, &tv.3.1, &tv.3.2),
                 &tv.4,
+                tv.5.clone(),
             )
             .await
             {
@@ -342,8 +383,10 @@ impl ManagerService {
     /// One TV was discovered during a `DiscoverTvs` scan.
     ///
     /// Wire payload mirrors `DiscoverTvs`'s return tuple:
-    /// `(id, name, address, (manufacturer, model, serial), vendor)`.
-    /// Empty strings represent unknown fields. Listening to this
+    /// `(id, name, address, (manufacturer, model, serial), vendor,
+    /// vendor_data)`. Empty strings represent unknown fields.
+    /// `vendor_data` is the same `a{ss}` map carried on the RPC return
+    /// (ARP-discovered MAC under `"mac"`, etc.). Listening to this
     /// signal lets clients render results progressively instead of
     /// waiting on the synchronous RPC return.
     ///
@@ -359,6 +402,7 @@ impl ManagerService {
         address: &str,
         hardware_id: (&str, &str, &str),
         vendor: &str,
+        vendor_data: HashMap<String, String>,
     ) -> zbus::Result<()>;
 }
 

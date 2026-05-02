@@ -911,15 +911,24 @@ async fn run_wizard_discovery(daemon: Arc<DaemonClient>, app_weak: slint::Weak<A
     // DaemonClient; the wire shape is forward-compatible).
     match daemon.discover_tvs(5000).await {
         Ok(tvs) => {
+            // `vendor_data` (sixth tuple element) carries autofill keys
+            // matching the vendor's pairing schema — most importantly
+            // `vendor_data["mac"]` from the daemon's ARP enrichment for
+            // IP-addressed backends. The wizard's static layout doesn't
+            // consume it yet; that hookup arrives with the schema-driven
+            // form renderer, which feeds discovery autofill into each
+            // PairingField whose `autofill = "discovery.<key>"` matches.
             let rows: Vec<WizardDiscoveredTv> = tvs
                 .into_iter()
-                .map(|(id, name, address, hw_id, vendor)| WizardDiscoveredTv {
-                    id: SharedString::from(id),
-                    name: SharedString::from(name),
-                    vendor: SharedString::from(vendor),
-                    address: SharedString::from(address),
-                    hw_model: SharedString::from(hw_id.model.unwrap_or_default()),
-                })
+                .map(
+                    |(id, name, address, hw_id, vendor, _vendor_data)| WizardDiscoveredTv {
+                        id: SharedString::from(id),
+                        name: SharedString::from(name),
+                        vendor: SharedString::from(vendor),
+                        address: SharedString::from(address),
+                        hw_model: SharedString::from(hw_id.model.unwrap_or_default()),
+                    },
+                )
                 .collect();
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();

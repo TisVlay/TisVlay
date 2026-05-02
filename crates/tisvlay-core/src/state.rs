@@ -169,9 +169,9 @@ pub struct DiscoveredTv {
     /// Carries any extra fields the discovery channel was able to
     /// gather beyond the structured columns above — populated either
     /// by the vendor backend itself or by a post-discovery enrichment
-    /// step (see [`crate::network::arp_lookup`] which the daemon
-    /// uses to fill `vendor_data["mac"]` from the kernel neighbour
-    /// table after each SSDP hit).
+    /// step in the daemon (the daemon's `Manager1.DiscoverTvs`
+    /// handler fills `vendor_data["mac"]` from the kernel neighbour
+    /// table after each SSDP hit, for IP-addressed backends).
     ///
     /// Consumers match these entries against the vendor's pairing
     /// schema's `autofill: "discovery.<key>"` directives — when a
@@ -202,11 +202,7 @@ impl DiscoveredTv {
     }
 
     /// Insert a `key → value` entry into [`Self::vendor_data`].
-    pub fn with_vendor_data(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
+    pub fn with_vendor_data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.vendor_data.insert(key.into(), value.into());
         self
     }

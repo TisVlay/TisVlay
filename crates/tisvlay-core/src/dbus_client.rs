@@ -82,13 +82,27 @@ impl BusKind<'_> {
 trait TisvlayManager {
     /// Discover TVs on the network.
     ///
-    /// Returns `(id, name, address, (manufacturer, model, serial), vendor)` tuples.
-    /// The nested `(sss)` carries the vendor-reported hardware identity with
-    /// empty strings for unknown fields.
+    /// Returns `(id, name, address, (manufacturer, model, serial),
+    /// vendor, vendor_data)` tuples. The nested `(sss)` carries the
+    /// vendor-reported hardware identity with empty strings for
+    /// unknown fields. `vendor_data` is a free-form `key → value`
+    /// map of vendor-specific discovery data — currently used to
+    /// carry the kernel-resolved MAC under `"mac"` for IP-addressed
+    /// backends. Wizards match these entries against each vendor's
+    /// `PairingField::autofill` directives.
     fn discover_tvs(
         &self,
         timeout_ms: u32,
-    ) -> zbus::Result<Vec<(String, String, String, (String, String, String), String)>>;
+    ) -> zbus::Result<
+        Vec<(
+            String,
+            String,
+            String,
+            (String, String, String),
+            String,
+            std::collections::HashMap<String, String>,
+        )>,
+    >;
 
     /// Get supported vendors.
     /// Returns: [(vendor_id, vendor_name)]
@@ -140,7 +154,8 @@ trait TisvlayManager {
 
     /// One TV was discovered during a `DiscoverTvs` scan. Tuple shape
     /// matches the synchronous RPC return:
-    /// `(id, name, address, (manufacturer, model, serial), vendor)`.
+    /// `(id, name, address, (manufacturer, model, serial), vendor,
+    /// vendor_data)`.
     #[zbus(signal)]
     fn discovery_found(
         &self,
@@ -149,6 +164,7 @@ trait TisvlayManager {
         address: String,
         hardware_id: (String, String, String),
         vendor: String,
+        vendor_data: std::collections::HashMap<String, String>,
     ) -> zbus::Result<()>;
 }
 
@@ -850,11 +866,24 @@ impl DaemonClient {
 
     /// Discover TVs on the network.
     ///
-    /// Returns `(id, name, address, hardware_id, vendor)` tuples.
+    /// Returns `(id, name, address, hardware_id, vendor, vendor_data)`
+    /// tuples. `vendor_data` carries free-form key/value entries the
+    /// daemon collected during discovery (e.g. `"mac"` from the kernel
+    /// neighbour table for IP-addressed backends); wizards match these
+    /// against each vendor's `PairingField::autofill` directives.
     pub async fn discover_tvs(
         &self,
         timeout_ms: u32,
-    ) -> Result<Vec<(String, String, String, crate::HardwareId, String)>> {
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            crate::HardwareId,
+            String,
+            std::collections::HashMap<String, String>,
+        )>,
+    > {
         let raw = self
             .manager
             .discover_tvs(timeout_ms)
@@ -862,13 +891,14 @@ impl DaemonClient {
             .context("Failed to discover TVs")?;
         Ok(raw
             .into_iter()
-            .map(|(id, name, address, hw_tuple, vendor)| {
+            .map(|(id, name, address, hw_tuple, vendor, vendor_data)| {
                 (
                     id,
                     name,
                     address,
                     crate::HardwareId::from_dbus_tuple(hw_tuple),
                     vendor,
+                    vendor_data,
                 )
             })
             .collect())
@@ -1029,16 +1059,25 @@ impl DaemonClient {
 
     /// Subscribe to `Manager1.DiscoveryFound` signals.
     ///
-    /// Returns a stream of `(id, name, address, hardware_id, vendor)`
-    /// tuples — same shape as the `discover_tvs` RPC return value.
-    /// In v1 the daemon emits these in a burst right before
-    /// `DiscoverTvs` returns; clients should still set up the stream
-    /// before calling `discover_tvs` so future per-backend streaming
-    /// arrives intact.
+    /// Returns a stream of `(id, name, address, hardware_id, vendor,
+    /// vendor_data)` tuples — same shape as the `discover_tvs` RPC
+    /// return value. In v1 the daemon emits these in a burst right
+    /// before `DiscoverTvs` returns; clients should still set up the
+    /// stream before calling `discover_tvs` so future per-backend
+    /// streaming arrives intact.
     pub async fn discovery_found_stream(
         &self,
     ) -> Result<
-        impl futures_util::Stream<Item = (String, String, String, crate::HardwareId, String)> + use<>,
+        impl futures_util::Stream<
+            Item = (
+                String,
+                String,
+                String,
+                crate::HardwareId,
+                String,
+                std::collections::HashMap<String, String>,
+            ),
+        > + use<>,
     > {
         use futures_util::StreamExt;
 
@@ -1055,6 +1094,7 @@ impl DaemonClient {
                 args.address,
                 crate::HardwareId::from_dbus_tuple(args.hardware_id),
                 args.vendor,
+                args.vendor_data,
             ))
         }))
     }
