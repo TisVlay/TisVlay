@@ -27,11 +27,11 @@ use crate::tv_manager::TvManagerError;
 ///
 /// Each variant maps to a stable D-Bus error name (e.g.
 /// `org.tisvlay.Error.PowerNoMacConfigured`). Per-domain typed
-/// errors from `tisvlay-core::errors` (Phase 4 of plan5) get their
-/// own dedicated variants so clients can route on the name without
-/// parsing the message string. Common case: GUI's inline-error
-/// surface checks the D-Bus error name to pick the right localized
-/// message + recovery action.
+/// errors from `tisvlay-core::errors` get their own dedicated
+/// variants so clients can route on the name without parsing the
+/// message string. Common case: GUI's inline-error surface checks
+/// the D-Bus error name to pick the right localized message +
+/// recovery action.
 #[derive(Debug, Clone, zbus::DBusError)]
 #[zbus(prefix = "org.tisvlay.Error")]
 pub enum DaemonError {

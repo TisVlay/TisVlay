@@ -8,8 +8,8 @@
 //!   `DaemonClient::from_connection`
 //! - `list_tvs()` returns the configured mock TV with the right id
 //!
-//! Once this passes, Phase B.1.2 can layer profile-dispatch tests
-//! on top of the same harness without re-validating the wiring.
+//! Downstream tests can layer additional scenarios on top of the
+//! same harness without re-validating the wiring once this passes.
 
 #![cfg(feature = "mock")]
 

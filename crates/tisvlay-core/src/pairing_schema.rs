@@ -10,13 +10,11 @@
 //! per backend, generic UI consumer, server-side canonical
 //! validation.
 //!
-//! Per [plan5.md][2] phase 1. v1 schema scope is the *pairing* form
-//! only (what the user enters BEFORE pairing); a separate
-//! `GetConfigSchema` for editing existing TVs lands with
-//! the edit-properties work.
+//! Scope is the *pairing* form only (fields the user enters
+//! BEFORE pairing). A separate `GetConfigSchema` for editing
+//! already-paired TVs is on the roadmap.
 //!
 //! [1]: https://developers.home-assistant.io/docs/data_entry_flow_index/
-//! [2]: ../../docs/plan5.md
 //!
 //! # Example
 //!
@@ -51,9 +49,8 @@ use serde::{Deserialize, Serialize};
 /// dispatches on it for canonical format checks (IP / MAC / port
 /// range).
 ///
-/// Per v3 Q4 of [plan5.md] this is the canonical vocabulary. Add a
-/// variant when a new backend genuinely needs it; don't reuse
-/// `String` as a catch-all when a typed variant fits.
+/// Add a variant when a new backend genuinely needs it; don't
+/// reuse `String` as a catch-all when a typed variant fits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PairingFieldType {
@@ -118,8 +115,8 @@ pub struct PairingField {
     /// [1]: ../errors/config/enum.ConfigError.html
     pub name: String,
 
-    /// User-facing label (English source). Phase 5 of plan5 will
-    /// route this through gettext when `translation_key` is set.
+    /// User-facing label (English source). When `translation_key`
+    /// is set, the GUI routes this through gettext for display.
     pub label: String,
 
     /// Optional helper / explanation text shown under the field.

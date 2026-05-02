@@ -661,11 +661,10 @@ fn register_callbacks(
     let wizard = app.global::<PairingWizard>();
     let errors_global = app.global::<Errors>();
     // Inline-error action callback. v1 has no contextual actions
-    // wired (the stub-then-fill pattern from plan5 v2 Q2 — `kind`
-    // routing lands when the recovery flows do, e.g. "Edit MAC"
-    // tied to phase 8's edit-properties pane). Register a no-op
-    // so the Slint side has a handler bound; the close X is the
-    // only dismiss path users see today.
+    // wired — `kind`-based routing lands once the recovery flows
+    // do (e.g. "Edit MAC" once the edit-properties pane exists).
+    // Register a no-op so the Slint side has a handler bound; the
+    // close X is the only dismiss path users see today.
     errors_global.on_tvs_action(|| {});
     errors_global.on_pairing_action(|| {});
 
@@ -1034,9 +1033,8 @@ fn register_callbacks(
             2 => {
                 // Configure → Pair: kick off pair_tv. Collected
                 // pairing-form values come from the dynamic
-                // `schema-fields` model; the daemon then validates
-                // each field server-side per
-                // `Manager1.AddTv` (see plan5 phase 1).
+                // `schema-fields` model; the daemon validates each
+                // field server-side in `Manager1.AddTv`.
                 let name = wizard.get_tv_name().to_string();
                 if name.is_empty() {
                     return;
@@ -1397,8 +1395,8 @@ fn build_config_json_from_schema(model: &ModelRc<PairingFieldRow>) -> String {
 /// Fetch the vendor's pairing-form schema and publish autofilled
 /// rows into the wizard's `schema-fields` model. Failure leaves
 /// the model empty and surfaces the error in `discovery-error`
-/// (the closest existing inline-message slot until phase 5 lands
-/// the dedicated `Errors.pairing` channel).
+/// (the closest existing inline-message slot — a dedicated
+/// `Errors.pairing` channel is on the roadmap).
 async fn fetch_and_publish_schema(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,

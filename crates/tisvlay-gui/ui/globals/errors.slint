@@ -6,17 +6,14 @@
 // slot, that disappears when the user dismisses or the slot
 // clears.
 //
-// Per [plan5.md][1] phase 5. Per-pane (instead of one global
-// slot) so a TVs-pane error doesn't leak into Settings; matches
-// Kirigami inline-message placement (within a pane, near its
-// header).
+// Per-pane (instead of one global slot) so a TVs-pane error
+// doesn't leak into Settings; matches Kirigami inline-message
+// placement (within a pane, near its header).
 //
 // `kind` is a stable machine-readable identifier so the action
 // button can pick the right recovery path when one applies (e.g.
 // `kind == "no-mac-configured"` → "Edit MAC"). Empty `kind` =
 // generic message, no contextual action.
-//
-// [1]: ../../docs/plan5.md
 
 export struct ErrorState {
     kind: string,

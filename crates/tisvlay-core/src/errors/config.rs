@@ -1,10 +1,11 @@
 //! Typed errors for configuration validation.
 //!
 //! Surfaces the typed shape of pairing- and config-form
-//! validation failures. Per plan5 phase 1 + v4 Q2: errors carry
-//! the schema field's `name` identifier (machine-readable) so the
-//! GUI can route the message back to the correct widget and
-//! render the field's localized label alongside the reason.
+//! validation failures. Errors carry the schema field's `name`
+//! identifier (machine-readable) so the GUI can route the message
+//! back to the correct widget and render the field's localized
+//! label alongside the reason — keeping the daemon
+//! locale-agnostic.
 
 use std::fmt;
 

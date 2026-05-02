@@ -824,9 +824,8 @@ component StepPair {
                 HorizontalLayout {
                     alignment: center;
                     Text {
-                        // `root.message` is set from Rust (see Phase 5 of plan5
-                        // — typed errors flow into a localized string there);
-                        // it's already translated by the time it reaches us.
+                        // `root.message` is set from Rust — typed errors are
+                        // already localized by the time they reach this Text.
                         // The fallback strings below are static, so wrap them.
                         text: root.message != ""
                             ? root.message

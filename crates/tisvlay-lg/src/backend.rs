@@ -691,9 +691,8 @@ impl TvConnector for LgConnector {
                 field_type: PairingFieldType::Ip,
                 required: true,
                 placeholder: "192.168.1.100".into(),
-                // SSDP discovery yields IP under `vendor_data["ip"]`
-                // (see Phase 3 — once `vendor_data` ships, this
-                // autofill key matches).
+                // SSDP discovery populates `vendor_data["ip"]`;
+                // this autofill key matches.
                 autofill: "discovery.ip".into(),
                 ..Default::default()
             },
@@ -704,14 +703,14 @@ impl TvConnector for LgConnector {
                          can't power this TV on from deep standby."
                     .into(),
                 field_type: PairingFieldType::Mac,
-                // Optional at the schema level; the wizard surfaces a
-                // warning when empty (per the form-validation
-                // lifecycle in plan5.md), but lets the user proceed
+                // Optional at the schema level; the wizard surfaces
+                // a warning when empty but lets the user proceed
                 // since some setups manage power externally.
                 required: false,
                 placeholder: "AA:BB:CC:DD:EE:FF".into(),
-                // ARP-resolved by the daemon after SSDP yields the IP
-                // (Phase 3 of plan5).
+                // Daemon ARP-resolves this from the kernel's neighbour
+                // table after SSDP yields the IP and stuffs it into
+                // `vendor_data["mac"]`.
                 autofill: "discovery.mac".into(),
                 ..Default::default()
             },

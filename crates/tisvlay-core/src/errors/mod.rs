@@ -1,11 +1,12 @@
 //! Per-domain typed error vocabularies.
 //!
-//! Per [plan5.md][1] phase 4, the daemon's error surface is split
-//! into per-domain enums (mirroring [ModemManager's
-//! `MMCoreError` / `MMConnectionError` / etc. layout][2]):
+//! The daemon's error surface is split into per-domain enums,
+//! mirroring [ModemManager's
+//! `MMCoreError` / `MMConnectionError` / etc. layout][1]:
 //!
 //! - [`power`] — Wake-on-LAN, connect, and power-cycle failures.
-//! - Future: `pairing`, `config`, `connection` modules.
+//! - [`config`] — Schema validation, duplicate IDs, profile refs.
+//! - Future: `pairing`, `connection` modules.
 //!
 //! Each variant has:
 //! - A typed payload describing the failure
@@ -19,8 +20,7 @@
 //! their own backend-specific errors on top via the boxed `source`
 //! pattern.
 //!
-//! [1]: ../../../docs/plan5.md
-//! [2]: https://www.freedesktop.org/software/ModemManager/doc/latest/ModemManager/ModemManager-Errors.html
+//! [1]: https://www.freedesktop.org/software/ModemManager/doc/latest/ModemManager/ModemManager-Errors.html
 
 pub mod config;
 pub mod power;

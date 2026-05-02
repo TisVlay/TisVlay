@@ -2,12 +2,13 @@
 //! background-task pattern.
 //!
 //! TvManager spawns long-lived tasks that loop on an mpsc receiver
-//! and schedule per-TV work via `tokio::time::sleep`. Phase B.1
-//! integration tests want to drive that scheduled work deterministically
-//! by `tokio::time::advance()`-ing the paused clock instead of waiting
+//! and schedule per-TV work via `tokio::time::sleep`. Integration
+//! tests want to drive that scheduled work deterministically by
+//! `tokio::time::advance()`-ing the paused clock instead of waiting
 //! real time.
 //!
-//! This test confirms two assumptions before B.1.1 leans on them:
+//! This test confirms two assumptions before downstream tests
+//! lean on them:
 //!
 //! 1. Paused time **does not** auto-advance, so a `sleep(1h)` blocks
 //!    until we explicitly advance.

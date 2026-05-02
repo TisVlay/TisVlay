@@ -15,11 +15,13 @@ use std::time::Duration;
 /// How long the direct-connect probe in [`TvManager::power_on`]
 /// waits before giving up and falling through to Wake-on-LAN.
 ///
-/// With the LG backend's fast-fail `connect()` contract (Phase 6.1
-/// of plan5), healthy reconnects complete in <500 ms. This cap is
-/// belt-and-suspenders for misbehaving networks (firewall
-/// blackholes, hung TLS handshakes) where a connect would
-/// otherwise stall on the kernel's multi-second handshake budget.
+/// Healthy single-attempt reconnects complete in <500 ms when the
+/// TV is reachable; this cap is belt-and-suspenders for misbehaving
+/// networks (firewall blackholes, hung TLS handshakes) where a
+/// connect would otherwise stall on the kernel's multi-second
+/// handshake budget. Backends that violate the
+/// `TvConnector::connect()` fast-fail contract are also bounded
+/// here.
 const DIRECT_CONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 use tisvlay_core::{
     Capabilities, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection, TvConfig,
@@ -1297,9 +1299,8 @@ impl TvManager {
         // Probe direct-connect first (when `should_probe`). Wrapped
         // in a 2 s timeout so misbehaving networks (firewall
         // blackholes, hung TLS handshakes) can't burn the kernel's
-        // multi-second handshake-stall budget. With the LG backend
-        // contract fix from Phase 6.1, healthy probes complete in
-        // <500 ms; this is belt-and-suspenders.
+        // multi-second handshake-stall budget. Healthy probes
+        // complete in <500 ms; the timeout is belt-and-suspenders.
         let direct_result = if should_probe {
             self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::DirectConnect);
             match tokio::time::timeout(
