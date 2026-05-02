@@ -245,12 +245,17 @@ async fn main() -> Result<()> {
                         "disconnected"
                     };
                     let managed = if tv.managed { "" } else { " [unmanaged]" };
-                    // Show backend's primary diagnostic descriptor
+                    // Show backend's primary editable descriptor
                     // (LG: IP address; future: serial port, etc.) —
-                    // first non-Secret entry of `Tv1.VendorInfo`.
+                    // first entry of `Tv1.VendorConfig`. Falls
+                    // through to `vendor_info` (Diagnostic) for
+                    // backends that have no `UserInput` schema
+                    // fields, so the column never goes blank for a
+                    // backend that surfaces anything at all.
                     let descriptor = tv
-                        .vendor_info
+                        .vendor_config
                         .first()
+                        .or_else(|| tv.vendor_info.first())
                         .map(|(_, v)| v.as_str())
                         .unwrap_or("?");
                     println!(
@@ -543,8 +548,11 @@ fn print_tv_status(tv: &TvInfo, user_profile: Option<&str>) {
     let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
     println!("TV: {} ({})", tv.uuid, tv.name);
     println!("  Vendor: {}", tv.vendor);
-    // Vendor diagnostic info (LG: IP + MAC; future: serial port, …)
-    for (label, value) in &tv.vendor_info {
+    // User-editable vendor config (LG: IP, MAC) followed by the
+    // backend-discovered diagnostics (LG: WebSocket scheme).
+    // Identical visual treatment — the split matters in the GUI's
+    // CONFIG/INFO grouping, not in a flat CLI dump.
+    for (label, value) in tv.vendor_config.iter().chain(tv.vendor_info.iter()) {
         println!("  {}: {}", label, value);
     }
     println!("Managed: {}", tv.managed);

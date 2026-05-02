@@ -165,14 +165,18 @@ async fn update_config_rejects_unknown_system_profile() {
 }
 
 #[tokio::test]
-async fn vendor_field_change_refreshes_cached_vendor_info() {
+async fn vendor_field_change_refreshes_cached_vendor_config() {
     // Regression: editing a vendor field via `Tv1.UpdateConfig`
     // writes the on-disk config and reconnects the transport,
-    // but the per-TV D-Bus property cache (`Tv1.VendorInfo`,
-    // `Tv1.Power.SupportsWake`) used to stay at the old values
-    // until daemon restart. The `TvVendorConfigChanged` event +
-    // `refresh_tv_vendor_state` forwarder handler now keep them
-    // in sync.
+    // but the per-TV D-Bus property cache (`Tv1.VendorConfig`,
+    // `Tv1.VendorInfo`, `Tv1.Power.SupportsWake`) used to stay
+    // at the old values until daemon restart. The
+    // `TvVendorConfigChanged` event + `refresh_tv_vendor_state`
+    // forwarder handler now keep them in sync.
+    //
+    // The mock's `address` is a `UserInput` field, so it lives
+    // in `Tv1.VendorConfig` (not `Tv1.VendorInfo`, which is
+    // narrowed to `Diagnostic`-visibility rows).
     let (daemon, client) = empty_daemon().await;
     let tv_id = pair_one(&daemon, &client, "mock://before_edit").await;
     settle().await;
@@ -182,7 +186,7 @@ async fn vendor_field_change_refreshes_cached_vendor_info() {
         .iter()
         .find(|t| t.uuid == tv_id)
         .unwrap()
-        .vendor_info
+        .vendor_config
         .iter()
         .map(|(_, v)| v.clone())
         .collect();
@@ -190,7 +194,7 @@ async fn vendor_field_change_refreshes_cached_vendor_info() {
         initial_descriptors
             .iter()
             .any(|v| v == "mock://before_edit"),
-        "sanity: vendor_info should carry the original address; got {initial_descriptors:?}"
+        "sanity: vendor_config should carry the original address; got {initial_descriptors:?}"
     );
 
     let patch = serde_json::json!({ "address": "mock://after_edit" }).to_string();
@@ -202,19 +206,19 @@ async fn vendor_field_change_refreshes_cached_vendor_info() {
         .iter()
         .find(|t| t.uuid == tv_id)
         .unwrap()
-        .vendor_info
+        .vendor_config
         .iter()
         .map(|(_, v)| v.clone())
         .collect();
     assert!(
         updated_descriptors.iter().any(|v| v == "mock://after_edit"),
-        "vendor_info should reflect the updated address; got {updated_descriptors:?}"
+        "vendor_config should reflect the updated address; got {updated_descriptors:?}"
     );
     assert!(
         !updated_descriptors
             .iter()
             .any(|v| v == "mock://before_edit"),
-        "vendor_info should no longer carry the stale original address; got {updated_descriptors:?}"
+        "vendor_config should no longer carry the stale original address; got {updated_descriptors:?}"
     );
 }
 

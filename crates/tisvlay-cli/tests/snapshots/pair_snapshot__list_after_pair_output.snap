@@ -6,7 +6,7 @@ info:
     - "--user"
     - list
   env:
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-qQtZPU/bus.sock,guid=9abc3ad8dc8fc3ae148eba0f69f66ad5"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-C78hVF/bus.sock,guid=b8bac4bf2ff1d0cb6283b6ae69f68e08"
 ---
 success: true
 exit_code: 0

@@ -58,10 +58,17 @@ export struct TvViewModel {
     hw-model: string,
     hw-serial: string,
     desktop-connector: string,
-    /// Vendor-specific `(label, value)` rows from
-    /// `Tv1.VendorInfo` — appended to the INFO group below the
-    /// cross-vendor identity rows. Empty for backends that don't
-    /// surface any vendor info.
+    /// User-editable `(label, value)` rows from
+    /// `Tv1.VendorConfig` (LG: IP, MAC). Rendered in the CONFIG
+    /// group's view-mode list; the edit form replaces these with
+    /// `EditPane.fields` while the user is editing. Empty for
+    /// backends without any `UserInput` schema fields.
+    vendor-config: [VendorInfoRow],
+    /// Backend-discovered diagnostic `(label, value)` rows from
+    /// `Tv1.VendorInfo` (LG: WebSocket scheme). Read-only;
+    /// rendered in the INFO group alongside the cross-vendor
+    /// identity rows. Empty for backends without any `Diagnostic`
+    /// schema fields.
     vendor-info: [VendorInfoRow],
     /// Empty when no power-on is in flight; otherwise the latest
     /// phase string from `Tv1.Power.PowerCycleProgress`
@@ -787,16 +794,12 @@ component TvDetail inherits Rectangle {
                     }
                 }
 
-                // -- Info --
+                // -- Config --
                 //
-                // Address-book contact pattern: a small pencil on the
-                // INFO header line flips Name + vendor `UserInput`
-                // rows to editable inputs; ✓/✗ replace the pencil
-                // while editing. Read-only identity rows (TV ID,
-                // hardware, DRM connector) and `Diagnostic` vendor
-                // rows stay visible and uneditable in both modes —
-                // backend-discovered values can only be refreshed
-                // via re-pair.
+                // Address-book contact pattern: a small pencil on
+                // the CONFIG header line flips Name + vendor
+                // `UserInput` rows to editable inputs (LG: IP,
+                // MAC); ✓/✗ replace the pencil while editing.
                 //
                 // Inlines the `Group` widget's title-row + card
                 // structure rather than wrapping `Group` so the
@@ -817,7 +820,7 @@ component TvDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             Text {
-                                text: @tr("INFO");
+                                text: @tr("CONFIG");
                                 color: Theme.text-dim;
                                 font-size: Design.font-mini;
                                 font-weight: 600;
@@ -862,13 +865,12 @@ component TvDetail inherits Rectangle {
                                 dismissable: false;
                             }
 
-                            // Editable rows in edit mode: friendly
-                            // name + vendor `UserInput` schema
-                            // fields (LG: IP, MAC). The schema form
-                            // is the same component the pairing
-                            // wizard uses, so per-field validation
-                            // + server-side error routing are
-                            // shared.
+                            // Edit mode: friendly name input +
+                            // vendor `UserInput` schema fields. The
+                            // schema form is the same component the
+                            // pairing wizard uses, so per-field
+                            // validation + server-side error
+                            // routing are shared.
                             if root.in-edit-mode: VerticalLayout {
                                 spacing: Design.gap-row;
 
@@ -893,28 +895,40 @@ component TvDetail inherits Rectangle {
                                 }
                             }
 
-                            LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
-                            // Vendor-specific rows (LG: IP + MAC;
-                            // future backends: serial port, API
-                            // endpoint, …). Backend declines to
-                            // surface secrets — LG omits
-                            // `client_key`. In edit mode, the
-                            // `UserInput` subset (IP, MAC) is moved
-                            // into the schema form above; only
-                            // `Diagnostic` rows (LG: scheme) remain
-                            // here.
+                            // View mode: name + vendor `UserInput`
+                            // rows as read-only labels. Same set
+                            // the edit form mutates.
                             if !root.in-edit-mode: VerticalLayout {
-                                for entry in root.tv.vendor-info: LabeledRow {
+                                LabeledRow { label: @tr("Name"); value: root.tv.name; }
+                                for entry in root.tv.vendor-config: LabeledRow {
                                     label: entry.label;
                                     value: entry.value;
                                     mono: true;
                                 }
                             }
-                            LabeledRow { label: @tr("Manufacturer"); value: root.tv.hw-manufacturer; }
-                            LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }
-                            LabeledRow { label: @tr("Serial"); value: root.tv.hw-serial; mono: true; }
-                            LabeledRow { label: @tr("DRM connector"); value: root.tv.desktop-connector; mono: true; }
                         }
+                    }
+                }
+
+                // -- Info --
+                //
+                // Read-only identity rows that the user can never
+                // edit through this surface: TV UUID + hardware
+                // identity + DRM connector + backend-discovered
+                // diagnostics (LG: WebSocket scheme). Diagnostics
+                // refresh only on re-pair.
+                Group {
+                    title: @tr("INFO");
+
+                    LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
+                    LabeledRow { label: @tr("Manufacturer"); value: root.tv.hw-manufacturer; }
+                    LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }
+                    LabeledRow { label: @tr("Serial"); value: root.tv.hw-serial; mono: true; }
+                    LabeledRow { label: @tr("DRM connector"); value: root.tv.desktop-connector; mono: true; }
+                    for entry in root.tv.vendor-info: LabeledRow {
+                        label: entry.label;
+                        value: entry.value;
+                        mono: true;
                     }
                 }
 

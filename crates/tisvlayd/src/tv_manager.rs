@@ -899,15 +899,30 @@ impl TvManager {
             .collect()
     }
 
-    /// Vendor-specific diagnostic info for this TV (IP, MAC, etc.).
-    /// Read at D-Bus interface registration time and cached on
-    /// `Tv1.VendorInfo`. Empty when the backend declines to surface
-    /// any vendor-specific info or the TV isn't found.
-    pub async fn vendor_info(&self, tv_id: &str) -> Vec<(String, String)> {
+    /// User-editable vendor-config rows (LG: IP, MAC). Read at
+    /// `Tv1.*` interface registration time and cached on
+    /// `Tv1.VendorConfig`. Empty when the backend has no
+    /// `UserInput` schema fields or the TV isn't found.
+    pub async fn vendor_config(&self, tv_id: &str) -> Vec<(String, String)> {
         match self.get_tv(tv_id).await {
             Ok(tv_arc) => {
                 let tv = tv_arc.lock().await;
-                self.registry.display_info(&tv.config)
+                self.registry.display_config(&tv.config)
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Backend-discovered diagnostic rows (LG: WebSocket scheme).
+    /// Read at `Tv1.*` interface registration time and cached on
+    /// `Tv1.VendorInfo`; refreshed via `TvVendorConfigChanged` after
+    /// `Tv1.UpdateConfig` writes. Empty when the backend has no
+    /// `Diagnostic` schema fields or the TV isn't found.
+    pub async fn vendor_diagnostics(&self, tv_id: &str) -> Vec<(String, String)> {
+        match self.get_tv(tv_id).await {
+            Ok(tv_arc) => {
+                let tv = tv_arc.lock().await;
+                self.registry.display_diagnostics(&tv.config)
             }
             Err(_) => Vec::new(),
         }

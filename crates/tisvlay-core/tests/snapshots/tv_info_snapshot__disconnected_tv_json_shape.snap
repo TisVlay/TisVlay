@@ -16,6 +16,7 @@ expression: sample_disconnected()
     "model": null,
     "serial": null
   },
+  "vendor_config": [],
   "vendor_info": [],
   "desktop": {
     "connector": ""

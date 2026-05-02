@@ -1874,6 +1874,15 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
             hw_model: raw.hw_model,
             hw_serial: raw.hw_serial,
             desktop_connector: raw.desktop_connector,
+            vendor_config: ModelRc::new(VecModel::from(
+                raw.vendor_config
+                    .into_iter()
+                    .map(|(label, value)| VendorInfoRow {
+                        label: SharedString::from(label),
+                        value: SharedString::from(value),
+                    })
+                    .collect::<Vec<_>>(),
+            )),
             vendor_info: ModelRc::new(VecModel::from(
                 raw.vendor_info
                     .into_iter()

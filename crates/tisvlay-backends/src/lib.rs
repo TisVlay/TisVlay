@@ -153,30 +153,49 @@ impl BackendRegistry {
         connector.connect(vendor_config).await
     }
 
-    /// Vendor-specific diagnostic info to surface in the GUI's
-    /// INFO pane (IP, MAC, etc.). See
-    /// [`TvConnector::display_info`] for the backend's contract.
-    /// Returns an empty vec for unknown vendors or backends that
-    /// don't implement it.
-    pub fn display_info(&self, tv_config: &TvConfig) -> Vec<(String, String)> {
+    /// User-editable vendor-config rows for the GUI's TVs-pane
+    /// CONFIG group. Wraps [`TvConnector::display_config`] —
+    /// returns an empty vec for unknown vendors or backends with
+    /// no `UserInput` schema fields.
+    pub fn display_config(&self, tv_config: &TvConfig) -> Vec<(String, String)> {
         self.get_connector(&tv_config.vendor)
             .ok()
-            .and_then(|c| tv_config.get_raw_vendor_value().map(|v| c.display_info(v)))
+            .and_then(|c| {
+                tv_config
+                    .get_raw_vendor_value()
+                    .map(|v| c.display_config(v))
+            })
+            .unwrap_or_default()
+    }
+
+    /// Read-only diagnostic vendor rows for the GUI's TVs-pane
+    /// INFO group. Wraps [`TvConnector::display_diagnostics`] —
+    /// returns an empty vec for unknown vendors or backends with
+    /// no `Diagnostic` schema fields.
+    pub fn display_diagnostics(&self, tv_config: &TvConfig) -> Vec<(String, String)> {
+        self.get_connector(&tv_config.vendor)
+            .ok()
+            .and_then(|c| {
+                tv_config
+                    .get_raw_vendor_value()
+                    .map(|v| c.display_diagnostics(v))
+            })
             .unwrap_or_default()
     }
 
     /// Backend's primary descriptor — the value of the first
-    /// non-`Secret` `display_info` entry. Convention: backends
-    /// order their `config_schema` so the most informative field
-    /// (LG: ip; future Bluetooth: MAC; USB-CEC: serial port)
-    /// comes first. Used by daemon-internal log formatters and
-    /// route resolution where a single transport-appropriate
-    /// string is needed.
+    /// `UserInput`-visibility entry from the vendor config.
+    /// Convention: backends order their `config_schema` so the
+    /// most informative editable field (LG: ip; future Bluetooth:
+    /// MAC; USB-CEC: serial port) comes first. Used by
+    /// daemon-internal log formatters and route resolution where
+    /// a single transport-appropriate string is needed.
     ///
     /// Returns `None` when the backend declines to surface any
-    /// diagnostic info (mock, future minimal backends).
+    /// editable info (mock without `UserInput` fields, future
+    /// minimal backends).
     pub fn primary_descriptor(&self, tv_config: &TvConfig) -> Option<String> {
-        self.display_info(tv_config)
+        self.display_config(tv_config)
             .into_iter()
             .next()
             .map(|(_, value)| value)

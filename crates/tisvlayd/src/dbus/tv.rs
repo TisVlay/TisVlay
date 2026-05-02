@@ -33,10 +33,16 @@ pub struct TvService {
     pub(crate) system_profile: String,
     pub(crate) primary_input: String,
     pub(crate) automate_when: tisvlay_core::AutomateWhen,
-    /// Vendor-specific diagnostic info — `(label, value)` pairs
-    /// from the backend's `display_info`. Surfaced to the GUI's
-    /// INFO pane via `Tv1.VendorInfo`. Empty for backends that
-    /// decline to expose any.
+    /// User-editable vendor-config rows — `(label, value)` pairs
+    /// from the backend's `display_config` (LG: IP, MAC). Surfaced
+    /// via `Tv1.VendorConfig` and rendered in the GUI's CONFIG
+    /// group. Empty for backends with no `UserInput` schema fields.
+    pub(crate) vendor_config: Vec<(String, String)>,
+    /// Read-only diagnostic vendor rows — `(label, value)` pairs
+    /// from the backend's `display_diagnostics` (LG: WebSocket
+    /// scheme). Surfaced via `Tv1.VendorInfo` and rendered in the
+    /// GUI's INFO group. Empty for backends with no `Diagnostic`
+    /// schema fields.
     pub(crate) vendor_info: Vec<(String, String)>,
 
     // Cached runtime state (updated by subscription pushes)
@@ -82,17 +88,36 @@ impl TvService {
         &self.vendor
     }
 
-    /// Vendor-specific diagnostic info as ordered `(label, value)`
-    /// pairs the GUI's INFO pane renders alongside the cross-vendor
-    /// identity columns. LG returns IP + MAC; future backends
-    /// surface their own (USB-CEC: serial port; Samsung: API
-    /// endpoint URL; etc.). Secrets like client_keys are
-    /// intentionally excluded by the backends.
+    /// User-editable vendor-config rows as ordered `(label, value)`
+    /// pairs. The GUI's CONFIG group renders these in view mode
+    /// and the edit form drives the same field set in edit mode
+    /// via `Tv1.UpdateConfig`. Schema-driven projection — see
+    /// [`TvConnector::display_config`]. LG: IP + MAC. Future
+    /// backends: whatever `UserInput`-visibility fields they
+    /// declare on their `config_schema`.
     ///
-    /// Set at interface-registration time and re-set on config
-    /// reload — values come from `LgVendorConfig` and friends, not
-    /// live state, so a `const`-style signal would be a lie when
-    /// the user re-pairs.
+    /// Set at interface-registration time and refreshed via
+    /// `state_forwarder` after `Tv1.UpdateConfig` writes —
+    /// values come from `vendor_config`, not live state, so a
+    /// `const`-style signal would be a lie when the user edits.
+    ///
+    /// [`TvConnector::display_config`]: tisvlay_core::TvConnector::display_config
+    #[zbus(property)]
+    fn vendor_config(&self) -> Vec<(String, String)> {
+        self.vendor_config.clone()
+    }
+
+    /// Backend-discovered diagnostic rows as ordered
+    /// `(label, value)` pairs. The GUI's INFO group renders these
+    /// alongside cross-vendor identity columns (TV ID, hardware,
+    /// DRM connector). LG: WebSocket scheme. Future backends:
+    /// whatever `Diagnostic`-visibility fields they declare. Not
+    /// editable — backends refresh diagnostics during pairing
+    /// only, so the user re-pairs to update.
+    ///
+    /// Set at interface-registration time and refreshed via
+    /// `state_forwarder` after `Tv1.UpdateConfig` writes (in case
+    /// a vendor field's display projection depends on others).
     #[zbus(property)]
     fn vendor_info(&self) -> Vec<(String, String)> {
         self.vendor_info.clone()
@@ -651,7 +676,8 @@ pub async fn register_tv_interfaces(
 
     let object_server = connection.object_server();
 
-    let vendor_info = manager.vendor_info(&tv_id).await;
+    let vendor_config = manager.vendor_config(&tv_id).await;
+    let vendor_info = manager.vendor_diagnostics(&tv_id).await;
 
     object_server
         .at(
@@ -665,6 +691,7 @@ pub async fn register_tv_interfaces(
                 system_profile,
                 primary_input,
                 automate_when,
+                vendor_config,
                 vendor_info,
                 connected,
                 current_input: current_input.clone(),

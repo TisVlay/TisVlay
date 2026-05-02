@@ -17,7 +17,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
       "model": "OLED65G4SUB",
       "serial": "serial-1"
     },
-    "vendor_info": [
+    "vendor_config": [
       [
         "IP address",
         "192.168.1.100"
@@ -25,6 +25,12 @@ expression: "vec![sample_connected(), sample_disconnected()]"
       [
         "MAC address",
         "AA:BB:CC:DD:EE:FF"
+      ]
+    ],
+    "vendor_info": [
+      [
+        "WebSocket scheme",
+        "wss"
       ]
     ],
     "desktop": {
@@ -67,6 +73,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
       "model": null,
       "serial": null
     },
+    "vendor_config": [],
     "vendor_info": [],
     "desktop": {
       "connector": ""

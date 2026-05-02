@@ -322,33 +322,40 @@ pub trait TvConnector: Send + Sync {
 
     /// Vendor-specific connection info for the GUI's INFO pane.
     ///
-    /// Returns ordered `(label, value)` pairs the user might care
-    /// about for diagnosis — IP, MAC, serial port, etc. Display
-    /// order is preserved.
+    /// User-editable vendor-config fields, ordered `(label, value)`
+    /// pairs. The GUI's TVs-pane CONFIG group uses this for its
+    /// view-mode read-only display, and the edit pane uses the
+    /// same field set as its editable surface (driven by the
+    /// `UserInput` slice of [`config_schema`](Self::config_schema)).
     ///
-    /// **Default impl** walks [`config_schema`](Self::config_schema)
-    /// and emits a row per field whose
-    /// [`visibility`](crate::FieldVisibility) is `UserInput` or
-    /// `Diagnostic`. `Secret` fields are skipped — backends opt
-    /// fields out of display by marking them
-    /// [`FieldVisibility::Secret`] in their schema rather than
-    /// hand-rolling exclusion logic here. Empty values are elided.
+    /// **Default impl** walks `config_schema` and emits a row per
+    /// `UserInput`-visibility field. Empty values are elided.
     ///
     /// Backends only need to override this when the schema-driven
     /// projection isn't enough (e.g. the field's wire form needs
     /// reformatting before display — `0xFFEE...` → `FF:EE:...`).
-    fn display_info(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
-        self.config_schema()
-            .into_iter()
-            .filter(|f| f.visibility != crate::FieldVisibility::Secret)
-            .filter_map(|f| {
-                let value = toml_field_as_string(vendor_config, &f.name)?;
-                if value.is_empty() {
-                    return None;
-                }
-                Some((f.label, value))
-            })
-            .collect()
+    fn display_config(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
+        display_rows_for_visibility(
+            &self.config_schema(),
+            vendor_config,
+            crate::FieldVisibility::UserInput,
+        )
+    }
+
+    /// Backend-discovered diagnostic fields, ordered
+    /// `(label, value)` pairs. The GUI's TVs-pane INFO group uses
+    /// this for its read-only diagnostic rows (LG: WebSocket
+    /// scheme captured at pair time). These fields can only be
+    /// refreshed via re-pair, so they're never editable.
+    ///
+    /// **Default impl** walks `config_schema` and emits a row per
+    /// `Diagnostic`-visibility field. Empty values are elided.
+    fn display_diagnostics(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
+        display_rows_for_visibility(
+            &self.config_schema(),
+            vendor_config,
+            crate::FieldVisibility::Diagnostic,
+        )
     }
 
     /// Whether this transport supports waking the device from standby.
@@ -445,6 +452,29 @@ pub trait TvConnector: Send + Sync {
 /// container types (arrays / tables). Used by the default
 /// [`TvConnector::display_info`] impl to project values out of a
 /// `vendor_config` for display.
+/// Project a `(label, value)` row list out of a vendor schema,
+/// keeping only fields whose [`visibility`](crate::FieldVisibility)
+/// matches the requested filter and whose value is non-empty.
+/// Shared between [`TvConnector::display_config`] and
+/// [`TvConnector::display_diagnostics`].
+fn display_rows_for_visibility(
+    schema: &[crate::PairingField],
+    vendor_config: &toml::Value,
+    visibility: crate::FieldVisibility,
+) -> Vec<(String, String)> {
+    schema
+        .iter()
+        .filter(|f| f.visibility == visibility)
+        .filter_map(|f| {
+            let value = toml_field_as_string(vendor_config, &f.name)?;
+            if value.is_empty() {
+                return None;
+            }
+            Some((f.label.clone(), value))
+        })
+        .collect()
+}
+
 fn toml_field_as_string(value: &toml::Value, name: &str) -> Option<String> {
     let table = value.as_table()?;
     match table.get(name)? {

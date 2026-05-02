@@ -219,9 +219,19 @@ trait TisvlayTv {
     #[zbus(property)]
     fn hardware_id(&self) -> zbus::Result<(String, String, String)>;
 
-    /// Vendor-specific diagnostic info as ordered `(label, value)`
-    /// pairs (IP, MAC, serial port, etc.). Backends populate this
-    /// via `TvConnector::display_info`. Excludes secrets.
+    /// User-editable vendor-config rows (LG: IP, MAC). Drives the
+    /// GUI's CONFIG group view-mode display and matches the field
+    /// set the edit form mutates via `Tv1.UpdateConfig`. Backends
+    /// populate this via `TvConnector::display_config` —
+    /// `UserInput`-visibility schema fields only.
+    #[zbus(property)]
+    fn vendor_config(&self) -> zbus::Result<Vec<(String, String)>>;
+
+    /// Backend-discovered diagnostic rows (LG: WebSocket scheme).
+    /// Read-only — surfaced in the GUI's INFO group alongside
+    /// hardware identity. Backends populate this via
+    /// `TvConnector::display_diagnostics` —
+    /// `Diagnostic`-visibility schema fields only.
     #[zbus(property)]
     fn vendor_info(&self) -> zbus::Result<Vec<(String, String)>>;
 
@@ -501,9 +511,15 @@ pub struct TvInfo {
     pub primary_input: String,
     /// Vendor-reported hardware identity (manufacturer / model / serial).
     pub hardware_id: crate::HardwareId,
-    /// Vendor-specific diagnostic info as ordered `(label, value)`
-    /// pairs (IP, MAC, serial port, etc.). Surfaces what the
-    /// backend's `display_info` exposes — no secrets.
+    /// User-editable vendor-config rows (LG: IP, MAC). Mirrors
+    /// `Tv1.VendorConfig`. The GUI's CONFIG group renders these
+    /// in view mode and edits the same fields via the schema
+    /// form when the user clicks the edit pencil.
+    pub vendor_config: Vec<(String, String)>,
+    /// Backend-discovered diagnostic rows (LG: WebSocket scheme).
+    /// Mirrors `Tv1.VendorInfo`. Read-only — refreshed only on
+    /// re-pair. Rendered in the GUI's INFO group alongside the
+    /// hardware identity columns.
     pub vendor_info: Vec<(String, String)>,
     /// Desktop-side identity from the daemon's in-process DRM-EDID
     /// probe. Empty strings until `tisvlayd` matches a connector for
@@ -816,6 +832,10 @@ impl DaemonClient {
                 .map(crate::HardwareId::from_dbus_tuple)
                 .unwrap_or_default();
 
+            let vendor_config: Vec<(String, String)> = props
+                .get("VendorConfig")
+                .and_then(|v: &OwnedValue| <Vec<(String, String)>>::try_from(v.clone()).ok())
+                .unwrap_or_default();
             let vendor_info: Vec<(String, String)> = props
                 .get("VendorInfo")
                 .and_then(|v: &OwnedValue| <Vec<(String, String)>>::try_from(v.clone()).ok())
@@ -888,6 +908,7 @@ impl DaemonClient {
                 system_profile,
                 primary_input,
                 hardware_id,
+                vendor_config,
                 vendor_info,
                 desktop,
                 path: path.as_str().to_string(),

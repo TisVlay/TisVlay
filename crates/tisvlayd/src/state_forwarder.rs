@@ -388,12 +388,17 @@ async fn refresh_tv_vendor_state(
     tv_id: &str,
     manager: &Arc<TvManager>,
 ) {
-    let vendor_info = manager.vendor_info(tv_id).await;
+    let vendor_config = manager.vendor_config(tv_id).await;
+    let vendor_diagnostics = manager.vendor_diagnostics(tv_id).await;
     if let Ok(iface_ref) = object_server.interface::<_, TvService>(path).await {
         let mut iface = iface_ref.get_mut().await;
         let emitter = iface_ref.signal_emitter();
-        if iface.vendor_info != vendor_info {
-            iface.vendor_info = vendor_info;
+        if iface.vendor_config != vendor_config {
+            iface.vendor_config = vendor_config;
+            iface.vendor_config_changed(emitter).await.ok();
+        }
+        if iface.vendor_info != vendor_diagnostics {
+            iface.vendor_info = vendor_diagnostics;
             iface.vendor_info_changed(emitter).await.ok();
         }
     }

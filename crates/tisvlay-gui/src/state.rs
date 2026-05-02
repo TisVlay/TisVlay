@@ -41,11 +41,18 @@ pub(crate) struct TvViewRaw {
     pub hw_model: SharedString,
     pub hw_serial: SharedString,
     pub desktop_connector: SharedString,
-    /// Vendor-specific diagnostic rows from `Tv1.VendorInfo`.
-    /// Plain `Vec<(String, String)>` here so the snapshot crosses
-    /// the tokio→Slint thread boundary as `Send`; the conversion
-    /// to `[VendorInfoRow]` (a `ModelRc`-backed list) happens
-    /// inside the event-loop closure in `main.rs`.
+    /// User-editable vendor-config rows from `Tv1.VendorConfig`
+    /// (LG: IP, MAC). Rendered in the CONFIG group's view-mode
+    /// list; the edit form replaces this with `EditPane.fields`
+    /// when the user clicks the pencil. Plain
+    /// `Vec<(String, String)>` here so the snapshot crosses the
+    /// tokio→Slint thread boundary as `Send`; the conversion to
+    /// `[VendorInfoRow]` (a `ModelRc`-backed list) happens inside
+    /// the event-loop closure in `main.rs`.
+    pub vendor_config: Vec<(String, String)>,
+    /// Backend-discovered diagnostic rows from `Tv1.VendorInfo`
+    /// (LG: WebSocket scheme). Read-only; rendered in the INFO
+    /// group alongside hardware identity.
     pub vendor_info: Vec<(String, String)>,
 }
 
@@ -106,9 +113,16 @@ pub(crate) async fn fetch_state(
             .map(|(id, _)| SharedString::from(id.as_str()))
             .collect();
 
+        // Spatial hint shown alongside the name — backend's primary
+        // editable descriptor (LG: IP; future Bluetooth: MAC; etc.).
+        // First entry of `Tv1.VendorConfig` by convention. (Falls
+        // back to the read-only diagnostic list if a backend has no
+        // `UserInput` schema fields — unlikely but kept the legacy
+        // behavior intact for paranoia.)
         let primary_descriptor = tv
-            .vendor_info
+            .vendor_config
             .first()
+            .or_else(|| tv.vendor_info.first())
             .map(|(_, v)| v.clone())
             .unwrap_or_default();
 
@@ -135,6 +149,7 @@ pub(crate) async fn fetch_state(
             hw_model: SharedString::from(tv.hardware_id.model.unwrap_or_default()),
             hw_serial: SharedString::from(tv.hardware_id.serial.unwrap_or_default()),
             desktop_connector: SharedString::from(tv.desktop.connector),
+            vendor_config: tv.vendor_config,
             vendor_info: tv.vendor_info,
         });
     }
