@@ -59,6 +59,10 @@ arboard = { version = "3", default-features = false }
 # share the same `.po`/`.mo` catalogs and slint's
 # `init_translations!` directory layout.
 gettext-rs = "0.7"
+# Cross-platform URL opener used by the About pane's "View source"
+# and "Report issue" buttons. Wraps xdg-open on Linux, with
+# fallbacks for other targets if we ever build for them.
+webbrowser = "1"
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection
 # during dev. Pinned to the exact slint version because the backend
@@ -70,6 +74,11 @@ dev-mcp = ["dep:i-slint-backend-selector"]
 
 [build-dependencies]
 slint-build = "1.16"
+# build.rs reads Cargo.lock to surface the resolved Slint version into
+# the binary at compile time (used by the About pane's diagnostic-copy
+# button). `toml` is already a workspace runtime dep; reusing it here
+# avoids pulling cargo_metadata or built into the build-deps tree.
+toml = { workspace = true }
 
 [lints]
 workspace = true

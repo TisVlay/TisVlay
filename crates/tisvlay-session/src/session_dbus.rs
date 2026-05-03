@@ -55,6 +55,14 @@ impl SessionService {
 
 #[interface(name = "org.tisvlay.Session1")]
 impl SessionService {
+    /// Compile-time version of the running session-service binary.
+    /// Lets the GUI surface installed-version drift between processes
+    /// after a partial upgrade where services weren't restarted.
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
     /// List all available user profiles.
     ///
     /// Returns: Array of (profile_name, profile_json) tuples.

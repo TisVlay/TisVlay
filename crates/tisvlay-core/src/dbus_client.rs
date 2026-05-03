@@ -80,6 +80,11 @@ impl BusKind<'_> {
     default_path = "/org/tisvlay/Manager"
 )]
 trait TisvlayManager {
+    /// Compile-time version of the running daemon binary. Const property
+    /// (no PropertiesChanged signal); read once after `is_available`.
+    #[zbus(property)]
+    fn version(&self) -> zbus::Result<String>;
+
     /// Discover TVs on the network.
     ///
     /// Returns `(id, name, address, (manufacturer, model, serial),
@@ -722,6 +727,17 @@ impl DaemonClient {
     /// Check if the daemon is available and responding.
     pub async fn is_available(&self) -> bool {
         self.object_manager.get_managed_objects().await.is_ok()
+    }
+
+    /// Compile-time version of the running daemon binary. Returns the
+    /// `Manager1.Version` const property — surfaces installed-version
+    /// drift between the calling process (e.g., the GUI) and the
+    /// daemon after a partial upgrade where services weren't restarted.
+    pub async fn version(&self) -> Result<String> {
+        self.manager
+            .version()
+            .await
+            .context("Failed to read daemon version")
     }
 
     /// Execute an operation on a TV's cached proxies, handling proxy lookup boilerplate.
@@ -1431,6 +1447,11 @@ impl DaemonClient {
     default_path = "/org/tisvlay/Session"
 )]
 trait TisvlaySession {
+    /// Compile-time version of the running session-service binary.
+    /// Const property; read once after `is_available`.
+    #[zbus(property)]
+    fn version(&self) -> zbus::Result<String>;
+
     /// List all available user profiles.
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
@@ -1478,6 +1499,17 @@ impl SessionClient {
     /// Check if the session service is available.
     pub async fn is_available(&self) -> bool {
         self.proxy.list_user_profiles().await.is_ok()
+    }
+
+    /// Compile-time version of the running session-service binary.
+    /// Returns the `Session1.Version` const property — surfaces
+    /// installed-version drift between the calling process and the
+    /// session service after a partial upgrade.
+    pub async fn version(&self) -> Result<String> {
+        self.proxy
+            .version()
+            .await
+            .context("Failed to read session-service version")
     }
 
     /// List all available user profiles.

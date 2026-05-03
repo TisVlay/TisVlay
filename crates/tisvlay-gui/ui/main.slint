@@ -26,7 +26,7 @@ import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "componen
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
-import { AboutPane } from "components/about_pane.slint";
+import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 
 export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard, EditPane, Clipboard, Errors, Icons }
 
@@ -102,8 +102,15 @@ export component AppWindow inherits Window {
     in property <bool> session-available: false;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
+    in property <string> gui-version;
+    in property <[AboutComponentRow]> about-components;
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
+
+    // About-pane button callbacks (Rust handles URL launch + clipboard write).
+    callback view-source-clicked();
+    callback report-issue-clicked();
+    callback copy-diagnostic-clicked();
 
     // Sidebar glyphs — Rust resolves these against the user's
     // freedesktop icon theme at startup (see `main.rs`). Empty
@@ -275,6 +282,12 @@ export component AppWindow inherits Window {
                 height: 100%;
                 daemon-available: root.daemon-available;
                 session-available: root.session-available;
+                gui-version: root.gui-version;
+                components: root.about-components;
+                logo: root.about-icon;
+                view-source-clicked => { root.view-source-clicked(); }
+                report-issue-clicked => { root.report-issue-clicked(); }
+                copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
             }
         }
     }

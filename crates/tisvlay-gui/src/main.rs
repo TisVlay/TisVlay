@@ -128,6 +128,107 @@ fn load_themed_icon(names: &[&str]) -> slint::Image {
     slint::Image::default()
 }
 
+/// Compile-time version of this binary. Surfaces in the About pane's
+/// header chip and as the local anchor for the per-component drift
+/// tone in the COMPONENTS table.
+const GUI_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Resolved Slint version, lifted from `Cargo.lock` by `build.rs` so
+/// it stays in sync with the workspace dep automatically. Slint
+/// doesn't expose a runtime `VERSION` constant of its own.
+const SLINT_VERSION: &str = env!("TISVLAY_GUI_SLINT_VERSION");
+
+/// Project repository URL — picked up from the workspace package
+/// metadata at compile time. The About pane's `View source` button
+/// opens this; `Report issue` appends `/issues/new`.
+const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
+
+/// Static (name, description) catalogue of every binary that ships in
+/// the package. The version chip is added per-row by
+/// `make_about_components` based on which processes are reachable.
+const COMPONENT_CATALOGUE: &[(&str, &str)] = &[
+    ("tisvlayd", "system daemon · /var/lib/tisvlay/"),
+    ("tisvlay-session", "user service · ~/.config/tisvlay/"),
+    ("tisvlay", "command-line interface"),
+    ("tisvlay-tray", "system tray (ksni)"),
+    ("tisvlay-gui", "this window"),
+];
+
+/// Tone for a per-row version chip in the COMPONENTS table, picked by
+/// comparing the remote process's reported version to this binary's
+/// compile-time version. `info` when equal, `warn` when remote is
+/// newer (we're behind), `danger` when remote is older (a downgrade
+/// or a stale service that wasn't restarted after upgrade).
+fn drift_tone(local: &str, remote: &str) -> &'static str {
+    let parse = |s: &str| -> Vec<u64> {
+        s.split(['.', '-', '+'])
+            .filter_map(|c| c.parse().ok())
+            .collect()
+    };
+    match parse(local).cmp(&parse(remote)) {
+        std::cmp::Ordering::Equal => "info",
+        std::cmp::Ordering::Less => "warn",
+        std::cmp::Ordering::Greater => "danger",
+    }
+}
+
+/// Build the COMPONENTS-table model for the About pane. Daemon/session
+/// rows show their probed runtime version with a drift tone; the GUI
+/// row shows the compile-time version with `info` tone; CLI/tray rows
+/// have no chip (no D-Bus surface to probe).
+fn make_about_components(
+    daemon_version: Option<&str>,
+    session_version: Option<&str>,
+) -> Vec<AboutComponentRow> {
+    COMPONENT_CATALOGUE
+        .iter()
+        .map(|(name, desc)| {
+            let (version, tone) = match *name {
+                "tisvlayd" => match daemon_version {
+                    Some(v) => (v.to_string(), drift_tone(GUI_VERSION, v).to_string()),
+                    None => (String::new(), String::new()),
+                },
+                "tisvlay-session" => match session_version {
+                    Some(v) => (v.to_string(), drift_tone(GUI_VERSION, v).to_string()),
+                    None => (String::new(), String::new()),
+                },
+                "tisvlay-gui" => (GUI_VERSION.to_string(), "info".to_string()),
+                _ => (String::new(), String::new()),
+            };
+            AboutComponentRow {
+                name: SharedString::from(*name),
+                description: SharedString::from(*desc),
+                version: SharedString::from(version),
+                tone: SharedString::from(tone),
+            }
+        })
+        .collect()
+}
+
+/// JSON blob copied to the clipboard by the About-pane diagnostic
+/// button. Pulls the daemon/session versions out of the live
+/// COMPONENTS model so we don't have to reach into shared state.
+fn build_diagnostic_blob(app: &AppWindow) -> String {
+    let rows = app.get_about_components();
+    let lookup = |name: &str| -> String {
+        for i in 0..rows.row_count() {
+            if let Some(r) = rows.row_data(i)
+                && r.name.as_str() == name
+            {
+                return r.version.to_string();
+            }
+        }
+        String::new()
+    };
+    let v = serde_json::json!({
+        "gui_version": GUI_VERSION,
+        "daemon_version": lookup("tisvlayd"),
+        "session_version": lookup("tisvlay-session"),
+        "slint_version": SLINT_VERSION,
+    });
+    serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+}
+
 /// Marshal a UI-touching closure onto the Slint event loop. Clones
 /// the weak ref internally so callers can pass it by reference; if
 /// the `AppWindow` has been dropped by the time the closure runs,
@@ -424,6 +525,41 @@ fn main() -> Result<()> {
         }
         Err(e) => warn!(error = %e, "couldn't open clipboard"),
     });
+
+    // About-pane wiring: GUI version (compile-time) + the three
+    // top-row callbacks (View source / Report issue / Copy diagnostic).
+    // The COMPONENTS array is pushed lazily once the daemon/session
+    // versions are known — see `push_about_components` below.
+    app.set_gui_version(GUI_VERSION.into());
+    app.set_about_components(ModelRc::new(VecModel::from(make_about_components(
+        None, None,
+    ))));
+    app.on_view_source_clicked(|| {
+        if let Err(e) = webbrowser::open(REPO_URL) {
+            warn!(error = %e, url = REPO_URL, "open browser failed");
+        }
+    });
+    app.on_report_issue_clicked(|| {
+        let url = format!("{REPO_URL}/issues/new");
+        if let Err(e) = webbrowser::open(&url) {
+            warn!(error = %e, %url, "open browser failed");
+        }
+    });
+    {
+        let app_weak = app.as_weak();
+        app.on_copy_diagnostic_clicked(move || {
+            let Some(app) = app_weak.upgrade() else { return };
+            let blob = build_diagnostic_blob(&app);
+            match arboard::Clipboard::new() {
+                Ok(mut cb) => {
+                    if let Err(e) = cb.set_text(blob) {
+                        warn!(error = %e, "clipboard write failed");
+                    }
+                }
+                Err(e) => warn!(error = %e, "couldn't open clipboard"),
+            }
+        });
+    }
 
     // Build clients eagerly (synchronously, via block_on) so callbacks
     // can capture them at registration time. This briefly blocks the
@@ -1723,6 +1859,7 @@ async fn initial_fetch_and_watch(
         app.set_session_available(initial_session_available);
     });
 
+    refresh_about_components(&daemon, &session, &app_weak).await;
     watch_state(daemon, session, reconcilers, app_weak).await;
 }
 
@@ -1797,6 +1934,7 @@ async fn watch_state(
                     app.set_daemon_available(false);
                     app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
                 });
+                refresh_about_components(&daemon, &session, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
                 if let Ok(client) = SessionClient::new().await
@@ -1842,6 +1980,29 @@ async fn refresh(
             });
         }
     }
+    drop(session_ref);
+    refresh_about_components(daemon, session, app_weak).await;
+}
+
+/// Probe daemon + session versions and push the COMPONENTS-table
+/// model to the About pane. The version property is `const` upstream,
+/// so this is cheap to invoke after every state-affecting event;
+/// caching would save a couple of zbus round-trips on a flap-storm
+/// but isn't worth the extra plumbing.
+async fn refresh_about_components(
+    daemon: &DaemonClient,
+    session: &RwLock<Option<SessionClient>>,
+    app_weak: &slint::Weak<AppWindow>,
+) {
+    let daemon_v = daemon.version().await.ok();
+    let session_v = match session.read().await.as_ref() {
+        Some(s) => s.version().await.ok(),
+        None => None,
+    };
+    let rows = make_about_components(daemon_v.as_deref(), session_v.as_deref());
+    on_ui(app_weak, move |app| {
+        app.set_about_components(ModelRc::new(VecModel::from(rows)));
+    });
 }
 
 /// Wrap a fetched [`StateSnapshot`] into Slint models and push to the

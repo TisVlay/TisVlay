@@ -121,6 +121,61 @@ export component DangerBtn inherits Rectangle {
 }
 
 // =============================================================================
+// Btn — neutral outlined button with a hand-pointer hover cursor.
+// =============================================================================
+//
+// std-widgets `Button` deliberately keeps the default arrow cursor on
+// hover (matching native KDE/GNOME/Windows convention where only
+// hyperlinks get the hand). This project leans web-style — every
+// custom button widget here sets `mouse-cursor: pointer` so the
+// affordance is unambiguous. `Btn` is the neutral counterpart to
+// `DangerBtn`: same shape, surface fill instead of accent, used for
+// secondary actions like the About pane's `View source` /
+// `Report issue` / `Copy diagnostic` row.
+
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <length> min-button-width: 80px;
+    callback clicked();
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-height: Design.size-input;
+    min-width: min-button-width;
+
+    background: !enabled
+        ? Theme.surface2
+        : touch.has-hover ? Theme.surface2
+        : Theme.surface;
+    border-color: Theme.border;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    animate background { duration: 150ms; }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: Design.gap-row;
+        padding-right: Design.gap-row;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: !root.enabled ? Theme.text-faint : Theme.text;
+            font-size: Design.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// =============================================================================
 // LineEditField — std-widgets LineEdit with a higher-contrast placeholder.
 // =============================================================================
 //

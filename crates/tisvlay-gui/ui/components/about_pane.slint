@@ -1,38 +1,122 @@
-import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+import { ScrollView, AboutSlint } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { Group } from "tvs_pane.slint";
+import { Group, Chip, Btn } from "../widgets.slint";
 
-component StatusLine {
+// One row in the COMPONENTS table. `version` is empty when we have no
+// way to probe the running binary (CLI, tray) — the row renders
+// without a chip in that case. `tone` is the chip-colour mapping
+// produced by Rust based on the comparison vs the GUI's compile-time
+// version: "info" if equal, "warn" if remote > local, "danger" if
+// remote < local.
+export struct AboutComponentRow {
+    name: string,
+    description: string,
+    version: string,
+    tone: string,
+}
+
+// CONNECTIONS-group row: status icon (28px coloured circle with a check
+// or x glyph) + title + monospace bus address + one-line description,
+// with the online/offline chip pushed to the row's right edge so it
+// vertically aligns with the per-row version chips in the COMPONENTS
+// group (and the version chip in the page header). Replaces the
+// bullet+label `StatusLine` from the previous pane.
+component ConnectionRow {
     in property <bool> ok;
-    in property <string> label;
+    in property <string> title;
+    in property <string> address;
+    in property <string> description;
 
     HorizontalLayout {
-        spacing: Design.gap-stack;
-        alignment: start;
+        spacing: 12px;
 
-        VerticalLayout {
-            alignment: center;
-            // Bullet — solid when connected, hollow ring when offline.
-            Rectangle {
-                width: 8px;
-                height: 8px;
-                border-radius: 4px;
-                background: root.ok ? Theme.success : transparent;
-                border-width: root.ok ? 0 : 1.5px;
-                border-color: Theme.danger;
+        // Status indicator
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            border-radius: 14px;
+            background: root.ok ? Theme.success-soft : Theme.danger-soft;
+            horizontal-stretch: 0;
+            vertical-stretch: 0;
+
+            Text {
+                text: root.ok ? "✓" : "✗";
+                color: root.ok ? Theme.success-text : Theme.danger-text;
+                font-weight: 700;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
         }
 
         VerticalLayout {
-            alignment: center;
+            spacing: 4px;
             horizontal-stretch: 1;
+
             Text {
-                text: root.ok ? @tr("{}: connected", root.label)
-                              : @tr("{}: offline", root.label);
-                color: root.ok ? Theme.success-text : Theme.danger-text;
+                text: root.title;
+                color: Theme.text;
                 font-size: Design.font-body;
+                font-weight: 600;
             }
+
+            Text {
+                text: root.address;
+                color: Theme.text-dim;
+                font-size: Design.font-helper;
+                font-family: "ui-monospace, monospace";
+            }
+
+            if root.description != "": Text {
+                text: root.description;
+                color: Theme.text-dim;
+                font-size: Design.font-helper;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            alignment: start;
+            horizontal-stretch: 0;
+            Chip {
+                label: root.ok ? @tr("online") : @tr("offline");
+                tone: root.ok ? "success" : "danger";
+            }
+        }
+    }
+}
+
+// Single row of the COMPONENTS table. Two-column layout: monospace
+// binary name + dim description, with an optional version chip on the
+// right whose tone reflects drift vs the running GUI.
+component ComponentRow {
+    in property <AboutComponentRow> entry;
+
+    HorizontalLayout {
+        spacing: Design.gap-stack;
+        alignment: stretch;
+
+        Text {
+            text: entry.name;
+            color: Theme.text;
+            font-size: Design.font-mini;
+            font-family: "ui-monospace, monospace";
+            min-width: 160px;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: entry.description;
+            color: Theme.text-dim;
+            font-size: Design.font-helper;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+
+        if entry.version != "": Chip {
+            label: "v" + entry.version;
+            tone: entry.tone;
         }
     }
 }
@@ -40,6 +124,13 @@ component StatusLine {
 export component AboutPane inherits Rectangle {
     in property <bool> daemon-available;
     in property <bool> session-available;
+    in property <string> gui-version;
+    in property <[AboutComponentRow]> components;
+    in property <image> logo;
+
+    callback view-source-clicked();
+    callback report-issue-clicked();
+    callback copy-diagnostic-clicked();
 
     background: Theme.surface-alt;
 
@@ -52,52 +143,139 @@ export component AboutPane inherits Rectangle {
             padding-bottom: Design.pad-pane;
             spacing: 18px;
 
-            // -- Title block --
-            VerticalLayout {
-                spacing: Design.gap-tight;
-                Text {
-                    // Brand name; intentionally not translated.
-                    text: "TisVlay";
-                    font-size: Design.font-title-1;
-                    font-weight: 700;
-                    color: Theme.text;
+            // -- Header row: clickable [logo · title + tagline] (opens
+            // repo URL — same target as the old "View source" button)
+            // and a right-aligned column with version chip stacked
+            // over the action buttons. `padding-right: pad-card`
+            // matches the body padding inside the Groups below, so
+            // the header's right column shares an x-coord with the
+            // per-row chips. (Slint's border doesn't inset content,
+            // so no `+ border-thin` adjustment is needed — the
+            // Groups' 1px border sits flush with the card's outer
+            // edge.)
+            HorizontalLayout {
+                spacing: 16px;
+                padding-right: Design.pad-card;
+
+                // Brand area is the click target for "View source".
+                // The whole region — logo + text — gets a hand
+                // cursor; the title brightens to accent on hover so
+                // the affordance reads even before the cursor change
+                // registers.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        width: 100%;
+                        height: 100%;
+                        spacing: 16px;
+                        Image {
+                            source: root.logo;
+                            width: 56px;
+                            height: 56px;
+                            horizontal-stretch: 0;
+                            vertical-stretch: 0;
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                // Brand name; intentionally not translated.
+                                text: "TisVlay";
+                                font-size: Design.font-title-1;
+                                font-weight: 700;
+                                color: brand-touch.has-hover ? Theme.accent : Theme.text;
+                                animate color { duration: 120ms; }
+                            }
+                            Text {
+                                text: @tr("Multi-vendor TV control for Linux desktops.");
+                                color: Theme.text-dim;
+                                font-size: 13px;
+                            }
+                        }
+                    }
+                    brand-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.view-source-clicked(); }
+                    }
                 }
-                Text {
-                    text: @tr("TV Display control for Linux");
-                    color: Theme.text-dim;
-                    font-size: 14px;
+
+                VerticalLayout {
+                    alignment: start;
+                    horizontal-stretch: 0;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        alignment: end;
+                        Chip {
+                            label: "v" + root.gui-version;
+                            tone: "neutral";
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        Btn {
+                            text: @tr("Report issue");
+                            clicked => { root.report-issue-clicked(); }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        Btn {
+                            text: @tr("Copy diagnostic");
+                            clicked => { root.copy-diagnostic-clicked(); }
+                        }
+                    }
                 }
             }
 
-            // -- Connections --
+            // -- CONNECTIONS --
             Group {
                 title: @tr("CONNECTIONS");
 
-                StatusLine {
+                ConnectionRow {
                     ok: root.daemon-available;
-                    label: @tr("Daemon (system bus)");
+                    title: @tr("Daemon (system bus)");
+                    address: "org.tisvlay.Daemon";
+                    description: @tr("Vendor-agnostic TV management, WoL at boot, per-TV D-Bus objects.");
                 }
-                StatusLine {
+
+                Rectangle {
+                    height: 1px;
+                    background: Theme.border;
+                }
+
+                ConnectionRow {
                     ok: root.session-available;
-                    label: @tr("Session (user bus)");
+                    title: @tr("Session (user bus)");
+                    address: "org.tisvlay.Session";
+                    description: @tr("User-profile assignments and session-event dispatch.");
                 }
             }
 
-            // -- Footer --
-            VerticalLayout {
-                spacing: Design.gap-form;
+            // -- COMPONENTS (data-driven; per-row version chip from Rust) --
+            Group {
+                title: @tr("COMPONENTS");
+
+                for c in root.components: ComponentRow { entry: c; }
+            }
+
+            // -- LICENSE (copyright line; actions live in the header) --
+            Group {
+                title: @tr("LICENSE");
+
                 Text {
-                    text: "Apache-2.0";
-                    color: Theme.text-faint;
+                    // Year range and project name; intentionally not translated.
+                    text: "Apache-2.0 · © 2024–2026 TisVlay contributors";
+                    color: Theme.text;
                     font-size: Design.font-helper;
-                }
-                Text {
-                    text: "https://github.com/ruffsl/tisvlay";
-                    color: Theme.text-faint;
-                    font-size: Design.font-helper;
-                    font-family: "ui-monospace, monospace";
+                    wrap: word-wrap;
                 }
             }
+
+            // Slint Royalty-free 2.0 license requires an `AboutSlint`
+            // widget to appear in the application's About pane.
+            // Tracks slint-ui/slint LicenseRef-Slint-Royalty-free-2.0.
+            AboutSlint { }
         }
     }
 }

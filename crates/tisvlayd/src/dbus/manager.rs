@@ -34,6 +34,19 @@ impl ManagerService {
 #[interface(name = "org.tisvlay.Manager1")]
 impl ManagerService {
     // -------------------------------------------------------------------------
+    // Identity
+    // -------------------------------------------------------------------------
+
+    /// Compile-time version of the running daemon binary. Lets the GUI
+    /// (and other clients) surface installed-version drift between
+    /// processes after a partial upgrade where services weren't
+    /// restarted.
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
+    // -------------------------------------------------------------------------
     // Discovery
     // -------------------------------------------------------------------------
 
