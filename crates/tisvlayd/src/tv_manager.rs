@@ -8,7 +8,7 @@
 
 use crate::registry::BackendRegistry;
 use indexmap::IndexMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -456,6 +456,13 @@ impl TvManager {
         };
 
         (manager, state_change_rx)
+    }
+
+    /// Resolved on-disk path of the daemon's config file. Surfaced as
+    /// the `Manager1.ConfigPath` D-Bus property so clients can show
+    /// the actual location regardless of `--config` overrides.
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 
     /// Emit a state change event.

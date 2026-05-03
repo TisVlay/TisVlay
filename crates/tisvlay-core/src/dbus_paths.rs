@@ -24,6 +24,12 @@ pub const SESSION_INTERFACE: &str = "org.tisvlay.Session1";
 /// D-Bus object path for the session service.
 pub const SESSION_PATH: &str = "/org/tisvlay/Session";
 
+/// D-Bus service name for the tray binary's self-introspection surface.
+pub const TRAY_SERVICE: &str = "org.tisvlay.Tray";
+
+/// D-Bus service name for the GUI binary's self-introspection surface.
+pub const GUI_SERVICE: &str = "org.tisvlay.Gui";
+
 /// Generate the D-Bus object path for a TV.
 ///
 /// Sanitizes the TV ID by replacing any non-alphanumeric, non-underscore

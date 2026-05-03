@@ -125,6 +125,7 @@ component ComponentRow {
 export component AboutPane inherits Rectangle {
     in property <bool> daemon-available;
     in property <bool> session-available;
+    in property <bool> tray-available;
     in property <string> gui-version;
     in property <[AboutComponentRow]> components;
     in property <image> logo;
@@ -269,6 +270,18 @@ export component AboutPane inherits Rectangle {
                     title: @tr("Session (user bus)");
                     address: "org.tisvlay.Session";
                     description: @tr("User-profile assignments and session-event dispatch.");
+                }
+
+                Rectangle {
+                    height: 1px;
+                    background: Theme.border;
+                }
+
+                ConnectionRow {
+                    ok: root.tray-available;
+                    title: @tr("Tray (user bus)");
+                    address: "org.tisvlay.Tray";
+                    description: @tr("Tray icon, menu actions, real-time TV state.");
                 }
             }
 

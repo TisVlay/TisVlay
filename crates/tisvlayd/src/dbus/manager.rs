@@ -46,6 +46,18 @@ impl ManagerService {
         env!("CARGO_PKG_VERSION")
     }
 
+    /// Resolved on-disk path of the daemon's config file (post
+    /// `--config` resolution). Empty string only if the path can't
+    /// be UTF-8 encoded, which is theoretical on Linux.
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn config_path(&self) -> String {
+        self.manager
+            .config_path()
+            .to_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
     // -------------------------------------------------------------------------
     // Discovery
     // -------------------------------------------------------------------------

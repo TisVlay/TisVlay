@@ -101,6 +101,7 @@ export component AppWindow inherits Window {
     in property <[TvViewModel]> tvs;
     in property <bool> daemon-available: false;
     in property <bool> session-available: false;
+    in property <bool> tray-available: false;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
     in property <string> gui-version;
@@ -247,6 +248,12 @@ export component AppWindow inherits Window {
                     font-size: Design.font-caption;
                     horizontal-alignment: left;
                 }
+                Text {
+                    text: (root.tray-available ? "● " : "○ ") + @tr("Tray");
+                    color: root.tray-available ? Theme.success : Theme.danger;
+                    font-size: Design.font-caption;
+                    horizontal-alignment: left;
+                }
             }
         }
 
@@ -284,6 +291,7 @@ export component AppWindow inherits Window {
                 height: 100%;
                 daemon-available: root.daemon-available;
                 session-available: root.session-available;
+                tray-available: root.tray-available;
                 gui-version: root.gui-version;
                 components: root.about-components;
                 logo: root.about-icon;

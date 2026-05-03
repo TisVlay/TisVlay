@@ -13,6 +13,7 @@
 // generated UI scaffolding.
 #![allow(unreachable_pub, missing_debug_implementations)]
 
+mod dbus;
 mod schema_form;
 mod state;
 
@@ -36,7 +37,7 @@ use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
     Coalescer, DaemonClient, PowerCyclePhase, ReconcilerMap, RefreshTrigger, SessionClient,
-    StateEvent, StateWatcher,
+    StateEvent, StateWatcher, TrayClient,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -143,16 +144,28 @@ const SLINT_VERSION: &str = env!("TISVLAY_GUI_SLINT_VERSION");
 /// opens this; `Report issue` appends `/issues/new`.
 const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
 
-/// Static (name, description) catalogue of every binary that ships in
-/// the package. The version chip is added per-row by
-/// `make_about_components` based on which processes are reachable.
+/// Static (name, base description) catalogue of every binary that
+/// ships in the package. The base description gets a " · " separator
+/// and the peer's probed `ConfigPath` appended when one is
+/// available, so a `--config /custom` invocation flows through to
+/// the row text without any further plumbing.
 const COMPONENT_CATALOGUE: &[(&str, &str)] = &[
-    ("tisvlayd", "system daemon · /var/lib/tisvlay/"),
-    ("tisvlay-session", "user service · ~/.config/tisvlay/"),
+    ("tisvlayd", "system daemon"),
+    ("tisvlay-session", "user service"),
     ("tisvlay-gui", "this window"),
     ("tisvlay-tray", "system tray (ksni)"),
     ("tisvlay", "command-line interface"),
 ];
+
+/// Probed runtime metadata for a single peer process: its `Version`
+/// and `ConfigPath` D-Bus properties. Always probed together because
+/// they live on the same interface. `config_path` is empty when the
+/// peer has no config file yet (e.g., tray pre-phase-2, GUI).
+#[derive(Clone, Default, Debug)]
+pub struct PeerInfo {
+    pub version: String,
+    pub config_path: String,
+}
 
 /// Tone for a per-row version chip in the COMPONENTS table, picked by
 /// comparing the remote process's reported version to this binary's
@@ -172,32 +185,64 @@ fn drift_tone(local: &str, remote: &str) -> &'static str {
     }
 }
 
-/// Build the COMPONENTS-table model for the About pane. Daemon/session
-/// rows show their probed runtime version with a drift tone; the GUI
-/// row shows the compile-time version with `info` tone; CLI/tray rows
-/// have no chip (no D-Bus surface to probe).
+/// Append a probed config-path suffix to the base description when
+/// available — keeps the COMPONENTS-row text honest about where the
+/// peer is reading config from instead of guessing the default.
+fn describe(base: &str, config_path: &str) -> String {
+    if config_path.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base} · {config_path}")
+    }
+}
+
+/// Build the COMPONENTS-table model for the About pane. Daemon /
+/// session / tray rows show their probed runtime version with a
+/// drift tone; the GUI row shows the compile-time version with
+/// `info` tone; the CLI row has no chip (no D-Bus surface to probe).
 fn make_about_components(
-    daemon_version: Option<&str>,
-    session_version: Option<&str>,
+    daemon: Option<&PeerInfo>,
+    session: Option<&PeerInfo>,
+    tray: Option<&PeerInfo>,
 ) -> Vec<AboutComponentRow> {
     COMPONENT_CATALOGUE
         .iter()
-        .map(|(name, desc)| {
-            let (version, tone) = match *name {
-                "tisvlayd" => match daemon_version {
-                    Some(v) => (v.to_string(), drift_tone(GUI_VERSION, v).to_string()),
-                    None => (String::new(), String::new()),
+        .map(|(name, base_desc)| {
+            let (version, tone, description) = match *name {
+                "tisvlayd" => match daemon {
+                    Some(info) => (
+                        info.version.clone(),
+                        drift_tone(GUI_VERSION, &info.version).to_string(),
+                        describe(base_desc, &info.config_path),
+                    ),
+                    None => (String::new(), String::new(), base_desc.to_string()),
                 },
-                "tisvlay-session" => match session_version {
-                    Some(v) => (v.to_string(), drift_tone(GUI_VERSION, v).to_string()),
-                    None => (String::new(), String::new()),
+                "tisvlay-session" => match session {
+                    Some(info) => (
+                        info.version.clone(),
+                        drift_tone(GUI_VERSION, &info.version).to_string(),
+                        describe(base_desc, &info.config_path),
+                    ),
+                    None => (String::new(), String::new(), base_desc.to_string()),
                 },
-                "tisvlay-gui" => (GUI_VERSION.to_string(), "info".to_string()),
-                _ => (String::new(), String::new()),
+                "tisvlay-tray" => match tray {
+                    Some(info) => (
+                        info.version.clone(),
+                        drift_tone(GUI_VERSION, &info.version).to_string(),
+                        describe(base_desc, &info.config_path),
+                    ),
+                    None => (String::new(), String::new(), base_desc.to_string()),
+                },
+                "tisvlay-gui" => (
+                    GUI_VERSION.to_string(),
+                    "info".to_string(),
+                    base_desc.to_string(),
+                ),
+                _ => (String::new(), String::new(), base_desc.to_string()),
             };
             AboutComponentRow {
                 name: SharedString::from(*name),
-                description: SharedString::from(*desc),
+                description: SharedString::from(description),
                 version: SharedString::from(version),
                 tone: SharedString::from(tone),
             }
@@ -599,7 +644,7 @@ fn main() -> Result<()> {
     // versions are known — see `push_about_components` below.
     app.set_gui_version(GUI_VERSION.into());
     app.set_about_components(ModelRc::new(VecModel::from(make_about_components(
-        None, None,
+        None, None, None,
     ))));
     app.on_view_source_clicked(|| {
         if let Err(e) = webbrowser::open(REPO_URL) {
@@ -637,7 +682,7 @@ fn main() -> Result<()> {
     // can capture them at registration time. This briefly blocks the
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
-    let (daemon, session) = rt.block_on(async {
+    let (daemon, session, tray, _gui_dbus) = rt.block_on(async {
         let daemon = if args.user {
             info!("Connecting to daemon on session bus (development mode)");
             DaemonClient::new_session().await
@@ -654,7 +699,21 @@ fn main() -> Result<()> {
                 _ => None,
             }));
 
-        anyhow::Ok((daemon, session))
+        let tray: Arc<RwLock<Option<TrayClient>>> =
+            Arc::new(RwLock::new(match TrayClient::new().await {
+                Ok(client) if client.is_available().await => Some(client),
+                _ => None,
+            }));
+
+        // Register `org.tisvlay.Gui` on the user bus so external
+        // tools can probe our version + (eventual) config path
+        // symmetrically with the daemon, session, and tray.
+        // No config file yet — pass `None`.
+        let gui_dbus = dbus::register(None)
+            .await
+            .context("Failed to register GUI D-Bus interface")?;
+
+        anyhow::Ok((daemon, session, tray, gui_dbus))
     })?;
 
     // Per-(tv_id, property) reconcilers shared across the user-input
@@ -683,6 +742,7 @@ fn main() -> Result<()> {
     tokio::spawn(initial_fetch_and_watch(
         daemon,
         session,
+        tray,
         reconcilers,
         app_weak,
     ));
@@ -1884,10 +1944,12 @@ fn update_power_cycle_phase(
 async fn initial_fetch_and_watch(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
 ) {
     let initial_session_available = session.read().await.is_some();
+    let initial_tray_available = tray.read().await.is_some();
     let initial_snapshot = match fetch_state(&daemon, session.read().await.as_ref()).await {
         Ok(mut s) => {
             reconcilers.reconcile(&mut s);
@@ -1929,15 +1991,17 @@ async fn initial_fetch_and_watch(
         wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
         app.set_daemon_available(initial_daemon_available);
         app.set_session_available(initial_session_available);
+        app.set_tray_available(initial_tray_available);
     });
 
-    refresh_about_components(&daemon, &session, &app_weak).await;
-    watch_state(daemon, session, reconcilers, app_weak).await;
+    refresh_about_components(&daemon, &session, &tray, &app_weak).await;
+    watch_state(daemon, session, tray, reconcilers, app_weak).await;
 }
 
 async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
 ) {
@@ -1978,14 +2042,16 @@ async fn watch_state(
     let trigger_refresh = || {
         let daemon = daemon.clone();
         let session = session.clone();
+        let tray = tray.clone();
         let reconcilers = reconcilers.clone();
         let app_weak = app_weak.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
+            let tray = tray.clone();
             let reconcilers = reconcilers.clone();
             let app_weak = app_weak.clone();
-            async move { refresh(&daemon, &session, &reconcilers, &app_weak).await }
+            async move { refresh(&daemon, &session, &tray, &reconcilers, &app_weak).await }
         });
     };
 
@@ -2006,7 +2072,7 @@ async fn watch_state(
                     app.set_daemon_available(false);
                     app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
                 });
-                refresh_about_components(&daemon, &session, &app_weak).await;
+                refresh_about_components(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
                 if let Ok(client) = SessionClient::new().await
@@ -2026,6 +2092,24 @@ async fn watch_state(
                 });
                 trigger_refresh();
             }
+            StateEvent::TrayAppeared => {
+                if let Ok(client) = TrayClient::new().await
+                    && client.is_available().await
+                {
+                    *tray.write().await = Some(client);
+                    on_ui(&app_weak, move |app| {
+                        app.set_tray_available(true);
+                    });
+                    trigger_refresh();
+                }
+            }
+            StateEvent::TrayDisappeared => {
+                *tray.write().await = None;
+                on_ui(&app_weak, move |app| {
+                    app.set_tray_available(false);
+                });
+                trigger_refresh();
+            }
         }
     }
 }
@@ -2033,6 +2117,7 @@ async fn watch_state(
 async fn refresh(
     daemon: &DaemonClient,
     session: &RwLock<Option<SessionClient>>,
+    tray: &RwLock<Option<TrayClient>>,
     reconcilers: &Reconcilers,
     app_weak: &slint::Weak<AppWindow>,
 ) {
@@ -2053,25 +2138,45 @@ async fn refresh(
         }
     }
     drop(session_ref);
-    refresh_about_components(daemon, session, app_weak).await;
+    refresh_about_components(daemon, session, tray, app_weak).await;
 }
 
-/// Probe daemon + session versions and push the COMPONENTS-table
-/// model to the About pane. The version property is `const` upstream,
-/// so this is cheap to invoke after every state-affecting event;
-/// caching would save a couple of zbus round-trips on a flap-storm
-/// but isn't worth the extra plumbing.
+/// Probe each peer's `Version` + `ConfigPath` D-Bus properties and
+/// push the COMPONENTS-table model to the About pane. Both
+/// properties are `const` upstream, so this is cheap to invoke after
+/// every state-affecting event; caching would save a couple of zbus
+/// round-trips on a flap-storm but isn't worth the extra plumbing.
 async fn refresh_about_components(
     daemon: &DaemonClient,
     session: &RwLock<Option<SessionClient>>,
+    tray: &RwLock<Option<TrayClient>>,
     app_weak: &slint::Weak<AppWindow>,
 ) {
-    let daemon_v = daemon.version().await.ok();
-    let session_v = match session.read().await.as_ref() {
-        Some(s) => s.version().await.ok(),
+    async fn probe<F1, F2>(version: F1, config_path: F2) -> Option<PeerInfo>
+    where
+        F1: std::future::Future<Output = anyhow::Result<String>>,
+        F2: std::future::Future<Output = anyhow::Result<String>>,
+    {
+        Some(PeerInfo {
+            version: version.await.ok()?,
+            config_path: config_path.await.unwrap_or_default(),
+        })
+    }
+
+    let daemon_info = probe(daemon.version(), daemon.config_path()).await;
+    let session_info = match session.read().await.as_ref() {
+        Some(s) => probe(s.version(), s.config_path()).await,
         None => None,
     };
-    let rows = make_about_components(daemon_v.as_deref(), session_v.as_deref());
+    let tray_info = match tray.read().await.as_ref() {
+        Some(t) => probe(t.version(), t.config_path()).await,
+        None => None,
+    };
+    let rows = make_about_components(
+        daemon_info.as_ref(),
+        session_info.as_ref(),
+        tray_info.as_ref(),
+    );
     on_ui(app_weak, move |app| {
         app.set_about_components(ModelRc::new(VecModel::from(rows)));
     });
