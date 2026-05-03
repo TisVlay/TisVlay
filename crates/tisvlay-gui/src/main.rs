@@ -149,9 +149,9 @@ const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const COMPONENT_CATALOGUE: &[(&str, &str)] = &[
     ("tisvlayd", "system daemon · /var/lib/tisvlay/"),
     ("tisvlay-session", "user service · ~/.config/tisvlay/"),
-    ("tisvlay", "command-line interface"),
-    ("tisvlay-tray", "system tray (ksni)"),
     ("tisvlay-gui", "this window"),
+    ("tisvlay-tray", "system tray (ksni)"),
+    ("tisvlay", "command-line interface"),
 ];
 
 /// Tone for a per-row version chip in the COMPONENTS table, picked by
