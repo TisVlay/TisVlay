@@ -204,9 +204,8 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         width: 100%;
                         height: 100%;
-                        padding-left: 4px;
                         spacing: Design.gap-tight;
-                        alignment: start;
+                        alignment: center;
                         VerticalLayout {
                             alignment: center;
                             Text {
@@ -236,23 +235,38 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                Text {
-                    text: (root.daemon-available ? "● " : "○ ") + @tr("Daemon");
-                    color: root.daemon-available ? Theme.success : Theme.danger;
-                    font-size: Design.font-caption;
-                    horizontal-alignment: left;
-                }
-                Text {
-                    text: (root.session-available ? "● " : "○ ") + @tr("Session");
-                    color: root.session-available ? Theme.success : Theme.danger;
-                    font-size: Design.font-caption;
-                    horizontal-alignment: left;
-                }
-                Text {
-                    text: (root.tray-available ? "● " : "○ ") + @tr("Tray");
-                    color: root.tray-available ? Theme.success : Theme.danger;
-                    font-size: Design.font-caption;
-                    horizontal-alignment: left;
+                // Footer status block — three peer indicators (Daemon /
+                // Session / Tray) grouped together and centred within
+                // the sidebar. Each row is a single left-aligned Text
+                // (dot glyph + label), so the dots naturally share an
+                // x-coord (the row's left edge); wrapping the whole
+                // VerticalLayout in a centred HorizontalLayout shifts
+                // the block into the middle of the sidebar without
+                // disturbing per-row layout.
+                HorizontalLayout {
+                    alignment: center;
+                    VerticalLayout {
+                        spacing: 2px;
+                        horizontal-stretch: 0;
+                        Text {
+                            text: (root.daemon-available ? "● " : "○ ") + @tr("Daemon");
+                            color: root.daemon-available ? Theme.success : Theme.danger;
+                            font-size: Design.font-caption;
+                            horizontal-alignment: left;
+                        }
+                        Text {
+                            text: (root.session-available ? "● " : "○ ") + @tr("Session");
+                            color: root.session-available ? Theme.success : Theme.danger;
+                            font-size: Design.font-caption;
+                            horizontal-alignment: left;
+                        }
+                        Text {
+                            text: (root.tray-available ? "● " : "○ ") + @tr("Tray");
+                            color: root.tray-available ? Theme.success : Theme.danger;
+                            font-size: Design.font-caption;
+                            horizontal-alignment: left;
+                        }
+                    }
                 }
             }
         }
