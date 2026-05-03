@@ -71,10 +71,12 @@ tisvlay-backends = { workspace = true, features = ["mock"] }
 # Generates .deb, .rpm, .pkg.tar.zst from a single config.
 # Usage: just package-deb | just package-rpm | just package-archlinux
 #
-# Paths use the musl target directory directly so packaging never touches
-# the native dev build cache at target/release/. cargo-nfpm auto-adds the
-# main binary (tisvlayd) using the correct --target path; the other three
-# binaries are listed explicitly and must use the same target directory.
+# All five binaries are built by `just package-build` with cargo-zigbuild
+# against an explicit glibc baseline (see justfile `glibc_baseline`); zig
+# is the linker so the ELF interpreter is the standard system path rather
+# than a Nix-store path. cargo-nfpm auto-adds the main binary (tisvlayd)
+# from target/x86_64-unknown-linux-gnu/release/ via the matching --target
+# in the justfile recipes; the others are listed explicitly below.
 
 [package.metadata.nfpm]
 name = "tisvlay"
@@ -83,9 +85,10 @@ priority = "optional"
 
 contents = [
     # Binaries (tisvlayd is auto-added by cargo-nfpm from the -p target)
-    { src = "target/x86_64-unknown-linux-musl/release/tisvlay", dst = "/usr/bin/tisvlay" },
-    { src = "target/x86_64-unknown-linux-musl/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
-    { src = "target/x86_64-unknown-linux-musl/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay", dst = "/usr/bin/tisvlay" },
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-gui", dst = "/usr/bin/tisvlay-gui" },
     # Systemd system service
     { src = "packaging/systemd/tisvlayd.service", dst = "/usr/lib/systemd/system/tisvlayd.service" },
     # Systemd user services
@@ -101,11 +104,32 @@ contents = [
 postinstall = "packaging/scripts/postinstall.sh"
 preremove = "packaging/scripts/preremove.sh"
 
+# Runtime deps. Daemons / CLI / session / tray only need glibc; the GUI
+# additionally links fontconfig at load time and dlopens libGL/libEGL,
+# libwayland-{client,egl}, and libxcb at startup (Slint femtovg + winit).
+# Names follow Debian/Ubuntu (deb) and Fedora/RHEL (rpm) conventions —
+# verify against the target distro before each release.
 [package.metadata.nfpm.deb]
-depends = ["libc6"]
+depends = [
+    "libc6",
+    "libfontconfig1",
+    "libgl1",
+    "libegl1",
+    "libwayland-client0",
+    "libwayland-egl1",
+    "libxcb1",
+]
 
 [package.metadata.nfpm.rpm]
-depends = ["glibc"]
+depends = [
+    "glibc",
+    "fontconfig",
+    "mesa-libGL",
+    "mesa-libEGL",
+    "libwayland-client",
+    "libwayland-egl",
+    "libxcb",
+]
 
 [lints]
 workspace = true

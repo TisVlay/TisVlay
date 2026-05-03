@@ -31,9 +31,7 @@
       let
         overlays = [ rust-overlay.overlays.default ];
         pkgs = import nixpkgs { inherit overlays system; };
-        rust = (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml).override {
-          targets = [ "x86_64-unknown-linux-musl" ];
-        };
+        rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in
       {
         packages = {
@@ -73,13 +71,25 @@
               cargo-insta
               cargo-llvm-cov
               cargo-nextest
+              # cargo-zigbuild + zig drive the release build: zig serves
+              # as the linker so the resulting glibc-dynamic binary
+              # carries an explicit min-glibc baseline (see justfile's
+              # `package-build`) and runs on any distro at-or-newer than
+              # that anchor — without baking Nix-store paths into the
+              # ELF interpreter the way a plain `cargo build` from the
+              # dev shell would.
+              cargo-zigbuild
+              zig
               just
               just-lsp
               linuxConsoleTools
               lldb
               llvmPackages_21.bintools-unwrapped
+              # nfpm (Go binary) is the packager that cargo-nfpm shells
+              # out to. cargo-nfpm itself is not in nixpkgs — install
+              # with `cargo install cargo-nfpm` to drive `just package-*`.
+              nfpm
               pkg-config
-              pkgsMusl.stdenv.cc
               prek
               # slint-lsp on $PATH so editor integrations (VSCode Slint
               # extension, Helix, Neovim) pick up the system-provided LSP
@@ -98,9 +108,6 @@
               gettext
               slint-tr-extractor
             ] ++ slintRuntimeLibs;
-
-            # Tell cargo where to find the musl linker
-            CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${pkgs.pkgsMusl.stdenv.cc}/bin/cc";
 
             # Tell rust-analyzer where to find std sources for go-to-definition.
             RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library";
