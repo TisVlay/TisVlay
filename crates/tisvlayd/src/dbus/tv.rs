@@ -12,8 +12,10 @@ use crate::dbus::DaemonError;
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
 use tisvlay_core::TvState;
-use tracing::info;
+use tisvlay_core::dbus_paths::tv_path;
+use tracing::{info, warn};
 use zbus::interface;
+use zbus::object_server::SignalEmitter;
 
 /// Base TV interface with properties and connection management.
 ///
@@ -27,11 +29,21 @@ pub struct TvService {
     // Cached identity/config (set at registration, updated on config reload)
     pub(crate) name: String,
     pub(crate) vendor: String,
-    pub(crate) address: String,
     pub(crate) managed: bool,
     pub(crate) system_profile: String,
     pub(crate) primary_input: String,
     pub(crate) automate_when: tisvlay_core::AutomateWhen,
+    /// User-editable vendor-config rows — `(label, value)` pairs
+    /// from the backend's `display_config` (LG: IP, MAC). Surfaced
+    /// via `Tv1.VendorConfig` and rendered in the GUI's CONFIG
+    /// group. Empty for backends with no `UserInput` schema fields.
+    pub(crate) vendor_config: Vec<(String, String)>,
+    /// Read-only diagnostic vendor rows — `(label, value)` pairs
+    /// from the backend's `display_diagnostics` (LG: WebSocket
+    /// scheme). Surfaced via `Tv1.VendorInfo` and rendered in the
+    /// GUI's INFO group. Empty for backends with no `Diagnostic`
+    /// schema fields.
+    pub(crate) vendor_info: Vec<(String, String)>,
 
     // Cached runtime state (updated by subscription pushes)
     pub(crate) connected: bool,
@@ -45,9 +57,10 @@ impl TvService {
     // Properties
     // -------------------------------------------------------------------------
 
-    /// TV identifier.
+    /// TV UUID (RFC 4122). Stable, opaque, generated once at pair time.
+    /// `Tv1.Name` is the user-facing label; this is the immutable handle.
     #[zbus(property(emits_changed_signal = "const"))]
-    fn id(&self) -> &str {
+    fn uuid(&self) -> &str {
         &self.tv_id
     }
 
@@ -75,10 +88,39 @@ impl TvService {
         &self.vendor
     }
 
-    /// TV display address (vendor-specific, e.g. IP address, serial port path).
-    #[zbus(property(emits_changed_signal = "const"))]
-    fn address(&self) -> &str {
-        &self.address
+    /// User-editable vendor-config rows as ordered `(label, value)`
+    /// pairs. The GUI's CONFIG group renders these in view mode
+    /// and the edit form drives the same field set in edit mode
+    /// via `Tv1.UpdateConfig`. Schema-driven projection — see
+    /// [`TvConnector::display_config`]. LG: IP + MAC. Future
+    /// backends: whatever `UserInput`-visibility fields they
+    /// declare on their `config_schema`.
+    ///
+    /// Set at interface-registration time and refreshed via
+    /// `state_forwarder` after `Tv1.UpdateConfig` writes —
+    /// values come from `vendor_config`, not live state, so a
+    /// `const`-style signal would be a lie when the user edits.
+    ///
+    /// [`TvConnector::display_config`]: tisvlay_core::TvConnector::display_config
+    #[zbus(property)]
+    fn vendor_config(&self) -> Vec<(String, String)> {
+        self.vendor_config.clone()
+    }
+
+    /// Backend-discovered diagnostic rows as ordered
+    /// `(label, value)` pairs. The GUI's INFO group renders these
+    /// alongside cross-vendor identity columns (TV ID, hardware,
+    /// DRM connector). LG: WebSocket scheme. Future backends:
+    /// whatever `Diagnostic`-visibility fields they declare. Not
+    /// editable — backends refresh diagnostics during pairing
+    /// only, so the user re-pairs to update.
+    ///
+    /// Set at interface-registration time and refreshed via
+    /// `state_forwarder` after `Tv1.UpdateConfig` writes (in case
+    /// a vendor field's display projection depends on others).
+    #[zbus(property)]
+    fn vendor_info(&self) -> Vec<(String, String)> {
+        self.vendor_info.clone()
     }
 
     /// Whether the TV is currently connected.
@@ -203,6 +245,70 @@ impl TvService {
             .await
             .map_err(DaemonError::from)
     }
+
+    /// Remove this TV from the daemon's configuration.
+    ///
+    /// Drops the in-memory TV map entry, deletes the entry from the
+    /// on-disk config file, and unregisters every `Tv1.*` interface
+    /// at this object path so `ObjectManager.InterfacesRemoved`
+    /// fires for clients watching the surface.
+    ///
+    /// Lives on `Tv1` rather than `Manager1` so the handler has
+    /// `&self.tv_id` directly — no `object_path → tv_id` decoding,
+    /// no path-component sanitization to undo. zbus keeps `self`
+    /// alive for the duration of the call even though the
+    /// interface is being unregistered as part of it.
+    async fn remove(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), DaemonError> {
+        info!(tv_id = %self.tv_id, "D-Bus: Remove");
+        self.manager
+            .remove_tv(&self.tv_id)
+            .await
+            .map_err(DaemonError::from)?;
+
+        let path = tv_path(&self.tv_id);
+        if let Err(e) = unregister_tv_interfaces(connection, &path).await {
+            warn!(tv_id = %self.tv_id, error = %e, "Failed to unregister D-Bus interfaces for TV");
+        }
+        Ok(())
+    }
+
+    /// Return the current TV config as a JSON string suitable for
+    /// prefilling the GUI's edit pane. Top-level fields (`name`,
+    /// `managed`, `system_profile`, `primary_input`) are merged
+    /// with vendor-config fields filtered to non-`Secret`
+    /// visibilities. The reply mirrors the keys
+    /// [`Tv1::update_config`] accepts so the GUI can round-trip
+    /// the same payload shape it submits.
+    async fn get_config(&self) -> Result<String, DaemonError> {
+        info!(tv_id = %self.tv_id, "D-Bus: GetConfig");
+        self.manager
+            .get_tv_config_json(&self.tv_id)
+            .await
+            .map_err(DaemonError::from)
+    }
+
+    /// Apply a JSON patch to this TV's config atomically.
+    ///
+    /// Schema-validated server-side: each vendor field passes
+    /// through `PairingField::validate` (same checks as `AddTv`),
+    /// `Diagnostic` / `Secret` fields are rejected as not-editable,
+    /// and unknown keys are surfaced as errors rather than silently
+    /// ignored. Top-level fields (`name`, `managed`,
+    /// `system_profile`, `primary_input`) are accepted in the same
+    /// patch — atomicity covers in-memory + disk persistence.
+    ///
+    /// Vendor field changes drop the live connection and trigger a
+    /// reconnect with the new parameters.
+    async fn update_config(&self, json_patch: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %self.tv_id, "D-Bus: UpdateConfig");
+        self.manager
+            .update_tv_config(&self.tv_id, json_patch)
+            .await
+            .map_err(DaemonError::from)
+    }
 }
 
 // =============================================================================
@@ -217,6 +323,12 @@ pub struct TvPowerService {
 
     // Cached state
     pub(crate) power_state: String,
+    /// Whether the vendor backend can wake the TV from standby
+    /// (e.g. LG: has a MAC for WoL). GUIs use this to disable the
+    /// Power-on button when both `Connected == false` and
+    /// `SupportsWake == false` — the only state where Power-on
+    /// has no path to succeed.
+    pub(crate) supports_wake: bool,
 }
 
 #[interface(name = "org.tisvlay.Tv1.Power")]
@@ -244,6 +356,28 @@ impl TvPowerService {
     fn power_state(&self) -> &str {
         &self.power_state
     }
+
+    /// Whether the vendor backend can wake the TV from standby.
+    /// Reflects whether `power_on()` has a viable path when the TV
+    /// is currently offline; GUIs gate the Power-on button on
+    /// `Connected || SupportsWake`.
+    #[zbus(property)]
+    fn supports_wake(&self) -> bool {
+        self.supports_wake
+    }
+
+    /// Phase transitions during a power-on flow.
+    ///
+    /// Emitted as the manager walks through either the wake-on-LAN
+    /// path (`wol_sent` → `connecting` → `connected` / `failed`) or
+    /// the direct-connect path when the TV is already reachable
+    /// (`direct_connect` → `connecting` → `connected` / `failed`).
+    /// GUIs subscribe to render staged feedback during the 5-30 s
+    /// wake window or the much-shorter direct-connect window.
+    /// See [`tisvlay_core::PowerCyclePhase`] for the typed shape.
+    #[zbus(signal)]
+    pub async fn power_cycle_progress(emitter: &SignalEmitter<'_>, phase: &str)
+    -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -252,8 +386,10 @@ impl TvPowerService {
 
 /// Screen control interface (OLED-safe blanking).
 ///
-/// The screen state is exposed as a writable boolean property `IsScreenOn`.
-/// Setting `true` unblanks the screen, setting `false` blanks it.
+/// `IsScreenOn` is a read-only boolean property reflecting the TV's
+/// current screen state, populated by `state_forwarder` from backend
+/// subscription pushes. Writes go through the `SetScreen(b)` method
+/// (`true` unblanks, `false` blanks).
 #[derive(Debug)]
 pub struct TvScreenService {
     pub(crate) tv_id: String,
@@ -266,25 +402,20 @@ pub struct TvScreenService {
 #[interface(name = "org.tisvlay.Tv1.Screen")]
 impl TvScreenService {
     /// Whether the screen is currently on.
-    ///
-    /// Set `true` to unblank, `false` to blank (OLED-safe screen off).
     #[zbus(property)]
     fn is_screen_on(&self) -> bool {
         self.is_screen_on
     }
 
-    /// Set screen on/off state.
-    #[zbus(property)]
-    async fn set_is_screen_on(&mut self, on: bool) -> zbus::fdo::Result<()> {
-        info!(tv_id = %self.tv_id, on = on, "D-Bus: set IsScreenOn");
+    /// Set the screen on (true) or off (false).
+    async fn set_screen(&self, on: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, on = on, "D-Bus: SetScreen");
         if on {
             self.manager.screen_on(&self.tv_id).await
         } else {
             self.manager.screen_off(&self.tv_id).await
         }
-        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        self.is_screen_on = on;
-        Ok(())
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }
 
@@ -294,8 +425,10 @@ impl TvScreenService {
 
 /// Volume control interface.
 ///
-/// Volume and mute are writable properties. Setting them sends the command
-/// to the TV backend and updates the cache on success.
+/// `Volume` and `Muted` are read-only properties reflecting the TV's
+/// current state, populated by `state_forwarder` from backend
+/// subscription pushes. Writes go through the `SetVolume(y)` and
+/// `SetMuted(b)` methods.
 #[derive(Debug)]
 pub struct TvVolumeService {
     pub(crate) tv_id: String,
@@ -315,18 +448,15 @@ impl TvVolumeService {
     }
 
     /// Set volume level (0-100).
-    #[zbus(property)]
-    async fn set_volume(&mut self, level: u8) -> zbus::fdo::Result<()> {
+    async fn set_volume(&self, level: u8) -> zbus::fdo::Result<()> {
         if level > 100 {
             return Err(zbus::fdo::Error::InvalidArgs("Volume must be 0-100".into()));
         }
-        info!(tv_id = %self.tv_id, volume = level, "D-Bus: set Volume");
+        info!(tv_id = %self.tv_id, volume = level, "D-Bus: SetVolume");
         self.manager
             .set_volume(&self.tv_id, level)
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        self.volume = level;
-        Ok(())
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// Whether audio is currently muted.
@@ -336,15 +466,12 @@ impl TvVolumeService {
     }
 
     /// Set mute state.
-    #[zbus(property)]
-    async fn set_muted(&mut self, muted: bool) -> zbus::fdo::Result<()> {
-        info!(tv_id = %self.tv_id, muted = muted, "D-Bus: set Muted");
+    async fn set_muted(&self, muted: bool) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, muted = muted, "D-Bus: SetMuted");
         self.manager
             .set_mute(&self.tv_id, muted)
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        self.muted = muted;
-        Ok(())
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }
 
@@ -393,8 +520,10 @@ impl TvInputService {
 
 /// Backlight control interface (OLED pixel brightness).
 ///
-/// Backlight is a writable property. Setting it sends the command to the
-/// TV backend and updates the cache on success.
+/// `Backlight` is a read-only property reflecting the TV's current
+/// pixel-brightness level, populated by `state_forwarder` from
+/// backend subscription pushes. Writes go through the
+/// `SetBacklight(y)` method.
 #[derive(Debug)]
 pub struct TvBacklightService {
     pub(crate) tv_id: String,
@@ -413,20 +542,17 @@ impl TvBacklightService {
     }
 
     /// Set backlight level (0-100).
-    #[zbus(property)]
-    async fn set_backlight(&mut self, level: u8) -> zbus::fdo::Result<()> {
+    async fn set_backlight(&self, level: u8) -> zbus::fdo::Result<()> {
         if level > 100 {
             return Err(zbus::fdo::Error::InvalidArgs(
                 "Backlight must be 0-100".into(),
             ));
         }
-        info!(tv_id = %self.tv_id, backlight = level, "D-Bus: set Backlight");
+        info!(tv_id = %self.tv_id, backlight = level, "D-Bus: SetBacklight");
         self.manager
             .set_backlight(&self.tv_id, level)
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        self.backlight = level;
-        Ok(())
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }
 
@@ -499,11 +625,11 @@ pub async fn register_tv_interfaces(
     initial_state: Option<&TvState>,
 ) -> zbus::Result<()> {
     // Fetch config-based properties for initial cache
-    let (name, vendor, address, managed) = manager
+    let (name, vendor, managed) = manager
         .get_tv_info(&tv_id)
         .await
-        .map(|info| (info.name, info.vendor, info.address, info.managed))
-        .unwrap_or_else(|| (String::new(), String::new(), String::new(), true));
+        .map(|info| (info.name, info.vendor, info.managed))
+        .unwrap_or_else(|| (String::new(), String::new(), true));
     let system_profile = manager
         .get_tv_system_profile(&tv_id)
         .await
@@ -550,6 +676,9 @@ pub async fn register_tv_interfaces(
 
     let object_server = connection.object_server();
 
+    let vendor_config = manager.vendor_config(&tv_id).await;
+    let vendor_info = manager.vendor_diagnostics(&tv_id).await;
+
     object_server
         .at(
             path,
@@ -558,16 +687,19 @@ pub async fn register_tv_interfaces(
                 manager: manager.clone(),
                 name,
                 vendor,
-                address,
                 managed,
                 system_profile,
                 primary_input,
                 automate_when,
+                vendor_config,
+                vendor_info,
                 connected,
                 current_input: current_input.clone(),
             },
         )
         .await?;
+
+    let supports_wake = manager.supports_wake(&tv_id).await;
 
     object_server
         .at(
@@ -576,6 +708,7 @@ pub async fn register_tv_interfaces(
                 tv_id: tv_id.clone(),
                 manager: manager.clone(),
                 power_state,
+                supports_wake,
             },
         )
         .await?;

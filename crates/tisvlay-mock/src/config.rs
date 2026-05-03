@@ -49,6 +49,24 @@ pub struct MockVendorConfig {
     /// shorthand is only applied if no handle outcome is present.
     #[serde(default)]
     pub pairing: PairingShorthand,
+
+    /// If non-empty, `set_backlight(target)` pushes each of these
+    /// values via the subscription channel, then pushes `target`.
+    /// Models real LG TVs that ramp backlight gradually rather than
+    /// snapping, emitting multiple `picture/backlight` subscription
+    /// updates per setSystemSettings call. Default empty (snap, like
+    /// volume).
+    #[serde(default)]
+    pub backlight_ramp_intermediates: Vec<u8>,
+
+    /// Delay between intermediate ramp pushes, in milliseconds. With
+    /// `backlight_ramp_intermediates` non-empty, each step waits this
+    /// long before pushing the next. Default 0 = `tokio::yield_now`
+    /// (effectively instant — fine for "is the emit pipeline ordered"
+    /// tests). Set to a few ms for tests that need to interleave a
+    /// new command mid-ramp deterministically.
+    #[serde(default)]
+    pub backlight_ramp_step_delay_ms: u64,
 }
 
 fn default_address() -> String {
@@ -89,6 +107,8 @@ impl Default for MockVendorConfig {
             initial_backlight: default_backlight(),
             inputs: default_inputs(),
             pairing: PairingShorthand::default(),
+            backlight_ramp_intermediates: Vec::new(),
+            backlight_ramp_step_delay_ms: 0,
         }
     }
 }

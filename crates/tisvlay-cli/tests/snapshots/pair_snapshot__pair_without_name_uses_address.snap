@@ -9,14 +9,14 @@ info:
     - "--vendor"
     - mock
   env:
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/nix-shell.48rDG3/tisvlay-test-bus-2wfWBo/bus.sock,guid=ae3c125c5289e01d66c64ebc69dbde10"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-iRoMmT/bus.sock,guid=4bb593d5c14070a12b18498669f652a1"
 ---
 success: true
 exit_code: 0
 ----- stdout -----
 Connecting to TV at mock://office...
 Please accept the pairing request on your TV.
-TV 'TV at mock://office' paired successfully with ID: tv_at_mockoffice
+TV 'TV at mock://office' paired successfully with ID: <UUID>
 
 Note: No wake ID (MAC address) provided. Wake-on-LAN will not work.
 You can update the MAC address in the config file.

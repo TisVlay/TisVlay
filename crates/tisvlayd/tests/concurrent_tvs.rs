@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 use tisvlay_core::{SessionAction, SystemConfig, SystemProfileConfig};
-use tisvlay_harness::daemon::{TestDaemon, mock_tv_config};
+use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlayd::tv_manager::SystemEvent;
 
 async fn settle() {
@@ -34,12 +34,12 @@ async fn shutdown_only_affects_managed_tvs() {
 
     daemon
         .manager()
-        .reconnect("multi_managed")
+        .reconnect(&test_tv_uuid("multi_managed").to_string())
         .await
         .expect("reconnect managed");
     daemon
         .manager()
-        .reconnect("multi_unmanaged")
+        .reconnect(&test_tv_uuid("multi_unmanaged").to_string())
         .await
         .expect("reconnect unmanaged");
     settle().await;
@@ -51,11 +51,17 @@ async fn shutdown_only_affects_managed_tvs() {
     settle().await;
 
     assert!(
-        !daemon.manager().is_connected("multi_managed").await,
+        !daemon
+            .manager()
+            .is_connected(&test_tv_uuid("multi_managed").to_string())
+            .await,
         "managed TV should be disconnected after shutdown",
     );
     assert!(
-        daemon.manager().is_connected("multi_unmanaged").await,
+        daemon
+            .manager()
+            .is_connected(&test_tv_uuid("multi_unmanaged").to_string())
+            .await,
         "unmanaged TV should remain connected after shutdown",
     );
 }
@@ -83,12 +89,12 @@ async fn mixed_profiles_dispatch_independently() {
 
     daemon
         .manager()
-        .reconnect("mix_off")
+        .reconnect(&test_tv_uuid("mix_off").to_string())
         .await
         .expect("reconnect mix_off");
     daemon
         .manager()
-        .reconnect("mix_noop")
+        .reconnect(&test_tv_uuid("mix_noop").to_string())
         .await
         .expect("reconnect mix_noop");
     settle().await;
@@ -100,11 +106,17 @@ async fn mixed_profiles_dispatch_independently() {
     settle().await;
 
     assert!(
-        !daemon.manager().is_connected("mix_off").await,
+        !daemon
+            .manager()
+            .is_connected(&test_tv_uuid("mix_off").to_string())
+            .await,
         "TV with default profile should be powered off",
     );
     assert!(
-        daemon.manager().is_connected("mix_noop").await,
+        daemon
+            .manager()
+            .is_connected(&test_tv_uuid("mix_noop").to_string())
+            .await,
         "TV with noop profile should remain connected",
     );
 }

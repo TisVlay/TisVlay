@@ -16,7 +16,7 @@ on_idle_timeout = "screen_off"
 on_idle_resume = "screen_on"
 
 [[tv]]
-id = "office"
+uuid = "9a3f1b22-c4d8-4e90-b21f-7f1a2c8e5b40"
 name = "office"
 vendor = "lg"
 primary_input = "HDMI_1"

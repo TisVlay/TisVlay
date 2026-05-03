@@ -245,9 +245,22 @@ async fn main() -> Result<()> {
                         "disconnected"
                     };
                     let managed = if tv.managed { "" } else { " [unmanaged]" };
+                    // Show backend's primary editable descriptor
+                    // (LG: IP address; future: serial port, etc.) —
+                    // first entry of `Tv1.VendorConfig`. Falls
+                    // through to `vendor_info` (Diagnostic) for
+                    // backends that have no `UserInput` schema
+                    // fields, so the column never goes blank for a
+                    // backend that surfaces anything at all.
+                    let descriptor = tv
+                        .vendor_config
+                        .first()
+                        .or_else(|| tv.vendor_info.first())
+                        .map(|(_, v)| v.as_str())
+                        .unwrap_or("?");
                     println!(
                         "  {} - {} ({}) [{}] <{}>{}{}",
-                        tv.id, tv.name, tv.address, status, tv.vendor, managed, default
+                        tv.uuid, tv.name, descriptor, status, tv.vendor, managed, default
                     );
                 }
             }
@@ -289,16 +302,14 @@ async fn main() -> Result<()> {
                     let tvs = client.list_tvs().await?;
                     let managed = tvs
                         .iter()
-                        .find(|t| t.id == tv_id)
+                        .find(|t| t.uuid == tv_id)
                         .map(|t| t.managed)
                         .unwrap_or(true);
                     println!("Managed: {}", managed);
                 }
                 Some(state) => {
                     let managed = matches!(state, ManageState::True);
-                    client
-                        .set_tv_option(&tv_id, "managed", if managed { "true" } else { "false" })
-                        .await?;
+                    client.set_tv_managed(&tv_id, managed).await?;
                     println!("Managed: {}", managed);
                 }
             }
@@ -355,7 +366,7 @@ async fn main() -> Result<()> {
                     let tvs = client.list_tvs().await?;
                     let system_profile = tvs
                         .iter()
-                        .find(|t| t.id == tv_id)
+                        .find(|t| t.uuid == tv_id)
                         .map(|t| t.system_profile.as_str())
                         .unwrap_or("default");
                     println!("TV '{}' system profile: {}", tv_id, system_profile);
@@ -372,8 +383,22 @@ async fn main() -> Result<()> {
             let tv_id = tv_id?;
             match action {
                 PowerAction::On => {
-                    client.power_on(&tv_id).await?;
-                    println!("Wake signal sent to TV");
+                    // Subscribe to PowerCycleProgress before issuing the
+                    // call so phases emitted during wake-and-connect are
+                    // surfaced to the user. The stream task ends when
+                    // power_on returns and we drop the receiver.
+                    use futures_util::StreamExt;
+                    let progress = client.power_cycle_progress_stream(&tv_id).await?;
+                    let logger = tokio::spawn(async move {
+                        let mut s = std::pin::pin!(progress);
+                        while let Some(phase) = s.next().await {
+                            println!("  → {phase}");
+                        }
+                    });
+                    let result = client.power_on(&tv_id).await;
+                    logger.abort();
+                    result?;
+                    println!("TV is online");
                 }
                 PowerAction::Off => {
                     client.power_off(&tv_id).await?;
@@ -443,7 +468,7 @@ async fn main() -> Result<()> {
                 MuteState::Off => false,
                 MuteState::Toggle => {
                     let tvs = client.list_tvs().await?;
-                    let tv = tvs.iter().find(|t| t.id == tv_id);
+                    let tv = tvs.iter().find(|t| t.uuid == tv_id);
                     !tv.map(|t| t.muted).unwrap_or(false)
                 }
             };
@@ -470,7 +495,7 @@ async fn main() -> Result<()> {
             let tvs = client.list_tvs().await?;
             let tv = tvs
                 .iter()
-                .find(|t| t.id == tv_id)
+                .find(|t| t.uuid == tv_id)
                 .ok_or_else(|| anyhow::anyhow!("TV not found: {}", tv_id))?;
             // Try to get user profile from session service (optional)
             let user_profile = match SessionClient::new().await {
@@ -514,16 +539,22 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
             if tvs.is_empty() {
                 anyhow::bail!("No TVs configured. Use 'tisvlay pair <address>' to add a TV.");
             }
-            Ok(tvs[0].id.clone())
+            Ok(tvs[0].uuid.clone())
         }
     }
 }
 
 fn print_tv_status(tv: &TvInfo, user_profile: Option<&str>) {
     let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
-    println!("TV: {} ({})", tv.id, tv.name);
+    println!("TV: {} ({})", tv.uuid, tv.name);
     println!("  Vendor: {}", tv.vendor);
-    println!("  Address: {}", tv.address);
+    // User-editable vendor config (LG: IP, MAC) followed by the
+    // backend-discovered diagnostics (LG: WebSocket scheme).
+    // Identical visual treatment — the split matters in the GUI's
+    // CONFIG/INFO grouping, not in a flat CLI dump.
+    for (label, value) in tv.vendor_config.iter().chain(tv.vendor_info.iter()) {
+        println!("  {}: {}", label, value);
+    }
     println!("Managed: {}", tv.managed);
     println!("  Automated: {}", tv.automated);
     println!("Profile:");

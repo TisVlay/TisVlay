@@ -6,7 +6,8 @@ idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
 
 [[tv]]
-id = "office"
+# Must match `[[tv]] uuid` in the system config (docs/configs/daemon.toml).
+uuid = "9a3f1b22-c4d8-4e90-b21f-7f1a2c8e5b40"
 
 [tv.profile]
 user = "foo"

@@ -19,7 +19,7 @@
 #![cfg(feature = "mock")]
 
 use std::time::Duration;
-use tisvlay_harness::daemon::TestDaemon;
+use tisvlay_harness::daemon::{TestDaemon, test_tv_uuid};
 
 /// Simulates the daemon's shutdown sequence (same as main.rs after
 /// SIGINT) and asserts it completes within a bounded time, even when
@@ -37,7 +37,9 @@ async fn shutdown_completes_promptly_with_inflight_reconnect() {
     // reconnect that holds the per-TV lock across the slow connect.
     let manager = daemon.manager().clone();
     tokio::spawn(async move {
-        let _ = manager.reconnect("slow_tv").await;
+        let _ = manager
+            .reconnect(&test_tv_uuid("slow_tv").to_string())
+            .await;
     });
 
     // Let the reconnect task start and enter the connect delay.

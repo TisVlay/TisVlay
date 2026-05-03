@@ -11,14 +11,14 @@ info:
     - "--name"
     - Living Room
   env:
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/nix-shell.rmf30I/tisvlay-test-bus-KpmQDK/bus.sock,guid=137873dd9f6c8f00c956ef6969dbde26"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-DxmIBk/bus.sock,guid=cd8e2ff7f5eb33a6362f8e9169f652a1"
 ---
 success: true
 exit_code: 0
 ----- stdout -----
 Connecting to TV at mock://living_room...
 Please accept the pairing request on your TV.
-TV 'Living Room' paired successfully with ID: living_room
+TV 'Living Room' paired successfully with ID: <UUID>
 
 Note: No wake ID (MAC address) provided. Wake-on-LAN will not work.
 You can update the MAC address in the config file.

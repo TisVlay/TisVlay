@@ -16,8 +16,29 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use state::fetch_all_state;
-use tisvlay_core::{DaemonClient, SessionClient, StateEvent, StateWatcher};
+use tisvlay_core::{
+    Coalescer, DaemonClient, ReconcilerMap, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
+};
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
+
+/// Per-(tv_id, property) reconciler maps for scroll-driven values.
+/// Bundles the volume and backlight maps so the apply layer can be
+/// passed a single `Reconcilers` value through `process_commands`,
+/// `watch_state`, and `refresh_state` without two parameters
+/// everywhere.
+///
+/// The apply uses `volume.current()` / `backlight.current()` as the
+/// base for the next delta (pinned to user intent) and `dispatch()`
+/// to update intent on each user input. The refresh path feeds
+/// every fetched value through `observe()`, gating mid-ramp values
+/// that don't match the last dispatch. See
+/// `crates/tisvlayd/tests/scroll_apply_under_ramp.rs` for the
+/// regression test that this gating prevents.
+#[derive(Clone, Default, Debug)]
+struct Reconcilers {
+    volume: ReconcilerMap<String, u8>,
+    backlight: ReconcilerMap<String, u8>,
+}
 
 /// tisvlay system tray - TV control from your taskbar.
 #[derive(Parser, Debug)]
@@ -78,9 +99,6 @@ async fn main() -> Result<()> {
 
     // Create command channel
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    // Clone before moving into tray; used to re-queue non-scroll commands
-    // that are encountered while draining scroll events in the processor.
-    let requeue_tx = cmd_tx.clone();
 
     // Create tray with initial state
     let tray = TisvlayTray {
@@ -99,20 +117,89 @@ async fn main() -> Result<()> {
 
     info!("Tray icon spawned");
 
+    // Per-(tv_id) reconcilers for scroll-driven properties. Shared
+    // between the watch_state refresh path and the scroll apply
+    // closures so the apply's base value (`current + delta`) and the
+    // menu's displayed value both stay pinned to the user's intent
+    // during TV ramps. See `Reconcilers` docstring above.
+    let reconcilers = Reconcilers::default();
+
     // Spawn signal watcher (replaces polling)
     let watch_daemon = daemon.clone();
     let watch_session = session.clone();
     let watch_handle = handle.clone();
+    let watch_reconcilers = reconcilers.clone();
     tokio::spawn(async move {
-        watch_state(watch_daemon, watch_session, watch_handle).await;
+        watch_state(watch_daemon, watch_session, watch_handle, watch_reconcilers).await;
+    });
+
+    // Per-(tv_id) sum-merge coalescers for scroll-wheel deltas. Folds
+    // a burst of `ScrollBy` events into a single daemon write per TV
+    // per target. The apply uses `Reconcilers` to read the
+    // user's intent (not the bouncing daemon cache during a TV ramp)
+    // as the base for `current + delta`, then dispatches the new
+    // intent BEFORE awaiting the daemon round-trip so the gate is in
+    // place before any subscription pushes arrive.
+
+    let volume_scroll = Coalescer::new(|old: i32, new: i32| old + new, {
+        let daemon = daemon.clone();
+        let handle = handle.clone();
+        let reconcilers = reconcilers.clone();
+        move |tv_id: String, steps: i32| {
+            let daemon = daemon.clone();
+            let handle = handle.clone();
+            let reconcilers = reconcilers.clone();
+            async move {
+                let fallback = get_cached_volume(&handle, &tv_id).await;
+                let current = reconcilers.volume.current(&tv_id, fallback);
+                let new = (current as i32 + steps * VOLUME_STEP as i32).clamp(0, 100) as u8;
+                reconcilers.volume.dispatch(&tv_id, new);
+                if let Err(e) = daemon.set_volume(&tv_id, new).await {
+                    warn!(tv_id = %tv_id, error = %e, "Set volume failed");
+                } else {
+                    set_cached_volume(&handle, &tv_id, new).await;
+                }
+            }
+        }
+    });
+    let backlight_scroll = Coalescer::new(|old: i32, new: i32| old + new, {
+        let daemon = daemon.clone();
+        let handle = handle.clone();
+        let reconcilers = reconcilers.clone();
+        move |tv_id: String, steps: i32| {
+            let daemon = daemon.clone();
+            let handle = handle.clone();
+            let reconcilers = reconcilers.clone();
+            async move {
+                let fallback = get_cached_backlight(&handle, &tv_id).await;
+                let current = reconcilers.backlight.current(&tv_id, fallback);
+                let new = (current as i32 + steps * BACKLIGHT_STEP as i32).clamp(0, 100) as u8;
+                reconcilers.backlight.dispatch(&tv_id, new);
+                if let Err(e) = daemon.set_backlight(&tv_id, new).await {
+                    warn!(tv_id = %tv_id, error = %e, "Set backlight failed");
+                } else {
+                    set_cached_backlight(&handle, &tv_id, new).await;
+                }
+            }
+        }
     });
 
     // Spawn command processor
     let cmd_daemon = daemon.clone();
     let cmd_session = session.clone();
     let cmd_handle = handle.clone();
+    let cmd_reconcilers = reconcilers.clone();
     let cmd_task = tokio::spawn(async move {
-        process_commands(cmd_rx, requeue_tx, cmd_daemon, cmd_session, cmd_handle).await;
+        process_commands(
+            cmd_rx,
+            cmd_daemon,
+            cmd_session,
+            cmd_handle,
+            volume_scroll,
+            backlight_scroll,
+            cmd_reconcilers,
+        )
+        .await;
     });
 
     // Wait for shutdown: command processor exit (Quit menu item) or signal
@@ -143,16 +230,33 @@ async fn wait_for_signal() {
 }
 
 /// Fetch TV state and update the tray menu immediately.
+///
+/// Each TV's `volume` and `backlight` are routed through
+/// `reconcilers.{volume,backlight}.observe` before being written to `CachedTvState`,
+/// so mid-ramp values that don't match a pending dispatch don't
+/// bounce the displayed/menu value (or the apply layer's base for
+/// the next delta). Other fields (connected, current_input, etc.)
+/// pass through unchanged — they aren't delta-driven and don't have
+/// transient intermediate states to gate.
 async fn refresh_state(
     daemon: &DaemonClient,
     session: &tokio::sync::RwLock<Option<SessionClient>>,
     handle: &ksni::Handle<TisvlayTray>,
+    reconcilers: &Reconcilers,
 ) {
     let session_ref = session.read().await;
     let session_client = session_ref.as_ref();
 
     match fetch_all_state(daemon, session_client).await {
-        Ok(tvs) => {
+        Ok(mut tvs) => {
+            for tv in &mut tvs {
+                if let Some(v) = tv.volume {
+                    tv.volume = Some(reconcilers.volume.observe(&tv.id, v));
+                }
+                if let Some(b) = tv.backlight {
+                    tv.backlight = Some(reconcilers.backlight.observe(&tv.id, b));
+                }
+            }
             debug!(count = tvs.len(), "Refresh: state updated");
             handle
                 .update(|t| {
@@ -185,6 +289,7 @@ async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
+    reconcilers: Reconcilers,
 ) {
     let mut watcher = match StateWatcher::new(&daemon, Default::default()).await {
         Ok(w) => w,
@@ -192,6 +297,24 @@ async fn watch_state(
             warn!(error = %e, "Failed to create state watcher");
             return;
         }
+    };
+
+    // `watcher.next() → refresh.await` inline halts signal_stream
+    // draining and wedges the connection under flood. See
+    // `RefreshTrigger`'s docstring for the bug history.
+    let trigger = RefreshTrigger::new();
+    let trigger_refresh = || {
+        let daemon = daemon.clone();
+        let session = session.clone();
+        let handle = handle.clone();
+        let reconcilers = reconcilers.clone();
+        trigger.fire(move || {
+            let daemon = daemon.clone();
+            let session = session.clone();
+            let handle = handle.clone();
+            let reconcilers = reconcilers.clone();
+            async move { refresh_state(&daemon, &session, &handle, &reconcilers).await }
+        });
     };
 
     loop {
@@ -208,7 +331,7 @@ async fn watch_state(
             | StateEvent::DaemonAppeared
             | StateEvent::SessionProfileChanged
             | StateEvent::FallbackPoll => {
-                refresh_state(&daemon, &session, &handle).await;
+                trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
                 handle
@@ -222,13 +345,13 @@ async fn watch_state(
                 if let Ok(client) = SessionClient::new().await {
                     if client.is_available().await {
                         *session.write().await = Some(client);
-                        refresh_state(&daemon, &session, &handle).await;
+                        trigger_refresh();
                     }
                 }
             }
             StateEvent::SessionDisappeared => {
                 *session.write().await = None;
-                refresh_state(&daemon, &session, &handle).await;
+                trigger_refresh();
             }
         }
     }
@@ -237,10 +360,12 @@ async fn watch_state(
 /// Process commands from tray menu callbacks.
 async fn process_commands(
     mut cmd_rx: mpsc::UnboundedReceiver<TrayCommand>,
-    requeue_tx: mpsc::UnboundedSender<TrayCommand>,
     daemon: Arc<DaemonClient>,
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
+    volume_scroll: Coalescer<String, i32>,
+    backlight_scroll: Coalescer<String, i32>,
+    reconcilers: Reconcilers,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         debug!(cmd = ?cmd, "Processing tray command");
@@ -259,7 +384,7 @@ async fn process_commands(
                     }
                 }
                 drop(session_ref);
-                refresh_state(&daemon, &session, &handle).await;
+                refresh_state(&daemon, &session, &handle, &reconcilers).await;
             }
             TrayCommand::PowerOn(id) => {
                 if let Err(e) = daemon.power_on(&id).await {
@@ -292,7 +417,7 @@ async fn process_commands(
                 }
             }
             TrayCommand::SetSystemProfile(id, profile) => {
-                if let Err(e) = daemon.set_tv_option(&id, "profile.system", &profile).await {
+                if let Err(e) = daemon.set_tv_system_profile(&id, &profile).await {
                     warn!(tv_id = %id, profile = %profile, error = %e, "Set system profile failed");
                 }
             }
@@ -301,53 +426,23 @@ async fn process_commands(
                     warn!(tv_id = %id, input = %input, error = %e, "Switch input failed");
                 }
             }
-            TrayCommand::ScrollBy(id, target, mut steps) => {
-                // Coalesce all pending scroll events for the same TV and target
-                // into one D-Bus call, preventing queue buildup from fast scroll wheels.
-                loop {
-                    match cmd_rx.try_recv() {
-                        Ok(TrayCommand::ScrollBy(nid, ntarget, nsteps))
-                            if nid == id && ntarget == target =>
-                        {
-                            steps += nsteps;
-                        }
-                        Ok(other) => {
-                            // Non-scroll command arrived mid-burst: re-queue it so it
-                            // isn't lost; it will be processed in the next iteration.
-                            let _ = requeue_tx.send(other);
-                            break;
-                        }
-                        Err(_) => break,
-                    }
-                }
+            TrayCommand::ScrollBy(id, target, steps) => {
+                // Hand off to the per-target sum-merge `Coalescer`. It
+                // folds rapid scroll events for the same TV into one
+                // daemon write, applying the cached-value lookup +
+                // optimistic write inside its apply closure (set up in
+                // `main`). We don't await the dispatch here, so other
+                // commands aren't blocked behind a slow daemon call.
                 if steps == 0 {
                     continue;
                 }
                 match target {
-                    ScrollTarget::Volume => {
-                        let current = get_cached_volume(&handle, &id).await;
-                        let new = (current as i32 + steps * VOLUME_STEP as i32).clamp(0, 100) as u8;
-                        if let Err(e) = daemon.set_volume(&id, new).await {
-                            warn!(tv_id = %id, error = %e, "Set volume failed");
-                        } else {
-                            set_cached_volume(&handle, &id, new).await;
-                        }
-                    }
-                    ScrollTarget::Backlight => {
-                        let current = get_cached_backlight(&handle, &id).await;
-                        let new =
-                            (current as i32 + steps * BACKLIGHT_STEP as i32).clamp(0, 100) as u8;
-                        if let Err(e) = daemon.set_backlight(&id, new).await {
-                            warn!(tv_id = %id, error = %e, "Set backlight failed");
-                        } else {
-                            set_cached_backlight(&handle, &id, new).await;
-                        }
-                    }
+                    ScrollTarget::Volume => volume_scroll.fire(id, steps),
+                    ScrollTarget::Backlight => backlight_scroll.fire(id, steps),
                 }
-                // Skip the full fetch_all_state refresh — the cache was already
-                // updated optimistically above, and the next poll cycle will
-                // reconcile with the real state. This avoids an extra D-Bus +
-                // WebSocket round-trip per scroll step (~5x faster cycle time).
+                // Skip the post-command refresh — the coalescer's
+                // optimistic cache write keeps the menu in sync, and
+                // the next D-Bus signal reconciles for free.
                 continue;
             }
             TrayCommand::ToggleMute(id) => {
@@ -361,15 +456,13 @@ async fn process_commands(
                 }
             }
             TrayCommand::SetManaged(id, managed) => {
-                if let Err(e) = daemon
-                    .set_tv_option(&id, "managed", if managed { "true" } else { "false" })
-                    .await
-                {
+                if let Err(e) = daemon.set_tv_managed(&id, managed).await {
                     warn!(tv_id = %id, managed = %managed, error = %e, "Set managed failed");
                 }
                 // No need to notify the session service: it queries the daemon's managed
-                // set live on each event, and set_tv_option updates in-memory state
-                // synchronously before returning, so the next event dispatch picks it up.
+                // set live on each event, and the per-property setter updates in-memory
+                // state synchronously before returning, so the next event dispatch picks
+                // up the new value.
             }
         }
 

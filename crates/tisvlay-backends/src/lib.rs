@@ -147,22 +147,58 @@ impl BackendRegistry {
         let vendor_config = tv_config.get_raw_vendor_value().ok_or_else(|| {
             tisvlay_core::Error::backend(
                 &tv_config.vendor,
-                format!("No vendor config for TV '{}'", tv_config.id),
+                format!("No vendor config for TV '{}'", tv_config.uuid),
             )
         })?;
         connector.connect(vendor_config).await
     }
 
-    /// Get a human-readable display address for a TV.
-    pub fn display_address(&self, tv_config: &TvConfig) -> String {
+    /// User-editable vendor-config rows for the GUI's TVs-pane
+    /// CONFIG group. Wraps [`TvConnector::display_config`] —
+    /// returns an empty vec for unknown vendors or backends with
+    /// no `UserInput` schema fields.
+    pub fn display_config(&self, tv_config: &TvConfig) -> Vec<(String, String)> {
         self.get_connector(&tv_config.vendor)
             .ok()
             .and_then(|c| {
                 tv_config
                     .get_raw_vendor_value()
-                    .map(|v| c.display_address(v))
+                    .map(|v| c.display_config(v))
             })
-            .unwrap_or_else(|| "unknown".to_string())
+            .unwrap_or_default()
+    }
+
+    /// Read-only diagnostic vendor rows for the GUI's TVs-pane
+    /// INFO group. Wraps [`TvConnector::display_diagnostics`] —
+    /// returns an empty vec for unknown vendors or backends with
+    /// no `Diagnostic` schema fields.
+    pub fn display_diagnostics(&self, tv_config: &TvConfig) -> Vec<(String, String)> {
+        self.get_connector(&tv_config.vendor)
+            .ok()
+            .and_then(|c| {
+                tv_config
+                    .get_raw_vendor_value()
+                    .map(|v| c.display_diagnostics(v))
+            })
+            .unwrap_or_default()
+    }
+
+    /// Backend's primary descriptor — the value of the first
+    /// `UserInput`-visibility entry from the vendor config.
+    /// Convention: backends order their `config_schema` so the
+    /// most informative editable field (LG: ip; future Bluetooth:
+    /// MAC; USB-CEC: serial port) comes first. Used by
+    /// daemon-internal log formatters and route resolution where
+    /// a single transport-appropriate string is needed.
+    ///
+    /// Returns `None` when the backend declines to surface any
+    /// editable info (mock without `UserInput` fields, future
+    /// minimal backends).
+    pub fn primary_descriptor(&self, tv_config: &TvConfig) -> Option<String> {
+        self.display_config(tv_config)
+            .into_iter()
+            .next()
+            .map(|(_, value)| value)
     }
 
     /// Get the transport type for a TV's backend.
@@ -198,7 +234,7 @@ impl BackendRegistry {
         let vendor_config = tv_config.get_raw_vendor_value().ok_or_else(|| {
             tisvlay_core::Error::backend(
                 &tv_config.vendor,
-                format!("No vendor config for TV '{}'", tv_config.id),
+                format!("No vendor config for TV '{}'", tv_config.uuid),
             )
         })?;
         connector.wake(vendor_config).await
@@ -216,7 +252,7 @@ impl BackendRegistry {
         let vendor_config = tv_config.get_raw_vendor_value().ok_or_else(|| {
             tisvlay_core::Error::backend(
                 &tv_config.vendor,
-                format!("No vendor config for TV '{}'", tv_config.id),
+                format!("No vendor config for TV '{}'", tv_config.uuid),
             )
         })?;
         connector.wake_and_connect(vendor_config).await

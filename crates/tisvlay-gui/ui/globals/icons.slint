@@ -1,0 +1,21 @@
+// Action-glyph icons resolved from the user's freedesktop icon
+// theme (Breeze on KDE, Adwaita on GNOME, hicolor as fallback).
+// Rust loads each at startup via `load_themed_icon` and pushes
+// them here so any component can reference them without prop
+// drilling through pane / row layouts.
+//
+// Distinct from the per-pane icons on `AppWindow` (tvs-icon /
+// profiles-icon / etc.) which are sidebar-specific. Distinct from
+// `Clipboard.copy-icon` which is paired with its `copy(string)`
+// callback. Action icons here are decoupled from any specific
+// callback — they're just glyphs.
+
+export global Icons {
+    in property <image> shutdown;
+    in property <image> edit;
+    /// Confirm / commit (✓). Used by the INFO group's Save button.
+    in property <image> save;
+    /// Discard / dismiss (✗). Used by the INFO group's Cancel
+    /// button and as the dismiss glyph in inline error banners.
+    in property <image> cancel;
+}

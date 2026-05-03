@@ -38,6 +38,7 @@ futures-util = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }
 indexmap = { workspace = true }
+uuid = { workspace = true }
 rtnetlink = "0.20"
 netlink-packet-core = "0.8"
 netlink-packet-route = "0.28"

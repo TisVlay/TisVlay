@@ -47,7 +47,7 @@ pub(crate) async fn fetch_all_state(
 ) -> anyhow::Result<Vec<CachedTvState>> {
     let tvs = daemon.list_tvs().await?;
     for tv in &tvs {
-        debug!(tv_id = %tv.id, connected = tv.connected, "TV from daemon");
+        debug!(tv_id = %tv.uuid, connected = tv.connected, "TV from daemon");
     }
 
     // Fetch available user profiles from session service (once, shared across TVs).
@@ -76,14 +76,14 @@ pub(crate) async fn fetch_all_state(
     for tv in tvs {
         // Fetch per-TV user profile assignment from session service
         let user_profile = match session {
-            Some(session_client) => session_client.get_tv_user_profile(&tv.id).await.ok(),
+            Some(session_client) => session_client.get_tv_user_profile(&tv.uuid).await.ok(),
             None => None,
         };
 
         let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
 
         let cached = CachedTvState {
-            id: tv.id.clone(),
+            id: tv.uuid.clone(),
             name: tv.name,
             connected: tv.connected,
             is_on,

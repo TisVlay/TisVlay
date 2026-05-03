@@ -22,7 +22,8 @@ use std::sync::Arc;
 
 use tisvlay_core::DaemonClient;
 use tisvlay_session::__internals::{
-    SessionEvent, SessionState, event_handler, register_session_dbus_on,
+    SessionEvent, SessionState, event_handler, reconcile_user_config_orphans,
+    register_session_dbus_on,
 };
 use tisvlay_test::fake_screensaver::FakeScreenSaver;
 use tokio::sync::{RwLock, mpsc};
@@ -45,6 +46,7 @@ pub struct TestSession {
     screensaver: FakeScreenSaver,
     _session_dbus_conn: zbus::Connection,
     handler_task: tokio::task::JoinHandle<()>,
+    pruner_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl TestSession {
@@ -78,8 +80,11 @@ impl TestSession {
     async fn build(tv_id: &str, config_path: Option<std::path::PathBuf>) -> anyhow::Result<Self> {
         let daemon = TestDaemon::with_one_mock_tv(tv_id).await?;
 
-        // Connect the daemon and reconnect so the TV is online.
-        daemon.manager().reconnect(tv_id).await?;
+        // Connect the daemon and reconnect so the TV is online. The
+        // daemon keys TVs by UUID, so translate the fixture name to
+        // its derived UUID first.
+        let tv_uuid = crate::daemon::test_tv_uuid(tv_id).to_string();
+        daemon.manager().reconnect(&tv_uuid).await?;
 
         let bus = tisvlay_test::PrivateBus::shared();
 
@@ -96,7 +101,7 @@ impl TestSession {
             tisvlay_core::BusKind::Address(bus.address()),
             state.clone(),
             daemon_client.clone(),
-            config_path,
+            config_path.clone(),
         )
         .await?;
 
@@ -113,6 +118,30 @@ impl TestSession {
             event_handler(event_rx, handler_state, handler_daemon).await;
         });
 
+        // Mirror the production orphan-pruner so tests exercise the
+        // same `Tv1.Remove() → InterfacesRemoved → user-config prune`
+        // pipeline that prod runs.
+        let pruner_task = match daemon_client.tv_list_change_stream().await {
+            Ok(stream) => {
+                let pruner_state = state.clone();
+                let pruner_daemon = daemon_client.clone();
+                let pruner_config = config_path.clone();
+                Some(tokio::spawn(async move {
+                    use futures_util::StreamExt;
+                    let mut stream = std::pin::pin!(stream);
+                    while stream.next().await.is_some() {
+                        reconcile_user_config_orphans(
+                            &pruner_state,
+                            &pruner_daemon,
+                            pruner_config.as_ref(),
+                        )
+                        .await;
+                    }
+                }))
+            }
+            Err(_) => None,
+        };
+
         Ok(Self {
             daemon,
             daemon_client,
@@ -121,6 +150,7 @@ impl TestSession {
             screensaver,
             _session_dbus_conn: session_dbus_conn,
             handler_task,
+            pruner_task,
         })
     }
 
@@ -157,5 +187,8 @@ impl TestSession {
 impl Drop for TestSession {
     fn drop(&mut self) {
         self.handler_task.abort();
+        if let Some(t) = self.pruner_task.take() {
+            t.abort();
+        }
     }
 }

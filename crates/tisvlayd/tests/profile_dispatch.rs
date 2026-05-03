@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 use tisvlay_core::DaemonClient;
-use tisvlay_harness::daemon::TestDaemon;
+use tisvlay_harness::daemon::{TestDaemon, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 use tisvlayd::tv_manager::SystemEvent;
 
@@ -46,6 +46,7 @@ async fn client() -> DaemonClient {
 
 #[tokio::test]
 async fn shutdown_disconnects_connected_tv() {
+    let tv_uuid = test_tv_uuid("lr_shutdown").to_string();
     let daemon = TestDaemon::with_one_mock_tv("lr_shutdown")
         .await
         .expect("daemon");
@@ -53,13 +54,13 @@ async fn shutdown_disconnects_connected_tv() {
     // Connect the TV so it has a live MockConnection.
     daemon
         .manager()
-        .reconnect("lr_shutdown")
+        .reconnect(&tv_uuid)
         .await
         .expect("reconnect");
     settle().await;
 
     assert!(
-        daemon.manager().is_connected("lr_shutdown").await,
+        daemon.manager().is_connected(&tv_uuid).await,
         "TV should be connected after reconnect",
     );
 
@@ -71,7 +72,7 @@ async fn shutdown_disconnects_connected_tv() {
 
     // PowerOff drops the connection and marks powered_off.
     assert!(
-        !daemon.manager().is_connected("lr_shutdown").await,
+        !daemon.manager().is_connected(&tv_uuid).await,
         "TV should be disconnected after shutdown",
     );
 }
@@ -80,12 +81,13 @@ async fn shutdown_disconnects_connected_tv() {
 
 #[tokio::test]
 async fn sleep_disconnects_connected_tv() {
+    let tv_uuid = test_tv_uuid("lr_sleep").to_string();
     let daemon = TestDaemon::with_one_mock_tv("lr_sleep")
         .await
         .expect("daemon");
     daemon
         .manager()
-        .reconnect("lr_sleep")
+        .reconnect(&tv_uuid)
         .await
         .expect("reconnect");
     settle().await;
@@ -97,7 +99,7 @@ async fn sleep_disconnects_connected_tv() {
     settle().await;
 
     assert!(
-        !daemon.manager().is_connected("lr_sleep").await,
+        !daemon.manager().is_connected(&tv_uuid).await,
         "TV should be disconnected after sleep",
     );
 }
@@ -106,12 +108,13 @@ async fn sleep_disconnects_connected_tv() {
 
 #[tokio::test]
 async fn reboot_does_not_disconnect_tv() {
+    let tv_uuid = test_tv_uuid("lr_reboot").to_string();
     let daemon = TestDaemon::with_one_mock_tv("lr_reboot")
         .await
         .expect("daemon");
     daemon
         .manager()
-        .reconnect("lr_reboot")
+        .reconnect(&tv_uuid)
         .await
         .expect("reconnect");
     settle().await;
@@ -123,7 +126,7 @@ async fn reboot_does_not_disconnect_tv() {
     settle().await;
 
     assert!(
-        daemon.manager().is_connected("lr_reboot").await,
+        daemon.manager().is_connected(&tv_uuid).await,
         "TV should still be connected (reboot action is None by default)",
     );
 }
@@ -132,12 +135,13 @@ async fn reboot_does_not_disconnect_tv() {
 
 #[tokio::test]
 async fn no_session_does_not_disconnect_tv() {
+    let tv_uuid = test_tv_uuid("lr_nosess").to_string();
     let daemon = TestDaemon::with_one_mock_tv("lr_nosess")
         .await
         .expect("daemon");
     daemon
         .manager()
-        .reconnect("lr_nosess")
+        .reconnect(&tv_uuid)
         .await
         .expect("reconnect");
     settle().await;
@@ -149,7 +153,7 @@ async fn no_session_does_not_disconnect_tv() {
     settle().await;
 
     assert!(
-        daemon.manager().is_connected("lr_nosess").await,
+        daemon.manager().is_connected(&tv_uuid).await,
         "TV should still be connected (no_session action is None by default)",
     );
 }
@@ -158,6 +162,7 @@ async fn no_session_does_not_disconnect_tv() {
 
 #[tokio::test]
 async fn reconnect_sets_connected_property_on_dbus() {
+    let tv_uuid = test_tv_uuid("lr_dbus").to_string();
     let daemon = TestDaemon::with_one_mock_tv("lr_dbus")
         .await
         .expect("daemon");
@@ -169,7 +174,7 @@ async fn reconnect_sets_connected_property_on_dbus() {
 
     daemon
         .manager()
-        .reconnect("lr_dbus")
+        .reconnect(&tv_uuid)
         .await
         .expect("reconnect");
     settle().await;
@@ -180,6 +185,7 @@ async fn reconnect_sets_connected_property_on_dbus() {
 
 #[tokio::test]
 async fn shutdown_clears_connected_property_on_dbus() {
+    let tv_uuid = test_tv_uuid("lr_dbus2").to_string();
     let daemon = TestDaemon::with_one_mock_tv("lr_dbus2")
         .await
         .expect("daemon");
@@ -187,7 +193,7 @@ async fn shutdown_clears_connected_property_on_dbus() {
 
     daemon
         .manager()
-        .reconnect("lr_dbus2")
+        .reconnect(&tv_uuid)
         .await
         .expect("reconnect");
     settle().await;

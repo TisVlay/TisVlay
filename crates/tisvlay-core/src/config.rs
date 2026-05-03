@@ -23,7 +23,7 @@
 //! on_session_unlock = "screen_on"
 //!
 //! [[tv]]
-//! id = "living_room"
+//! uuid = "11111111-1111-1111-1111-111111111111"
 //! name = "Living Room TV"
 //! vendor = "lg"
 //! primary_input = "HDMI_1"
@@ -49,7 +49,7 @@
 //! idle_timeout_seconds = 0
 //!
 //! [[tv]]
-//! id = "living_room"
+//! uuid = "11111111-1111-1111-1111-111111111111"
 //! profile.user = "gaming"
 //! ```
 
@@ -57,6 +57,7 @@ use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 // =============================================================================
 // Actions
@@ -502,35 +503,21 @@ fn default_profile_name() -> String {
 /// The `managed` field controls whether this TV participates in automation
 /// (boot WoL, session events, shutdown). Unmanaged TVs remain available for
 /// manual control via the tray and CLI but are skipped by all event-driven paths.
-///
-/// Check whether a TV ID is valid for use in D-Bus object paths.
-///
-/// Valid IDs contain only ASCII alphanumerics and underscores
-/// (`[A-Za-z0-9_]`). This ensures the ID can be used directly as a
-/// D-Bus object path component without lossy sanitization.
-pub fn is_valid_tv_id(id: &str) -> bool {
-    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// Generate a D-Bus-safe TV ID from a display name.
-///
-/// Lowercases, replaces whitespace with `_`, and strips anything
-/// outside `[a-z0-9_]`. The result is always a valid TV ID.
-pub fn tv_id_from_name(name: &str) -> String {
-    name.to_lowercase()
-        .replace(' ', "_")
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvConfig {
-    /// Unique identifier for this TV.
+    /// Stable identifier for this TV — RFC 4122 UUID v4
+    /// generated at pair time. Decoupled from `name` so renames
+    /// don't churn cross-references (profile assignments, D-Bus
+    /// paths, `primary_input` keying, etc.). Matches
+    /// NetworkManager's connection-uuid pattern.
     ///
-    /// Must match `[A-Za-z0-9_]+` so it can be used as a D-Bus object
-    /// path component without lossy sanitization.
-    pub id: String,
+    /// Serialized as the canonical hyphenated form
+    /// (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) in TOML; D-Bus
+    /// paths substitute hyphens with underscores via the existing
+    /// [`tv_path`](crate::dbus_paths::tv_path) helper. Tests
+    /// needing deterministic UUIDs use
+    /// [`with_uuid`](Self::with_uuid).
+    pub uuid: Uuid,
 
     /// Display name.
     pub name: String,
@@ -569,19 +556,29 @@ pub struct TvConfig {
 }
 
 impl TvConfig {
-    /// Create a new TV configuration.
+    /// Create a new TV configuration with a freshly-generated UUID.
     ///
     /// `managed` controls whether this TV participates in automation (boot WoL,
     /// session events, shutdown). Pass `true` for normal TVs; `false` to register
     /// the TV for manual control only. There is no default — callers must be explicit.
-    pub fn new(
-        id: impl Into<String>,
+    ///
+    /// For tests that need a deterministic UUID, use
+    /// [`with_uuid`](Self::with_uuid).
+    pub fn new(name: impl Into<String>, vendor: impl Into<String>, managed: bool) -> Self {
+        Self::with_uuid(Uuid::new_v4(), name, vendor, managed)
+    }
+
+    /// Create a TV configuration with an explicit UUID. Used by the
+    /// pair flow (when `AddTv` provides the UUID) and by tests that
+    /// need stable identifiers across runs.
+    pub fn with_uuid(
+        uuid: Uuid,
         name: impl Into<String>,
         vendor: impl Into<String>,
         managed: bool,
     ) -> Self {
         Self {
-            id: id.into(),
+            uuid,
             name: name.into(),
             vendor: vendor.into(),
             primary_input: None,
@@ -699,58 +696,54 @@ impl SystemConfig {
         PathBuf::from("/var/lib/tisvlay/config.toml")
     }
 
-    /// Validate all TV IDs are D-Bus-safe and unique.
-    ///
-    /// Called after deserialization to catch invalid or colliding IDs
-    /// before they hit the D-Bus path sanitizer.
+    /// Validate that all TV UUIDs are unique. Per-TV format
+    /// validity is handled by serde during deserialization (the
+    /// `Uuid` type rejects malformed values), so this only catches
+    /// the multi-entry collision case.
     pub fn validate_tv_ids(&self) -> Result<()> {
-        let mut seen = std::collections::HashMap::<&str, usize>::new();
+        let mut seen = std::collections::HashMap::<Uuid, usize>::new();
         for (i, tv) in self.tv.iter().enumerate() {
-            if !is_valid_tv_id(&tv.id) {
-                let suggestion = tv_id_from_name(&tv.id);
+            if let Some(&prev) = seen.get(&tv.uuid) {
                 return Err(Error::ConfigValidation(format!(
-                    "TV ID '{}' contains characters not allowed in D-Bus paths. \
-                     Only ASCII alphanumerics and underscores are valid. \
-                     Suggestion: use '{}'",
-                    tv.id, suggestion,
-                )));
-            }
-            if let Some(&prev) = seen.get(tv.id.as_str()) {
-                return Err(Error::ConfigValidation(format!(
-                    "Duplicate TV ID '{}' (entries {} and {})",
-                    tv.id,
+                    "Duplicate TV UUID '{}' (entries {} and {})",
+                    tv.uuid,
                     prev + 1,
                     i + 1,
                 )));
             }
-            seen.insert(&tv.id, i);
+            seen.insert(tv.uuid, i);
         }
         Ok(())
     }
 
-    /// Find a TV by ID.
+    /// Find a TV by UUID string (canonical hyphenated form).
     pub fn find_tv(&self, id: &str) -> Option<&TvConfig> {
-        self.tv.iter().find(|tv| tv.id == id)
+        let target = Uuid::parse_str(id).ok()?;
+        self.tv.iter().find(|tv| tv.uuid == target)
     }
 
-    /// Find a TV by ID (mutable).
+    /// Find a TV by UUID string (mutable).
     pub fn find_tv_mut(&mut self, id: &str) -> Option<&mut TvConfig> {
-        self.tv.iter_mut().find(|tv| tv.id == id)
+        let target = Uuid::parse_str(id).ok()?;
+        self.tv.iter_mut().find(|tv| tv.uuid == target)
     }
 
     /// Add or update a TV configuration.
     pub fn upsert_tv(&mut self, tv: TvConfig) {
-        if let Some(existing) = self.find_tv_mut(&tv.id) {
+        if let Some(existing) = self.tv.iter_mut().find(|t| t.uuid == tv.uuid) {
             *existing = tv;
         } else {
             self.tv.push(tv);
         }
     }
 
-    /// Remove a TV by ID.
+    /// Remove a TV by UUID string.
     pub fn remove_tv(&mut self, id: &str) -> bool {
+        let Ok(target) = Uuid::parse_str(id) else {
+            return false;
+        };
         let len = self.tv.len();
-        self.tv.retain(|tv| tv.id != id);
+        self.tv.retain(|tv| tv.uuid != target);
         self.tv.len() < len
     }
 
@@ -792,14 +785,16 @@ pub struct UserConfig {
 
 /// User's per-TV settings.
 ///
-/// All fields except `id` have `#[serde(default)]` so that when parsing
+/// All fields except `uuid` have `#[serde(default)]` so that when parsing
 /// a single-file config (where `[[tv]]` entries contain system fields like
 /// `name`, `vendor`, etc.), unknown fields are silently ignored and missing
 /// user-specific fields get defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserTvConfig {
-    /// TV identifier (matches a TV ID from the system config).
-    pub id: String,
+    /// TV UUID (matches `TvConfig.uuid` from the system config).
+    /// Stored as canonical hyphenated string to keep the user config
+    /// readable and tolerant of hand-edits.
+    pub uuid: String,
 
     /// Profile assignment for this TV.
     #[serde(default)]
@@ -877,7 +872,7 @@ impl UserConfig {
         let profile_name = self
             .tv
             .iter()
-            .find(|t| t.id == tv_id)
+            .find(|t| t.uuid == tv_id)
             .map(|t| t.profile.user.as_str())
             .unwrap_or("default");
 
@@ -924,7 +919,7 @@ impl UserConfig {
     pub fn get_tv_user_profile_name(&self, tv_id: &str) -> &str {
         self.tv
             .iter()
-            .find(|t| t.id == tv_id)
+            .find(|t| t.uuid == tv_id)
             .map(|t| t.profile.user.as_str())
             .unwrap_or("default")
     }
@@ -935,11 +930,11 @@ impl UserConfig {
     pub fn set_tv_user_profile(&mut self, tv_id: impl Into<String>, profile: impl Into<String>) {
         let tv_id = tv_id.into();
         let profile = profile.into();
-        if let Some(entry) = self.tv.iter_mut().find(|t| t.id == tv_id) {
+        if let Some(entry) = self.tv.iter_mut().find(|t| t.uuid == tv_id) {
             entry.profile.user = profile;
         } else {
             self.tv.push(UserTvConfig {
-                id: tv_id,
+                uuid: tv_id,
                 profile: UserTvProfileAssignment { user: profile },
             });
         }
@@ -994,7 +989,7 @@ mod tests {
         assert!(config.system.profiles.is_empty());
         assert!(config.user.profiles.is_empty());
         // With no profiles defined, resolution should give hard-coded defaults
-        let tv = TvConfig::new("test", "Test", "lg", true);
+        let tv = TvConfig::new("Test", "lg", true);
         let resolved = config.resolve_system_profile(&tv);
         assert_eq!(resolved.on_startup, SessionAction::PowerOn);
         assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
@@ -1015,7 +1010,7 @@ on_session_lock = "none"
 idle_timeout_seconds = 0
 
 [[tv]]
-id = "living_room"
+uuid = "11111111-1111-1111-1111-111111111111"
 name = "Living Room TV"
 vendor = "lg"
 primary_input = "HDMI_1"
@@ -1062,7 +1057,7 @@ on_session_lock = "screen_off"
 idle_timeout_seconds = 300
 
 [[tv]]
-id = "living_room"
+uuid = "11111111-1111-1111-1111-111111111111"
 name = "Living Room G4"
 vendor = "lg"
 primary_input = "HDMI_1"
@@ -1114,7 +1109,7 @@ on_session_lock = "none"
 idle_timeout_seconds = 0
 
 [[tv]]
-id = "living_room"
+uuid = "11111111-1111-1111-1111-111111111111"
 name = "Living Room"
 vendor = "lg"
 managed = true
@@ -1125,7 +1120,7 @@ profile.user = "gaming"
 ip = "192.168.1.100"
 
 [[tv]]
-id = "guest_room"
+uuid = "22222222-2222-2222-2222-222222222222"
 name = "Guest Room"
 vendor = "lg"
 managed = true
@@ -1139,10 +1134,10 @@ ip = "192.168.1.101"
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.tv.len(), 2);
 
-        let living = config.tv.iter().find(|t| t.id == "living_room").unwrap();
+        let living = config.tv.iter().find(|t| t.name == "Living Room").unwrap();
         assert_eq!(living.profile.system, "default");
 
-        let guest = config.tv.iter().find(|t| t.id == "guest_room").unwrap();
+        let guest = config.tv.iter().find(|t| t.name == "Guest Room").unwrap();
         assert_eq!(guest.profile.system, "guest");
 
         // System profile resolution works
@@ -1162,14 +1157,14 @@ ip = "192.168.1.101"
         let living_user = user_config
             .tv
             .iter()
-            .find(|t| t.id == "living_room")
+            .find(|t| t.uuid == "11111111-1111-1111-1111-111111111111")
             .unwrap();
         assert_eq!(living_user.profile.user, "gaming");
 
         let guest_user = user_config
             .tv
             .iter()
-            .find(|t| t.id == "guest_room")
+            .find(|t| t.uuid == "22222222-2222-2222-2222-222222222222")
             .unwrap();
         assert_eq!(guest_user.profile.user, "default"); // not specified, defaults
     }
@@ -1183,7 +1178,7 @@ ip = "192.168.1.101"
             default_input: Some("HDMI_1".to_string()),
         };
 
-        let tv = TvConfig::new("test", "Test", "lg", true).with_vendor_config(&lg_config);
+        let tv = TvConfig::new("Test", "lg", true).with_vendor_config(&lg_config);
 
         assert_eq!(tv.vendor, "lg");
 
@@ -1195,20 +1190,26 @@ ip = "192.168.1.101"
 
     #[test]
     fn test_find_tv() {
+        let tv1_uuid = Uuid::from_u128(1);
+        let tv2_uuid = Uuid::from_u128(2);
+        let absent_uuid = Uuid::from_u128(99);
+
         let mut config = SystemConfig::default();
         config.tv.push(
-            TvConfig::new("tv1", "TV 1", "lg", true).with_vendor_config(
+            TvConfig::with_uuid(tv1_uuid, "TV 1", "lg", true).with_vendor_config(
                 &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:01"),
             ),
         );
         config.tv.push(
-            TvConfig::new("tv2", "TV 2", "lg", true).with_vendor_config(
+            TvConfig::with_uuid(tv2_uuid, "TV 2", "lg", true).with_vendor_config(
                 &TestLgConfig::new("192.168.1.2").with_mac("AA:BB:CC:DD:EE:02"),
             ),
         );
 
-        assert!(config.find_tv("tv1").is_some());
-        assert!(config.find_tv("tv3").is_none());
+        assert!(config.find_tv(&tv1_uuid.to_string()).is_some());
+        assert!(config.find_tv(&absent_uuid.to_string()).is_none());
+        // Non-UUID strings are no longer valid lookups.
+        assert!(config.find_tv("tv1").is_none());
     }
 
     #[test]
@@ -1230,7 +1231,7 @@ ip = "192.168.1.101"
 
         let mut config = SystemConfig::default();
         config.tv.push(
-            TvConfig::new("test", "Test TV", "lg", true).with_vendor_config(
+            TvConfig::new("Test TV", "lg", true).with_vendor_config(
                 &TestLgConfig::new("192.168.1.1").with_mac("AA:BB:CC:DD:EE:FF"),
             ),
         );
@@ -1358,13 +1359,13 @@ ip = "192.168.1.101"
         );
 
         // TV with default profile
-        let tv_default = TvConfig::new("living_room", "Living Room", "lg", true);
+        let tv_default = TvConfig::new("Living Room", "lg", true);
         let resolved = config.resolve_system_profile(&tv_default);
         assert_eq!(resolved.on_startup, SessionAction::PowerOn);
         assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
 
         // TV with guest profile
-        let mut tv_guest = TvConfig::new("guest_room", "Guest Room", "lg", true);
+        let mut tv_guest = TvConfig::new("Guest Room", "lg", true);
         tv_guest.profile.system = "guest".to_string();
         let resolved = config.resolve_system_profile(&tv_guest);
         assert_eq!(resolved.on_startup, SessionAction::None);
@@ -1384,7 +1385,7 @@ ip = "192.168.1.101"
             },
         );
 
-        let mut tv = TvConfig::new("test", "Test", "lg", true);
+        let mut tv = TvConfig::new("Test", "lg", true);
         tv.profile.system = "nonexistent".to_string();
         let resolved = config.resolve_system_profile(&tv);
         assert_eq!(resolved.on_startup, SessionAction::PowerOn); // from default
@@ -1397,7 +1398,7 @@ ip = "192.168.1.101"
 on_startup = "power_on"
 
 [[tv]]
-id = "living_room"
+uuid = "11111111-1111-1111-1111-111111111111"
 name = "Living Room"
 vendor = "lg"
 managed = true
@@ -1415,7 +1416,7 @@ ip = "192.168.1.100"
     fn test_tv_profile_assignment_default() {
         let toml_str = r#"
 [[tv]]
-id = "test"
+uuid = "33333333-3333-3333-3333-333333333333"
 name = "Test"
 vendor = "lg"
 managed = true
@@ -1530,14 +1531,14 @@ on_session_lock = "none"
 idle_timeout_seconds = 0
 
 [[tv]]
-id = "living_room"
+uuid = "11111111-1111-1111-1111-111111111111"
 profile.user = "gaming"
 "#;
 
         let config: UserConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.user.profiles.len(), 2);
         assert_eq!(config.tv.len(), 1);
-        assert_eq!(config.tv[0].id, "living_room");
+        assert_eq!(config.tv[0].uuid, "11111111-1111-1111-1111-111111111111");
         assert_eq!(config.tv[0].profile.user, "gaming");
     }
 
@@ -1669,7 +1670,7 @@ profile.user = "gaming"
         let living = deserialized
             .tv
             .iter()
-            .find(|t| t.id == "living_room")
+            .find(|t| t.uuid == "living_room")
             .unwrap();
         assert_eq!(living.profile.user, "gaming");
     }
@@ -1689,7 +1690,7 @@ idle_timeout_seconds = 300
 on_idle_timeout = "screen_off"
 
 [[tv]]
-id = "test"
+uuid = "33333333-3333-3333-3333-333333333333"
 name = "Test"
 vendor = "lg"
 managed = true
@@ -1750,7 +1751,7 @@ on_session_lock = "none"
 idle_timeout_seconds = 0
 
 [[tv]]
-id = "office"
+uuid = "22222222-2222-2222-2222-222222222222"
 name = "Office"
 vendor = "lg"
 managed = true
@@ -1881,7 +1882,7 @@ idle_timeout_seconds = 600
 on_session_lock = "none"
 
 [[tv]]
-id = "living_room"
+uuid = "11111111-1111-1111-1111-111111111111"
 profile.user = "gaming"
 "#;
 
@@ -1889,7 +1890,11 @@ profile.user = "gaming"
         assert_eq!(config.user.profiles.len(), 2);
         assert!(config.user.profiles.contains_key("default"));
         assert!(config.user.profiles.contains_key("gaming"));
-        let living = config.tv.iter().find(|t| t.id == "living_room").unwrap();
+        let living = config
+            .tv
+            .iter()
+            .find(|t| t.uuid == "11111111-1111-1111-1111-111111111111")
+            .unwrap();
         assert_eq!(living.profile.user, "gaming");
     }
 
@@ -1909,7 +1914,7 @@ on_session_lock = "screen_off"
 on_session_lock = "none"
 
 [[tv]]
-id = "office"
+uuid = "22222222-2222-2222-2222-222222222222"
 name = "Office"
 vendor = "lg"
 managed = true
@@ -1920,7 +1925,7 @@ ip = "192.168.1.1"
 
         let config: UserConfig = toml::from_str(system_toml).unwrap();
         assert_eq!(config.tv.len(), 1);
-        assert_eq!(config.tv[0].id, "office");
+        assert_eq!(config.tv[0].uuid, "22222222-2222-2222-2222-222222222222");
         // profile.user defaults to "default" since it's not specified
         assert_eq!(config.tv[0].profile.user, "default");
     }
@@ -2006,51 +2011,19 @@ ip = "192.168.1.1"
     }
 
     // =========================================================================
-    // TV ID validation
+    // TV UUID validation
     // =========================================================================
-
-    #[test]
-    fn test_is_valid_tv_id() {
-        assert!(is_valid_tv_id("living_room"));
-        assert!(is_valid_tv_id("tv1"));
-        assert!(is_valid_tv_id("LivingRoom42"));
-        assert!(!is_valid_tv_id("living-room"));
-        assert!(!is_valid_tv_id("living room"));
-        assert!(!is_valid_tv_id("living.room"));
-        assert!(!is_valid_tv_id(""));
-    }
-
-    #[test]
-    fn test_tv_id_from_name() {
-        assert_eq!(tv_id_from_name("Living Room"), "living_room");
-        assert_eq!(tv_id_from_name("Office TV"), "office_tv");
-        assert_eq!(tv_id_from_name("Bedroom"), "bedroom");
-        assert_eq!(tv_id_from_name("My TV #2"), "my_tv_2");
-    }
-
-    #[test]
-    fn test_validate_rejects_hyphenated_id() {
-        let mut config = SystemConfig::default();
-        config
-            .tv
-            .push(TvConfig::new("living-room", "Living Room", "lg", true));
-        let err = config.validate_tv_ids().unwrap_err();
-        assert!(
-            err.to_string().contains("living-room"),
-            "error should name the invalid ID: {}",
-            err
-        );
-    }
 
     #[test]
     fn test_validate_rejects_duplicate_ids() {
         let mut config = SystemConfig::default();
+        let shared = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
         config
             .tv
-            .push(TvConfig::new("living_room", "Living Room", "lg", true));
+            .push(TvConfig::with_uuid(shared, "Living Room", "lg", true));
         config
             .tv
-            .push(TvConfig::new("living_room", "Office", "lg", true));
+            .push(TvConfig::with_uuid(shared, "Office", "lg", true));
         let err = config.validate_tv_ids().unwrap_err();
         assert!(
             err.to_string().contains("Duplicate"),
@@ -2060,14 +2033,10 @@ ip = "192.168.1.1"
     }
 
     #[test]
-    fn test_validate_accepts_valid_ids() {
+    fn test_validate_accepts_unique_uuids() {
         let mut config = SystemConfig::default();
-        config
-            .tv
-            .push(TvConfig::new("living_room", "Living Room", "lg", true));
-        config
-            .tv
-            .push(TvConfig::new("office", "Office", "lg", true));
+        config.tv.push(TvConfig::new("Living Room", "lg", true));
+        config.tv.push(TvConfig::new("Office", "lg", true));
         config.validate_tv_ids().unwrap();
     }
 }

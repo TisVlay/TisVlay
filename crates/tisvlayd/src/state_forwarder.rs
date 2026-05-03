@@ -164,6 +164,32 @@ pub async fn state_change_forwarder(
                     iface.connector_changed(emitter).await.ok();
                 }
             }
+            StateChangeEvent::PowerCycleProgress { ref tv_id, phase } => {
+                let path = tv_path(tv_id);
+                debug!(tv_id = %tv_id, phase = %phase, "Forwarding power-cycle phase to D-Bus");
+                if let Ok(iface_ref) = object_server.interface::<_, TvPowerService>(&*path).await
+                    && let Err(e) = TvPowerService::power_cycle_progress(
+                        iface_ref.signal_emitter(),
+                        phase.as_str(),
+                    )
+                    .await
+                {
+                    warn!(error = %e, tv_id = %tv_id, "Failed to emit PowerCycleProgress");
+                }
+            }
+            StateChangeEvent::PairingProgress {
+                ref tv_id,
+                ref phase,
+                ref message,
+            } => {
+                debug!(tv_id = %tv_id, phase = %phase, "Forwarding pairing progress to D-Bus");
+                if let Ok(emitter) = SignalEmitter::new(&connection, MANAGER_PATH)
+                    && let Err(e) =
+                        ManagerService::pairing_progress(&emitter, tv_id, phase, message).await
+                {
+                    warn!(error = %e, tv_id = %tv_id, "Failed to emit PairingProgress");
+                }
+            }
             StateChangeEvent::ConfigReloaded => {
                 debug!("Emitting ConfigReloaded signal on Manager1");
 
@@ -173,10 +199,27 @@ pub async fn state_change_forwarder(
                     }
                 }
 
+                // Per-TV config-derived properties (managed, system
+                // profile, primary input, automate_when) may have
+                // changed via direct config-file edits. The reload
+                // path doesn't emit per-key OptionChanged events for
+                // these, so resync the cached D-Bus fields here.
+                let object_server = connection.object_server();
+                for tv_id in manager.list_tv_ids().await {
+                    let path = tv_path(&tv_id);
+                    refresh_tv_config_state(object_server, &path, &tv_id, &manager).await;
+                }
+
                 // The TV list may have changed under us; re-run the
                 // global EDID match so any newly-added TVs pick up
                 // their connector and any removed TVs drop theirs.
                 refresh_desktop_mapping(&manager).await;
+            }
+            StateChangeEvent::TvVendorConfigChanged { ref tv_id } => {
+                let path = tv_path(tv_id);
+                debug!(tv_id = %tv_id, "Forwarding vendor config change to D-Bus");
+                let object_server = connection.object_server();
+                refresh_tv_vendor_state(object_server, &path, tv_id, &manager).await;
             }
             StateChangeEvent::InterfaceDown { ref interface } => {
                 debug!(interface = %interface, "Interface carrier down: disconnecting affected TVs");
@@ -323,5 +366,110 @@ async fn update_tv_cached_state(object_server: &zbus::ObjectServer, path: &str, 
                     .ok();
             }
         }
+    }
+}
+
+/// Refresh cached per-TV properties that derive from the vendor
+/// config — `Tv1.VendorInfo` (the label/value projection from the
+/// connector's `display_info`) and `Tv1.Power.SupportsWake` (LG:
+/// depends on MAC presence). Triggered by
+/// [`StateChangeEvent::TvVendorConfigChanged`] after
+/// `Tv1.UpdateConfig` writes vendor patches.
+///
+/// Without this resync, editing IP or MAC via the GUI's edit pane
+/// updates the on-disk config + reconnects the transport, but the
+/// D-Bus property cache stays at the old values until daemon
+/// restart — the user sees the old MAC in the INFO group and
+/// (worse) the Power-on button stays disabled if `SupportsWake`
+/// flipped from false → true.
+async fn refresh_tv_vendor_state(
+    object_server: &zbus::ObjectServer,
+    path: &str,
+    tv_id: &str,
+    manager: &Arc<TvManager>,
+) {
+    let vendor_config = manager.vendor_config(tv_id).await;
+    let vendor_diagnostics = manager.vendor_diagnostics(tv_id).await;
+    if let Ok(iface_ref) = object_server.interface::<_, TvService>(path).await {
+        let mut iface = iface_ref.get_mut().await;
+        let emitter = iface_ref.signal_emitter();
+        if iface.vendor_config != vendor_config {
+            iface.vendor_config = vendor_config;
+            iface.vendor_config_changed(emitter).await.ok();
+        }
+        if iface.vendor_info != vendor_diagnostics {
+            iface.vendor_info = vendor_diagnostics;
+            iface.vendor_info_changed(emitter).await.ok();
+        }
+    }
+
+    let supports_wake = manager.supports_wake(tv_id).await;
+    if let Ok(iface_ref) = object_server.interface::<_, TvPowerService>(path).await {
+        let mut iface = iface_ref.get_mut().await;
+        let emitter = iface_ref.signal_emitter();
+        if iface.supports_wake != supports_wake {
+            iface.supports_wake = supports_wake;
+            iface.supports_wake_changed(emitter).await.ok();
+        }
+    }
+}
+
+/// Refresh cached `TvService` properties that derive from the on-disk
+/// config (name / managed / system_profile / primary_input /
+/// automate_when). Used after `ConfigReloaded` to propagate direct
+/// config-file edits — `set_tv_option` already emits per-key
+/// `OptionChanged` events, but `reload_config` does not, so without
+/// this resync clients see stale cached values until daemon restart.
+async fn refresh_tv_config_state(
+    object_server: &zbus::ObjectServer,
+    path: &str,
+    tv_id: &str,
+    manager: &Arc<TvManager>,
+) {
+    let Ok(iface_ref) = object_server.interface::<_, TvService>(path).await else {
+        return;
+    };
+
+    let info = manager.get_tv_info(tv_id).await;
+    let system_profile = manager
+        .get_tv_system_profile(tv_id)
+        .await
+        .unwrap_or_else(|| "default".to_string());
+    let primary_input = manager
+        .get_tv_primary_input(tv_id)
+        .await
+        .unwrap_or_default();
+    let automate_when = manager
+        .get_tv_automate_when(tv_id)
+        .await
+        .unwrap_or_default();
+
+    let mut iface = iface_ref.get_mut().await;
+    let emitter = iface_ref.signal_emitter();
+
+    if let Some(info) = info {
+        if iface.name != info.name {
+            iface.name = info.name;
+            iface.name_changed(emitter).await.ok();
+        }
+        if iface.managed != info.managed {
+            iface.managed = info.managed;
+            iface.managed_changed(emitter).await.ok();
+        }
+    }
+    if iface.system_profile != system_profile {
+        iface.system_profile = system_profile;
+        iface.system_profile_changed(emitter).await.ok();
+    }
+    if iface.primary_input != primary_input {
+        iface.primary_input = primary_input;
+        iface.primary_input_changed(emitter).await.ok();
+    }
+    if iface.automate_when != automate_when {
+        iface.automate_when = automate_when;
+        iface.automate_when_changed(emitter).await.ok();
+        // `Automated` is computed from automate_when + current_input
+        // + managed; conservatively re-emit so clients re-read it.
+        iface.automated_changed(emitter).await.ok();
     }
 }

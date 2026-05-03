@@ -35,14 +35,38 @@ impl std::fmt::Debug for WebOsClient {
 }
 
 impl WebOsClient {
-    /// Connect to a TV and register.
+    /// Connect to a TV and register, trying `wss://` first and
+    /// falling back to `ws://`. Used during pairing and for legacy
+    /// configs that haven't yet recorded which scheme the TV speaks.
     ///
-    /// If `client_key` is provided, attempts to reconnect with existing pairing.
-    /// If `None` or the key is invalid, a pairing prompt will be shown on the TV.
+    /// If `client_key` is provided, attempts to reconnect with
+    /// existing pairing. If `None` or the key is invalid, a pairing
+    /// prompt will be shown on the TV.
     pub async fn connect(host: &str, client_key: Option<String>) -> Result<Self> {
         let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
         let conn = Connection::connect(host, connect_timeout).await?;
+        Self::register_on(conn, client_key).await
+    }
 
+    /// Connect via a known [`WebOsScheme`] and register. Used on
+    /// reconnects when the pairing flow has already recorded which
+    /// scheme the TV speaks into `LgVendorConfig.scheme` — single
+    /// dispatch, no fallback round-trip.
+    pub async fn connect_with_scheme(
+        host: &str,
+        scheme: crate::config::WebOsScheme,
+        client_key: Option<String>,
+    ) -> Result<Self> {
+        use crate::config::WebOsScheme;
+        let connect_timeout = Duration::from_millis(timeouts::CONNECT_MS);
+        let conn = match scheme {
+            WebOsScheme::Wss => Connection::connect_wss(host, connect_timeout).await?,
+            WebOsScheme::Ws => Connection::connect_ws(host, connect_timeout).await?,
+        };
+        Self::register_on(conn, client_key).await
+    }
+
+    async fn register_on(conn: Connection, client_key: Option<String>) -> Result<Self> {
         let mut client = Self {
             conn: Some(conn),
             client_key: client_key.clone(),
@@ -179,6 +203,15 @@ impl WebOsClient {
         self.client_key.as_deref()
     }
 
+    /// WebSocket scheme the underlying connection succeeded over.
+    /// Returns `None` when the connection is closed. Read by the
+    /// pairing flow so the working scheme can be persisted to
+    /// `LgVendorConfig.scheme` and skip the wss→ws fallback on
+    /// subsequent reconnects.
+    pub(crate) fn scheme(&self) -> Option<crate::config::WebOsScheme> {
+        self.conn.as_ref().map(|c| c.scheme())
+    }
+
     /// Generate the next request ID.
     fn next_id(&mut self) -> String {
         let id = self.request_id;
@@ -240,58 +273,79 @@ impl WebOsClient {
         std::collections::HashMap<String, String>,
         Vec<(String, Response)>,
     )> {
+        use futures_util::future::join_all;
         use serde_json::json;
 
-        let mut id_to_uri = std::collections::HashMap::new();
-        let mut initial_responses = Vec::new();
-
-        // Plain subscriptions (no payload needed)
-        let plain_endpoints = [
+        // Build all the subscribe requests upfront. ID allocation
+        // is the only `&mut self` step; the wire send + response
+        // wait below run against a shared `&Connection` so the
+        // requests can fly in parallel.
+        let plain_endpoints: &[&str] = &[
             power::GET_POWER_STATE,
             audio::GET_VOLUME,
             audio::GET_MUTE,
             input::GET_EXTERNAL_INPUT_LIST,
             input::GET_CURRENT_INPUT,
         ];
-
-        for uri in &plain_endpoints {
-            let request = Request::subscribe(self.next_id(), *uri);
-            let req_id = request.id.clone();
-            let timeout = self.timeout;
-            let response = self.conn()?.request(&request, timeout).await?;
-
-            if response.msg_type == ResponseType::Error {
-                if let Some(error) = &response.error {
-                    tracing::warn!(uri, error, "Subscribe returned error");
-                }
-            } else {
-                let uri_string = uri.to_string();
-                initial_responses.push((uri_string.clone(), response));
-                id_to_uri.insert(req_id, uri_string);
-            }
-        }
-
-        // Subscriptions with payloads (settings endpoints need category + keys)
         let payload_endpoints: Vec<(&str, serde_json::Value)> = vec![(
             picture::GET_SYSTEM_SETTINGS,
             json!({"category": "picture", "keys": ["backlight"]}),
         )];
 
+        // (request_id, uri-or-synthetic-uri-for-bookkeeping, request)
+        let mut prepared: Vec<(String, String, Request)> =
+            Vec::with_capacity(plain_endpoints.len() + payload_endpoints.len());
+
+        for uri in plain_endpoints {
+            let request = Request::subscribe(self.next_id(), *uri);
+            prepared.push((request.id.clone(), uri.to_string(), request));
+        }
         for (uri, payload) in &payload_endpoints {
             let request = Request::subscribe_with_payload(self.next_id(), *uri, payload.clone());
-            let req_id = request.id.clone();
-            let timeout = self.timeout;
-            let response = self.conn()?.request(&request, timeout).await?;
+            // Synthetic URI distinguishes multiple `getSystemSettings`
+            // calls at routing time — each (category, keys) pair
+            // gets its own pseudo-URI so the state forwarder can
+            // tell them apart.
+            let synthetic_uri = format!("{}#picture/backlight", uri);
+            prepared.push((request.id.clone(), synthetic_uri, request));
+        }
 
-            if response.msg_type == ResponseType::Error {
-                if let Some(error) = &response.error {
-                    tracing::warn!(uri, error, "Subscribe with payload returned error");
+        let timeout = self.timeout;
+        let conn = self.conn()?;
+
+        // Fire every subscribe concurrently. WebSocket is full-duplex
+        // and the response reader correlates by request `id`, so
+        // multiple in-flight subscribes are fine. Total wall time is
+        // max single-subscribe latency rather than the sum, which
+        // compresses subscription bring-up after a power-cycle from
+        // ~7 s of serialized round-trips to ~1 s.
+        //
+        // SSAP has no batch-fetch endpoint that returns
+        // power+volume+input+backlight in one call (each lives under
+        // its own service URI), so parallelism is the only knob.
+        let results = join_all(
+            prepared
+                .iter()
+                .map(|(_, _, req)| conn.request(req, timeout)),
+        )
+        .await;
+
+        let mut id_to_uri = std::collections::HashMap::new();
+        let mut initial_responses = Vec::new();
+        for ((req_id, uri_string, _req), result) in prepared.into_iter().zip(results) {
+            match result {
+                Ok(response) if response.msg_type == ResponseType::Error => {
+                    if let Some(error) = &response.error {
+                        tracing::warn!(uri = %uri_string, error, "Subscribe returned error");
+                    }
                 }
-            } else {
-                // Use a synthetic URI to distinguish from other getSystemSettings calls
-                let synthetic_uri = format!("{}#picture/backlight", uri);
-                initial_responses.push((synthetic_uri.clone(), response));
-                id_to_uri.insert(req_id, synthetic_uri);
+                Ok(response) => {
+                    initial_responses.push((uri_string.clone(), response));
+                    id_to_uri.insert(req_id, uri_string);
+                }
+                Err(e) => {
+                    tracing::warn!(uri = %uri_string, error = %e, "Subscribe request failed");
+                }
             }
         }
 

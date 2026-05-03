@@ -3,24 +3,27 @@ source: crates/tisvlay-core/tests/tv_info_snapshot.rs
 expression: sample_disconnected()
 ---
 {
-  "id": "guest_room",
+  "uuid": "22222222-2222-2222-2222-222222222222",
   "name": "Guest Room",
-  "address": "192.168.1.101",
   "vendor": "lg",
   "connected": false,
   "managed": false,
   "automated": false,
   "system_profile": "guest",
+  "primary_input": "",
   "hardware_id": {
     "manufacturer": null,
     "model": null,
     "serial": null
   },
+  "vendor_config": [],
+  "vendor_info": [],
   "desktop": {
     "connector": ""
   },
-  "path": "/org/tisvlay/Tv/guest_room",
+  "path": "/org/tisvlay/Tv/22222222_2222_2222_2222_222222222222",
   "power_state": "unknown",
+  "supports_wake": false,
   "is_screen_on": true,
   "volume": 0,
   "muted": false,

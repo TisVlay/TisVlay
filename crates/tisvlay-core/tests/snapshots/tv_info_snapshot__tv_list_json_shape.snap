@@ -4,24 +4,41 @@ expression: "vec![sample_connected(), sample_disconnected()]"
 ---
 [
   {
-    "id": "living_room",
+    "uuid": "11111111-1111-1111-1111-111111111111",
     "name": "Living Room G4",
-    "address": "192.168.1.100",
     "vendor": "lg",
     "connected": true,
     "managed": true,
     "automated": true,
     "system_profile": "default",
+    "primary_input": "HDMI_1",
     "hardware_id": {
       "manufacturer": "GSM",
       "model": "OLED65G4SUB",
       "serial": "serial-1"
     },
+    "vendor_config": [
+      [
+        "IP address",
+        "192.168.1.100"
+      ],
+      [
+        "MAC address",
+        "AA:BB:CC:DD:EE:FF"
+      ]
+    ],
+    "vendor_info": [
+      [
+        "WebSocket scheme",
+        "wss"
+      ]
+    ],
     "desktop": {
       "connector": "HDMI-A-2"
     },
-    "path": "/org/tisvlay/Tv/living_room",
+    "path": "/org/tisvlay/Tv/11111111_1111_1111_1111_111111111111",
     "power_state": "active",
+    "supports_wake": true,
     "is_screen_on": true,
     "volume": 30,
     "muted": false,
@@ -43,24 +60,27 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     ]
   },
   {
-    "id": "guest_room",
+    "uuid": "22222222-2222-2222-2222-222222222222",
     "name": "Guest Room",
-    "address": "192.168.1.101",
     "vendor": "lg",
     "connected": false,
     "managed": false,
     "automated": false,
     "system_profile": "guest",
+    "primary_input": "",
     "hardware_id": {
       "manufacturer": null,
       "model": null,
       "serial": null
     },
+    "vendor_config": [],
+    "vendor_info": [],
     "desktop": {
       "connector": ""
     },
-    "path": "/org/tisvlay/Tv/guest_room",
+    "path": "/org/tisvlay/Tv/22222222_2222_2222_2222_222222222222",
     "power_state": "unknown",
+    "supports_wake": false,
     "is_screen_on": true,
     "volume": 0,
     "muted": false,

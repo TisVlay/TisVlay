@@ -24,6 +24,14 @@ pub use tisvlay_core::dbus_paths::{
 use crate::tv_manager::TvManagerError;
 
 /// D-Bus error type for tisvlay.
+///
+/// Each variant maps to a stable D-Bus error name (e.g.
+/// `org.tisvlay.Error.PowerNoMacConfigured`). Per-domain typed
+/// errors from `tisvlay-core::errors` get their own dedicated
+/// variants so clients can route on the name without parsing the
+/// message string. Common case: GUI's inline-error surface checks
+/// the D-Bus error name to pick the right localized message +
+/// recovery action.
 #[derive(Debug, Clone, zbus::DBusError)]
 #[zbus(prefix = "org.tisvlay.Error")]
 pub enum DaemonError {
@@ -41,6 +49,45 @@ pub enum DaemonError {
     UnknownVendor(String),
     /// Pairing error.
     PairingFailed(String),
+
+    // -- Power-cycle (typed; mirrors `errors::PowerErrorCode`) --
+    /// TV has no wake method configured (no MAC for WoL).
+    PowerNoMacConfigured(String),
+    /// Wake-on-LAN packet send failed at the network layer.
+    PowerWolSendFailed(String),
+    /// Sent WoL but TV didn't respond within the wait window.
+    PowerWakeTimeout(String),
+    /// TV reachable but not accepting connections.
+    PowerConnectTimeout(String),
+    /// TV is already powered on.
+    PowerAlreadyOn(String),
+    /// TV is already powered off.
+    PowerAlreadyOff(String),
+
+    // -- Config (typed; mirrors `errors::ConfigErrorCode`) --
+    /// Schema-validated field has an invalid or missing value.
+    /// Message format: `"<field>: <reason>"` so clients can split
+    /// on `": "` to recover the schema-field name for routing.
+    ConfigInvalidVendorConfig(String),
+    /// New TV's id collides with an existing one.
+    ConfigDuplicateTvId(String),
+    /// TV references a profile name that doesn't exist.
+    ConfigInvalidProfileReference(String),
+}
+
+impl From<tisvlay_core::errors::ConfigError> for DaemonError {
+    fn from(e: tisvlay_core::errors::ConfigError) -> Self {
+        use tisvlay_core::errors::ConfigError;
+        match e {
+            ConfigError::InvalidVendorConfig { field, reason } => {
+                DaemonError::ConfigInvalidVendorConfig(format!("{}: {}", field, reason))
+            }
+            ConfigError::DuplicateTvId(id) => DaemonError::ConfigDuplicateTvId(id),
+            ConfigError::InvalidProfileReference(name) => {
+                DaemonError::ConfigInvalidProfileReference(name)
+            }
+        }
+    }
 }
 
 impl From<TvManagerError> for DaemonError {
@@ -74,8 +121,17 @@ impl From<TvManagerError> for DaemonError {
                     )),
                 }
             }
-            TvManagerError::WakeNotSupported(id) => {
-                DaemonError::NotSupported(format!("Wake not supported for TV: {}", id))
+            TvManagerError::Power { tv_id, kind } => {
+                use tisvlay_core::errors::PowerError;
+                let msg = format!("TV {}: {}", tv_id, kind);
+                match kind {
+                    PowerError::NoMacConfigured => DaemonError::PowerNoMacConfigured(msg),
+                    PowerError::WolSendFailed { .. } => DaemonError::PowerWolSendFailed(msg),
+                    PowerError::WakeTimeout { .. } => DaemonError::PowerWakeTimeout(msg),
+                    PowerError::ConnectTimeout { .. } => DaemonError::PowerConnectTimeout(msg),
+                    PowerError::AlreadyOn => DaemonError::PowerAlreadyOn(msg),
+                    PowerError::AlreadyOff => DaemonError::PowerAlreadyOff(msg),
+                }
             }
             TvManagerError::PairingFailed(source) => DaemonError::PairingFailed(source.to_string()),
             TvManagerError::ConfigError(msg) => DaemonError::OperationFailed(msg),

@@ -24,14 +24,14 @@ async fn session_lock_turns_screen_off() {
 
     // Verify the screen starts on (default mock state).
     let tvs = session.client().list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == "lock_tv").unwrap();
+    let tv = tvs.iter().find(|t| t.name == "lock_tv").unwrap();
     assert!(tv.is_screen_on, "screen should start on");
 
     session.inject_event(SessionEvent::SessionLocked);
     settle().await;
 
     let tvs = session.client().list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == "lock_tv").unwrap();
+    let tv = tvs.iter().find(|t| t.name == "lock_tv").unwrap();
     assert!(!tv.is_screen_on, "screen should be off after lock");
 }
 
@@ -47,7 +47,7 @@ async fn session_unlock_turns_screen_on() {
     settle().await;
 
     let tvs = session.client().list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == "unlock_tv").unwrap();
+    let tv = tvs.iter().find(|t| t.name == "unlock_tv").unwrap();
     assert!(tv.is_screen_on, "screen should be on after unlock");
 }
 
@@ -61,7 +61,7 @@ async fn idle_timeout_turns_screen_off() {
     settle().await;
 
     let tvs = session.client().list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == "idle_tv").unwrap();
+    let tv = tvs.iter().find(|t| t.name == "idle_tv").unwrap();
     assert!(!tv.is_screen_on, "screen should be off after idle timeout");
 }
 
@@ -76,7 +76,7 @@ async fn idle_resume_turns_screen_on() {
     settle().await;
 
     let tvs = session.client().list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == "resume_tv").unwrap();
+    let tv = tvs.iter().find(|t| t.name == "resume_tv").unwrap();
     assert!(tv.is_screen_on, "screen should be on after idle resume");
 }
 
@@ -96,7 +96,7 @@ async fn greeter_wake_turns_screen_on() {
     settle().await;
 
     let tvs = session.client().list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == "greeter_tv").unwrap();
+    let tv = tvs.iter().find(|t| t.name == "greeter_tv").unwrap();
     assert!(tv.is_screen_on, "screen should be on after greeter wake");
 }
 
@@ -112,6 +112,6 @@ async fn duplicate_lock_events_are_idempotent() {
     settle().await;
 
     let tvs = session.client().list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == "dup_tv").unwrap();
+    let tv = tvs.iter().find(|t| t.name == "dup_tv").unwrap();
     assert!(!tv.is_screen_on, "screen should still be off");
 }

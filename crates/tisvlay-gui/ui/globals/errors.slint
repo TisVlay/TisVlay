@@ -1,0 +1,44 @@
+// Per-pane inline-error slots. Modeled on KDE Kirigami's
+// inline-message convention (sticky, four tones, optional close
+// + action). Rust pushes failed user-initiated daemon callbacks
+// into the relevant slot via `app.global::<Errors>().set_X(...)`;
+// each pane embeds an `InlineError` near the top, bound to its
+// slot, that disappears when the user dismisses or the slot
+// clears.
+//
+// Per-pane (instead of one global slot) so a TVs-pane error
+// doesn't leak into Settings; matches Kirigami inline-message
+// placement (within a pane, near its header).
+//
+// `kind` is a stable machine-readable identifier so the action
+// button can pick the right recovery path when one applies (e.g.
+// `kind == "no-mac-configured"` → "Edit MAC"). Empty `kind` =
+// generic message, no contextual action.
+
+export struct ErrorState {
+    kind: string,
+    tone: string,
+    title: string,
+    message: string,
+    action-label: string,
+}
+
+export global Errors {
+    /// TVs pane — set/clear via Rust on every user-initiated
+    /// `Daemon.X(...)` callback that returns an error
+    /// (power_on/off, set_volume, set_managed, remove_tv, ...).
+    /// Reload-config errors land here too; the user is typically
+    /// looking at the TVs pane when they hit reload.
+    in-out property <ErrorState> tvs;
+    /// Pairing wizard — reserved for non-step-3 wizard errors
+    /// (the wizard's step 3 has its own retry / back-to-discovery
+    /// surface; field-level errors land inline via
+    /// `PairingFieldRow.error`). Empty by default.
+    in-out property <ErrorState> pairing;
+
+    /// Action callback for `tvs.kind` (e.g. "Retry"). Rust binds
+    /// this and routes per-kind. Empty action-label hides the
+    /// button entirely; the callback never fires in that case.
+    callback tvs-action();
+    callback pairing-action();
+}

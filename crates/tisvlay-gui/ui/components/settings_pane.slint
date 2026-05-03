@@ -1,0 +1,42 @@
+// Settings pane.
+//
+// Currently empty — the only setting we used to expose
+// (light/dark/system) was removed in favor of always following the
+// desktop's color-scheme via `Palette.color-scheme` (driven live by
+// xdg-desktop-portal). Keeping the pane shell so the sidebar entry
+// has a target; future settings (e.g. "show tray notifications",
+// "default startup pane") can land here without re-plumbing.
+
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+
+export component SettingsPane inherits Rectangle {
+    background: Theme.surface-alt;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: Design.pad-pane;
+        padding-right: Design.pad-pane;
+        padding-top: Design.pad-pane-top;
+        padding-bottom: Design.pad-pane;
+        spacing: 18px;
+        alignment: start;
+
+        Text {
+            text: @tr("Settings");
+            color: Theme.text;
+            font-size: Design.font-title-2;
+            font-weight: 700;
+        }
+
+        Text {
+            text: @tr("No user-facing settings yet. Appearance follows your desktop's color-scheme automatically.");
+            color: Theme.text-dim;
+            font-size: Design.font-body;
+            wrap: word-wrap;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+    }
+}

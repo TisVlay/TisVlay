@@ -81,6 +81,23 @@ pub struct Credentials {
 
     /// Optional credential type identifier.
     pub credential_type: Option<String>,
+
+    /// Vendor-discovered metadata captured during pairing, free-form
+    /// `key → value`. Lets backends persist *what they learned at
+    /// pair time* alongside the primary credential without polluting
+    /// the daemon's vendor-agnostic relay.
+    ///
+    /// Examples:
+    /// - LG: `extra["scheme"] = "wss"` — which WebSocket scheme the
+    ///   TV accepted, so subsequent reconnects skip the wss→ws
+    ///   fallback.
+    /// - Future: Samsung PSK refresh URLs, OAuth refresh tokens,
+    ///   etc.
+    ///
+    /// Read by `TvConnector::build_config_from_pairing` to populate
+    /// the persisted vendor config. Other vendors leave it empty.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub extra: std::collections::HashMap<String, String>,
 }
 
 impl Credentials {
@@ -89,6 +106,7 @@ impl Credentials {
         Self {
             data: data.into(),
             credential_type: None,
+            extra: std::collections::HashMap::new(),
         }
     }
 
@@ -97,7 +115,14 @@ impl Credentials {
         Self {
             data: data.into(),
             credential_type: Some(credential_type.into()),
+            extra: std::collections::HashMap::new(),
         }
+    }
+
+    /// Insert a key/value into [`Self::extra`] (builder shorthand).
+    pub fn with_extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra.insert(key.into(), value.into());
+        self
     }
 }
 

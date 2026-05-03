@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 use tisvlay_core::DaemonClient;
-use tisvlay_harness::daemon::TestDaemon;
+use tisvlay_harness::daemon::{TestDaemon, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 
 async fn settle() {
@@ -42,7 +42,7 @@ async fn connected_tv_reports_initial_mock_state() {
 
     daemon
         .manager()
-        .reconnect("dbus_init")
+        .reconnect(&test_tv_uuid("dbus_init").to_string())
         .await
         .expect("reconnect");
     settle().await;
@@ -71,15 +71,16 @@ async fn set_volume_round_trips_through_dbus() {
 
     daemon
         .manager()
-        .reconnect("dbus_vol")
+        .reconnect(&test_tv_uuid("dbus_vol").to_string())
         .await
         .expect("reconnect");
     settle().await;
 
-    client.set_volume("dbus_vol", 75).await.expect("set_volume");
+    let uuid = test_tv_uuid("dbus_vol").to_string();
+    client.set_volume(&uuid, 75).await.expect("set_volume");
     settle().await;
 
-    let vol = client.get_volume("dbus_vol").await.expect("get_volume");
+    let vol = client.get_volume(&uuid).await.expect("get_volume");
     assert_eq!(vol, 75);
 }
 
@@ -92,12 +93,15 @@ async fn set_mute_round_trips_through_dbus() {
 
     daemon
         .manager()
-        .reconnect("dbus_mute")
+        .reconnect(&test_tv_uuid("dbus_mute").to_string())
         .await
         .expect("reconnect");
     settle().await;
 
-    client.set_mute("dbus_mute", true).await.expect("set_mute");
+    client
+        .set_mute(&test_tv_uuid("dbus_mute").to_string(), true)
+        .await
+        .expect("set_mute");
     settle().await;
 
     let tvs = client.list_tvs().await.expect("list_tvs");
@@ -113,12 +117,15 @@ async fn screen_off_updates_power_state_and_screen_flag() {
 
     daemon
         .manager()
-        .reconnect("dbus_screen")
+        .reconnect(&test_tv_uuid("dbus_screen").to_string())
         .await
         .expect("reconnect");
     settle().await;
 
-    client.screen_off("dbus_screen").await.expect("screen_off");
+    client
+        .screen_off(&test_tv_uuid("dbus_screen").to_string())
+        .await
+        .expect("screen_off");
     settle().await;
 
     let tvs = client.list_tvs().await.expect("list_tvs");
@@ -135,21 +142,19 @@ async fn set_backlight_round_trips_through_dbus() {
 
     daemon
         .manager()
-        .reconnect("dbus_bl")
+        .reconnect(&test_tv_uuid("dbus_bl").to_string())
         .await
         .expect("reconnect");
     settle().await;
 
+    let uuid = test_tv_uuid("dbus_bl").to_string();
     client
-        .set_backlight("dbus_bl", 42)
+        .set_backlight(&uuid, 42)
         .await
         .expect("set_backlight");
     settle().await;
 
-    let bl = client
-        .get_backlight("dbus_bl")
-        .await
-        .expect("get_backlight");
+    let bl = client.get_backlight(&uuid).await.expect("get_backlight");
     assert_eq!(bl, 42);
 }
 

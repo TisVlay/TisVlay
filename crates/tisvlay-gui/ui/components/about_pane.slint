@@ -1,0 +1,103 @@
+import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+import { Group } from "tvs_pane.slint";
+
+component StatusLine {
+    in property <bool> ok;
+    in property <string> label;
+
+    HorizontalLayout {
+        spacing: Design.gap-stack;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+            // Bullet — solid when connected, hollow ring when offline.
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.ok ? Theme.success : transparent;
+                border-width: root.ok ? 0 : 1.5px;
+                border-color: Theme.danger;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.ok ? @tr("{}: connected", root.label)
+                              : @tr("{}: offline", root.label);
+                color: root.ok ? Theme.success-text : Theme.danger-text;
+                font-size: Design.font-body;
+            }
+        }
+    }
+}
+
+export component AboutPane inherits Rectangle {
+    in property <bool> daemon-available;
+    in property <bool> session-available;
+
+    background: Theme.surface-alt;
+
+    ScrollView {
+        VerticalLayout {
+            width: 100%;
+            padding-left: Design.pad-pane;
+            padding-right: Design.pad-pane;
+            padding-top: Design.pad-pane-top;
+            padding-bottom: Design.pad-pane;
+            spacing: 18px;
+
+            // -- Title block --
+            VerticalLayout {
+                spacing: Design.gap-tight;
+                Text {
+                    // Brand name; intentionally not translated.
+                    text: "TisVlay";
+                    font-size: Design.font-title-1;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+                Text {
+                    text: @tr("TV Display control for Linux");
+                    color: Theme.text-dim;
+                    font-size: 14px;
+                }
+            }
+
+            // -- Connections --
+            Group {
+                title: @tr("CONNECTIONS");
+
+                StatusLine {
+                    ok: root.daemon-available;
+                    label: @tr("Daemon (system bus)");
+                }
+                StatusLine {
+                    ok: root.session-available;
+                    label: @tr("Session (user bus)");
+                }
+            }
+
+            // -- Footer --
+            VerticalLayout {
+                spacing: Design.gap-form;
+                Text {
+                    text: "Apache-2.0";
+                    color: Theme.text-faint;
+                    font-size: Design.font-helper;
+                }
+                Text {
+                    text: "https://github.com/ruffsl/tisvlay";
+                    color: Theme.text-faint;
+                    font-size: Design.font-helper;
+                    font-family: "ui-monospace, monospace";
+                }
+            }
+        }
+    }
+}

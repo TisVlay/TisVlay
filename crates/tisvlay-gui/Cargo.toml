@@ -1,0 +1,75 @@
+[package]
+name = "tisvlay-gui"
+description = "Settings + management GUI for tisvlay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "tisvlay-gui"
+path = "src/main.rs"
+
+[dependencies]
+tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+directories = { workspace = true }
+# `accessibility` is dropped from the default features. It pulls in
+# `accesskit_unix`, which spawns its own thread to talk to the
+# accessibility bus via zbus. That thread isn't a tokio worker, and
+# zbus's tokio backend panics with "no reactor running" when it tries
+# to spawn its blocking I/O work from there. Re-enabling accessibility
+# requires running zbus on async-io rather than tokio (workspace-wide
+# decision), or configuring accesskit to share our tokio runtime.
+slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "compat-1-2", "renderer-femtovg", "gettext"] }
+zbus = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true }
+# Resolve sidebar icon names against the user's freedesktop icon
+# theme (Breeze on KDE Plasma, Adwaita on GNOME, hicolor as
+# fallback). Same pattern the tray already uses, just done in-
+# process here because Slint has no built-in icon-theme resolver.
+freedesktop-icons = "0.4"
+# xdg-desktop-portal client. Only the `settings` portal is needed
+# (live `org.freedesktop.appearance.accent-color` for the user's
+# DE-chosen accent on KDE 6 / GNOME 46+ / Cosmic / Elementary).
+# Default features only pull in the tokio runtime selector — every
+# portal is opt-in, so this stays minimal.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
+# Clipboard write for the "copy" button on identifier fields (TV ID,
+# serial, MAC, …). Slint exposes a `Platform::set_clipboard_text`
+# trait method but no public app-facing helper, so we go through
+# `arboard` (the de facto Rust clipboard crate).
+arboard = { version = "3", default-features = false }
+# Localization for Rust-side dynamic strings (errors that surface
+# to the user, schema labels pushed from vendor backends, etc.).
+# Slint's `@tr()` macro covers literal strings inside `.slint`
+# files; everything else routes through gettext-rs's `tr!` to
+# share the same `.po`/`.mo` catalogs and slint's
+# `init_translations!` directory layout.
+gettext-rs = "0.7"
+
+# Optional: enable the in-process MCP server for AI-assisted UI inspection
+# during dev. Pinned to the exact slint version because the backend
+# selector does not follow semver.
+i-slint-backend-selector = { version = "=1.16.1", features = ["mcp"], optional = true }
+
+[features]
+dev-mcp = ["dep:i-slint-backend-selector"]
+
+[build-dependencies]
+slint-build = "1.16"
+
+[lints]
+workspace = true

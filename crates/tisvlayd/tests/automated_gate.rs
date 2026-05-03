@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 use tisvlay_core::{AutomateWhen, SessionAction, SystemConfig, SystemProfileConfig};
-use tisvlay_harness::daemon::{TestDaemon, mock_tv_config};
+use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlayd::tv_manager::SystemEvent;
 
 async fn settle() {
@@ -28,7 +28,7 @@ async fn unmanaged_tv_is_not_automated() {
 
     daemon
         .manager()
-        .reconnect("gate_unmanaged")
+        .reconnect(&test_tv_uuid("gate_unmanaged").to_string())
         .await
         .expect("reconnect");
     settle().await;
@@ -41,7 +41,10 @@ async fn unmanaged_tv_is_not_automated() {
     settle().await;
 
     assert!(
-        daemon.manager().is_connected("gate_unmanaged").await,
+        daemon
+            .manager()
+            .is_connected(&test_tv_uuid("gate_unmanaged").to_string())
+            .await,
         "unmanaged TV should remain connected after shutdown event",
     );
 }
@@ -68,7 +71,7 @@ async fn on_primary_fires_when_input_matches() {
 
     daemon
         .manager()
-        .reconnect("gate_onp_match")
+        .reconnect(&test_tv_uuid("gate_onp_match").to_string())
         .await
         .expect("reconnect");
     settle().await;
@@ -82,7 +85,10 @@ async fn on_primary_fires_when_input_matches() {
     settle().await;
 
     assert!(
-        !daemon.manager().is_connected("gate_onp_match").await,
+        !daemon
+            .manager()
+            .is_connected(&test_tv_uuid("gate_onp_match").to_string())
+            .await,
         "on_primary should fire when current_input == primary_input",
     );
 }
@@ -95,7 +101,7 @@ async fn on_primary_skips_when_input_differs() {
 
     daemon
         .manager()
-        .reconnect("gate_onp_skip")
+        .reconnect(&test_tv_uuid("gate_onp_skip").to_string())
         .await
         .expect("reconnect");
     settle().await;
@@ -112,7 +118,10 @@ async fn on_primary_skips_when_input_differs() {
     settle().await;
 
     assert!(
-        daemon.manager().is_connected("gate_onp_skip").await,
+        daemon
+            .manager()
+            .is_connected(&test_tv_uuid("gate_onp_skip").to_string())
+            .await,
         "on_primary should skip when current_input != primary_input",
     );
 }
@@ -140,7 +149,7 @@ async fn off_primary_fires_when_input_differs() {
 
     daemon
         .manager()
-        .reconnect("gate_offp_fire")
+        .reconnect(&test_tv_uuid("gate_offp_fire").to_string())
         .await
         .expect("reconnect");
     settle().await;
@@ -154,7 +163,10 @@ async fn off_primary_fires_when_input_differs() {
     settle().await;
 
     assert!(
-        !daemon.manager().is_connected("gate_offp_fire").await,
+        !daemon
+            .manager()
+            .is_connected(&test_tv_uuid("gate_offp_fire").to_string())
+            .await,
         "off_primary should fire when current_input != primary_input",
     );
 }
@@ -167,7 +179,7 @@ async fn off_primary_skips_when_input_matches() {
 
     daemon
         .manager()
-        .reconnect("gate_offp_skip")
+        .reconnect(&test_tv_uuid("gate_offp_skip").to_string())
         .await
         .expect("reconnect");
     settle().await;
@@ -181,7 +193,10 @@ async fn off_primary_skips_when_input_matches() {
     settle().await;
 
     assert!(
-        daemon.manager().is_connected("gate_offp_skip").await,
+        daemon
+            .manager()
+            .is_connected(&test_tv_uuid("gate_offp_skip").to_string())
+            .await,
         "off_primary should skip when current_input == primary_input",
     );
 }

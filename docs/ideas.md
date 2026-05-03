@@ -123,3 +123,105 @@ The matching decision is shared state with multiple consumers (tray, future GUI,
 - `Tv1.HardwareId` (already there) carries vendor-side identity for icons / pretty names.
 - The library extraction is mechanical when GUI work starts (~250 LOC moved); no D-Bus API churn needed at that point.
 - An EDID hash field on `DesktopMapping` was considered and rejected — see the discussion in [PR #34](https://github.com/ruffsl/TisVlay/pull/34) and the cull that followed.
+
+## Polkit gating for multi-user shared workstations
+
+Current trust model is "any local user with D-Bus access can mutate config." Fine for single-user desktops (the typical TisVlay deployment); the daemon does the privileged work as the dedicated `tisvlay` system user.
+
+For multi-user shared workstations (lab machines, family PCs where one user's edit shouldn't silently rebind another's TV), polkit is the canonical Linux gate. When this becomes a concern, the work is:
+
+1. Add `polkit::AuthorityProxy::check_authorization` to each privileged `Manager1` / `Tv1` method handler. Read-only properties stay open.
+2. Ship `org.tisvlay.policy.xml` declaring action IDs (one per privileged method or grouped by lifecycle).
+3. Document the action IDs in the NixOS module so admins can pin the auth rules per their tenancy model.
+
+No GUI-side changes — polkit prompts surface through the existing freedesktop polkit agent (KDE / GNOME both ship one). Adds zero overhead in the single-user case (polkit's `check_authorization` short-circuits when the caller is root or the daemon's own user).
+
+## Profile rename
+
+System and user profiles can be created, edited, deleted today, but not renamed. Rename was scoped out of the M3.5 / M4 profile-CRUD work because it has to walk every TV's `profile.system` / `profile.user` assignment to rewrite atomically — a meaningfully different operation from the per-profile CRUD methods.
+
+Path forward when this becomes a concern:
+
+- Daemon-side `Manager1.RenameSystemProfile(old: s, new: s)` and `Session1.RenameUserProfile(old: s, new: s)` that do the assignment-rewrite under an internal lock.
+- Validation: same alphabet rules as create (`[a-z0-9-]+`), `default` undeleteable so also unrenameable.
+- Atomicity: load → rewrite all references → save in one disk-write window, same `disk_write_lock` pattern the existing CRUD uses.
+- GUI-side: rename input on the profile editor with the same validation feedback the new-profile flow has.
+
+Skipped in v1 simply because no user has asked for it; the create-new-then-reassign-then-delete-old workflow covers the same need with three clicks.
+
+## CLI shorthand for `Tv1.UpdateConfig`
+
+Was scoped as an optional follow-up after the GUI's edit-mode toggle landed. Mirrors NetworkManager's `nmcli connection modify <name|uuid> field value`:
+
+```
+tisvlay tvs <name|uuid> set <field>=<value> [<field>=<value>…]
+```
+
+Wraps `Tv1.UpdateConfig(json_patch)` so multi-field edits round-trip atomically through the same daemon path the GUI uses. Includes the long-deferred name/UUID dual-lookup for TV identifier args (today the CLI already accepts UUID but not name; this would unify the two).
+
+Cost is mostly clap plumbing — the daemon-side surface is already there. Land when there's a concrete user request or when scripted edits start showing up in operator workflows.
+
+## `a{sv}` wire-format migration for vendor-config surfaces
+
+`Manager1.AddTv` and `Tv1.UpdateConfig` currently take `config_json: s` (JSON string). The architecturally correct end-state per freedesktop convention is `a{sv}` (D-Bus variant dict), matching ModemManager's `Modem.Simple.Connect(properties: a{sv})` and `ProfileManager.Set(properties: a{sv})` shape.
+
+Triggers for reconsidering:
+
+1. A second vendor backend lands and the multi-vendor introspection argument becomes concrete.
+2. External tools (third-party clients, monitoring scripts) start consuming the D-Bus surface and the typed introspection becomes user-visible.
+3. A vendor config grows nested structure that `a{sv}` would handle awkwardly but JSON would handle cleanly (which would *strengthen* the case for staying on JSON, not weaken it).
+
+Cost of locking in `a{sv}` now is migrating `AddTv` callers during peak-development churn for no concrete user-visible benefit. Cost of staying on JSON is a future wire-flip whose blast radius grows with each shipped consumer. Revisit when the second vendor backend is in flight.
+
+## Atomic config writes (tempfile + rename)
+
+Today's `SystemConfig::save_to` is a synchronous `fs::write` — an interrupted write can leave the on-disk config half-rewritten. The standard Linux pattern is "write to `<path>.tmp`, fsync, `rename(2)` over the live file" so a crash mid-write leaves either the old or the new content but never a torn one.
+
+Scoped out of the Phase 8.1 UUID work because no failure mode has been observed; an interrupted save typically affects a single edit which the user can redo. Worth doing when:
+
+- The first user reports a config that won't load after a crash, or
+- A new write site lands that's harder to diagnose post-crash than "rerun the last edit", or
+- We add an automated edit pipeline (e.g., GUI batch-edits) where the user wouldn't easily know which edit was in flight.
+
+Implementation is small (~20 LOC: extract a `write_atomic(path, contents)` helper, swap call sites).
+
+## Typed `Failed { reason }` payload across daemon error vocabulary
+
+The `PairingState::Failed` wire format is still `(s)` — a single human-readable string carrying the reason. Plan 5 introduced typed `ConfigError::InvalidVendorConfig { field, reason }` for the pairing-form validation case (so the GUI routes per-field errors back to the originating row), but the broader `Failed { reason }` payload across `Connection` / `Pairing` / `Internal` errors stays untyped on the wire.
+
+Path forward:
+
+- Define typed sub-variants (`Failed::ConnectionRefused`, `Failed::TvUnreachable { last_seen_at }`, `Failed::PairingRejected`, `Failed::Internal { kind }`) under the existing `tisvlay-core/src/errors/` per-domain enum tree.
+- D-Bus wire encoding: variant-tagged dict rather than a free-form string, so clients can branch on reason kind.
+- Migrate `tisvlay-cli` and the GUI's inline-error surface to render the typed variant rather than the raw string.
+
+Useful when the GUI grows kind-based recovery actions ("Edit MAC", "Open firewall settings", etc.) — each action ID is gated on the corresponding `Failed::*` variant.
+
+## "Open logs" affordance
+
+User asked about a journal-viewer launcher; researched in Plan 5 and dropped because there's no portable `journal://` URI scheme. Options that surfaced:
+
+- **(a)** Spawn `ksystemlog` directly via `xdg-open` — best UX when KSystemLog is installed, degrades on GNOME / minimal installs.
+- **(b)** Spawn a terminal with `journalctl -u tisvlayd -f` pre-typed — most accurate but UX is fragile (`xdg-terminal-exec` is freedesktop-spec but spotty).
+- **(c)** Copy-to-clipboard a `journalctl` command with a toast saying "Open a terminal and paste" — simplest and degradation-friendly.
+- **(d)** Embed a small log viewer inside the GUI (read systemd journal via `systemd::journal::Journal::open` or shell out + parse) — most polished but a sizable engineering chunk.
+
+Leading recommendation: **(a) with (c) as fallback** — try `xdg-open` on the KSystemLog desktop file first; on failure, fall back to copy-to-clipboard with the journalctl command. Defer (d) until a real debugging-support story justifies the engineering cost.
+
+Surface placement: both — About pane gets the always-on shortcut; inline-error messages with `kind == "internal"` get a contextual "View logs" action button.
+
+## DE-driven theming via xdg-desktop-portal Settings
+
+The Slint `fluent` style doesn't pick up the user's KDE accent color or custom palette. True DE-driven theming would require:
+
+- xdg-desktop-portal `Settings` namespace queries for the accent color and color-scheme preference.
+- Writing the resolved values into `Palette.accent-background` / `Palette.background` etc. at runtime.
+- Watching for Settings-namespace change signals so the UI re-tints when the user changes their KDE settings.
+
+Scoped out of Plan 4's theming sweep (which settled on `fluent` + a stable token surface as the pragmatic v1) because the Settings-namespace work has no user-visible payoff over fluent's defaults until a user complains the GUI looks out-of-place in their themed desktop.
+
+Revisit when a user reports the visual mismatch, or when `cosmic` (the alternative with looser Slint integration) becomes the right default and fluent's hard-coded look starts feeling stale.
+
+## Slint dialog open/close fade animation
+
+Was filed as polish work and deferred — `ConfirmDialog` is so brief in the typical edit/remove flow that a fade-in adds visible lag rather than polish. Revisit if the dialog's role expands (e.g., multi-step removal confirmation, settings-export wizard) and the snappier timing starts feeling abrupt.

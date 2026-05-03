@@ -36,7 +36,7 @@
 //!     let daemon = DaemonClient::new_system().await?;
 //!     let tvs = daemon.list_tvs().await?;
 //!     for tv in &tvs {
-//!         println!("{}: {} ({})", tv.id, tv.name, if tv.connected { "connected" } else { "offline" });
+//!         println!("{}: {} ({})", tv.uuid, tv.name, if tv.connected { "connected" } else { "offline" });
 //!     }
 //!     Ok(())
 //! }
@@ -44,12 +44,17 @@
 
 // Core modules (always available)
 mod capabilities;
+mod coalescer;
 mod config;
 pub mod dbus_paths;
 mod desktop;
 mod error;
+pub mod errors;
 mod hardware_id;
 mod pairing;
+mod pairing_schema;
+mod reconciler;
+mod refresh_trigger;
 mod state;
 mod traits;
 pub mod wol;
@@ -81,23 +86,29 @@ pub use pairing::{
     Credentials, InputType, PairingCommand, PairingError, PairingErrorCode, PairingSession,
     PairingState,
 };
+pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 
 // Configuration
 pub use config::{
     AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
     SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, is_valid_tv_id,
-    tv_id_from_name,
+    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment,
 };
 
 // State
-pub use state::{DiscoveredTv, InputInfo, PowerState, TvState};
+pub use state::{DiscoveredTv, InputInfo, PowerCyclePhase, PowerState, TvState};
 
 // Errors
 pub use error::{Error, Result};
 
 // Wake-on-LAN
 pub use wol::{MacAddress, WakeOptions, wake, wake_with_options};
+
+// Concurrency helpers (always available — async tokio utilities,
+// not D-Bus-specific).
+pub use coalescer::Coalescer;
+pub use reconciler::{Reconciler, ReconcilerMap};
+pub use refresh_trigger::RefreshTrigger;
 
 // =============================================================================
 // Public re-exports: Optional features

@@ -1,0 +1,723 @@
+// Shared UI primitives used across multiple panes / components.
+//
+// Tokens come from `theme.slint` — these widgets only know about
+// themed colors, not raw hex values. Add a primitive here when it's
+// needed by ≥ 2 panes; pane-specific helpers stay in their pane.
+
+import { LineEdit, Slider } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Design } from "design.slint";
+import { Clipboard } from "globals/clipboard.slint";
+import { Icons } from "globals/icons.slint";
+
+// =============================================================================
+// Chip — small status pill (Connected, Managed, Unmanaged, etc.).
+// =============================================================================
+//
+// `tone` selects the color palette. Defaults to neutral.
+
+export component Chip inherits Rectangle {
+    in property <string> label;
+    /// One of: "neutral", "success", "danger", "warn", "info".
+    in property <string> tone: "neutral";
+
+    property <brush> bg-color: tone == "success" ? Theme.success-soft
+                              : tone == "danger" ? Theme.danger-soft
+                              : tone == "warn" ? Theme.warn-soft
+                              : tone == "info" ? Theme.info-soft
+                              : Theme.chip;
+    property <brush> fg-color: tone == "success" ? Theme.success-text
+                              : tone == "danger" ? Theme.danger-text
+                              : tone == "warn" ? Theme.warn-text
+                              : tone == "info" ? Theme.info-text
+                              : Theme.chip-text;
+    property <brush> br-color: tone == "success" ? Theme.success
+                              : tone == "danger" ? Theme.danger
+                              : tone == "warn" ? Theme.warn
+                              : tone == "info" ? Theme.info
+                              : Theme.chip-border;
+
+    background: bg-color;
+    border-color: br-color;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-pill;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 3px;
+        padding-bottom: 3px;
+        Text {
+            text: root.label;
+            color: root.fg-color;
+            font-size: Design.font-mini;
+            font-weight: 600;
+        }
+    }
+}
+
+// =============================================================================
+// DangerBtn — destructive-action button (accent fill, white text).
+// =============================================================================
+//
+// Originally used `Theme.danger` (red) to signal "this is
+// destructive", but Plasma users now expect their DE-chosen accent
+// to drive filled buttons consistently — a red button next to
+// otherwise-accent-tinted UI looks alien. We rely on placement
+// (right side, after a Cancel) and explicit wording to convey
+// destructive intent, matching the std-widgets `Button { primary }`
+// look. Kept as a separate component so call sites are
+// self-documenting (`DangerBtn { text: "Remove TV" }` reads
+// destructive-by-name, even though the rendering matches a primary
+// button).
+
+export component DangerBtn inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <length> min-button-width: 80px;
+    callback clicked();
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-height: Design.size-input;
+    min-width: min-button-width;
+
+    background: !enabled
+        ? Theme.surface2
+        : touch.has-hover ? Theme.accent-pressed
+        : Theme.accent;
+    border-color: !enabled
+        ? Theme.border
+        : touch.has-hover ? Theme.accent-pressed
+        : Theme.accent;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    animate background, border-color { duration: 150ms; }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: Design.gap-row;
+        padding-right: Design.gap-row;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: !root.enabled ? Theme.text-faint : white;
+            font-size: Design.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// =============================================================================
+// LineEditField — std-widgets LineEdit with a higher-contrast placeholder.
+// =============================================================================
+//
+// Slint's `LineEdit` exposes `placeholder-text` but not
+// `placeholder-color`; the fluent style renders the placeholder at
+// `FluentPalette.text-secondary` (~60% black on white), which is
+// only ~30% lighter than entered text and reads as "same color"
+// to most users — easy to mistake an empty field for one
+// containing pre-entered text.
+//
+// This wrapper keeps the std-widgets LineEdit (clear icon,
+// password toggle, focus border, accessibility hookups all
+// preserved) but suppresses its built-in placeholder by passing
+// `placeholder-text: ""`, then overlays our own Text with
+// `Theme.text-faint` — a clearly faded color (well-tuned for
+// both light and dark) that makes empty fields visually distinct
+// from filled ones.
+
+export component LineEditField inherits Rectangle {
+    in property <string> placeholder-text;
+    in-out property <string> text <=> inner.text;
+    in property <bool> enabled <=> inner.enabled;
+    /// Optional CSS-style font-family list (e.g.
+    /// `"ui-monospace, monospace"`) — useful for IP / MAC entry.
+    in property <string> font-family <=> inner.font-family;
+    callback edited(string);
+    callback accepted(string);
+
+    horizontal-stretch: 1;
+    min-height: inner.min-height;
+
+    inner := LineEdit {
+        // Bind to fill the wrapper Rectangle. Without this the
+        // LineEdit sits at its preferred size (~32px) anchored at
+        // (0,0) instead of stretching to whatever slot the outer
+        // layout grants the wrapper.
+        width: 100%;
+        height: 100%;
+        // Suppress fluent's subtle built-in placeholder; we render
+        // our own with a stronger contrast below.
+        placeholder-text: "";
+        edited(v) => { root.edited(v); }
+        accepted(v) => { root.accepted(v); }
+    }
+
+    // Overlay placeholder. Visible only when the field is empty
+    // and unfocused (matches the standard "placeholder hides on
+    // input or focus" pattern). Text without a TouchArea doesn't
+    // intercept clicks, so the underlying LineEdit still receives
+    // focus on click.
+    //
+    // x=13px matches fluent's 12px LineEdit padding plus a 1px
+    // optical adjustment so the placeholder sits exactly where
+    // typed text would appear. y centers within the wrapper.
+    if root.text == "" && !inner.has-focus: Text {
+        x: 13px;
+        y: (parent.height - self.height) / 2;
+        text: root.placeholder-text;
+        color: Theme.text-faint;
+        font-size: Design.font-body;
+        font-family: root.font-family;
+    }
+}
+
+
+// =============================================================================
+// InlineError — Kirigami-style sticky inline message.
+// =============================================================================
+//
+// Modeled on KDE Kirigami's [InlineMessage][1] — sticky by default
+// (no auto-dismiss), four tones (info / positive / warning /
+// error), optional action button on the right plus a close X.
+// Visible iff `message != ""`; dismissed when the user clicks
+// close or when Rust clears the slot (e.g. on retry success).
+//
+// Used by panes via the `Errors` global (one slot per pane). A
+// failed user-initiated daemon callback pushes a typed message
+// into `Errors.<pane>` and this widget renders it directly under
+// the pane's header. Sticky placement matches KDE convention so
+// users have time to read & act before dismissing.
+//
+// [1]: https://develop.kde.org/docs/getting-started/kirigami/components-inlinemessages/
+
+export component InlineError inherits Rectangle {
+    /// "info" | "success" | "warn" | "error". Drives both the
+    /// background tint and the leading glyph. Defaults to error
+    /// since user-initiated-action failures are the dominant case.
+    in property <string> tone: "error";
+    /// Headline (e.g. "Power-on failed"). Empty hides the message
+    /// entirely (the parent layout collapses).
+    in property <string> title;
+    /// Detail text (the underlying typed reason).
+    in property <string> message;
+    /// Optional action label (e.g. "Retry", "Edit MAC"). Empty
+    /// hides the action button.
+    in property <string> action-label;
+    /// Whether to show the trailing close (×) button. Off only
+    /// when the message is non-dismissable (e.g. a fatal pane
+    /// state). Defaults to on, matching Kirigami.
+    in property <bool> dismissable: true;
+    callback action-clicked();
+    callback dismissed();
+
+    property <bool> visible-content: root.title != "" || root.message != "";
+
+    property <brush> bg-color:
+          tone == "success" ? Theme.success-soft
+        : tone == "warn"    ? Theme.warn-soft
+        : tone == "info"    ? Theme.info-soft
+        : Theme.danger-soft;
+    property <brush> border-c:
+          tone == "success" ? Theme.success
+        : tone == "warn"    ? Theme.warn
+        : tone == "info"    ? Theme.info
+        : Theme.danger;
+    property <brush> text-c:
+          tone == "success" ? Theme.success-text
+        : tone == "warn"    ? Theme.warn-text
+        : tone == "info"    ? Theme.info-text
+        : Theme.danger-text;
+    property <string> glyph:
+          tone == "success" ? "✓"
+        : tone == "warn"    ? "!"
+        : tone == "info"    ? "i"
+        : "⚠";
+
+    height: visible-content ? content.preferred-height : 0;
+    background: bg-color;
+    border-color: border-c;
+    border-width: visible-content ? Design.border-thin : 0;
+    border-radius: Design.radius-card;
+    visible: visible-content;
+    animate height { duration: 150ms; easing: ease-out; }
+
+    content := HorizontalLayout {
+        width: 100%;
+        padding: 12px;
+        spacing: Design.gap-row;
+        alignment: stretch;
+
+        // Leading icon — uses a glyph instead of a freedesktop
+        // image so the inline message renders identically without
+        // an icon-theme dependency. Tone matches the border.
+        VerticalLayout {
+            alignment: start;
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: root.border-c;
+                Text {
+                    text: root.glyph;
+                    color: white;
+                    font-size: Design.font-helper;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+
+        // Title + body — vertically centered when there's no body.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-tight;
+            if root.title != "": Text {
+                text: root.title;
+                color: root.text-c;
+                font-size: Design.font-body;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            if root.message != "": Text {
+                text: root.message;
+                color: Theme.text;
+                font-size: Design.font-helper;
+                wrap: word-wrap;
+            }
+        }
+
+        // Optional action button (e.g. "Retry"). Tinted to match
+        // the inline message's tone so it's clearly the message's
+        // own affordance, not a generic page-level button.
+        if root.action-label != "": VerticalLayout {
+            alignment: center;
+            Rectangle {
+                background: action-touch.has-hover ? root.border-c : transparent;
+                border-color: root.border-c;
+                border-width: Design.border-thin;
+                border-radius: Design.radius-control;
+                min-height: Design.size-input;
+                min-width: 80px;
+                animate background { duration: 120ms; }
+                HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding-left: Design.gap-row;
+                    padding-right: Design.gap-row;
+                    alignment: center;
+                    Text {
+                        text: root.action-label;
+                        color: action-touch.has-hover ? white : root.text-c;
+                        font-size: Design.font-helper;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+                action-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.action-clicked(); }
+                }
+            }
+        }
+
+        // Trailing close (×). 24-px hit target keeps the click
+        // accessible without the glyph itself being oversized.
+        if root.dismissable: VerticalLayout {
+            alignment: start;
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 12px;
+                background: close-touch.has-hover ? root.border-c : transparent;
+                animate background { duration: 120ms; }
+                Text {
+                    text: "×";
+                    color: close-touch.has-hover ? white : root.text-c;
+                    font-size: Design.font-section;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+                close-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.dismissed(); }
+                }
+            }
+        }
+    }
+}
+
+
+// =============================================================================
+// OptimisticSlider — slider + readout that tracks user intent.
+// =============================================================================
+//
+// A horizontal slider paired with a numeric readout, designed for
+// values that are mirrored on a remote endpoint (the daemon → TV).
+// Convergence gating lives on the Rust side (`Reconciler<V>` /
+// `ReconcilerMap<K, V>` in `tisvlay-core`); this component is a thin
+// view that displays a Rust-driven `model-value` and forwards user
+// input via `committed(int)`.
+//
+// Behavior:
+//   - `model-value` is the gated authoritative value pushed by Rust
+//     after going through the reconciler. While the Rust side has a
+//     pending dispatch, intermediate ramp echoes are dropped before
+//     reaching `model-value`, so the value Slint receives is stable
+//     during a TV transition.
+//   - The Slider's `value` is two-way bound to a local `display`
+//     property so user drag updates the thumb without breaking the
+//     binding to `model-value`. The `changed model-value` handler
+//     re-syncs `display` from the model after a user drag (one
+//     writer per direction, no loop hazard).
+//   - User input fires `committed(int)`; the consumer is expected to
+//     dispatch through its `Reconciler` + daemon write path.
+//
+// Use for any value mirrored on the daemon as a numeric property and
+// driven via a "live preview" slider thumb (volume, backlight,
+// future contrast / brightness / color balance). For discrete
+// selection inputs use std-widgets `ComboBox` — the flicker pattern
+// doesn't apply.
+
+export component OptimisticSlider {
+    /// Gated authoritative value from the model (Rust drives it
+    /// through a reconciler; intermediate ramp echoes are dropped
+    /// upstream).
+    in property <int> model-value;
+    in property <int> minimum: 0;
+    in property <int> maximum: 100;
+    /// Slider responds to user input. Independent from `value-visible`
+    /// because some values (volume) keep showing a number even when
+    /// muted disables drag.
+    in property <bool> enabled: true;
+    /// Readout shows the numeric value (else "—") and uses normal vs
+    /// faint text color.
+    in property <bool> value-visible: true;
+    /// Fired when the user changes the value, rounded to int. The
+    /// consumer is expected to dispatch the write through its
+    /// reconciler + daemon write path.
+    callback committed(int);
+
+    // Local display value bound two-way to the Slider so user drag
+    // updates the thumb. Re-synced from `model-value` whenever Rust
+    // pushes a new value (the user-side `<=>` write breaks the
+    // initial-value binding; this restores it).
+    in-out property <float> display: model-value;
+    changed model-value => { display = model-value; }
+
+    HorizontalLayout {
+        spacing: Design.gap-row;
+
+        Slider {
+            horizontal-stretch: 1;
+            minimum: root.minimum;
+            maximum: root.maximum;
+            value <=> root.display;
+            enabled: root.enabled;
+            changed(v) => { root.committed(round(v)); }
+        }
+
+        Text {
+            width: Design.width-readout-col;
+            text: root.value-visible ? round(root.display) : "—";
+            color: root.value-visible ? Theme.text : Theme.text-faint;
+            font-size: Design.font-body;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// =============================================================================
+// Group — uppercase 11px title above a card.
+// =============================================================================
+//
+// Replaces std-widgets' GroupBox with the design's flatter shape.
+// Children supply their own vertical layout via `@children`.
+
+export component Group {
+    in property <string> title;
+    in property <length> body-padding: Design.pad-card;
+
+    VerticalLayout {
+        width: 100%;
+        spacing: 0;
+
+        // Title
+        HorizontalLayout {
+            padding-left: 2px;
+            padding-bottom: Design.gap-stack;
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
+        }
+
+        // Card
+        Rectangle {
+            background: Theme.surface;
+            border-color: Theme.border;
+            border-width: Design.border-thin;
+            border-radius: Design.radius-card;
+
+            VerticalLayout {
+                width: 100%;
+                padding: root.body-padding;
+                spacing: 12px;
+                @children
+            }
+        }
+    }
+}
+
+// =============================================================================
+// SpinnerArc — track ring + rotating top-quarter arc (`tv-spin`).
+// =============================================================================
+//
+// Mirrors the design handoff's `Spinner` (CSS: full neutral border,
+// `border-top-color: accent`, `tv-spin 0.9s linear infinite`). Visual:
+// a still grey ring with one accent-colored quarter at the top,
+// rotating 360° every 0.9s linearly. See
+// `.claude/ui/pairing-wizard-motion.md` § 2 (`tv-spin`).
+//
+// Slint's std-widgets `Spinner` uses a Material-style growing/
+// shrinking arc with two simultaneous animations — visually busier
+// and not what the design calls for. This is the simple
+// fixed-arc-rotating variant.
+
+export component SpinnerArc inherits Rectangle {
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // Track ring — neutral, still.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: self.width / 2;
+        border-width: 2.5px;
+        border-color: Theme.border;
+    }
+
+    // Rotating top-quarter arc — accent, ~0.9s/rev linear.
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        stroke: Theme.accent;
+        stroke-width: 2.5px;
+        fill: transparent;
+        transform-rotation: (360deg * animation-tick() / 900ms).mod(360deg);
+
+        // 90° arc spanning from 12 o'clock to 3 o'clock. Radius 47
+        // sits the arc curve atop the 2.5px-wide track ring.
+        MoveTo { x: 50; y: 3; }
+        ArcTo {
+            radius-x: 47;
+            radius-y: 47;
+            x: 97;
+            y: 50;
+            sweep: true;
+        }
+    }
+}
+
+// =============================================================================
+// PulseDot — radar-ping liveness indicator (10×10).
+// =============================================================================
+//
+// Mirrors the design handoff's `PulseDot` component
+// (`.claude/ui/design_handoff_tisvlay_gui/wizard-components.jsx`)
+// and `tv-pulse` keyframe: a solid 6×6 dot in front of an animated
+// 10×10 disc that scales 0.6 → 2.4 while fading 0.7 → 0 on a 1.4s
+// ease-out loop. Communicates ambient liveness ("the system is
+// listening") without consuming attention. See
+// `.claude/ui/pairing-wizard-motion.md` § 1 for the canonical motion
+// values.
+
+export component PulseDot inherits Rectangle {
+    width: 10px;
+    height: 10px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // Radar ring — scales out from 0.6× to 2.4× while fading.
+    // `transform-scale` extends the rendering beyond the 10×10
+    // layout bounds; that's intentional (the ring radiates).
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.accent;
+        // Ease-out approximation: t * (2 - t) gives natural decay.
+        property <float> phase: (animation-tick() / 1400ms).mod(1);
+        property <float> eased: phase * (2.0 - phase);
+        transform-scale: 0.6 + 1.8 * eased;
+        opacity: 0.7 * (1.0 - eased);
+    }
+
+    // Solid inner dot — still, on top of the radar ring.
+    Rectangle {
+        x: 2px;
+        y: 2px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.accent;
+    }
+}
+
+// =============================================================================
+// ScanLine — horizontal "we're working on it" sweep indicator.
+// =============================================================================
+//
+// 2px-tall track with a 40%-wide accent gradient that sweeps left to
+// right on a 1.6s ease-in-out loop. Matches the design handoff's
+// `tv-scan` CSS keyframe (`left: -40% → 100%`) — see
+// `.claude/ui/design_handoff_tisvlay_gui/wizard-components.jsx`
+// `ScanLine` and the `@keyframes tv-scan` block in `Pairing
+// Wizard.html`. Used during discovery scanning and the pair-step
+// "registering" phase.
+
+export component ScanLine inherits Rectangle {
+    height: 2px;
+    background: Theme.surface2;
+    border-radius: 1px;
+    clip: true;
+
+    Rectangle {
+        width: parent.width * 0.4;
+        height: parent.height;
+        // Smooth-step easing on a unit phase (Slint analogue of CSS
+        // `ease-in-out`); sweep range is `-self.width → parent.width`
+        // so the highlight enters from off-left and exits off-right
+        // before snapping back at the cycle boundary.
+        property <float> phase: (animation-tick() / 1600ms).mod(1);
+        property <float> eased: phase * phase * (3.0 - 2.0 * phase);
+        x: -self.width + (parent.width + self.width) * eased;
+        background: @linear-gradient(90deg, transparent 0%, Theme.accent 50%, transparent 100%);
+    }
+}
+
+// =============================================================================
+// CopyBtn — square ghost button that copies a string to the clipboard.
+// =============================================================================
+//
+// Used next to read-only identifier values (TV ID, serial, MAC, …)
+// where the user might want to copy the value into another tool.
+// Glyph comes from `Clipboard.copy-icon` (Rust resolves it against
+// the freedesktop `edit-copy` name); when missing, the button still
+// renders a (mostly-blank) hit target so the action stays
+// reachable. Click fires `Clipboard.copy(value)` — Rust handles
+// the actual platform clipboard write.
+
+export component CopyBtn inherits Rectangle {
+    in property <string> value;
+
+    width: 24px;
+    height: 24px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    background: touch.has-hover ? Theme.row-hover : transparent;
+    border-radius: Design.radius-control;
+    animate background { duration: 150ms; }
+
+    Image {
+        source: Clipboard.copy-icon;
+        width: 14px;
+        height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        colorize: touch.has-hover ? Theme.text : Theme.text-dim;
+        opacity: touch.has-hover ? 1.0 : 0.7;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Clipboard.copy(root.value); }
+    }
+}
+
+// =============================================================================
+// IconBtn — square ghost button with a centered glyph.
+// =============================================================================
+//
+// Same 24px ghost shape as `CopyBtn`, but the icon is supplied by
+// the caller rather than tied to a specific role. Used for the
+// TVs-pane INFO group's edit / save / cancel triplet (pencil →
+// checkmark + X). Callers wire each instance to its own icon
+// (loaded into the `Icons` global at startup) and `clicked`
+// callback. `enabled = false` dims the glyph and disables the
+// pointer interaction so disabled-Save during an in-flight write
+// reads as inert without changing the layout.
+//
+// `loading = true` swaps the icon for a `SpinnerArc` in the same
+// slot. Standard "the thing I clicked is processing" pattern
+// (GitHub, Notion, GNOME Contacts) — no layout shift, the spinner
+// motion communicates the wait. Click is blocked while spinning
+// so a double-tap can't fire two saves in flight.
+
+export component IconBtn inherits Rectangle {
+    in property <image> source;
+    in property <bool> enabled: true;
+    in property <bool> loading: false;
+    callback clicked();
+
+    property <bool> interactive: root.enabled && !root.loading;
+
+    width: 24px;
+    height: 24px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    background: touch.has-hover && root.interactive ? Theme.row-hover : transparent;
+    border-radius: Design.radius-control;
+    animate background { duration: 150ms; }
+    opacity: root.enabled || root.loading ? 1.0 : 0.4;
+
+    if !root.loading: Image {
+        source: root.source;
+        width: 14px;
+        height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        colorize: touch.has-hover && root.interactive ? Theme.text : Theme.text-dim;
+        opacity: touch.has-hover ? 1.0 : 0.7;
+    }
+
+    if root.loading: SpinnerArc {
+        width: 14px;
+        height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        enabled: root.interactive;
+        mouse-cursor: root.interactive ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}

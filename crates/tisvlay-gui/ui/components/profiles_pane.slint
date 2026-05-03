@@ -1,0 +1,32 @@
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+
+export component ProfilesPane inherits Rectangle {
+    background: Theme.surface-alt;
+
+    VerticalBox {
+        width: 100%;
+        height: 100%;
+        alignment: center;
+        spacing: Design.gap-tight;
+
+        HorizontalBox {
+            alignment: center;
+            Text {
+                text: @tr("Profiles");
+                font-size: Design.font-title-2;
+                font-weight: 600;
+                color: Theme.text;
+            }
+        }
+        HorizontalBox {
+            alignment: center;
+            Text {
+                text: @tr("System and user profile editing arrives in M4.");
+                color: Theme.text-dim;
+                font-size: Design.font-body;
+            }
+        }
+    }
+}

@@ -16,13 +16,13 @@
 //!     // List all configured TVs
 //!     let tvs = client.list_tvs().await?;
 //!     for tv in &tvs {
-//!         println!("{}: {} ({}) - {}", tv.id, tv.name, tv.address,
+//!         println!("{}: {} - {}", tv.uuid, tv.name,
 //!             if tv.connected { "connected" } else { "disconnected" });
 //!     }
 //!
 //!     // Turn off screen on first TV
 //!     if let Some(tv) = tvs.first() {
-//!         client.screen_off(&tv.id).await?;
+//!         client.screen_off(&tv.uuid).await?;
 //!     }
 //!
 //!     Ok(())
@@ -82,17 +82,39 @@ impl BusKind<'_> {
 trait TisvlayManager {
     /// Discover TVs on the network.
     ///
-    /// Returns `(id, name, address, (manufacturer, model, serial), vendor)` tuples.
-    /// The nested `(sss)` carries the vendor-reported hardware identity with
-    /// empty strings for unknown fields.
+    /// Returns `(id, name, address, (manufacturer, model, serial),
+    /// vendor, vendor_data)` tuples. The nested `(sss)` carries the
+    /// vendor-reported hardware identity with empty strings for
+    /// unknown fields. `vendor_data` is a free-form `key → value`
+    /// map of vendor-specific discovery data — currently used to
+    /// carry the kernel-resolved MAC under `"mac"` for IP-addressed
+    /// backends. Wizards match these entries against each vendor's
+    /// `PairingField::autofill` directives.
     fn discover_tvs(
         &self,
         timeout_ms: u32,
-    ) -> zbus::Result<Vec<(String, String, String, (String, String, String), String)>>;
+    ) -> zbus::Result<
+        Vec<(
+            String,
+            String,
+            String,
+            (String, String, String),
+            String,
+            std::collections::HashMap<String, String>,
+        )>,
+    >;
 
     /// Get supported vendors.
     /// Returns: [(vendor_id, vendor_name)]
     fn get_supported_vendors(&self) -> zbus::Result<Vec<(String, String)>>;
+
+    /// Get the pairing-form schema for a vendor.
+    ///
+    /// Returns a JSON-serialized `Vec<PairingField>` describing the
+    /// fields the wizard should render (and the daemon expects in
+    /// the matching `add_tv` call's `config_json`). See
+    /// [`crate::pairing_schema`] for the field shape.
+    fn get_pairing_schema(&self, vendor: &str) -> zbus::Result<String>;
 
     /// Add a TV.
     /// config_json: vendor-specific connection parameters as JSON
@@ -106,9 +128,6 @@ trait TisvlayManager {
         managed: bool,
     ) -> zbus::Result<(OwnedObjectPath, String)>;
 
-    /// Remove a TV.
-    fn remove_tv(&self, tv_path: &OwnedObjectPath) -> zbus::Result<()>;
-
     /// Reload configuration.
     fn reload_config(&self) -> zbus::Result<()>;
 
@@ -121,8 +140,26 @@ trait TisvlayManager {
     /// Get all system profiles as (name, json) pairs.
     fn list_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Set a system-level TV option.
-    fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> zbus::Result<()>;
+    /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
+    /// `awaiting_input`, `complete`, `failed`. See
+    /// [`tisvlay_core::PairingState`] for the canonical enum.
+    #[zbus(signal)]
+    fn pairing_progress(&self, tv_id: String, phase: String, message: String) -> zbus::Result<()>;
+
+    /// One TV was discovered during a `DiscoverTvs` scan. Tuple shape
+    /// matches the synchronous RPC return:
+    /// `(id, name, address, (manufacturer, model, serial), vendor,
+    /// vendor_data)`.
+    #[zbus(signal)]
+    fn discovery_found(
+        &self,
+        id: String,
+        name: String,
+        address: String,
+        hardware_id: (String, String, String),
+        vendor: String,
+        vendor_data: std::collections::HashMap<String, String>,
+    ) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -132,9 +169,9 @@ trait TisvlayManager {
 /// D-Bus proxy for the base TV interface.
 #[proxy(interface = "org.tisvlay.Tv1", default_service = "org.tisvlay.Daemon")]
 trait TisvlayTv {
-    /// TV identifier.
+    /// TV UUID (RFC 4122). Stable, opaque handle generated at pair time.
     #[zbus(property)]
-    fn id(&self) -> zbus::Result<String>;
+    fn uuid(&self) -> zbus::Result<String>;
 
     /// TV display name.
     #[zbus(property)]
@@ -147,10 +184,6 @@ trait TisvlayTv {
     /// TV vendor ID.
     #[zbus(property)]
     fn vendor(&self) -> zbus::Result<String>;
-
-    /// TV address (transport-agnostic display address).
-    #[zbus(property)]
-    fn address(&self) -> zbus::Result<String>;
 
     /// Whether the TV is currently connected.
     #[zbus(property)]
@@ -172,10 +205,35 @@ trait TisvlayTv {
     #[zbus(property)]
     fn set_system_profile(&self, profile: &str) -> zbus::Result<()>;
 
+    /// The HDMI input the controlling PC is plugged into. Drives
+    /// `Tv1.Automated` recomputation.
+    #[zbus(property)]
+    fn primary_input(&self) -> zbus::Result<String>;
+
+    /// Set the primary input for this TV.
+    #[zbus(property)]
+    fn set_primary_input(&self, input: &str) -> zbus::Result<()>;
+
     /// Vendor-reported hardware identity: `(manufacturer, model, serial)`.
     /// Empty strings represent unknown fields.
     #[zbus(property)]
     fn hardware_id(&self) -> zbus::Result<(String, String, String)>;
+
+    /// User-editable vendor-config rows (LG: IP, MAC). Drives the
+    /// GUI's CONFIG group view-mode display and matches the field
+    /// set the edit form mutates via `Tv1.UpdateConfig`. Backends
+    /// populate this via `TvConnector::display_config` —
+    /// `UserInput`-visibility schema fields only.
+    #[zbus(property)]
+    fn vendor_config(&self) -> zbus::Result<Vec<(String, String)>>;
+
+    /// Backend-discovered diagnostic rows (LG: WebSocket scheme).
+    /// Read-only — surfaced in the GUI's INFO group alongside
+    /// hardware identity. Backends populate this via
+    /// `TvConnector::display_diagnostics` —
+    /// `Diagnostic`-visibility schema fields only.
+    #[zbus(property)]
+    fn vendor_info(&self) -> zbus::Result<Vec<(String, String)>>;
 
     /// Capabilities supported by this TV.
     #[zbus(property)]
@@ -183,6 +241,22 @@ trait TisvlayTv {
 
     /// Force reconnection.
     fn reconnect(&self) -> zbus::Result<()>;
+
+    /// Remove this TV from the daemon's configuration.
+    ///
+    /// Drops the in-memory entry, deletes from the config file,
+    /// and unregisters every `Tv1.*` interface at this path so
+    /// `ObjectManager.InterfacesRemoved` fires for watchers.
+    fn remove(&self) -> zbus::Result<()>;
+
+    /// Return the current TV config as a JSON string for prefilling
+    /// the edit pane. Top-level fields + non-`Secret` vendor fields.
+    fn get_config(&self) -> zbus::Result<String>;
+
+    /// Apply a JSON patch to this TV's config atomically.
+    /// Server-side schema-validated. Vendor changes trigger a
+    /// reconnect.
+    fn update_config(&self, json_patch: &str) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -204,6 +278,21 @@ trait TisvlayTvPower {
     /// Get current power state.
     #[zbus(property)]
     fn power_state(&self) -> zbus::Result<String>;
+
+    /// Whether the vendor backend can wake the TV from standby.
+    /// Surfaces enough info for clients to gate the Power-on button
+    /// on `Connected || SupportsWake` — true means there's at least
+    /// one viable path to bring the TV online.
+    #[zbus(property)]
+    fn supports_wake(&self) -> zbus::Result<bool>;
+
+    /// Phase transitions during a power-on flow.
+    ///
+    /// Phase string is one of `wol_sent`, `direct_connect`,
+    /// `connecting`, `connected`, `failed` — see
+    /// [`crate::PowerCyclePhase`] for the typed shape.
+    #[zbus(signal)]
+    fn power_cycle_progress(&self, phase: String) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for TV screen control.
@@ -217,8 +306,7 @@ trait TisvlayTvScreen {
     fn is_screen_on(&self) -> zbus::Result<bool>;
 
     /// Set screen on/off (true = unblank, false = blank).
-    #[zbus(property)]
-    fn set_is_screen_on(&self, on: bool) -> zbus::Result<()>;
+    fn set_screen(&self, on: bool) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for TV volume control.
@@ -232,7 +320,6 @@ trait TisvlayTvVolume {
     fn volume(&self) -> zbus::Result<u8>;
 
     /// Set volume level (0-100).
-    #[zbus(property)]
     fn set_volume(&self, level: u8) -> zbus::Result<()>;
 
     /// Whether audio is currently muted.
@@ -240,7 +327,6 @@ trait TisvlayTvVolume {
     fn muted(&self) -> zbus::Result<bool>;
 
     /// Set mute state.
-    #[zbus(property)]
     fn set_muted(&self, muted: bool) -> zbus::Result<()>;
 }
 
@@ -273,7 +359,6 @@ trait TisvlayTvBacklight {
     fn backlight(&self) -> zbus::Result<u8>;
 
     /// Set backlight level (0-100).
-    #[zbus(property)]
     fn set_backlight(&self, level: u8) -> zbus::Result<()>;
 }
 
@@ -403,12 +488,10 @@ pub async fn watch_service(
 /// defaults (power_state="unknown", volume=0, etc.).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TvInfo {
-    /// TV identifier.
-    pub id: String,
+    /// TV UUID (RFC 4122). Stable opaque handle generated at pair time.
+    pub uuid: String,
     /// Display name.
     pub name: String,
-    /// Transport-agnostic display address (e.g. IP, serial port, CEC address).
-    pub address: String,
     /// Vendor ID.
     pub vendor: String,
     /// Whether connected.
@@ -422,8 +505,22 @@ pub struct TvInfo {
     pub automated: bool,
     /// System profile name assigned to this TV.
     pub system_profile: String,
+    /// Primary-input ID for this TV (the HDMI port the controlling PC
+    /// is plugged into). Empty when unset; "_unknown_" when set to
+    /// the wildcard (every input is treated as primary).
+    pub primary_input: String,
     /// Vendor-reported hardware identity (manufacturer / model / serial).
     pub hardware_id: crate::HardwareId,
+    /// User-editable vendor-config rows (LG: IP, MAC). Mirrors
+    /// `Tv1.VendorConfig`. The GUI's CONFIG group renders these
+    /// in view mode and edits the same fields via the schema
+    /// form when the user clicks the edit pencil.
+    pub vendor_config: Vec<(String, String)>,
+    /// Backend-discovered diagnostic rows (LG: WebSocket scheme).
+    /// Mirrors `Tv1.VendorInfo`. Read-only — refreshed only on
+    /// re-pair. Rendered in the GUI's INFO group alongside the
+    /// hardware identity columns.
+    pub vendor_info: Vec<(String, String)>,
     /// Desktop-side identity from the daemon's in-process DRM-EDID
     /// probe. Empty strings until `tisvlayd` matches a connector for
     /// this TV (typically on the first `ConnectionChanged(true)`).
@@ -434,6 +531,10 @@ pub struct TvInfo {
     // State from sub-interface properties
     /// Power state (e.g., "active", "standby", "screen_off", "unknown").
     pub power_state: String,
+    /// Whether the vendor backend can wake the TV from standby.
+    /// Surfaced from `Tv1.Power.SupportsWake` so GUIs gate the
+    /// Power-on button on `connected || supports_wake`.
+    pub supports_wake: bool,
     /// Whether the screen is on (not blanked).
     pub is_screen_on: bool,
     /// Current volume level (0-100).
@@ -708,9 +809,8 @@ impl DaemonClient {
                     })
             };
 
-            let id = get_str("Id");
+            let uuid = get_str("Uuid");
             let name = get_str("Name");
-            let address = get_str("Address");
             let vendor = get_str("Vendor");
             let connected = get_bool("Connected", false);
             let managed = get_bool("Managed", true);
@@ -724,10 +824,21 @@ impl DaemonClient {
                 }
             };
 
+            let primary_input = get_str("PrimaryInput");
+
             let hardware_id = props
                 .get("HardwareId")
                 .and_then(|v: &OwnedValue| <(String, String, String)>::try_from(v.clone()).ok())
                 .map(crate::HardwareId::from_dbus_tuple)
+                .unwrap_or_default();
+
+            let vendor_config: Vec<(String, String)> = props
+                .get("VendorConfig")
+                .and_then(|v: &OwnedValue| <Vec<(String, String)>>::try_from(v.clone()).ok())
+                .unwrap_or_default();
+            let vendor_info: Vec<(String, String)> = props
+                .get("VendorInfo")
+                .and_then(|v: &OwnedValue| <Vec<(String, String)>>::try_from(v.clone()).ok())
                 .unwrap_or_default();
 
             // Helper to extract properties from a sub-interface.
@@ -759,6 +870,7 @@ impl DaemonClient {
 
             // Extract state from sub-interfaces
             let power_state = get_sub_str("org.tisvlay.Tv1.Power", "PowerState", "unknown");
+            let supports_wake = get_sub_bool("org.tisvlay.Tv1.Power", "SupportsWake", false);
             let is_screen_on = get_sub_bool("org.tisvlay.Tv1.Screen", "IsScreenOn", true);
             let volume = get_sub_u8("org.tisvlay.Tv1.Volume", "Volume");
             let muted = get_sub_bool("org.tisvlay.Tv1.Volume", "Muted", false);
@@ -781,24 +893,27 @@ impl DaemonClient {
                 );
             }
 
-            if id.is_empty() {
-                warn!(path = %path, "TV object returned by daemon has empty Id, skipping");
+            if uuid.is_empty() {
+                warn!(path = %path, "TV object returned by daemon has empty Uuid, skipping");
                 continue;
             }
 
             tvs.push(TvInfo {
-                id,
+                uuid,
                 name,
-                address,
                 vendor,
                 connected,
                 managed,
                 automated,
                 system_profile,
+                primary_input,
                 hardware_id,
+                vendor_config,
+                vendor_info,
                 desktop,
                 path: path.as_str().to_string(),
                 power_state,
+                supports_wake,
                 is_screen_on,
                 volume,
                 muted,
@@ -813,11 +928,24 @@ impl DaemonClient {
 
     /// Discover TVs on the network.
     ///
-    /// Returns `(id, name, address, hardware_id, vendor)` tuples.
+    /// Returns `(id, name, address, hardware_id, vendor, vendor_data)`
+    /// tuples. `vendor_data` carries free-form key/value entries the
+    /// daemon collected during discovery (e.g. `"mac"` from the kernel
+    /// neighbour table for IP-addressed backends); wizards match these
+    /// against each vendor's `PairingField::autofill` directives.
     pub async fn discover_tvs(
         &self,
         timeout_ms: u32,
-    ) -> Result<Vec<(String, String, String, crate::HardwareId, String)>> {
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            crate::HardwareId,
+            String,
+            std::collections::HashMap<String, String>,
+        )>,
+    > {
         let raw = self
             .manager
             .discover_tvs(timeout_ms)
@@ -825,13 +953,14 @@ impl DaemonClient {
             .context("Failed to discover TVs")?;
         Ok(raw
             .into_iter()
-            .map(|(id, name, address, hw_tuple, vendor)| {
+            .map(|(id, name, address, hw_tuple, vendor, vendor_data)| {
                 (
                     id,
                     name,
                     address,
                     crate::HardwareId::from_dbus_tuple(hw_tuple),
                     vendor,
+                    vendor_data,
                 )
             })
             .collect())
@@ -845,6 +974,21 @@ impl DaemonClient {
             .get_supported_vendors()
             .await
             .context("Failed to get supported vendors")
+    }
+
+    /// Get the pairing-form schema for a vendor.
+    ///
+    /// Returns the typed [`PairingField`] list the wizard should
+    /// render. The daemon serializes it as JSON over D-Bus
+    /// (matching the `config_json` convention on `AddTv`); this
+    /// wrapper deserializes back into typed Rust on the client.
+    pub async fn get_pairing_schema(&self, vendor: &str) -> Result<Vec<crate::PairingField>> {
+        let json = self
+            .manager
+            .get_pairing_schema(vendor)
+            .await
+            .context("Failed to get pairing schema")?;
+        serde_json::from_str(&json).context("Failed to parse pairing schema JSON")
     }
 
     /// Pair/add a new TV.
@@ -877,22 +1021,69 @@ impl DaemonClient {
     }
 
     /// Remove a TV from configuration.
+    ///
+    /// Routes through the per-object `Tv1.Remove()` method so the
+    /// daemon's handler has `&self.tv_id` directly — no path
+    /// decoding, no hyphen/underscore mangling. The daemon
+    /// unregisters every `Tv1.*` interface at this path as part
+    /// of the call; we drop the proxy cache entry on success.
     pub async fn remove_tv(&self, tv_id: &str) -> Result<()> {
-        debug!(tv_id = %tv_id, "Removing TV via daemon");
-        let path = tv_path(tv_id);
-        let obj_path = OwnedObjectPath::try_from(path).context("Invalid TV path")?;
-        self.manager
-            .remove_tv(&obj_path)
-            .await
-            .with_context(|| format!("Failed to remove TV: {}", tv_id))?;
+        self.with_proxies(tv_id, "remove", |p| Box::pin(p.base.remove()))
+            .await?;
 
-        // Remove from cache
-        {
-            let mut cache = self.tv_proxies.write().await;
-            cache.remove(tv_id);
-        }
-
+        let mut cache = self.tv_proxies.write().await;
+        cache.remove(tv_id);
         Ok(())
+    }
+
+    /// Fetch a TV's config as JSON (top-level + non-`Secret` vendor
+    /// fields). Used by the GUI's edit pane to prefill its form.
+    pub async fn get_tv_config(&self, tv_id: &str) -> Result<String> {
+        self.with_proxies(tv_id, "get config", |p| Box::pin(p.base.get_config()))
+            .await
+    }
+
+    /// Apply a JSON patch atomically to a TV's config. Routes
+    /// through the per-object `Tv1.UpdateConfig` method; the
+    /// daemon validates each field server-side against the
+    /// vendor's `config_schema`, persists to disk, and triggers a
+    /// reconnect if any vendor field changed.
+    pub async fn update_tv_config(&self, tv_id: &str, json_patch: &str) -> Result<()> {
+        let patch = json_patch.to_string();
+        self.with_proxies(tv_id, "update config", move |p| {
+            let patch = patch.clone();
+            Box::pin(async move { p.base.update_config(&patch).await })
+        })
+        .await
+    }
+
+    /// Subscribe to structural changes in the daemon's TV list.
+    ///
+    /// Returns a stream that yields `()` whenever the daemon's
+    /// `ObjectManager` emits `InterfacesAdded` or `InterfacesRemoved`
+    /// — i.e. whenever a TV is paired or removed. The stream
+    /// intentionally does not carry diff information so subscribers
+    /// always reconcile against the daemon's authoritative
+    /// `list_tvs()` rather than against a wire-format payload that
+    /// could drift from the underlying state.
+    ///
+    /// Used by `tisvlay-session` to prune orphan `[[tv]]` profile
+    /// assignments from user config when the corresponding TV is
+    /// unpaired.
+    pub async fn tv_list_change_stream(&self) -> Result<impl Stream<Item = ()> + Send + 'static> {
+        let rule = format!(
+            "type='signal',sender='{}',interface='org.freedesktop.DBus.ObjectManager',path='{}'",
+            DAEMON_SERVICE, OBJECT_MANAGER_PATH,
+        );
+        let raw = subscribe_signals(&self.connection, &rule)
+            .await
+            .context("Failed to subscribe to ObjectManager signals on daemon")?;
+        Ok(raw.filter_map(|msg_result| async move {
+            let msg = msg_result.ok()?;
+            let header = msg.header();
+            let member = header.member()?.to_string();
+            (member == "InterfacesAdded" || member == "InterfacesRemoved").then_some(())
+        }))
     }
 
     // -------------------------------------------------------------------------
@@ -911,10 +1102,117 @@ impl DaemonClient {
             .await
     }
 
+    /// Subscribe to `Tv1.Power.PowerCycleProgress` signals for a TV.
+    ///
+    /// Returns a stream of [`crate::PowerCyclePhase`] values yielded as
+    /// the daemon walks through `WolSent` → `Connecting` → `Connected`
+    /// or `Failed` during a `PowerOn`. Set up the subscription **before**
+    /// calling [`Self::power_on`] — phases emitted before the stream is
+    /// active are dropped.
+    ///
+    /// Unknown phase strings (forward-compat slack from a newer daemon)
+    /// are skipped silently.
+    pub async fn power_cycle_progress_stream(
+        &self,
+        tv_id: &str,
+    ) -> Result<impl futures_util::Stream<Item = crate::PowerCyclePhase> + use<>> {
+        use futures_util::StreamExt;
+
+        let path = tv_path(tv_id);
+        let obj_path = OwnedObjectPath::try_from(path).context("Invalid TV path")?;
+        let proxy = TisvlayTvPowerProxy::builder(&self.connection)
+            .path(obj_path)
+            .context("Invalid TV path for Tv1.Power proxy")?
+            .build()
+            .await
+            .context("failed to build Tv1.Power proxy")?;
+        let raw = proxy
+            .receive_power_cycle_progress()
+            .await
+            .context("failed to subscribe to PowerCycleProgress signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            match args.phase.as_str() {
+                "wol_sent" => Some(crate::PowerCyclePhase::WolSent),
+                "direct_connect" => Some(crate::PowerCyclePhase::DirectConnect),
+                "connecting" => Some(crate::PowerCyclePhase::Connecting),
+                "connected" => Some(crate::PowerCyclePhase::Connected),
+                "failed" => Some(crate::PowerCyclePhase::Failed),
+                _ => None,
+            }
+        }))
+    }
+
+    /// Subscribe to `Manager1.PairingProgress` signals.
+    ///
+    /// Returns a stream of `(tv_id, phase, message)` tuples emitted
+    /// during `pair_tv()` calls. Phase strings: `awaiting_tv`,
+    /// `awaiting_input`, `complete`, `failed`. Set up the stream
+    /// **before** calling `pair_tv` if you want to observe its
+    /// progress — phases emitted before the stream is active are
+    /// dropped.
+    pub async fn pairing_progress_stream(
+        &self,
+    ) -> Result<impl futures_util::Stream<Item = (String, String, String)> + use<>> {
+        use futures_util::StreamExt;
+
+        let raw = self
+            .manager
+            .receive_pairing_progress()
+            .await
+            .context("failed to subscribe to PairingProgress signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Some((args.tv_id, args.phase, args.message))
+        }))
+    }
+
+    /// Subscribe to `Manager1.DiscoveryFound` signals.
+    ///
+    /// Returns a stream of `(id, name, address, hardware_id, vendor,
+    /// vendor_data)` tuples — same shape as the `discover_tvs` RPC
+    /// return value. In v1 the daemon emits these in a burst right
+    /// before `DiscoverTvs` returns; clients should still set up the
+    /// stream before calling `discover_tvs` so future per-backend
+    /// streaming arrives intact.
+    pub async fn discovery_found_stream(
+        &self,
+    ) -> Result<
+        impl futures_util::Stream<
+            Item = (
+                String,
+                String,
+                String,
+                crate::HardwareId,
+                String,
+                std::collections::HashMap<String, String>,
+            ),
+        > + use<>,
+    > {
+        use futures_util::StreamExt;
+
+        let raw = self
+            .manager
+            .receive_discovery_found()
+            .await
+            .context("failed to subscribe to DiscoveryFound signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Some((
+                args.id,
+                args.name,
+                args.address,
+                crate::HardwareId::from_dbus_tuple(args.hardware_id),
+                args.vendor,
+                args.vendor_data,
+            ))
+        }))
+    }
+
     /// Turn screen on (resume from blank).
     pub async fn screen_on(&self, tv_id: &str) -> Result<()> {
         self.with_proxies(tv_id, "turn screen on", |p| {
-            Box::pin(p.screen.set_is_screen_on(true))
+            Box::pin(p.screen.set_screen(true))
         })
         .await
     }
@@ -922,7 +1220,7 @@ impl DaemonClient {
     /// Turn screen off (OLED-safe blank).
     pub async fn screen_off(&self, tv_id: &str) -> Result<()> {
         self.with_proxies(tv_id, "turn screen off", |p| {
-            Box::pin(p.screen.set_is_screen_on(false))
+            Box::pin(p.screen.set_screen(false))
         })
         .await
     }
@@ -1068,23 +1366,57 @@ impl DaemonClient {
             .context("Failed to list system profiles from daemon")
     }
 
-    /// Set the system profile for a TV.
+    /// Set a TV's friendly name.
     ///
-    /// Convenience wrapper around `set_tv_option(tv_id, "profile.system", name)`.
-    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
-        self.set_tv_option(tv_id, "profile.system", profile_name)
-            .await
+    /// Routes through the per-object `Tv1.Name` writable property
+    /// (`Properties.Set`). Use [`update_tv_config`](Self::update_tv_config)
+    /// when changing multiple fields atomically; this single-field
+    /// helper has the lighter-weight wire format for inline controls
+    /// (rename in the TVs pane header, etc.).
+    pub async fn set_tv_name(&self, tv_id: &str, name: &str) -> Result<()> {
+        let name = name.to_string();
+        self.with_proxies(tv_id, "set name", move |p| {
+            let name = name.clone();
+            Box::pin(async move { p.base.set_name(&name).await })
+        })
+        .await
     }
 
-    /// Set a system-level TV option.
+    /// Toggle whether a TV participates in managed automation.
     ///
-    /// Supported keys: `primary_input`, `managed`, `name`, `profile.system`.
-    pub async fn set_tv_option(&self, tv_id: &str, key: &str, value: &str) -> Result<()> {
-        debug!(tv_id = %tv_id, key = %key, value = %value, "Calling SetTvOption on daemon");
-        self.manager
-            .set_tv_option(tv_id, key, value)
-            .await
-            .with_context(|| format!("Failed to set TV option: {} {}={}", tv_id, key, value))
+    /// Routes through the per-object `Tv1.Managed` writable property.
+    pub async fn set_tv_managed(&self, tv_id: &str, managed: bool) -> Result<()> {
+        self.with_proxies(tv_id, "set managed", move |p| {
+            Box::pin(p.base.set_managed(managed))
+        })
+        .await
+    }
+
+    /// Set the system profile for a TV (e.g. `"default"`, `"guest"`).
+    ///
+    /// Routes through the per-object `Tv1.SystemProfile` writable
+    /// property.
+    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
+        let profile_name = profile_name.to_string();
+        self.with_proxies(tv_id, "set system profile", move |p| {
+            let profile_name = profile_name.clone();
+            Box::pin(async move { p.base.set_system_profile(&profile_name).await })
+        })
+        .await
+    }
+
+    /// Set a TV's primary input — the HDMI port the controlling PC
+    /// is plugged into. Drives `Tv1.Automated` recomputation.
+    ///
+    /// Routes through the per-object `Tv1.PrimaryInput` writable
+    /// property.
+    pub async fn set_tv_primary_input(&self, tv_id: &str, input: &str) -> Result<()> {
+        let input = input.to_string();
+        self.with_proxies(tv_id, "set primary input", move |p| {
+            let input = input.clone();
+            Box::pin(async move { p.base.set_primary_input(&input).await })
+        })
+        .await
     }
 }
 

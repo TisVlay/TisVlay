@@ -205,13 +205,48 @@ async fn main() -> Result<()> {
         tisvlay_session::event_handler(event_rx, handler_state, handler_daemon).await;
     });
 
+    // Spawn the orphan-pruner: when the daemon unregisters a TV's
+    // `Tv1.*` interfaces (via `Tv1.Remove()`), this watches the
+    // resulting `ObjectManager.InterfacesRemoved` signal and prunes
+    // the corresponding user-config `[[tv]]` assignment so we don't
+    // accumulate orphans across the device lifecycle.
+    let pruner_task = match daemon.tv_list_change_stream().await {
+        Ok(stream) => {
+            let pruner_state = state.clone();
+            let pruner_daemon = daemon.clone();
+            let pruner_config = args.config.clone();
+            Some(tokio::spawn(async move {
+                use futures_util::StreamExt;
+                let mut stream = std::pin::pin!(stream);
+                while stream.next().await.is_some() {
+                    tisvlay_session::reconcile_user_config_orphans(
+                        &pruner_state,
+                        &pruner_daemon,
+                        pruner_config.as_ref(),
+                    )
+                    .await;
+                }
+            }))
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Failed to subscribe to daemon TV-list signals; orphan user config entries will not be pruned automatically"
+            );
+            None
+        }
+    };
+
     // Wait for shutdown signals
     wait_for_signals(state, daemon, args.config).await;
 
     info!("Shutting down...");
 
-    // Abort the handler task
+    // Abort spawned tasks
     handler_task.abort();
+    if let Some(t) = pruner_task {
+        t.abort();
+    }
 
     Ok(())
 }

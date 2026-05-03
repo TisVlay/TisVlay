@@ -10,9 +10,22 @@ use crate::registry::BackendRegistry;
 use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// How long the direct-connect probe in [`TvManager::power_on`]
+/// waits before giving up and falling through to Wake-on-LAN.
+///
+/// Healthy single-attempt reconnects complete in <500 ms when the
+/// TV is reachable; this cap is belt-and-suspenders for misbehaving
+/// networks (firewall blackholes, hung TLS handshakes) where a
+/// connect would otherwise stall on the kernel's multi-second
+/// handshake budget. Backends that violate the
+/// `TvConnector::connect()` fast-fail contract are also bounded
+/// here.
+const DIRECT_CONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 use tisvlay_core::{
-    Capabilities, ResolvedSystemProfile, SessionAction, SystemConfig, SystemSection, TvConfig,
-    TvConnection, TvState, UserProfileConfig, UserSection,
+    Capabilities, FieldVisibility, ResolvedSystemProfile, SessionAction, SystemConfig,
+    SystemSection, TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -53,9 +66,17 @@ pub enum TvManagerError {
         source: tisvlay_core::Error,
     },
 
-    /// Wake not supported for this TV.
-    #[error("Wake not supported for TV: {0}")]
-    WakeNotSupported(String),
+    /// Power-cycle failure with a typed reason. Carries the
+    /// per-domain `PowerError` so consumers (D-Bus error
+    /// mapping, GUI inline-error surface, tray) can route on a
+    /// stable [`PowerErrorCode`](tisvlay_core::errors::PowerErrorCode)
+    /// rather than parsing a free-form string.
+    #[error("Power-cycle failure on TV {tv_id}: {kind}")]
+    Power {
+        tv_id: String,
+        #[source]
+        kind: tisvlay_core::errors::PowerError,
+    },
 
     /// Pairing failed.
     #[error("Pairing failed: {0}")]
@@ -96,6 +117,17 @@ pub enum StateChangeEvent {
     ///
     /// Profile lists, TV names, and managed flags may all differ.
     ConfigReloaded,
+    /// A TV's vendor-specific config was edited (`Tv1.UpdateConfig`
+    /// touched at least one schema field).
+    ///
+    /// The forwarder refreshes per-TV cached properties that derive
+    /// from the vendor config — `Tv1.VendorInfo` (label/value
+    /// projection) and `Tv1.Power.SupportsWake` (LG: depends on
+    /// MAC presence). The connection itself drops and reconnects
+    /// inside `update_tv_config` so the new transport is picked up
+    /// independently; this event handles the cached-property
+    /// resync that has no other trigger.
+    TvVendorConfigChanged { tv_id: String },
     /// A network interface's carrier went up (cable plugged in, link established).
     ///
     /// From kernel netlink RTMGRP_LINK. Triggers reconnection for TVs
@@ -117,14 +149,33 @@ pub enum StateChangeEvent {
     /// The forwarder invalidates the `org.tisvlay.Tv1.Desktop` cached
     /// properties so the next read returns the updated identity.
     DesktopMappingChanged { tv_id: String },
+    /// A power-on flow walked into a new phase.
+    ///
+    /// The forwarder emits `Tv1.Power.PowerCycleProgress(phase: s)` so
+    /// the GUI can show staged feedback during the 5-30 s wake window.
+    PowerCycleProgress {
+        tv_id: String,
+        phase: tisvlay_core::PowerCyclePhase,
+    },
+    /// A pairing flow transitioned to a new state.
+    ///
+    /// The forwarder emits `Manager1.PairingProgress(tv_id, phase: s)`
+    /// so wizard UIs can render staged feedback ("Confirm on TV..." /
+    /// "Awaiting input" / "Complete" / "Failed: <reason>").
+    ///
+    /// `phase` matches [`tisvlay_core::PairingState::to_dbus_state`]:
+    /// `awaiting_tv`, `awaiting_input`, `complete`, `failed`.
+    PairingProgress {
+        tv_id: String,
+        phase: String,
+        message: String,
+    },
 }
 
 /// Basic TV information for D-Bus properties.
 #[derive(Debug, Clone)]
 pub struct TvInfo {
     pub name: String,
-    /// Display address (extracted from vendor-specific config via connector).
-    pub address: String,
     pub vendor: String,
     pub managed: bool,
 }
@@ -377,7 +428,7 @@ impl TvManager {
         for tv_config in &config.tv {
             let system_profile = config.resolve_system_profile(tv_config);
             tvs.insert(
-                tv_config.id.clone(),
+                tv_config.uuid.to_string(),
                 (
                     tv_config.managed,
                     Arc::new(Mutex::new(ManagedTv::new(
@@ -455,7 +506,10 @@ impl TvManager {
             return;
         }
 
-        let address = self.registry.display_address(&config);
+        let Some(address) = self.registry.primary_descriptor(&config) else {
+            debug!(tv_id = %tv_id, "Backend exposed no primary descriptor for route resolution");
+            return;
+        };
         let ip: std::net::IpAddr = match address.parse() {
             Ok(ip) => ip,
             Err(_) => {
@@ -619,10 +673,10 @@ impl TvManager {
                         Err(_) => continue,
                     };
                     let tv = tv_arc.lock().await;
-                    self.registry.display_address(&tv.config)
+                    self.registry.primary_descriptor(&tv.config)
                 };
 
-                info!(tv_id = %tv_id, address = %display_addr, "Warm restart: connecting to TV");
+                info!(tv_id = %tv_id, address = ?display_addr, "Warm restart: connecting to TV");
 
                 match self.reconnect(tv_id).await {
                     Ok(()) => info!(tv_id = %tv_id, "Warm restart: connected"),
@@ -830,10 +884,8 @@ impl TvManager {
     pub async fn get_tv_info(&self, tv_id: &str) -> Option<TvInfo> {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
         let tv = tv_arc.lock().await;
-        let address = self.registry.display_address(&tv.config);
         Some(TvInfo {
             name: tv.config.name.clone(),
-            address,
             vendor: tv.config.vendor.clone(),
             managed: tv.config.managed,
         })
@@ -845,6 +897,50 @@ impl TvManager {
         tvs.iter()
             .filter_map(|(id, (managed, _))| if *managed { Some(id.clone()) } else { None })
             .collect()
+    }
+
+    /// User-editable vendor-config rows (LG: IP, MAC). Read at
+    /// `Tv1.*` interface registration time and cached on
+    /// `Tv1.VendorConfig`. Empty when the backend has no
+    /// `UserInput` schema fields or the TV isn't found.
+    pub async fn vendor_config(&self, tv_id: &str) -> Vec<(String, String)> {
+        match self.get_tv(tv_id).await {
+            Ok(tv_arc) => {
+                let tv = tv_arc.lock().await;
+                self.registry.display_config(&tv.config)
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Backend-discovered diagnostic rows (LG: WebSocket scheme).
+    /// Read at `Tv1.*` interface registration time and cached on
+    /// `Tv1.VendorInfo`; refreshed via `TvVendorConfigChanged` after
+    /// `Tv1.UpdateConfig` writes. Empty when the backend has no
+    /// `Diagnostic` schema fields or the TV isn't found.
+    pub async fn vendor_diagnostics(&self, tv_id: &str) -> Vec<(String, String)> {
+        match self.get_tv(tv_id).await {
+            Ok(tv_arc) => {
+                let tv = tv_arc.lock().await;
+                self.registry.display_diagnostics(&tv.config)
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Whether this TV's vendor backend can wake the TV from
+    /// standby (e.g. has a MAC for Wake-on-LAN). Read at D-Bus
+    /// interface registration time and cached on
+    /// `Tv1.Power.SupportsWake`; the GUI uses it to gate the
+    /// Power-on button when the TV is offline AND can't be woken.
+    pub async fn supports_wake(&self, tv_id: &str) -> bool {
+        match self.get_tv(tv_id).await {
+            Ok(tv_arc) => {
+                let tv = tv_arc.lock().await;
+                self.registry.supports_wake(&tv.config)
+            }
+            Err(_) => false,
+        }
     }
 
     /// Check if a TV is connected.
@@ -958,8 +1054,8 @@ impl TvManager {
             tv.config.clone()
         };
 
-        let display_addr = self.registry.display_address(&config);
-        info!(tv_id = %tv_id, address = %display_addr, vendor = %config.vendor, "Reconnecting to TV");
+        let display_addr = self.registry.primary_descriptor(&config);
+        info!(tv_id = %tv_id, address = ?display_addr, vendor = %config.vendor, "Reconnecting to TV");
 
         // Connect without holding the lock — backends may retry for
         // seconds (LG: 5 attempts × ~10s each).
@@ -1122,8 +1218,8 @@ impl TvManager {
                 return Err(TvManagerError::PoweredOff(tv_id.to_string()));
             }
 
-            let display_addr = self.registry.display_address(&tv.config);
-            info!(tv_id = %tv_id, address = %display_addr, vendor = %tv.config.vendor, "Connecting to TV");
+            let display_addr = self.registry.primary_descriptor(&tv.config);
+            info!(tv_id = %tv_id, address = ?display_addr, vendor = %tv.config.vendor, "Connecting to TV");
 
             let connection = self.registry.connect_tv(&tv.config).await.map_err(|e| {
                 TvManagerError::ConnectionFailed {
@@ -1141,14 +1237,13 @@ impl TvManager {
                 .registry
                 .transport_for(&tv.config)
                 .is_network_dependent()
+                && let Some(address) = self.registry.primary_descriptor(&tv.config)
+                && let Ok(ip) = address.parse::<std::net::IpAddr>()
             {
-                let address = self.registry.display_address(&tv.config);
-                if let Ok(ip) = address.parse::<std::net::IpAddr>() {
-                    let interface = crate::netlink::resolve_interface_for_ip(ip).await;
-                    if tv.monitored_interface != interface {
-                        debug!(tv_id = %tv_id, interface = ?interface, "Monitored interface resolved");
-                        tv.monitored_interface = interface;
-                    }
+                let interface = crate::netlink::resolve_interface_for_ip(ip).await;
+                if tv.monitored_interface != interface {
+                    debug!(tv_id = %tv_id, interface = ?interface, "Monitored interface resolved");
+                    tv.monitored_interface = interface;
                 }
             }
 
@@ -1176,23 +1271,51 @@ impl TvManager {
     // Power Control
     // -------------------------------------------------------------------------
 
-    /// Power on a TV using Wake-on-LAN.
+    /// Power on a TV — probe-first, with WoL fallback.
     ///
-    /// The backend owns all transport-specific retry logic (WoL resend,
-    /// boot wait, connect retry) via `wake_and_connect()`.
+    /// Picks one of two paths based on whether the TV is reachable:
+    ///
+    /// - **Direct connect** (TV already up; we just lost the WS):
+    ///   skip the magic packet entirely, go straight to connect.
+    ///   Emits `DirectConnect` → `Connecting` → `Connected`. Common
+    ///   case after a NIC flap, route change, or backgrounded TV
+    ///   that's still in `Active`.
+    /// - **Wake-on-LAN** (TV in deep standby): magic packet, then
+    ///   the backend's connect-retry loop. Emits `WolSent` →
+    ///   `Connecting` → `Connected`.
+    ///
+    /// The probe is "did `connect()` succeed within
+    /// [`DIRECT_CONNECT_PROBE_TIMEOUT`]?" — backends own the
+    /// transport-specific retry timing, so a fast-failing connect
+    /// here means "TV not reachable at all", and we fall through to
+    /// the wake path. The timeout caps misbehaving networks
+    /// (firewall blackholes etc.) so the user doesn't pay the
+    /// kernel's TCP/TLS handshake-stall budget.
+    ///
+    /// Skips the probe entirely when `was_powered_off` is set:
+    /// the user just hit Power Off seconds ago and we *know* the
+    /// TV is in standby, so a probe would always fail and burn
+    /// the timeout for nothing. Goes straight to WoL.
+    ///
+    /// If neither path is available (no wake method AND not
+    /// reachable), surfaces a typed
+    /// [`PowerError::NoMacConfigured`] so the GUI's inline-error
+    /// surface can render an actionable message.
     pub async fn power_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let tv_arc = self.get_tv(tv_id).await?;
 
-        // Read config and clear state under per-TV lock
-        let config = {
+        let (config, supports_wake, was_powered_off) = {
             let mut tv = tv_arc.lock().await;
-
-            if !self.registry.supports_wake(&tv.config) {
-                return Err(TvManagerError::WakeNotSupported(tv_id.to_string()));
-            }
-
-            let display_addr = self.registry.display_address(&tv.config);
-            info!(tv_id = %tv_id, address = %display_addr, "Waking TV");
+            let supports_wake = self.registry.supports_wake(&tv.config);
+            let was_powered_off = tv.powered_off;
+            let display_addr = self.registry.primary_descriptor(&tv.config);
+            info!(
+                tv_id = %tv_id,
+                address = ?display_addr,
+                supports_wake,
+                was_powered_off,
+                "PowerOn requested",
+            );
 
             // Drop any stale connection and clear the powered-off flag
             tv.powered_off = false;
@@ -1201,36 +1324,120 @@ impl TvManager {
                 let _ = conn.close().await;
             }
 
-            tv.config.clone()
+            (tv.config.clone(), supports_wake, was_powered_off)
         };
 
-        // Backend handles wake + boot wait + connect retry (no lock held)
-        let result = self.registry.wake_and_connect_tv(&config).await;
+        // Heuristic: skip the direct-connect probe when we *know*
+        // the TV is in standby. The user just hit Power Off seconds
+        // ago — a probe is guaranteed to fail and would just burn
+        // the connect timeout. Only skip when we have a wake method;
+        // otherwise we'd return immediately with no recovery path.
+        let should_probe = !(was_powered_off && supports_wake);
+
+        // Probe direct-connect first (when `should_probe`). Wrapped
+        // in a 2 s timeout so misbehaving networks (firewall
+        // blackholes, hung TLS handshakes) can't burn the kernel's
+        // multi-second handshake-stall budget. Healthy probes
+        // complete in <500 ms; the timeout is belt-and-suspenders.
+        let direct_result = if should_probe {
+            self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::DirectConnect);
+            match tokio::time::timeout(
+                DIRECT_CONNECT_PROBE_TIMEOUT,
+                self.registry.connect_tv(&config),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(|e| format!("{e}")),
+                Err(_elapsed) => Err(format!(
+                    "probe timed out after {:?}",
+                    DIRECT_CONNECT_PROBE_TIMEOUT
+                )),
+            }
+        } else {
+            debug!(tv_id = %tv_id, "Skipping direct-connect probe; TV was just powered off");
+            Err("powered_off hint; skipping probe".to_string())
+        };
+
+        let connection = match direct_result {
+            Ok(conn) => {
+                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connecting);
+                debug!(tv_id = %tv_id, "Direct connect succeeded; skipping WoL");
+                conn
+            }
+            Err(probe_err) => {
+                debug!(
+                    tv_id = %tv_id,
+                    error = %probe_err,
+                    "Direct-connect probe skipped/failed; falling back to WoL"
+                );
+                if !supports_wake {
+                    // No wake method AND TV not reachable. Without
+                    // this, the only evidence the user gets is a
+                    // D-Bus method `Err` return — buried in journald
+                    // by the GUI's `warn!`. Emitting `Failed` lets
+                    // the phase consumer transition out of the
+                    // in-flight spinner; the typed `PowerError`
+                    // routes through the GUI's inline-error surface.
+                    warn!(
+                        tv_id = %tv_id,
+                        "PowerOn requested but TV is unreachable AND has \
+                         no wake method configured (LG: missing MAC; pair \
+                         the TV again or edit config to add a MAC)",
+                    );
+                    self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Failed);
+                    let mut tv = tv_arc.lock().await;
+                    tv.reconnecting = false;
+                    return Err(TvManagerError::Power {
+                        tv_id: tv_id.to_string(),
+                        kind: tisvlay_core::errors::PowerError::NoMacConfigured,
+                    });
+                }
+
+                // Fall through: WoL path. Emit WolSent before kicking
+                // off the wake; the backend's WoL send + connect
+                // retry loop is atomic from our view, so Connecting
+                // fires immediately after.
+                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::WolSent);
+                self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connecting);
+                match self.registry.wake_and_connect_tv(&config).await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        let mut tv = tv_arc.lock().await;
+                        tv.reconnecting = false;
+                        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Failed);
+                        return Err(TvManagerError::WakeFailed {
+                            tv_id: tv_id.to_string(),
+                            source: e,
+                        });
+                    }
+                }
+            }
+        };
 
         // Store the connection and subscribe to state updates
         {
             let mut tv = tv_arc.lock().await;
             tv.reconnecting = false;
-            match result {
-                Ok(connection) => {
-                    tv.connection = Some(connection);
-                    if let Some(conn) = tv.connection.as_mut() {
-                        self.try_subscribe_state(tv_id, conn.as_mut()).await;
-                    }
-                }
-                Err(e) => {
-                    return Err(TvManagerError::WakeFailed {
-                        tv_id: tv_id.to_string(),
-                        source: e,
-                    });
-                }
+            tv.connection = Some(connection);
+            if let Some(conn) = tv.connection.as_mut() {
+                self.try_subscribe_state(tv_id, conn.as_mut()).await;
             }
         }
 
+        self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connected);
         self.emit_connection_changed(tv_id, true);
         self.resolve_monitored_interface(tv_id).await;
-        info!(tv_id = %tv_id, "TV is online after WoL");
+        info!(tv_id = %tv_id, "TV is online");
         Ok(())
+    }
+
+    /// Shorthand for emitting a [`StateChangeEvent::PowerCycleProgress`]
+    /// event. Keeps `power_on` readable.
+    fn emit_power_cycle_phase(&self, tv_id: &str, phase: tisvlay_core::PowerCyclePhase) {
+        self.emit_state_change(StateChangeEvent::PowerCycleProgress {
+            tv_id: tv_id.to_string(),
+            phase,
+        });
     }
 
     /// Power off a TV.
@@ -1341,10 +1548,16 @@ impl TvManager {
         name: &str,
         vendor: &str,
         vendor_config: toml::Value,
-        id: Option<&str>,
         managed: bool,
     ) -> Result<String, TvManagerError> {
         info!(name = %name, vendor = %vendor, "Pairing TV");
+
+        // Generate a fresh UUID v4 upfront so PairingProgress signals
+        // can carry a stable identifier even before the connection is
+        // established. Decoupled from `name` so renames don't churn
+        // cross-references.
+        let uuid = uuid::Uuid::new_v4();
+        let tv_id = uuid.to_string();
 
         // Start pairing via registry
         let mut session = self
@@ -1352,11 +1565,38 @@ impl TvManager {
             .start_pairing(vendor, &vendor_config)
             .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
+        // Spawn a watcher that forwards PairingState changes as
+        // `Manager1.PairingProgress` events. Bounded by the session's
+        // lifetime — when wait_for_completion returns and the session
+        // drops, the watch channel closes and the task exits.
+        let mut state_rx = session.subscribe();
+        let progress_tx = self.state_change_tx.clone();
+        let progress_tv_id = tv_id.clone();
+        let progress_task = tokio::spawn(async move {
+            // Emit the initial state before the first .changed() call.
+            let initial = state_rx.borrow().clone();
+            let _ = progress_tx.send(StateChangeEvent::PairingProgress {
+                tv_id: progress_tv_id.clone(),
+                phase: initial.to_dbus_state().to_string(),
+                message: initial.message().to_string(),
+            });
+            while state_rx.changed().await.is_ok() {
+                let s = state_rx.borrow().clone();
+                let _ = progress_tx.send(StateChangeEvent::PairingProgress {
+                    tv_id: progress_tv_id.clone(),
+                    phase: s.to_dbus_state().to_string(),
+                    message: s.message().to_string(),
+                });
+                if s.is_terminal() {
+                    break;
+                }
+            }
+        });
+
         // Wait for pairing to complete
-        let credentials = session
-            .wait_for_completion()
-            .await
-            .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
+        let result = session.wait_for_completion().await;
+        progress_task.abort();
+        let credentials = result.map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
         // Build final vendor config from pairing results
         let final_config = self
@@ -1364,14 +1604,10 @@ impl TvManager {
             .build_config_from_pairing(vendor, &vendor_config, &credentials)
             .map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
-        // Generate ID from name if not provided. Uses tv_id_from_name()
-        // which produces D-Bus-safe IDs (alphanumeric + underscore only).
-        let tv_id = id
-            .map(String::from)
-            .unwrap_or_else(|| tisvlay_core::tv_id_from_name(name));
-
-        // Create TV config with vendor-specific connection parameters
-        let mut tv_config = TvConfig::new(&tv_id, name, vendor, managed);
+        // Create TV config with vendor-specific connection parameters.
+        // The UUID was generated upfront so the persisted config
+        // matches the identifier emitted in PairingProgress signals.
+        let mut tv_config = TvConfig::with_uuid(uuid, name, vendor, managed);
 
         // Store the vendor config
         tv_config
@@ -1481,12 +1717,18 @@ impl TvManager {
         .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))?
     }
 
-    /// Set a system-level TV option and persist to disk.
+    /// Set a single top-level TV option and persist to disk.
     ///
-    /// Applies the change to the in-memory TV config first (which also validates
-    /// the TV ID and key), then persists via `spawn_blocking` to avoid blocking
-    /// the async executor on disk I/O.
-    pub async fn set_tv_option(
+    /// Crate-internal helper: the per-property `Tv1.{Name,Managed,
+    /// SystemProfile,PrimaryInput}` writable handlers route through
+    /// here for single-field flips. Multi-field atomic edits go via
+    /// [`update_tv_config`](Self::update_tv_config) instead.
+    ///
+    /// Applies the change to the in-memory TV config first (which
+    /// also validates the TV ID and key), then persists via
+    /// `spawn_blocking` to avoid blocking the async executor on
+    /// disk I/O.
+    pub(crate) async fn set_tv_option(
         &self,
         tv_id: &str,
         key: &str,
@@ -1516,7 +1758,7 @@ impl TvManager {
             }
         } // per-TV lock released before I/O
 
-        // Keep the outer managed flag in sync when toggled via SetTvOption.
+        // Keep the outer managed flag in sync when this helper toggles `managed`.
         if key == "managed" {
             if let Ok(managed_val) = value.parse::<bool>() {
                 let mut tvs = self.tvs.write().await;
@@ -1557,6 +1799,310 @@ impl TvManager {
         Ok(())
     }
 
+    /// Render the current TV config as a JSON object suitable for
+    /// prefilling the GUI's edit pane.
+    ///
+    /// The payload mirrors the keys the schema-driven form expects:
+    /// top-level `name` / `managed` / `system_profile` /
+    /// `primary_input` keys (mapped from `tv.config.profile.system`
+    /// for the system-profile key) plus every vendor-config field
+    /// from the connector's `config_schema()` filtered to non-`Secret`
+    /// visibilities. `Secret` fields (LG `client_key` etc.) are
+    /// stripped server-side so they can never reach the GUI even
+    /// if a future schema slip-up forgets to mark a field.
+    pub async fn get_tv_config_json(&self, tv_id: &str) -> Result<String, TvManagerError> {
+        let tv_arc = self.get_tv(tv_id).await?;
+        let tv = tv_arc.lock().await;
+        let config = &tv.config;
+
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "name".to_string(),
+            serde_json::Value::String(config.name.clone()),
+        );
+        obj.insert(
+            "managed".to_string(),
+            serde_json::Value::Bool(config.managed),
+        );
+        obj.insert(
+            "system_profile".to_string(),
+            serde_json::Value::String(config.profile.system.clone()),
+        );
+        if let Some(ref pi) = config.primary_input {
+            obj.insert(
+                "primary_input".to_string(),
+                serde_json::Value::String(pi.clone()),
+            );
+        }
+
+        let connector = self
+            .registry
+            .get_connector(&config.vendor)
+            .map_err(|e| TvManagerError::ConfigError(format!("Unknown vendor: {}", e)))?;
+        let schema = connector.config_schema();
+        let vendor_table = config.get_raw_vendor_value().and_then(|v| v.as_table());
+
+        for field in &schema {
+            if field.visibility == FieldVisibility::Secret {
+                continue;
+            }
+            if let Some(value) = vendor_table.and_then(|t| t.get(&field.name)) {
+                obj.insert(field.name.clone(), crate::json_toml::toml_to_json(value));
+            }
+        }
+
+        serde_json::to_string(&serde_json::Value::Object(obj))
+            .map_err(|e| TvManagerError::ConfigError(format!("Serialize config: {}", e)))
+    }
+
+    /// Apply a JSON patch atomically to a TV's config.
+    ///
+    /// Accepted top-level keys: `name`, `managed`, `system_profile`,
+    /// `primary_input` (mirrors the keys `set_tv_option` accepts;
+    /// `system_profile` maps to the internal `profile.system` slot).
+    /// All other keys are interpreted as vendor-config fields and
+    /// must be `UserInput`-visibility entries in the connector's
+    /// `config_schema()`. `Secret` and `Diagnostic` keys are
+    /// rejected — defense in depth, the daemon never trusts a
+    /// client to filter on visibility for it.
+    ///
+    /// Each vendor field is canonically validated server-side via
+    /// `PairingField::validate` (same checks `AddTv` runs at pair
+    /// time), so a field that passes here passes there. Validation
+    /// errors map to `ConfigError::InvalidVendorConfig { field,
+    /// reason }` so the GUI's existing inline-error routing handles
+    /// them unchanged.
+    ///
+    /// Vendor patches are merged into the existing
+    /// `vendor_config[vendor]` table — keys not in the patch keep
+    /// their current values. After persisting, if any vendor field
+    /// changed the connection is dropped and the daemon reconnects
+    /// (covers IP changes; `mac` changes don't break the connection
+    /// but the reconnect is harmless).
+    pub async fn update_tv_config(
+        self: &Arc<Self>,
+        tv_id: &str,
+        json_patch: &str,
+    ) -> Result<(), TvManagerError> {
+        const TOP_LEVEL_KEYS: &[&str] = &["name", "managed", "system_profile", "primary_input"];
+
+        let patch: serde_json::Value = serde_json::from_str(json_patch)
+            .map_err(|e| TvManagerError::ConfigError(format!("Invalid JSON patch: {}", e)))?;
+        let patch_obj = patch.as_object().ok_or_else(|| {
+            TvManagerError::ConfigError("patch must be a JSON object".to_string())
+        })?;
+
+        let tv_arc = self.get_tv(tv_id).await?;
+        let vendor = {
+            let tv = tv_arc.lock().await;
+            tv.config.vendor.clone()
+        };
+
+        let connector = self
+            .registry
+            .get_connector(&vendor)
+            .map_err(|e| TvManagerError::ConfigError(format!("Unknown vendor: {}", e)))?;
+        let schema = connector.config_schema();
+
+        // Sort patches into top-level + vendor buckets, validating
+        // along the way so we reject a malformed patch before
+        // touching disk or in-memory state.
+        let mut top_level: Vec<(String, String)> = Vec::new();
+        let mut vendor_patches: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+
+        for (key, value) in patch_obj {
+            if TOP_LEVEL_KEYS.contains(&key.as_str()) {
+                let str_value = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Null => String::new(),
+                    _ => {
+                        return Err(TvManagerError::ConfigError(format!(
+                            "Invalid value type for top-level field '{}'",
+                            key
+                        )));
+                    }
+                };
+                if key == "system_profile" {
+                    let system = self.system_section.read().await;
+                    if !system.profiles.contains_key(&str_value) {
+                        return Err(TvManagerError::ConfigError(format!(
+                            "Unknown system profile: {}",
+                            str_value
+                        )));
+                    }
+                }
+                top_level.push((key.clone(), str_value));
+                continue;
+            }
+
+            let field = schema.iter().find(|f| f.name == *key).ok_or_else(|| {
+                TvManagerError::ConfigError(format!(
+                    "Field '{}' is not in the {} config schema",
+                    key, vendor
+                ))
+            })?;
+            if field.visibility != FieldVisibility::UserInput {
+                return Err(TvManagerError::ConfigError(format!(
+                    "Field '{}' is not editable (visibility = {:?})",
+                    key, field.visibility
+                )));
+            }
+            let str_value = match value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            field.validate(&str_value).map_err(|e| {
+                TvManagerError::ConfigError(format!("Validation failed for field '{}': {}", key, e))
+            })?;
+            vendor_patches.insert(key.clone(), value.clone());
+        }
+
+        // Apply to in-memory config under the per-TV lock.
+        let mut managed_changed_to: Option<bool> = None;
+        let mut system_profile_changed = false;
+        {
+            let mut tv = tv_arc.lock().await;
+            for (key, value) in &top_level {
+                let internal_key = if key == "system_profile" {
+                    "profile.system"
+                } else {
+                    key.as_str()
+                };
+                apply_tv_option(&mut tv.config, internal_key, value)?;
+                if key == "system_profile" {
+                    system_profile_changed = true;
+                }
+                if key == "managed" {
+                    if let Ok(b) = value.parse::<bool>() {
+                        managed_changed_to = Some(b);
+                    }
+                }
+            }
+            for (key, value) in &vendor_patches {
+                let toml_value =
+                    crate::json_toml::json_to_toml(value).map_err(TvManagerError::ConfigError)?;
+                let entry = tv
+                    .config
+                    .vendor_config
+                    .entry(vendor.clone())
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                if let toml::Value::Table(table) = entry {
+                    table.insert(key.clone(), toml_value);
+                }
+            }
+            if system_profile_changed {
+                let system = self.system_section.read().await;
+                tv.system_profile = system.resolve_profile(&tv.config.profile.system);
+            }
+        }
+
+        // Mirror managed flag onto the outer per-TV tuple so
+        // automation gating sees the new value without a reload.
+        if let Some(b) = managed_changed_to {
+            let mut tvs = self.tvs.write().await;
+            if let Some((flag, _)) = tvs.get_mut(tv_id) {
+                *flag = b;
+            }
+        }
+
+        // Persist to disk: load → patch the matching `[[tv]]` →
+        // save. Same disk-write-lock + spawn_blocking pattern the
+        // rest of `tv_manager` uses.
+        let config_path = self.config_path.clone();
+        let tv_id_owned = tv_id.to_string();
+        let top_level_owned = top_level.clone();
+        let vendor_patches_owned = vendor_patches.clone();
+        let vendor_owned = vendor.clone();
+        let _disk_lock = self.disk_write_lock.lock().await;
+        tokio::task::spawn_blocking(move || -> Result<(), TvManagerError> {
+            let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
+                TvManagerError::ConfigError(format!("Failed to load config: {}", e))
+            })?;
+            let tv = config
+                .find_tv_mut(&tv_id_owned)
+                .ok_or_else(|| TvManagerError::TvNotFound(tv_id_owned.clone()))?;
+            for (key, value) in &top_level_owned {
+                let internal_key = if key == "system_profile" {
+                    "profile.system"
+                } else {
+                    key.as_str()
+                };
+                apply_tv_option(tv, internal_key, value)?;
+            }
+            for (key, value) in &vendor_patches_owned {
+                let toml_value =
+                    crate::json_toml::json_to_toml(value).map_err(TvManagerError::ConfigError)?;
+                let entry = tv
+                    .vendor_config
+                    .entry(vendor_owned.clone())
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                if let toml::Value::Table(table) = entry {
+                    table.insert(key.clone(), toml_value);
+                }
+            }
+            config
+                .save_to(&config_path)
+                .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
+        })
+        .await
+        .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
+        drop(_disk_lock);
+
+        // Emit per-key OptionChanged events so `state_forwarder`
+        // refreshes the cached fields on the per-TV `Tv1` interface
+        // (managed / name / system_profile / primary_input). Without
+        // these the in-memory daemon state is correct but D-Bus
+        // property reads return the stale cached value until the
+        // next config reload.
+        for (key, value) in &top_level {
+            let internal_key = if key == "system_profile" {
+                "profile.system"
+            } else {
+                key.as_str()
+            };
+            self.emit_state_change(StateChangeEvent::OptionChanged {
+                tv_id: tv_id.to_string(),
+                key: internal_key.to_string(),
+                value: value.clone(),
+            });
+        }
+
+        // Vendor-field changes invalidate the live connection (IP
+        // moved, port changed, etc.). Drop + reconnect; the next
+        // command goes over the new transport. Also fire a
+        // `TvVendorConfigChanged` event so the forwarder refreshes
+        // per-TV cached properties that derive from vendor config —
+        // `Tv1.VendorInfo` (label/value projection) and
+        // `Tv1.Power.SupportsWake` (depends on MAC presence). The
+        // forwarder is responsible for the property refresh; the
+        // reconnect handles transport semantics independently.
+        if !vendor_patches.is_empty() {
+            self.emit_state_change(StateChangeEvent::TvVendorConfigChanged {
+                tv_id: tv_id.to_string(),
+            });
+            if let Err(e) = self.reconnect(tv_id).await {
+                warn!(
+                    tv_id = %tv_id,
+                    error = %e,
+                    "Failed to reconnect after vendor config update; subsequent commands will retry"
+                );
+            }
+        }
+
+        info!(
+            tv_id = %tv_id,
+            top_level_changed = top_level.len(),
+            vendor_changed = vendor_patches.len(),
+            "TV config updated"
+        );
+        Ok(())
+    }
+
     /// Reload configuration from disk.
     ///
     /// Uses `spawn_blocking` to avoid blocking the async executor on disk I/O,
@@ -1574,7 +2120,7 @@ impl TvManager {
         .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))??;
 
         let new_ids: std::collections::HashSet<_> =
-            new_config.tv.iter().map(|t| t.id.clone()).collect();
+            new_config.tv.iter().map(|t| t.uuid.to_string()).collect();
 
         // Phase 1: update the IndexMap under write lock (map mutations only — no I/O).
         // Collect Arcs for removed TVs and existing TVs that need config updates.
@@ -1598,18 +2144,19 @@ impl TvManager {
 
             // Add or update TVs from new config
             for tv_config in new_config.tv {
-                if let Some((managed_flag, tv_arc)) = tvs.get_mut(&tv_config.id) {
+                let tv_id = tv_config.uuid.to_string();
+                if let Some((managed_flag, tv_arc)) = tvs.get_mut(&tv_id) {
                     // Existing TV: update outer managed flag immediately under the write
                     // lock, then defer the rest of the config update to Phase 2.
                     *managed_flag = tv_config.managed;
                     to_update.push((tv_arc.clone(), Some(tv_config)));
                 } else {
                     // New TV: add to map immediately (no connection to close).
-                    info!(tv_id = %tv_config.id, "Adding new TV from config");
+                    info!(tv_id = %tv_id, "Adding new TV from config");
                     let system_profile =
                         new_config.system.resolve_profile(&tv_config.profile.system);
                     tvs.insert(
-                        tv_config.id.clone(),
+                        tv_id,
                         (
                             tv_config.managed,
                             Arc::new(Mutex::new(ManagedTv::new(tv_config, system_profile))),
@@ -1637,7 +2184,7 @@ impl TvManager {
                     let connection_changed = tv.config.vendor != tv_config.vendor
                         || tv.config.vendor_config != tv_config.vendor_config;
                     if connection_changed {
-                        info!(tv_id = %tv_config.id, "Updating TV config (will reconnect)");
+                        info!(tv_id = %tv_config.uuid, "Updating TV config (will reconnect)");
                         if let Some(mut conn) = tv.connection.take() {
                             let _ = conn.close().await;
                         }
@@ -1722,8 +2269,13 @@ mod tests {
         tv_id: &str,
         connection: Option<Box<dyn TvConnection>>,
     ) -> Arc<RwLock<IndexMap<String, TvEntry>>> {
+        // Derive a stable UUID from the human-readable test id so the
+        // `TvConfig` field is well-typed, but key the in-memory map by
+        // `tv_id` itself — tests assert on this string and don't care
+        // about the config's internal UUID.
+        let uuid = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, tv_id.as_bytes());
         let mut tv = ManagedTv::new(
-            TvConfig::new(tv_id, tv_id, "fake", true),
+            TvConfig::with_uuid(uuid, tv_id, "fake", true),
             ResolvedSystemProfile::default(),
         );
         tv.connection = connection;

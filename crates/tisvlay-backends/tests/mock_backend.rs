@@ -64,8 +64,6 @@ async fn mock_connect_and_mutate_state() {
     let connector = registry.get_connector("mock").unwrap();
     let config = mock_config();
 
-    assert_eq!(connector.display_address(&config), "mock://living_room");
-
     let mut conn = connector.connect(&config).await.unwrap();
     assert!(conn.is_connected());
 

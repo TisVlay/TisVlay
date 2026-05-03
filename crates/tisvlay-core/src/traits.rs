@@ -320,11 +320,43 @@ pub trait TvConnector: Send + Sync {
     /// The connector deserializes it into its own config type internally.
     async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>>;
 
-    /// Human-readable address for logging and UI.
+    /// Vendor-specific connection info for the GUI's INFO pane.
     ///
-    /// Returns a transport-appropriate string, e.g. "192.168.1.100" for IP,
-    /// "/dev/ttyUSB0" for serial, "cec:0" for HDMI-CEC.
-    fn display_address(&self, vendor_config: &toml::Value) -> String;
+    /// User-editable vendor-config fields, ordered `(label, value)`
+    /// pairs. The GUI's TVs-pane CONFIG group uses this for its
+    /// view-mode read-only display, and the edit pane uses the
+    /// same field set as its editable surface (driven by the
+    /// `UserInput` slice of [`config_schema`](Self::config_schema)).
+    ///
+    /// **Default impl** walks `config_schema` and emits a row per
+    /// `UserInput`-visibility field. Empty values are elided.
+    ///
+    /// Backends only need to override this when the schema-driven
+    /// projection isn't enough (e.g. the field's wire form needs
+    /// reformatting before display — `0xFFEE...` → `FF:EE:...`).
+    fn display_config(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
+        display_rows_for_visibility(
+            &self.config_schema(),
+            vendor_config,
+            crate::FieldVisibility::UserInput,
+        )
+    }
+
+    /// Backend-discovered diagnostic fields, ordered
+    /// `(label, value)` pairs. The GUI's TVs-pane INFO group uses
+    /// this for its read-only diagnostic rows (LG: WebSocket
+    /// scheme captured at pair time). These fields can only be
+    /// refreshed via re-pair, so they're never editable.
+    ///
+    /// **Default impl** walks `config_schema` and emits a row per
+    /// `Diagnostic`-visibility field. Empty values are elided.
+    fn display_diagnostics(&self, vendor_config: &toml::Value) -> Vec<(String, String)> {
+        display_rows_for_visibility(
+            &self.config_schema(),
+            vendor_config,
+            crate::FieldVisibility::Diagnostic,
+        )
+    }
 
     /// Whether this transport supports waking the device from standby.
     ///
@@ -371,6 +403,91 @@ pub trait TvConnector: Send + Sync {
         pairing_params: &toml::Value,
         credentials: &crate::Credentials,
     ) -> Result<toml::Value>;
+
+    /// Full persisted-config schema — every field that lives in
+    /// the vendor's TOML config, with a
+    /// [`visibility`](crate::FieldVisibility) tag per field.
+    /// Canonical source of truth for the schema views below.
+    ///
+    /// The framework projects this into:
+    /// - **Pairing wizard** ([`pairing_schema`](Self::pairing_schema)):
+    ///   `UserInput` fields only.
+    /// - **INFO pane** ([`display_info`](Self::display_info)):
+    ///   `UserInput + Diagnostic`, skips `Secret`.
+    /// - **Edit pane** (future): `UserInput` only.
+    ///
+    /// Default impl returns an empty list — backends that haven't
+    /// migrated to schema-driven config keep their previous
+    /// behavior (no display_info, no edit support). Override to
+    /// describe the full vendor-config shape and tag each field's
+    /// visibility; the framework handles projection from there.
+    fn config_schema(&self) -> Vec<crate::PairingField> {
+        Vec::new()
+    }
+
+    /// Pairing form schema — declares the input fields the user
+    /// must provide before pairing can start.
+    ///
+    /// The daemon exposes this over D-Bus
+    /// (`Manager1.GetPairingSchema(vendor)`) as JSON; the GUI's
+    /// pairing wizard renders the form dynamically from the
+    /// returned [`PairingField`] list. See
+    /// [`pairing_schema`](crate::pairing_schema) for the field
+    /// vocabulary.
+    ///
+    /// Default impl filters [`config_schema`](Self::config_schema)
+    /// to `UserInput`-visibility fields. Backends that override
+    /// `config_schema` get this projection for free; backends that
+    /// haven't migrated can still override this directly.
+    fn pairing_schema(&self) -> Vec<crate::PairingField> {
+        self.config_schema()
+            .into_iter()
+            .filter(|f| f.visibility == crate::FieldVisibility::UserInput)
+            .collect()
+    }
+}
+
+/// Look up a field on a TOML table by name and stringify its
+/// scalar value. Returns `None` for missing keys, `null`, or
+/// container types (arrays / tables). Used by the default
+/// [`TvConnector::display_info`] impl to project values out of a
+/// `vendor_config` for display.
+/// Project a `(label, value)` row list out of a vendor schema,
+/// keeping only fields whose [`visibility`](crate::FieldVisibility)
+/// matches the requested filter and whose value is non-empty.
+/// Shared between [`TvConnector::display_config`] and
+/// [`TvConnector::display_diagnostics`].
+fn display_rows_for_visibility(
+    schema: &[crate::PairingField],
+    vendor_config: &toml::Value,
+    visibility: crate::FieldVisibility,
+) -> Vec<(String, String)> {
+    schema
+        .iter()
+        .filter(|f| f.visibility == visibility)
+        .filter_map(|f| {
+            let value = toml_field_as_string(vendor_config, &f.name)?;
+            if value.is_empty() {
+                return None;
+            }
+            Some((f.label.clone(), value))
+        })
+        .collect()
+}
+
+fn toml_field_as_string(value: &toml::Value, name: &str) -> Option<String> {
+    let table = value.as_table()?;
+    match table.get(name)? {
+        toml::Value::String(s) => Some(s.clone()),
+        toml::Value::Integer(i) => Some(i.to_string()),
+        toml::Value::Boolean(b) => Some(b.to_string()),
+        toml::Value::Float(f) => Some(f.to_string()),
+        toml::Value::Datetime(d) => Some(d.to_string()),
+        // Arrays / tables aren't meaningful as a single display
+        // row — skip silently. Backends needing structured
+        // display can override `display_info` directly.
+        toml::Value::Array(_) | toml::Value::Table(_) => None,
+    }
 }
 
 /// Discovery of TVs on the network.

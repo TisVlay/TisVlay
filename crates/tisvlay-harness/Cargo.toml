@@ -33,6 +33,8 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 toml = { workspace = true }
 tempfile = { workspace = true }
+uuid = { workspace = true }
+futures-util = { workspace = true }
 
 [lints]
 workspace = true

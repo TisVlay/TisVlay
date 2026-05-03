@@ -38,10 +38,10 @@ graph TD
 | Component | Binary | Description |
 |-----------|--------|-------------|
 | **System Daemon** | `tisvlayd` | Systemd system service. Vendor-agnostic TV management, D-Bus API, WoL at boot. |
-| **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle). |
+| **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle); reactively prunes orphan user-config `[[tv]]` assignments via `ObjectManager.InterfacesRemoved`. |
 | **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
 | **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Subscribes to daemon D-Bus signals for real-time state updates (30s fallback poll). Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
-| **GUI** | `tisvlay-gui` | Slint-based configuration window. (Not yet implemented) |
+| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. About pane built; Profiles / Session panes are placeholders pending the M3.5 / M4 / M5 work in [docs/plan.md](plan.md). |
 
 ### Crate Structure
 
@@ -49,34 +49,44 @@ See `CLAUDE.md` for the full file tree. Key crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `tisvlay-core` | Core traits (`TvBackend`, `TvConnection`, `TvConnector`), types, config, D-Bus client |
+| `tisvlay-core` | Core traits (`TvBackend`, `TvConnection`, `TvConnector`), types, config, schema (`PairingField`, `FieldVisibility`), D-Bus client |
 | `tisvlay-lg` | LG WebOS backend (WebSocket, SSAP protocol, SSDP discovery) |
+| `tisvlay-mock` | In-memory mock backend (dev/tests, optional via `mock` feature) |
+| `tisvlay-test` | OS-environment fakes — private `dbus-daemon`, fake logind, fake screensaver |
 | `tisvlay-backends` | Composition crate — only place that imports vendor crates |
+| `tisvlay-harness` | Binary-lifecycle test fixtures (`TestDaemon`, `TestSession`, `TestTray`) |
 | `tisvlayd` | System daemon — vendor-agnostic TV management |
 | `tisvlay-cli` | CLI tool — vendor-agnostic |
 | `tisvlay-session` | User session service — vendor-agnostic |
+| `tisvlay-tray` | System-tray app (ksni) — vendor-agnostic |
+| `tisvlay-gui` | Slint-based settings window — vendor-agnostic; status in [plan.md](plan.md) |
 
 ### Dependency Graph
 
 ```mermaid
 graph BT
-    core["tisvlay-core<br/><i>traits, types, D-Bus client</i>"]
+    core["tisvlay-core<br/><i>traits, types, schema, D-Bus client</i>"]
     lg["tisvlay-lg"]
+    mock["tisvlay-mock"]
     samsung["tisvlay-samsung, ..."]
     backends["tisvlay-backends<br/><i>composition — ONLY crate that imports vendors</i>"]
     daemon["tisvlayd<br/><i>system daemon</i>"]
     cli["tisvlay-cli"]
     session["tisvlay-session"]
     tray["tisvlay-tray"]
+    gui["tisvlay-gui"]
 
     lg --> core
+    mock --> core
     samsung -.-> core
     backends --> lg
+    backends -->|"mock feature"| mock
     backends -.-> samsung
     daemon --> backends
     cli -->|"dbus feature"| core
     session -->|"dbus feature"| core
     tray -->|"dbus feature"| core
+    gui -->|"dbus feature"| core
 ```
 
 **Key principle**: Only `tisvlay-backends` knows about vendor crates. All binaries are vendor-agnostic. No `if vendor == "lg"` checks or downcasts in any binary code.
@@ -105,7 +115,10 @@ classDiagram
     class TvConnector {
         +transport() Transport
         +connect(vendor_config) TvConnection
-        +display_address(vendor_config) String
+        +config_schema() Vec~PairingField~
+        +pairing_schema() Vec~PairingField~
+        +display_config(vendor_config) Vec~(String,String)~
+        +display_diagnostics(vendor_config) Vec~(String,String)~
         +supports_wake(vendor_config) bool
         +wake(vendor_config)
         +wake_and_connect(vendor_config, ...)
@@ -155,7 +168,8 @@ Each connector declares its `Transport` type (`Network`, `Serial`, `Usb`, `Cec`)
 Key `TvConnector` methods:
 - `transport()` — communication transport used by this connector
 - `connect(vendor_config)` — create a connection using vendor-specific transport
-- `display_address(vendor_config)` — human-readable address for logging/UI
+- `config_schema()` — declarative `Vec<PairingField>` describing the persisted-config shape with `FieldVisibility` (`UserInput` / `Diagnostic` / `Secret`) per field. Drives the pairing wizard, the GUI's edit pane, and the daemon's `Tv1.{VendorConfig,VendorInfo}` projections — backends declare schema once and the framework projects per-use-case.
+- `display_config(vendor_config)` / `display_diagnostics(vendor_config)` — `(label, value)` projection of `UserInput` / `Diagnostic` fields respectively, default-implemented via `config_schema`. `Secret` fields are excluded from both.
 - `supports_wake(vendor_config)` / `wake(vendor_config)` — abstract over WoL, CEC, etc.
 - `start_pairing(vendor_config)` / `build_config_from_pairing(...)` — vendor-specific pairing
 
@@ -181,17 +195,19 @@ See `crates/tisvlayd/src/dbus/` for the implementation.
 org.tisvlay.Daemon  (system bus; session bus in dev)
 ├── /org/tisvlay                    ObjectManager
 ├── /org/tisvlay/Manager            org.tisvlay.Manager1
-│   ├── Methods:  ListSystemProfiles, GetUserProfileDefault, ListUserProfiles,
-│   │             ReloadConfig, AddTv, RemoveTv, SetTvOption, DiscoverTvs
-│   └── Signals:  TvAdded, TvRemoved, ConfigReloaded
-└── /org/tisvlay/Tv/{id}            org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
-    │                               Tv1.Volume, Tv1.Backlight, Tv1.Input
+│   ├── Methods:  GetSupportedVendors, GetPairingSchema, AddTv,
+│   │             ReloadConfig, ListSystemProfiles,
+│   │             GetUserProfileDefault, ListUserProfiles, DiscoverTvs
+│   └── Signals:  ConfigReloaded
+└── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
+    │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
     ├── Properties (rw): Name, Managed, SystemProfile, PrimaryInput,
     │                     IsScreenOn, Volume, Muted, Backlight
-    ├── Properties (ro): Id, Vendor, Address, Connected, Capabilities,
-    │                     AutomateWhen, Automated, PowerState,
-    │                     CurrentInput, AvailableInputs
-    ├── Methods:  Reconnect, PowerOn, PowerOff, SwitchInput
+    ├── Properties (ro): Uuid, Vendor, Connected, Capabilities,
+    │                     VendorInfo, AutomateWhen, Automated,
+    │                     PowerState, CurrentInput, AvailableInputs
+    ├── Methods:  Reconnect, Remove, GetConfig, UpdateConfig,
+    │             PowerOn, PowerOff, SwitchInput
     └── Signals:  (standard PropertiesChanged only)
 
 org.tisvlay.Session  (session bus)
@@ -215,16 +231,27 @@ org.tisvlay.Session  (session bus)
 
 Methods:
 - `GetSupportedVendors() → a(ss)` — list `(vendor_id, vendor_name)` pairs
-- `AddTv(name: s, vendor: s, config_json: s, managed: b) → o` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation
-- `RemoveTv(tv_id: s)` — remove TV from config
+- `GetPairingSchema(vendor: s) → s` — JSON-serialized `Vec<PairingField>` describing the pairing-form fields the GUI should render for the given vendor
+- `AddTv(name: s, vendor: s, config_json: s, managed: b) → (os)` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation. Returns `(object_path, tv_uuid)`. Per-TV lifecycle (`Remove`, `GetConfig`, `UpdateConfig`) lives on `Tv1` after pair.
 - `ReloadConfig()` — reload config from disk
-- `SetTvOption(tv_id: s, key: s, value: s)` — update a system-level TV field (`primary_input`, `managed`, `name`, `profile.system`); saves to disk and applies immediately
 - `ListSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
 - `GetUserProfileDefault() → s` — admin baseline user profile as JSON; used by session services to inherit defaults
 - `ListUserProfiles() → a(ss)` — all user profiles (admin-defined) as `(name, json)` pairs
 - `DiscoverTvs(timeout_ms: u) → a(sssss)` — SSDP discovery, returns `(id, name, address, hardware_id, vendor)` tuples. Only available when compiled with the `discovery` feature.
 
-Signals: `TvAdded(tv_path: o)`, `TvRemoved(tv_path: o)`
+Signals: `ConfigReloaded`, `PairingProgress`, `DiscoveryFound`. (Per-TV add/remove fires standard `ObjectManager.InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay`.)
+
+### org.tisvlay.Tv1 (per-TV lifecycle)
+
+The per-TV `Tv1` interface owns the methods that take a TV identifier — they read `&self.tv_id` directly from the interface impl rather than decoding it from a path argument, which avoided a class of `tv_path()` round-trip bugs around UUID hyphens.
+
+Methods:
+- `Reconnect()` — drop and re-establish the connection
+- `Remove()` — drop the TV from in-memory + on-disk config and unregister every `Tv1.*` interface at this path (fires `ObjectManager.InterfacesRemoved`)
+- `GetConfig() → s` — return current config (top-level + non-`Secret` vendor fields) as a JSON object suitable for prefilling an edit form
+- `UpdateConfig(json_patch: s)` — atomic batch edit. Top-level keys (`name`, `managed`, `system_profile`, `primary_input`) plus any `UserInput`-visibility vendor schema field. Server-side schema-validated; vendor-field changes drop and reconnect. `Diagnostic`/`Secret` keys are rejected.
+
+Single-field edits also flow through the per-property `Properties.Set` path — `Tv1.Name`, `Tv1.Managed`, `Tv1.SystemProfile`, `Tv1.PrimaryInput`, `Tv1.IsScreenOn`, `Tv1.Volume`, `Tv1.Muted`, `Tv1.Backlight` — which routes through the same internal helpers as `UpdateConfig` for top-level fields.
 
 ### org.tisvlay.Session1 (Session Service)
 
@@ -251,13 +278,13 @@ No custom signals — uses standard `org.freedesktop.DBus.Properties.PropertiesC
 
 ### Feature Interfaces
 
-Each feature interface is implemented on per-TV objects. Controllable state is exposed as writable properties — setting them sends the command to the TV backend and updates the cache on success. zbus auto-emits `PropertiesChanged` after each successful set.
+Each feature interface is implemented on per-TV objects. Controllable state is exposed as **read-only** properties driven by backend subscription pushes — `state_forwarder` is the single emit path for `PropertiesChanged`. Writes go through explicit Set methods, matching the conventional D-Bus pattern (UPower, GNOME, BlueZ, NetworkManager). This avoids the auto-emit-vs-subscription race that affects ramping properties (notably backlight on LG OLEDs, which transitions over hundreds of ms via subscription pushes).
 
 - **org.tisvlay.Tv1.Power** — `PowerOn()`, `PowerOff()` methods; `PowerState` (ro) property
-- **org.tisvlay.Tv1.Screen** — `IsScreenOn` (rw) property; set `true` to unblank, `false` to blank
-- **org.tisvlay.Tv1.Volume** — `Volume` (rw, 0-100), `Muted` (rw) properties
+- **org.tisvlay.Tv1.Screen** — `SetScreen(b)` method; `IsScreenOn` (ro) property
+- **org.tisvlay.Tv1.Volume** — `SetVolume(y)`, `SetMuted(b)` methods; `Volume` (ro, 0-100), `Muted` (ro) properties
 - **org.tisvlay.Tv1.Input** — `SwitchInput(input_id: s)` method; `CurrentInput` (ro), `AvailableInputs` (ro, invalidates) properties
-- **org.tisvlay.Tv1.Backlight** — `Backlight` (rw, 0-100) property
+- **org.tisvlay.Tv1.Backlight** — `SetBacklight(y)` method; `Backlight` (ro, 0-100) property
 
 ---
 
@@ -271,6 +298,18 @@ Config is split between **system config** (daemon-owned) and **user config** (se
 Both accept `--config <PATH>` to override their respective path. `tisvlayd` defaults to `/var/lib/tisvlay/config.toml`; `--session` dev mode defaults to the XDG user path.
 
 See `crates/tisvlay-core/src/config.rs` for the full schema.
+
+### Schema-driven vendor config
+
+Top-level `TvConfig` fields (`name`, `managed`, `system_profile`, `primary_input`) are uniform across vendors. Vendor-specific fields (LG: `ip`, `mac`, `client_key`, `scheme`) live under `[tv.<vendor>]` and are described declaratively by the vendor's `TvConnector::config_schema()` — a `Vec<PairingField>` where each field carries a `FieldVisibility`:
+
+| Visibility | Where it surfaces | Editable? |
+|---|---|---|
+| `UserInput` | `Tv1.VendorConfig`, GUI's CONFIG group, pairing wizard form, edit-mode form | yes (via `Tv1.UpdateConfig` or pairing) |
+| `Diagnostic` | `Tv1.VendorInfo`, GUI's INFO group | no — backend-discovered, refresh via re-pair |
+| `Secret` | nowhere (filtered out of every projection) | n/a |
+
+Adding an editable field is a one-row schema entry — no D-Bus method changes, no CLI dispatch arms, no GUI form-rendering code. The framework projects the right view per use case.
 
 ### System Config Example
 
@@ -305,7 +344,7 @@ on_idle_timeout = "none"
 on_idle_resume = "screen_on"     # action when activity resumes after idle
 
 [[tv]]
-id = "living-room"
+uuid = "11111111-1111-4111-8111-111111111111"  # RFC 4122 v4, opaque, immutable
 name = "Living Room G4"
 vendor = "lg"
 primary_input = "HDMI_1"         # which input this PC uses (vendor-agnostic)
@@ -313,7 +352,7 @@ managed = true                   # participates in automation (boot WoL, session
 profile.system = "default"       # which system profile this TV uses
 
 [[tv]]
-id = "guest-room"
+uuid = "22222222-2222-4222-8222-222222222222"
 name = "Guest Room"
 vendor = "lg"
 managed = true
@@ -343,9 +382,9 @@ on_session_lock = "none"          # don't interrupt gameplay
 idle_timeout_seconds = 0
 on_idle_resume = "none"
 
-# Per-TV user profile assignments (TV IDs from system config)
+# Per-TV user profile assignments — `uuid` matches the system config.
 [[tv]]
-id = "living-room"
+uuid = "11111111-1111-4111-8111-111111111111"
 profile.user = "gaming"
 
 # guest-room inherits user.profiles.default (no override)
@@ -639,12 +678,7 @@ Forward-looking work that hasn't shipped yet. No fixed sequencing — entries la
 
 ### GUI Configuration
 
-User-friendly setup and configuration.
-
-1. `tisvlay-gui`: Slint-based settings window
-2. TV discovery and pairing wizard with managed checkbox
-3. Per-TV configuration
-4. Session behavior settings
+`tisvlay-gui` is largely built — see [docs/plan.md](plan.md) for the full milestone status. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), and About pane shipped through M3 + Plan-6 follow-on work. The Profiles pane, Session pane, and packaging (NixOS module flag, nfpm desktop entry) remain as M3.5 / M4 / M5 / M6 follow-ups.
 
 ### Event-Driven Power Management
 
@@ -701,7 +735,7 @@ The `TvConnection` trait provides an optional `subscribe_state()` method with a 
 
 After establishing a connection, the daemon calls `subscribe_state()` on the `TvConnection`. If the backend supports push (LG does), a spawned task forwards received `TvState` snapshots as `StateChangeEvent::SubscriptionUpdate`s through an internal channel. The `state_change_forwarder` task receives these and updates cached property fields on all per-TV D-Bus interface structs via `InterfaceRef::get_mut()`, emitting standard `PropertiesChanged` signals only for properties that actually changed.
 
-Write commands via writable property setters (Volume, Muted, Backlight, IsScreenOn) update the cache and auto-emit `PropertiesChanged` on success via zbus machinery. The backend subscription then confirms the state shortly after, but the property update is typically a no-op since the setter already set the value.
+Write commands go through explicit Set methods (`SetVolume`, `SetMuted`, `SetBacklight`, `SetScreen`) which dispatch to `TvManager` and return after the backend acknowledges. The cached property field is **not** mutated by the method — `state_forwarder` updates it and emits `PropertiesChanged` only when the TV's subscription confirms the new value. Single emit path, no auto-emit-vs-subscription race; convergence-gating clients (the GUI's `OptimisticSlider`, the tray's `Reconciler`) see exactly one stream of authoritative state changes per property.
 
 ### Per-Device Network Monitoring
 

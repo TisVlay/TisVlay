@@ -42,15 +42,17 @@ async fn pair_mock_tv_appears_in_tv_list() {
         .await
         .expect("pairing should succeed");
 
-    // ID is derived from name: "Living Room" → "living_room" (underscores,
-    // not hyphens). AddTv now returns the canonical ID directly, so it
-    // matches the Tv1.Id property from list_tvs().
-    assert_eq!(tv_id, "living_room");
+    // AddTv returns a freshly generated UUID v4 — opaque, but it must
+    // round-trip to the Tv1.Uuid property from list_tvs().
+    assert!(
+        uuid::Uuid::parse_str(&tv_id).is_ok(),
+        "AddTv should return a valid UUID, got {tv_id:?}"
+    );
 
     // The paired TV should now appear in the list.
     let tvs = client.list_tvs().await.unwrap();
     assert_eq!(tvs.len(), 1);
-    assert_eq!(tvs[0].id, "living_room");
+    assert_eq!(tvs[0].uuid, tv_id);
     assert_eq!(tvs[0].name, "Living Room");
     assert_eq!(tvs[0].vendor, "mock");
     assert!(tvs[0].managed, "should be managed (we passed managed=true)");
@@ -68,11 +70,14 @@ async fn pair_then_control_screen() {
         .pair_tv("Office TV", "mock", config_json, true)
         .await
         .unwrap();
-    assert_eq!(tv_id, "office_tv");
+    assert!(
+        uuid::Uuid::parse_str(&tv_id).is_ok(),
+        "AddTv should return a valid UUID, got {tv_id:?}"
+    );
 
     // Screen should default to on.
     let tvs = client.list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == tv_id).unwrap();
+    let tv = tvs.iter().find(|t| t.uuid == tv_id).unwrap();
     assert!(tv.is_screen_on);
 
     // Turn screen off via D-Bus — proves the paired TV's interfaces
@@ -83,7 +88,7 @@ async fn pair_then_control_screen() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let tvs = client.list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == tv_id).unwrap();
+    let tv = tvs.iter().find(|t| t.uuid == tv_id).unwrap();
     assert!(!tv.is_screen_on, "screen should be off after screen_off");
 }
 
@@ -129,7 +134,7 @@ async fn pair_state_reflects_mock_defaults_not_zeroed() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let tvs = client.list_tvs().await.unwrap();
-    let tv = tvs.iter().find(|t| t.id == tv_id).unwrap();
+    let tv = tvs.iter().find(|t| t.uuid == tv_id).unwrap();
 
     // Mock defaults: volume=30, backlight=80, input=HDMI_1, power=active.
     // If the bug is present, these will be 0/"unknown"/"" instead.
@@ -166,7 +171,10 @@ async fn pair_unmanaged_tv() {
         .pair_tv("Bedroom", "mock", config_json, false)
         .await
         .unwrap();
-    assert_eq!(tv_id, "bedroom");
+    assert!(
+        uuid::Uuid::parse_str(&tv_id).is_ok(),
+        "AddTv should return a valid UUID, got {tv_id:?}"
+    );
 
     let tvs = client.list_tvs().await.unwrap();
     assert_eq!(tvs.len(), 1);

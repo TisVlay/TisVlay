@@ -1,0 +1,127 @@
+// Pairing wizard state + callbacks. The wizard is a multi-step
+// flow with significant Rust-driven state (discovered TVs,
+// streaming flag, pair phase) and user-driven state (selected
+// index, name edits, vendor/IP/MAC for manual entry). All of it
+// lives on this global so the wizard's pane and sub-components
+// access state directly without prop-drilling through TvsPane /
+// AppWindow.
+
+// Types co-located here so the global owns the dependency chain:
+// `components/pairing_wizard.slint` (the view) imports both the
+// global and its struct types from this file, never the other
+// direction.
+
+export struct WizardDiscoveredTv {
+    id: string,
+    name: string,
+    vendor: string,
+    address: string,
+    hw-model: string,
+}
+
+export struct VendorOption {
+    id: string,
+    name: string,
+}
+
+// One row in the dynamic pairing-form schema. Mirrors
+// `tisvlay_core::pairing_schema::PairingField` plus a `value` slot
+// for the user's current input and per-row validation state.
+// The wizard's step-2 form renders
+// `for row in PairingWizard.schema-fields: FieldRenderer { row; ... }`.
+//
+// `field-type` is the kebab-case wire string from
+// `PairingFieldType` ("string" / "password" / "ip" / "mac" / "port" /
+// "int" / "bool" / "select" / "path"); `FieldRenderer` switches on
+// this to pick the right widget.
+//
+// `value` is two-way synced via `PairingWizard.field-value-edited`
+// — Slint can't mutate struct fields inside a `[T]` directly, so
+// edits round-trip through Rust which writes the new row back into
+// the model.
+//
+// `state` is the field's lifecycle position:
+//   "pristine" — never edited, no opinion (initial blank fields)
+//   "valid"    — current `value` parses correctly per `field-type`
+//   "invalid"  — current `value` fails canonical validation
+// `error` is a human-readable failure reason, populated either by
+// client-side validation or by routing a server-side
+// `ConfigInvalidVendorConfig` D-Bus error back to the row whose
+// `name` matches.
+export struct PairingFieldRow {
+    name: string,
+    label: string,
+    helper: string,
+    field-type: string,
+    required: bool,
+    placeholder: string,
+    options: [string],
+    value: string,
+    state: string,
+    error: string,
+}
+
+export global PairingWizard {
+    // -- Driven from Rust --
+    /// Whether the wizard is currently displayed. Set true on
+    /// `Daemon.request-pair()` and false on cancel/finish.
+    in-out property <bool> active;
+    in-out property <int> step: 1;
+    in-out property <[WizardDiscoveredTv]> discovered;
+    in-out property <bool> discovery-streaming;
+    in-out property <string> discovery-error;
+    in-out property <string> pair-phase;
+    in-out property <string> pair-message;
+    /// Vendors registered on the running daemon, fetched via
+    /// `Manager1.GetSupportedVendors`. Pushed once at startup.
+    in-out property <[VendorOption]> supported-vendors;
+    in-out property <[string]> supported-vendor-names;
+    /// Mirrors the currently-selected discovered TV's fields.
+    /// Published as separate properties (instead of indexing into
+    /// the model from Slint) because struct-from-model bindings
+    /// have been unreliable across step transitions.
+    in-out property <string> selected-vendor;
+    in-out property <string> selected-address;
+    in-out property <string> selected-hw-model;
+
+    /// Dynamic pairing-form schema for the currently-selected vendor.
+    /// Populated by Rust on entry to step 2 by fetching
+    /// `Manager1.GetPairingSchema(vendor)` and applying autofill
+    /// from each row's `vendor_data` map (per
+    /// `PairingField::autofill = "discovery.<key>"`).
+    /// `field-value-edited(index, value)` is the writeback channel
+    /// — Slint emits it when a `FieldRenderer`'s value changes;
+    /// Rust mutates the model row in place.
+    in-out property <[PairingFieldRow]> schema-fields;
+    /// Whether every required schema field currently has a non-empty
+    /// value AND no field is in `state == "invalid"`. Computed
+    /// Rust-side on each `field-value-edited` (Slint can't fold over
+    /// a `[T]` model from a property expression). Step 2's `Pair`
+    /// button binds `enabled` to this — disabled until the user has
+    /// filled (or autofill provided) all required fields.
+    in-out property <bool> schema-valid;
+    callback field-value-edited(int, string);
+
+    // -- Two-way: Rust seeds, the wizard's controls write back --
+    in-out property <int> selected-index: -1;
+    in-out property <string> tv-name;
+    in-out property <string> system-profile;
+    in-out property <bool> managed: true;
+    in-out property <string> manual-vendor: "lg";
+    in-out property <string> manual-ip;
+
+    // -- Callbacks --
+    callback cancel();
+    callback step-next();
+    callback step-back();
+    callback retry-pair();
+    callback back-to-discovery();
+    callback finish();
+    callback selected-changed(int);
+    callback name-edited(string);
+    callback profile-selected(string);
+    callback managed-toggled(bool);
+    callback manual-vendor-edited(string);
+    callback manual-ip-edited(string);
+    callback manual-add();
+}

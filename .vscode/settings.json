@@ -1,4 +1,5 @@
 {
+    "slint.lspServerPath": "slint-lsp",
     "rust-analyzer.server.path": "rust-analyzer",
     "cSpell.words": [
         "archlinux",
@@ -36,6 +37,7 @@
         "rustup",
         "serde",
         "SIGPIPE",
+        "slint",
         "socat",
         "SSAP",
         "ssdp",

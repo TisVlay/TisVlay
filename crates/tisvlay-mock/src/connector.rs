@@ -97,12 +97,6 @@ impl TvConnector for MockConnector {
         Ok(Box::new(MockConnection::new(&config, hardware_id)))
     }
 
-    fn display_address(&self, vendor_config: &toml::Value) -> String {
-        parse_config(vendor_config)
-            .map(|c| c.address)
-            .unwrap_or_else(|_| "mock://<invalid-config>".to_string())
-    }
-
     fn supports_wake(&self, _vendor_config: &toml::Value) -> bool {
         // Mock TVs are always reachable — "wake" is a no-op that returns
         // immediately, so we claim wake support.
@@ -213,5 +207,24 @@ impl TvConnector for MockConnector {
         let config = parse_config(pairing_params)?;
         toml::Value::try_from(&config)
             .map_err(|e| Error::backend(crate::VENDOR_ID, format!("serialize config: {e}")))
+    }
+
+    fn config_schema(&self) -> Vec<tisvlay_core::PairingField> {
+        use tisvlay_core::{PairingField, PairingFieldType};
+        // Just the address field — the mock's other config knobs
+        // (`pairing`, `initial_volume`, ramp injectors, etc.) are
+        // test-fixture inputs, not user-editable settings, so they
+        // don't appear in the schema. Keeps the round-trip surface
+        // minimal while still exercising the schema-driven edit
+        // pipeline (UpdateConfig + GetConfig).
+        vec![PairingField {
+            name: "address".into(),
+            label: "Address".into(),
+            helper: "Mock-vendor address (`mock://<id>`).".into(),
+            field_type: PairingFieldType::String,
+            required: true,
+            placeholder: "mock://living_room".into(),
+            ..Default::default()
+        }]
     }
 }

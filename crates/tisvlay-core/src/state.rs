@@ -4,6 +4,59 @@ use crate::HardwareId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Phases a power-on (wake-and-connect) flow walks through.
+///
+/// Emitted as a `(s)` D-Bus signal on `Tv1.Power.PowerCycleProgress`
+/// so GUIs can show staged feedback ("Sending wake-up..." →
+/// "Connecting..." → "Connected" / "Failed") instead of a single
+/// 5-30 s spinner.
+///
+/// The manager picks one of two paths up front:
+///
+/// - **Direct-connect** (TV reachable already; just lost the WS):
+///   skip WoL, emit `DirectConnect` → `Connecting` → `Connected`.
+/// - **Wake-on-LAN** (TV in deep standby): emit `WolSent` →
+///   `Connecting` → `Connected`. The backend's WoL send + connect
+///   retry loop is atomic from the manager's view, so `WolSent`
+///   and `Connecting` fire back-to-back just before the call.
+///
+/// Either path terminates in `Connected` on success or `Failed` on
+/// failure. The wire string is stable; new phases get appended (not
+/// renumbered) so old clients keep working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerCyclePhase {
+    /// Wake-on-LAN packet has been (or is about to be) sent.
+    WolSent,
+    /// Skipping WoL — TV reachable, going straight to connect.
+    /// Mutually exclusive with `WolSent` for a given power-on flow.
+    DirectConnect,
+    /// Manager is attempting to establish a connection to the TV.
+    Connecting,
+    /// Connection succeeded; the TV is online.
+    Connected,
+    /// Wake-and-connect failed (TV unreachable, timeout, etc.).
+    Failed,
+}
+
+impl PowerCyclePhase {
+    /// Wire representation. Stable string contract for the D-Bus signal.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WolSent => "wol_sent",
+            Self::DirectConnect => "direct_connect",
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::fmt::Display for PowerCyclePhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Current state of a TV.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TvState {
@@ -125,6 +178,22 @@ pub struct DiscoveredTv {
     /// Location URL for device description (vendor-specific).
     #[serde(default)]
     pub location: String,
+    /// Vendor-specific discovery data, free-form `key → value` map.
+    ///
+    /// Carries any extra fields the discovery channel was able to
+    /// gather beyond the structured columns above — populated either
+    /// by the vendor backend itself or by a post-discovery enrichment
+    /// step in the daemon (the daemon's `Manager1.DiscoverTvs`
+    /// handler fills `vendor_data["mac"]` from the kernel neighbour
+    /// table after each SSDP hit, for IP-addressed backends).
+    ///
+    /// Consumers match these entries against the vendor's pairing
+    /// schema's `autofill: "discovery.<key>"` directives — when a
+    /// `PairingField` declares `autofill = "discovery.mac"` and
+    /// `vendor_data["mac"]` is populated, the wizard pre-fills the
+    /// field with that value.
+    #[serde(default)]
+    pub vendor_data: HashMap<String, String>,
 }
 
 impl DiscoveredTv {
@@ -142,7 +211,14 @@ impl DiscoveredTv {
             hardware_id: None,
             vendor: vendor.into(),
             location: String::new(),
+            vendor_data: HashMap::new(),
         }
+    }
+
+    /// Insert a `key → value` entry into [`Self::vendor_data`].
+    pub fn with_vendor_data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.vendor_data.insert(key.into(), value.into());
+        self
     }
 
     /// Attach a hardware identity to this discovery entry.

@@ -1,0 +1,281 @@
+// AppWindow root.
+//
+// Architecture:
+//   - Cross-pane callbacks live on globals (`Daemon`,
+//     `PairingWizard`) — components call e.g. `Daemon.set-volume(...)`
+//     directly instead of forwarding through every parent.
+//   - Theming follows `Palette.color-scheme` (live xdg-desktop-portal),
+//     no app-level appearance toggle.
+//   - Convergence gating for slider values lives in Rust
+//     (`tisvlay-core::ReconcilerMap`); Slint stays a thin view.
+//   - Animations: see `widgets.slint` (`PulseDot`, `SpinnerArc`,
+//     `ScanLine`) and the per-call-site `animate background { ... }`
+//     hover transitions, all aligned with
+//     `.claude/ui/pairing-wizard-motion.md`.
+
+import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Design } from "design.slint";
+import { Daemon } from "globals/daemon.slint";
+import { PairingWizard } from "globals/pairing_wizard.slint";
+import { EditPane } from "globals/edit_pane.slint";
+import { Clipboard } from "globals/clipboard.slint";
+import { Errors } from "globals/errors.slint";
+import { Icons } from "globals/icons.slint";
+import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
+import { ProfilesPane } from "components/profiles_pane.slint";
+import { SessionPane } from "components/session_pane.slint";
+import { SettingsPane } from "components/settings_pane.slint";
+import { AboutPane } from "components/about_pane.slint";
+
+export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard, EditPane, Clipboard, Errors, Icons }
+
+export enum Pane {
+    tvs,
+    profiles,
+    session,
+    settings,
+    about,
+}
+
+// Sidebar entry. Optional `icon` (a freedesktop-resolved symbolic
+// SVG loaded from the user's icon theme — see `main.rs::load_themed_icon`)
+// renders left-of-label, tinted to white when selected and
+// `Theme.sidebar-text` otherwise. If the icon failed to resolve the
+// `image` property is empty and Slint draws nothing in its slot —
+// the layout degrades to label-only without surrounding rework.
+component SidebarItem inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: Design.size-sidebar-item;
+    background: selected ? Theme.sidebar-selected
+              : (touch.has-hover ? Theme.sidebar-hover : transparent);
+    border-radius: 5px;
+    animate background { duration: 150ms; }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 10px;
+        spacing: 8px;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: 16px;
+                height: 16px;
+                colorize: root.selected ? white : Theme.sidebar-text;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.label;
+                color: root.selected ? white : Theme.sidebar-text;
+                font-size: Design.font-body;
+                font-weight: root.selected ? 600 : 500;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "TisVlay";
+    preferred-width: 720px;
+    preferred-height: 640px;
+    min-width: 720px;
+    min-height: 480px;
+
+    // TV-state model (read-only from Slint's perspective; Rust pushes
+    // updates via `app.set_tvs(...)`). Writes go through the Daemon
+    // global's callbacks.
+    in property <[TvViewModel]> tvs;
+    in property <bool> daemon-available: false;
+    in property <bool> session-available: false;
+    in property <[string]> system-profiles;
+    in property <[string]> user-profiles;
+    in-out property <int> selected-tv-index: -1;
+    in-out property <Pane> active-pane: Pane.tvs;
+
+    // Sidebar glyphs — Rust resolves these against the user's
+    // freedesktop icon theme at startup (see `main.rs`). Empty
+    // images render as blank, so missing names degrade to
+    // label-only without errors.
+    in property <image> tvs-icon;
+    in property <image> profiles-icon;
+    in property <image> session-icon;
+    in property <image> settings-icon;
+    in property <image> about-icon;
+
+    // Daemon callbacks moved to `Daemon` global (globals/daemon.slint).
+    // Wizard callbacks + state moved to `PairingWizard` global
+    // (globals/pairing_wizard.slint). Appearance follows
+    // `Palette.color-scheme` directly — no app-level setting.
+
+    HorizontalBox {
+        padding: 0;
+        spacing: 0;
+
+        // Sidebar
+        Rectangle {
+            width: Design.width-sidebar;
+            background: Theme.sidebar;
+
+            VerticalBox {
+                padding: Design.gap-stack;
+                spacing: 2px;
+
+                Text {
+                    text: "TisVlay";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: Theme.sidebar-text;
+                    letter-spacing: 0.2px;
+                    horizontal-alignment: center;
+                    height: Design.size-sidebar-item;
+                    vertical-alignment: center;
+                }
+
+                SidebarItem {
+                    icon: root.tvs-icon;
+                    label: @tr("TVs");
+                    selected: root.active-pane == Pane.tvs;
+                    clicked => { root.active-pane = Pane.tvs; }
+                }
+                SidebarItem {
+                    icon: root.profiles-icon;
+                    label: @tr("Profiles");
+                    selected: root.active-pane == Pane.profiles;
+                    clicked => { root.active-pane = Pane.profiles; }
+                }
+                SidebarItem {
+                    icon: root.session-icon;
+                    label: @tr("Session");
+                    selected: root.active-pane == Pane.session;
+                    clicked => { root.active-pane = Pane.session; }
+                }
+                SidebarItem {
+                    icon: root.settings-icon;
+                    label: @tr("Settings");
+                    selected: root.active-pane == Pane.settings;
+                    clicked => { root.active-pane = Pane.settings; }
+                }
+                SidebarItem {
+                    icon: root.about-icon;
+                    label: @tr("About");
+                    selected: root.active-pane == Pane.about;
+                    clicked => { root.active-pane = Pane.about; }
+                }
+
+                // Spacer pushes status to bottom
+                Rectangle { vertical-stretch: 1; }
+
+                // Reload daemon config — power-user action. The daemon
+                // re-reads `~/.config/tisvlay/config.toml` from disk;
+                // useful only when someone edited the file outside the
+                // GUI. Sits above the daemon/session status because
+                // it's a daemon-scoped action.
+                Rectangle {
+                    height: 28px;
+                    background: reload-touch.has-hover && root.daemon-available
+                        ? Theme.sidebar-hover
+                        : transparent;
+                    border-radius: 5px;
+                    animate background { duration: 150ms; }
+
+                    HorizontalLayout {
+                        width: 100%;
+                        height: 100%;
+                        padding-left: 4px;
+                        spacing: Design.gap-tight;
+                        alignment: start;
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: "↻";
+                                color: root.daemon-available
+                                    ? Theme.sidebar-text
+                                    : Theme.sidebar-text-dim;
+                                font-size: Design.font-section;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: @tr("Reload");
+                                color: root.daemon-available
+                                    ? Theme.sidebar-text
+                                    : Theme.sidebar-text-dim;
+                                font-size: Design.font-caption;
+                            }
+                        }
+                    }
+
+                    reload-touch := TouchArea {
+                        enabled: root.daemon-available;
+                        mouse-cursor: root.daemon-available ? pointer : default;
+                        clicked => { Daemon.reload-config(); }
+                    }
+                }
+
+                Text {
+                    text: (root.daemon-available ? "● " : "○ ") + @tr("Daemon");
+                    color: root.daemon-available ? Theme.success : Theme.danger;
+                    font-size: Design.font-caption;
+                    horizontal-alignment: left;
+                }
+                Text {
+                    text: (root.session-available ? "● " : "○ ") + @tr("Session");
+                    color: root.session-available ? Theme.success : Theme.danger;
+                    font-size: Design.font-caption;
+                    horizontal-alignment: left;
+                }
+            }
+        }
+
+        // Content area
+        Rectangle {
+            background: Theme.surface-alt;
+            horizontal-stretch: 1;
+
+            // Each pane is positioned absolutely within this Rectangle.
+            // Slint Rectangles don't lay out children, so panes must
+            // bind width / height to the parent explicitly.
+            if root.active-pane == Pane.tvs: TvsPane {
+                width: 100%;
+                height: 100%;
+                tvs: root.tvs;
+                selected-index <=> root.selected-tv-index;
+                daemon-available: root.daemon-available;
+                system-profiles: root.system-profiles;
+                user-profiles: root.user-profiles;
+            }
+            if root.active-pane == Pane.profiles: ProfilesPane {
+                width: 100%;
+                height: 100%;
+            }
+            if root.active-pane == Pane.session: SessionPane {
+                width: 100%;
+                height: 100%;
+            }
+            if root.active-pane == Pane.settings: SettingsPane {
+                width: 100%;
+                height: 100%;
+            }
+            if root.active-pane == Pane.about: AboutPane {
+                width: 100%;
+                height: 100%;
+                daemon-available: root.daemon-available;
+                session-available: root.session-available;
+            }
+        }
+    }
+}
