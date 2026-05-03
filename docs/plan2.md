@@ -61,21 +61,24 @@ NOTICE                              ← curated top-level (Apache-2.0 propagatio
 
 Two commits, scoped per the "scaffolding + first usage in one commit" preference.
 
-### Commit A — About pane visual fidelity + Slint license compliance
+### Commit A — About pane visual fidelity + Slint license compliance + version-drift surface
 
-**Goal**: Match the design handoff and stop violating the Slint license. No build-system or dep-graph changes.
+**Goal**: Match the design handoff, stop violating the Slint license, and surface installed-version drift between the running GUI and the daemon/session it's talking to.
 
 Touches:
+- [`crates/tisvlayd/src/dbus/`](../crates/tisvlayd/src/dbus/) — add a read-only `Version` property on `Manager1` returning `env!("CARGO_PKG_VERSION")`.
+- [`crates/tisvlay-session/src/session_dbus.rs`](../crates/tisvlay-session/src/session_dbus.rs) — same on `Session1`.
+- [`crates/tisvlay-core/src/dbus_client.rs`](../crates/tisvlay-core/src/dbus_client.rs) — add `version()` accessors on `DaemonClient` + `SessionClient`.
 - [`crates/tisvlay-gui/ui/components/about_pane.slint`](../crates/tisvlay-gui/ui/components/about_pane.slint) — refactor to match the handoff:
-  - Header row: logo + title + tagline (left), version chip (right)
-  - CONNECTIONS group: replace `StatusLine` with a richer `ConnectionRow` (status icon + title + address + description + online chip, per [`other-panes.jsx:374`](../.claude/ui/design_handoff_tisvlay_gui/other-panes.jsx#L374))
-  - COMPONENTS group: 5-row table (`tisvlayd`, `tisvlay-session`, `tisvlay`, `tisvlay-tray`, `tisvlay-gui`)
-  - LICENSE group: copyright line + `View source` / `Report issue` buttons
-  - **`AboutSlint` widget** at the bottom (Slint license compliance)
-- `crates/tisvlay-gui/src/main.rs` — pass `CARGO_PKG_VERSION` into the GUI as a Slint property; wire button callbacks for the two URLs.
-- `crates/tisvlay-gui/Cargo.toml` — possibly add `webbrowser` dep if we go that route over a hand-rolled `xdg-open` invocation (see open question 2).
+  - Header row: logo + title + tagline (left), version chip (right; sourced from compile-time `CARGO_PKG_VERSION`).
+  - CONNECTIONS group: replace `StatusLine` with a richer `ConnectionRow` (status icon + title + address + description + online chip, per [`other-panes.jsx:374`](../.claude/ui/design_handoff_tisvlay_gui/other-panes.jsx#L374)).
+  - COMPONENTS group: data-driven 5-row table fed from a Rust array via a `Repeater`. Each row has a per-component version chip toned by comparison vs. the GUI's compile-time version — **info** if equal, **warn** if remote > local, **danger** if remote < local. Daemon and session rows pull their version over D-Bus; CLI and tray rows have no chip (no D-Bus surface to probe).
+  - LICENSE group: copyright line + `View source` / `Report issue` buttons + **diagnostic copy-to-clipboard** button that emits the JSON blob `{ daemon_version, session_version, slint_version, gui_version }` (per [`docs/plan.md`](plan.md) M5) via `arboard` (already a dep).
+  - **`AboutSlint` widget** at the bottom (Slint license compliance).
+- `crates/tisvlay-gui/src/main.rs` — wire `CARGO_PKG_VERSION` through to Slint, fetch daemon/session versions on About-pane open, build the COMPONENTS row array, route the URL buttons through `webbrowser = "1"`, wire the diagnostic-copy callback.
+- [`crates/tisvlay-gui/Cargo.toml`](../crates/tisvlay-gui/Cargo.toml) — add `webbrowser = "1"`.
 
-**Visual smoke test**: launch `tisvlay-gui --user`, navigate to About, verify each section matches [`about-light.png`](../.claude/ui/design_handoff_tisvlay_gui/screenshots/about-light.png) and `about-dark.png`.
+**Visual smoke test**: launch `tisvlay-gui --user`, navigate to About, verify each section matches [`about-light.png`](../.claude/ui/design_handoff_tisvlay_gui/screenshots/about-light.png) and `about-dark.png`. Sanity-check the version-drift logic by running an older `tisvlayd` binary against the new GUI (warn/danger chips render).
 
 ### Commit B — Third-party FOSS attribution pipeline
 
@@ -99,18 +102,18 @@ Touches:
 - `just package-rpm` produces a package whose `rpm -qpl` lists `/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html`.
 - `tisvlay-gui` About pane shows the embedded text and is scrollable.
 
-## Open questions
+## Decisions
 
-1. **Version chip data source**: compile-time `env!("CARGO_PKG_VERSION")` (passed in via Slint property), or pull from a Slint global the way `daemon-available` is wired? Compile-time is simpler and the version doesn't change at runtime.
-2. **URL-open routing for the View source / Report issue buttons**: `webbrowser` crate (≈1.5M downloads, cross-platform, well-maintained) or hand-rolled `std::process::Command::new("xdg-open")`? The crate is one extra dep but handles edge cases; the std::process route is one less dep.
-3. **Components-table data source**: list only the binaries actually built, or stay statically authored as the handoff shows? Static is simpler and stable; build-time enumeration would only matter if we ever conditionally compile a binary out.
-4. **Notices presentation**: single big scrollable `TextEdit`, or expandable per-license sections? The research and VS Code precedent say single blob; per-license sections add UI complexity for limited reader benefit.
-5. **MIT-vs-Apache for `OR` clauses in `about.toml` priority**: picking MIT first minimizes NOTICE-propagation work (industry norm — what ripgrep/Alacritty do); picking Apache aligns with the project's own license. Default to MIT unless there's a project-values reason otherwise.
+1. **Version chips**: compile-time `env!("CARGO_PKG_VERSION")` for the GUI's overall version chip in the header row. Per-row chips in the COMPONENTS table for the daemon and session reflect their probed runtime versions (read via the new `Version` property on `Manager1` and `Session1`). Tone the chip by comparison vs. the GUI's compile-time version: **info** if equal, **warn** if remote > local, **danger** if remote < local. CLI and tray rows: no chip — they're not D-Bus services we have a connection to, and shelling out to `--version` is awkward and brittle. (The drift case that matters in practice is daemon/session-vs-GUI after a partial upgrade where services haven't been restarted.)
+2. **URL-open routing**: `webbrowser = "1"`. Slightly more dep weight than a hand-rolled `xdg-open` invocation, but cross-platform-ready and we may want more of its features later.
+3. **Components table data source**: data-driven from Rust (forced by decision 1 — we need to push per-row version + tone). Slint renders via a `Repeater` over a property-bound array.
+4. **Notices presentation**: single scrollable `TextEdit` for now. Per-license expandable sections deferred as a stretch UX goal.
+5. **OR-clause license priority** in `about.toml`: MIT first, Apache-2.0 second, others by `cargo-about`'s default order. Industry norm; minimizes NOTICE-propagation work.
+6. **Diagnostic copy-to-clipboard button**: included even though not in the handoff. Lives in the LICENSE group alongside `View source` / `Report issue`, copies the JSON blob `{ daemon_version, session_version, slint_version, gui_version }` (from [`docs/plan.md`](plan.md) M5) via `arboard` (already a dep).
 
 ## Out of scope
 
 - Authors / Contributors list (the handoff doesn't show one; can be added later if/when we have meaningful contributors beyond solo dev).
-- Diagnostic copy-to-clipboard button (mentioned in `docs/plan.md` M5 description but visually not in the handoff for About; defer to M5 polish).
 - Per-vendor backend attribution (LG/Samsung/Sony when those land) — once we have multi-vendor builds, vendor backend crates may want their own license sub-sections. Cross-link from this plan when relevant.
 - A separate "Third-party Notices" pane in the sidebar (some apps do this; we follow the simpler pattern of keeping it inside About).
 
