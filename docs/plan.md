@@ -247,9 +247,9 @@ The placeholder pane currently just displays "System and user profile editing ar
 
 About pane is built (version info, links, license, diagnostic-copy button). Session pane is a placeholder ("session-service status arrives in M5"). Settings pane (a fifth nav item that emerged after the original roadmap) is also a placeholder. Polish items (toasts, keyboard nav, window-state persistence) are incremental as the panes get fleshed out.
 
-### M6 — Packaging + distribution (not started)
+### M6 — Packaging + distribution (partial)
 
-NixOS module's `services.tisvlay.enableGui` flag, `cargo-nfpm` GUI binary entry, XDG desktop entry. The `tisvlay-gui` binary builds today but isn't packaged.
+The `tisvlay-gui` binary is now packaged — see [packaging/README.md](../packaging/README.md). Remaining: NixOS module's `services.tisvlay.enableGui` flag and the XDG `.desktop` entry.
 
 ### Beyond the original roadmap
 

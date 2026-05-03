@@ -201,27 +201,37 @@ cli-status:
 
 # --- Packaging ----------------------------------------------------------
 
-# Build musl static binaries for packaging. Writes to
-# target/x86_64-unknown-linux-musl/release/ and never touches
-# the native dev build cache at target/release/.
+# Min glibc the produced binaries support. Coverage table and bump
+# rationale: packaging/README.md.
+glibc_baseline := "2.34"
+
+# Cross-distro release build — see packaging/README.md for the full
+# pipeline rationale. Output lands in target/x86_64-unknown-linux-gnu
+# /release/; zigbuild strips the `.<glibc>` suffix when invoking cargo.
 [private]
-package-build-musl:
-    cargo build --release --workspace --target x86_64-unknown-linux-musl
+package-build:
+    cargo zigbuild --release \
+        --target x86_64-unknown-linux-gnu.{{ glibc_baseline }} \
+        -p tisvlayd \
+        -p tisvlay-cli \
+        -p tisvlay-session \
+        -p tisvlay-tray \
+        -p tisvlay-gui
 
 # Build .deb package
 [group('package')]
-package-deb: package-build-musl
-    cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-musl -f deb
+package-deb: package-build
+    cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-gnu -f deb
 
 # Build .rpm package
 [group('package')]
-package-rpm: package-build-musl
-    cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-musl -f rpm
+package-rpm: package-build
+    cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-gnu -f rpm
 
 # Build Arch Linux package
 [group('package')]
-package-archlinux: package-build-musl
-    cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-musl -f archlinux
+package-archlinux: package-build
+    cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-gnu -f archlinux
 
 # Build all package formats
 [group('package')]
