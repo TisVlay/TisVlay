@@ -1,5 +1,7 @@
 # Plan 3 — Tray as a first-class GUI peer + symmetric peer-introspection D-Bus surface
 
+**Status: shipped.** Implementation landed in a single commit on `feat/gui-about`; smoke-tested via the Slint MCP server end-to-end (kill/restart of `tisvlay-tray` flips the GUI's row + footer dot in real time). All "Done when" criteria below are satisfied.
+
 Bring `tisvlay-tray` into the GUI's status surfaces (footer dot, About pane CONNECTIONS row, COMPONENTS chip) and generalise the per-peer D-Bus introspection so every long-running process in the stack — daemon, session, tray, and the GUI itself — can be probed for version and config-path the same way. Replaces the static, hardcoded per-component descriptions in the GUI's COMPONENTS catalogue with values queried from each peer's own `ConfigPath` property, so a `--config /some/override` invocation is reflected accurately.
 
 ## Why now
@@ -85,10 +87,10 @@ Touches:
 
 ## Done when
 
-- `busctl --user introspect` confirms `Tray1` and `Gui1` interfaces with `Version` + `ConfigPath` properties.
-- `Manager1` and `Session1` both expose `ConfigPath` const properties; verified with the same probe.
-- About pane renders three CONNECTIONS rows (daemon, session, tray); footer renders three dots; COMPONENTS table chip appears for `tisvlay-tray` with the same drift-tone logic as the other peers.
-- COMPONENTS-row descriptions for daemon, session, and tray reflect their actual probed `ConfigPath` (not the previously-hardcoded paths).
-- Killing or restarting `tisvlay-tray` flips the GUI's tray dot + chip in real time, parallel to how session events already work.
-- Existing `just check` passes; `just package-rpm` still produces an installable artifact (no nfpm config changes — both new binaries are already shipped).
-- Plan 3 entry added to [`docs/plan.md`](plan.md)'s "Beyond the original roadmap" table once the work lands.
+- ✅ `busctl --user introspect` confirms `Tray1` and `Gui1` interfaces with `Version` + `ConfigPath` properties.
+- ✅ `Manager1` and `Session1` both expose `ConfigPath` const properties; verified with the same probe.
+- ✅ About pane renders three CONNECTIONS rows (daemon, session, tray); footer renders three dots; COMPONENTS table chip appears for `tisvlay-tray` with the same drift-tone logic as the other peers.
+- ✅ COMPONENTS-row descriptions for daemon, session, and tray reflect their actual probed `ConfigPath` (not the previously-hardcoded paths). Verified in the dev shell: `tisvlayd` reads `docs/configs/daemon.toml` and the row text says so.
+- ✅ Killing or restarting `tisvlay-tray` flips the GUI's tray dot + chip in real time, parallel to how session events already work.
+- ✅ `just check` passes (build + clippy + tests); `just package-rpm` still produces an installable artifact (no nfpm config changes — both new binaries are already shipped).
+- ⏳ Plan 3 entry to add to [`docs/plan.md`](plan.md)'s "Beyond the original roadmap" table — pending follow-up commit when the branch lands on `origin/main`.
