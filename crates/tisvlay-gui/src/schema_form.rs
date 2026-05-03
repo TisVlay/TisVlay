@@ -153,10 +153,10 @@ pub fn compute_schema_valid(model: &ModelRc<PairingFieldRow>) -> bool {
 /// us an IP and the daemon-side `LgVendorConfig` accepts `address`
 /// as an alias for `ip`, so seeding either works).
 ///
-/// Autofill rule mirrors plan5: a field's `autofill = "discovery.<key>"`
-/// resolves to `vendor_data[<key>]`. Missing entries fall back to
-/// the field's `default`. The user can still edit the pre-filled
-/// value before submitting.
+/// Autofill rule: a field's `autofill = "discovery.<key>"` resolves
+/// to `vendor_data[<key>]`. Missing entries fall back to the
+/// field's `default`. The user can still edit the pre-filled value
+/// before submitting.
 ///
 /// Decoupled from any specific carrier struct (e.g. the wizard's
 /// `WizardEntry`) so the same routine drives both the pairing

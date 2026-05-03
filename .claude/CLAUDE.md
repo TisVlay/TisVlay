@@ -15,11 +15,13 @@ See [docs/design.md](docs/design.md) for the full architecture, D-Bus interface 
 
 ## What's Next
 
-- Event-driven power-management redesign — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md) "Event-driven power-management redesign" for design notes carried forward from the dev-branch sync research.
-- `tisvlay-gui`: Slint-based settings window
-- TV discovery and pairing wizard (with managed checkbox)
-- Per-TV configuration and session behavior settings
-- Input-aware automation (`primary_input`, `automate_when`) — see design.md § Power & Screen State Machine
+The TVs-pane half of `tisvlay-gui` is feature-complete (master/detail with live-state controls, edit-mode pencil, pairing wizard with discovery streaming, About pane). Remaining GUI work, packaging, and architectural follow-ups:
+
+- **Profile CRUD daemon methods + Profiles pane** — system + user profile create/update/delete/get D-Bus methods on `Manager1` / `Session1`, then the GUI's two-sub-tab profile editor. Tracked as M3.5 + M4 in [docs/plan.md](../docs/plan.md).
+- **Session pane + polish** — user-bus connection indicator, session-service status, default user-profile selector, error toasts, keyboard nav, window-state persistence. M5 in [docs/plan.md](../docs/plan.md).
+- **GUI packaging** — NixOS module `enableGui` flag, nfpm desktop entry, XDG `.desktop` file. M6 in [docs/plan.md](../docs/plan.md).
+- **Event-driven power-management redesign** — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md).
+- **Plus other deferred ideas**: polkit gating for multi-user workstations, profile rename UX, CLI shorthand for `Tv1.UpdateConfig`, `a{sv}` wire-format migration, atomic config writes, typed `Failed { reason }` payload, "Open logs" affordance. All filed in [docs/ideas.md](../docs/ideas.md).
 
 ## Current Project Structure
 
@@ -96,23 +98,39 @@ tisvlay/
 │   │       ├── state_forwarder.rs # Backend state → D-Bus PropertiesChanged pipeline
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
 │   │       ├── netlink.rs        # Kernel netlink: route resolution + carrier/route monitoring
+│   │       ├── desktop_probe.rs  # DRM connector enumeration + EDID-based TV ↔ connector matching
+│   │       ├── json_toml.rs      # Lossless JSON ↔ TOML conversion for vendor-config payloads
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool, profile dispatch, disk serialization
 │   │
 │   ├── tisvlay-session/           # User session service (lib + bin)
 │   │   └── src/
-│   │       ├── lib.rs            # Library root (SessionState, event_handler, __internals)
+│   │       ├── lib.rs            # Library root (SessionState, event_handler, reconcile_user_config_orphans, __internals)
 │   │       ├── main.rs           # Entry point (thin, delegates to lib)
 │   │       ├── session_dbus.rs   # org.tisvlay.Session1 D-Bus interface
 │   │       ├── session_monitor.rs # Session lock/unlock detection
 │   │       ├── wayland_idle.rs   # Wayland greeter wake detection
 │   │       └── idle.rs           # Idle timeout detection
 │   │
-│   └── tisvlay-tray/              # System tray app
-│       └── src/
-│           ├── main.rs           # Entry point, signal watcher, command processor
-│           ├── tray.rs           # ksni Tray impl, menu building, TrayCommand
-│           └── state.rs          # CachedTvState, fetch_all_state()
+│   ├── tisvlay-tray/              # System tray app
+│   │   └── src/
+│   │       ├── main.rs           # Entry point, signal watcher, command processor
+│   │       ├── tray.rs           # ksni Tray impl, menu building, TrayCommand
+│   │       └── state.rs          # CachedTvState, fetch_all_state()
+│   │
+│   └── tisvlay-gui/               # Slint-based settings window
+│       ├── src/
+│       │   ├── main.rs           # Entry point, Daemon/Session client wiring, EditPane callbacks
+│       │   ├── state.rs          # TvViewRaw, fetch_state (daemon → Slint snapshot)
+│       │   └── schema_form.rs    # Schema-driven form helpers (validate, autofill, prefill)
+│       ├── ui/
+│       │   ├── main.slint        # Window root + sidebar nav, AppWindow component
+│       │   ├── theme.slint       # Theme tokens global (dark/light)
+│       │   ├── design.slint      # Design tokens (gaps, font sizes, radii)
+│       │   ├── widgets.slint     # Bespoke primitives (Chip, Group, IconBtn, SpinnerArc, …)
+│       │   ├── components/       # Pane components (tvs_pane, profiles_pane, schema_form, …)
+│       │   └── globals/          # Cross-pane state globals (Daemon, EditPane, PairingWizard, …)
+│       └── lang/                 # gettext message catalogs (.pot template + per-locale .po/.mo)
 │
 ├── packaging/
 │   ├── nix/
@@ -130,11 +148,22 @@ tisvlay/
 │
 ├── docs/
 │   ├── design.md                 # Full architecture design
+│   ├── plan.md                   # GUI roadmap + ship status
+│   ├── ideas.md                  # Deferred work + research notes
+│   ├── concerns.md               # Design concerns / technical debt
+│   ├── bugs.md                   # Known bugs index (per-bug docs in bugs/)
+│   ├── testing.md                # Testing guide
 │   ├── firewall.md               # SSDP firewall configuration
-│   └── watchers/
-│       └── network.md            # Network monitoring: carrier, route resolution, pitfalls
+│   ├── configs/                  # Sample daemon + session TOML configs
+│   ├── watchers/
+│   │   └── network.md            # Network monitoring: carrier, route resolution, pitfalls
+│   ├── lg/                       # LG-specific docs (WebOS notes, benchmarks)
+│   ├── kde/                      # KDE-specific notes (tray quirks)
+│   └── bugs/                     # Per-bug detail docs
 │
-└── .claude/CLAUDE.md             # This file
+└── .claude/
+    ├── CLAUDE.md                 # This file
+    └── slint.md                  # Slint dev workflow + MCP introspection notes
 ```
 
 ## Key Crates
@@ -178,39 +207,61 @@ tisvlay/
 tisvlayd --session
 tisvlay-session --user
 tisvlay-tray --user
+tisvlay-gui --user      # optional — settings window
 
 # Production (system bus, as systemd services):
 sudo tisvlayd
 systemctl --user enable --now tisvlay-session
 systemctl --user enable --now tisvlay-tray
+tisvlay-gui              # launched on demand from app menu
 ```
 
 ### Testing with busctl
 
+Per-TV object paths use underscore-encoded UUIDs since the Phase 8.1 identity migration. The examples below use `<UUID_>` as a stand-in — replace with the actual path component (run `busctl --user tree org.tisvlay.Daemon` or `tisvlay list` to see).
+
 ```bash
 # Manager interface
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 GetSupportedVendors
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 GetPairingSchema s lg
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ReloadConfig
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ListSystemProfiles
 
 # List all objects + properties (single round-trip for all TV state)
 busctl --user call org.tisvlay.Daemon /org/tisvlay org.freedesktop.DBus.ObjectManager GetManagedObjects
 
-# Per-TV properties (replace living_room with TV ID)
-busctl --user introspect org.tisvlay.Daemon /org/tisvlay/Tv/living_room
-busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1 Connected
-busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume Volume
+# Per-TV identity + cached state
+busctl --user introspect org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_>
+busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Connected
+busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 VendorConfig
+busctl --user get-property org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 VendorInfo
 
-# Writable state (set via Set* methods; properties are read-only)
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume SetVolume y 30
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Volume SetMuted b true
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Screen SetScreen b false
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Backlight SetBacklight y 80
+# Single-field config edits via the per-property setters
+busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Name s "Living Room G4"
+busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Managed b true
+busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 SystemProfile s default
+busctl --user set-property org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 PrimaryInput s HDMI_1
+
+# Multi-field atomic edit via Tv1.UpdateConfig
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 UpdateConfig s '{"name":"Renamed","mac":"AA:BB:CC:DD:EE:FF"}'
+
+# Read current config (top-level + non-Secret vendor fields, JSON-string)
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 GetConfig
+
+# Lifecycle
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Reconnect
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Remove
+
+# Writable live-state methods (properties stay read-only; Set* methods are the auth path)
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Volume SetVolume y 30
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Volume SetMuted b true
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Screen SetScreen b false
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Backlight SetBacklight y 80
 
 # Other methods
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Power PowerOff
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Power PowerOn
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/living_room org.tisvlay.Tv1.Input SwitchInput s HDMI_2
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Power PowerOff
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Power PowerOn
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Input SwitchInput s HDMI_2
 
 # Monitor PropertiesChanged signals
 busctl --user monitor org.tisvlay.Daemon

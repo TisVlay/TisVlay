@@ -1,6 +1,6 @@
 // AppWindow root.
 //
-// Architecture (post plan4 sweep):
+// Architecture:
 //   - Cross-pane callbacks live on globals (`Daemon`,
 //     `PairingWizard`) — components call e.g. `Daemon.set-volume(...)`
 //     directly instead of forwarding through every parent.

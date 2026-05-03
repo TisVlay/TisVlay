@@ -38,10 +38,10 @@ graph TD
 | Component | Binary | Description |
 |-----------|--------|-------------|
 | **System Daemon** | `tisvlayd` | Systemd system service. Vendor-agnostic TV management, D-Bus API, WoL at boot. |
-| **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle). |
+| **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle); reactively prunes orphan user-config `[[tv]]` assignments via `ObjectManager.InterfacesRemoved`. |
 | **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
 | **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Subscribes to daemon D-Bus signals for real-time state updates (30s fallback poll). Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
-| **GUI** | `tisvlay-gui` | Slint-based configuration window. (Not yet implemented) |
+| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. About pane built; Profiles / Session panes are placeholders pending the M3.5 / M4 / M5 work in [docs/plan.md](plan.md). |
 
 ### Crate Structure
 
@@ -49,34 +49,44 @@ See `CLAUDE.md` for the full file tree. Key crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `tisvlay-core` | Core traits (`TvBackend`, `TvConnection`, `TvConnector`), types, config, D-Bus client |
+| `tisvlay-core` | Core traits (`TvBackend`, `TvConnection`, `TvConnector`), types, config, schema (`PairingField`, `FieldVisibility`), D-Bus client |
 | `tisvlay-lg` | LG WebOS backend (WebSocket, SSAP protocol, SSDP discovery) |
+| `tisvlay-mock` | In-memory mock backend (dev/tests, optional via `mock` feature) |
+| `tisvlay-test` | OS-environment fakes — private `dbus-daemon`, fake logind, fake screensaver |
 | `tisvlay-backends` | Composition crate — only place that imports vendor crates |
+| `tisvlay-harness` | Binary-lifecycle test fixtures (`TestDaemon`, `TestSession`, `TestTray`) |
 | `tisvlayd` | System daemon — vendor-agnostic TV management |
 | `tisvlay-cli` | CLI tool — vendor-agnostic |
 | `tisvlay-session` | User session service — vendor-agnostic |
+| `tisvlay-tray` | System-tray app (ksni) — vendor-agnostic |
+| `tisvlay-gui` | Slint-based settings window — vendor-agnostic; status in [plan.md](plan.md) |
 
 ### Dependency Graph
 
 ```mermaid
 graph BT
-    core["tisvlay-core<br/><i>traits, types, D-Bus client</i>"]
+    core["tisvlay-core<br/><i>traits, types, schema, D-Bus client</i>"]
     lg["tisvlay-lg"]
+    mock["tisvlay-mock"]
     samsung["tisvlay-samsung, ..."]
     backends["tisvlay-backends<br/><i>composition — ONLY crate that imports vendors</i>"]
     daemon["tisvlayd<br/><i>system daemon</i>"]
     cli["tisvlay-cli"]
     session["tisvlay-session"]
     tray["tisvlay-tray"]
+    gui["tisvlay-gui"]
 
     lg --> core
+    mock --> core
     samsung -.-> core
     backends --> lg
+    backends -->|"mock feature"| mock
     backends -.-> samsung
     daemon --> backends
     cli -->|"dbus feature"| core
     session -->|"dbus feature"| core
     tray -->|"dbus feature"| core
+    gui -->|"dbus feature"| core
 ```
 
 **Key principle**: Only `tisvlay-backends` knows about vendor crates. All binaries are vendor-agnostic. No `if vendor == "lg"` checks or downcasts in any binary code.
@@ -105,7 +115,10 @@ classDiagram
     class TvConnector {
         +transport() Transport
         +connect(vendor_config) TvConnection
-        +display_address(vendor_config) String
+        +config_schema() Vec~PairingField~
+        +pairing_schema() Vec~PairingField~
+        +display_config(vendor_config) Vec~(String,String)~
+        +display_diagnostics(vendor_config) Vec~(String,String)~
         +supports_wake(vendor_config) bool
         +wake(vendor_config)
         +wake_and_connect(vendor_config, ...)
@@ -155,7 +168,8 @@ Each connector declares its `Transport` type (`Network`, `Serial`, `Usb`, `Cec`)
 Key `TvConnector` methods:
 - `transport()` — communication transport used by this connector
 - `connect(vendor_config)` — create a connection using vendor-specific transport
-- `display_address(vendor_config)` — human-readable address for logging/UI
+- `config_schema()` — declarative `Vec<PairingField>` describing the persisted-config shape with `FieldVisibility` (`UserInput` / `Diagnostic` / `Secret`) per field. Drives the pairing wizard, the GUI's edit pane, and the daemon's `Tv1.{VendorConfig,VendorInfo}` projections — backends declare schema once and the framework projects per-use-case.
+- `display_config(vendor_config)` / `display_diagnostics(vendor_config)` — `(label, value)` projection of `UserInput` / `Diagnostic` fields respectively, default-implemented via `config_schema`. `Secret` fields are excluded from both.
 - `supports_wake(vendor_config)` / `wake(vendor_config)` — abstract over WoL, CEC, etc.
 - `start_pairing(vendor_config)` / `build_config_from_pairing(...)` — vendor-specific pairing
 
@@ -284,6 +298,18 @@ Config is split between **system config** (daemon-owned) and **user config** (se
 Both accept `--config <PATH>` to override their respective path. `tisvlayd` defaults to `/var/lib/tisvlay/config.toml`; `--session` dev mode defaults to the XDG user path.
 
 See `crates/tisvlay-core/src/config.rs` for the full schema.
+
+### Schema-driven vendor config
+
+Top-level `TvConfig` fields (`name`, `managed`, `system_profile`, `primary_input`) are uniform across vendors. Vendor-specific fields (LG: `ip`, `mac`, `client_key`, `scheme`) live under `[tv.<vendor>]` and are described declaratively by the vendor's `TvConnector::config_schema()` — a `Vec<PairingField>` where each field carries a `FieldVisibility`:
+
+| Visibility | Where it surfaces | Editable? |
+|---|---|---|
+| `UserInput` | `Tv1.VendorConfig`, GUI's CONFIG group, pairing wizard form, edit-mode form | yes (via `Tv1.UpdateConfig` or pairing) |
+| `Diagnostic` | `Tv1.VendorInfo`, GUI's INFO group | no — backend-discovered, refresh via re-pair |
+| `Secret` | nowhere (filtered out of every projection) | n/a |
+
+Adding an editable field is a one-row schema entry — no D-Bus method changes, no CLI dispatch arms, no GUI form-rendering code. The framework projects the right view per use case.
 
 ### System Config Example
 
@@ -652,12 +678,7 @@ Forward-looking work that hasn't shipped yet. No fixed sequencing — entries la
 
 ### GUI Configuration
 
-User-friendly setup and configuration.
-
-1. `tisvlay-gui`: Slint-based settings window
-2. TV discovery and pairing wizard with managed checkbox
-3. Per-TV configuration
-4. Session behavior settings
+`tisvlay-gui` is largely built — see [docs/plan.md](plan.md) for the full milestone status. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), and About pane shipped through M3 + Plan-6 follow-on work. The Profiles pane, Session pane, and packaging (NixOS module flag, nfpm desktop entry) remain as M3.5 / M4 / M5 / M6 follow-ups.
 
 ### Event-Driven Power Management
 
