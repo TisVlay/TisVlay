@@ -600,19 +600,11 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 
 **Goal**: Install the full stack on any distro.
 
-**NixOS** (`services.tisvlay.enable = true`):
-1. `packaging/nix/package.nix`: `rustPlatform.buildRustPackage` for all four binaries
-2. `packaging/nix/module.nix`: NixOS module — system daemon, user services, D-Bus policy, dedicated user/group
-3. `flake.nix`: `nixosModules.default`, `overlays.default`, `packages.default`
+**NixOS** (`services.tisvlay.enable = true`) — see [packaging/nix/README.md](../packaging/nix/README.md).
 
-**Multi-distro** (via `cargo-nfpm`):
-1. `[package.metadata.nfpm]` on `tisvlayd/Cargo.toml` — single config for all formats
-2. `cargo nfpm package -p tisvlayd --no-build -f deb|rpm|archlinux`
-3. Output package named `tisvlay` — bundles all 4 binaries, systemd services, D-Bus policy
-4. `packaging/scripts/postinstall.sh` — create config dir, reload systemd + D-Bus
-5. `packaging/scripts/preremove.sh` — stop and disable services
+**Multi-distro** — see [packaging/README.md](../packaging/README.md).
 
-**GitHub releases**: `.github/workflows/release.yml` — builds and uploads .deb, .rpm, .pkg.tar.zst on `v*` tags
+**GitHub releases**: see [`.github/workflows/release.yml`](../.github/workflows/release.yml) — triggers on `v*` tags.
 
 **crates.io**: each crate published independently; `cargo install` provides binaries only (no service files)
 
@@ -678,7 +670,7 @@ Forward-looking work that hasn't shipped yet. No fixed sequencing — entries la
 
 ### GUI Configuration
 
-`tisvlay-gui` is largely built — see [docs/plan.md](plan.md) for the full milestone status. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), and About pane shipped through M3 + Plan-6 follow-on work. The Profiles pane, Session pane, and packaging (NixOS module flag, nfpm desktop entry) remain as M3.5 / M4 / M5 / M6 follow-ups.
+`tisvlay-gui` is largely built and packaged — see [docs/plan.md](plan.md) for the full milestone status, and [packaging/README.md](../packaging/README.md) for the shipping channels. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), and About pane shipped through M3 + Plan-6 follow-on work. The Profiles pane, Session pane, NixOS module's `enableGui` flag, and the XDG `.desktop` entry remain as M3.5 / M4 / M5 / M6 follow-ups.
 
 ### Event-Driven Power Management
 

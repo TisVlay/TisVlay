@@ -201,20 +201,13 @@ cli-status:
 
 # --- Packaging ----------------------------------------------------------
 
-# Glibc baseline for the release build. Anything ≥ this version
-# (Ubuntu 20.04, Debian 11, Fedora 33, RHEL 9, …) can install the
-# resulting .deb/.rpm. Bump cautiously — older anchors widen the
-# install matrix at the cost of newer libc syscalls.
-glibc_baseline := "2.31"
+# Min glibc the produced binaries support. Coverage table and bump
+# rationale: packaging/README.md.
+glibc_baseline := "2.34"
 
-# Build the five shipped binaries with cargo-zigbuild against an
-# explicit glibc baseline. Zig is used as the linker so the resulting
-# ELF interpreter is the standard `/lib64/ld-linux-x86-64.so.2`
-# (no Nix-store path baked in) and the binary loads on any distro at
-# or newer than `glibc_baseline`. tisvlay-gui pulls libfontconfig at
-# link time and dlopens GL/Wayland/X11 at runtime; both work cleanly
-# under glibc-dynamic. Output lands in target/x86_64-unknown-linux-gnu
-# /release/ — zigbuild strips the version suffix when invoking cargo.
+# Cross-distro release build — see packaging/README.md for the full
+# pipeline rationale. Output lands in target/x86_64-unknown-linux-gnu
+# /release/; zigbuild strips the `.<glibc>` suffix when invoking cargo.
 [private]
 package-build:
     cargo zigbuild --release \

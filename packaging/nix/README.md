@@ -46,7 +46,7 @@ Authoritative option reference: read [`module.nix`](module.nix) directly — eve
 
 - `cargoLock.lockFile = ../../Cargo.lock` rather than `cargoHash`. Local workspace → no re-hashing needed on every dependency bump.
 - `useNextest = true`. `cargoNextestHook` pulls in `cargo-nextest` automatically; `nativeCheckInputs` just needs `dbus` (the integration tests spawn a private `dbus-daemon`).
-- Production build ships **default features only**, matching the `justfile`'s musl recipe. Tests still run with `--all-features` via `cargoTestFlags`.
+- Production build ships **default features only**, matching the `justfile`'s `package-build` recipe (cross-distro pipeline: see [`../README.md`](../README.md)). Tests still run with `--all-features` via `cargoTestFlags`.
 - All internal `[workspace.dependencies]` entries carry `version = "0.1.0"` alongside `path = "..."` so `cargo package` can resolve the published manifest layout. See [`../../Cargo.toml`](../../Cargo.toml).
 
 ## Security posture

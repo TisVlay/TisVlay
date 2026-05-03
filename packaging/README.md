@@ -47,16 +47,17 @@ The two ingredients that make this work cleanly from a NixOS host are:
 
 ### Glibc baseline
 
-Set in [`justfile`](../justfile) as `glibc_baseline := "2.31"`. Coverage:
+Set in [`justfile`](../justfile) as `glibc_baseline := "2.34"`. Coverage as of 2026-05-03:
 
-| baseline | covers | notes |
+| baseline | covers (distros with glibc ≥ baseline, in-support) | notes |
 |---|---|---|
-| 2.17 | RHEL 7+ | Very portable, very old; Zig has stability issues with such old targets. |
-| 2.28 | RHEL 8+, Debian 10+, Ubuntu 18.04+ | What `manylinux_2_28` (Python wheel standard) picks. |
-| **2.31** | RHEL 9+, Debian 11+, Ubuntu 20.04+, Fedora 33+ | Current pick. Comfortable middle ground; clear of Zig's known undefined-symbol bugs at older anchors. |
-| 2.34 | RHEL 9+, Debian 12+, Ubuntu 22.04+, Fedora 35+ | More-permissive 2026 floor; drops nothing anyone still desktop-installs. |
+| 2.28 | RHEL / AlmaLinux / Rocky 8 (maint. until 2029-05); everything newer | [`manylinux_2_28`](https://github.com/pypa/manylinux) floor. Enterprise-only — no consumer desktop distro still ships this. |
+| 2.31 | + Debian 11 (LTS until 2026-08), Ubuntu 20.04 (ESM-only since 2025-04) | Adds only legacy/paid users beyond what 2.34 covers; Debian 11 LTS exits in three months. |
+| **2.34** | + RHEL / AlmaLinux / Rocky 9 (maint. until 2032-05), Ubuntu 22.04 LTS (until 2027-04), Fedora 35+ | Currently configured. Every in-standard-support enterprise + desktop distro. Clear of Zig's older-anchor undefined-symbol bugs. |
+| 2.36 | Debian 12 (LTS until 2028-06), Ubuntu 24.04+, Fedora 36+, RHEL 10+ — drops RHEL 9 | Drops RHEL 9 (maint. through 2032) for no real-world gain. Avoid. |
+| 2.39 | RHEL 10 (since 2025-05), Debian 13 (since 2025-08), Ubuntu 24.04+, Fedora 41+ — drops RHEL 9, Ubuntu 22.04 | Too aggressive for a 2026 release. |
 
-Bumping the baseline is a one-line change. Going below 2.28 starts hitting [zig issue #15486](https://github.com/ziglang/zig/issues/15486), [#5882](https://github.com/ziglang/zig/issues/5882), [#9485](https://github.com/ziglang/zig/issues/9485) (undefined `__isoc23_strtoul`, `fcntl64`, `aligned_alloc`).
+Bumping the baseline is a one-line change in `glibc_baseline`. The 2.34 anchor was picked because Ubuntu 20.04 went ESM-only in April 2025 and Debian 11 LTS exits August 2026, so 2.31 (and below) now adds only legacy/paid users — while keeping the bar at 2.34 still covers RHEL 9 active through 2032. Going below 2.28 starts hitting [zig #15486](https://github.com/ziglang/zig/issues/15486), [#5882](https://github.com/ziglang/zig/issues/5882), [#9485](https://github.com/ziglang/zig/issues/9485) (undefined `__isoc23_strtoul`, `fcntl64`, `aligned_alloc`).
 
 ### Runtime dependencies
 
