@@ -22,6 +22,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev
+
       - name: Toolchain
         run: |
           rustup component add llvm-tools-preview
