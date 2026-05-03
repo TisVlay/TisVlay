@@ -26,13 +26,13 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-// Rust-side counterpart to Slint's `@tr()` macro. Uses the same
-// gettext catalog (`init_translations!` sets up the lookup paths
-// process-wide); call sites that push user-facing strings into
-// Slint properties (e.g. wizard pair-flow messages) wrap their
-// literals with `gettext("…")` so the slint-tr-extractor and
-// xgettext both find the same source-of-truth in the .pot file.
-use gettextrs::gettext;
+// Identity stub standing in for `gettextrs::gettext`. The real crate
+// (and Slint's `gettext` feature) link glibc's libintl
+// (`_nl_msg_cat_cntr`), which the musl static-packaging path can't
+// satisfy. v1 ships English only, so call sites keep wrapping their
+// literals with `gettext("…")` and `xgettext` still harvests them
+// into `lang/tisvlay-gui.pot`; the runtime returns the source string.
+fn gettext(s: &str) -> String { s.to_string() }
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
     Coalescer, DaemonClient, PowerCyclePhase, ReconcilerMap, RefreshTrigger, SessionClient,
@@ -344,17 +344,6 @@ struct Args {
 
 fn main() -> Result<()> {
     tisvlay_core::logging::init(&["tisvlay_gui=info", "zbus=warn", "slint=warn"])?;
-
-    // Localization. `init_translations!` registers `<crate>.mo` lookup
-    // under `<dir>/<locale>/LC_MESSAGES/` for both Slint's `@tr()`
-    // calls and our Rust-side `gettextrs::gettext()` calls — they
-    // share the same gettext catalog. The `lang/` directory is
-    // resolved relative to `CARGO_MANIFEST_DIR` at compile time;
-    // for installed binaries the system loader falls back to
-    // `/usr/share/locale/<locale>/LC_MESSAGES/tisvlay-gui.mo`. v1
-    // ships English only — every `@tr("…")` and `gettext("…")`
-    // returns the literal in the absence of a matching catalog.
-    slint::init_translations!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang"));
 
     let args = Args::parse();
     info!("tisvlay-gui starting");

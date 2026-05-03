@@ -78,6 +78,10 @@
               linuxConsoleTools
               lldb
               llvmPackages_21.bintools-unwrapped
+              # nfpm (Go binary) is the packager that cargo-nfpm shells
+              # out to. cargo-nfpm itself is not in nixpkgs — install it
+              # with `cargo install cargo-nfpm` to drive `just package-*`.
+              nfpm
               pkg-config
               pkgsMusl.stdenv.cc
               prek

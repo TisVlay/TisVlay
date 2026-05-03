@@ -31,7 +31,7 @@ directories = { workspace = true }
 # to spawn its blocking I/O work from there. Re-enabling accessibility
 # requires running zbus on async-io rather than tokio (workspace-wide
 # decision), or configuring accesskit to share our tokio runtime.
-slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "compat-1-2", "renderer-femtovg", "gettext"] }
+slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "compat-1-2", "renderer-femtovg"] }
 zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -52,18 +52,28 @@ ashpd = { version = "0.13", default-features = false, features = ["tokio", "sett
 # trait method but no public app-facing helper, so we go through
 # `arboard` (the de facto Rust clipboard crate).
 arboard = { version = "3", default-features = false }
-# Localization for Rust-side dynamic strings (errors that surface
-# to the user, schema labels pushed from vendor backends, etc.).
-# Slint's `@tr()` macro covers literal strings inside `.slint`
-# files; everything else routes through gettext-rs's `tr!` to
-# share the same `.po`/`.mo` catalogs and slint's
-# `init_translations!` directory layout.
-gettext-rs = "0.7"
+# Localization for Rust-side dynamic strings is currently disabled:
+# `gettext-rs` and Slint's `gettext` feature both pull in glibc-only
+# libintl symbols (`_nl_msg_cat_cntr`) that musl can't satisfy, which
+# breaks the static-binary packaging path. v1 ships English only, so
+# `gettext()` is locally stubbed to identity in main.rs and the 22
+# call sites continue to compile. Catalogs in `lang/` and the
+# i18n-* justfile recipes stay so re-enabling is one Cargo line.
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection
 # during dev. Pinned to the exact slint version because the backend
 # selector does not follow semver.
 i-slint-backend-selector = { version = "=1.16.1", features = ["mcp"], optional = true }
+
+# Direct dep we never `use` — the only purpose is to flip fontique's
+# `fontconfig-dlopen` feature, which propagates `dlopen` onto the
+# transitive `yeslogic-fontconfig-sys`. With dlopen on, the build
+# script skips pkg-config + libfontconfig.a (so we link cleanly under
+# musl from the Nix shell) and the binary loads `libfontconfig.so.1`
+# from the host at startup via libloading. Pulled into the dep graph
+# transitively by slint → i-slint-core → parley → fontique; this
+# entry just unifies features. Pin tracks slint 1.16's choice.
+fontique = { version = "0.8", features = ["fontconfig-dlopen"] }
 
 [features]
 dev-mcp = ["dep:i-slint-backend-selector"]

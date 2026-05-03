@@ -86,6 +86,7 @@ contents = [
     { src = "target/x86_64-unknown-linux-musl/release/tisvlay", dst = "/usr/bin/tisvlay" },
     { src = "target/x86_64-unknown-linux-musl/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
     { src = "target/x86_64-unknown-linux-musl/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
+    { src = "target/x86_64-unknown-linux-musl/release/tisvlay-gui", dst = "/usr/bin/tisvlay-gui" },
     # Systemd system service
     { src = "packaging/systemd/tisvlayd.service", dst = "/usr/lib/systemd/system/tisvlayd.service" },
     # Systemd user services
@@ -101,11 +102,30 @@ contents = [
 postinstall = "packaging/scripts/postinstall.sh"
 preremove = "packaging/scripts/preremove.sh"
 
+# tisvlay-gui dlopens these at startup (femtovg + winit). Daemons /
+# CLI / session / tray have no runtime deps beyond the musl-static
+# binary itself, so the package depends on this set only because the
+# GUI is bundled. Names follow Debian/Ubuntu (deb) and Fedora/RHEL
+# (rpm) conventions; verify against the target distro before release.
 [package.metadata.nfpm.deb]
-depends = ["libc6"]
+depends = [
+    "libfontconfig1",
+    "libgl1",
+    "libegl1",
+    "libwayland-client0",
+    "libwayland-egl1",
+    "libxcb1",
+]
 
 [package.metadata.nfpm.rpm]
-depends = ["glibc"]
+depends = [
+    "fontconfig",
+    "mesa-libGL",
+    "mesa-libEGL",
+    "libwayland-client",
+    "libwayland-egl",
+    "libxcb",
+]
 
 [lints]
 workspace = true
