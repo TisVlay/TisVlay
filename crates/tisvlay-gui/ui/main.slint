@@ -22,13 +22,14 @@ import { EditPane } from "globals/edit_pane.slint";
 import { Clipboard } from "globals/clipboard.slint";
 import { Errors } from "globals/errors.slint";
 import { Icons } from "globals/icons.slint";
+import { Toast, ToastView } from "globals/toast.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
 import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 
-export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard, EditPane, Clipboard, Errors, Icons }
+export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard, EditPane, Clipboard, Errors, Icons, Toast }
 
 export enum Pane {
     tvs,
@@ -290,5 +291,15 @@ export component AppWindow inherits Window {
                 copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
             }
         }
+    }
+
+    // Top-centre toast — declared after the HorizontalBox so it
+    // renders on top of the panes. Positioned by `x`/`y` rather than
+    // a layout because we want it to float over the chrome (titlebar
+    // edge included), not inside the sidebar+pane split. Auto-clears
+    // via Rust-side timer (see `show_toast` in main.rs).
+    ToastView {
+        x: (root.width - self.width) / 2;
+        y: 24px;
     }
 }

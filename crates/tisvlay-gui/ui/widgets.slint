@@ -740,6 +740,14 @@ export component IconBtn inherits Rectangle {
     in property <image> source;
     in property <bool> enabled: true;
     in property <bool> loading: false;
+    /// `framed: false` (default) → ghost style: transparent
+    /// background, hover-only highlight, no border. Used by the
+    /// TVs-pane edit/save/cancel triplet.
+    /// `framed: true` → matches `Btn`'s surface fill + border, so
+    /// an icon-only button can sit alongside text Btns in a row
+    /// without looking like an empty slot. Used by the About-pane
+    /// `Copy diagnostic` action.
+    in property <bool> framed: false;
     callback clicked();
 
     property <bool> interactive: root.enabled && !root.loading;
@@ -748,7 +756,13 @@ export component IconBtn inherits Rectangle {
     height: 24px;
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    background: touch.has-hover && root.interactive ? Theme.row-hover : transparent;
+    background: root.framed
+        ? (!root.interactive
+            ? Theme.surface2
+            : (touch.has-hover ? Theme.surface2 : Theme.surface))
+        : (touch.has-hover && root.interactive ? Theme.row-hover : transparent);
+    border-color: root.framed ? Theme.border : transparent;
+    border-width: root.framed ? Design.border-thin : 0;
     border-radius: Design.radius-control;
     animate background { duration: 150ms; }
     opacity: root.enabled || root.loading ? 1.0 : 0.4;

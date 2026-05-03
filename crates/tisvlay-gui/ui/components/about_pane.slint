@@ -1,7 +1,8 @@
 import { ScrollView, AboutSlint } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { Group, Chip, Btn } from "../widgets.slint";
+import { Group, Chip, Btn, IconBtn } from "../widgets.slint";
+import { Clipboard } from "../globals/clipboard.slint";
 
 // One row in the COMPONENTS table. `version` is empty when we have no
 // way to probe the running binary (CLI, tray) — the row renders
@@ -213,16 +214,20 @@ export component AboutPane inherits Rectangle {
                     }
                     HorizontalLayout {
                         alignment: end;
+                        spacing: Design.gap-stack;
+                        IconBtn {
+                            source: Clipboard.copy-icon;
+                            // Match the neighbouring `Report issue` Btn's
+                            // row height (default IconBtn is 24px ghost,
+                            // tuned for the TVs-pane edit triplet).
+                            width: Design.size-input;
+                            height: Design.size-input;
+                            framed: true;
+                            clicked => { root.copy-diagnostic-clicked(); }
+                        }
                         Btn {
                             text: @tr("Report issue");
                             clicked => { root.report-issue-clicked(); }
-                        }
-                    }
-                    HorizontalLayout {
-                        alignment: end;
-                        Btn {
-                            text: @tr("Copy diagnostic");
-                            clicked => { root.copy-diagnostic-clicked(); }
                         }
                     }
                 }

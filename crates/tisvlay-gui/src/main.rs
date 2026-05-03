@@ -229,6 +229,42 @@ fn build_diagnostic_blob(app: &AppWindow) -> String {
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
 }
 
+/// Visible duration of a toast before it auto-clears, in milliseconds.
+/// Tuned long enough to read a short success line and short enough
+/// not to linger across the user's next action.
+const TOAST_DURATION_MS: u64 = 2500;
+
+/// Monotonic generation token for in-flight toasts. Each `show_toast`
+/// call increments it; the spawned auto-clear task captures its
+/// generation and only clears the message if the counter still
+/// matches at wakeup. Means a rapid second toast replaces the first
+/// without the first's clear-task wiping out the second prematurely.
+static TOAST_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Display a top-centre toast for `TOAST_DURATION_MS` and auto-clear.
+/// Safe to call from any thread; marshals through the Slint event
+/// loop. Multiple rapid calls coalesce — only the most recent
+/// message stays visible, no toast queue.
+fn show_toast(app_weak: slint::Weak<AppWindow>, message: &str) {
+    let generation = TOAST_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let message = message.to_string();
+    on_ui(&app_weak, {
+        let message = message.clone();
+        move |app| {
+            app.global::<Toast>()
+                .set_message(SharedString::from(message));
+        }
+    });
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(TOAST_DURATION_MS)).await;
+        if TOAST_GEN.load(std::sync::atomic::Ordering::SeqCst) == generation {
+            on_ui(&app_weak, |app| {
+                app.global::<Toast>().set_message(SharedString::default());
+            });
+        }
+    });
+}
+
 /// Marshal a UI-touching closure onto the Slint event loop. Clones
 /// the weak ref internally so callers can pass it by reference; if
 /// the `AppWindow` has been dropped by the time the closure runs,
@@ -517,14 +553,37 @@ fn main() -> Result<()> {
     // appears to do nothing rather than panicking.
     let clipboard = app.global::<Clipboard>();
     clipboard.set_copy_icon(load_themed_icon(&["edit-copy"]));
-    clipboard.on_copy(|value| match arboard::Clipboard::new() {
-        Ok(mut cb) => {
-            if let Err(e) = cb.set_text(value.to_string()) {
-                warn!(error = %e, "clipboard write failed");
+    {
+        let app_weak = app.as_weak();
+        clipboard.on_copy(move |value| {
+            match arboard::Clipboard::new() {
+                Ok(mut cb) => {
+                    if let Err(e) = cb.set_text(value.to_string()) {
+                        // KDE-style: silent on failure, log only.
+                        warn!(error = %e, "clipboard write failed");
+                        return;
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "couldn't open clipboard");
+                    return;
+                }
             }
-        }
-        Err(e) => warn!(error = %e, "couldn't open clipboard"),
-    });
+            show_toast(app_weak.clone(), "Copied to clipboard.");
+        });
+    }
+
+    // Toast.show is the public Slint-side trigger for the top-centre
+    // notification surface. Rust handlers can either invoke this
+    // callback (e.g., from `Daemon.on_*` paths via the AppWindow
+    // global) or call `show_toast` directly — both feed the same
+    // property + auto-clear flow.
+    {
+        let app_weak = app.as_weak();
+        app.global::<Toast>().on_show(move |message| {
+            show_toast(app_weak.clone(), message.as_str());
+        });
+    }
 
     // About-pane wiring: GUI version (compile-time) + the three
     // top-row callbacks (View source / Report issue / Copy diagnostic).
@@ -550,14 +609,11 @@ fn main() -> Result<()> {
         app.on_copy_diagnostic_clicked(move || {
             let Some(app) = app_weak.upgrade() else { return };
             let blob = build_diagnostic_blob(&app);
-            match arboard::Clipboard::new() {
-                Ok(mut cb) => {
-                    if let Err(e) = cb.set_text(blob) {
-                        warn!(error = %e, "clipboard write failed");
-                    }
-                }
-                Err(e) => warn!(error = %e, "couldn't open clipboard"),
-            }
+            // Route through the shared Clipboard.copy chokepoint so
+            // the success toast fires via the same path every other
+            // CopyBtn uses — no parallel arboard call here.
+            app.global::<Clipboard>()
+                .invoke_copy(SharedString::from(blob));
         });
     }
 
