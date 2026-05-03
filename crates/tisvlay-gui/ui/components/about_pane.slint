@@ -144,6 +144,15 @@ export component AboutPane inherits Rectangle {
             padding-top: Design.pad-pane-top;
             padding-bottom: Design.pad-pane;
             spacing: 18px;
+            // Pack all sections at the top instead of stretch-
+            // distributing extra vertical space when the window is
+            // taller than the content. Without this, the default
+            // `alignment: stretch` lets the first Group (whose
+            // wrap: word-wrap descendants give it an unbounded
+            // vertical-stretch hint) absorb the entire surplus —
+            // visible as a huge gap between the page header and the
+            // CONNECTIONS card on a tall window.
+            alignment: start;
 
             // -- Header row: clickable [logo · title + tagline] (opens
             // repo URL — same target as the old "View source" button)
@@ -286,7 +295,21 @@ export component AboutPane inherits Rectangle {
             // Slint Royalty-free 2.0 license requires an `AboutSlint`
             // widget to appear in the application's About pane.
             // Tracks slint-ui/slint LicenseRef-Slint-Royalty-free-2.0.
-            AboutSlint { }
+            //
+            // The widget's source declares `preferred-width: 100%;
+            // preferred-height: 100%;` so without bounds it scales
+            // to fill whatever space is left in the pane —
+            // overwhelming the rest of the page on a maximized
+            // window. Bound it to badge-like dimensions and centre
+            // horizontally; matches the visual weight Slint
+            // upstream uses in their own demo pane.
+            HorizontalLayout {
+                alignment: center;
+                AboutSlint {
+                    max-width: 280px;
+                    max-height: 96px;
+                }
+            }
         }
     }
 }
