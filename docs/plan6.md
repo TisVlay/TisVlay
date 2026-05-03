@@ -27,6 +27,7 @@
 > | No config-load migration; regenerate sample configs directly | ✅ resolved | Identity model |
 > | Atomic config writes via tempfile + rename | ✅ resolved | Identity model |
 > | Wire format for `Tv1.UpdateConfig`: JSON-string (defer `a{sv}` migration) | ✅ resolved | Open questions / Deferred |
+> | Split `Tv1.VendorInfo` into `Tv1.VendorConfig` (UserInput) + narrowed `Tv1.VendorInfo` (Diagnostic) | ✅ resolved | Split vendor surface |
 
 ## Bug recap (motivation)
 
@@ -198,6 +199,52 @@ churn.
 - Every read site (TVs pane header, tray menu) — switch to
   `vendor_info` lookups, or stay on `DiscoveredTv.address` for
   the pre-pair case.
+
+### Split vendor surface: CONFIG vs INFO ✅ resolved
+
+Once the GUI's edit-mode toggle landed in Phase 8.5, the
+single `Tv1.VendorInfo` projection (UserInput + Diagnostic
+combined under one label/value list) became a UX problem: the
+TVs-pane INFO group rendered IP/MAC (editable) and WebSocket
+scheme (read-only) under one heading with no visual cue
+separating them. The user could click the edit pencil and the
+form would offer IP and MAC for editing but not scheme — a
+behavior the surface didn't telegraph.
+
+**Resolution:** split the projection into two narrower
+properties so the GUI can render two distinct groups. CONFIG
+holds the editable subset (with the edit pencil); INFO holds
+read-only identity + diagnostics.
+
+| D-Bus property | Visibility filter | GUI placement |
+|---|---|---|
+| `Tv1.VendorConfig: a(ss)` *(new)* | `UserInput` only | CONFIG group, view + edit modes |
+| `Tv1.VendorInfo: a(ss)` *(narrowed)* | `Diagnostic` only | INFO group, read-only |
+
+**Connector trait:** replace `display_info` with two
+defaulted methods — `display_config` (UserInput) and
+`display_diagnostics` (Diagnostic) — both projecting through a
+shared `display_rows_for_visibility` helper. No backend
+overrides existed for `display_info`, so the migration was
+mechanical.
+
+**Why "VendorInfo" still names the Diagnostic-only property:**
+"Info" reads as informational/diagnostic in many freedesktop
+projects (UPower, ModemManager). Keeping the name avoids a
+churn-y rename for what's now the smaller subset. The new
+property gets the clarifying name (`VendorConfig` →
+"vendor config the user edits") since it's where the explicit
+distinction needed to land.
+
+**Primary descriptor follow-through:**
+`BackendRegistry::primary_descriptor` (the spatial-hint
+helper that GUI/CLI/log formatters use for one-line summaries)
+now reads from `display_config` instead of the old
+union-projection. The first editable field is the right
+"spatial hint" — Diagnostic rows like LG's WebSocket scheme
+aren't user-meaningful spatial identifiers. The CLI's `list`
+descriptor falls through `vendor_config[0]` → `vendor_info[0]`
+so backends with no UserInput fields still surface something.
 
 ### Atomicity & failure modes (resolved Q4)
 
@@ -555,18 +602,21 @@ Suggested order, smallest reviewable units first.
   the originating row inline.
 - **✅ Phase 8.6 — Side-effect polish (partial).**
   Reconnect-on-IP-change flow already wired in
-  `update_tv_config`. `SupportsWake` + `VendorInfo` cached-
-  property refresh added via a new
+  `update_tv_config`. `SupportsWake` + `VendorConfig` +
+  `VendorInfo` cached-property refresh added via a new
   `StateChangeEvent::TvVendorConfigChanged` event +
   `state_forwarder::refresh_tv_vendor_state` handler — the
   Power-on button now correctly enables when the user adds a
   MAC via the edit pane. Save-button spinner indicates
-  in-flight saves. **Deferred:** an explicit "(reconnecting
-  after edit…)" status banner during the post-edit reconnect
-  window — the existing `Tv1.Connected` chip flicker
-  communicates the same state and a banner felt heavy for a
-  sub-second round-trip. Revisit if user feedback shows the
-  flicker is missed.
+  in-flight saves. The vendor surface itself was also split
+  during this phase (see "Split vendor surface" decision
+  above): CONFIG group shows `Tv1.VendorConfig` (editable)
+  and INFO group shows `Tv1.VendorInfo` (Diagnostic-only).
+  **Deferred:** an explicit "(reconnecting after edit…)"
+  status banner during the post-edit reconnect window — the
+  existing `Tv1.Connected` chip flicker communicates the same
+  state and a banner felt heavy for a sub-second round-trip.
+  Revisit if user feedback shows the flicker is missed.
 - **Phase 8.7 (optional, not started)** — CLI
   `tisvlay tvs <name|uuid> set <field>=<value>` shorthand
   wrapping `Tv1.UpdateConfig`. Includes the name/UUID
@@ -596,6 +646,11 @@ implementation and reshaped the original plan:
   Phase 8.5 UX polish, address-book contact pattern.
 - **`b4d1b7b feat(gui): swap save icon for SpinnerArc while EditPane.saving`** —
   Phase 8.6 UX polish for the save button's in-flight state.
+- **`a0f9f26 refactor: split vendor surface into VendorConfig + VendorInfo`** —
+  D-Bus + GUI surface split prompted by the post-8.5 UX
+  observation that the single VendorInfo projection conflated
+  editable and read-only rows. See "Split vendor surface"
+  decision above.
 
 ## Open questions
 
