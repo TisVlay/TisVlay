@@ -555,7 +555,7 @@ fn main() -> Result<()> {
     clipboard.set_copy_icon(load_themed_icon(&["edit-copy"]));
     {
         let app_weak = app.as_weak();
-        clipboard.on_copy(move |value| {
+        clipboard.on_copy(move |value, label| {
             match arboard::Clipboard::new() {
                 Ok(mut cb) => {
                     if let Err(e) = cb.set_text(value.to_string()) {
@@ -569,7 +569,15 @@ fn main() -> Result<()> {
                     return;
                 }
             }
-            show_toast(app_weak.clone(), "Copied to clipboard.");
+            // Empty label → the older generic copy toast; non-empty
+            // → the noun-specific form. Two distinct gettext keys so
+            // translators see full sentences for both shapes.
+            let message = if label.is_empty() {
+                gettext("Copied to clipboard.")
+            } else {
+                gettext("Copied {0}.").replace("{0}", &label)
+            };
+            show_toast(app_weak.clone(), &message);
         });
     }
 
@@ -612,8 +620,10 @@ fn main() -> Result<()> {
             // Route through the shared Clipboard.copy chokepoint so
             // the success toast fires via the same path every other
             // CopyBtn uses — no parallel arboard call here.
-            app.global::<Clipboard>()
-                .invoke_copy(SharedString::from(blob));
+            app.global::<Clipboard>().invoke_copy(
+                SharedString::from(blob),
+                SharedString::from(gettext("diagnostic info")),
+            );
         });
     }
 

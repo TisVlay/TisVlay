@@ -687,11 +687,17 @@ export component ScanLine inherits Rectangle {
 // Glyph comes from `Clipboard.copy-icon` (Rust resolves it against
 // the freedesktop `edit-copy` name); when missing, the button still
 // renders a (mostly-blank) hit target so the action stays
-// reachable. Click fires `Clipboard.copy(value)` — Rust handles
-// the actual platform clipboard write.
+// reachable. Click fires `Clipboard.copy(value, label)` — Rust
+// handles the platform clipboard write and surfaces a
+// "Copied {label}." toast on success.
 
 export component CopyBtn inherits Rectangle {
     in property <string> value;
+    /// Noun the success toast displays — typically forwarded from
+    /// the wrapping `LabeledRow`'s `@tr()`-translated label
+    /// ("TV ID", "MAC address", "serial", …). Empty string falls
+    /// back to the generic "Copied to clipboard." toast.
+    in property <string> label;
 
     width: 24px;
     height: 24px;
@@ -713,7 +719,7 @@ export component CopyBtn inherits Rectangle {
 
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { Clipboard.copy(root.value); }
+        clicked => { Clipboard.copy(root.value, root.label); }
     }
 }
 
