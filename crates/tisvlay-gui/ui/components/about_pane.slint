@@ -130,6 +130,7 @@ export component AboutPane inherits Rectangle {
     in property <image> logo;
 
     callback view-source-clicked();
+    callback view-release-clicked();
     callback report-issue-clicked();
     callback copy-diagnostic-clicked();
 
@@ -209,7 +210,12 @@ export component AboutPane inherits Rectangle {
                         alignment: end;
                         Chip {
                             label: "v" + root.gui-version;
-                            tone: "neutral";
+                            // `info` tone matches the COMPONENTS chips
+                            // when versions agree — visual continuity
+                            // for the running build's identifier.
+                            tone: "info";
+                            interactive: true;
+                            clicked => { root.view-release-clicked(); }
                         }
                     }
                     HorizontalLayout {

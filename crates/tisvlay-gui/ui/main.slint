@@ -110,6 +110,7 @@ export component AppWindow inherits Window {
 
     // About-pane button callbacks (Rust handles URL launch + clipboard write).
     callback view-source-clicked();
+    callback view-release-clicked();
     callback report-issue-clicked();
     callback copy-diagnostic-clicked();
 
@@ -287,6 +288,7 @@ export component AppWindow inherits Window {
                 components: root.about-components;
                 logo: root.about-icon;
                 view-source-clicked => { root.view-source-clicked(); }
+                view-release-clicked => { root.view-release-clicked(); }
                 report-issue-clicked => { root.report-issue-clicked(); }
                 copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
             }

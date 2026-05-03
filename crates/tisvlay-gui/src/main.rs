@@ -606,6 +606,12 @@ fn main() -> Result<()> {
             warn!(error = %e, url = REPO_URL, "open browser failed");
         }
     });
+    app.on_view_release_clicked(|| {
+        let url = format!("{REPO_URL}/releases/tag/v{GUI_VERSION}");
+        if let Err(e) = webbrowser::open(&url) {
+            warn!(error = %e, %url, "open browser failed");
+        }
+    });
     app.on_report_issue_clicked(|| {
         let url = format!("{REPO_URL}/issues/new");
         if let Err(e) = webbrowser::open(&url) {

@@ -20,6 +20,12 @@ export component Chip inherits Rectangle {
     in property <string> label;
     /// One of: "neutral", "success", "danger", "warn", "info".
     in property <string> tone: "neutral";
+    /// `interactive: true` adds a pointer cursor + click handling so
+    /// the chip reads as a hyperlink-style affordance. Default
+    /// `false` keeps every existing decorative chip (online/offline,
+    /// version-drift indicators, etc.) inert.
+    in property <bool> interactive: false;
+    callback clicked();
 
     property <brush> bg-color: tone == "success" ? Theme.success-soft
                               : tone == "danger" ? Theme.danger-soft
@@ -57,6 +63,11 @@ export component Chip inherits Rectangle {
             font-size: Design.font-mini;
             font-weight: 600;
         }
+    }
+
+    if root.interactive: TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }
 
