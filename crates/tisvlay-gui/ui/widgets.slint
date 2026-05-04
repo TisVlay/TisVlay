@@ -126,25 +126,30 @@ export component DangerBtn inherits Rectangle {
 
     touch := TouchArea {
         enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
         clicked => { root.clicked(); }
     }
 }
 
 // =============================================================================
-// Btn — neutral outlined button with a hand-pointer hover cursor.
+// UriBtn — neutral outlined button for opening URLs.
 // =============================================================================
 //
-// std-widgets `Button` deliberately keeps the default arrow cursor on
-// hover (matching native KDE/GNOME/Windows convention where only
-// hyperlinks get the hand). This project leans web-style — every
-// custom button widget here sets `mouse-cursor: pointer` so the
-// affordance is unambiguous. `Btn` is the neutral counterpart to
-// `DangerBtn`: same shape, surface fill instead of accent, used for
-// secondary actions like the About pane's `View source` /
-// `Report issue` / `Copy diagnostic` row.
+// KDE HIG ([develop.kde.org/hig/getting_input/](https://develop.kde.org/hig/getting_input/))
+// is unambiguous: "Only use the pointing finger cursor to signal
+// interactivity for a clickable URL." `UriBtn` is the one button
+// widget in this file that opts in to the hand cursor, because its
+// click action is by contract a URL open (xdg-open, webbrowser, or
+// the like). Every other custom button widget here (`DangerBtn`,
+// `IconBtn`, `CopyBtn`) sticks with the default arrow cursor for
+// in-app actions, matching std-widgets `Button` and the rest of the
+// KDE/GNOME desktop.
+//
+// Use `UriBtn` for: `Report issue`, `View source`, `Open release
+// notes`, etc. Do *not* use it for `Copy`, `Save`, `Reload`, `Remove`,
+// or any other in-app action — those are `DangerBtn`, `IconBtn`,
+// `CopyBtn`, or std-widgets `Button` instead.
 
-export component Btn inherits Rectangle {
+export component UriBtn inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
     in property <length> min-button-width: 80px;
@@ -397,7 +402,6 @@ export component InlineError inherits Rectangle {
                     }
                 }
                 action-touch := TouchArea {
-                    mouse-cursor: pointer;
                     clicked => { root.action-clicked(); }
                 }
             }
@@ -424,7 +428,6 @@ export component InlineError inherits Rectangle {
                     height: 100%;
                 }
                 close-touch := TouchArea {
-                    mouse-cursor: pointer;
                     clicked => { root.dismissed(); }
                 }
             }
@@ -729,7 +732,6 @@ export component CopyBtn inherits Rectangle {
     }
 
     touch := TouchArea {
-        mouse-cursor: pointer;
         clicked => { Clipboard.copy(root.value, root.label); }
     }
 }
@@ -760,8 +762,8 @@ export component IconBtn inherits Rectangle {
     /// `framed: false` (default) → ghost style: transparent
     /// background, hover-only highlight, no border. Used by the
     /// TVs-pane edit/save/cancel triplet.
-    /// `framed: true` → matches `Btn`'s surface fill + border, so
-    /// an icon-only button can sit alongside text Btns in a row
+    /// `framed: true` → matches `UriBtn`'s surface fill + border, so
+    /// an icon-only button can sit alongside text buttons in a row
     /// without looking like an empty slot. Used by the About-pane
     /// `Copy diagnostic` action.
     in property <bool> framed: false;
@@ -803,7 +805,6 @@ export component IconBtn inherits Rectangle {
 
     touch := TouchArea {
         enabled: root.interactive;
-        mouse-cursor: root.interactive ? pointer : default;
         clicked => { root.clicked(); }
     }
 }

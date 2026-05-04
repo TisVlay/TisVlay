@@ -348,7 +348,6 @@ component TvList inherits Rectangle {
                     }
                     pair-touch := TouchArea {
                         enabled: root.daemon-available;
-                        mouse-cursor: root.daemon-available ? pointer : default;
                         clicked => { Daemon.request-pair(); }
                     }
                 }

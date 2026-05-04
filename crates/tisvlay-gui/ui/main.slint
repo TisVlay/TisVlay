@@ -230,7 +230,6 @@ export component AppWindow inherits Window {
 
                     reload-touch := TouchArea {
                         enabled: root.daemon-available;
-                        mouse-cursor: root.daemon-available ? pointer : default;
                         clicked => { Daemon.reload-config(); }
                     }
                 }
