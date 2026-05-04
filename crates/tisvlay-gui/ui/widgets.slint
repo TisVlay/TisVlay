@@ -784,7 +784,7 @@ export component IconBtn inherits Rectangle {
     border-width: root.framed ? Design.border-thin : 0;
     border-radius: Design.radius-control;
     animate background { duration: 150ms; }
-    opacity: root.enabled || root.loading ? 1.0 : 0.4;
+    opacity: root.enabled || root.loading ? 1.0 : Design.opacity-disabled;
 
     if !root.loading: Image {
         source: root.source;

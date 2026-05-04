@@ -72,7 +72,7 @@ component ComponentRow {
         spacing: 12px;
 
         if root.show-divider: Rectangle {
-            height: 1px;
+            height: Design.border-thin;
             background: Theme.border;
         }
 
@@ -85,9 +85,9 @@ component ComponentRow {
             // the CLI it indicates "binary on PATH and `--version`
             // parsed cleanly". Same visual idiom either way.
             Rectangle {
-                width: 28px;
-                height: 28px;
-                border-radius: 14px;
+                width: Design.size-tile-sm;
+                height: Design.size-tile-sm;
+                border-radius: self.width / 2;
                 background: entry.online ? Theme.success-soft : Theme.danger-soft;
                 horizontal-stretch: 0;
                 vertical-stretch: 0;
@@ -96,6 +96,8 @@ component ComponentRow {
                     text: entry.online ? "✓" : "✗";
                     color: entry.online ? Theme.success-text : Theme.danger-text;
                     font-weight: 700;
+                    // Glyph scale: half the circle's width minus a small
+                    // optical inset. Local one-off; not worth a token.
                     font-size: 14px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -104,7 +106,7 @@ component ComponentRow {
 
             // Left column: title + description, stacked.
             VerticalLayout {
-                spacing: 4px;
+                spacing: Design.gap-form;
                 horizontal-stretch: 1;
 
                 // Title row: friendly name + bus address + (for D-Bus
@@ -116,7 +118,7 @@ component ComponentRow {
                 // property is empty. CLI rows skip the button entirely
                 // (no D-Bus surface, no per-binary config of its own).
                 HorizontalLayout {
-                    spacing: 6px;
+                    spacing: Design.gap-tight;
                     alignment: start;
                     Text {
                         text: entry.friendly_name;
@@ -134,10 +136,14 @@ component ComponentRow {
                     }
                     if entry.bus_address != "": IconBtn {
                         source: Icons.folder-open;
+                        // Smaller than the default 24px IconBtn so the
+                        // glyph sits inline with the title row's font
+                        // height rather than overpowering it. One-off
+                        // until a second small-icon-button site exists.
                         width: 18px;
                         height: 18px;
                         enabled: entry.config_path != "";
-                        opacity: entry.config_path != "" ? 1 : 0.4;
+                        opacity: entry.config_path != "" ? 1 : Design.opacity-disabled;
                         clicked => { root.open-config-folder(entry.config_path); }
                     }
                 }
@@ -152,7 +158,7 @@ component ComponentRow {
 
             // Right column: stacked pills, top-aligned to the title row.
             VerticalLayout {
-                spacing: 4px;
+                spacing: Design.gap-form;
                 horizontal-stretch: 0;
                 alignment: start;
 
@@ -204,7 +210,7 @@ export component AboutPane inherits Rectangle {
             padding-right: Design.pad-pane;
             padding-top: Design.pad-pane-top;
             padding-bottom: Design.pad-pane;
-            spacing: 18px;
+            spacing: Design.gap-pane;
             // Pack all sections at the top instead of stretch-
             // distributing extra vertical space when the window is
             // taller than the content. Without this, the default
@@ -226,7 +232,7 @@ export component AboutPane inherits Rectangle {
             // Groups' 1px border sits flush with the card's outer
             // edge.)
             HorizontalLayout {
-                spacing: 16px;
+                spacing: Design.gap-pane;
                 padding-right: Design.pad-card;
 
                 // Brand area is the click target for "View source".
@@ -239,15 +245,20 @@ export component AboutPane inherits Rectangle {
                     HorizontalLayout {
                         width: 100%;
                         height: 100%;
-                        spacing: 16px;
+                        spacing: Design.gap-pane;
                         Image {
                             source: root.logo;
+                            // Brand-area asset size — one-off larger
+                            // than any `size-*` token. Not promoted.
                             width: 56px;
                             height: 56px;
                             horizontal-stretch: 0;
                             vertical-stretch: 0;
                         }
                         VerticalLayout {
+                            // Tighter than `gap-form` (4px) — the
+                            // tagline reads as a continuation of the
+                            // title rather than a separate field.
                             spacing: 2px;
                             horizontal-stretch: 1;
                             alignment: center;
@@ -257,12 +268,12 @@ export component AboutPane inherits Rectangle {
                                 font-size: Design.font-title-1;
                                 font-weight: 700;
                                 color: brand-touch.has-hover ? Theme.accent : Theme.text;
-                                animate color { duration: 120ms; }
+                                animate color { duration: 150ms; }
                             }
                             Text {
                                 text: @tr("Multi-vendor TV control for Linux desktops.");
                                 color: Theme.text-dim;
-                                font-size: 13px;
+                                font-size: Design.font-body;
                             }
                         }
                     }
@@ -275,7 +286,7 @@ export component AboutPane inherits Rectangle {
                 VerticalLayout {
                     alignment: start;
                     horizontal-stretch: 0;
-                    spacing: 8px;
+                    spacing: Design.gap-stack;
                     HorizontalLayout {
                         alignment: end;
                         Chip {
