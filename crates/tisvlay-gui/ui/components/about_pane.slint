@@ -331,7 +331,8 @@ export component AboutPane inherits Rectangle {
                 }
             }
 
-            // -- LICENSE (copyright line; actions live in the header) --
+            // -- LICENSE (project copyright + Slint upstream
+            // attribution; actions live in the header) --
             Group {
                 title: @tr("LICENSE");
 
@@ -342,24 +343,24 @@ export component AboutPane inherits Rectangle {
                     font-size: Design.font-helper;
                     wrap: word-wrap;
                 }
-            }
 
-            // Slint Royalty-free 2.0 license requires an `AboutSlint`
-            // widget to appear in the application's About pane.
-            // Tracks slint-ui/slint LicenseRef-Slint-Royalty-free-2.0.
-            //
-            // The widget's source declares `preferred-width: 100%;
-            // preferred-height: 100%;` so without bounds it scales
-            // to fill whatever space is left in the pane —
-            // overwhelming the rest of the page on a maximized
-            // window. Bound it to badge-like dimensions and centre
-            // horizontally; matches the visual weight Slint
-            // upstream uses in their own demo pane.
-            HorizontalLayout {
-                alignment: center;
-                AboutSlint {
-                    max-width: 280px;
-                    max-height: 96px;
+                // Slint Royalty-free 2.0 license requires an `AboutSlint`
+                // widget to appear in the application's About pane.
+                // Tracks slint-ui/slint LicenseRef-Slint-Royalty-free-2.0.
+                //
+                // The widget's source declares `preferred-width: 100%;
+                // preferred-height: 100%;` so without bounds it scales
+                // to fill whatever space is left in the pane —
+                // overwhelming the rest of the page on a maximized
+                // window. Bound it to badge-like dimensions and centre
+                // horizontally; matches the visual weight Slint
+                // upstream uses in their own demo pane.
+                HorizontalLayout {
+                    alignment: center;
+                    AboutSlint {
+                        max-width: 280px;
+                        max-height: 96px;
+                    }
                 }
             }
         }
