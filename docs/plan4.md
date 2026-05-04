@@ -1,5 +1,7 @@
 # Plan 4 — KDE HIG cursor compliance + `UriBtn` rename + About-pane peer-table consolidation
 
+**Status: shipped.** Three commits on `feat/gui-about` (HIG cursor + rename, COMPONENTS merge, file-manager folder buttons). Smoke-tested via the Slint MCP server; folder click verified manually against Dolphin in the live session. All "Done when" criteria below are satisfied. Three deliberate divergences from the original plan are noted in the [Implementation deltas](#implementation-deltas) section at the bottom.
+
 Bring the project's cursor language into compliance with KDE's [Human Interface Guidelines](https://develop.kde.org/hig/getting_input/) ("Only use the pointing finger cursor to signal interactivity for a clickable URL"), rename the existing `Btn` to `UriBtn` so the URL-opening intent is explicit at the call site, fold the About-pane CONNECTIONS group into a richer COMPONENTS table (each peer appears once, with stacked status + version pills and an open-in-file-manager button next to its config path), and probe the CLI's version by shelling out to `tisvlay --version` so it joins the table as a first-class row.
 
 ## Why now
@@ -136,3 +138,11 @@ Touches:
 - Killing the daemon flips its row's status pill to "offline / danger" tone; killing the tray does the same to its row. Footer dots in the sidebar mirror the same state (unchanged from Plan 3).
 - `just check` passes.
 - Plan 4 entry added to [`docs/plan.md`](plan.md)'s "Beyond the original roadmap" table once the work lands.
+
+## Implementation deltas
+
+Three deliberate divergences from the original plan, all driven by review feedback during implementation:
+
+1. **Unified `online` model instead of `online_known` + `online` pair (Commit B).** Plan 4 §6 + Commit B's bullet list specified an `(online_known: bool, online: bool)` pair so CLI rows could opt out of the status pill. During implementation we collapsed it to a single `online` flag — the CLI's status circle now reflects whether the `tisvlay --version` shell-out parsed cleanly, same vocabulary as "D-Bus surface answered" for the peers. The rendered status chip on the CLI row stays invisible (`opacity: 0`) to reserve the layout slot so the version chip below lands at the same vertical offset as on the D-Bus rows. Less moving parts and the CLI row now carries presence info too.
+2. **Restored CONNECTIONS-era ✓/✗ status circle + inter-row dividers (Commit B).** The original plan §3 + §6 didn't carry over the old CONNECTIONS group's left-side 28px coloured circle (✓ green / ✗ red) or the 1px hairlines between rows. After review noticed both regressions, we put them back: every row gets the status circle (uniform with the new `online` model — Decision 1 above), and `ComponentRow` carries a `show-divider: bool` property the parent for-loop sets on every row except the first.
+3. **Source-side `absolutize` for daemon + session config paths (Commit C).** Out of plan scope — discovered while smoke-testing Commit C that `tisvlayd --config <relative>` surfaced the relative string verbatim through the `ConfigPath` D-Bus property, breaking the GUI's `FileManager1.ShowItems` call (which requires a `file://` URI built from an absolute path). Fixed at the source: a new `tisvlay_core::absolutize(PathBuf) -> PathBuf` helper is called once at startup in `tisvlayd/src/main.rs` and `tisvlay-session/src/main.rs`, prepending `current_dir()` only when the path isn't already absolute. XDG defaults are unaffected. The fix was bundled into Commit C since the broken behaviour was only observable through Commit C's new affordance.
