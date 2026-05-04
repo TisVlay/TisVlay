@@ -63,7 +63,13 @@ component ComponentRow {
     callback open-config-folder(string);
 
     VerticalLayout {
-        spacing: Design.gap-stack;
+        // Mirrors `Group`'s internal between-children spacing (12px,
+        // hardcoded in widgets.slint) so the divider sits exactly
+        // halfway between the previous row's content and this row's
+        // content — equal whitespace above and below the line. Using
+        // `Design.gap-stack` here would render 8px below the divider
+        // against 12px above (Group's spacing), visibly asymmetric.
+        spacing: 12px;
 
         if root.show-divider: Rectangle {
             height: 1px;
