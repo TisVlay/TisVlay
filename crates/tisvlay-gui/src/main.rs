@@ -228,13 +228,14 @@ async fn probe_cli_version() -> Option<String> {
     stdout.split_whitespace().nth(1).map(str::to_string)
 }
 
-/// Build the COMPONENTS-table model for the About pane. Each peer
-/// gets one row with stacked pills (status + version) on the right.
-/// Daemon / Session / Tray drive their pills from the probed
-/// `PeerInfo`; GUI is hardcoded to `online` and ships its compile-
-/// time `CARGO_PKG_VERSION`; CLI gets no status pill (no D-Bus
-/// surface to probe its presence) and a version pill only when the
-/// shell-out probe succeeds.
+/// Build the COMPONENTS-table model for the About pane. Each row
+/// gets a status circle on the left and stacked presence + version
+/// pills on the right under one uniform vocabulary: `online` means
+/// "the surface answered" — D-Bus reachable for peers, `--version`
+/// parsed cleanly for the CLI. Daemon / Session / Tray fold their
+/// probed `PeerInfo` into the row; GUI is hardcoded online and ships
+/// its compile-time `CARGO_PKG_VERSION`; CLI's row reflects the
+/// shell-out result.
 fn make_about_components(
     daemon: Option<&PeerInfo>,
     session: Option<&PeerInfo>,
@@ -252,45 +253,37 @@ fn make_about_components(
     COMPONENT_CATALOGUE
         .iter()
         .map(|(name, friendly, bus, description)| {
-            let (version, tone, online_known, online) = match *name {
+            let (version, tone, online) = match *name {
                 "tisvlayd" => match daemon {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
                         true,
-                        true,
                     ),
-                    None => (String::new(), String::new(), true, false),
+                    None => (String::new(), String::new(), false),
                 },
                 "tisvlay-session" => match session {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
                         true,
-                        true,
                     ),
-                    None => (String::new(), String::new(), true, false),
+                    None => (String::new(), String::new(), false),
                 },
                 "tisvlay-tray" => match tray {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
                         true,
-                        true,
                     ),
-                    None => (String::new(), String::new(), true, false),
+                    None => (String::new(), String::new(), false),
                 },
-                "tisvlay-gui" => (GUI_VERSION.to_string(), "info".to_string(), true, true),
+                "tisvlay-gui" => (GUI_VERSION.to_string(), "info".to_string(), true),
                 "tisvlay" => match cli_version {
-                    Some(v) => (
-                        v.to_string(),
-                        drift_tone(GUI_VERSION, v).to_string(),
-                        false,
-                        false,
-                    ),
-                    None => (String::new(), String::new(), false, false),
+                    Some(v) => (v.to_string(), drift_tone(GUI_VERSION, v).to_string(), true),
+                    None => (String::new(), String::new(), false),
                 },
-                _ => (String::new(), String::new(), false, false),
+                _ => (String::new(), String::new(), false),
             };
             AboutComponentRow {
                 name: SharedString::from(*name),
@@ -299,7 +292,6 @@ fn make_about_components(
                 description: SharedString::from(*description),
                 version: SharedString::from(version),
                 tone: SharedString::from(tone),
-                online_known,
                 online,
             }
         })

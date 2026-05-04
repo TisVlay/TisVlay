@@ -6,7 +6,7 @@ import { Clipboard } from "../globals/clipboard.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
 // (friendly name + monospace bus address in parens) above a rich
-// description, with stacked pills on the right (status pill on top,
+// description, with stacked pills on the right (presence pill on top,
 // version pill below).
 //
 // Field semantics:
@@ -23,9 +23,9 @@ import { Clipboard } from "../globals/clipboard.slint";
 //     no version chip in that case.
 //   - `tone`: drift-tone ("info" / "warn" / "danger") for the
 //     version chip vs the running GUI's compile-time version.
-//   - `online_known`: true for D-Bus peers (drives the status pill);
-//     false for CLI (no surface to probe — no status pill).
-//   - `online`: true/false status when `online_known` is true.
+//   - `online`: true if the surface answered (D-Bus peer reachable,
+//     or `tisvlay --version` parsed cleanly). Drives the status
+//     circle + presence chip uniformly across all rows.
 export struct AboutComponentRow {
     name: string,
     friendly_name: string,
@@ -33,14 +33,13 @@ export struct AboutComponentRow {
     description: string,
     version: string,
     tone: string,
-    online_known: bool,
     online: bool,
 }
 
 // Single row of the COMPONENTS table. Two-line layout: title row
 // (friendly name + bus address) and description row (rich sentence).
-// Stacked pills column on the right: status chip on top (when
-// `online_known`), version chip below (when `version` non-empty).
+// Left: 28px ✓/✗ status circle. Right: stacked pills — presence chip
+// on top, version chip below (only when `version` non-empty).
 //
 // `show-divider` draws a 1px hairline above the row using
 // `Theme.border` — the parent for-loop sets it on every entry except
@@ -62,12 +61,11 @@ component ComponentRow {
             spacing: 12px;
             alignment: stretch;
 
-            // Status indicator — 28px coloured circle with ✓/✗ glyph,
-            // matching the previous CONNECTIONS group's left-column
-            // affordance. Shown only for `online_known` peers (the
-            // four D-Bus surfaces); CLI gets no circle since there's
-            // no presence to indicate.
-            if entry.online_known: Rectangle {
+            // Status indicator — 28px coloured circle with ✓/✗ glyph.
+            // For D-Bus peers it indicates "service responding"; for
+            // the CLI it indicates "binary on PATH and `--version`
+            // parsed cleanly". Same visual idiom either way.
+            Rectangle {
                 width: 28px;
                 height: 28px;
                 border-radius: 14px;
@@ -125,11 +123,19 @@ component ComponentRow {
                 horizontal-stretch: 0;
                 alignment: start;
 
-                if entry.online_known: HorizontalLayout {
+                HorizontalLayout {
                     alignment: end;
                     Chip {
                         label: entry.online ? @tr("online") : @tr("offline");
                         tone: entry.online ? "success" : "danger";
+                        // CLI rows (empty `bus_address`) have no
+                        // "service presence" to declare — `online`
+                        // for a one-shot binary reads as a stretch.
+                        // Render invisible so the slot still reserves
+                        // its height; the version chip below then
+                        // lands at the same vertical offset as it
+                        // does on the D-Bus rows above.
+                        opacity: entry.bus_address != "" ? 1 : 0;
                     }
                 }
 
