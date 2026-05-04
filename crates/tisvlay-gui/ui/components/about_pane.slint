@@ -7,8 +7,8 @@ import { Icons } from "../globals/icons.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
 // (friendly name + monospace bus address in parens) above a rich
-// description, with stacked pills on the right (presence pill on top,
-// version pill below).
+// description, with a single state-pill anchored at the top-right
+// (version when the peer is online, `offline` when it isn't).
 //
 // Field semantics:
 //   - `name`: binary name (`tisvlayd` etc.) — kept for the diagnostic
@@ -20,13 +20,15 @@ import { Icons } from "../globals/icons.slint";
 //     (`(org.tisvlay.Daemon)`). Empty for CLI (no D-Bus surface).
 //   - `description`: rich one-line sentence describing what this
 //     component does ("Device management, WoL at boot, …").
-//   - `version`: probed runtime version. Empty when unreachable —
-//     no version chip in that case.
+//   - `version`: probed runtime version. Always populated when
+//     `online` is true (D-Bus const property / `--version` parse);
+//     unread when offline.
 //   - `tone`: drift-tone ("info" / "warn" / "danger") for the
 //     version chip vs the running GUI's compile-time version.
 //   - `online`: true if the surface answered (D-Bus peer reachable,
-//     or `tisvlay --version` parsed cleanly). Drives the status
-//     circle + presence chip uniformly across all rows.
+//     or `tisvlay --version` parsed cleanly). Drives both the
+//     status circle and the right-column chip's content (version
+//     pill vs `offline` pill).
 //   - `config_path`: absolute path to the peer's config file.
 //     Drives the folder-open IconBtn — present and enabled when
 //     non-empty, present-but-disabled (40% opacity) for D-Bus peers
@@ -45,9 +47,11 @@ export struct AboutComponentRow {
 
 // Single row of the COMPONENTS table. Two-line layout: title row
 // (friendly name + bus address + folder-open IconBtn) and description
-// row (rich sentence). Left: 28px ✓/✗ status circle. Right: stacked
-// pills — presence chip on top, version chip below (only when
-// `version` non-empty).
+// row (rich sentence). Left: 28px ✓/✗ status circle. Right: single
+// chip slot — version pill when online, `offline` pill when not.
+// The status circle already conveys presence, so a separate "online"
+// pill would duplicate the green check; consolidating to one chip
+// keeps the slot's vertical anchor steady across both states.
 //
 // `show-divider` draws a 1px hairline above the row using
 // `Theme.border` — the parent for-loop sets it on every entry except
@@ -156,33 +160,23 @@ component ComponentRow {
                 }
             }
 
-            // Right column: stacked pills, top-aligned to the title row.
+            // Right column: single chip, top-aligned to the title
+            // row. Online → version pill with drift-tone; offline →
+            // `offline` pill in danger tone. Same anchor, same width
+            // band, content is what flips — so the column reads as a
+            // stable status column whether the row's peer is up or
+            // down. The CLI's old "invisible online chip" trick is no
+            // longer needed: under the new rule a CLI row that probes
+            // cleanly just shows its version pill outright.
             VerticalLayout {
-                spacing: Design.gap-form;
                 horizontal-stretch: 0;
                 alignment: start;
 
                 HorizontalLayout {
                     alignment: end;
                     Chip {
-                        label: entry.online ? @tr("online") : @tr("offline");
-                        tone: entry.online ? "success" : "danger";
-                        // CLI rows (empty `bus_address`) have no
-                        // "service presence" to declare — `online`
-                        // for a one-shot binary reads as a stretch.
-                        // Render invisible so the slot still reserves
-                        // its height; the version chip below then
-                        // lands at the same vertical offset as it
-                        // does on the D-Bus rows above.
-                        opacity: entry.bus_address != "" ? 1 : 0;
-                    }
-                }
-
-                if entry.version != "": HorizontalLayout {
-                    alignment: end;
-                    Chip {
-                        label: "v" + entry.version;
-                        tone: entry.tone;
+                        label: entry.online ? "v" + entry.version : @tr("offline");
+                        tone: entry.online ? entry.tone : "danger";
                     }
                 }
             }
