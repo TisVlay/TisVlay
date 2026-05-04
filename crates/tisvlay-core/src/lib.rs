@@ -92,7 +92,7 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 pub use config::{
     AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
     SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment,
+    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
 };
 
 // State
@@ -122,6 +122,7 @@ pub use dbus_paths::{
 
 #[cfg(feature = "dbus")]
 pub use dbus_client::{
-    BusKind, DaemonClient, ServiceEvent, SessionClient, StateEvent, StateWatcher,
-    StateWatcherConfig, TvInfo, TvStateChange, add_signal_match, subscribe_signals, watch_service,
+    BusKind, DaemonClient, GuiClient, ServiceEvent, SessionClient, StateEvent, StateWatcher,
+    StateWatcherConfig, TrayClient, TvInfo, TvStateChange, add_signal_match, subscribe_signals,
+    watch_service,
 };

@@ -20,6 +20,12 @@ export component Chip inherits Rectangle {
     in property <string> label;
     /// One of: "neutral", "success", "danger", "warn", "info".
     in property <string> tone: "neutral";
+    /// `interactive: true` adds a pointer cursor + click handling so
+    /// the chip reads as a hyperlink-style affordance. Default
+    /// `false` keeps every existing decorative chip (online/offline,
+    /// version-drift indicators, etc.) inert.
+    in property <bool> interactive: false;
+    callback clicked();
 
     property <brush> bg-color: tone == "success" ? Theme.success-soft
                               : tone == "danger" ? Theme.danger-soft
@@ -57,6 +63,11 @@ export component Chip inherits Rectangle {
             font-size: Design.font-mini;
             font-weight: 600;
         }
+    }
+
+    if root.interactive: TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -107,6 +118,66 @@ export component DangerBtn inherits Rectangle {
         Text {
             text: root.text;
             color: !root.enabled ? Theme.text-faint : white;
+            font-size: Design.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// =============================================================================
+// UriBtn — neutral outlined button for opening URLs.
+// =============================================================================
+//
+// KDE HIG ([develop.kde.org/hig/getting_input/](https://develop.kde.org/hig/getting_input/))
+// is unambiguous: "Only use the pointing finger cursor to signal
+// interactivity for a clickable URL." `UriBtn` is the one button
+// widget in this file that opts in to the hand cursor, because its
+// click action is by contract a URL open (xdg-open, webbrowser, or
+// the like). Every other custom button widget here (`DangerBtn`,
+// `IconBtn`, `CopyBtn`) sticks with the default arrow cursor for
+// in-app actions, matching std-widgets `Button` and the rest of the
+// KDE/GNOME desktop.
+//
+// Use `UriBtn` for: `Report issue`, `View source`, `Open release
+// notes`, etc. Do *not* use it for `Copy`, `Save`, `Reload`, `Remove`,
+// or any other in-app action — those are `DangerBtn`, `IconBtn`,
+// `CopyBtn`, or std-widgets `Button` instead.
+
+export component UriBtn inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <length> min-button-width: 80px;
+    callback clicked();
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-height: Design.size-input;
+    min-width: min-button-width;
+
+    background: !enabled
+        ? Theme.surface2
+        : touch.has-hover ? Theme.surface2
+        : Theme.surface;
+    border-color: Theme.border;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    animate background { duration: 150ms; }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: Design.gap-row;
+        padding-right: Design.gap-row;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: !root.enabled ? Theme.text-faint : Theme.text;
             font-size: Design.font-body;
             font-weight: 500;
             vertical-alignment: center;
@@ -331,7 +402,6 @@ export component InlineError inherits Rectangle {
                     }
                 }
                 action-touch := TouchArea {
-                    mouse-cursor: pointer;
                     clicked => { root.action-clicked(); }
                 }
             }
@@ -358,7 +428,6 @@ export component InlineError inherits Rectangle {
                     height: 100%;
                 }
                 close-touch := TouchArea {
-                    mouse-cursor: pointer;
                     clicked => { root.dismissed(); }
                 }
             }
@@ -632,11 +701,17 @@ export component ScanLine inherits Rectangle {
 // Glyph comes from `Clipboard.copy-icon` (Rust resolves it against
 // the freedesktop `edit-copy` name); when missing, the button still
 // renders a (mostly-blank) hit target so the action stays
-// reachable. Click fires `Clipboard.copy(value)` — Rust handles
-// the actual platform clipboard write.
+// reachable. Click fires `Clipboard.copy(value, label)` — Rust
+// handles the platform clipboard write and surfaces a
+// "Copied {label}." toast on success.
 
 export component CopyBtn inherits Rectangle {
     in property <string> value;
+    /// Noun the success toast displays — typically forwarded from
+    /// the wrapping `LabeledRow`'s `@tr()`-translated label
+    /// ("TV ID", "MAC address", "serial", …). Empty string falls
+    /// back to the generic "Copied to clipboard." toast.
+    in property <string> label;
 
     width: 24px;
     height: 24px;
@@ -657,8 +732,7 @@ export component CopyBtn inherits Rectangle {
     }
 
     touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { Clipboard.copy(root.value); }
+        clicked => { Clipboard.copy(root.value, root.label); }
     }
 }
 
@@ -685,6 +759,14 @@ export component IconBtn inherits Rectangle {
     in property <image> source;
     in property <bool> enabled: true;
     in property <bool> loading: false;
+    /// `framed: false` (default) → ghost style: transparent
+    /// background, hover-only highlight, no border. Used by the
+    /// TVs-pane edit/save/cancel triplet.
+    /// `framed: true` → matches `UriBtn`'s surface fill + border, so
+    /// an icon-only button can sit alongside text buttons in a row
+    /// without looking like an empty slot. Used by the About-pane
+    /// `Copy diagnostic` action.
+    in property <bool> framed: false;
     callback clicked();
 
     property <bool> interactive: root.enabled && !root.loading;
@@ -693,10 +775,16 @@ export component IconBtn inherits Rectangle {
     height: 24px;
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    background: touch.has-hover && root.interactive ? Theme.row-hover : transparent;
+    background: root.framed
+        ? (!root.interactive
+            ? Theme.surface2
+            : (touch.has-hover ? Theme.surface2 : Theme.surface))
+        : (touch.has-hover && root.interactive ? Theme.row-hover : transparent);
+    border-color: root.framed ? Theme.border : transparent;
+    border-width: root.framed ? Design.border-thin : 0;
     border-radius: Design.radius-control;
     animate background { duration: 150ms; }
-    opacity: root.enabled || root.loading ? 1.0 : 0.4;
+    opacity: root.enabled || root.loading ? 1.0 : Design.opacity-disabled;
 
     if !root.loading: Image {
         source: root.source;
@@ -717,7 +805,6 @@ export component IconBtn inherits Rectangle {
 
     touch := TouchArea {
         enabled: root.interactive;
-        mouse-cursor: root.interactive ? pointer : default;
         clicked => { root.clicked(); }
     }
 }

@@ -23,6 +23,10 @@ ksni = "0.3"
 tracing = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+# Hosts our own minimal `org.tisvlay.Tray1` introspection surface so
+# the GUI's About pane can report the tray's online status, version,
+# and resolved config path symmetrically with the daemon and session.
+zbus = { workspace = true }
 
 [lints]
 workspace = true

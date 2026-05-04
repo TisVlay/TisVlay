@@ -13,6 +13,8 @@
 // generated UI scaffolding.
 #![allow(unreachable_pub, missing_debug_implementations)]
 
+mod dbus;
+mod file_manager;
 mod schema_form;
 mod state;
 
@@ -36,7 +38,7 @@ use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
     Coalescer, DaemonClient, PowerCyclePhase, ReconcilerMap, RefreshTrigger, SessionClient,
-    StateEvent, StateWatcher,
+    StateEvent, StateWatcher, TrayClient,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -126,6 +128,252 @@ fn load_themed_icon(names: &[&str]) -> slint::Image {
         "no fallback resolved across user / breeze / Adwaita / hicolor"
     );
     slint::Image::default()
+}
+
+/// Compile-time version of this binary. Surfaces in the About pane's
+/// header chip and as the local anchor for the per-component drift
+/// tone in the COMPONENTS table.
+const GUI_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Resolved Slint version, lifted from `Cargo.lock` by `build.rs` so
+/// it stays in sync with the workspace dep automatically. Slint
+/// doesn't expose a runtime `VERSION` constant of its own.
+const SLINT_VERSION: &str = env!("TISVLAY_GUI_SLINT_VERSION");
+
+/// Project repository URL — picked up from the workspace package
+/// metadata at compile time. The About pane's `View source` button
+/// opens this; `Report issue` appends `/issues/new`.
+const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
+
+/// Static catalogue of every binary that ships in the package.
+/// `name` is the binary identifier (kept for diagnostic-blob lookup);
+/// `friendly` is the human-readable label shown as the row title;
+/// `bus` is the D-Bus well-known name shown in monospace parens
+/// (empty for the CLI row); `description` is the rich one-line
+/// sentence describing what the component does.
+const COMPONENT_CATALOGUE: &[(&str, &str, &str, &str)] = &[
+    (
+        "tisvlayd",
+        "Daemon",
+        "org.tisvlay.Daemon",
+        "Device management, WoL at boot, system profiles.",
+    ),
+    (
+        "tisvlay-session",
+        "Session",
+        "org.tisvlay.Session",
+        "User-profile assignments and session-event dispatch.",
+    ),
+    (
+        "tisvlay-tray",
+        "Tray",
+        "org.tisvlay.Tray",
+        "Tray icon, menu actions, real-time TV state.",
+    ),
+    (
+        "tisvlay-gui",
+        "GUI",
+        "org.tisvlay.Gui",
+        "Graphical interface for TisVlay management.",
+    ),
+    (
+        "tisvlay",
+        "CLI",
+        "",
+        "Command-line interface for TisVlay management.",
+    ),
+];
+
+/// Probed runtime metadata for a single peer process: its `Version`
+/// and `ConfigPath` D-Bus properties. Always probed together because
+/// they live on the same interface. `config_path` is empty when the
+/// peer has no config file yet (e.g., tray pre-phase-2, GUI).
+#[derive(Clone, Default, Debug)]
+pub struct PeerInfo {
+    pub version: String,
+    pub config_path: String,
+}
+
+/// Tone for a per-row version chip in the COMPONENTS table, picked by
+/// comparing the remote process's reported version to this binary's
+/// compile-time version. `info` when equal, `warn` when remote is
+/// newer (we're behind), `danger` when remote is older (a downgrade
+/// or a stale service that wasn't restarted after upgrade).
+fn drift_tone(local: &str, remote: &str) -> &'static str {
+    let parse = |s: &str| -> Vec<u64> {
+        s.split(['.', '-', '+'])
+            .filter_map(|c| c.parse().ok())
+            .collect()
+    };
+    match parse(local).cmp(&parse(remote)) {
+        std::cmp::Ordering::Equal => "info",
+        std::cmp::Ordering::Less => "warn",
+        std::cmp::Ordering::Greater => "danger",
+    }
+}
+
+/// Probe the CLI's version by shelling out to `tisvlay --version`.
+/// clap's default `--version` output is `tisvlay 0.1.0\n`; we take
+/// the second whitespace-separated token. Returns `None` on any
+/// failure (binary not on PATH, exit non-zero, unparseable output).
+async fn probe_cli_version() -> Option<String> {
+    let output = tokio::process::Command::new("tisvlay")
+        .arg("--version")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    stdout.split_whitespace().nth(1).map(str::to_string)
+}
+
+/// Build the COMPONENTS-table model for the About pane. Each row
+/// gets a status circle on the left and stacked presence + version
+/// pills on the right under one uniform vocabulary: `online` means
+/// "the surface answered" — D-Bus reachable for peers, `--version`
+/// parsed cleanly for the CLI. Daemon / Session / Tray fold their
+/// probed `PeerInfo` into the row; GUI is hardcoded online and ships
+/// its compile-time `CARGO_PKG_VERSION`; CLI's row reflects the
+/// shell-out result.
+fn make_about_components(
+    daemon: Option<&PeerInfo>,
+    session: Option<&PeerInfo>,
+    tray: Option<&PeerInfo>,
+    cli_version: Option<&str>,
+) -> Vec<AboutComponentRow> {
+    let bus_parens = |bus: &str| {
+        if bus.is_empty() {
+            String::new()
+        } else {
+            format!("({bus})")
+        }
+    };
+
+    COMPONENT_CATALOGUE
+        .iter()
+        .map(|(name, friendly, bus, description)| {
+            let (version, tone, online, config_path) = match *name {
+                "tisvlayd" => match daemon {
+                    Some(info) => (
+                        info.version.clone(),
+                        drift_tone(GUI_VERSION, &info.version).to_string(),
+                        true,
+                        info.config_path.clone(),
+                    ),
+                    None => (String::new(), String::new(), false, String::new()),
+                },
+                "tisvlay-session" => match session {
+                    Some(info) => (
+                        info.version.clone(),
+                        drift_tone(GUI_VERSION, &info.version).to_string(),
+                        true,
+                        info.config_path.clone(),
+                    ),
+                    None => (String::new(), String::new(), false, String::new()),
+                },
+                "tisvlay-tray" => match tray {
+                    Some(info) => (
+                        info.version.clone(),
+                        drift_tone(GUI_VERSION, &info.version).to_string(),
+                        true,
+                        info.config_path.clone(),
+                    ),
+                    None => (String::new(), String::new(), false, String::new()),
+                },
+                // GUI has no config file yet (passes `None` to dbus::register).
+                "tisvlay-gui" => (
+                    GUI_VERSION.to_string(),
+                    "info".to_string(),
+                    true,
+                    String::new(),
+                ),
+                // CLI has no per-binary config of its own — its
+                // settings live in the daemon/session configs.
+                "tisvlay" => match cli_version {
+                    Some(v) => (
+                        v.to_string(),
+                        drift_tone(GUI_VERSION, v).to_string(),
+                        true,
+                        String::new(),
+                    ),
+                    None => (String::new(), String::new(), false, String::new()),
+                },
+                _ => (String::new(), String::new(), false, String::new()),
+            };
+            AboutComponentRow {
+                name: SharedString::from(*name),
+                friendly_name: SharedString::from(*friendly),
+                bus_address: SharedString::from(bus_parens(bus)),
+                description: SharedString::from(*description),
+                version: SharedString::from(version),
+                tone: SharedString::from(tone),
+                online,
+                config_path: SharedString::from(config_path),
+            }
+        })
+        .collect()
+}
+
+/// JSON blob copied to the clipboard by the About-pane diagnostic
+/// button. Pulls the daemon/session versions out of the live
+/// COMPONENTS model so we don't have to reach into shared state.
+fn build_diagnostic_blob(app: &AppWindow) -> String {
+    let rows = app.get_about_components();
+    let lookup = |name: &str| -> String {
+        for i in 0..rows.row_count() {
+            if let Some(r) = rows.row_data(i)
+                && r.name.as_str() == name
+            {
+                return r.version.to_string();
+            }
+        }
+        String::new()
+    };
+    let v = serde_json::json!({
+        "gui_version": GUI_VERSION,
+        "daemon_version": lookup("tisvlayd"),
+        "session_version": lookup("tisvlay-session"),
+        "slint_version": SLINT_VERSION,
+    });
+    serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+}
+
+/// Visible duration of a toast before it auto-clears, in milliseconds.
+/// Tuned long enough to read a short success line and short enough
+/// not to linger across the user's next action.
+const TOAST_DURATION_MS: u64 = 2500;
+
+/// Monotonic generation token for in-flight toasts. Each `show_toast`
+/// call increments it; the spawned auto-clear task captures its
+/// generation and only clears the message if the counter still
+/// matches at wakeup. Means a rapid second toast replaces the first
+/// without the first's clear-task wiping out the second prematurely.
+static TOAST_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Display a top-centre toast for `TOAST_DURATION_MS` and auto-clear.
+/// Safe to call from any thread; marshals through the Slint event
+/// loop. Multiple rapid calls coalesce — only the most recent
+/// message stays visible, no toast queue.
+fn show_toast(app_weak: slint::Weak<AppWindow>, message: &str) {
+    let generation = TOAST_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let message = message.to_string();
+    on_ui(&app_weak, {
+        let message = message.clone();
+        move |app| {
+            app.global::<Toast>()
+                .set_message(SharedString::from(message));
+        }
+    });
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(TOAST_DURATION_MS)).await;
+        if TOAST_GEN.load(std::sync::atomic::Ordering::SeqCst) == generation {
+            on_ui(&app_weak, |app| {
+                app.global::<Toast>().set_message(SharedString::default());
+            });
+        }
+    });
 }
 
 /// Marshal a UI-touching closure onto the Slint event loop. Clones
@@ -407,6 +655,10 @@ fn main() -> Result<()> {
     // colored stop-sign which reads as destructive).
     icons.set_save(load_themed_icon(&["dialog-ok-apply", "dialog-ok"]));
     icons.set_cancel(load_themed_icon(&["window-close", "dialog-cancel"]));
+    // Folder-open glyph for the About-pane "reveal config in file
+    // manager" buttons. `document-open-folder` is the Breeze name;
+    // `folder-open` is the Adwaita / hicolor fallback.
+    icons.set_folder_open(load_themed_icon(&["document-open-folder", "folder-open"]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing
@@ -416,20 +668,96 @@ fn main() -> Result<()> {
     // appears to do nothing rather than panicking.
     let clipboard = app.global::<Clipboard>();
     clipboard.set_copy_icon(load_themed_icon(&["edit-copy"]));
-    clipboard.on_copy(|value| match arboard::Clipboard::new() {
-        Ok(mut cb) => {
-            if let Err(e) = cb.set_text(value.to_string()) {
-                warn!(error = %e, "clipboard write failed");
+    {
+        let app_weak = app.as_weak();
+        clipboard.on_copy(move |value, label| {
+            match arboard::Clipboard::new() {
+                Ok(mut cb) => {
+                    if let Err(e) = cb.set_text(value.to_string()) {
+                        // KDE-style: silent on failure, log only.
+                        warn!(error = %e, "clipboard write failed");
+                        return;
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "couldn't open clipboard");
+                    return;
+                }
             }
+            // Empty label → the older generic copy toast; non-empty
+            // → the noun-specific form. Two distinct gettext keys so
+            // translators see full sentences for both shapes.
+            let message = if label.is_empty() {
+                gettext("Copied to clipboard.")
+            } else {
+                gettext("Copied {0}.").replace("{0}", &label)
+            };
+            show_toast(app_weak.clone(), &message);
+        });
+    }
+
+    // Toast.show is the public Slint-side trigger for the top-centre
+    // notification surface. Rust handlers can either invoke this
+    // callback (e.g., from `Daemon.on_*` paths via the AppWindow
+    // global) or call `show_toast` directly — both feed the same
+    // property + auto-clear flow.
+    {
+        let app_weak = app.as_weak();
+        app.global::<Toast>().on_show(move |message| {
+            show_toast(app_weak.clone(), message.as_str());
+        });
+    }
+
+    // About-pane wiring: GUI version (compile-time) + the three
+    // top-row callbacks (View source / Report issue / Copy diagnostic).
+    // The COMPONENTS array is pushed lazily once the daemon/session
+    // versions are known — see `push_about_components` below.
+    app.set_gui_version(GUI_VERSION.into());
+    app.set_about_components(ModelRc::new(VecModel::from(make_about_components(
+        None, None, None, None,
+    ))));
+    app.on_view_source_clicked(|| {
+        if let Err(e) = webbrowser::open(REPO_URL) {
+            warn!(error = %e, url = REPO_URL, "open browser failed");
         }
-        Err(e) => warn!(error = %e, "couldn't open clipboard"),
     });
+    app.on_view_release_clicked(|| {
+        let url = format!("{REPO_URL}/releases/tag/v{GUI_VERSION}");
+        if let Err(e) = webbrowser::open(&url) {
+            warn!(error = %e, %url, "open browser failed");
+        }
+    });
+    app.on_report_issue_clicked(|| {
+        let url = format!("{REPO_URL}/issues/new");
+        if let Err(e) = webbrowser::open(&url) {
+            warn!(error = %e, %url, "open browser failed");
+        }
+    });
+    {
+        let app_weak = app.as_weak();
+        app.on_copy_diagnostic_clicked(move || {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            let blob = build_diagnostic_blob(&app);
+            // Route through the shared Clipboard.copy chokepoint so
+            // the success toast fires via the same path every other
+            // CopyBtn uses — no parallel arboard call here.
+            app.global::<Clipboard>().invoke_copy(
+                SharedString::from(blob),
+                SharedString::from(gettext("diagnostic info")),
+            );
+        });
+    }
+    // `on_open_config_folder` is wired below, after the user-bus
+    // connection has been built — it needs a live zbus::Connection
+    // for `org.freedesktop.FileManager1.ShowItems`.
 
     // Build clients eagerly (synchronously, via block_on) so callbacks
     // can capture them at registration time. This briefly blocks the
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
-    let (daemon, session) = rt.block_on(async {
+    let (daemon, session, tray, gui_dbus) = rt.block_on(async {
         let daemon = if args.user {
             info!("Connecting to daemon on session bus (development mode)");
             DaemonClient::new_session().await
@@ -446,8 +774,44 @@ fn main() -> Result<()> {
                 _ => None,
             }));
 
-        anyhow::Ok((daemon, session))
+        let tray: Arc<RwLock<Option<TrayClient>>> =
+            Arc::new(RwLock::new(match TrayClient::new().await {
+                Ok(client) if client.is_available().await => Some(client),
+                _ => None,
+            }));
+
+        // Register `org.tisvlay.Gui` on the user bus so external
+        // tools can probe our version + (eventual) config path
+        // symmetrically with the daemon, session, and tray.
+        // No config file yet — pass `None`.
+        let gui_dbus = dbus::register(None)
+            .await
+            .context("Failed to register GUI D-Bus interface")?;
+
+        anyhow::Ok((daemon, session, tray, gui_dbus))
     })?;
+
+    // Wire the per-row "reveal config in file manager" callback now
+    // that we have a live user-bus connection. `gui_dbus` is the
+    // GUI's own service registration; reusing its `Connection` for
+    // method calls is supported by zbus (the connection multiplexes
+    // server + client roles). Failure to launch the file manager
+    // logs a warning and is otherwise silent.
+    {
+        let conn = gui_dbus.clone();
+        app.on_open_config_folder(move |path| {
+            if path.is_empty() {
+                return;
+            }
+            let conn = conn.clone();
+            let path = std::path::PathBuf::from(path.as_str());
+            tokio::spawn(async move {
+                if let Err(e) = file_manager::reveal(&conn, &path).await {
+                    warn!(error = %e, path = %path.display(), "open config folder failed");
+                }
+            });
+        });
+    }
 
     // Per-(tv_id, property) reconcilers shared across the user-input
     // dispatch path (Slint callback → coalescer.apply → reconciler
@@ -475,6 +839,7 @@ fn main() -> Result<()> {
     tokio::spawn(initial_fetch_and_watch(
         daemon,
         session,
+        tray,
         reconcilers,
         app_weak,
     ));
@@ -1676,10 +2041,12 @@ fn update_power_cycle_phase(
 async fn initial_fetch_and_watch(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
 ) {
     let initial_session_available = session.read().await.is_some();
+    let initial_tray_available = tray.read().await.is_some();
     let initial_snapshot = match fetch_state(&daemon, session.read().await.as_ref()).await {
         Ok(mut s) => {
             reconcilers.reconcile(&mut s);
@@ -1721,14 +2088,17 @@ async fn initial_fetch_and_watch(
         wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
         app.set_daemon_available(initial_daemon_available);
         app.set_session_available(initial_session_available);
+        app.set_tray_available(initial_tray_available);
     });
 
-    watch_state(daemon, session, reconcilers, app_weak).await;
+    refresh_about_components(&daemon, &session, &tray, &app_weak).await;
+    watch_state(daemon, session, tray, reconcilers, app_weak).await;
 }
 
 async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
 ) {
@@ -1769,14 +2139,16 @@ async fn watch_state(
     let trigger_refresh = || {
         let daemon = daemon.clone();
         let session = session.clone();
+        let tray = tray.clone();
         let reconcilers = reconcilers.clone();
         let app_weak = app_weak.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
+            let tray = tray.clone();
             let reconcilers = reconcilers.clone();
             let app_weak = app_weak.clone();
-            async move { refresh(&daemon, &session, &reconcilers, &app_weak).await }
+            async move { refresh(&daemon, &session, &tray, &reconcilers, &app_weak).await }
         });
     };
 
@@ -1797,6 +2169,7 @@ async fn watch_state(
                     app.set_daemon_available(false);
                     app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
                 });
+                refresh_about_components(&daemon, &session, &tray, &app_weak).await;
             }
             StateEvent::SessionAppeared => {
                 if let Ok(client) = SessionClient::new().await
@@ -1816,6 +2189,24 @@ async fn watch_state(
                 });
                 trigger_refresh();
             }
+            StateEvent::TrayAppeared => {
+                if let Ok(client) = TrayClient::new().await
+                    && client.is_available().await
+                {
+                    *tray.write().await = Some(client);
+                    on_ui(&app_weak, move |app| {
+                        app.set_tray_available(true);
+                    });
+                    trigger_refresh();
+                }
+            }
+            StateEvent::TrayDisappeared => {
+                *tray.write().await = None;
+                on_ui(&app_weak, move |app| {
+                    app.set_tray_available(false);
+                });
+                trigger_refresh();
+            }
         }
     }
 }
@@ -1823,6 +2214,7 @@ async fn watch_state(
 async fn refresh(
     daemon: &DaemonClient,
     session: &RwLock<Option<SessionClient>>,
+    tray: &RwLock<Option<TrayClient>>,
     reconcilers: &Reconcilers,
     app_weak: &slint::Weak<AppWindow>,
 ) {
@@ -1842,6 +2234,51 @@ async fn refresh(
             });
         }
     }
+    drop(session_ref);
+    refresh_about_components(daemon, session, tray, app_weak).await;
+}
+
+/// Probe each peer's `Version` + `ConfigPath` D-Bus properties and
+/// push the COMPONENTS-table model to the About pane. Both
+/// properties are `const` upstream, so this is cheap to invoke after
+/// every state-affecting event; caching would save a couple of zbus
+/// round-trips on a flap-storm but isn't worth the extra plumbing.
+async fn refresh_about_components(
+    daemon: &DaemonClient,
+    session: &RwLock<Option<SessionClient>>,
+    tray: &RwLock<Option<TrayClient>>,
+    app_weak: &slint::Weak<AppWindow>,
+) {
+    async fn probe<F1, F2>(version: F1, config_path: F2) -> Option<PeerInfo>
+    where
+        F1: std::future::Future<Output = anyhow::Result<String>>,
+        F2: std::future::Future<Output = anyhow::Result<String>>,
+    {
+        Some(PeerInfo {
+            version: version.await.ok()?,
+            config_path: config_path.await.unwrap_or_default(),
+        })
+    }
+
+    let daemon_info = probe(daemon.version(), daemon.config_path()).await;
+    let session_info = match session.read().await.as_ref() {
+        Some(s) => probe(s.version(), s.config_path()).await,
+        None => None,
+    };
+    let tray_info = match tray.read().await.as_ref() {
+        Some(t) => probe(t.version(), t.config_path()).await,
+        None => None,
+    };
+    let cli_version = probe_cli_version().await;
+    let rows = make_about_components(
+        daemon_info.as_ref(),
+        session_info.as_ref(),
+        tray_info.as_ref(),
+        cli_version.as_deref(),
+    );
+    on_ui(app_weak, move |app| {
+        app.set_about_components(ModelRc::new(VecModel::from(rows)));
+    });
 }
 
 /// Wrap a fetched [`StateSnapshot`] into Slint models and push to the

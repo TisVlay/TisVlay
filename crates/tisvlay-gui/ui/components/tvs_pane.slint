@@ -348,7 +348,6 @@ component TvList inherits Rectangle {
                     }
                     pair-touch := TouchArea {
                         enabled: root.daemon-available;
-                        mouse-cursor: root.daemon-available ? pointer : default;
                         clicked => { Daemon.request-pair(); }
                     }
                 }
@@ -433,11 +432,14 @@ component LabeledRow {
         }
 
         // Copy button — only when there's a real value to copy
-        // ("—" placeholder for empty fields gets nothing).
+        // ("—" placeholder for empty fields gets nothing). The row's
+        // already-translated `label` flows through so the success
+        // toast can name the field ("Copied MAC address.").
         if root.value != "": VerticalLayout {
             alignment: center;
             CopyBtn {
                 value: root.value;
+                label: root.label;
             }
         }
     }

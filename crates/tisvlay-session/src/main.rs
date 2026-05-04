@@ -15,7 +15,7 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{DaemonClient, UserConfig, UserProfileConfig};
+use tisvlay_core::{DaemonClient, UserConfig, UserProfileConfig, absolutize};
 use tisvlay_session::SessionState;
 use tisvlay_session::idle::IdleMonitor;
 use tisvlay_session::session_monitor::{SessionEvent, SessionMonitor};
@@ -49,6 +49,14 @@ async fn main() -> Result<()> {
 
     info!("tisvlay-session starting...");
 
+    // Absolutize a relative `--config` argument against the session's
+    // CWD at startup. The `ConfigPath` D-Bus property must be
+    // absolute so consumers (GUI's open-folder action, sysadmins,
+    // monitoring tools) can resolve it without guessing our CWD.
+    // `None` means "default to XDG", which the SessionService falls
+    // back to via `UserConfig::config_path()` (already absolute).
+    let config_path = args.config.map(absolutize);
+
     // Create daemon client
     let daemon = if args.user {
         info!("Using user/session bus for daemon communication (development mode)");
@@ -68,7 +76,7 @@ async fn main() -> Result<()> {
     }
 
     // Load session state (query daemon + load user config)
-    let state = match SessionState::load(&daemon, args.config.as_ref()).await {
+    let state = match SessionState::load(&daemon, config_path.as_ref()).await {
         Ok(state) => {
             let idle_timeout = state.effective_idle_timeout();
             info!(
@@ -110,7 +118,7 @@ async fn main() -> Result<()> {
     if !daemon_available {
         let retry_state = state.clone();
         let retry_daemon = daemon.clone();
-        let retry_config = args.config.clone();
+        let retry_config = config_path.clone();
         let retry_event_tx = event_tx.clone();
         let retry_is_locked = is_locked.clone();
         tokio::spawn(async move {
@@ -157,7 +165,7 @@ async fn main() -> Result<()> {
     let _session_dbus_connection = match tisvlay_session::session_dbus::register_session_dbus(
         state.clone(),
         daemon.clone(),
-        args.config.clone(),
+        config_path.clone(),
     )
     .await
     {
@@ -214,7 +222,7 @@ async fn main() -> Result<()> {
         Ok(stream) => {
             let pruner_state = state.clone();
             let pruner_daemon = daemon.clone();
-            let pruner_config = args.config.clone();
+            let pruner_config = config_path.clone();
             Some(tokio::spawn(async move {
                 use futures_util::StreamExt;
                 let mut stream = std::pin::pin!(stream);
@@ -238,7 +246,7 @@ async fn main() -> Result<()> {
     };
 
     // Wait for shutdown signals
-    wait_for_signals(state, daemon, args.config).await;
+    wait_for_signals(state, daemon, config_path).await;
 
     info!("Shutting down...");
 

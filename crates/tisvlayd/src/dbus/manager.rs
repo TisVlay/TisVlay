@@ -34,6 +34,31 @@ impl ManagerService {
 #[interface(name = "org.tisvlay.Manager1")]
 impl ManagerService {
     // -------------------------------------------------------------------------
+    // Identity
+    // -------------------------------------------------------------------------
+
+    /// Compile-time version of the running daemon binary. Lets the GUI
+    /// (and other clients) surface installed-version drift between
+    /// processes after a partial upgrade where services weren't
+    /// restarted.
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
+    /// Resolved on-disk path of the daemon's config file (post
+    /// `--config` resolution). Empty string only if the path can't
+    /// be UTF-8 encoded, which is theoretical on Linux.
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn config_path(&self) -> String {
+        self.manager
+            .config_path()
+            .to_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    // -------------------------------------------------------------------------
     // Discovery
     // -------------------------------------------------------------------------
 

@@ -4,6 +4,7 @@
 //! via the tisvlayd D-Bus daemon. Communicates exclusively through
 //! `DaemonClient` — no vendor crate dependencies.
 
+mod dbus;
 mod state;
 mod tray;
 
@@ -116,6 +117,15 @@ async fn main() -> Result<()> {
         .context("Failed to spawn tray icon (is a StatusNotifierHost running?)")?;
 
     info!("Tray icon spawned");
+
+    // Register `org.tisvlay.Tray` on the user bus so the GUI's
+    // About pane and external tools can probe our version + config
+    // path. Hold the connection in a `_dbus_keepalive` binding for
+    // the lifetime of `main`; dropping it tears the registration
+    // down. No config path yet (phase 2).
+    let _dbus_keepalive = dbus::register(None)
+        .await
+        .context("Failed to register tray D-Bus interface")?;
 
     // Per-(tv_id) reconcilers for scroll-driven properties. Shared
     // between the watch_state refresh path and the scroll apply
@@ -353,6 +363,10 @@ async fn watch_state(
                 *session.write().await = None;
                 trigger_refresh();
             }
+            // Tray's own service appearing/disappearing isn't
+            // actionable here — that's the tray itself, not a peer
+            // we depend on for state.
+            StateEvent::TrayAppeared | StateEvent::TrayDisappeared => {}
         }
     }
 }

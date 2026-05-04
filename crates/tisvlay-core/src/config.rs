@@ -941,6 +941,22 @@ impl UserConfig {
     }
 }
 
+/// Resolve a path to absolute form by prepending the current working
+/// directory if it isn't already absolute. Used by daemon + session
+/// at startup so the `ConfigPath` D-Bus property is always absolute,
+/// regardless of how the binary was invoked. Falls back to the
+/// original path if `current_dir()` itself fails (e.g., the CWD has
+/// been deleted) — a relative path is still better than panicking.
+pub fn absolutize(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================

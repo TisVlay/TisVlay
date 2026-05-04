@@ -80,6 +80,17 @@ impl BusKind<'_> {
     default_path = "/org/tisvlay/Manager"
 )]
 trait TisvlayManager {
+    /// Compile-time version of the running daemon binary. Const property
+    /// (no PropertiesChanged signal); read once after `is_available`.
+    #[zbus(property)]
+    fn version(&self) -> zbus::Result<String>;
+
+    /// Resolved on-disk path of the daemon's config file (post `--config`
+    /// resolution). Const property; empty string when path resolution
+    /// fails (theoretical on Linux).
+    #[zbus(property)]
+    fn config_path(&self) -> zbus::Result<String>;
+
     /// Discover TVs on the network.
     ///
     /// Returns `(id, name, address, (manufacturer, model, serial),
@@ -722,6 +733,28 @@ impl DaemonClient {
     /// Check if the daemon is available and responding.
     pub async fn is_available(&self) -> bool {
         self.object_manager.get_managed_objects().await.is_ok()
+    }
+
+    /// Compile-time version of the running daemon binary. Returns the
+    /// `Manager1.Version` const property — surfaces installed-version
+    /// drift between the calling process (e.g., the GUI) and the
+    /// daemon after a partial upgrade where services weren't restarted.
+    pub async fn version(&self) -> Result<String> {
+        self.manager
+            .version()
+            .await
+            .context("Failed to read daemon version")
+    }
+
+    /// Resolved on-disk path of the daemon's config file. Returns the
+    /// `Manager1.ConfigPath` const property — lets the About-pane
+    /// COMPONENTS row show the actual path rather than a hardcoded
+    /// guess regardless of `--config` overrides.
+    pub async fn config_path(&self) -> Result<String> {
+        self.manager
+            .config_path()
+            .await
+            .context("Failed to read daemon config path")
     }
 
     /// Execute an operation on a TV's cached proxies, handling proxy lookup boilerplate.
@@ -1431,6 +1464,16 @@ impl DaemonClient {
     default_path = "/org/tisvlay/Session"
 )]
 trait TisvlaySession {
+    /// Compile-time version of the running session-service binary.
+    /// Const property; read once after `is_available`.
+    #[zbus(property)]
+    fn version(&self) -> zbus::Result<String>;
+
+    /// Resolved on-disk path of the user's config file. Const property;
+    /// empty string when XDG resolution fails.
+    #[zbus(property)]
+    fn config_path(&self) -> zbus::Result<String>;
+
     /// List all available user profiles.
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
@@ -1480,6 +1523,27 @@ impl SessionClient {
         self.proxy.list_user_profiles().await.is_ok()
     }
 
+    /// Compile-time version of the running session-service binary.
+    /// Returns the `Session1.Version` const property — surfaces
+    /// installed-version drift between the calling process and the
+    /// session service after a partial upgrade.
+    pub async fn version(&self) -> Result<String> {
+        self.proxy
+            .version()
+            .await
+            .context("Failed to read session-service version")
+    }
+
+    /// Resolved on-disk path of the user's config file. Returns the
+    /// `Session1.ConfigPath` const property — empty string if XDG
+    /// resolution fails on the session-service side.
+    pub async fn config_path(&self) -> Result<String> {
+        self.proxy
+            .config_path()
+            .await
+            .context("Failed to read session-service config path")
+    }
+
     /// List all available user profiles.
     ///
     /// Returns: Vec of (profile_name, profile_json) tuples.
@@ -1521,6 +1585,140 @@ impl SessionClient {
 }
 
 // =============================================================================
+// Tray Interface Proxy + Client
+// =============================================================================
+//
+// Minimal self-introspection surface mirrored from `Manager1` /
+// `Session1` so the GUI's About pane can report tray status the
+// same way it reports the daemon and session. Tray exposes only
+// `Version` + `ConfigPath` (no methods); future tray-side
+// functionality (notifications, etc.) lands here as additions.
+
+#[proxy(
+    interface = "org.tisvlay.Tray1",
+    default_service = "org.tisvlay.Tray",
+    default_path = "/org/tisvlay/Tray"
+)]
+trait TisvlayTray {
+    /// Compile-time version of the running tray binary.
+    #[zbus(property)]
+    fn version(&self) -> zbus::Result<String>;
+
+    /// Resolved path of the tray's config file (empty until phase 2
+    /// of the tray-notifications work lands a config schema).
+    #[zbus(property)]
+    fn config_path(&self) -> zbus::Result<String>;
+}
+
+#[derive(Clone, Debug)]
+pub struct TrayClient {
+    proxy: TisvlayTrayProxy<'static>,
+}
+
+impl TrayClient {
+    /// Create a new tray client connected to the user/session bus.
+    /// The tray always registers on the session bus regardless of
+    /// whether the daemon uses system or session — same convention
+    /// as `SessionClient`.
+    pub async fn new() -> Result<Self> {
+        let connection = zbus::Connection::session()
+            .await
+            .context("Failed to connect to session D-Bus")?;
+        let proxy = TisvlayTrayProxy::new(&connection)
+            .await
+            .context("Failed to create tray proxy")?;
+        Ok(Self { proxy })
+    }
+
+    /// Check if the tray service is registered on the user bus.
+    /// Probes the `Version` const property (cheapest non-failing
+    /// call) and treats any error as offline.
+    pub async fn is_available(&self) -> bool {
+        self.proxy.version().await.is_ok()
+    }
+
+    /// Compile-time version of the running tray binary.
+    pub async fn version(&self) -> Result<String> {
+        self.proxy
+            .version()
+            .await
+            .context("Failed to read tray version")
+    }
+
+    /// Resolved on-disk path of the tray's config file.
+    pub async fn config_path(&self) -> Result<String> {
+        self.proxy
+            .config_path()
+            .await
+            .context("Failed to read tray config path")
+    }
+}
+
+// =============================================================================
+// GUI Interface Proxy + Client
+// =============================================================================
+//
+// Symmetric with Tray1. The GUI normally introspects itself directly
+// via `CARGO_PKG_VERSION`, but owning a `Gui1` interface lets external
+// tooling (busctl, monitoring scripts) walk the whole stack with a
+// single probe pattern.
+
+#[proxy(
+    interface = "org.tisvlay.Gui1",
+    default_service = "org.tisvlay.Gui",
+    default_path = "/org/tisvlay/Gui"
+)]
+trait TisvlayGui {
+    /// Compile-time version of the running GUI binary.
+    #[zbus(property)]
+    fn version(&self) -> zbus::Result<String>;
+
+    /// Resolved path of the GUI's config file (empty until window-
+    /// state persistence or similar lands).
+    #[zbus(property)]
+    fn config_path(&self) -> zbus::Result<String>;
+}
+
+#[derive(Clone, Debug)]
+pub struct GuiClient {
+    proxy: TisvlayGuiProxy<'static>,
+}
+
+impl GuiClient {
+    /// Create a new GUI client connected to the user/session bus.
+    pub async fn new() -> Result<Self> {
+        let connection = zbus::Connection::session()
+            .await
+            .context("Failed to connect to session D-Bus")?;
+        let proxy = TisvlayGuiProxy::new(&connection)
+            .await
+            .context("Failed to create GUI proxy")?;
+        Ok(Self { proxy })
+    }
+
+    /// Check if a GUI process is registered on the user bus.
+    pub async fn is_available(&self) -> bool {
+        self.proxy.version().await.is_ok()
+    }
+
+    /// Compile-time version of the running GUI binary.
+    pub async fn version(&self) -> Result<String> {
+        self.proxy
+            .version()
+            .await
+            .context("Failed to read GUI version")
+    }
+
+    /// Resolved on-disk path of the GUI's config file.
+    pub async fn config_path(&self) -> Result<String> {
+        self.proxy
+            .config_path()
+            .await
+            .context("Failed to read GUI config path")
+    }
+}
+
+// =============================================================================
 // State Watcher
 // =============================================================================
 
@@ -1550,6 +1748,12 @@ pub enum StateEvent {
 
     /// A `UserProfileChanged` signal was received from the session service.
     SessionProfileChanged,
+
+    /// The tray service appeared on D-Bus.
+    TrayAppeared,
+
+    /// The tray service disappeared from D-Bus.
+    TrayDisappeared,
 
     /// The fallback poll timer fired.
     FallbackPoll,
@@ -1616,6 +1820,8 @@ pub struct StateWatcher {
     session_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
     /// Stream of session UserProfileChanged signals (filtered).
     session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>>,
+    /// Stream of tray service appear/disappear events.
+    tray_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
     /// Configuration.
     config: StateWatcherConfig,
 }
@@ -1750,6 +1956,19 @@ impl StateWatcher {
                 None => None,
             };
 
+        // --- Tray name watch (parallel to session) ---
+        let tray_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>> =
+            match session_conn {
+                Some(sconn) => match watch_service(sconn, crate::dbus_paths::TRAY_SERVICE).await {
+                    Ok(stream) => Some(Box::pin(stream)),
+                    Err(e) => {
+                        warn!(error = %e, "Failed to watch tray service name");
+                        None
+                    }
+                },
+                None => None,
+            };
+
         // --- Session UserProfileChanged signals ---
         let session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>> =
             match session_conn {
@@ -1789,6 +2008,7 @@ impl StateWatcher {
             daemon_watch,
             session_watch,
             session_signal_stream,
+            tray_watch,
             config,
         })
     }
@@ -1877,7 +2097,26 @@ impl StateWatcher {
                 Some(StateEvent::SessionProfileChanged)
             }
 
-            // Branch 5: fallback poll
+            // Branch 5: tray service appeared/disappeared
+            Some(event) = async {
+                match self.tray_watch.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match event {
+                    ServiceEvent::Appeared => {
+                        info!("Tray service appeared on D-Bus");
+                        Some(StateEvent::TrayAppeared)
+                    }
+                    ServiceEvent::Disappeared => {
+                        debug!("Tray service left D-Bus");
+                        Some(StateEvent::TrayDisappeared)
+                    }
+                }
+            }
+
+            // Branch 6: fallback poll
             _ = tokio::time::sleep(self.config.fallback_poll_interval) => {
                 debug!("Fallback poll timer fired");
                 Some(StateEvent::FallbackPoll)

@@ -22,13 +22,14 @@ import { EditPane } from "globals/edit_pane.slint";
 import { Clipboard } from "globals/clipboard.slint";
 import { Errors } from "globals/errors.slint";
 import { Icons } from "globals/icons.slint";
+import { Toast, ToastView } from "globals/toast.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
-import { AboutPane } from "components/about_pane.slint";
+import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 
-export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard, EditPane, Clipboard, Errors, Icons }
+export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard, EditPane, Clipboard, Errors, Icons, Toast }
 
 export enum Pane {
     tvs,
@@ -100,10 +101,22 @@ export component AppWindow inherits Window {
     in property <[TvViewModel]> tvs;
     in property <bool> daemon-available: false;
     in property <bool> session-available: false;
+    in property <bool> tray-available: false;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
+    in property <string> gui-version;
+    in property <[AboutComponentRow]> about-components;
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
+
+    // About-pane button callbacks (Rust handles URL launch + clipboard write).
+    callback view-source-clicked();
+    callback view-release-clicked();
+    callback report-issue-clicked();
+    callback copy-diagnostic-clicked();
+    // Per-row "reveal config in file manager" callback. Rust forwards
+    // the path to `org.freedesktop.FileManager1.ShowItems`.
+    callback open-config-folder(string);
 
     // Sidebar glyphs — Rust resolves these against the user's
     // freedesktop icon theme at startup (see `main.rs`). Empty
@@ -194,9 +207,8 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         width: 100%;
                         height: 100%;
-                        padding-left: 4px;
                         spacing: Design.gap-tight;
-                        alignment: start;
+                        alignment: center;
                         VerticalLayout {
                             alignment: center;
                             Text {
@@ -221,22 +233,43 @@ export component AppWindow inherits Window {
 
                     reload-touch := TouchArea {
                         enabled: root.daemon-available;
-                        mouse-cursor: root.daemon-available ? pointer : default;
                         clicked => { Daemon.reload-config(); }
                     }
                 }
 
-                Text {
-                    text: (root.daemon-available ? "● " : "○ ") + @tr("Daemon");
-                    color: root.daemon-available ? Theme.success : Theme.danger;
-                    font-size: Design.font-caption;
-                    horizontal-alignment: left;
-                }
-                Text {
-                    text: (root.session-available ? "● " : "○ ") + @tr("Session");
-                    color: root.session-available ? Theme.success : Theme.danger;
-                    font-size: Design.font-caption;
-                    horizontal-alignment: left;
+                // Footer status block — three peer indicators (Daemon /
+                // Session / Tray) grouped together and centred within
+                // the sidebar. Each row is a single left-aligned Text
+                // (dot glyph + label), so the dots naturally share an
+                // x-coord (the row's left edge); wrapping the whole
+                // VerticalLayout in a centred HorizontalLayout shifts
+                // the block into the middle of the sidebar without
+                // disturbing per-row layout.
+                HorizontalLayout {
+                    alignment: center;
+                    padding-bottom: Design.gap-stack;
+                    VerticalLayout {
+                        spacing: 2px;
+                        horizontal-stretch: 0;
+                        Text {
+                            text: (root.daemon-available ? "● " : "○ ") + @tr("Daemon");
+                            color: root.daemon-available ? Theme.success : Theme.danger;
+                            font-size: Design.font-caption;
+                            horizontal-alignment: left;
+                        }
+                        Text {
+                            text: (root.session-available ? "● " : "○ ") + @tr("Session");
+                            color: root.session-available ? Theme.success : Theme.danger;
+                            font-size: Design.font-caption;
+                            horizontal-alignment: left;
+                        }
+                        Text {
+                            text: (root.tray-available ? "● " : "○ ") + @tr("Tray");
+                            color: root.tray-available ? Theme.success : Theme.danger;
+                            font-size: Design.font-caption;
+                            horizontal-alignment: left;
+                        }
+                    }
                 }
             }
         }
@@ -273,9 +306,25 @@ export component AppWindow inherits Window {
             if root.active-pane == Pane.about: AboutPane {
                 width: 100%;
                 height: 100%;
-                daemon-available: root.daemon-available;
-                session-available: root.session-available;
+                gui-version: root.gui-version;
+                components: root.about-components;
+                logo: root.about-icon;
+                view-source-clicked => { root.view-source-clicked(); }
+                view-release-clicked => { root.view-release-clicked(); }
+                report-issue-clicked => { root.report-issue-clicked(); }
+                copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
+                open-config-folder(p) => { root.open-config-folder(p); }
             }
         }
+    }
+
+    // Top-centre toast — declared after the HorizontalBox so it
+    // renders on top of the panes. Positioned by `x`/`y` rather than
+    // a layout because we want it to float over the chrome (titlebar
+    // edge included), not inside the sidebar+pane split. Auto-clears
+    // via Rust-side timer (see `show_toast` in main.rs).
+    ToastView {
+        x: (root.width - self.width) / 2;
+        y: 24px;
     }
 }

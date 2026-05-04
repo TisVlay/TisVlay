@@ -55,6 +55,31 @@ impl SessionService {
 
 #[interface(name = "org.tisvlay.Session1")]
 impl SessionService {
+    /// Compile-time version of the running session-service binary.
+    /// Lets the GUI surface installed-version drift between processes
+    /// after a partial upgrade where services weren't restarted.
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
+    /// Resolved on-disk path of the user's config file. Falls back to
+    /// the canonical XDG default (`~/.config/tisvlay/config.toml`)
+    /// when `--config` wasn't passed; empty string only when path
+    /// resolution fails entirely (no XDG dirs).
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn config_path(&self) -> String {
+        let resolved = self
+            .config_path
+            .clone()
+            .or_else(|| tisvlay_core::UserConfig::config_path().ok());
+        resolved
+            .as_ref()
+            .and_then(|p| p.to_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
     /// List all available user profiles.
     ///
     /// Returns: Array of (profile_name, profile_json) tuples.

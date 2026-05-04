@@ -7,7 +7,11 @@
 // image when unavailable, in which case `CopyBtn` simply doesn't
 // render the icon.
 
+// `label` is the noun the success toast surfaces ("Copied {label}.")
+// — already translated at the call site, typically forwarded from
+// the surrounding `LabeledRow` whose `label` is wrapped with
+// `@tr()`. Empty string → generic "Copied to clipboard." fallback.
 export global Clipboard {
     in property <image> copy-icon;
-    callback copy(string);
+    callback copy(value: string, label: string);
 }
