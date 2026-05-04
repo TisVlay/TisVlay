@@ -4,128 +4,148 @@ import { Design } from "../design.slint";
 import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
 import { Clipboard } from "../globals/clipboard.slint";
 
-// One row in the COMPONENTS table. `version` is empty when we have no
-// way to probe the running binary (CLI, tray) — the row renders
-// without a chip in that case. `tone` is the chip-colour mapping
-// produced by Rust based on the comparison vs the GUI's compile-time
-// version: "info" if equal, "warn" if remote > local, "danger" if
-// remote < local.
+// One row in the COMPONENTS table. Two visual lines per row: title
+// (friendly name + monospace bus address in parens) above a rich
+// description, with stacked pills on the right (status pill on top,
+// version pill below).
+//
+// Field semantics:
+//   - `name`: binary name (`tisvlayd` etc.) — kept for the diagnostic
+//     blob lookup that pulls per-binary versions out of the live
+//     model. Not displayed.
+//   - `friendly_name`: human-readable label ("Daemon" / "Session" /
+//     "Tray" / "GUI" / "CLI") shown as the row title.
+//   - `bus_address`: D-Bus well-known name in monospace parens
+//     (`(org.tisvlay.Daemon)`). Empty for CLI (no D-Bus surface).
+//   - `description`: rich one-line sentence describing what this
+//     component does ("Device management, WoL at boot, …").
+//   - `version`: probed runtime version. Empty when unreachable —
+//     no version chip in that case.
+//   - `tone`: drift-tone ("info" / "warn" / "danger") for the
+//     version chip vs the running GUI's compile-time version.
+//   - `online_known`: true for D-Bus peers (drives the status pill);
+//     false for CLI (no surface to probe — no status pill).
+//   - `online`: true/false status when `online_known` is true.
 export struct AboutComponentRow {
     name: string,
+    friendly_name: string,
+    bus_address: string,
     description: string,
     version: string,
     tone: string,
+    online_known: bool,
+    online: bool,
 }
 
-// CONNECTIONS-group row: status icon (28px coloured circle with a check
-// or x glyph) + title + monospace bus address + one-line description,
-// with the online/offline chip pushed to the row's right edge so it
-// vertically aligns with the per-row version chips in the COMPONENTS
-// group (and the version chip in the page header). Replaces the
-// bullet+label `StatusLine` from the previous pane.
-component ConnectionRow {
-    in property <bool> ok;
-    in property <string> title;
-    in property <string> address;
-    in property <string> description;
-
-    HorizontalLayout {
-        spacing: 12px;
-
-        // Status indicator
-        Rectangle {
-            width: 28px;
-            height: 28px;
-            border-radius: 14px;
-            background: root.ok ? Theme.success-soft : Theme.danger-soft;
-            horizontal-stretch: 0;
-            vertical-stretch: 0;
-
-            Text {
-                text: root.ok ? "✓" : "✗";
-                color: root.ok ? Theme.success-text : Theme.danger-text;
-                font-weight: 700;
-                font-size: 14px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        VerticalLayout {
-            spacing: 4px;
-            horizontal-stretch: 1;
-
-            Text {
-                text: root.title;
-                color: Theme.text;
-                font-size: Design.font-body;
-                font-weight: 600;
-            }
-
-            Text {
-                text: root.address;
-                color: Theme.text-dim;
-                font-size: Design.font-helper;
-                font-family: "ui-monospace, monospace";
-            }
-
-            if root.description != "": Text {
-                text: root.description;
-                color: Theme.text-dim;
-                font-size: Design.font-helper;
-                wrap: word-wrap;
-            }
-        }
-
-        VerticalLayout {
-            alignment: start;
-            horizontal-stretch: 0;
-            Chip {
-                label: root.ok ? @tr("online") : @tr("offline");
-                tone: root.ok ? "success" : "danger";
-            }
-        }
-    }
-}
-
-// Single row of the COMPONENTS table. Two-column layout: monospace
-// binary name + dim description, with an optional version chip on the
-// right whose tone reflects drift vs the running GUI.
+// Single row of the COMPONENTS table. Two-line layout: title row
+// (friendly name + bus address) and description row (rich sentence).
+// Stacked pills column on the right: status chip on top (when
+// `online_known`), version chip below (when `version` non-empty).
+//
+// `show-divider` draws a 1px hairline above the row using
+// `Theme.border` — the parent for-loop sets it on every entry except
+// the first, restoring the inter-row separators the old CONNECTIONS
+// group used to render via interleaved `Rectangle`s.
 component ComponentRow {
     in property <AboutComponentRow> entry;
+    in property <bool> show-divider;
 
-    HorizontalLayout {
+    VerticalLayout {
         spacing: Design.gap-stack;
-        alignment: stretch;
 
-        Text {
-            text: entry.name;
-            color: Theme.text;
-            font-size: Design.font-mini;
-            font-family: "ui-monospace, monospace";
-            min-width: 160px;
-            vertical-alignment: center;
+        if root.show-divider: Rectangle {
+            height: 1px;
+            background: Theme.border;
         }
 
-        Text {
-            text: entry.description;
-            color: Theme.text-dim;
-            font-size: Design.font-helper;
-            horizontal-stretch: 1;
-            vertical-alignment: center;
-        }
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: stretch;
 
-        if entry.version != "": Chip {
-            label: "v" + entry.version;
-            tone: entry.tone;
+            // Status indicator — 28px coloured circle with ✓/✗ glyph,
+            // matching the previous CONNECTIONS group's left-column
+            // affordance. Shown only for `online_known` peers (the
+            // four D-Bus surfaces); CLI gets no circle since there's
+            // no presence to indicate.
+            if entry.online_known: Rectangle {
+                width: 28px;
+                height: 28px;
+                border-radius: 14px;
+                background: entry.online ? Theme.success-soft : Theme.danger-soft;
+                horizontal-stretch: 0;
+                vertical-stretch: 0;
+
+                Text {
+                    text: entry.online ? "✓" : "✗";
+                    color: entry.online ? Theme.success-text : Theme.danger-text;
+                    font-weight: 700;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Left column: title + description, stacked.
+            VerticalLayout {
+                spacing: 4px;
+                horizontal-stretch: 1;
+
+                // Title row: friendly name + bus address. The folder
+                // open-in-file-manager button will live here (Plan 4
+                // Commit C) — slot reserved for it after the bus parens.
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    Text {
+                        text: entry.friendly_name;
+                        color: Theme.text;
+                        font-size: Design.font-body;
+                        font-weight: 600;
+                    }
+                    if entry.bus_address != "": Text {
+                        text: entry.bus_address;
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        font-family: "ui-monospace, monospace";
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: entry.description;
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                    wrap: word-wrap;
+                }
+            }
+
+            // Right column: stacked pills, top-aligned to the title row.
+            VerticalLayout {
+                spacing: 4px;
+                horizontal-stretch: 0;
+                alignment: start;
+
+                if entry.online_known: HorizontalLayout {
+                    alignment: end;
+                    Chip {
+                        label: entry.online ? @tr("online") : @tr("offline");
+                        tone: entry.online ? "success" : "danger";
+                    }
+                }
+
+                if entry.version != "": HorizontalLayout {
+                    alignment: end;
+                    Chip {
+                        label: "v" + entry.version;
+                        tone: entry.tone;
+                    }
+                }
+            }
         }
     }
 }
 
 export component AboutPane inherits Rectangle {
-    in property <bool> daemon-available;
-    in property <bool> session-available;
-    in property <bool> tray-available;
     in property <string> gui-version;
     in property <[AboutComponentRow]> components;
     in property <image> logo;
@@ -249,47 +269,14 @@ export component AboutPane inherits Rectangle {
                 }
             }
 
-            // -- CONNECTIONS --
-            Group {
-                title: @tr("CONNECTIONS");
-
-                ConnectionRow {
-                    ok: root.daemon-available;
-                    title: @tr("Daemon (system bus)");
-                    address: "org.tisvlay.Daemon";
-                    description: @tr("Vendor-agnostic TV management, WoL at boot, per-TV D-Bus objects.");
-                }
-
-                Rectangle {
-                    height: 1px;
-                    background: Theme.border;
-                }
-
-                ConnectionRow {
-                    ok: root.session-available;
-                    title: @tr("Session (user bus)");
-                    address: "org.tisvlay.Session";
-                    description: @tr("User-profile assignments and session-event dispatch.");
-                }
-
-                Rectangle {
-                    height: 1px;
-                    background: Theme.border;
-                }
-
-                ConnectionRow {
-                    ok: root.tray-available;
-                    title: @tr("Tray (user bus)");
-                    address: "org.tisvlay.Tray";
-                    description: @tr("Tray icon, menu actions, real-time TV state.");
-                }
-            }
-
-            // -- COMPONENTS (data-driven; per-row version chip from Rust) --
+            // -- COMPONENTS (data-driven; one row per peer with stacked status + version pills) --
             Group {
                 title: @tr("COMPONENTS");
 
-                for c in root.components: ComponentRow { entry: c; }
+                for c[i] in root.components: ComponentRow {
+                    entry: c;
+                    show-divider: i > 0;
+                }
             }
 
             // -- LICENSE (copyright line; actions live in the header) --

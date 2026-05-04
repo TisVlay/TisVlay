@@ -69,9 +69,10 @@ impl SessionService {
     /// resolution fails entirely (no XDG dirs).
     #[zbus(property(emits_changed_signal = "const"))]
     fn config_path(&self) -> String {
-        let resolved = self.config_path.clone().or_else(|| {
-            tisvlay_core::UserConfig::config_path().ok()
-        });
+        let resolved = self
+            .config_path
+            .clone()
+            .or_else(|| tisvlay_core::UserConfig::config_path().ok());
         resolved
             .as_ref()
             .and_then(|p| p.to_str())

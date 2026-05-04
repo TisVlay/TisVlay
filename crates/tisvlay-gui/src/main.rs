@@ -144,17 +144,43 @@ const SLINT_VERSION: &str = env!("TISVLAY_GUI_SLINT_VERSION");
 /// opens this; `Report issue` appends `/issues/new`.
 const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
 
-/// Static (name, base description) catalogue of every binary that
-/// ships in the package. The base description gets a " · " separator
-/// and the peer's probed `ConfigPath` appended when one is
-/// available, so a `--config /custom` invocation flows through to
-/// the row text without any further plumbing.
-const COMPONENT_CATALOGUE: &[(&str, &str)] = &[
-    ("tisvlayd", "system daemon"),
-    ("tisvlay-session", "user service"),
-    ("tisvlay-gui", "this window"),
-    ("tisvlay-tray", "system tray (ksni)"),
-    ("tisvlay", "command-line interface"),
+/// Static catalogue of every binary that ships in the package.
+/// `name` is the binary identifier (kept for diagnostic-blob lookup);
+/// `friendly` is the human-readable label shown as the row title;
+/// `bus` is the D-Bus well-known name shown in monospace parens
+/// (empty for the CLI row); `description` is the rich one-line
+/// sentence describing what the component does.
+const COMPONENT_CATALOGUE: &[(&str, &str, &str, &str)] = &[
+    (
+        "tisvlayd",
+        "Daemon",
+        "org.tisvlay.Daemon",
+        "Device management, WoL at boot, system profiles.",
+    ),
+    (
+        "tisvlay-session",
+        "Session",
+        "org.tisvlay.Session",
+        "User-profile assignments and session-event dispatch.",
+    ),
+    (
+        "tisvlay-tray",
+        "Tray",
+        "org.tisvlay.Tray",
+        "Tray icon, menu actions, real-time TV state.",
+    ),
+    (
+        "tisvlay-gui",
+        "GUI",
+        "org.tisvlay.Gui",
+        "Graphical interface for TisVlay management.",
+    ),
+    (
+        "tisvlay",
+        "CLI",
+        "",
+        "Command-line interface for TisVlay management.",
+    ),
 ];
 
 /// Probed runtime metadata for a single peer process: its `Version`
@@ -185,66 +211,96 @@ fn drift_tone(local: &str, remote: &str) -> &'static str {
     }
 }
 
-/// Append a probed config-path suffix to the base description when
-/// available — keeps the COMPONENTS-row text honest about where the
-/// peer is reading config from instead of guessing the default.
-fn describe(base: &str, config_path: &str) -> String {
-    if config_path.is_empty() {
-        base.to_string()
-    } else {
-        format!("{base} · {config_path}")
+/// Probe the CLI's version by shelling out to `tisvlay --version`.
+/// clap's default `--version` output is `tisvlay 0.1.0\n`; we take
+/// the second whitespace-separated token. Returns `None` on any
+/// failure (binary not on PATH, exit non-zero, unparseable output).
+async fn probe_cli_version() -> Option<String> {
+    let output = tokio::process::Command::new("tisvlay")
+        .arg("--version")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    stdout.split_whitespace().nth(1).map(str::to_string)
 }
 
-/// Build the COMPONENTS-table model for the About pane. Daemon /
-/// session / tray rows show their probed runtime version with a
-/// drift tone; the GUI row shows the compile-time version with
-/// `info` tone; the CLI row has no chip (no D-Bus surface to probe).
+/// Build the COMPONENTS-table model for the About pane. Each peer
+/// gets one row with stacked pills (status + version) on the right.
+/// Daemon / Session / Tray drive their pills from the probed
+/// `PeerInfo`; GUI is hardcoded to `online` and ships its compile-
+/// time `CARGO_PKG_VERSION`; CLI gets no status pill (no D-Bus
+/// surface to probe its presence) and a version pill only when the
+/// shell-out probe succeeds.
 fn make_about_components(
     daemon: Option<&PeerInfo>,
     session: Option<&PeerInfo>,
     tray: Option<&PeerInfo>,
+    cli_version: Option<&str>,
 ) -> Vec<AboutComponentRow> {
+    let bus_parens = |bus: &str| {
+        if bus.is_empty() {
+            String::new()
+        } else {
+            format!("({bus})")
+        }
+    };
+
     COMPONENT_CATALOGUE
         .iter()
-        .map(|(name, base_desc)| {
-            let (version, tone, description) = match *name {
+        .map(|(name, friendly, bus, description)| {
+            let (version, tone, online_known, online) = match *name {
                 "tisvlayd" => match daemon {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
-                        describe(base_desc, &info.config_path),
+                        true,
+                        true,
                     ),
-                    None => (String::new(), String::new(), base_desc.to_string()),
+                    None => (String::new(), String::new(), true, false),
                 },
                 "tisvlay-session" => match session {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
-                        describe(base_desc, &info.config_path),
+                        true,
+                        true,
                     ),
-                    None => (String::new(), String::new(), base_desc.to_string()),
+                    None => (String::new(), String::new(), true, false),
                 },
                 "tisvlay-tray" => match tray {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
-                        describe(base_desc, &info.config_path),
+                        true,
+                        true,
                     ),
-                    None => (String::new(), String::new(), base_desc.to_string()),
+                    None => (String::new(), String::new(), true, false),
                 },
-                "tisvlay-gui" => (
-                    GUI_VERSION.to_string(),
-                    "info".to_string(),
-                    base_desc.to_string(),
-                ),
-                _ => (String::new(), String::new(), base_desc.to_string()),
+                "tisvlay-gui" => (GUI_VERSION.to_string(), "info".to_string(), true, true),
+                "tisvlay" => match cli_version {
+                    Some(v) => (
+                        v.to_string(),
+                        drift_tone(GUI_VERSION, v).to_string(),
+                        false,
+                        false,
+                    ),
+                    None => (String::new(), String::new(), false, false),
+                },
+                _ => (String::new(), String::new(), false, false),
             };
             AboutComponentRow {
                 name: SharedString::from(*name),
-                description: SharedString::from(description),
+                friendly_name: SharedString::from(*friendly),
+                bus_address: SharedString::from(bus_parens(bus)),
+                description: SharedString::from(*description),
                 version: SharedString::from(version),
                 tone: SharedString::from(tone),
+                online_known,
+                online,
             }
         })
         .collect()
@@ -644,7 +700,7 @@ fn main() -> Result<()> {
     // versions are known — see `push_about_components` below.
     app.set_gui_version(GUI_VERSION.into());
     app.set_about_components(ModelRc::new(VecModel::from(make_about_components(
-        None, None, None,
+        None, None, None, None,
     ))));
     app.on_view_source_clicked(|| {
         if let Err(e) = webbrowser::open(REPO_URL) {
@@ -666,7 +722,9 @@ fn main() -> Result<()> {
     {
         let app_weak = app.as_weak();
         app.on_copy_diagnostic_clicked(move || {
-            let Some(app) = app_weak.upgrade() else { return };
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
             let blob = build_diagnostic_blob(&app);
             // Route through the shared Clipboard.copy chokepoint so
             // the success toast fires via the same path every other
@@ -2172,10 +2230,12 @@ async fn refresh_about_components(
         Some(t) => probe(t.version(), t.config_path()).await,
         None => None,
     };
+    let cli_version = probe_cli_version().await;
     let rows = make_about_components(
         daemon_info.as_ref(),
         session_info.as_ref(),
         tray_info.as_ref(),
+        cli_version.as_deref(),
     );
     on_ui(app_weak, move |app| {
         app.set_about_components(ModelRc::new(VecModel::from(rows)));

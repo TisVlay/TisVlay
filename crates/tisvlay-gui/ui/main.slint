@@ -302,9 +302,6 @@ export component AppWindow inherits Window {
             if root.active-pane == Pane.about: AboutPane {
                 width: 100%;
                 height: 100%;
-                daemon-available: root.daemon-available;
-                session-available: root.session-available;
-                tray-available: root.tray-available;
                 gui-version: root.gui-version;
                 components: root.about-components;
                 logo: root.about-icon;

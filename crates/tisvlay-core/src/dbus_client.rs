@@ -1959,15 +1959,13 @@ impl StateWatcher {
         // --- Tray name watch (parallel to session) ---
         let tray_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>> =
             match session_conn {
-                Some(sconn) => {
-                    match watch_service(sconn, crate::dbus_paths::TRAY_SERVICE).await {
-                        Ok(stream) => Some(Box::pin(stream)),
-                        Err(e) => {
-                            warn!(error = %e, "Failed to watch tray service name");
-                            None
-                        }
+                Some(sconn) => match watch_service(sconn, crate::dbus_paths::TRAY_SERVICE).await {
+                    Ok(stream) => Some(Box::pin(stream)),
+                    Err(e) => {
+                        warn!(error = %e, "Failed to watch tray service name");
+                        None
                     }
-                }
+                },
                 None => None,
             };
 
