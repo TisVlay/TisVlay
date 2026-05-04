@@ -14,6 +14,7 @@
 #![allow(unreachable_pub, missing_debug_implementations)]
 
 mod dbus;
+mod file_manager;
 mod schema_form;
 mod state;
 
@@ -253,37 +254,53 @@ fn make_about_components(
     COMPONENT_CATALOGUE
         .iter()
         .map(|(name, friendly, bus, description)| {
-            let (version, tone, online) = match *name {
+            let (version, tone, online, config_path) = match *name {
                 "tisvlayd" => match daemon {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
                         true,
+                        info.config_path.clone(),
                     ),
-                    None => (String::new(), String::new(), false),
+                    None => (String::new(), String::new(), false, String::new()),
                 },
                 "tisvlay-session" => match session {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
                         true,
+                        info.config_path.clone(),
                     ),
-                    None => (String::new(), String::new(), false),
+                    None => (String::new(), String::new(), false, String::new()),
                 },
                 "tisvlay-tray" => match tray {
                     Some(info) => (
                         info.version.clone(),
                         drift_tone(GUI_VERSION, &info.version).to_string(),
                         true,
+                        info.config_path.clone(),
                     ),
-                    None => (String::new(), String::new(), false),
+                    None => (String::new(), String::new(), false, String::new()),
                 },
-                "tisvlay-gui" => (GUI_VERSION.to_string(), "info".to_string(), true),
+                // GUI has no config file yet (passes `None` to dbus::register).
+                "tisvlay-gui" => (
+                    GUI_VERSION.to_string(),
+                    "info".to_string(),
+                    true,
+                    String::new(),
+                ),
+                // CLI has no per-binary config of its own — its
+                // settings live in the daemon/session configs.
                 "tisvlay" => match cli_version {
-                    Some(v) => (v.to_string(), drift_tone(GUI_VERSION, v).to_string(), true),
-                    None => (String::new(), String::new(), false),
+                    Some(v) => (
+                        v.to_string(),
+                        drift_tone(GUI_VERSION, v).to_string(),
+                        true,
+                        String::new(),
+                    ),
+                    None => (String::new(), String::new(), false, String::new()),
                 },
-                _ => (String::new(), String::new(), false),
+                _ => (String::new(), String::new(), false, String::new()),
             };
             AboutComponentRow {
                 name: SharedString::from(*name),
@@ -293,6 +310,7 @@ fn make_about_components(
                 version: SharedString::from(version),
                 tone: SharedString::from(tone),
                 online,
+                config_path: SharedString::from(config_path),
             }
         })
         .collect()
@@ -637,6 +655,10 @@ fn main() -> Result<()> {
     // colored stop-sign which reads as destructive).
     icons.set_save(load_themed_icon(&["dialog-ok-apply", "dialog-ok"]));
     icons.set_cancel(load_themed_icon(&["window-close", "dialog-cancel"]));
+    // Folder-open glyph for the About-pane "reveal config in file
+    // manager" buttons. `document-open-folder` is the Breeze name;
+    // `folder-open` is the Adwaita / hicolor fallback.
+    icons.set_folder_open(load_themed_icon(&["document-open-folder", "folder-open"]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing
@@ -727,12 +749,15 @@ fn main() -> Result<()> {
             );
         });
     }
+    // `on_open_config_folder` is wired below, after the user-bus
+    // connection has been built — it needs a live zbus::Connection
+    // for `org.freedesktop.FileManager1.ShowItems`.
 
     // Build clients eagerly (synchronously, via block_on) so callbacks
     // can capture them at registration time. This briefly blocks the
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
-    let (daemon, session, tray, _gui_dbus) = rt.block_on(async {
+    let (daemon, session, tray, gui_dbus) = rt.block_on(async {
         let daemon = if args.user {
             info!("Connecting to daemon on session bus (development mode)");
             DaemonClient::new_session().await
@@ -765,6 +790,28 @@ fn main() -> Result<()> {
 
         anyhow::Ok((daemon, session, tray, gui_dbus))
     })?;
+
+    // Wire the per-row "reveal config in file manager" callback now
+    // that we have a live user-bus connection. `gui_dbus` is the
+    // GUI's own service registration; reusing its `Connection` for
+    // method calls is supported by zbus (the connection multiplexes
+    // server + client roles). Failure to launch the file manager
+    // logs a warning and is otherwise silent.
+    {
+        let conn = gui_dbus.clone();
+        app.on_open_config_folder(move |path| {
+            if path.is_empty() {
+                return;
+            }
+            let conn = conn.clone();
+            let path = std::path::PathBuf::from(path.as_str());
+            tokio::spawn(async move {
+                if let Err(e) = file_manager::reveal(&conn, &path).await {
+                    warn!(error = %e, path = %path.display(), "open config folder failed");
+                }
+            });
+        });
+    }
 
     // Per-(tv_id, property) reconcilers shared across the user-input
     // dispatch path (Slint callback → coalescer.apply → reconciler

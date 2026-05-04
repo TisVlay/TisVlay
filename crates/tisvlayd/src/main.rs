@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{SystemConfig, UserConfig};
+use tisvlay_core::{SystemConfig, UserConfig, absolutize};
 use tracing::{info, warn};
 
 use tisvlayd::dbus::{BusKind, DBUS_NAME, ManagerService, build_dbus_connection};
@@ -43,15 +43,20 @@ async fn main() -> Result<()> {
 
     info!("tisvlayd starting...");
 
-    // Determine config file path
-    let config_path = args.config.unwrap_or_else(|| {
+    // Determine config file path. Absolutize relative `--config`
+    // arguments against the daemon's CWD at startup so the
+    // `ConfigPath` D-Bus property is always an absolute path —
+    // consumers (GUI's open-folder action, sysadmins, monitoring
+    // tools) can't resolve a relative path against our CWD without
+    // racing or guessing.
+    let config_path = absolutize(args.config.unwrap_or_else(|| {
         if args.session {
             UserConfig::config_path()
                 .unwrap_or_else(|_| PathBuf::from("/var/lib/tisvlay/config.toml"))
         } else {
             PathBuf::from("/var/lib/tisvlay/config.toml")
         }
-    });
+    }));
     info!(path = %config_path.display(), "Using config file");
 
     // Load configuration

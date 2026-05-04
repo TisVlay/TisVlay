@@ -3,6 +3,7 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
 import { Clipboard } from "../globals/clipboard.slint";
+import { Icons } from "../globals/icons.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
 // (friendly name + monospace bus address in parens) above a rich
@@ -26,6 +27,11 @@ import { Clipboard } from "../globals/clipboard.slint";
 //   - `online`: true if the surface answered (D-Bus peer reachable,
 //     or `tisvlay --version` parsed cleanly). Drives the status
 //     circle + presence chip uniformly across all rows.
+//   - `config_path`: absolute path to the peer's config file.
+//     Drives the folder-open IconBtn — present and enabled when
+//     non-empty, present-but-disabled (40% opacity) for D-Bus peers
+//     without a config file (e.g., GUI today), absent for the CLI
+//     (which has no config of its own).
 export struct AboutComponentRow {
     name: string,
     friendly_name: string,
@@ -34,20 +40,27 @@ export struct AboutComponentRow {
     version: string,
     tone: string,
     online: bool,
+    config_path: string,
 }
 
 // Single row of the COMPONENTS table. Two-line layout: title row
-// (friendly name + bus address) and description row (rich sentence).
-// Left: 28px ✓/✗ status circle. Right: stacked pills — presence chip
-// on top, version chip below (only when `version` non-empty).
+// (friendly name + bus address + folder-open IconBtn) and description
+// row (rich sentence). Left: 28px ✓/✗ status circle. Right: stacked
+// pills — presence chip on top, version chip below (only when
+// `version` non-empty).
 //
 // `show-divider` draws a 1px hairline above the row using
 // `Theme.border` — the parent for-loop sets it on every entry except
 // the first, restoring the inter-row separators the old CONNECTIONS
 // group used to render via interleaved `Rectangle`s.
+//
+// `open-config-folder(path)` fires when the title-row IconBtn is
+// clicked. AboutPane re-emits it; main.rs lands it on the
+// FileManager1.ShowItems helper.
 component ComponentRow {
     in property <AboutComponentRow> entry;
     in property <bool> show-divider;
+    callback open-config-folder(string);
 
     VerticalLayout {
         spacing: Design.gap-stack;
@@ -88,9 +101,14 @@ component ComponentRow {
                 spacing: 4px;
                 horizontal-stretch: 1;
 
-                // Title row: friendly name + bus address. The folder
-                // open-in-file-manager button will live here (Plan 4
-                // Commit C) — slot reserved for it after the bus parens.
+                // Title row: friendly name + bus address + (for D-Bus
+                // peers) a folder-open IconBtn that reveals the peer's
+                // config file in the user's file manager. The button
+                // is rendered disabled (40% opacity, no click) for
+                // peers that don't have a config file on disk yet —
+                // GUI today, others if the daemon's `ConfigPath`
+                // property is empty. CLI rows skip the button entirely
+                // (no D-Bus surface, no per-binary config of its own).
                 HorizontalLayout {
                     spacing: 6px;
                     alignment: start;
@@ -99,6 +117,7 @@ component ComponentRow {
                         color: Theme.text;
                         font-size: Design.font-body;
                         font-weight: 600;
+                        vertical-alignment: center;
                     }
                     if entry.bus_address != "": Text {
                         text: entry.bus_address;
@@ -106,6 +125,14 @@ component ComponentRow {
                         font-size: Design.font-helper;
                         font-family: "ui-monospace, monospace";
                         vertical-alignment: center;
+                    }
+                    if entry.bus_address != "": IconBtn {
+                        source: Icons.folder-open;
+                        width: 18px;
+                        height: 18px;
+                        enabled: entry.config_path != "";
+                        opacity: entry.config_path != "" ? 1 : 0.4;
+                        clicked => { root.open-config-folder(entry.config_path); }
                     }
                 }
 
@@ -160,6 +187,7 @@ export component AboutPane inherits Rectangle {
     callback view-release-clicked();
     callback report-issue-clicked();
     callback copy-diagnostic-clicked();
+    callback open-config-folder(string);
 
     background: Theme.surface-alt;
 
@@ -282,6 +310,7 @@ export component AboutPane inherits Rectangle {
                 for c[i] in root.components: ComponentRow {
                     entry: c;
                     show-divider: i > 0;
+                    open-config-folder(p) => { root.open-config-folder(p); }
                 }
             }
 
