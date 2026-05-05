@@ -1,6 +1,19 @@
 # Plan 2 — About pane parity + FOSS attribution
 
-**Status: Commit A shipped + two follow-up plans (former `plan3.md`, `plan4.md`) absorbed below; Commit B redesigned twice (first for the dedicated Notices pane, then again post-research for the indie-Rust convention) and now split into B1 + B2 to keep the scaffolding/first-usage rule honest.** Commits A through C of the absorbed work landed on `feat/gui-about` (peer-introspection symmetry, KDE HIG cursor compliance, COMPONENTS-table consolidation, file-manager folder buttons, source-side `absolutize`). Commits B1 (workspace config + policy gate) and B2 (GUI Notices pane + packaging) are the remaining work.
+**Status: shipped.** Commit A landed on `feat/gui-about` (About pane parity, AboutSlint widget, peer-introspection symmetry, KDE HIG cursor compliance, COMPONENTS-table consolidation, file-manager folder buttons, source-side `absolutize`). Commits B1 (workspace config + policy gate) and B2 (build-time embed + packaged HTML) shipped on `feat/gui-about-2`. The body of this plan is preserved as planning history; the **Shipped deltas** section immediately below lists where reality diverged from intent.
+
+## Shipped deltas
+
+Iteration during implementation produced several deviations from the plan body. Recording them here so the rest of the doc can be read as "what we set out to do" without misleading anyone about "what's actually in the tree":
+
+- **No in-app Notices pane.** The plan envisioned a dedicated `Notices` pane rendering the embedded plain-text bundle. Built, perf-tested across `TextEdit`, virtualized `ListView`, and a `renderer-femtovg` → `renderer-skia` swap; none matched a browser for ~1400-row monospace text (femtovg lacks dirty-region partial rendering — see slint #6754; Skia helped modestly but plain `Text` rows still don't render link colors / clickable anchors / cross-row selection). The pivot: the About pane's `View third-party notices` `UriBtn` now hands the HTML directly off to the user's browser via `xdg-open`. `notices_pane.slint`, `Pane::notices`, the `about.txt.hbs` template, and the in-Rust `notices_overview` parser were deleted as part of the pivot.
+- **Embedded artifact is HTML-only.** Without an in-app pane, the plain-text variant has no consumer; `build.rs` only generates `THIRD-PARTY-LICENSES.html` into `$OUT_DIR` now. The embedded HTML is a fallback when no installed copy is found.
+- **Prefix-aware path resolution.** `crates/tisvlay-gui/src/main.rs::installed_notices_path()` tries the FHS path (`/usr/share/doc/tisvlay/...`, populated by nfpm) first, then walks up from `current_exe()` for `$prefix/share/doc/tisvlay/...` — covers Nix (`/nix/store/<hash>/share/doc/...`), AppImage, and `make install` to non-FHS prefixes. Falls back to writing the embedded blob to a per-process tempfile in dev / source builds.
+- **Nix package installs the bundle.** `packaging/nix/package.nix` mirrors the upstream `tracexec` precedent: `cargo-about` in `nativeBuildInputs`, `preBuild` does the `no-clearly-defined = true` sandbox-safe override + `cargo about generate`, `postInstall` installs `NOTICE` + `THIRD-PARTY-LICENSES.html` to `$out/share/doc/tisvlay/`. Nix users now get the same install-prefix behavior as nfpm users instead of always going through the embedded fallback.
+- **Renderer reverted to `femtovg`.** Skia was speculative for the in-pane scrolling perf that no longer matters; `renderer-femtovg` is Slint's recommended default — smaller binary, faster build, no skia-bindings C++ compile.
+- **Templates + configs live under `packaging/licensing/`** rather than the repo root. Same intent (workspace-scoped, gitignored generated artifact), just colocated under one directory: `about.toml`, `about.html.hbs`, `deny.toml`, `NOTICE`, plus the gitignored `THIRD-PARTY-LICENSES.html` output. The rest of the plan still mostly says "repo root"; treat that as the intent at the time.
+- **Real-world exceptions caught by `just deny`.** The plan's "fully permissive" survey missed several crates that needed per-crate clarifications: the entire Slint family (LicenseRef-Slint-Royalty-free-2.0), `option-ext` (MPL-2.0, transitively via `directories`), `generational-arena` (MPL-2.0, via Slint renderers under `--all-features`), `libfuzzer-sys` (NCSA, via image's fuzz feature). All recorded as per-crate exceptions in both `about.toml` and `deny.toml` rather than added to the global allow-list, so any future MPL-or-novel-license dep forces a deliberate decision.
+- **Notices template uses `overview` (one entry per SPDX id, with canonical text), not `licenses` (one per text-variation).** The original template emitted 24 separate "Apache License 2.0" sections — correct for legal review, visually noisy. Switched to cargo-about's `LicenseSet`-aggregated `overview` array; bundle dropped from 8888 → 1383 lines without losing attribution scope.
 
 Bring the `tisvlay-gui` About pane in line with the design handoff, satisfy the Slint license requirement we're currently violating, and stand up a proper third-party-attribution pipeline so the redistributable `.deb`/`.rpm`/`.pkg.tar.zst` packages cite every FOSS dependency the way a proprietary build would.
 
@@ -55,6 +68,8 @@ Two complementary tools, each with a clear role:
 Rejected alternatives: `cargo-license` (lists only, no text); `cargo-bundle-licenses` (YAML output still needs rendering); `cargo-3pl` (unmaintained).
 
 ## Layout target
+
+> **As-shipped:** the as-shipped layout differs from the diagram below — see the **Shipped deltas** section above. Configs + templates live under `packaging/licensing/` (not the repo root); the in-pane `notices_pane.slint` and `about.txt.hbs` template don't exist (browser-handoff replaced the in-app rendering). The diagram is preserved as planning intent.
 
 Workspace-scoped sources at the repo root; generated artifacts gitignored. Mirrors what cargo-about expects (workspace-root config) and what the indie-Rust convention found above does (no checked-in bundled-deps blob).
 
@@ -235,12 +250,15 @@ The split is deliberate: B1 lands tooling that nothing depends on yet (a `just l
 
 ## Done when
 
-- About pane visually matches both light and dark screenshots in [`screenshots/`](../.claude/ui/design_handoff_tisvlay_gui/screenshots/).
-- The `AboutSlint` widget is rendered in the About pane (Slint license satisfied).
-- `about.toml`, `about.{txt,html}.hbs`, `deny.toml`, and a hand-written `NOTICE` are checked in at the repo root. Generated `THIRD-PARTY-LICENSES.{txt,html}` are gitignored and only built on demand.
-- `cargo build -p tisvlay-gui` populates `$OUT_DIR/THIRD-PARTY-LICENSES.txt` (verified via `find target -name THIRD-PARTY-LICENSES.txt`); the GUI's Notices pane embeds the generated blob via `include_str!`.
-- `cargo build -p tisvlay-gui` without `cargo-about` on `$PATH` succeeds (graceful degradation): the embedded blob is a stub with install instructions, accompanied by a `cargo:warning=`.
-- `prek run -a` runs `cargo-deny check licenses` and fails if a forbidden SPDX id (GPL/LGPL/MPL etc.) appears in the workspace dep graph.
-- The `.rpm` smoke-tested on Bazzite still installs and the GUI launches cleanly with the new pane visible. `rpm -qpl tisvlay-*.rpm | grep THIRD-PARTY` lists `/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html`.
-- About pane LICENSE group has a `View third-party notices` button. Click → Notices pane shows the embedded text in a scrollable view with a `← Back` button that returns to About. No sidebar entry for Notices.
-- [`docs/plan.md`](plan.md) M5 entry is updated to mark the About-pane work complete; the deferred items above are filed in [`docs/ideas.md`](ideas.md).
+Annotated with the as-shipped state (✅ done as planned, ✏️ done with a delta — see **Shipped deltas** above):
+
+- ✅ About pane visually matches both light and dark screenshots in [`screenshots/`](../.claude/ui/design_handoff_tisvlay_gui/screenshots/).
+- ✅ The `AboutSlint` widget is rendered in the About pane (Slint license satisfied).
+- ✏️ `about.toml`, `about.html.hbs`, `deny.toml`, and a hand-written `NOTICE` are checked in under `packaging/licensing/` (not the repo root). `about.txt.hbs` was deleted along with the in-pane Notices view. Generated `THIRD-PARTY-LICENSES.html` is gitignored and only built on demand.
+- ✏️ `cargo build -p tisvlay-gui` populates `$OUT_DIR/THIRD-PARTY-LICENSES.html` (HTML, not text — verified via `find target -name THIRD-PARTY-LICENSES.html`). The About pane's `View third-party notices` button hands the file off to the user's browser via `xdg-open`.
+- ✅ `cargo build -p tisvlay-gui` without `cargo-about` on `$PATH` succeeds (graceful degradation): the embedded blob is a stub with install instructions, accompanied by a `cargo:warning=`.
+- ✅ `prek run -a` runs `cargo-deny check --config packaging/licensing/deny.toml licenses` and fails if a forbidden SPDX id (GPL/LGPL/MPL etc.) appears in the workspace dep graph.
+- ⚠️ `.rpm` Bazzite smoke test: not yet re-run after the packaging/licensing/ relocation. Expected to pass — `rpm -qpl tisvlay-*.rpm | grep THIRD-PARTY` should list `/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html`.
+- ✏️ About pane LICENSE group has a `View third-party notices` `UriBtn` (it's a `file://` URL open). Click → user's browser opens the bundled HTML directly. No in-app Notices pane, no `← Back` button — the in-app view didn't survive the perf research.
+- ✅ The Nix package installs `NOTICE` + `THIRD-PARTY-LICENSES.html` to `$out/share/doc/tisvlay/` so Nix-installed binaries get the same install-prefix behavior as nfpm-installed binaries (via `installed_notices_path()`'s `current_exe()`-relative resolution).
+- ⏳ [`docs/plan.md`](plan.md) M5 entry update + filing deferred items in [`docs/ideas.md`](ideas.md): not yet done.
