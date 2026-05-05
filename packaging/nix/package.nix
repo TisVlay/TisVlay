@@ -1,6 +1,7 @@
 {
   lib,
   rustPlatform,
+  cargo-about,
   pkg-config,
   dbus,
 }:
@@ -14,12 +15,33 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ../../Cargo.lock;
 
   nativeBuildInputs = [
+    # build.rs (tisvlay-gui) and preBuild both invoke cargo-about for
+    # the same THIRD-PARTY-LICENSES.html — embedded in the binary and
+    # installed to share/doc/ respectively.
+    cargo-about
     pkg-config
   ];
 
   nativeCheckInputs = [
     dbus
   ];
+
+  # Disable cargo-about's clearlydefined.io fallback — the Nix sandbox
+  # has no network. Sed targets the build copy only; the checked-in
+  # about.toml keeps clearlydefined enabled for dev / CI runs.
+  preBuild = ''
+    sed -i '1ino-clearly-defined = true' about.toml
+    cargo about generate \
+      --workspace --all-features --locked --fail \
+      about.html.hbs -o THIRD-PARTY-LICENSES.html
+  '';
+
+  # Match the nfpm /usr/share/doc/tisvlay/ layout so the GUI's
+  # current_exe()-relative path resolution finds the file.
+  postInstall = ''
+    install -Dm0644 NOTICE -t $out/share/doc/tisvlay/
+    install -Dm0644 THIRD-PARTY-LICENSES.html -t $out/share/doc/tisvlay/
+  '';
 
   useNextest = true;
 
