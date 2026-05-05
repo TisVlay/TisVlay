@@ -1,6 +1,6 @@
 # Plan 2 — About pane parity + FOSS attribution
 
-**Status: Commit A shipped + two follow-up plans (former `plan3.md`, `plan4.md`) absorbed below; Commit B redesigned twice — first to put third-party notices in their own pane, then again post-research to follow the indie-Rust convention (gitignored artifact, `cargo-deny` policy gate, build-time embed).** Commits A through C of the absorbed work landed on `feat/gui-about` (peer-introspection symmetry, KDE HIG cursor compliance, COMPONENTS-table consolidation, file-manager folder buttons, source-side `absolutize`). Commit B (FOSS attribution + Notices pane) is the remaining work.
+**Status: Commit A shipped + two follow-up plans (former `plan3.md`, `plan4.md`) absorbed below; Commit B redesigned twice (first for the dedicated Notices pane, then again post-research for the indie-Rust convention) and now split into B1 + B2 to keep the scaffolding/first-usage rule honest.** Commits A through C of the absorbed work landed on `feat/gui-about` (peer-introspection symmetry, KDE HIG cursor compliance, COMPONENTS-table consolidation, file-manager folder buttons, source-side `absolutize`). Commits B1 (workspace config + policy gate) and B2 (GUI Notices pane + packaging) are the remaining work.
 
 Bring the `tisvlay-gui` About pane in line with the design handoff, satisfy the Slint license requirement we're currently violating, and stand up a proper third-party-attribution pipeline so the redistributable `.deb`/`.rpm`/`.pkg.tar.zst` packages cite every FOSS dependency the way a proprietary build would.
 
@@ -120,7 +120,7 @@ After Commit A landed, two follow-up plans extended the same About-pane surface 
 
 ## Phasing
 
-Two commits, scoped per the "scaffolding + first usage in one commit" preference.
+Three commits. A shipped; B1 + B2 remain. The split keeps each commit at one coherent layer — B1 is workspace tooling that no binary depends on yet, B2 is every binary-side and packaging consumer of B1's output landing together (scaffolding + first usage paired, per the documented preference).
 
 ### Commit A — About pane visual fidelity + Slint license compliance + version-drift surface
 
@@ -141,9 +141,44 @@ Touches:
 
 **Visual smoke test**: launch `tisvlay-gui --user`, navigate to About, verify each section matches [`about-light.png`](../.claude/ui/design_handoff_tisvlay_gui/screenshots/about-light.png) and `about-dark.png`. Sanity-check the version-drift logic by running an older `tisvlayd` binary against the new GUI (warn/danger chips render).
 
-### Commit B — Third-party FOSS attribution pipeline + dedicated Notices pane
+### Commit B1 — Workspace config + license-policy gate
 
-**Goal**: Stand up workspace-wide third-party attribution covering all five binaries' transitive deps. Surface it through a dedicated `Notices` pane reachable from a button in the About pane's LICENSE group. Follow the indie-Rust convention (no checked-in generated bundle; `cargo-deny` policy gate; build-time embed for the GUI; package-time HTML for `/usr/share/doc/`).
+**Goal**: Stand up the cargo-about and cargo-deny scaffolding at the workspace root, so we can generate the bundled-deps blob on demand and enforce the SPDX allow-list at PR time. No binary, UI, or packaging changes — the next commit (B2) consumes this scaffolding.
+
+The split is deliberate: B1 lands tooling that nothing depends on yet (a `just licenses-html` invocation produces output that gets gitignored; `just deny` is wired into prek but doesn't touch shipped code). It's a coherent, independently-reviewable foundation; B2 is then the user-facing payoff.
+
+#### Touches
+
+- [`flake.nix`](../flake.nix) — add `cargo-about` and `cargo-deny` to the dev shell.
+- `about.toml` (repo root) — `cargo-about` SPDX accept-list (priority-ordered: MIT > Apache-2.0 > BSD-* > ISC > Zlib > BSL-1.0 > Unicode-3.0 > CDLA-Permissive-2.0 > Unlicense > MIT-0); `targets = ["x86_64-unknown-linux-gnu"]`; `workarounds = ["rustls", "ring", "wasmtime", "rustix"]`; `private = { ignore = true }`; `ignore-dev-dependencies = true`; `filter-noassertion = true`. Per Decisions 11 + 12 above.
+- `about.html.hbs` (repo root) — Handlebars template for the packaged HTML variant; navigable layout with per-license anchors per the upstream `about.hbs` template (link in `docs/cargo-about/about.hbs`). The plain-text template lives with its consumer in B2.
+- `deny.toml` (repo root) — `[licenses]` section only (skip `[bans]`/`[advisories]`/`[sources]` for now; out of scope). `allow = [...]` mirrors `about.toml`'s `accepted` list. `confidence-threshold = 0.92` (cargo-deny default).
+- `NOTICE` (repo root) — hand-written, ~4 lines:
+  ```
+  TisVlay
+  Copyright 2026 TisVlay contributors
+
+  Licensed under the Apache License, Version 2.0
+  (see LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0).
+  ```
+  Mirrors bat's pattern. Upstream `NOTICE` propagation lives inside the bundled blob (each License's `text` includes its NOTICE content if the upstream packaged one); this top-level `NOTICE` is just ours.
+- `.gitignore` — add `/THIRD-PARTY-LICENSES.html` (repo root, the just-licenses-html output). Also ensure `target/` already covers the build.rs OUT_DIR file (it does — `target/` is workspace-gitignored).
+- [`justfile`](../justfile) — two new recipes:
+  - `licenses-html`: `cargo about generate --workspace --all-features --locked --fail about.html.hbs -o THIRD-PARTY-LICENSES.html`.
+  - `deny`: `cargo deny check licenses`.
+- [`prek.toml`](../prek.toml) — new hook `deny` calling the just recipe (priority 0, file-check tier — `cargo deny check licenses` is fast, no compilation needed).
+
+#### Smoke tests
+
+- `cargo about generate --workspace --all-features --locked --fail about.txt.hbs > /tmp/notices.txt` produces a non-empty file with no errors. Eyeball-verify it includes Slint's text, rustls's text, ring's text, and a sensible LLVM-exception entry.
+- `just licenses-html` writes a non-empty `THIRD-PARTY-LICENSES.html` at the repo root; `git status` shows the workspace clean (file is gitignored). Open the HTML in a browser; sanity-check anchor navigation works.
+- `just deny` exits 0 on the current workspace.
+- Temporarily add a GPL-licensed crate to a fresh test branch (e.g. add `readline = "5"` or any GPL crate to a workspace member's deps), run `just deny` — it exits non-zero with a clear license-policy violation message. Roll the branch back.
+- `prek run -a deny` runs the same check as part of the pre-commit pipeline and gates merges.
+
+### Commit B2 — GUI Notices pane + packaged HTML
+
+**Goal**: Consume B1's scaffolding from both binary surfaces — the GUI's About pane (via a Notices sub-pane fed by a build-time embed) and the distro packages (via `/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html`). Pairing them in one commit so the scaffolding gets its first usage in both places it needs to land.
 
 #### Pane navigation model
 
@@ -151,18 +186,10 @@ Touches:
 
 #### Touches
 
-**Tooling + repo-root config (workspace-scoped)**
-
-- [`flake.nix`](../flake.nix) — add `cargo-about` and `cargo-deny` to the dev shell.
-- `about.toml` (repo root) — `cargo-about` SPDX accept-list; OR-priority (MIT > Apache-2.0); clarifications for any non-standard crates.
-- `about.txt.hbs` + `about.html.hbs` (repo root) — Handlebars templates for the embedded plain-text and packaged HTML variants.
-- `deny.toml` (repo root) — `cargo-deny` license-policy allow-list (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, BSL-1.0, Unicode-3.0, CDLA-Permissive-2.0, Unlicense, MIT-0). Forbids GPL/LGPL/MPL by default.
-- `NOTICE` (repo root) — hand-written, ~4 lines: project copyright + Apache-2.0 election. Mirrors bat's pattern. Upstream `NOTICE` propagation lives inside the generated bundle (cargo-about handles it via the `notice-text` Handlebars helper); this top-level `NOTICE` is just our own.
-- `.gitignore` — add `THIRD-PARTY-LICENSES.html` (repo root) and any other generated artifacts.
-
 **GUI build-time embed**
 
-- `crates/tisvlay-gui/build.rs` — invoke `cargo about generate --workspace --all-features about.txt.hbs > $OUT_DIR/THIRD-PARTY-LICENSES.txt`. Emit `cargo:rerun-if-changed=Cargo.lock` so it only re-runs on dep changes. If `cargo-about` isn't on `$PATH`, write a stub explaining how to install + emit a `cargo:warning=` rather than failing the build (clean dev env without Nix shell shouldn't be blocked).
+- `about.txt.hbs` (repo root) — Handlebars template for the embedded plain-text blob. Emits a flat `# {license name}\n{used by ...}\n{license text}\n---\n` per License, sized for Slint's `TextEdit { read-only: true }` rather than the navigable HTML variant from B1.
+- `crates/tisvlay-gui/build.rs` (new) — invoke `cargo about generate --workspace --all-features --locked --fail about.txt.hbs > $OUT_DIR/THIRD-PARTY-LICENSES.txt`. Emit `cargo:rerun-if-changed=Cargo.lock` so it only re-runs on dep changes. If `cargo-about` isn't on `$PATH`, write a stub explaining how to install + emit a `cargo:warning=` rather than failing the build. Stub content: a short paragraph saying the embedded notices weren't generated because `cargo-about` wasn't available, with the install command and a link to the project README.
 - `crates/tisvlay-gui/Cargo.toml` — no new deps; `cargo-about` is a dev-shell tool, not a `[build-dependencies]` crate.
 - `crates/tisvlay-gui/src/main.rs` — `const NOTICES: &str = include_str!(concat!(env!("OUT_DIR"), "/THIRD-PARTY-LICENSES.txt"));` ; push as a Slint property.
 
@@ -170,26 +197,20 @@ Touches:
 
 - `crates/tisvlay-gui/ui/components/notices_pane.slint` (new) — the dedicated pane. Header row with title + `← Back` button (calls `back-clicked`); body is a `ScrollView { TextEdit { read-only: true; text: root.notices; } }`.
 - [`crates/tisvlay-gui/ui/main.slint`](../crates/tisvlay-gui/ui/main.slint) — extend the `Pane` enum with `notices`; instantiate `NoticesPane` gated on `active-pane == Pane.notices`; wire `back-clicked => { root.active-pane = Pane.about; }`.
-- [`crates/tisvlay-gui/ui/components/about_pane.slint`](../crates/tisvlay-gui/ui/components/about_pane.slint) — add a `View third-party notices` button to the LICENSE group. Note: `UriBtn` is wrong here (per Plan 4, it's reserved for URL openers; this is an in-app pane navigation). Use std-widgets `Button` or extend with an in-app-action variant.
+- [`crates/tisvlay-gui/ui/components/about_pane.slint`](../crates/tisvlay-gui/ui/components/about_pane.slint) — add a `View third-party notices` button to the LICENSE group. Note: `UriBtn` is wrong here (per Plan 4, it's reserved for URL openers; this is an in-app pane navigation). Default to std-widgets `Button` unless the visual treatment looks out of place; if it does, extend `widgets.slint` with a small in-app-action variant rather than reusing `UriBtn`.
 
-**Packaging + automation**
+**Packaging**
 
-- [`justfile`](../justfile) — three new recipes:
-  - `licenses-html`: `cargo about generate --workspace --all-features about.html.hbs -o THIRD-PARTY-LICENSES.html` (writes to repo root, gitignored).
-  - `deny`: `cargo deny check licenses` (CI-friendly).
-  - `package-{deb,rpm,archlinux}` recipes gain `licenses-html` as a prerequisite so the HTML always refreshes before bundling.
-- [`prek.toml`](../prek.toml) — new hook `deny` (priority 0, file-check tier — `cargo-deny` is fast, no compilation needed). Replaces the originally-planned "stale-attribution" hook with a more useful policy-enforcement check.
+- [`justfile`](../justfile) — `package-{deb,rpm,archlinux}` recipes gain `licenses-html` as a prerequisite so the HTML always refreshes before bundling.
 - [`crates/tisvlayd/Cargo.toml`](../crates/tisvlayd/Cargo.toml) `[package.metadata.nfpm]` — add `THIRD-PARTY-LICENSES.html` → `/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html` to `contents`.
 - [`packaging/README.md`](../packaging/README.md) — short section on the attribution flow: how `licenses-html` regenerates, where the HTML variant lives in the package, what `deny` enforces, and why nothing's checked in.
 
 #### Smoke tests
 
 - `cargo build -p tisvlay-gui` populates `target/.../build/.../out/THIRD-PARTY-LICENSES.txt` (verified via `find target -name THIRD-PARTY-LICENSES.txt`).
-- `cargo build -p tisvlay-gui` with `cargo-about` removed from `$PATH` succeeds with a `cargo:warning=` and the embedded blob is the install-instructions stub.
-- `just licenses-html` writes a non-empty `THIRD-PARTY-LICENSES.html` at the repo root; `git status` shows no tracked file modified (only untracked-but-gitignored).
-- `just deny` exits 0 on the current workspace; deliberately introducing a GPL crate (in a temp branch) makes it exit non-zero.
-- `just package-rpm` produces a package whose `rpm -qpl` lists `/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html`.
+- `cargo build -p tisvlay-gui` with `cargo-about` removed from `$PATH` (or `PATH=/usr/bin:/bin cargo build`) succeeds with a `cargo:warning=` and the embedded blob is the install-instructions stub.
 - About pane LICENSE group shows the new `View third-party notices` button. Click → Notices pane displays the embedded text in a scrollable view. Back button → returns to About pane (sidebar `active-pane` flips to `tvs` if the user clicks a sidebar entry mid-flow; otherwise stays on About).
+- `just package-rpm` produces a package whose `rpm -qpl` lists `/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html`. `rpm -qp --info` shows the package size hasn't ballooned absurdly (the HTML is ~MB-scale, acceptable).
 
 ## Decisions
 
