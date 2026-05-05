@@ -138,52 +138,68 @@ cov-ratchet lines=cov_baseline_lines: _cov-collect
     cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ lines }} --summary-only
 
 # --- Dev run targets ----------------------------------------------------
+#
+# Each peer has a single `<peer>-start` recipe parameterized by the
+# top-level `bus` / `gui_mcp` variables below. Edit defaults for your
+# usual workflow, or override per-call via env or --set:
+#
+#   BUS=system just daemon-start          # env-var override
+#   just --set bus system daemon-start    # --set override
+#   GUI_MCP=true just gui-start           # GUI with Slint MCP on :9315
+#
+# These are dev-only; no production / CI path goes through them.
+
+# "user" = session/user bus, "system" = system bus (daemon needs sudo).
+bus := env("BUS", "user")
+
+# GUI only. "true" → build with the `dev-mcp` Cargo feature and start
+# the Slint MCP server on http://127.0.0.1:9315/mcp. Note that
+# `SLINT_EMIT_DEBUG_INFO=1` must be set at *build time*, not just at
+# runtime — the element tree is dead without it. See `.claude/slint.md`.
+gui_mcp := env("GUI_MCP", "false")
 
 _daemon_log := "debug,zbus=warn,rustls=warn,tungstenite=warn"
 _session_log := "debug,zbus=warn"
 _tray_log := "debug,zbus=warn,ksni=warn"
 _gui_log := "debug,zbus=warn,slint=warn,winit=warn"
 
-# Start the daemon on the session bus (dev mode)
+# `--user` flag for binaries that take it. Empty when bus=system, so
+# the binary defaults to the system bus.
+_user_flag := if bus == "user" { "--user" } else { "" }
+
+# `sudo cargo run` for the system bus would write artifacts into
+# root's target dir, so the system path pre-builds as the user and
+# then sudo-runs the resulting binary.
+#
+# Start the daemon.
 [group('dev')]
 daemon-start:
-    RUST_LOG="{{ _daemon_log }}" cargo run --bin tisvlayd -- --session --config docs/configs/daemon.toml
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{ bus }}" = "system" ]; then
+        cargo build --bin tisvlayd
+        RUST_LOG="{{ _daemon_log }}" sudo -E ./target/debug/tisvlayd --config docs/configs/daemon.toml
+    else
+        RUST_LOG="{{ _daemon_log }}" cargo run --bin tisvlayd -- --session --config docs/configs/daemon.toml
+    fi
 
-# Start the daemon on the system bus (requires sudo)
-[group('dev')]
-daemon-start-system:
-    cargo build --bin tisvlayd
-    RUST_LOG="{{ _daemon_log }}" sudo -E ./target/debug/tisvlayd --config docs/configs/daemon.toml
-
-# Start the session service on the user session bus
+# Start the session service.
 [group('dev')]
 session-start:
-    RUST_LOG="{{ _session_log }}" cargo run --bin tisvlay-session -- --user --config docs/configs/session.toml
+    RUST_LOG="{{ _session_log }}" cargo run --bin tisvlay-session -- {{ _user_flag }} --config docs/configs/session.toml
 
-# Start the session service on the system bus
-[group('dev')]
-session-start-system:
-    RUST_LOG="{{ _session_log }}" cargo run --bin tisvlay-session -- --config docs/configs/session.toml
-
-# Start the tray on the user session bus
+# Start the tray.
 [group('dev')]
 tray-start:
-    RUST_LOG="{{ _tray_log }}" cargo run --bin tisvlay-tray -- --user
+    RUST_LOG="{{ _tray_log }}" cargo run --bin tisvlay-tray -- {{ _user_flag }}
 
-# Start the tray on the system bus
-[group('dev')]
-tray-start-system:
-    RUST_LOG="{{ _tray_log }}" cargo run --bin tisvlay-tray
-
-# Start the GUI on the user session bus (paired with `daemon-start`)
+# Start the GUI (paired with `daemon-start`).
 [group('dev')]
 gui-start:
-    RUST_LOG="{{ _gui_log }}" cargo run --bin tisvlay-gui -- --user
-
-# Start the GUI on the system bus
-[group('dev')]
-gui-start-system:
-    RUST_LOG="{{ _gui_log }}" cargo run --bin tisvlay-gui
+    {{ if gui_mcp == "true" { "SLINT_EMIT_DEBUG_INFO=1 SLINT_MCP_PORT=9315" } else { "" } }} \
+        RUST_LOG="{{ _gui_log }}" \
+        cargo run {{ if gui_mcp == "true" { "--features dev-mcp" } else { "" } }} \
+        --bin tisvlay-gui -- {{ _user_flag }}
 
 # Kill all running dev processes
 [group('dev')]
