@@ -31,6 +31,7 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: |
+            cargo-about
             cargo-nfpm
             cargo-zigbuild
             just
