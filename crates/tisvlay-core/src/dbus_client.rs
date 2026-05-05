@@ -80,15 +80,21 @@ impl BusKind<'_> {
     default_path = "/org/tisvlay/Manager"
 )]
 trait TisvlayManager {
-    /// Compile-time version of the running daemon binary. Const property
-    /// (no PropertiesChanged signal); read once after `is_available`.
-    #[zbus(property)]
+    /// Compile-time version of the running daemon binary.
+    ///
+    /// Marked `emits_changed_signal = "false"` so zbus doesn't cache
+    /// the read: const-property caches survive the peer's
+    /// `NameOwnerChanged`, which would let consumers (e.g. the GUI's
+    /// About-pane refresh) report a gone peer as still online. Same
+    /// rationale applies to every other peer `Version` / `ConfigPath`
+    /// property below.
+    #[zbus(property(emits_changed_signal = "false"))]
     fn version(&self) -> zbus::Result<String>;
 
     /// Resolved on-disk path of the daemon's config file (post `--config`
-    /// resolution). Const property; empty string when path resolution
-    /// fails (theoretical on Linux).
-    #[zbus(property)]
+    /// resolution). Empty string when path resolution fails (theoretical
+    /// on Linux).
+    #[zbus(property(emits_changed_signal = "false"))]
     fn config_path(&self) -> zbus::Result<String>;
 
     /// Discover TVs on the network.
@@ -1465,13 +1471,12 @@ impl DaemonClient {
 )]
 trait TisvlaySession {
     /// Compile-time version of the running session-service binary.
-    /// Const property; read once after `is_available`.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn version(&self) -> zbus::Result<String>;
 
-    /// Resolved on-disk path of the user's config file. Const property;
-    /// empty string when XDG resolution fails.
-    #[zbus(property)]
+    /// Resolved on-disk path of the user's config file. Empty string
+    /// when XDG resolution fails.
+    #[zbus(property(emits_changed_signal = "false"))]
     fn config_path(&self) -> zbus::Result<String>;
 
     /// List all available user profiles.
@@ -1601,12 +1606,12 @@ impl SessionClient {
 )]
 trait TisvlayTray {
     /// Compile-time version of the running tray binary.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn version(&self) -> zbus::Result<String>;
 
     /// Resolved path of the tray's config file (empty until phase 2
     /// of the tray-notifications work lands a config schema).
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn config_path(&self) -> zbus::Result<String>;
 }
 
@@ -1670,12 +1675,12 @@ impl TrayClient {
 )]
 trait TisvlayGui {
     /// Compile-time version of the running GUI binary.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn version(&self) -> zbus::Result<String>;
 
     /// Resolved path of the GUI's config file (empty until window-
     /// state persistence or similar lands).
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn config_path(&self) -> zbus::Result<String>;
 }
 
