@@ -28,6 +28,7 @@ import { ProfilesPane } from "components/profiles_pane.slint";
 import { SessionPane } from "components/session_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
 import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
+import { NoticesPane } from "components/notices_pane.slint";
 
 export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, PairingWizard, EditPane, Clipboard, Errors, Icons, Toast }
 
@@ -37,6 +38,10 @@ export enum Pane {
     session,
     settings,
     about,
+    // Reached only via the About pane's "View third-party notices"
+    // button; not a sidebar entry. Lives in the enum so the pane-
+    // switching plumbing in this file works uniformly.
+    notices,
 }
 
 // Sidebar entry. Optional `icon` (a freedesktop-resolved symbolic
@@ -106,6 +111,7 @@ export component AppWindow inherits Window {
     in property <[string]> user-profiles;
     in property <string> gui-version;
     in property <[AboutComponentRow]> about-components;
+    in property <[string]> notices-lines;
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
 
@@ -311,9 +317,16 @@ export component AppWindow inherits Window {
                 logo: root.about-icon;
                 view-source-clicked => { root.view-source-clicked(); }
                 view-release-clicked => { root.view-release-clicked(); }
+                view-notices-clicked => { root.active-pane = Pane.notices; }
                 report-issue-clicked => { root.report-issue-clicked(); }
                 copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
                 open-config-folder(p) => { root.open-config-folder(p); }
+            }
+            if root.active-pane == Pane.notices: NoticesPane {
+                width: 100%;
+                height: 100%;
+                notices-lines: root.notices-lines;
+                back-clicked => { root.active-pane = Pane.about; }
             }
         }
     }

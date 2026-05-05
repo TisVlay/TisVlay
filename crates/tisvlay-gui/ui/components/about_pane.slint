@@ -1,4 +1,4 @@
-import { ScrollView, AboutSlint } from "std-widgets.slint";
+import { ScrollView, AboutSlint, Button } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
@@ -191,6 +191,7 @@ export component AboutPane inherits Rectangle {
 
     callback view-source-clicked();
     callback view-release-clicked();
+    callback view-notices-clicked();
     callback report-issue-clicked();
     callback copy-diagnostic-clicked();
     callback open-config-folder(string);
@@ -330,12 +331,27 @@ export component AboutPane inherits Rectangle {
             Group {
                 title: @tr("LICENSE");
 
-                Text {
-                    // Year range and project name; intentionally not translated.
-                    text: "Apache-2.0 · © 2026 TisVlay contributors";
-                    color: Theme.text;
-                    font-size: Design.font-helper;
-                    wrap: word-wrap;
+                // Copyright row with the third-party-notices entry
+                // point on the right. `Button` (std-widgets) rather
+                // than `UriBtn` because this is in-app pane
+                // navigation, not a URL open — KDE HIG (per Plan 4)
+                // reserves the pointer cursor for URL openers only.
+                HorizontalLayout {
+                    spacing: Design.gap-row;
+                    alignment: stretch;
+                    Text {
+                        // Year range and project name; intentionally not translated.
+                        text: "Apache-2.0 · © 2026 TisVlay contributors";
+                        color: Theme.text;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        text: @tr("View third-party notices");
+                        clicked => { root.view-notices-clicked(); }
+                    }
                 }
 
                 // Slint Royalty-free 2.0 license requires an `AboutSlint`

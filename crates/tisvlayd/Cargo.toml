@@ -98,6 +98,15 @@ contents = [
     { src = "packaging/systemd/org.tisvlay.Daemon.service", dst = "/usr/share/dbus-1/system-services/org.tisvlay.Daemon.service" },
     # D-Bus policy
     { src = "packaging/systemd/org.tisvlay.Daemon.conf", dst = "/etc/dbus-1/system.d/org.tisvlay.Daemon.conf", type = "config" },
+    # Third-party FOSS attribution. Regenerated at the repo root by
+    # `just licenses-html` (a prerequisite of every `package-*`
+    # recipe), gitignored so it doesn't churn between dep bumps. Lives
+    # at /usr/share/doc/tisvlay/ so distro audit tools (rpm-sequoia,
+    # lintian) find it via the conventional path.
+    { src = "THIRD-PARTY-LICENSES.html", dst = "/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html" },
+    # Project-level NOTICE — our own copyright + Apache-2.0 election.
+    # Upstream NOTICE propagation lives inside THIRD-PARTY-LICENSES.html.
+    { src = "NOTICE", dst = "/usr/share/doc/tisvlay/NOTICE" },
 ]
 
 [package.metadata.nfpm.scripts]

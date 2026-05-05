@@ -263,17 +263,17 @@ package-build:
 
 # Build .deb package
 [group('package')]
-package-deb: package-build
+package-deb: package-build licenses-html
     cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-gnu -f deb
 
 # Build .rpm package
 [group('package')]
-package-rpm: package-build
+package-rpm: package-build licenses-html
     cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-gnu -f rpm
 
 # Build Arch Linux package
 [group('package')]
-package-archlinux: package-build
+package-archlinux: package-build licenses-html
     cargo nfpm package -p tisvlayd --no-build --target x86_64-unknown-linux-gnu -f archlinux
 
 # Build all package formats
