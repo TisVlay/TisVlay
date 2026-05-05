@@ -1,4 +1,4 @@
-import { ScrollView, AboutSlint, Button } from "std-widgets.slint";
+import { ScrollView, AboutSlint } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
@@ -332,10 +332,11 @@ export component AboutPane inherits Rectangle {
                 title: @tr("LICENSE");
 
                 // Copyright row with the third-party-notices entry
-                // point on the right. `Button` (std-widgets) rather
-                // than `UriBtn` because this is in-app pane
-                // navigation, not a URL open — KDE HIG (per Plan 4)
-                // reserves the pointer cursor for URL openers only.
+                // point on the right. `UriBtn`, not `Button`: the
+                // click is a `file://` URL open (xdg-open hands the
+                // bundled HTML to the user's browser), so per KDE
+                // HIG / Plan 4 the pointer-cursor + URL-affordance
+                // visual treatment is correct.
                 HorizontalLayout {
                     spacing: Design.gap-row;
                     alignment: stretch;
@@ -348,7 +349,7 @@ export component AboutPane inherits Rectangle {
                         vertical-alignment: center;
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    Button {
+                    UriBtn {
                         text: @tr("View third-party notices");
                         clicked => { root.view-notices-clicked(); }
                     }
