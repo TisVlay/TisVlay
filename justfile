@@ -58,6 +58,33 @@ test-snapshot-review:
 test-snapshot-accept:
     cargo insta accept
 
+# --- License attribution / policy --------------------------------------
+#
+# `deny` is the policy gate: cargo-deny verifies every crate in the
+# workspace dep graph carries an SPDX id from `deny.toml`'s allow-list.
+# Wired into prek so a future dep bump can't drag GPL/LGPL/MPL in.
+#
+# `licenses-html` regenerates THIRD-PARTY-LICENSES.html (gitignored,
+# repo root) for nfpm packaging — the package-{deb,rpm,archlinux}
+# recipes depend on it so it always refreshes before bundling.
+#
+# `--locked --fail` on `cargo about generate` keeps the bundle
+# reproducible (fails on Cargo.lock drift) and refuses to silently
+# emit a partial bundle when a crate's license can't be resolved.
+# See plan2.md Decisions 11 + 12.
+
+# Enforce the SPDX allow-list on every crate in the workspace dep graph.
+[group('check')]
+deny:
+    cargo deny check licenses
+
+# Regenerate THIRD-PARTY-LICENSES.html at the repo root for packaging.
+[group('check')]
+licenses-html:
+    cargo about generate \
+        --workspace --all-features --locked --fail \
+        about.html.hbs -o THIRD-PARTY-LICENSES.html
+
 # --- i18n / translation catalogs ---------------------------------------
 #
 # `i18n-extract` rebuilds `tisvlay-gui.pot` (the translation template)
