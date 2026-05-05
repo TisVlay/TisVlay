@@ -30,17 +30,19 @@ rustPlatform.buildRustPackage {
   # has no network. Sed targets the build copy only; the checked-in
   # about.toml keeps clearlydefined enabled for dev / CI runs.
   preBuild = ''
-    sed -i '1ino-clearly-defined = true' about.toml
+    sed -i '1ino-clearly-defined = true' packaging/licensing/about.toml
     cargo about generate \
+      --config packaging/licensing/about.toml \
       --workspace --all-features --locked --fail \
-      about.html.hbs -o THIRD-PARTY-LICENSES.html
+      packaging/licensing/about.html.hbs \
+      -o packaging/licensing/THIRD-PARTY-LICENSES.html
   '';
 
   # Match the nfpm /usr/share/doc/tisvlay/ layout so the GUI's
   # current_exe()-relative path resolution finds the file.
   postInstall = ''
-    install -Dm0644 NOTICE -t $out/share/doc/tisvlay/
-    install -Dm0644 THIRD-PARTY-LICENSES.html -t $out/share/doc/tisvlay/
+    install -Dm0644 packaging/licensing/NOTICE -t $out/share/doc/tisvlay/
+    install -Dm0644 packaging/licensing/THIRD-PARTY-LICENSES.html -t $out/share/doc/tisvlay/
   '';
 
   useNextest = true;

@@ -47,28 +47,29 @@ fn generate_third_party_licenses() {
     let workspace = workspace_root();
     let manifest = workspace.join("Cargo.toml");
 
-    println!(
-        "cargo:rerun-if-changed={}",
-        workspace.join("about.toml").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        workspace.join("about.html.hbs").display()
-    );
+    let about_dir = workspace.join("packaging/licensing");
+    let about_toml = about_dir.join("about.toml");
+    let about_template = about_dir.join("about.html.hbs");
+
+    println!("cargo:rerun-if-changed={}", about_toml.display());
+    println!("cargo:rerun-if-changed={}", about_template.display());
 
     generate_one(
         &manifest,
-        &workspace.join("about.html.hbs"),
+        &about_toml,
+        &about_template,
         &Path::new(&out_dir).join("THIRD-PARTY-LICENSES.html"),
         stub_notices_blob_html(),
     );
 }
 
-fn generate_one(manifest: &Path, template: &Path, out_path: &Path, stub: String) {
+fn generate_one(manifest: &Path, config: &Path, template: &Path, out_path: &Path, stub: String) {
     let output = Command::new("cargo-about")
         .arg("generate")
         .arg("--manifest-path")
         .arg(manifest)
+        .arg("--config")
+        .arg(config)
         .arg("--workspace")
         .arg("--all-features")
         .arg("--locked")

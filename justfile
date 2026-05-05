@@ -76,14 +76,18 @@ test-snapshot-accept:
 # Enforce the SPDX allow-list on every crate in the workspace dep graph.
 [group('check')]
 deny:
-    cargo deny check licenses
+    cargo deny check --config packaging/licensing/deny.toml licenses
 
-# Regenerate THIRD-PARTY-LICENSES.html at the repo root for packaging.
+# Regenerate THIRD-PARTY-LICENSES.html for packaging. Output lives next
+# to its source templates (gitignored); nfpm and the Nix postInstall
+# pick it up from there.
 [group('check')]
 licenses-html:
     cargo about generate \
+        --config packaging/licensing/about.toml \
         --workspace --all-features --locked --fail \
-        about.html.hbs -o THIRD-PARTY-LICENSES.html
+        packaging/licensing/about.html.hbs \
+        -o packaging/licensing/THIRD-PARTY-LICENSES.html
 
 # --- i18n / translation catalogs ---------------------------------------
 #
