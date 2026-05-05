@@ -76,16 +76,6 @@
             }
         },
         {
-            "label": "package: build (musl)",
-            "type": "shell",
-            "command": "just package-build-musl",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
             "label": "package: deb",
             "type": "shell",
             "command": "just package-deb",
