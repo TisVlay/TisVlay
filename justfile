@@ -46,7 +46,7 @@ test-ci:
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
-check: fmt build clippy test
+check: deny fmt build clippy test
 
 # Review pending snapshot changes (insta)
 [group('check')]
