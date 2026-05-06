@@ -52,7 +52,6 @@ Worth knowing what each global knob does (full list in the file's header comment
 - **`workarounds = ["rustls", "ring", "wasmtime", "rustix"]`** opts into cargo-about's built-in clarifications for crates with unusual license packaging. Review on every dep-graph shift; the catalogue lives at [cargo-about/docs/src/cli/generate/workarounds.md](https://github.com/EmbarkStudios/cargo-about/blob/main/docs/src/cli/generate/workarounds.md) (upstream).
 - **`private = { ignore = true }`** skips license checks on our own workspace crates (they're `publish = false`).
 - **`ignore-dev-dependencies = true`** keeps test-only crates out of the bundle. `ignore-build-dependencies = false` because build-deps' generated output ships in our binaries.
-- **`filter-noassertion = true`** falls back to local scanning when clearlydefined.io taints an expression with `NOASSERTION` — avoids forcing the user to accept a pseudo-SPDX id.
 
 ## Build-env behavior
 

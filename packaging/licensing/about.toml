@@ -57,12 +57,6 @@ private = { ignore = true }
 ignore-build-dependencies = false
 ignore-dev-dependencies = true
 
-# clearlydefined.io occasionally taints expressions with NOASSERTION
-# when its parser can't confidently classify a license file. Falling
-# back to local scanning avoids forcing the user to accept a
-# pseudo-SPDX id just to get the build through.
-filter-noassertion = true
-
 # Per-crate license additions for crates whose expression includes
 # something the global `accepted` list can't satisfy by itself.
 # Mirrors `deny.toml`'s `exceptions` block — same rationale, separate
@@ -73,41 +67,127 @@ filter-noassertion = true
 # LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`.
 # We elect the Royalty-free option (which triggers the AboutSlint
 # widget requirement satisfied by tisvlay-gui's About pane).
+#
+# Each crate also gets a `[<crate>.clarify]` block pointing at the
+# Royalty-free license file shipped under `LICENSES/` in the
+# published tarball. The checksum is identical across every Slint
+# crate (single source-of-truth file at the workspace root,
+# symlinked into each crate's LICENSES/ and resolved by `cargo
+# publish`); when Slint amends the license text — rare; this is a
+# legal document — the checksum fails closed and we re-confirm
+# explicitly. See `docs/licensing.md` "Per-crate exceptions" for
+# the upstream context.
+#
+# Note: until cargo-about EmbarkStudios/cargo-about#303 lands these
+# clarify blocks are *parsed but not surfaced* in the rendered
+# bundle. cargo-about's per-license iteration in `generate.rs`
+# treats `LicenseRef-*` identifiers via the `LicenseItem::Other`
+# arm, which currently ignores `license_files` entirely and emits
+# a "no license file for crate" warning regardless. The PR makes
+# the Other arm mirror the Spdx arm's filter so clarified files
+# actually land in the output. The blocks below are kept anyway —
+# forward-compatible config that starts working once the upstream
+# PR ships.
+#
+# `i-slint-backend-testing` is intentionally absent from the
+# `[<crate>.clarify]` blocks below: that crate's published tarball
+# doesn't ship LICENSES/ at all (the source is missing the symlinks
+# every sibling backend has — slint-ui/slint#11631 fixes that
+# upstream). Until that lands and a new Slint version ships the
+# file, the testing-backend crate falls back to the bare `accepted`
+# clause and continues emitting one "no license file" warning.
+
 [slint]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[slint.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[slint.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [slint-build]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[slint-build.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[slint-build.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [slint-macros]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[slint-macros.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[slint-macros.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-backend-selector]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[i-slint-backend-selector.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[i-slint-backend-selector.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-backend-testing]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+# No clarify block — see comment block above.
 
 [i-slint-backend-winit]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[i-slint-backend-winit.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[i-slint-backend-winit.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-common]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[i-slint-common.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[i-slint-common.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-compiler]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[i-slint-compiler.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[i-slint-compiler.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-core]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[i-slint-core.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[i-slint-core.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-core-macros]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[i-slint-core-macros.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[i-slint-core-macros.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-renderer-femtovg]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[i-slint-renderer-femtovg.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[i-slint-renderer-femtovg.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 [i-slint-renderer-skia]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+[i-slint-renderer-skia.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+[[i-slint-renderer-skia.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
 # option-ext: MPL-2.0. See deny.toml for the full rationale.
 [option-ext]
