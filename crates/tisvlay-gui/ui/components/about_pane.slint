@@ -333,10 +333,12 @@ export component AboutPane inherits Rectangle {
 
                 // Copyright row with the third-party-notices entry
                 // point on the right. `UriBtn`, not `Button`: the
-                // click is a `file://` URL open (xdg-open hands the
-                // bundled HTML to the user's browser), so per KDE
-                // HIG / Plan 4 the pointer-cursor + URL-affordance
-                // visual treatment is correct.
+                // click hands the bundled HTML's filesystem path off
+                // to xdg-open via `webbrowser::open` (xdg-open accepts
+                // both bare paths and `file://` URLs), which is a
+                // URL-open affordance from the user's perspective —
+                // so per KDE HIG / Plan 4 the pointer-cursor +
+                // URL-affordance visual treatment is correct.
                 HorizontalLayout {
                     spacing: Design.gap-row;
                     alignment: stretch;

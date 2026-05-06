@@ -8,8 +8,8 @@ canonical `text` field from cargo-about's `LicenseSet`) and `crates`
 for the per-crate manifest. We skip the `licenses` array here because
 subtle text variations between crates of the same license produce
 visual duplicates that aren't what an end-user attribution bundle
-should surface. See `docs/cargo-about/src/generate.rs:31-43` for the
-LicenseSet shape.
+should surface. See cargo-about's `LicenseSet` definition for the
+shape: https://github.com/EmbarkStudios/cargo-about/blob/main/src/generate.rs
 
 `prefers-color-scheme` so the page works in both light and dark
 distro browsers without any user toggle.

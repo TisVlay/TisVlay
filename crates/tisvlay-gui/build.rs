@@ -35,8 +35,9 @@ fn main() {
 /// dirty-region partial rendering — slint #6754; Skia helps
 /// modestly but Text widgets render no link colors, no clickable
 /// anchors, no copy-across-rows). Browser handoff is the principled
-/// path. See plan2.md "Iteration: Notices pane perf" for the
-/// upstream research that grounded the pivot.
+/// path. See `.claude/slint.md` "Slint text-rendering for large
+/// documents" for the upstream-research trail that grounded the
+/// pivot.
 ///
 /// On failure (most commonly: `cargo-about` not on `$PATH` in a
 /// clean dev env without the Nix shell) writes a stub blob with
@@ -64,7 +65,13 @@ fn generate_third_party_licenses() {
 }
 
 fn generate_one(manifest: &Path, config: &Path, template: &Path, out_path: &Path, stub: String) {
-    let output = Command::new("cargo-about")
+    // `-o <path>` makes cargo-about stream the bundle directly to
+    // the file rather than us buffering hundreds of KB through
+    // `Command::output()`'s captured stdout. On the failure paths
+    // (non-zero exit, spawn failure) we write the stub ourselves;
+    // cargo-about may have left a partial file behind so the stub
+    // write also overwrites whatever's there.
+    let status = Command::new("cargo-about")
         .arg("generate")
         .arg("--manifest-path")
         .arg(manifest)
@@ -74,33 +81,32 @@ fn generate_one(manifest: &Path, config: &Path, template: &Path, out_path: &Path
         .arg("--all-features")
         .arg("--locked")
         .arg("--fail")
+        .arg("-o")
+        .arg(out_path)
         .arg(template)
-        .output();
+        .status();
 
-    let blob = match output {
-        Ok(out) if out.status.success() => out.stdout,
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            // cargo-about will have already printed its diagnostic
+            // to stderr; surface a single cargo:warning so the
+            // dev sees their build degraded, then write the stub.
             println!(
-                "cargo:warning=cargo-about generate failed for {} (status: {}); embedding stub. stderr:",
+                "cargo:warning=cargo-about generate failed for {} (status: {}); embedding stub.",
                 template.display(),
-                out.status
+                s
             );
-            for line in stderr.lines() {
-                println!("cargo:warning=  {line}");
-            }
-            stub.into_bytes()
+            std::fs::write(out_path, stub.into_bytes()).expect("write THIRD-PARTY-LICENSES stub");
         }
         Err(e) => {
             println!(
                 "cargo:warning=cargo-about not invocable ({e}); embedding stub blob for {}. Install with `cargo install --locked cargo-about` (or run inside the Nix dev shell) to populate.",
                 template.display()
             );
-            stub.into_bytes()
+            std::fs::write(out_path, stub.into_bytes()).expect("write THIRD-PARTY-LICENSES stub");
         }
-    };
-
-    std::fs::write(out_path, blob).expect("write THIRD-PARTY-LICENSES artifact");
+    }
 }
 
 fn stub_notices_blob_html() -> String {

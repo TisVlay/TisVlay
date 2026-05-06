@@ -69,13 +69,14 @@
           pkgs.mkShell {
             packages = with pkgs; [
               # cargo-about generates the bundled-deps third-party
-              # license attribution: workspace-root `about.toml` +
-              # `about.{txt,html}.hbs` templates feed into a plain-text
-              # blob (embedded in tisvlay-gui via build.rs) and an HTML
-              # variant shipped at /usr/share/doc/tisvlay/ in the
-              # nfpm-built packages. cargo-deny enforces the SPDX
+              # license attribution: `packaging/licensing/about.toml`
+              # + `about.html.hbs` produce `THIRD-PARTY-LICENSES.html`,
+              # embedded into tisvlay-gui via build.rs (browser-handoff
+              # fallback) and shipped at /usr/share/doc/tisvlay/ in
+              # nfpm + Nix packages. cargo-deny enforces the SPDX
               # allow-list at PR time via prek so a future dep bump
-              # can't drag in a forbidden license.
+              # can't drag in a forbidden license. Maintenance
+              # reference: docs/licensing.md.
               cargo-about
               cargo-deny
               cargo-insta

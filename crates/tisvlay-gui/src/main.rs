@@ -189,16 +189,27 @@ fn installed_notices_path() -> Option<std::path::PathBuf> {
 /// `webbrowser::open` (xdg-open under the hood on Linux) so the
 /// user's default browser handles it.
 fn open_notices_html() -> anyhow::Result<()> {
-    let path = if let Some(installed) = installed_notices_path() {
-        installed
-    } else {
-        let temp = std::env::temp_dir().join(format!(
-            "tisvlay-third-party-licenses-{}.html",
-            std::process::id()
-        ));
-        std::fs::write(&temp, NOTICES_HTML)?;
-        temp
-    };
+    if let Some(installed) = installed_notices_path() {
+        webbrowser::open(&installed.to_string_lossy())?;
+        return Ok(());
+    }
+
+    // Dev / source-build fallback: write the embedded HTML to a
+    // securely-created temp file. `tempfile::Builder::tempfile`
+    // uses `O_CREAT|O_EXCL` with a random suffix — defends against
+    // the symlink/hardlink TOCTOU race a predictable
+    // `/tmp/<name>-<pid>.html` path would expose. Persisted with
+    // `keep()` so the OS doesn't delete the file before the browser
+    // gets a chance to read it (the browser opens asynchronously
+    // and returns immediately); /tmp's standard cleanup policies
+    // handle eventual eviction.
+    let mut tf = tempfile::Builder::new()
+        .prefix("tisvlay-third-party-licenses-")
+        .suffix(".html")
+        .tempfile()?;
+    use std::io::Write;
+    tf.write_all(NOTICES_HTML.as_bytes())?;
+    let (_, path) = tf.keep()?;
     webbrowser::open(&path.to_string_lossy())?;
     Ok(())
 }

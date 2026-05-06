@@ -10,11 +10,22 @@
 # if security policy or supply-chain pinning becomes a need.
 
 [licenses]
-# Same set as about.toml's `accepted`, modulo cargo-deny's lower-case
-# convention being identical to SPDX. cargo-deny doesn't need an
-# explicit OR-priority since it only checks satisfiability — picking
-# which side of `OR` to surface in the bundled attribution is
-# cargo-about's job.
+# Near-mirror of about.toml's `accepted` list. cargo-deny doesn't
+# need an explicit OR-priority since it only checks satisfiability —
+# picking which side of `OR` to surface in the bundled attribution
+# is cargo-about's job.
+#
+# The two configs' per-crate exception sets *can* legitimately
+# differ in one direction: cargo-about resolves the dep graph with
+# `--workspace --all-features` so the bundle covers anything any
+# feature might pull in, while cargo-deny uses its own default
+# feature resolution. Crates that surface only under cargo-about's
+# resolution (e.g. `i-slint-backend-testing`, `generational-arena`
+# from Slint renderers under `--all-features`) appear in
+# `about.toml`'s per-crate `accepted` list but not in this file's
+# `exceptions` — adding them here would just emit
+# "license-exception-not-encountered" warnings. When a new crate
+# does fail `just deny`, mirror the exception in *both* files.
 allow = [
     "MIT",
     "Apache-2.0",

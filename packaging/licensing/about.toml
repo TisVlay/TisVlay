@@ -14,7 +14,8 @@
 
 # Priority-ordered. cargo-about picks the FIRST match for `OR`
 # expressions, so MIT wins on `MIT OR Apache-2.0`. This minimizes
-# Apache-2.0 NOTICE-propagation work — see plan2.md Decision 5.
+# Apache-2.0 NOTICE-propagation work. See `docs/licensing.md`
+# "License elections" for the rationale.
 accepted = [
     "MIT",
     "Apache-2.0",
@@ -36,7 +37,7 @@ targets = [
 ]
 
 # cargo-about's built-in clarifications. The full upstream catalogue
-# lives at docs/cargo-about/docs/src/cli/generate/workarounds.md —
+# lives at https://github.com/EmbarkStudios/cargo-about/blob/main/docs/src/cli/generate/workarounds.md —
 # review it on every dep-graph shift.
 #
 #   rustls    direct dep (LG WebSocket TLS)

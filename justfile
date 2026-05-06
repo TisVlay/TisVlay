@@ -71,7 +71,7 @@ test-snapshot-accept:
 # `--locked --fail` on `cargo about generate` keeps the bundle
 # reproducible (fails on Cargo.lock drift) and refuses to silently
 # emit a partial bundle when a crate's license can't be resolved.
-# See plan2.md Decisions 11 + 12.
+# See `docs/licensing.md` for the full rationale.
 
 # Enforce the SPDX allow-list on every crate in the workspace dep graph.
 [group('check')]
