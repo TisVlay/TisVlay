@@ -9,6 +9,8 @@
 
 use serde_json::{Value, json};
 
+mod runtime_info;
+
 /// Embedded blob schema version. Bump on breaking field renames /
 /// removals so consumers branch on the version rather than guessing
 /// from field presence.
@@ -16,6 +18,31 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 const GUI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const SLINT_VERSION: &str = env!("TISVLAY_GUI_SLINT_VERSION");
+
+/// Build profile baked in at compile time (`debug` for `cargo build`
+/// and `--profile test`, `release` for `--release`). Folded into the
+/// blob's `gui.profile` field — useful triage signal because dev and
+/// release builds expose different log levels and feature gates.
+const GUI_PROFILE: &str = if cfg!(debug_assertions) {
+    "debug"
+} else {
+    "release"
+};
+
+/// Target triple emitted by `vergen-gix`. Always present.
+const GUI_TARGET: &str = env!("VERGEN_CARGO_TARGET_TRIPLE");
+
+/// `rustc --version` semver token emitted by `vergen-gix`. Always
+/// present.
+const GUI_RUSTC: &str = env!("VERGEN_RUSTC_SEMVER");
+
+/// 7-char git short SHA emitted by `vergen-gix`. Falls back to
+/// `VERGEN_IDEMPOTENT_OUTPUT` when the build runs outside a git
+/// checkout (release tarball, Nix sandbox without git history); the
+/// renderer translates that sentinel to `null` so consumers can tell
+/// "tarball build" apart from a clean repo build.
+const GUI_GIT_SHA: &str = env!("VERGEN_GIT_SHA");
+const VERGEN_IDEMPOTENT_SENTINEL: &str = "VERGEN_IDEMPOTENT_OUTPUT";
 
 /// Per-component snapshot. One of these per row in the About pane's
 /// COMPONENTS table. `name` is the catalogue id (`"tisvlayd"`,
@@ -62,15 +89,34 @@ fn render(inputs: &Inputs<'_>) -> Value {
     sorted_vendors.sort();
     json!({
         "schema_version": SCHEMA_VERSION,
-        "gui": {
-            "version": GUI_VERSION,
-            "slint": SLINT_VERSION,
-        },
+        "gui": gui_section(),
         "components": components_section(inputs.components),
         "runtime": runtime_section(inputs.user_bus),
         "tvs": tvs_section(inputs.tvs),
         "vendors_supported": sorted_vendors,
     })
+}
+
+fn gui_section() -> Value {
+    json!({
+        "version": GUI_VERSION,
+        "slint": SLINT_VERSION,
+        "profile": GUI_PROFILE,
+        "target": GUI_TARGET,
+        "rustc": GUI_RUSTC,
+        "git_sha": maybe_git_sha(GUI_GIT_SHA),
+    })
+}
+
+/// Collapse `vergen-gix`'s "no git history" sentinel to JSON `null`
+/// so consumers can tell a tarball / Nix sandbox build apart from a
+/// real checkout. Pure — split out for unit tests.
+fn maybe_git_sha(raw: &str) -> Value {
+    if raw.is_empty() || raw == VERGEN_IDEMPOTENT_SENTINEL {
+        Value::Null
+    } else {
+        Value::String(raw.to_owned())
+    }
 }
 
 fn components_section(components: &[ComponentSnap]) -> Value {
@@ -95,12 +141,24 @@ fn components_section(components: &[ComponentSnap]) -> Value {
 }
 
 fn runtime_section(user_bus: bool) -> Value {
+    let (os_id, os_version) = runtime_info::os_release();
     json!({
         "bus": if user_bus { "user" } else { "system" },
         "desktop": env_or_null("XDG_CURRENT_DESKTOP", true),
         "session_type": env_or_null("XDG_SESSION_TYPE", true),
         "locale": env_or_null("LANG", false),
+        "kernel": opt_string(runtime_info::kernel_release()),
+        "glibc": opt_string(runtime_info::glibc_version()),
+        "os_id": opt_string(os_id),
+        "os_version": opt_string(os_version),
     })
+}
+
+fn opt_string(value: Option<String>) -> Value {
+    match value {
+        Some(s) => Value::String(s),
+        None => Value::Null,
+    }
 }
 
 fn tvs_section(tvs: &[TvSnap]) -> Value {
@@ -193,6 +251,22 @@ mod tests {
 
         assert_eq!(v["schema_version"], SCHEMA_VERSION);
         assert_eq!(v["gui"]["version"], GUI_VERSION);
+        // PR #2 build-time fields: assert presence + non-empty rather
+        // than exact values (the latter churn per build).
+        assert!(v["gui"]["profile"].as_str().is_some_and(|s| !s.is_empty()));
+        assert!(v["gui"]["target"].as_str().is_some_and(|s| !s.is_empty()));
+        assert!(v["gui"]["rustc"].as_str().is_some_and(|s| !s.is_empty()));
+        // git_sha is either a 7-char short SHA or null (tarball / Nix
+        // sandbox build outside a checkout).
+        assert!(v["gui"]["git_sha"].is_string() || v["gui"]["git_sha"].is_null());
+        // PR #2 runtime fields: each is `Option<String>` → string or null.
+        for key in ["kernel", "glibc", "os_id", "os_version"] {
+            let field = &v["runtime"][key];
+            assert!(
+                field.is_string() || field.is_null(),
+                "runtime.{key} expected string|null, got {field:?}"
+            );
+        }
         assert_eq!(v["components"]["daemon"]["connected"], true);
         assert_eq!(v["components"]["daemon"]["config"], true);
         assert_eq!(v["components"]["tray"]["connected"], false);
@@ -245,6 +319,13 @@ mod tests {
         let by_vendor = v["tvs"]["by_vendor"].as_object().unwrap();
         assert_eq!(by_vendor.len(), 1);
         assert_eq!(by_vendor["lg"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn maybe_git_sha_collapses_idempotent_sentinel_to_null() {
+        assert_eq!(maybe_git_sha(""), Value::Null);
+        assert_eq!(maybe_git_sha("VERGEN_IDEMPOTENT_OUTPUT"), Value::Null);
+        assert_eq!(maybe_git_sha("9811118"), Value::String("9811118".into()));
     }
 
     #[test]

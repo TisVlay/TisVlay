@@ -5,6 +5,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use vergen_gix::{CargoBuilder, Emitter, GixBuilder, RustcBuilder};
+
 fn main() {
     slint_build::compile("ui/main.slint").unwrap();
 
@@ -19,7 +21,39 @@ fn main() {
     let lock = workspace_root().join("Cargo.lock");
     println!("cargo:rerun-if-changed={}", lock.display());
 
+    emit_vergen_env_vars();
     generate_third_party_licenses();
+}
+
+/// Emit `VERGEN_CARGO_TARGET_TRIPLE`, `VERGEN_RUSTC_SEMVER`, and
+/// `VERGEN_GIT_SHA` (short) for the diagnostic blob's `gui.{target,
+/// rustc, git_sha}` fields. Failures are deliberately swallowed —
+/// vergen falls back to `VERGEN_IDEMPOTENT_OUTPUT` when `.git/` is
+/// missing (release tarball, Nix sandbox without git history), and
+/// the diagnostic builder treats that sentinel as a non-fatal absence.
+fn emit_vergen_env_vars() {
+    let cargo = CargoBuilder::default().target_triple(true).build();
+    let rustc = RustcBuilder::default().semver(true).build();
+    // `.sha(true)` = 7-char short sha. False = full 40-char.
+    let gix = GixBuilder::default().sha(true).build();
+
+    let mut emitter = Emitter::default();
+    let mut chain = Ok(&mut emitter);
+    if let Ok(c) = &cargo {
+        chain = chain.and_then(|e| e.add_instructions(c));
+    }
+    if let Ok(r) = &rustc {
+        chain = chain.and_then(|e| e.add_instructions(r));
+    }
+    if let Ok(g) = &gix {
+        chain = chain.and_then(|e| e.add_instructions(g));
+    }
+    if let Err(err) = chain.and_then(|e| e.emit()) {
+        // Don't fail the build; the diagnostic blob will surface
+        // `VERGEN_IDEMPOTENT_OUTPUT` as `null` so consumers can tell
+        // a non-pristine build apart from a clean one.
+        println!("cargo:warning=vergen-gix instructions failed: {err}");
+    }
 }
 
 /// Generate `$OUT_DIR/THIRD-PARTY-LICENSES.html` for `include_str!`

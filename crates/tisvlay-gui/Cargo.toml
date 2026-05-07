@@ -66,6 +66,18 @@ webbrowser = "1"
 # Securely-created temp file for the About pane's notices browser
 # handoff in source builds. See `src/main.rs::open_notices_html`.
 tempfile = "3"
+# Typed `/etc/os-release` parser for the diagnostic blob's
+# `runtime.os_id` / `runtime.os_version` fields. Recognizes NixOS
+# correctly (verified upstream).
+etc-os-release = "0.1"
+# Kernel release string for the diagnostic blob's `runtime.kernel`
+# field. Already in the dep tree transitively (zbus → async-io);
+# pinning a direct dep here so the API surface is explicit.
+rustix = { version = "1", features = ["system"] }
+# Runtime glibc version for the diagnostic blob's `runtime.glibc`
+# field via `gnu_get_libc_version()` FFI; gated on
+# `cfg(target_env = "gnu")` at the call site.
+libc = "0.2"
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection
 # during dev. Pinned to the exact slint version because the backend
@@ -82,6 +94,12 @@ slint-build = "1.16"
 # button). `toml` is already a workspace runtime dep; reusing it here
 # avoids pulling cargo_metadata or built into the build-deps tree.
 toml = { workspace = true }
+# Build-time emission of `VERGEN_*` env vars for the diagnostic blob's
+# `gui.{target,rustc,git_sha}` fields. The `gix` flavor uses the
+# pure-Rust gitoxide backend so the build doesn't need a system `git`
+# binary on PATH — Nix sandbox / vendored tarball builds work as-is.
+# Falls back to `VERGEN_IDEMPOTENT_OUTPUT` when run outside a checkout.
+vergen-gix = { version = "9.1", default-features = false, features = ["cargo", "rustc"] }
 
 [lints]
 workspace = true
