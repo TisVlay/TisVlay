@@ -17,7 +17,6 @@ mod runtime_info;
 pub const SCHEMA_VERSION: u32 = 1;
 
 const GUI_VERSION: &str = env!("CARGO_PKG_VERSION");
-const SLINT_VERSION: &str = env!("TISVLAY_GUI_SLINT_VERSION");
 
 /// Build profile baked in at compile time (`debug` for `cargo build`
 /// and `--profile test`, `release` for `--release`). Folded into the
@@ -100,7 +99,6 @@ fn render(inputs: &Inputs<'_>) -> Value {
 fn gui_section() -> Value {
     json!({
         "version": GUI_VERSION,
-        "slint": SLINT_VERSION,
         "profile": GUI_PROFILE,
         "target": GUI_TARGET,
         "rustc": GUI_RUSTC,

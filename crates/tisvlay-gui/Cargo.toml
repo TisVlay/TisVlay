@@ -89,11 +89,6 @@ dev-mcp = ["dep:i-slint-backend-selector"]
 
 [build-dependencies]
 slint-build = "1.16"
-# build.rs reads Cargo.lock to surface the resolved Slint version into
-# the binary at compile time (used by the About pane's diagnostic-copy
-# button). `toml` is already a workspace runtime dep; reusing it here
-# avoids pulling cargo_metadata or built into the build-deps tree.
-toml = { workspace = true }
 # Build-time emission of `VERGEN_*` env vars for the diagnostic blob's
 # `gui.{target,rustc,git_sha}` fields. The `gix` flavor uses the
 # pure-Rust gitoxide backend so the build doesn't need a system `git`

@@ -2,7 +2,7 @@
 
 > **Status:** PR #1 (in-process Tier 1+2 enrichment, no new deps) and PR #2 (build / OS metadata via `vergen-gix` + `etc-os-release`) scoped here. Follow-on work — log ring buffer, consent UI, support-bundle CLI, crash capture, optional remote ingest — tabled in [`docs/ideas.md`](ideas.md) and picked up after these two ship.
 
-The About pane's "Diagnostics" button copies a JSON blob to the clipboard so users can paste it into a GitHub issue. Today's blob carries `gui_version`, `daemon_version`, `session_version`, and `slint_version` only — peer connectivity, runtime context, and build provenance all have to be asked for separately. This sprint widens the blob to "one paste covers most triage questions" without introducing remote ingestion, bundle archives, or panic-time capture (those land later behind their own gating).
+The About pane's "Diagnostics" button copies a JSON blob to the clipboard so users can paste it into a GitHub issue. Today's blob carries the gui / daemon / session versions and not much else — peer connectivity, runtime context, and build provenance all have to be asked for separately. This sprint widens the blob to "one paste covers most triage questions" without introducing remote ingestion, bundle archives, or panic-time capture (those land later behind their own gating).
 
 ## Target schema after PR #2
 
@@ -11,7 +11,6 @@ The About pane's "Diagnostics" button copies a JSON blob to the clipboard so use
   "schema_version": 1,
   "gui": {
     "version": "0.1.0",
-    "slint": "1.16.1",
     "profile": "release",
     "target": "x86_64-unknown-linux-gnu",
     "rustc": "1.85.0",
