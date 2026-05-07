@@ -225,3 +225,90 @@ Revisit when a user reports the visual mismatch, or when `cosmic` (the alternati
 ## Slint dialog open/close fade animation
 
 Was filed as polish work and deferred — `ConfirmDialog` is so brief in the typical edit/remove flow that a fade-in adds visible lag rather than polish. Revisit if the dialog's role expands (e.g., multi-step removal confirmation, settings-export wizard) and the snappier timing starts feeling abrupt.
+
+## Diagnostic log-tail ring buffer
+
+The About pane's diagnostic blob (schema baseline scoped in [`docs/plan2.md`](plan2.md)) carries peer + runtime + build metadata after the planned enrichment, but no record of what the GUI was *doing* at capture time. A ring-buffer `tracing-subscriber` `Layer` keeping the last N events drained into the blob would make it trivial to see "what happened in the 30 seconds before this issue."
+
+Implementation sketch:
+
+- New layer in `tisvlay-core::logging` (or a sibling module) that writes formatted events into an `Arc<Mutex<VecDeque<String>>>`, capacity-bounded with drop-oldest semantics.
+- Wired alongside the existing `fmt::Layer` so console output is unchanged.
+- `RUST_LOG` filter governs what the ring sees (single source of truth).
+- Default capacity 500 events (~250 KB at typical formatted-event line length); env-var override `TISVLAY_DIAG_BUFFER` for power users.
+- Drained at diagnostic-capture time as `Vec<String>` and embedded under `runtime.log_tail`.
+
+Industry convention: Sentry breadcrumbs default to 100 events, dmesg uses byte-bounded rings (16 KB–1 MB), browser DevTools caps at ~10K. 500 is a Sentry-x5 starting point because we paste rather than POST — bigger payload is fine.
+
+Tabled until the PR #1+#2 schema baseline ships so the embedding shape is clear.
+
+## Diagnostic preview-and-consent pane
+
+Today's "Diagnostics" button copies the blob immediately. Once the blob grows beyond the current 4-field stub (peers + runtime + tvs + log tail), the user should be able to *see* what's about to leave their machine and toggle off categories they'd rather not share.
+
+Path forward:
+
+- Modal sheet over the About pane (translucent overlay, dismissable). Discoverable; doesn't fight existing pane navigation.
+- Scrollable JSON preview rendered via the same browser-handoff path the third-party-notices view uses, or an in-pane code-style read-only text widget — TBD pending a Slint perf check on long JSON.
+- Category toggle chips: System info, Log tail, Vendor data, Build provenance. Each gates a top-level section in the captured payload.
+- Three action buttons in the sheet footer: Copy, Save File, Open Issue (URL-prefill via `https://github.com/.../issues/new?body=<urlencoded>`, with truncation when over GitHub's URL cap).
+
+Builds on the support-bundle CLI work below — both share the same `Diagnostic::redact_categories(&[Category])` helper.
+
+## Support-bundle CLI subcommand (`tisvlay diagnostic`)
+
+Mirrors `kubectl support-bundle` / `docker support-bundle`. Single CLI entrypoint that emits the diagnostic JSON to stdout or zips a richer bundle.
+
+Surfaces:
+
+- `tisvlay diagnostic` — JSON to stdout, suitable for `| pbcopy`, `| jq`, or piping into a gist.
+- `tisvlay diagnostic --bundle <path>` — zip containing `diagnostic.json` + `tisvlay.log` (recent journalctl extract or the ring-buffer tail) + `daemon-config.toml` (redacted) + `dbus-objects.json` (one-shot `Manager1.GetManagedObjects` dump).
+
+New deps: `zip` for archive creation. Logs path: `journalctl --user-unit tisvlay-* -n 1000 -o json` if the ring-buffer subscriber hasn't shipped, otherwise the in-memory tail.
+
+GUI integration: the consent-pane "Save File" action calls the same `Diagnostic::write_bundle(path)` helper the CLI uses, ensuring the artifacts users paste and the artifacts maintainers pull match.
+
+## Crash-time diagnostic capture
+
+When the GUI panics, the blob the user could have copied is gone. Wire a panic hook that writes the diagnostic blob to `~/.cache/tisvlay/crash-<ISO8601>.json` so post-crash triage doesn't depend on the user remembering to copy first.
+
+Stack:
+
+- `human-panic` for the friendly user-facing panic message + path-to-report shown on stderr.
+- Custom panic hook that calls `Diagnostic::capture()` (synchronous; the panicking thread writes the file before unwind) and chains into `human-panic`.
+- `tracing-error` for `SpanTrace` capture into errors at the daemon and GUI's error boundaries — gives the report a "what was happening" stack alongside the Rust backtrace.
+- `color-eyre` (or `eyre` directly) at error-bubbling boundaries so non-panic errors that surface to the user get the same hook treatment.
+
+Trade-off: `human-panic` writes to a temp dir by default; we override the path to `~/.cache/tisvlay/` so users have a stable place to find it. Adds three runtime crates (`human-panic`, `tracing-error`, `color-eyre`); none are heavy.
+
+## Opt-in remote crash reporting (`dev-telemetry` feature)
+
+Once the diagnostic blob and crash-time capture are in place, the natural next step is shipping reports to a backend instead of asking users to upload files manually. This is gated work — production binaries should not depend on remote ingestion.
+
+Approach:
+
+- New Cargo feature `dev-telemetry` on `tisvlay-gui`, default off. Enables `sentry-rust` (panic integration + tracing layer + breadcrumbs + release tags).
+- `SENTRY_DSN` env-var-gated: even with the feature on, no DSN means no transmission.
+- Backend choices, all DSN-compatible (no SDK swap):
+  - **GlitchTip** — FOSS, MIT, single Django container + Postgres + Redis (~512 MB RAM). v6.1 (March 2026) added minidump support.
+  - **Bugsink** — FOSS, MIT, single container + SQLite. $5 VPS-friendly.
+  - **Sentry SaaS** — free tier 5K errors/month; hosted Sentry self-host is heavy (16 GB RAM, ~25 services).
+- Recommended exploration path: local GlitchTip via Docker Compose first; document the spin-up in `docs/observability.md`. DSN flip moves the same code to Bugsink or hosted Sentry without changes.
+
+Production release builds compile out the feature entirely — `sentry-rust` is not in their dep graph at all.
+
+Conscious skips: PostHog (product analytics first; error tracking secondary; heavier infra), Highlight.io (acquired/shutdown 2026-02-28), Apache SkyWalking (APM/distributed tracing, not panic grouping), Bugsnag/Rollbar/Honeybadger (proprietary SaaS, no compelling Rust SDK over `sentry-rust`).
+
+## Native crash capture via `minidumper`
+
+`sentry-rust`'s panic integration captures Rust panics. Native crashes (SIGSEGV in Slint's GPU / wgpu / Skia path, third-party native deps) bypass it — those are the bugs that most need crash reports because the user has nothing to copy from a frozen UI.
+
+Stack:
+
+- Embark's `crash-handler` crate — installs signal handlers for SIGSEGV / SIGBUS / SIGFPE / SIGILL / SIGABRT.
+- Embark's `minidumper` — child-process minidump writer; the parent's signal handler hands off to the child so the dying parent doesn't have to allocate.
+- Upload via the Sentry minidump endpoint (GlitchTip 6.1+ supports it; Sentry SaaS does too).
+
+Gated under the same `dev-telemetry` Cargo feature as the `sentry-rust` integration. Minidump symbolication needs debug symbols on the receiving end; for self-hosted GlitchTip, ship a separate build artifact (`*.dwp` or `*-symbols.zip`) and upload via `sentry-cli upload-difs` or GlitchTip's `dif` API.
+
+Trade-off: the most heavyweight piece of the diagnostic stack. Worth it only when Slint/GPU crashes start showing up as recurring user reports.
