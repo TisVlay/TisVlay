@@ -1,8 +1,8 @@
 # Diagnostic blob enrichment
 
-> **Status:** PR #1 (in-process Tier 1+2 enrichment, no new deps) and PR #2 (build / OS metadata via `vergen-gix` + `etc-os-release`) scoped here. Follow-on work — log ring buffer, consent UI, support-bundle CLI, crash capture, optional remote ingest — tabled in [`docs/ideas.md`](ideas.md) and picked up after these two ship.
+> **Status:** ✅ Both PRs shipped. PR #1 (in-process enrichment, `2056dc3`), PR #2 (build / OS metadata, `d7305d8`), with a follow-up dropping `gui.slint` after the fact (`80ff09d`) — rationale in "As-shipped deltas" below. Follow-on work (log ring buffer, consent UI, support-bundle CLI, crash capture, optional remote ingest) lives in [`docs/ideas.md`](ideas.md).
 
-The About pane's "Diagnostics" button copies a JSON blob to the clipboard so users can paste it into a GitHub issue. Today's blob carries the gui / daemon / session versions and not much else — peer connectivity, runtime context, and build provenance all have to be asked for separately. This sprint widens the blob to "one paste covers most triage questions" without introducing remote ingestion, bundle archives, or panic-time capture (those land later behind their own gating).
+The About pane's "Diagnostics" button copies a JSON blob to the clipboard so users can paste it into a GitHub issue. Pre-sprint, the blob carried the gui / daemon / session versions and not much else — peer connectivity, runtime context, and build provenance all had to be asked for separately. This sprint widened the blob to "one paste covers most triage questions" without introducing remote ingestion, bundle archives, or panic-time capture (those land later behind their own gating).
 
 ## Target schema after PR #2
 
@@ -67,16 +67,19 @@ No new deps. Surfaces fields that already live inside the GUI process or sit one
 
 ### Implementation notes
 
-- `build_diagnostic_blob` already lives in [crates/tisvlay-gui/src/main.rs](../crates/tisvlay-gui/src/main.rs). Refactor into a small `diagnostic` module split into subfunctions per top-level section (`build_peers`, `build_runtime`, `build_tvs`) so PR #2's deps can land in clean files.
+- `build_diagnostic_blob` moved out of [crates/tisvlay-gui/src/main.rs](../crates/tisvlay-gui/src/main.rs) into a new [`diagnostic` module](../crates/tisvlay-gui/src/diagnostic.rs). Renderer takes plain `ComponentSnap` / `TvSnap` snapshot structs (no Slint types) so unit tests don't need an event loop. Subfunctions: `gui_section`, `components_section`, `runtime_section`, `tvs_section`.
 - Empty-string env vars (KDE-on-X11 sometimes leaves `XDG_SESSION_TYPE` unset) serialize as `null` rather than `""` for cleaner JSON consumption.
 - `vendors_supported` ordering: sorted alphabetically so diffs across captures stay stable.
-- `vendors_supported` is fetched once at startup (it's effectively a build-time constant for the running daemon); cache on `Daemon` global.
+- `vendors_supported` is fetched once at startup (it's effectively a build-time constant for the running daemon); cached in a process-wide `Arc<std::sync::RwLock<Vec<String>>>` populated by `initial_fetch_and_watch` and read at click time.
 
 ### Tests
 
-- `tests/diagnostic_snapshot.rs` (insta) capturing the JSON shape with synthetic inputs (no live D-Bus) — guards against accidental field renames or shape drift.
-- One test per env-var fallback (unset → null, weird casing → preserved as-given).
-- Coverage of the by-vendor rollup with mixed vendors and an empty TV list.
+Inline `#[cfg(test)] mod tests` in `src/diagnostic.rs` rather than a dedicated `tests/` integration crate — the renderer is pure so unit-test scope is the right fit, and `insta` would have been overkill for the shape we're guarding.
+
+- `schema_shape_is_stable` — JSON shape with synthetic inputs.
+- `missing_component_entries_default_safely` — empty inputs surface `null` / `0` / `false` rather than panic.
+- `empty_vendor_strings_are_skipped_in_rollup` — by-vendor rollup ignores empty vendor strings.
+- `normalize_env_handles_unset_empty_and_lowercase` — env-var fallback (split out from `env_or_null` so tests don't mutate process-wide state).
 
 ## PR #2 — Build + OS metadata
 
@@ -104,16 +107,25 @@ Adds `vergen-gix` (build-dep on `tisvlay-gui` only) and `etc-os-release` (runtim
 
 ### Implementation notes
 
-- `build.rs` for `tisvlay-gui` already exists for Slint compilation. Extend it with `vergen`'s `EmitBuilder` for git + cargo + rustc emission. Outside-checkout builds (release tarballs) fall back to compile-time stubs — match `vergen`'s `fallback` patterns so the Nix sandbox or vendored builds don't break.
-- `etc_os_release::OsRelease::open()` returns `Result` — wrap in a `runtime_info()` helper that returns `None` for missing fields rather than failing the whole capture. NixOS images without `/etc/os-release` are theoretical but possible.
-- `glibc_version_helper` module: ~5-line FFI wrapper, gated `cfg(target_env = "gnu")`, returns `Option<String>` so musl builds (theoretical) surface as `null`.
+- `build.rs` extended with `vergen-gix`'s `Emitter` chain (`CargoBuilder` → `RustcBuilder` → `GixBuilder`). Outside-checkout builds (release tarballs, Nix sandbox without git history) fall back to vergen's `VERGEN_IDEMPOTENT_OUTPUT` sentinel; the renderer's `maybe_git_sha()` helper translates that to JSON `null` so consumers can tell tarball builds apart from real checkouts.
+- Runtime probes live in a [`diagnostic::runtime_info`](../crates/tisvlay-gui/src/diagnostic/runtime_info.rs) submodule. `kernel_release()` (rustix uname), `glibc_version()` (~10-line FFI wrapper, `cfg(target_env = "gnu")` gate, documented `unsafe` block per the workspace's `undocumented_unsafe_blocks` lint), `os_release()` returning `(os_id, os_version)` — each `Option<String>`, mapped to JSON `null` by the renderer when absent.
 - Field ordering in the JSON is stable across captures (serde's struct-field order) so diffs are noise-free.
 
 ### Tests
 
-- Extend the PR #1 snapshot test with one variant that asserts the build-time fields are non-empty strings (not the actual values, which churn per build).
-- Unit test for the os-release parser's null-fallback behavior on an empty `/etc/os-release`.
-- Smoke test on the `dev-shell` (Nix) and `cargo build` (non-Nix) paths to catch the `vergen-gix` fallback regression.
+The PR #1 `schema_shape_is_stable` snapshot was extended to assert each PR #2 field is present and has the expected `string|null` type (the actual values churn per build). Plus one new pure unit test:
+
+- `maybe_git_sha_collapses_idempotent_sentinel_to_null` — `""` and `VERGEN_IDEMPOTENT_OUTPUT` map to `Value::Null`; a real SHA round-trips as `Value::String`.
+
+Out-of-band manual verification covered the Nix `dev-shell` path and a non-Nix `cargo build` (no CI matrix yet — would catch `vergen-gix` fallback regressions if they surface, but not part of this sprint).
+
+## As-shipped deltas
+
+Three notable refinements landed during implementation that aren't reflected in the original PR specs above:
+
+- **`gui.slint` removed.** Original spec carried it alongside `gui.version`. With `gui.git_sha` shipping, every workspace dep version (slint included) is recoverable by checking out the commit and reading `Cargo.lock` — the field duplicated information now derivable on demand, and locked the schema to a specific UI toolkit choice. Dropping it makes `gui.{version, profile, target, rustc, git_sha}` framework-agnostic. Followed by removing the `TISVLAY_GUI_SLINT_VERSION` env emission, the `read_dep_version_from_lock` helper, and the `toml` build-dep that only existed to support it (`80ff09d`).
+- **`peers` → `components`.** Field name renamed pre-flight to match the existing UI vocabulary (the About pane already labels this section "COMPONENTS"; the Slint model is `about_components`). Avoids forcing JSON consumers to learn fresh D-Bus jargon.
+- **`config_path` → `config: bool`.** Original spec carried the path string. Refined to a bool to keep `$HOME` / username out of the inline blob (the path is PII). The folder-open button in the GUI still uses the live path internally; only the diagnostic surface drops it.
 
 ## Out of scope (tabled to `docs/ideas.md`)
 
