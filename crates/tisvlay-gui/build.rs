@@ -25,10 +25,11 @@ fn main() {
 /// Generate `$OUT_DIR/THIRD-PARTY-LICENSES.html` for `include_str!`
 /// embedding into the GUI binary. The About pane's "View third-party
 /// notices" button hands this off to the user's browser via
-/// `xdg-open`: in packaged builds we prefer the distro-shipped copy
-/// at `/usr/share/doc/tisvlay/`; the embedded blob is the dev-build
-/// fallback (and a guarantee that the binary can always show its
-/// own attribution without external files).
+/// `xdg-open`. Runtime path resolution prefers an installed copy
+/// found by `installed_notices_path()` (see `src/main.rs`); the
+/// embedded blob is the source-build fallback and a guarantee that
+/// the binary can always show its own attribution without external
+/// files.
 ///
 /// We don't render the bundle in-app: Slint's text engine can't
 /// match a browser for ~1400-row monospace docs (femtovg lacks

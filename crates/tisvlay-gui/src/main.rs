@@ -148,29 +148,27 @@ const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
 /// HTML variant of the workspace-wide third-party FOSS attribution,
 /// generated at build time by `build.rs` via `cargo-about`. The
 /// About pane's "View third-party notices" button hands this off to
-/// the user's browser via `xdg-open`: in packaged builds we prefer
-/// the distro-shipped copy at `/usr/share/doc/tisvlay/`; the embedded
-/// blob is the dev-build fallback (and a guarantee that the binary
-/// can always show its own attribution without external files).
+/// the user's browser via `xdg-open`. Runtime resolution prefers an
+/// installed copy via `installed_notices_path`; the embedded blob
+/// is the source-build fallback and a guarantee that the binary can
+/// always show its own attribution without external files.
 const NOTICES_HTML: &str = include_str!(concat!(env!("OUT_DIR"), "/THIRD-PARTY-LICENSES.html"));
 
-/// Conventional FHS install path for the packaged HTML attribution.
-/// `crates/tisvlayd/Cargo.toml`'s nfpm contents map the generated
-/// `THIRD-PARTY-LICENSES.html` here for every distro format. Read
-/// directly when present so the user opens the same file distro
-/// audit tools (rpm-sequoia, lintian) inspect. Nix builds install at
-/// `$out/share/doc/tisvlay/...` instead — see `installed_notices_path`
-/// for the prefix-aware fallback.
+/// Conventional FHS install path for the bundled attribution. Read
+/// directly when present so the user opens the same file system
+/// audit tools (rpm-sequoia, lintian, etc.) inspect on installations
+/// that follow the FHS doc-path convention.
 const NOTICES_HTML_FHS: &str = "/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html";
 
 /// Locate an installed copy of the third-party-licenses HTML, if any.
-/// Tries the FHS path first (covers nfpm-built `.deb`/`.rpm`/
-/// `.pkg.tar.zst` and any source-installed `make install` to `/usr/`)
-/// then walks up from `current_exe()` to derive a `$prefix` and
-/// look in `$prefix/share/doc/tisvlay/`. The `current_exe()` path
-/// covers Nix (`/nix/store/<hash>/bin/<bin>` →
-/// `/nix/store/<hash>/share/doc/tisvlay/...`), AppImage mounts, and
-/// `make install` to non-FHS prefixes like `/usr/local/`.
+/// Tries the FHS path first, then walks up from `current_exe()` to
+/// derive a `$prefix` and look in `$prefix/share/doc/tisvlay/`. The
+/// `current_exe()` path covers any installer that places the binary
+/// at `<prefix>/bin/<name>` and the doc at `<prefix>/share/doc/...`
+/// — Nix store paths, AppImage mounts, and `make install` to
+/// non-FHS prefixes (`/usr/local/`, `/opt/...`). Falls through to
+/// the embedded-blob → tempfile path in `open_notices_html` when no
+/// installed copy is found.
 fn installed_notices_path() -> Option<std::path::PathBuf> {
     let fhs = std::path::PathBuf::from(NOTICES_HTML_FHS);
     if fhs.exists() {
@@ -183,7 +181,7 @@ fn installed_notices_path() -> Option<std::path::PathBuf> {
 }
 
 /// Hand off the workspace-wide attribution HTML to the user's
-/// browser. Prefers the distro-shipped copy when present; otherwise
+/// browser. Prefers an installed copy when present; otherwise
 /// writes the build-time-embedded blob to a per-process temp file
 /// and points the browser at that. Both paths route through
 /// `webbrowser::open` (xdg-open under the hood on Linux) so the
