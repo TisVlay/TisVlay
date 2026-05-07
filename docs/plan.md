@@ -243,9 +243,9 @@ Daemon-side surface listed under "New surface still pending for M3.5 / M4" above
 
 The placeholder pane currently just displays "System and user profile editing arrives in M4." Real implementation matches the original sketch — two sub-tabs (System / User), list + editor layout, strongly-typed form inputs.
 
-### M5 — Session pane + About pane + polish (partial)
+### M5 — Session pane + About pane + polish (partial — About done)
 
-About pane is built (version info, links, license, diagnostic-copy button). Session pane is a placeholder ("session-service status arrives in M5"). Settings pane (a fifth nav item that emerged after the original roadmap) is also a placeholder. Polish items (toasts, keyboard nav, window-state persistence) are incremental as the panes get fleshed out.
+About pane shipped end-to-end on `feat/gui-about` + `feat/gui-about-2` (former plan 2): peer-introspection (Daemon/Session/Tray/GUI uniformly expose `Version` + `ConfigPath`), KDE HIG cursor compliance + `UriBtn` rename, COMPONENTS table consolidation with file-manager folder buttons, version-drift surface, AboutSlint widget for license compliance, third-party-attribution pipeline (cargo-about + cargo-deny + browser handoff for the bundle). Session pane is still a placeholder ("session-service status arrives in M5"). Settings pane (a fifth nav item that emerged after the original roadmap) is also a placeholder. Polish items (toasts, keyboard nav, window-state persistence) are incremental as the panes get fleshed out.
 
 ### M6 — Packaging + distribution (partial)
 
@@ -257,11 +257,12 @@ Several plans not on the M1–M6 list shipped alongside the milestones above. Ea
 
 | Topic | Driving work | Key commits |
 |---|---|---|
-| Coalescer factor-out for scroll dispatch | (former plan 2) | `Coalescer<K, V>` lives in `tisvlay-core` and is reused by both the tray's volume/backlight scroll and the GUI's optimistic slider |
+| Coalescer factor-out for scroll dispatch | (former plan, archived in git history) | `Coalescer<K, V>` lives in `tisvlay-core` and is reused by both the tray's volume/backlight scroll and the GUI's optimistic slider |
 | D-Bus refactor: read-only properties + typed Set methods for live state | (former plan 3) | commit `87714ad` ("`refactor(daemon): writable state via methods, properties read-only`"); rationale captured in Plan 6's "SetTvOption retirement" research |
 | Slint architecture sweep: Daemon global, theme tokens, computed bindings, animations | (former plan 4) | spans many commits; established the per-pane component layout, the `Theme` global, the address-book contact pattern that Plan 6's edit pencil reuses |
 | Power-cycle robustness, MAC capture, vendor-agnostic config schema | (former plan 5) | `7566f0b` (declarative config schema with `FieldVisibility` metadata), `f50df5a` (schema-driven pairing wizard), `da9f2a6` (ARP-resolved MAC enrichment), `f18cd40` (smart Power button + connect-first PowerOn) |
 | Edit TV properties: `Tv1.UpdateConfig` / `GetConfig`, edit-mode pencil toggle, `VendorConfig`/`VendorInfo` split | (former plan 6) | `b55d8d9` (Tv1.UpdateConfig + Tv1.GetConfig), `7ae48c6` (edit-mode toggle), `a0f9f26` (VendorConfig/VendorInfo split); per-object `Tv1.Remove` (`2837098`) replaced `Manager1.RemoveTv` along the way |
+| About pane parity + peer introspection + KDE HIG + FOSS attribution | (former plan 2, retired in this commit) | shipped on `feat/gui-about` (Commit A: design-handoff parity, AboutSlint widget, peer-introspection symmetry, COMPONENTS-table consolidation, file-manager folder buttons) and `feat/gui-about-2` (B1: cargo-about + cargo-deny scaffolding under `packaging/licensing/`; B2: build-time attribution embed + browser handoff). Maintenance reference: [docs/licensing.md](licensing.md) |
 
 ## Open follow-ups (post v1)
 

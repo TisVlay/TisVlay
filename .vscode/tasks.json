@@ -14,33 +14,9 @@
             }
         },
         {
-            "label": "daemon: start (system bus)",
-            "type": "shell",
-            "command": "just daemon-start-system",
-            "isBackground": true,
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "group": "tisvlay"
-            }
-        },
-        {
             "label": "session: start",
             "type": "shell",
             "command": "just session-start",
-            "isBackground": true,
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "group": "tisvlay"
-            }
-        },
-        {
-            "label": "session: start (system bus)",
-            "type": "shell",
-            "command": "just session-start-system",
             "isBackground": true,
             "problemMatcher": [],
             "presentation": {
@@ -62,33 +38,9 @@
             }
         },
         {
-            "label": "tray: start (system bus)",
-            "type": "shell",
-            "command": "just tray-start-system",
-            "isBackground": true,
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "group": "tisvlay"
-            }
-        },
-        {
             "label": "gui: start",
             "type": "shell",
             "command": "just gui-start",
-            "isBackground": true,
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "group": "tisvlay"
-            }
-        },
-        {
-            "label": "gui: start (system bus)",
-            "type": "shell",
-            "command": "just gui-start-system",
             "isBackground": true,
             "problemMatcher": [],
             "presentation": {
@@ -104,115 +56,9 @@
             "problemMatcher": []
         },
         {
-            "label": "all: start (system bus)",
-            "dependsOn": ["daemon: start (system bus)", "session: start (system bus)", "tray: start (system bus)", "gui: start (system bus)"],
-            "dependsOrder": "parallel",
-            "problemMatcher": []
-        },
-        {
             "label": "all: stop",
             "type": "shell",
             "command": "just stop-all",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "cli: status",
-            "type": "shell",
-            "command": "just cli-status",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "package: build (musl)",
-            "type": "shell",
-            "command": "just package-build-musl",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "package: deb",
-            "type": "shell",
-            "command": "just package-deb",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "package: rpm",
-            "type": "shell",
-            "command": "just package-rpm",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "package: archlinux",
-            "type": "shell",
-            "command": "just package-archlinux",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "package: all",
-            "type": "shell",
-            "command": "just package-all",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "coverage: summary",
-            "type": "shell",
-            "command": "just cov",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "coverage: html",
-            "type": "shell",
-            "command": "just cov-html",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "coverage: lcov",
-            "type": "shell",
-            "command": "just cov-lcov",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
-            "label": "coverage: ratchet",
-            "type": "shell",
-            "command": "just cov-ratchet",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",

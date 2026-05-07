@@ -68,6 +68,13 @@
           in
           pkgs.mkShell {
             packages = with pkgs; [
+              # cargo-about generates the bundled third-party license
+              # attribution; cargo-deny enforces the SPDX allow-list
+              # at PR time via prek so a future dep bump can't drag
+              # in a forbidden license. Maintenance reference:
+              # docs/licensing.md.
+              cargo-about
+              cargo-deny
               cargo-insta
               cargo-llvm-cov
               cargo-nextest

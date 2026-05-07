@@ -1,0 +1,51 @@
+# cargo-deny config — license-policy gate. Pipeline rationale +
+# maintenance reference: `docs/licensing.md`.
+#
+# Only the `[licenses]` section is enabled here. The other cargo-deny
+# checks (`bans`, `advisories`, `sources`) are out of scope for the
+# initial attribution scaffolding; they can be enabled in a follow-up
+# if security policy or supply-chain pinning becomes a need.
+
+[licenses]
+# Near-mirror of about.toml's `accepted` list. The two configs'
+# per-crate exception sets can differ in one direction (cargo-about
+# resolves with `--workspace --all-features`; cargo-deny doesn't),
+# so crates surfaced only by cargo-about don't need entries here —
+# adding them would just emit "license-exception-not-encountered"
+# warnings. When a new crate fails `just deny`, mirror the exception
+# in *both* files.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "Unlicense",
+]
+
+# 0.93 is cargo-deny's default; raise only if we hit a misclassified
+# license file in practice.
+confidence-threshold = 0.93
+
+# Per-crate exceptions for crates whose license expression isn't
+# fully covered by the global `allow` set. Each entry's rationale
+# lives in `docs/licensing.md` "Per-crate exception catalog".
+exceptions = [
+    { name = "slint", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "slint-build", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "slint-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-backend-selector", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-backend-winit", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-common", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-compiler", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-core", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-core-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-renderer-femtovg", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-renderer-skia", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "option-ext", allow = ["MPL-2.0"] },
+    { name = "libfuzzer-sys", allow = ["NCSA"] },
+]

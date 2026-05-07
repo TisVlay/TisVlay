@@ -106,6 +106,7 @@ export component AppWindow inherits Window {
     in property <[string]> user-profiles;
     in property <string> gui-version;
     in property <[AboutComponentRow]> about-components;
+    callback view-notices-clicked();
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
 
@@ -311,6 +312,7 @@ export component AppWindow inherits Window {
                 logo: root.about-icon;
                 view-source-clicked => { root.view-source-clicked(); }
                 view-release-clicked => { root.view-release-clicked(); }
+                view-notices-clicked => { root.view-notices-clicked(); }
                 report-issue-clicked => { root.report-issue-clicked(); }
                 copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
                 open-config-folder(p) => { root.open-config-folder(p); }

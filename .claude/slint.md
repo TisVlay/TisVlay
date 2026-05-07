@@ -307,3 +307,60 @@ The user-driven workflow that worked for me:
   + opacity + types only. It does NOT expose user-defined Slint
   property values. Add an `info!` log on the Rust side to introspect
   state.
+
+## Slint text-rendering for large documents
+
+Don't render document-scale plain text in Slint. The About → Notices
+pane spent two iterations trying to do this in-app (originally a
+`TextEdit { read-only: true }`, then a virtualized
+`ListView { for line: Text }` with pinned row height) and neither
+matched a browser for the ~1400-row license bundle. The reasoning,
+in case it comes up again:
+
+- **Rendering primitives.** `TextEdit` is editable under the hood
+  ([`internal/core/textlayout/sharedparley.rs:1205`](https://github.com/slint-ui/slint/blob/master/internal/core/textlayout/sharedparley.rs#L1205))
+  — it re-shapes the entire document on every frame with no cache,
+  catastrophic for ~1400-row reads. `ListView` is the only virtualized
+  primitive Slint exposes (compiler-special-cased in
+  [`internal/compiler/object_tree.rs`](https://github.com/slint-ui/slint/blob/master/internal/compiler/object_tree.rs);
+  algorithm at [`repeater.rs::update_visible_instances`](https://github.com/slint-ui/slint/blob/master/internal/core/model/repeater.rs))
+  and its constraint is "exactly one `for` as children" — works fine
+  for one-row-per-line, with shaping cached per row.
+- **The structural ceiling.** Even with virtualized `ListView`, the
+  remaining gap to a browser is renderer-architecture: femtovg
+  redraws the full viewport every scroll frame and doesn't participate
+  in Slint's partial-renderer / dirty-region pipeline. Maintainer
+  Tronical confirmed in [slint #6754](https://github.com/slint-ui/slint/discussions/6754):
+  *"Partial rendering with FemtoVG is a little tricky in the sense
+  that the scissoring is implemented in the fragment shader, so it
+  will still run the whole pipeline even for invisible pixels."*
+  Skia *does* participate in partial rendering (CHANGELOG L557) and
+  does help modestly, but `Text` widgets still don't render link
+  colors / clickable anchors / cross-row selection. Browsers
+  composite the `<pre>` block as a single layer that scrolls via
+  transform; Slint has no equivalent.
+- **No upstream demos / fixes.** Surveyed
+  [`examples/`](https://github.com/slint-ui/slint/tree/master/examples)
+  and [`demos/`](https://github.com/slint-ui/slint/tree/master/demos):
+  every "About" page is a small static blurb (gallery, energy-monitor,
+  weather-demo). The Slint team has no in-tree precedent for
+  document-scale text rendering. The closest related upstream tickets
+  ([#6944](https://github.com/slint-ui/slint/issues/6944) "TextEdit
+  large-text lag" closed not-planned;
+  [#7986](https://github.com/slint-ui/slint/discussions/7986)
+  "ListView alternative" — maintainer ogoffart noted ListView's
+  Rust-level optimizations *cannot be replicated in custom Slint
+  code*) confirm this is a known gap without a roadmap.
+
+The pivot: hand the HTML off to the user's browser via `xdg-open`.
+[`crates/tisvlay-gui/src/main.rs::open_notices_html`](../crates/tisvlay-gui/src/main.rs)
+prefers an installed copy at `/usr/share/doc/<pkg>/...` (FHS,
+populated by nfpm) or `$prefix/share/doc/<pkg>/...` (current_exe()-
+relative, covers Nix / AppImage / non-FHS), with a per-process
+tempfile fallback in dev. Browser handles link colors, anchors,
+search, copy-paste, and scroll smoothness for free.
+
+If you ever consider rendering large text in Slint again: don't.
+Open it in the user's browser. The effort-to-result curve is
+unfavorable and the result is still inferior on every measurable
+axis (smoothness, link affordance, copy/paste, search).

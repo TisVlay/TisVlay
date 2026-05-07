@@ -173,6 +173,17 @@ Known benign noise during VM testing:
 
 - `libEGL warning: egl: failed to create dri2 screen` (printed twice). Mesa probes the DRI2 fast path during EGL init and falls back to whatever rendering path the VM's virtio-gpu / qxl driver actually exposes. The fallback works — interactive GUI rendering proves it. Disappears on bare metal with a real GPU.
 
+## Third-party FOSS attribution
+
+Each `.deb` / `.rpm` / `.pkg.tar.zst` ships two attribution files at `/usr/share/doc/tisvlay/`:
+
+- `THIRD-PARTY-LICENSES.html` — workspace-wide bundled licenses for every transitively-used crate. Regenerated at the source root before each build by `just licenses-html` (a prerequisite of every `package-*` recipe), gitignored.
+- `NOTICE` — hand-written project copyright + Apache-2.0 election.
+
+The Nix package mirrors the same paths under `$out/share/doc/tisvlay/` via `postInstall` in [`nix/package.nix`](nix/package.nix).
+
+For developer-facing details — the cargo-about + cargo-deny pipeline, per-crate exception catalog, license elections, how to add an exception when a dep bump fails the policy gate — see [`docs/licensing.md`](../docs/licensing.md).
+
 ## Known issues / caveats
 
 - **`libfontconfig.so.1` is a hard runtime dep through Slint 1.x.** Direct linkage is intentional upstream policy as of Slint 1.15: maintainers reverted the `fontconfig-dlopen` path that briefly shipped in 1.14.x because dlopen-mode silently breaks CJK/emoji fallback when libfontconfig isn't present at startup ([slint #10295](https://github.com/slint-ui/slint/issues/10295), [parley #464](https://github.com/linebender/parley/issues/464), 2026-01-30). The maintainer position: surface failures at link/load time rather than as silent text-rendering bugs. Our per-format `depends` lists pull libfontconfig in, so this is benign — but flipping `RUST_FONTCONFIG_DLOPEN=on` (or patching `i-slint-common`'s `fontconfig-dlopen` feature) would re-introduce the silent-fallback bug upstream just fixed. Don't. The pure-Rust replacement is tracked at [slint #3906](https://github.com/slint-ui/slint/issues/3906) — open, no priority label, no roadmap entry; realistic horizon >12 months. Plan around fontconfig staying for the foreseeable future.

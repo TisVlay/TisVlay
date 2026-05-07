@@ -191,6 +191,7 @@ export component AboutPane inherits Rectangle {
 
     callback view-source-clicked();
     callback view-release-clicked();
+    callback view-notices-clicked();
     callback report-issue-clicked();
     callback copy-diagnostic-clicked();
     callback open-config-folder(string);
@@ -330,12 +331,28 @@ export component AboutPane inherits Rectangle {
             Group {
                 title: @tr("LICENSE");
 
-                Text {
-                    // Year range and project name; intentionally not translated.
-                    text: "Apache-2.0 · © 2026 TisVlay contributors";
-                    color: Theme.text;
-                    font-size: Design.font-helper;
-                    wrap: word-wrap;
+                // Copyright row with the third-party-notices entry
+                // point on the right. `UriBtn`, not `Button`: the
+                // click is a URL-open affordance from the user's
+                // perspective (it opens HTML in their browser), so
+                // per KDE HIG / Plan 4 the pointer-cursor +
+                // URL-affordance visual treatment is correct.
+                HorizontalLayout {
+                    spacing: Design.gap-row;
+                    alignment: stretch;
+                    Text {
+                        // Year range and project name; intentionally not translated.
+                        text: "Apache-2.0 · © 2026 TisVlay contributors";
+                        color: Theme.text;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    UriBtn {
+                        text: @tr("View third-party notices");
+                        clicked => { root.view-notices-clicked(); }
+                    }
                 }
 
                 // Slint Royalty-free 2.0 license requires an `AboutSlint`

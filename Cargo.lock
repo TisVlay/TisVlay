@@ -5637,6 +5637,7 @@ dependencies = [
  "serde_json",
  "slint",
  "slint-build",
+ "tempfile",
  "tisvlay-core",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
