@@ -17,10 +17,10 @@ The About pane's "Diagnostics" button copies a JSON blob to the clipboard so use
     "rustc": "1.85.0",
     "git_sha": "9811118"
   },
-  "peers": {
-    "daemon":  { "version": "0.1.0", "connected": true,  "config_path": "/home/.../daemon.toml" },
-    "session": { "version": "0.1.0", "connected": true,  "config_path": "/home/.../session.toml" },
-    "tray":    { "version": "0.1.0", "connected": false, "config_path": null }
+  "components": {
+    "daemon":  { "version": "0.1.0", "connected": true,  "config": true  },
+    "session": { "version": "0.1.0", "connected": true,  "config": true  },
+    "tray":    { "version": "0.1.0", "connected": false, "config": false }
   },
   "runtime": {
     "bus": "user",
@@ -52,11 +52,11 @@ No new deps. Surfaces fields that already live inside the GUI process or sit one
 | Path | Source |
 |---|---|
 | `schema_version` | constant `1` |
-| `peers.daemon.version` | `about_components` row "tisvlayd" (already fetched) |
-| `peers.daemon.connected` | `entry.bus_address != ""` |
-| `peers.daemon.config_path` | `about_components` row's `config_path` (already fetched) |
-| `peers.session.{version,connected,config_path}` | row "tisvlay-session" |
-| `peers.tray.{version,connected,config_path}` | row "tisvlay-tray" — currently absent from the blob |
+| `components.daemon.version` | `about_components` row "tisvlayd" (already fetched) |
+| `components.daemon.connected` | `entry.bus_address != ""` |
+| `components.daemon.config` | `entry.config_path != ""` — bool only; the path itself is PII (leaks `$HOME` / username) |
+| `components.session.{version,connected,config}` | row "tisvlay-session" |
+| `components.tray.{version,connected,config}` | row "tisvlay-tray" — currently absent from the blob |
 | `runtime.bus` | `Daemon.bus_kind` global ("user" or "system") |
 | `runtime.desktop` | `std::env::var("XDG_CURRENT_DESKTOP")`, lowercased |
 | `runtime.session_type` | `std::env::var("XDG_SESSION_TYPE")` ("wayland" / "x11" / "tty") |
