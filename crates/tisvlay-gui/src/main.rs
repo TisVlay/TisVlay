@@ -14,6 +14,7 @@
 #![allow(unreachable_pub, missing_debug_implementations)]
 
 mod dbus;
+mod diagnostic;
 mod file_manager;
 mod schema_form;
 mod state;
@@ -134,11 +135,6 @@ fn load_themed_icon(names: &[&str]) -> slint::Image {
 /// header chip and as the local anchor for the per-component drift
 /// tone in the COMPONENTS table.
 const GUI_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Resolved Slint version, lifted from `Cargo.lock` by `build.rs` so
-/// it stays in sync with the workspace dep automatically. Slint
-/// doesn't expose a runtime `VERSION` constant of its own.
-const SLINT_VERSION: &str = env!("TISVLAY_GUI_SLINT_VERSION");
 
 /// Project repository URL — picked up from the workspace package
 /// metadata at compile time. The About pane's `View source` button
@@ -380,28 +376,55 @@ fn make_about_components(
         .collect()
 }
 
-/// JSON blob copied to the clipboard by the About-pane diagnostic
-/// button. Pulls the daemon/session versions out of the live
-/// COMPONENTS model so we don't have to reach into shared state.
-fn build_diagnostic_blob(app: &AppWindow) -> String {
-    let rows = app.get_about_components();
-    let lookup = |name: &str| -> String {
-        for i in 0..rows.row_count() {
-            if let Some(r) = rows.row_data(i)
-                && r.name.as_str() == name
-            {
-                return r.version.to_string();
-            }
-        }
-        String::new()
+/// Cached `Manager1.GetSupportedVendors` IDs, populated once at
+/// startup and read by the diagnostic-blob builder. `RwLock` rather
+/// than `OnceCell` because the value is written from the async
+/// startup path while the Slint callback reads from the main thread;
+/// `std::sync::RwLock` avoids dragging tokio's flavor across the
+/// thread boundary.
+type SupportedVendorsCache = Arc<std::sync::RwLock<Vec<String>>>;
+
+/// Build the diagnostic blob's [`diagnostic::Inputs`] from live
+/// in-process state (Slint models + per-process context) and render
+/// it to JSON. Schema lives in [`diagnostic`]; rationale in
+/// `docs/plan2.md`.
+fn build_diagnostic_blob(
+    app: &AppWindow,
+    user_bus: bool,
+    vendors: &SupportedVendorsCache,
+) -> String {
+    let components: Vec<diagnostic::ComponentSnap> = {
+        let model = app.get_about_components();
+        (0..model.row_count())
+            .filter_map(|i| model.row_data(i))
+            .map(|row| diagnostic::ComponentSnap {
+                name: row.name.to_string(),
+                version: row.version.to_string(),
+                connected: row.online,
+                has_config: !row.config_path.as_str().is_empty(),
+            })
+            .collect()
     };
-    let v = serde_json::json!({
-        "gui_version": GUI_VERSION,
-        "daemon_version": lookup("tisvlayd"),
-        "session_version": lookup("tisvlay-session"),
-        "slint_version": SLINT_VERSION,
-    });
-    serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+    let tvs: Vec<diagnostic::TvSnap> = {
+        let model = app.get_tvs();
+        (0..model.row_count())
+            .filter_map(|i| model.row_data(i))
+            .map(|row| diagnostic::TvSnap {
+                vendor: row.vendor.to_string(),
+                connected: row.connected,
+            })
+            .collect()
+    };
+    let supported_vendors = vendors
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
+    diagnostic::build_blob(diagnostic::Inputs {
+        components: &components,
+        tvs: &tvs,
+        user_bus,
+        supported_vendors: &supported_vendors,
+    })
 }
 
 /// Visible duration of a toast before it auto-clears, in milliseconds.
@@ -802,13 +825,17 @@ fn main() -> Result<()> {
             warn!(error = %e, %url, "open browser failed");
         }
     });
+    let supported_vendors_cache: SupportedVendorsCache =
+        Arc::new(std::sync::RwLock::new(Vec::new()));
     {
         let app_weak = app.as_weak();
+        let user_bus = args.user;
+        let vendors = supported_vendors_cache.clone();
         app.on_copy_diagnostic_clicked(move || {
             let Some(app) = app_weak.upgrade() else {
                 return;
             };
-            let blob = build_diagnostic_blob(&app);
+            let blob = build_diagnostic_blob(&app, user_bus, &vendors);
             // Route through the shared Clipboard.copy chokepoint so
             // the success toast fires via the same path every other
             // CopyBtn uses — no parallel arboard call here.
@@ -911,6 +938,7 @@ fn main() -> Result<()> {
         tray,
         reconcilers,
         app_weak,
+        supported_vendors_cache.clone(),
     ));
 
     // Background watcher for the user's DE-chosen accent color via
@@ -2113,6 +2141,7 @@ async fn initial_fetch_and_watch(
     tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
+    supported_vendors_cache: SupportedVendorsCache,
 ) {
     let initial_session_available = session.read().await.is_some();
     let initial_tray_available = tray.read().await.is_some();
@@ -2128,13 +2157,18 @@ async fn initial_fetch_and_watch(
     };
 
     // Fetch the daemon's vendor list once at startup. Used by the
-    // pairing wizard's manual-entry vendor selector. Failures are
-    // tolerable — the wizard falls back to its hardcoded "lg" default.
+    // pairing wizard's manual-entry vendor selector and cached for
+    // the diagnostic blob. Failures are tolerable — the wizard falls
+    // back to its hardcoded "lg" default; the diagnostic blob renders
+    // an empty `vendors_supported` array.
     let vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
     debug!(
         count = vendor_pairs.len(),
         "Fetched supported vendors from daemon"
     );
+    if let Ok(mut cache) = supported_vendors_cache.write() {
+        *cache = vendor_pairs.iter().map(|(id, _)| id.clone()).collect();
+    }
 
     let initial_daemon_available = initial_snapshot.is_some();
     on_ui(&app_weak, move |app| {
