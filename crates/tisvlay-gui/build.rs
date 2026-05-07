@@ -23,22 +23,11 @@ fn main() {
 }
 
 /// Generate `$OUT_DIR/THIRD-PARTY-LICENSES.html` for `include_str!`
-/// embedding into the GUI binary. The About pane's "View third-party
-/// notices" button hands this off to the user's browser via
-/// `xdg-open`. Runtime path resolution prefers an installed copy
-/// found by `installed_notices_path()` (see `src/main.rs`); the
-/// embedded blob is the source-build fallback and a guarantee that
-/// the binary can always show its own attribution without external
-/// files.
-///
-/// We don't render the bundle in-app: Slint's text engine can't
-/// match a browser for ~1400-row monospace docs (femtovg lacks
-/// dirty-region partial rendering — slint #6754; Skia helps
-/// modestly but Text widgets render no link colors, no clickable
-/// anchors, no copy-across-rows). Browser handoff is the principled
-/// path. See `.claude/slint.md` "Slint text-rendering for large
-/// documents" for the upstream-research trail that grounded the
-/// pivot.
+/// embedding into the GUI binary, consumed by the About pane's
+/// "View third-party notices" button via the browser-handoff path
+/// in `src/main.rs::open_notices_html`. See `docs/licensing.md` for
+/// the pipeline and `.claude/slint.md` "Slint text-rendering for
+/// large documents" for why we hand off rather than render in-app.
 ///
 /// On failure (most commonly: `cargo-about` not on `$PATH` in a
 /// clean dev env without the Nix shell) writes a stub blob with

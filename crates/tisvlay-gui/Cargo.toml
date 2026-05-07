@@ -63,11 +63,8 @@ gettext-rs = "0.7"
 # and "Report issue" buttons. Wraps xdg-open on Linux, with
 # fallbacks for other targets if we ever build for them.
 webbrowser = "1"
-# Securely-created temp files (O_CREAT|O_EXCL + random suffix) for
-# the About pane's `View third-party notices` browser handoff in
-# dev builds: the embedded HTML is written to a fresh tempfile and
-# then opened. Avoids the symlink/hardlink TOCTOU race a predictable
-# `/tmp/<name>-<pid>.html` path would expose.
+# Securely-created temp file for the About pane's notices browser
+# handoff in source builds. See `src/main.rs::open_notices_html`.
 tempfile = "3"
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection

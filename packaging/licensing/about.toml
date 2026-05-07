@@ -1,21 +1,9 @@
 # cargo-about config — workspace-wide SPDX allow-list, OR-priority,
-# and per-crate clarifications. Feeds the `about.html.hbs` template
-# to produce `THIRD-PARTY-LICENSES.html` in two places:
-#
-#   1. As `/usr/share/doc/tisvlay/THIRD-PARTY-LICENSES.html` inside
-#      each nfpm-built package — regenerated at the repo root by
-#      `just licenses-html` before bundling.
-#   2. Embedded into the GUI binary at compile time via
-#      `crates/tisvlay-gui/build.rs` (`include_str!` against
-#      `$OUT_DIR/THIRD-PARTY-LICENSES.html`) so the About pane's
-#      "View third-party notices" button can hand off to the user's
-#      browser even on a machine that doesn't have the packaged
-#      attribution installed.
+# and per-crate clarifications. Pipeline rationale + maintenance
+# reference: `docs/licensing.md`.
 
 # Priority-ordered. cargo-about picks the FIRST match for `OR`
-# expressions, so MIT wins on `MIT OR Apache-2.0`. This minimizes
-# Apache-2.0 NOTICE-propagation work. See `docs/licensing.md`
-# "License elections" for the rationale.
+# expressions, so MIT wins on `MIT OR Apache-2.0`.
 accepted = [
     "MIT",
     "Apache-2.0",
@@ -57,45 +45,24 @@ private = { ignore = true }
 ignore-build-dependencies = false
 ignore-dev-dependencies = true
 
-# Per-crate license additions for crates whose expression includes
-# something the global `accepted` list can't satisfy by itself.
-# Mirrors `deny.toml`'s `exceptions` block — same rationale, separate
-# vocabulary (cargo-about reads from this section; cargo-deny from
-# `[licenses].exceptions`).
+# Per-crate license additions + clarifications. Rationale lives in
+# `docs/licensing.md` "Per-crate exception catalog" (Slint family +
+# option-ext + generational-arena + libfuzzer-sys), so this file
+# only spells out site-specific notes.
 #
-# Slint family: triple-licensed `GPL-3.0-only OR
-# LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`.
-# We elect the Royalty-free option (which triggers the AboutSlint
-# widget requirement satisfied by tisvlay-gui's About pane).
+# The `[<crate>.clarify]` blocks for the Slint family below are
+# *parsed but not yet surfaced* in the rendered bundle —
+# EmbarkStudios/cargo-about#303 makes the `LicenseItem::Other`
+# arm in `generate.rs` honor `license_files`, which is what lets
+# our clarified-file text actually land in the output. The blocks
+# are kept as forward-compatible config that starts working once
+# that PR ships.
 #
-# Each crate also gets a `[<crate>.clarify]` block pointing at the
-# Royalty-free license file shipped under `LICENSES/` in the
-# published tarball. The checksum is identical across every Slint
-# crate (single source-of-truth file at the workspace root,
-# symlinked into each crate's LICENSES/ and resolved by `cargo
-# publish`); when Slint amends the license text — rare; this is a
-# legal document — the checksum fails closed and we re-confirm
-# explicitly. See `docs/licensing.md` "Per-crate exceptions" for
-# the upstream context.
-#
-# Note: until cargo-about EmbarkStudios/cargo-about#303 lands these
-# clarify blocks are *parsed but not surfaced* in the rendered
-# bundle. cargo-about's per-license iteration in `generate.rs`
-# treats `LicenseRef-*` identifiers via the `LicenseItem::Other`
-# arm, which currently ignores `license_files` entirely and emits
-# a "no license file for crate" warning regardless. The PR makes
-# the Other arm mirror the Spdx arm's filter so clarified files
-# actually land in the output. The blocks below are kept anyway —
-# forward-compatible config that starts working once the upstream
-# PR ships.
-#
-# `i-slint-backend-testing` is intentionally absent from the
-# `[<crate>.clarify]` blocks below: that crate's published tarball
-# doesn't ship LICENSES/ at all (the source is missing the symlinks
-# every sibling backend has — slint-ui/slint#11631 fixes that
-# upstream). Until that lands and a new Slint version ships the
-# file, the testing-backend crate falls back to the bare `accepted`
-# clause and continues emitting one "no license file" warning.
+# `i-slint-backend-testing` has no clarify block: its published
+# tarball doesn't ship `LICENSES/` at all (slint-ui/slint#11631
+# fixes that upstream — until it lands and Slint cuts a new
+# release, the testing-backend crate keeps emitting one "no
+# license file" warning).
 
 [slint]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
@@ -189,16 +156,11 @@ license = "LicenseRef-Slint-Royalty-free-2.0"
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
-# option-ext: MPL-2.0. See deny.toml for the full rationale.
 [option-ext]
 accepted = ["MPL-2.0"]
 
-# generational-arena: MPL-2.0. Pulled in via Slint's renderers under
-# `--all-features`; same MPL rationale as `option-ext`.
 [generational-arena]
 accepted = ["MPL-2.0"]
 
-# libfuzzer-sys: NCSA via image -> ravif -> rav1e's fuzz feature.
-# Not in shipped binaries; see deny.toml for the full rationale.
 [libfuzzer-sys]
 accepted = ["NCSA"]

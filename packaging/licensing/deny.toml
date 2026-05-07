@@ -1,8 +1,5 @@
-# cargo-deny config — license-policy gate enforced via prek (and
-# manually via `just deny`). Mirrors `about.toml`'s `accepted` list
-# but in cargo-deny's vocabulary. Catches a forbidden SPDX id (GPL,
-# LGPL, MPL, etc.) at PR time before it can drag the dep graph
-# somewhere we'd have to back out of.
+# cargo-deny config — license-policy gate. Pipeline rationale +
+# maintenance reference: `docs/licensing.md`.
 #
 # Only the `[licenses]` section is enabled here. The other cargo-deny
 # checks (`bans`, `advisories`, `sources`) are out of scope for the
@@ -10,22 +7,13 @@
 # if security policy or supply-chain pinning becomes a need.
 
 [licenses]
-# Near-mirror of about.toml's `accepted` list. cargo-deny doesn't
-# need an explicit OR-priority since it only checks satisfiability —
-# picking which side of `OR` to surface in the bundled attribution
-# is cargo-about's job.
-#
-# The two configs' per-crate exception sets *can* legitimately
-# differ in one direction: cargo-about resolves the dep graph with
-# `--workspace --all-features` so the bundle covers anything any
-# feature might pull in, while cargo-deny uses its own default
-# feature resolution. Crates that surface only under cargo-about's
-# resolution (e.g. `i-slint-backend-testing`, `generational-arena`
-# from Slint renderers under `--all-features`) appear in
-# `about.toml`'s per-crate `accepted` list but not in this file's
-# `exceptions` — adding them here would just emit
-# "license-exception-not-encountered" warnings. When a new crate
-# does fail `just deny`, mirror the exception in *both* files.
+# Near-mirror of about.toml's `accepted` list. The two configs'
+# per-crate exception sets can differ in one direction (cargo-about
+# resolves with `--workspace --all-features`; cargo-deny doesn't),
+# so crates surfaced only by cargo-about don't need entries here —
+# adding them would just emit "license-exception-not-encountered"
+# warnings. When a new crate fails `just deny`, mirror the exception
+# in *both* files.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -43,16 +31,9 @@ allow = [
 # license file in practice.
 confidence-threshold = 0.93
 
-# Per-crate exceptions for crates whose license expression includes
-# something the global `allow` set can't satisfy by itself.
-#
-# Slint family: every Slint crate is triple-licensed `GPL-3.0-only OR
-# LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`.
-# We elect the Royalty-free option (which triggers the `AboutSlint`
-# widget requirement satisfied by tisvlay-gui's About pane). The
-# Royalty-free identifier is a `LicenseRef-*`, not a standard SPDX
-# id, so cargo-deny needs an explicit per-crate exception rather
-# than a global allow.
+# Per-crate exceptions for crates whose license expression isn't
+# fully covered by the global `allow` set. Each entry's rationale
+# lives in `docs/licensing.md` "Per-crate exception catalog".
 exceptions = [
     { name = "slint", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "slint-build", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
@@ -65,22 +46,6 @@ exceptions = [
     { name = "i-slint-core-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-renderer-femtovg", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-renderer-skia", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
-
-    # option-ext: MPL-2.0. Pulled in via `directories` (used by
-    # tisvlay-core for XDG path resolution) and `dirs` (used by
-    # freedesktop-icons in tisvlay-gui). MPL-2.0 is file-level weak
-    # copyleft — it requires source disclosure only for modifications
-    # to MPL-licensed files themselves; using the crate unmodified
-    # against an Apache-2.0 distribution is well-established. Kept as
-    # a per-crate exception (rather than added to the global `allow`
-    # list) so any future MPL'd dep forces a deliberate decision.
     { name = "option-ext", allow = ["MPL-2.0"] },
-
-    # libfuzzer-sys: NCSA via image -> ravif -> rav1e's fuzz feature.
-    # Not part of the shipped binaries (rav1e gates libfuzzer-sys
-    # behind a non-default feature). NCSA is OSI-approved and
-    # FSF-free, but adding it to the global allow-list would invite
-    # accidental introduction in shipped paths; per-crate exception
-    # keeps the dev-only scope explicit.
     { name = "libfuzzer-sys", allow = ["NCSA"] },
 ]

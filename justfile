@@ -60,27 +60,15 @@ test-snapshot-accept:
 
 # --- License attribution / policy --------------------------------------
 #
-# `deny` is the policy gate: cargo-deny verifies every crate in the
-# workspace dep graph carries an SPDX id from `deny.toml`'s allow-list.
-# Wired into prek so a future dep bump can't drag GPL/LGPL/MPL in.
-#
-# `licenses-html` regenerates THIRD-PARTY-LICENSES.html (gitignored,
-# repo root) for nfpm packaging — the package-{deb,rpm,archlinux}
-# recipes depend on it so it always refreshes before bundling.
-#
-# `--locked --fail` on `cargo about generate` keeps the bundle
-# reproducible (fails on Cargo.lock drift) and refuses to silently
-# emit a partial bundle when a crate's license can't be resolved.
-# See `docs/licensing.md` for the full rationale.
+# Pipeline rationale + maintenance reference: `docs/licensing.md`.
 
 # Enforce the SPDX allow-list on every crate in the workspace dep graph.
 [group('check')]
 deny:
     cargo deny check --config packaging/licensing/deny.toml licenses
 
-# Regenerate THIRD-PARTY-LICENSES.html for packaging. Output lives next
-# to its source templates (gitignored); nfpm and the Nix postInstall
-# pick it up from there.
+# Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
+# consumed by the package-* recipes).
 [group('check')]
 licenses-html:
     cargo about generate \
