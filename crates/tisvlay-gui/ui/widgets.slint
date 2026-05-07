@@ -765,16 +765,31 @@ export component IconBtn inherits Rectangle {
     /// `framed: true` → matches `UriBtn`'s surface fill + border, so
     /// an icon-only button can sit alongside text buttons in a row
     /// without looking like an empty slot. Used by the About-pane
-    /// `Copy diagnostic` action.
+    /// `Diagnostics` and `Notices` actions.
     in property <bool> framed: false;
+    /// Optional label rendered to the right of the icon. When set,
+    /// the button auto-grows to fit `icon + label + padding` so it
+    /// reads as a labeled action; when empty, behaves as a square
+    /// icon-only button (the original 24×24 ghost style).
+    in property <string> label: "";
     callback clicked();
 
     property <bool> interactive: root.enabled && !root.loading;
+    property <bool> has-label: root.label != "";
+    /// Foreground (icon colorize + label color) at rest. Ghost mode
+    /// dims at rest and brightens on hover — the dim-then-bright
+    /// fade substitutes for the missing border. Framed mode follows
+    /// `UriBtn` / `DangerBtn` and keeps a stable foreground; only
+    /// the surface fill changes on hover.
+    property <brush> fg-rest: root.framed ? Theme.text : Theme.text-dim;
+    property <brush> fg-hover: Theme.text;
+    property <brush> fg: !root.enabled ? Theme.text-faint
+        : (touch.has-hover && root.interactive ? root.fg-hover : root.fg-rest);
 
-    width: 24px;
-    height: 24px;
     horizontal-stretch: 0;
     vertical-stretch: 0;
+    min-width: 24px;
+    min-height: 24px;
     background: root.framed
         ? (!root.interactive
             ? Theme.surface2
@@ -786,21 +801,43 @@ export component IconBtn inherits Rectangle {
     animate background { duration: 150ms; }
     opacity: root.enabled || root.loading ? 1.0 : Design.opacity-disabled;
 
-    if !root.loading: Image {
-        source: root.source;
-        width: 14px;
-        height: 14px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        colorize: touch.has-hover && root.interactive ? Theme.text : Theme.text-dim;
-        opacity: touch.has-hover ? 1.0 : 0.7;
-    }
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: root.has-label ? Design.gap-row : 0;
+        padding-right: root.has-label ? Design.gap-row : 0;
+        spacing: root.has-label ? Design.gap-stack : 0;
+        alignment: center;
 
-    if root.loading: SpinnerArc {
-        width: 14px;
-        height: 14px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        if !root.loading: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.source;
+                width: 14px;
+                height: 14px;
+                colorize: root.fg;
+                // Ghost mode also fades icon opacity at rest. Framed
+                // mode stays fully opaque so the icon reads as a
+                // first-class button glyph alongside `UriBtn` text.
+                opacity: root.framed ? 1.0 : (touch.has-hover ? 1.0 : 0.7);
+            }
+        }
+
+        if root.loading: VerticalLayout {
+            alignment: center;
+            SpinnerArc {
+                width: 14px;
+                height: 14px;
+            }
+        }
+
+        if root.has-label: Text {
+            text: root.label;
+            color: root.fg;
+            font-size: Design.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
     }
 
     touch := TouchArea {
