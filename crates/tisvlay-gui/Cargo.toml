@@ -66,10 +66,12 @@ webbrowser = "1"
 # Securely-created temp file for the About pane's notices browser
 # handoff in source builds. See `src/main.rs::open_notices_html`.
 tempfile = "3"
-# Typed `/etc/os-release` parser for the diagnostic blob's
-# `runtime.os_id` / `runtime.os_version` fields. Recognizes NixOS
-# correctly (verified upstream).
-etc-os-release = "0.1"
+# OS identity (distro + version) for the diagnostic blob's
+# `runtime.os_id` / `runtime.os_version` fields. Used by `cargo`
+# itself, so adoption + maintenance bus-factor is well-covered;
+# `nix` and `log` are already transitive deps in our tree, so the
+# net dep cost is just `os_info` itself.
+os_info = { version = "3", default-features = false }
 # Kernel release string for the diagnostic blob's `runtime.kernel`
 # field. Already in the dep tree transitively (zbus → async-io);
 # pinning a direct dep here so the API surface is explicit.

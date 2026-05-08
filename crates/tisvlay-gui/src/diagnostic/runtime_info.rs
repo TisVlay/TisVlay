@@ -3,8 +3,6 @@
 //! and the renderer maps `None` to JSON `null` so consumers can tell
 //! "probe didn't run" apart from "field was empty".
 
-use etc_os_release::OsRelease;
-
 /// Kernel release string from `uname()` (e.g. `6.18.24`). Returns
 /// `None` when the syscall surface yields a non-UTF-8 value, which
 /// is exceedingly rare on Linux but possible (the kernel's release
@@ -48,18 +46,34 @@ pub fn glibc_version() -> Option<String> {
     None
 }
 
-/// `(os_id, os_version)` from `/etc/os-release`. `os_id` is required
-/// by the spec but the file itself is optional — missing-file /
-/// permission-denied / parse-error all surface as `(None, None)`.
-/// Per `etc-os-release`'s public surface, `version_id` is optional
-/// even when the file is present (some immutable / appliance distros
-/// omit it).
+/// `(os_id, os_version)` from the `os_info` crate. `os_info::get()`
+/// is infallible (returns `Type::Unknown` / `Version::Unknown` when
+/// it can't detect, which we map to `None`), so missing-file /
+/// permission-denied / parse-error all surface as the same absence.
+/// The id is lowercased to match the `/etc/os-release ID=` convention
+/// (`Type::NixOS.to_string()` is `"NixOS"`; the spec spells the id
+/// `nixos`).
+///
+/// Known caveat: `os_info` parses `VERSION_ID` into a typed
+/// `Version::Semantic(major, minor, patch)` enum and re-renders,
+/// which drops formatting hints from the original string. NixOS's
+/// YY.MM convention loses its leading zero: `VERSION_ID="26.05"` →
+/// `Semantic(26, 5, 0)` → `"26.5.0"`. Acknowledged upstream as a bug
+/// (stanislav-tkach/os_info#318, with a proposed string-based
+/// redesign in #280); kept here because the alternative (raw inline
+/// parser, or staying on `etc-os-release`) loses the typed
+/// `Type::NixOS` defence against distro-detection typos. A future
+/// `os_info` release that switches to raw-string version storage
+/// will fix this without a code change on our side.
 pub fn os_release() -> (Option<String>, Option<String>) {
-    match OsRelease::open() {
-        Ok(release) => (
-            Some(release.id().to_owned()),
-            release.version_id().map(str::to_owned),
-        ),
-        Err(_) => (None, None),
-    }
+    let info = os_info::get();
+    let id = match info.os_type() {
+        os_info::Type::Unknown => None,
+        ty => Some(ty.to_string().to_lowercase()),
+    };
+    let version = match info.version() {
+        os_info::Version::Unknown => None,
+        v => Some(v.to_string()),
+    };
+    (id, version)
 }
