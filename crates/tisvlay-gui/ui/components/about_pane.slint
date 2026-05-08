@@ -140,12 +140,7 @@ component ComponentRow {
                     }
                     if entry.bus_address != "": IconBtn {
                         source: Icons.folder-open;
-                        // Smaller than the default 24px IconBtn so the
-                        // glyph sits inline with the title row's font
-                        // height rather than overpowering it. One-off
-                        // until a second small-icon-button site exists.
-                        width: 18px;
-                        height: 18px;
+                        label: @tr("Config");
                         enabled: entry.config_path != "";
                         opacity: entry.config_path != "" ? 1 : Design.opacity-disabled;
                         clicked => { root.open-config-folder(entry.config_path); }
@@ -299,10 +294,10 @@ export component AboutPane inherits Rectangle {
                         spacing: Design.gap-stack;
                         IconBtn {
                             source: Clipboard.copy-icon;
-                            // Match the neighbouring `Report issue` UriBtn's
-                            // row height (default IconBtn is 24px ghost,
-                            // tuned for the TVs-pane edit triplet).
-                            width: Design.size-input;
+                            label: @tr("Diagnostics");
+                            // Match the neighboring `Report issue`
+                            // UriBtn's row height. Width auto-grows
+                            // from the labeled-mode HorizontalLayout.
                             height: Design.size-input;
                             framed: true;
                             clicked => { root.copy-diagnostic-clicked(); }
