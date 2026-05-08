@@ -228,7 +228,7 @@ Was filed as polish work and deferred — `ConfirmDialog` is so brief in the typ
 
 ## Diagnostic log-tail ring buffer
 
-The About pane's diagnostic blob (schema baseline scoped in [`docs/plan2.md`](plan2.md)) carries peer + runtime + build metadata after the planned enrichment, but no record of what the GUI was *doing* at capture time. A ring-buffer `tracing-subscriber` `Layer` keeping the last N events drained into the blob would make it trivial to see "what happened in the 30 seconds before this issue."
+The About pane's diagnostic blob (schema reference in [`docs/diagnostics.md`](diagnostics.md)) carries peer + runtime + build metadata after the planned enrichment, but no record of what the GUI was *doing* at capture time. A ring-buffer `tracing-subscriber` `Layer` keeping the last N events drained into the blob would make it trivial to see "what happened in the 30 seconds before this issue."
 
 Implementation sketch:
 

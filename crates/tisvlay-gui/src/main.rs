@@ -387,7 +387,7 @@ type SupportedVendorsCache = Arc<std::sync::RwLock<Vec<String>>>;
 /// Build the diagnostic blob's [`diagnostic::Inputs`] from live
 /// in-process state (Slint models + per-process context) and render
 /// it to JSON. Schema lives in [`diagnostic`]; rationale in
-/// `docs/plan2.md`.
+/// `docs/diagnostics.md`.
 fn build_diagnostic_blob(
     app: &AppWindow,
     user_bus: bool,

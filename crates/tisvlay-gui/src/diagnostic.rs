@@ -1,5 +1,5 @@
 //! Diagnostic JSON blob produced by the About-pane "Diagnostics"
-//! button. Schema + rationale: `docs/plan2.md`.
+//! button. Schema + rationale: `docs/diagnostics.md`.
 //!
 //! The renderer takes plain Rust snapshot structs (no Slint types)
 //! so it's testable without booting an event loop. `main.rs` extracts
