@@ -39,6 +39,7 @@ exceptions = [
     { name = "slint-build", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "slint-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-backend-selector", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-backend-testing", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-backend-winit", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-common", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-compiler", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },

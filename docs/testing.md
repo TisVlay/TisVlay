@@ -484,6 +484,70 @@ sequenceDiagram
     Test->>Test: assert!(!tv.is_screen_on)
 ```
 
+## GUI testing (TestGui + i-slint-backend-testing)
+
+The `tisvlay-gui` test surface has two layers, mirroring the broader Slint ecosystem split between unit-style element-tree assertions and live-bus end-to-end runs.
+
+**Layer B — `tisvlay-gui/tests/`**: instantiate an `AppWindow` against synthetic models, query the element tree via `i_slint_backend_testing::ElementHandle`. Uses `init_no_event_loop()` — multiple `#[test]` functions per binary; no D-Bus, no daemon, no event loop. Best for "does the UI render the right thing for this state?" assertions.
+
+```rust
+use slint::{ModelRc, SharedString, VecModel};
+use tisvlay_gui::{AboutComponentRow, AppWindow, Pane};
+
+#[test]
+fn diagnostics_button_announces_its_label() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().unwrap();
+    app.set_about_components(ModelRc::new(VecModel::from(vec![/* synthetic rows */])));
+    app.set_active_pane(Pane::About);
+
+    let elem = ElementHandle::find_by_accessible_label(&app, "Diagnostics").next().unwrap();
+    assert!(elem.is_valid());
+}
+```
+
+**Layer C — `tisvlay-harness/tests/gui_*.rs`**: `TestGui` composes a [`TestSession`](#session-testing-testsession) with the Slint testing backend so end-to-end tests drive the daemon through real D-Bus and assert against the resulting UI state. Uses `init_integration_test_with_system_time()` — Slint panics if called twice in a process, so **one `#[test]` per integration-test binary**. Author new e2e scenarios as sibling files (`gui_pair_flow.rs`, future `gui_remove_flow.rs`, etc.), not additional `#[test]` functions in one file.
+
+```rust
+use tisvlay_gui::__internals::{SnapshotInputs, convert_snapshot};
+use tisvlay_gui::AppWindow;
+use tisvlay_harness::gui::TestGui;
+
+#[test]
+fn paired_tv_renders_in_master_list() {
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let gui = TestGui::with_one_mock_tv("Living Room").await.unwrap();
+        let tvs = gui.session().client().list_tvs().await.unwrap();
+        let snapshot = convert_snapshot(SnapshotInputs { tvs, ..Default::default() });
+        let app = AppWindow::new().unwrap();
+        // ... push snapshot, assert via app.get_tvs()
+    });
+}
+```
+
+### Required build env
+
+Slint's compiler embeds element-id metadata only when `SLINT_EMIT_DEBUG_INFO=1` is set **at build time** (when `slint_build::compile` runs in `build.rs`). Without it, `find_by_element_id` / `accessible_id()` silently return nothing and tests look like they "found no elements."
+
+The repo sets this once in `.cargo/config.toml [env]`, which Cargo reads from the workspace root for every invocation — `just build`, bare `cargo test`, rust-analyzer, IDE check-on-save, CI workflow steps. The justfile deliberately doesn't carry it because that would only apply to cargo invocations made via `just` (and would silently break direct `cargo` calls during local dev).
+
+### Naming conventions
+
+- `accessible-label` (translated via `@tr(...)`) — the screen-reader announcement; defaults to the visible text on button primitives. Tests query via `ElementHandle::find_by_accessible_label`.
+- `accessible-id` (literal, untranslated, `<pane>-<element>`) — the stable test selector. Tests query via `ElementQuery::match_predicate(|e| e.accessible_id() == ...)` until upstream adds a direct finder ([slint-ui/slint#9940](https://github.com/slint-ui/slint/pull/9940) shipped the property; finder remains TBD).
+
+Slint propagates accessibility properties to descendants, so an `accessible-id` query returns one hit per descendant of the target widget — see `tisvlay-gui/tests/about_pane.rs` for `find_by_accessible_id` (returns the first match) and `count_by_id` (renders-or-not check).
+
+### What we deliberately don't do
+
+- **No pixel-snapshot tests.** Slint upstream ships none in `i-slint-backend-testing`, ecosystem research consistently flags pixel diffs as the most flake-prone test type, and the alternative (software renderer + bundled fonts + tolerance threshold) is heavy maintenance for low signal. Tabled in `docs/ideas.md` if a real need surfaces.
+- **No MCP-driven CI tests.** Slint's MCP server is a dev-time introspection surface; `.claude/slint.md` documents the reliability quirks. Tests use the in-process testing backend exclusively.
+
+### Pin
+
+`i-slint-backend-testing` is pinned `=1.16.1` in both `tisvlay-gui` and `tisvlay-harness` Cargo.toml because the crate's README warns "preliminary API, no semver" and 1.17 already moved test helpers between modules ([slint-ui/slint#11516](https://github.com/slint-ui/slint/pull/11516) merged 2026-04-27).
+
 ## Test observability
 
 ### #[traced_test] — per-test log capture
