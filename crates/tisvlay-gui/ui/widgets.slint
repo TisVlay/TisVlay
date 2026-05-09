@@ -27,6 +27,18 @@ export component Chip inherits Rectangle {
     in property <bool> interactive: false;
     callback clicked();
 
+    /// Slint 1.16 requires a constant `accessible-role`; chips read
+    /// as text either way (the default-action callback below only
+    /// fires when `interactive: true` so screen-reader users get the
+    /// label without phantom button affordance on decorative chips).
+    accessible-role: text;
+    accessible-label: root.label;
+    accessible-action-default => {
+        if (root.interactive) {
+            root.clicked();
+        }
+    }
+
     property <brush> bg-color: tone == "success" ? Theme.success-soft
                               : tone == "danger" ? Theme.danger-soft
                               : tone == "warn" ? Theme.warn-soft
@@ -92,6 +104,15 @@ export component DangerBtn inherits Rectangle {
     in property <length> min-button-width: 80px;
     callback clicked();
 
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+
     horizontal-stretch: 0;
     vertical-stretch: 0;
     min-height: Design.size-input;
@@ -154,6 +175,15 @@ export component UriBtn inherits Rectangle {
     in property <bool> enabled: true;
     in property <length> min-button-width: 80px;
     callback clicked();
+
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
 
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -294,6 +324,16 @@ export component InlineError inherits Rectangle {
     in property <bool> dismissable: true;
     callback action-clicked();
     callback dismissed();
+
+    /// Inline messages are read-only diagnostics: AT clients should
+    /// announce the title + detail when the message becomes visible.
+    /// `accessible-live` (slint-ui/slint#11646) would mark this an
+    /// auto-announcing live region but landed post-1.16; revisit
+    /// when we bump.
+    accessible-role: text;
+    accessible-label: root.title != "" && root.message != ""
+        ? root.title + ". " + root.message
+        : (root.title != "" ? root.title : root.message);
 
     property <bool> visible-content: root.title != "" || root.message != "";
 
@@ -713,6 +753,15 @@ export component CopyBtn inherits Rectangle {
     /// back to the generic "Copied to clipboard." toast.
     in property <string> label;
 
+    accessible-role: button;
+    /// Spell out the action when the visible content is just a
+    /// glyph. Caller-supplied `label` (the noun being copied) plus
+    /// the universal verb makes for a useful screen-reader phrase.
+    accessible-label: root.label != "" ? "Copy " + root.label : "Copy";
+    accessible-action-default => {
+        Clipboard.copy(root.value, root.label);
+    }
+
     width: 24px;
     height: 24px;
     horizontal-stretch: 0;
@@ -773,6 +822,19 @@ export component IconBtn inherits Rectangle {
     /// icon-only button (the original 24×24 ghost style).
     in property <string> label: "";
     callback clicked();
+
+    accessible-role: button;
+    /// `label` is the visible text when set; for icon-only callsites
+    /// (label == "") the caller MUST supply `accessible-label: ...`
+    /// directly on the instance for screen readers to announce the
+    /// action.
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled && !root.loading) {
+            root.clicked();
+        }
+    }
 
     property <bool> interactive: root.enabled && !root.loading;
     property <bool> has-label: root.label != "";

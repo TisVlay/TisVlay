@@ -143,6 +143,7 @@ component ComponentRow {
                         label: @tr("Config");
                         enabled: entry.config_path != "";
                         opacity: entry.config_path != "" ? 1 : Design.opacity-disabled;
+                        accessible-id: "about-component-" + entry.name + "-config-button";
                         clicked => { root.open-config-folder(entry.config_path); }
                     }
                 }
@@ -286,6 +287,7 @@ export component AboutPane inherits Rectangle {
                             // for the running build's identifier.
                             tone: "info";
                             interactive: true;
+                            accessible-id: "about-version-chip";
                             clicked => { root.view-release-clicked(); }
                         }
                     }
@@ -300,10 +302,12 @@ export component AboutPane inherits Rectangle {
                             // from the labeled-mode HorizontalLayout.
                             height: Design.size-input;
                             framed: true;
+                            accessible-id: "about-diagnostics-button";
                             clicked => { root.copy-diagnostic-clicked(); }
                         }
                         UriBtn {
                             text: @tr("Report issue");
+                            accessible-id: "about-issue-button";
                             clicked => { root.report-issue-clicked(); }
                         }
                     }
@@ -346,6 +350,7 @@ export component AboutPane inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                     UriBtn {
                         text: @tr("View third-party notices");
+                        accessible-id: "about-notices-button";
                         clicked => { root.view-notices-clicked(); }
                     }
                 }

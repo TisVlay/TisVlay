@@ -51,6 +51,14 @@ component SidebarItem inherits Rectangle {
     in property <bool> selected;
     callback clicked();
 
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-action-default => {
+        root.clicked();
+    }
+
     height: Design.size-sidebar-item;
     background: selected ? Theme.sidebar-selected
               : (touch.has-hover ? Theme.sidebar-hover : transparent);
@@ -162,30 +170,35 @@ export component AppWindow inherits Window {
                     icon: root.tvs-icon;
                     label: @tr("TVs");
                     selected: root.active-pane == Pane.tvs;
+                    accessible-id: "sidebar-tvs";
                     clicked => { root.active-pane = Pane.tvs; }
                 }
                 SidebarItem {
                     icon: root.profiles-icon;
                     label: @tr("Profiles");
                     selected: root.active-pane == Pane.profiles;
+                    accessible-id: "sidebar-profiles";
                     clicked => { root.active-pane = Pane.profiles; }
                 }
                 SidebarItem {
                     icon: root.session-icon;
                     label: @tr("Session");
                     selected: root.active-pane == Pane.session;
+                    accessible-id: "sidebar-session";
                     clicked => { root.active-pane = Pane.session; }
                 }
                 SidebarItem {
                     icon: root.settings-icon;
                     label: @tr("Settings");
                     selected: root.active-pane == Pane.settings;
+                    accessible-id: "sidebar-settings";
                     clicked => { root.active-pane = Pane.settings; }
                 }
                 SidebarItem {
                     icon: root.about-icon;
                     label: @tr("About");
                     selected: root.active-pane == Pane.about;
+                    accessible-id: "sidebar-about";
                     clicked => { root.active-pane = Pane.about; }
                 }
 
@@ -204,6 +217,16 @@ export component AppWindow inherits Window {
                         : transparent;
                     border-radius: 5px;
                     animate background { duration: 150ms; }
+
+                    accessible-role: button;
+                    accessible-label: @tr("Reload daemon config");
+                    accessible-enabled: root.daemon-available;
+                    accessible-id: "sidebar-reload";
+                    accessible-action-default => {
+                        if (root.daemon-available) {
+                            Daemon.reload-config();
+                        }
+                    }
 
                     HorizontalLayout {
                         width: 100%;
