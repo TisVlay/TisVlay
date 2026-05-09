@@ -54,15 +54,22 @@ test:
 #   regions to source; full DWARF is overkill.
 #
 # `just build` runs `--all-targets --all-features` without coverage
-# instrumentation to catch feature-flag breakage; doc tests keep
-# `--all-features` because they don't link the bin.
+# instrumentation to catch feature-flag breakage; doc tests use the
+# same `mock`-only feature subset as the coverage build because the
+# instrumented `target/llvm-cov-target/` plus a fresh `--all-features`
+# `target/debug/` for doc tests together exceed the runner's free
+# disk. Doc-tested code lives in `tisvlay-core`, `tisvlay-lg`,
+# `tisvlay-mock`, `tisvlay-test`, `tisvlay-harness` — none gated on
+# `dev-mcp` or other features that `--all-features` would add — so
+# the narrower set loses no actual doc-test coverage.
 [group('check')]
 test-ci:
     NEXTEST_PROFILE=ci \
         CARGO_PROFILE_DEV_DEBUG=line-tables-only \
         cargo llvm-cov --no-report nextest --workspace \
             --features tisvlay-backends/mock,tisvlayd/mock
-    cargo test --workspace --all-features --doc
+    cargo test --workspace \
+        --features tisvlay-backends/mock,tisvlayd/mock --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
     cargo llvm-cov report {{ cov_exclude }} \
         --fail-under-lines {{ cov_baseline_lines }} --summary-only
