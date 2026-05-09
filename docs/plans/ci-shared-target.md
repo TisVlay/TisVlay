@@ -62,8 +62,8 @@ Lift the literal `tisvlay-backends/mock,tisvlayd/mock` into a `ci_features` just
 
 | # | Step | Status | Notes |
 |---|---|---|---|
-| 1 | Add `ci_features := "..."` justfile variable + comment block | todo | — |
-| 2 | Switch existing `_cov-collect` and `test-ci` cargo invocations to `{{ ci_features }}` (still using current pipeline shape) | todo | Pure refactor; no CI behavior change yet. Should pass `just test-ci` locally. |
+| 1 | Add `ci_features := "..."` justfile variable + comment block | done | Defined alongside test-ci recipe; comment block carries rationale + extension triggers. |
+| 2 | Switch existing `_cov-collect` and `test-ci` cargo invocations to `{{ ci_features }}` (still using current pipeline shape) | done | All four call sites updated. Also fixed `_cov-collect`'s doc-test step which still used `--all-features` (inconsistent with the test-ci fix from the previous sprint). Verified: `just test-ci` passes locally, coverage 52.48% unchanged. |
 | 3 | Refactor `test-ci` to the `cargo llvm-cov show-env` single-build shape (clippy + nextest + doc-test under instrumentation) | todo | The actual win. |
 | 4 | Update `.github/workflows/ci.yml` — drop the separate `Clippy` step; `Test` step alone now covers both | todo | Watch CI run for the wall-time delta. |
 | 5 | Update `docs/testing.md` and `CLAUDE.md` with pointers | todo | One-line each. |
@@ -81,6 +81,7 @@ Lift the literal `tisvlay-backends/mock,tisvlayd/mock` into a `ci_features` just
 Append findings as we go. Keep terse — full data lives in CI logs.
 
 - **2026-05-09** — plan drafted. No steps started yet.
+- **2026-05-09 — steps 1–2** (centralize `ci_features`): pure refactor, four call sites unified (`test-ci` × 2, `_cov-collect` × 2). Side-fix: `_cov-collect`'s doc-test step was still on `--all-features`, missed in the previous sprint's `test-ci` fix; aligned to `ci_features` for consistency. Behavior preserved (`just test-ci` passes, coverage 52.48%, ratchet baseline 52).
 
 ## Out of scope
 
