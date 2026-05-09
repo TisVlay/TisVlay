@@ -13,4 +13,3 @@ Implementation sketch:
 Industry convention: Sentry breadcrumbs default to 100 events, dmesg uses byte-bounded rings (16 KB–1 MB), browser DevTools caps at ~10K. 500 is a Sentry-x5 starting point because we paste rather than POST — bigger payload is fine.
 
 Tabled until the PR #1+#2 schema baseline ships so the embedding shape is clear.
-

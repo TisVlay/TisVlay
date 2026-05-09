@@ -9,4 +9,3 @@ The Slint `fluent` style doesn't pick up the user's KDE accent color or custom p
 Scoped out of Plan 4's theming sweep (which settled on `fluent` + a stable token surface as the pragmatic v1) because the Settings-namespace work has no user-visible payoff over fluent's defaults until a user complains the GUI looks out-of-place in their themed desktop.
 
 Revisit when a user reports the visual mismatch, or when `cosmic` (the alternative with looser Slint integration) becomes the right default and fluent's hard-coded look starts feeling stale.
-

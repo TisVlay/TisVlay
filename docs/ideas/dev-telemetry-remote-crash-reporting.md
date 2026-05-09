@@ -15,4 +15,3 @@ Approach:
 Production release builds compile out the feature entirely — `sentry-rust` is not in their dep graph at all.
 
 Conscious skips: PostHog (product analytics first; error tracking secondary; heavier infra), Highlight.io (acquired/shutdown 2026-02-28), Apache SkyWalking (APM/distributed tracing, not panic grouping), Bugsnag/Rollbar/Honeybadger (proprietary SaaS, no compelling Rust SDK over `sentry-rust`).
-

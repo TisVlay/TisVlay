@@ -10,4 +10,3 @@ Stack:
 - `color-eyre` (or `eyre` directly) at error-bubbling boundaries so non-panic errors that surface to the user get the same hook treatment.
 
 Trade-off: `human-panic` writes to a temp dir by default; we override the path to `~/.cache/tisvlay/` so users have a stable place to find it. Adds three runtime crates (`human-panic`, `tracing-error`, `color-eyre`); none are heavy.
-

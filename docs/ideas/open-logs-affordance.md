@@ -10,4 +10,3 @@ User asked about a journal-viewer launcher; researched in Plan 5 and dropped bec
 Leading recommendation: **(a) with (c) as fallback** — try `xdg-open` on the KSystemLog desktop file first; on failure, fall back to copy-to-clipboard with the journalctl command. Defer (d) until a real debugging-support story justifies the engineering cost.
 
 Surface placement: both — About pane gets the always-on shortcut; inline-error messages with `kind == "internal"` get a contextual "View logs" action button.
-

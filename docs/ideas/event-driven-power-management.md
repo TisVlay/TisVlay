@@ -53,4 +53,3 @@ Volume sync via PipeWire and brightness sync via KWin Wayland + D-Bus + an out-o
 - **Volume:** PipeWire mirror chains two gain stages, and the result depends on which side moved last. Per-app audio gets clipped or attenuated unpredictably.
 
 The full sync history (granular commits, plan docs, removed kernel module) is preserved in [PR #34](https://github.com/ruffsl/TisVlay/pull/34); the cull that retired it is preserved in the squash-merge that brought this stub onto main.
-

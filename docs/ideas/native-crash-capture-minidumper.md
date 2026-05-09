@@ -11,4 +11,3 @@ Stack:
 Gated under the same `dev-telemetry` Cargo feature as the `sentry-rust` integration. Minidump symbolication needs debug symbols on the receiving end; for self-hosted GlitchTip, ship a separate build artifact (`*.dwp` or `*-symbols.zip`) and upload via `sentry-cli upload-difs` or GlitchTip's `dif` API.
 
 Trade-off: the most heavyweight piece of the diagnostic stack. Worth it only when Slint/GPU crashes start showing up as recurring user reports.
-

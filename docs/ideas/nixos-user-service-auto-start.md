@@ -25,4 +25,3 @@ Options for TisVlay:
 Option 2 is the most natural fit given the `tisvlay-gui` roadmap — the
 GUI/tray becomes the entry point that ensures the rest of the user-side
 stack is running.
-

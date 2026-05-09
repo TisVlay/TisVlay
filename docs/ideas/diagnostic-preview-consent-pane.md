@@ -10,4 +10,3 @@ Path forward:
 - Three action buttons in the sheet footer: Copy, Save File, Open Issue (URL-prefill via `https://github.com/.../issues/new?body=<urlencoded>`, with truncation when over GitHub's URL cap).
 
 Builds on the support-bundle CLI work below — both share the same `Diagnostic::redact_categories(&[Category])` helper.
-
