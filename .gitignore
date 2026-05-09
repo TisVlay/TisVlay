@@ -31,3 +31,4 @@ result
 # /usr/share/doc/tisvlay/ inside the .deb/.rpm/.pkg.tar.zst. The
 # build-time embed lives in $OUT_DIR (already covered by target/).
 /packaging/licensing/THIRD-PARTY-LICENSES.html
+bench-results/
