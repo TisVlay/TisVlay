@@ -33,36 +33,54 @@ test:
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
 
-# Run tests under coverage instrumentation (CI): produces JUnit XML via
-# the 'ci' nextest profile, coverage data, then generates lcov.info and
-# checks the ratchet - all from one test run. Doc tests run separately
-# without coverage (stable rustc doesn't support doctest coverage).
+# Feature subset for CI's coverage and clippy paths. Excludes
+# `tisvlay-gui`'s `dev-mcp`, which pulls
+# `i-slint-backend-testing/mcp`'s prost/pbjson/protox stack and busts
+# the runner's ~14 GB free-disk ceiling. Audit: every `#[cfg(feature
+# = "X")]` block in `crates/*/src/` is covered either directly by
+# `mock` or transitively (`discovery`, `dbus`, `logging` are reached
+# through `tisvlayd/mock`'s default + workspace consumers). prek
+# locally still runs `--all-features` clippy, which is the
+# dep-resolution gate for `dev-mcp`.
 #
-# Two cargo-flag choices accommodate GitHub `ubuntu-latest`'s
-# resource ceilings:
+# When to extend:
+# - New `#[cfg(feature = "X")]` block in `src/` where X isn't already
+#   `mock` / `discovery` / `dbus` / `logging` → add the feature here
+#   so CI lints + tests it (or the gate becomes silent on PRs).
+# - New workspace crate with a mock-style test-only feature → add
+#   `<crate>/mock` here.
+ci_features := "tisvlay-backends/mock,tisvlayd/mock"
+
+# Run the full check pipeline (clippy + tests + doc tests + coverage
+# report) under a single coverage-instrumented build. `cargo llvm-cov
+# show-env --sh` emits the `export VAR=…` lines for
+# RUSTFLAGS=-C instrument-coverage and
+# CARGO_TARGET_DIR=target/llvm-cov-target/; `eval`-ing them in this
+# bash recipe means subsequent cargo commands all share that target
+# dir. Without this, clippy and the coverage build would each
+# compile the workspace independently (different RUSTFLAGS →
+# different cargo fingerprints, no artifact reuse). Design + the
+# residual clippy-vs-build dual-compile finding live in
+# `docs/build.md` "Build pipeline".
 #
-# - `--features tisvlay-backends/mock,tisvlayd/mock` instead of
-#   `--all-features`. `tisvlay-gui`'s `dev-mcp` feature pulls in
-#   dev-only MCP-server code that combined with coverage
-#   instrumentation OOMs the runner's linker. Naming `mock`
-#   explicitly preserves the coverage signal from feature-gated test
-#   binaries without re-pulling `dev-mcp`'s surface.
+# `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the instrumented
+# `target/llvm-cov-target/` to fit the runner's free-disk ceiling.
+# `llvm-cov` only needs line tables to map regions to source.
 #
-# - `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the
-#   instrumented `target/llvm-cov-target/` to fit the runner's
-#   free-disk ceiling. `llvm-cov` only needs line tables to map
-#   regions to source; full DWARF is overkill.
-#
-# `just build` runs `--all-targets --all-features` without coverage
-# instrumentation to catch feature-flag breakage; doc tests keep
-# `--all-features` because they don't link the bin.
+# Doc tests run under the same env, but stable rustc doesn't emit
+# coverage data for doctest harnesses — they execute but don't
+# contribute to the report.
 [group('check')]
 test-ci:
-    NEXTEST_PROFILE=ci \
-        CARGO_PROFILE_DEV_DEBUG=line-tables-only \
-        cargo llvm-cov --no-report nextest --workspace \
-            --features tisvlay-backends/mock,tisvlayd/mock
-    cargo test --workspace --all-features --doc
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CARGO_PROFILE_DEV_DEBUG=line-tables-only
+    export NEXTEST_PROFILE=ci
+    eval "$(cargo llvm-cov show-env --sh)"
+    cargo clippy --workspace --all-targets \
+        --features {{ ci_features }} -- -D warnings
+    cargo nextest run --workspace --features {{ ci_features }}
+    cargo test --workspace --features {{ ci_features }} --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
     cargo llvm-cov report {{ cov_exclude }} \
         --fail-under-lines {{ cov_baseline_lines }} --summary-only
@@ -85,10 +103,14 @@ test-snapshot-accept:
 #
 # Pipeline rationale + maintenance reference: `docs/licensing.md`.
 
-# Enforce the SPDX allow-list on every crate in the workspace dep graph.
+# Enforce the SPDX allow-list (`licenses`) and surface multi-version
+# dep duplication as warnings (`bans`) — see `deny.toml` for the
+# skip-list and `docs/build.md` "Dep-graph posture" for the
+# routine. `bans` is `multiple-versions = "warn"`, so it never
+# fails the build; output is informational.
 [group('check')]
 deny:
-    cargo deny check --config packaging/licensing/deny.toml licenses
+    cargo deny check --config packaging/licensing/deny.toml licenses bans
 
 # Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
 # consumed by the package-* recipes).
@@ -153,14 +175,15 @@ cov_baseline_lines := "52"
 cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock|harness)/|test_server)'"
 
 # Run tests under coverage instrumentation (shared by all cov-* recipes).
-# Mirrors `test-ci` — see that recipe's comment for the feature flag
-# choice and the `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale.
+# Mirrors `test-ci` — see that recipe's comment for the
+# `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale, and the
+# `ci_features` comment for the feature-subset rationale.
 [private]
 _cov-collect:
     CARGO_PROFILE_DEV_DEBUG=line-tables-only \
         cargo llvm-cov --no-report nextest --workspace \
-            --features tisvlay-backends/mock,tisvlayd/mock
-    cargo test --workspace --all-features --doc
+            --features {{ ci_features }}
+    cargo test --workspace --features {{ ci_features }} --doc
 
 # Text summary of workspace coverage
 [group('coverage')]

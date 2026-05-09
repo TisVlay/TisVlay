@@ -376,7 +376,12 @@ prek run -a --skip build --skip clippy --skip test
 # Run a specific hook
 prek run -a clippy
 
-# CI runs file checks via prek, then just build/clippy/test directly for live output
+# CI runs file checks via prek, then a single `just test-ci` that
+# wraps clippy + nextest + doc tests + coverage report under one
+# instrumented build (`cargo llvm-cov show-env`). Mock-only feature
+# subset for CI lives in `justfile` as `ci_features`; rationale and
+# extension triggers are in its comment block. Design notes:
+# `docs/build.md`.
 ```
 
 ### Dead Code Detection

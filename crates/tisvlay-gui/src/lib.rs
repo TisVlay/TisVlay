@@ -230,26 +230,20 @@ pub fn run() -> Result<()> {
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing
     // helper, so we route the Slint-side `Clipboard.copy(value)`
-    // callback through `arboard`. Failures (no display server,
-    // sandbox without clipboard access) log a warning — the button
-    // appears to do nothing rather than panicking.
+    // callback through `wl-clipboard-rs`. Wayland-only by design.
+    // Failures (X11/SSH session, sandbox without wl-data-control)
+    // log a warning — the button appears to do nothing rather than
+    // panicking, same UX as before.
     let clipboard = app.global::<Clipboard>();
     clipboard.set_copy_icon(load_themed_icon(&["edit-copy"]));
     {
         let app_weak = app.as_weak();
         clipboard.on_copy(move |value, label| {
-            match arboard::Clipboard::new() {
-                Ok(mut cb) => {
-                    if let Err(e) = cb.set_text(value.to_string()) {
-                        // KDE-style: silent on failure, log only.
-                        warn!(error = %e, "clipboard write failed");
-                        return;
-                    }
-                }
-                Err(e) => {
-                    warn!(error = %e, "couldn't open clipboard");
-                    return;
-                }
+            use wl_clipboard_rs::copy::{MimeType, Options, Source};
+            let source = Source::Bytes(value.as_bytes().to_vec().into_boxed_slice());
+            if let Err(e) = Options::new().copy(source, MimeType::Text) {
+                warn!(error = %e, "clipboard write failed");
+                return;
             }
             // Empty label → the older generic copy toast; non-empty
             // → the noun-specific form. Two distinct gettext keys so
@@ -318,7 +312,7 @@ pub fn run() -> Result<()> {
             let blob = build_diagnostic_blob(&app, user_bus, &vendors);
             // Route through the shared Clipboard.copy chokepoint so
             // the success toast fires via the same path every other
-            // CopyBtn uses — no parallel arboard call here.
+            // CopyBtn uses.
             app.global::<Clipboard>().invoke_copy(
                 SharedString::from(blob),
                 SharedString::from(gettext("diagnostic info")),

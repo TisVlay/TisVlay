@@ -123,6 +123,23 @@ missing_debug_implementations = "warn"
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
 
+# `split-debuginfo = "unpacked"` keeps debug info in sibling .o files
+# instead of inside the linked artifact — relinks don't have to copy
+# debuginfo, which is the dominant cost on incremental rebuilds. Linux
+# default is "off" (everything inlined), so we set it explicitly.
+[profile.dev]
+split-debuginfo = "unpacked"
+
+# Test profile inherits `split-debuginfo` from `dev`. `debug =
+# "line-tables-only"` keeps file:line in panic backtraces but drops
+# type info, shrinking object files significantly. `just check` /
+# `just test-ci` and `cargo test` all run under this profile, so the
+# win compounds across the build → clippy → test pipeline. `cargo run`
+# still uses `dev` (full debug) for interactive lldb sessions.
+[profile.test]
+split-debuginfo = "unpacked"
+debug = "line-tables-only"
+
 # Tuning for shipped binaries (Nix, musl release, .deb/.rpm/.archlinux).
 [profile.release]
 lto = "thin"
