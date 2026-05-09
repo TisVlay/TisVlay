@@ -33,6 +33,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 ## Build & CI
 
 - [Consolidate `tisvlayd` integration test binaries](ideas/tisvlayd-test-consolidation.md)
+- [Switch CI (or workspace) to nightly Rust for build-time knobs](ideas/ci-nightly-build-knobs.md)
 
 ## Diagnostics & telemetry
 
