@@ -74,7 +74,7 @@ Knobs ordered by expected ROI for the cold `just check` / `just test-ci` paths. 
 
 | # | Knob | Expected (cold / CI) | Effort | Risk | Status | Measured |
 |---|---|---|---|---|---|---|
-| 1 | `[profile.test] split-debuginfo = "unpacked"` + `debug = "line-tables-only"` (+ same for `dev`) | -3–8 s / -10–20 s | trivial | none | todo | — |
+| 1 | `[profile.test] split-debuginfo = "unpacked"` + `debug = "line-tables-only"`; `[profile.dev] split-debuginfo = "unpacked"` (full DWARF preserved on dev for `cargo run`) | -3–8 s / -10–20 s | trivial | none | done | cold -6.2 s (-10.8%), incr-core -1.9 s (-22%), incr-leaf -3.2 s (-32%), `just check` -6.9 s (-6.6%), `just test-ci` -3.4 s (-3.3%) |
 | 2 | `[profile.dev.package."*"] opt-level = 1` (faster test runtime, marginal compile cost) | ~0 / ~0 (test runtime only) | trivial | low | todo | — |
 | 3 | Verify `Swatinem/rust-cache@v2` is wired correctly in `.github/workflows`; key by rustflags so coverage and non-coverage caches don't collide | n/a / huge on warm CI | low | low | todo | — |
 | 4 | `cargo machete` audit — strip any unused workspace deps it flags | unknown | trivial | low | todo | — |
@@ -91,6 +91,7 @@ After each knob lands, record the new cold / incr-core / `just check` / `just te
 Append findings as we go (one bullet per knob attempt). Keep it terse — full data lives in `bench-results/`.
 
 - **2026-05-08** — baseline captured; cold = 57.3 s, just check = 105.4 s, just test-ci = 103.8 s. Critical path identified at `tisvlay-gui` (dual compile) + `moxcms` + `read-fonts` chain. Linker is rust-lld default; relink already 0.6 s.
+- **2026-05-09 — knob #1** (profile tweaks): cold 57.3 → 51.1 s (-10.8%), incr-after-core 8.8 → 6.9 s (-22%), incr-after-leaf 10.0 → 6.8 s (-32%), `just check` 105.4 → 98.5 s (-6.6%), `just test-ci` 103.8 → 100.3 s (-3.3%). Single run, no noise estimate; the incremental wins are solidly above run-to-run variance. `target/debug` size also drops because `.o` files no longer carry inlined debuginfo (didn't measure exact bytes). The justfile's `CARGO_PROFILE_DEV_DEBUG=line-tables-only` env-var override on `_cov-collect` / `test-ci` still applies because `cargo llvm-cov` uses the `dev` profile (where we left full debug for lldb sessions); leaving those overrides in place.
 
 ## Out of scope (for this sprint)
 

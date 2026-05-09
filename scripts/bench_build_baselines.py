@@ -32,12 +32,17 @@ def log(msg):
 
 
 def cold_drop():
-    """Drop target dirs that would otherwise carry cached artifacts."""
+    """Drop target dirs that would otherwise carry cached artifacts.
+
+    Uses `rm -rf` rather than `shutil.rmtree` because IDE / rust-analyzer
+    background tasks can race against the deletion (target/debug/deps
+    files mid-write) and `rm -rf` tolerates that better.
+    """
     for sub in ("debug", "llvm-cov-target", "cargo-timings"):
         p = TARGET / sub
         if p.exists():
             log(f"  rm -rf {p}")
-            shutil.rmtree(p)
+            subprocess.run(["rm", "-rf", str(p)], check=True)
 
 
 def force_rebuild(rel_path: str):
