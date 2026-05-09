@@ -4,6 +4,7 @@
   cargo-about,
   pkg-config,
   dbus,
+  fontconfig,
 }:
 
 rustPlatform.buildRustPackage {
@@ -20,6 +21,17 @@ rustPlatform.buildRustPackage {
     # installed to share/doc/ respectively.
     cargo-about
     pkg-config
+  ];
+
+  buildInputs = [
+    # Slint's femtovg renderer pulls `yeslogic-fontconfig-sys`, a
+    # `-sys` crate that resolves `fontconfig.pc` via pkg-config at
+    # compile time. Slint's other runtime libs (libGL, libxkbcommon,
+    # wayland) are dlopened by femtovg/winit and don't surface in the
+    # build phase — they're handled by the dev-shell's
+    # `LD_LIBRARY_PATH` for `cargo run`, and at runtime on shipped
+    # distro packages by the system loader's own search paths.
+    fontconfig
   ];
 
   nativeCheckInputs = [

@@ -64,16 +64,19 @@ pkgs.testers.runNixOSTest {
     )
     assert '"lg"' in vendors, f"expected lg vendor in {vendors!r}"
 
-    # ObjectManager reports zero TVs on a fresh install (no pairing yet).
-    # `GetManagedObjects` returns `a{oa{sa{sv}}}` — empty outer dict = 0.
+    # ObjectManager reports the Manager (with `ConfigPath` + `Version`
+    # properties consumed by the GUI's About pane) and zero TVs on a
+    # fresh install. The fresh-install invariant is "no /org/tisvlay/Tv/*
+    # paths"; the Manager itself is always present.
     managed = machine.succeed(
         "busctl --system call "
         "org.tisvlay.Daemon /org/tisvlay "
         "org.freedesktop.DBus.ObjectManager GetManagedObjects"
     )
-    # busctl renders empty array-of-dict as `a{...} 0`.
-    assert " 0" in managed, \
-        f"expected empty ObjectManager, got {managed!r}"
+    assert "/org/tisvlay/Manager" in managed, \
+        f"expected Manager in ObjectManager output, got {managed!r}"
+    assert "/org/tisvlay/Tv/" not in managed, \
+        f"expected no TVs on fresh install, got {managed!r}"
 
     # User units are loaded (even though not started in headless VM)
     machine.succeed(
