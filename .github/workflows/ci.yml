@@ -45,6 +45,11 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # Save the cache even when subsequent steps fail. Without this,
+          # a flaky test or a coverage-ratchet failure wipes the warm
+          # target/ tarball and the next run pays the full cold cost.
+          cache-on-failure: true
 
       - name: Lint
         uses: j178/prek-action@v2

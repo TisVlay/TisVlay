@@ -30,6 +30,10 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Re-enable Slint `accessibility` feature once upstream blockers clear](ideas/re-enable-slint-accessibility.md)
 - [GUI test coverage fan-out (Layer-C end-to-end tests)](ideas/gui-test-coverage-fanout.md)
 
+## Build & CI
+
+- [Consolidate `tisvlayd` integration test binaries](ideas/tisvlayd-test-consolidation.md)
+
 ## Diagnostics & telemetry
 
 - [Diagnostic log-tail ring buffer](ideas/diagnostic-log-tail.md)

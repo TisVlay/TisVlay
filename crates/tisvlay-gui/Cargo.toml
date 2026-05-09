@@ -20,10 +20,7 @@ path = "src/main.rs"
 tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
 tokio = { workspace = true }
 futures-util = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
-toml = { workspace = true }
-directories = { workspace = true }
 # `accessibility` is dropped from the default features. The local
 # blocker is a runtime conflict — `accesskit_unix` spawns a thread
 # that uses zbus, and zbus's tokio backend panics with "no reactor
@@ -119,3 +116,13 @@ vergen-gix = { version = "9.1", default-features = false, features = ["cargo", "
 
 [lints]
 workspace = true
+
+# `cargo machete` flags both as unused because there is no `use …` in
+# the Rust source, but both are real consumers:
+#   - `gettext-rs`: imported as `gettextrs::gettext` (Cargo names use
+#     `-`, the Rust crate alias drops it; machete doesn't reconcile).
+#   - `i-slint-backend-selector`: feature-gated on `dev-mcp`; its
+#     `mcp` feature registers Slint's MCP backend at link time, so no
+#     direct `use` ever appears in our source.
+[package.metadata.cargo-machete]
+ignored = ["gettext-rs", "i-slint-backend-selector"]
