@@ -89,6 +89,15 @@ i-slint-backend-selector = { version = "=1.16.1", features = ["mcp"], optional =
 [features]
 dev-mcp = ["dep:i-slint-backend-selector"]
 
+[dev-dependencies]
+# Headless Slint backend for `find_by_accessible_id` / `single_click`
+# / element-tree queries in tests. Pinned to `=1.16.1` because the
+# crate's README warns "preliminary API, no semver" and 1.17 already
+# moved test helpers between modules
+# (slint-ui/slint#11516 merged 2026-04-27); treat upstream bumps as
+# breaking.
+i-slint-backend-testing = "=1.16.1"
+
 [build-dependencies]
 slint-build = "1.16"
 # Build-time emission of `VERGEN_*` env vars for the diagnostic blob's

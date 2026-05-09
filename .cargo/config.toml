@@ -1,0 +1,13 @@
+# Per-workspace cargo config.
+#
+# `SLINT_EMIT_DEBUG_INFO=1` makes Slint's compiler emit element-id
+# info into the generated Rust code, which `i-slint-backend-testing`
+# needs for `find_by_element_id` / `find_by_accessible_id` queries.
+# Without it those finders silently return empty iterators and tests
+# look like they "found nothing." Slint's own CI sets this workflow-
+# wide; mirroring it here keeps local builds and CI in lockstep.
+#
+# See `crates/tisvlay-gui/tests/` for the headless test suite that
+# depends on this surface.
+[env]
+SLINT_EMIT_DEBUG_INFO = "1"

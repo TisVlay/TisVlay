@@ -6800,6 +6800,7 @@ dependencies = [
  "futures-util",
  "gettext-rs",
  "i-slint-backend-selector",
+ "i-slint-backend-testing",
  "libc",
  "os_info",
  "rustix 1.1.4",
