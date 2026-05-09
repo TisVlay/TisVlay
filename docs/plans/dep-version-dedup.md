@@ -87,6 +87,7 @@ Append findings as we go. Keep terse — full data lives in CI logs and the rese
 
 - **2026-05-09** — plan drafted. No steps started yet. Local audit ran via `cargo tree --duplicates`; SOTA research run synthesized into the **Findings** section.
 - **2026-05-09 — steps 1–4** (vergen-gix replacement): hand-rolled `tisvlay-gui/build.rs` to drop `vergen-gix` and its 46-crate gitoxide ecosystem. Lockfile 820 → 717 crates (-103, -12.5%). Cold local `just test-ci` 97 s → 94 s; tests still pass (328/328); coverage 52.27% → 52.41%. The hashbrown 0.14 / 0.15 duplicates remained but moved sources (now `rowan` / Slint compiler and `petgraph` / `prost-build` respectively, both upstream-bound) — the win was eliminating the gix-internal multi-pin and the broader dep weight, not unifying hashbrown. Real saving lands on 2-core CI where the dep-count drop serializes less.
+- **2026-05-09 — CI measurement**: cold Test step **13m 53s → 10m 6s (-27%)**; warm Test step 3m 15s → 3m 23s (within noise). The asymmetry is what we'd expect: deleting transitive deps wins where compilation happens (cold cache miss), barely shows where artifacts are restored from a tarball (warm). Combined with the share-target sprint's warm-CI saving, the two now cover both axes — share-target hits warm hardest (target dir layout change), vergen-gix removal hits cold hardest (fewer crates to compile).
 
 ## Out of scope
 
