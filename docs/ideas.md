@@ -315,7 +315,7 @@ Trade-off: the most heavyweight piece of the diagnostic stack. Worth it only whe
 
 ## Re-enable Slint `accessibility` feature once upstream blockers clear
 
-`tisvlay-gui` ships with the slint `accessibility` Cargo feature off (rationale lives in the Cargo.toml comment block). The original blocker on our side was a runtime conflict — `accesskit_unix` spawns its own thread that uses zbus, and zbus's tokio backend panics with "no reactor running" in that thread because it's not part of our tokio runtime. That symptom isn't filed upstream; the testing-infra sprint (`docs/plan2.md`) declined to invest in a workaround after surfacing three independent upstream blockers that need to clear first.
+`tisvlay-gui` ships with the slint `accessibility` Cargo feature off (rationale lives in the Cargo.toml comment block). The original blocker on our side was a runtime conflict — `accesskit_unix` spawns its own thread that uses zbus, and zbus's tokio backend panics with "no reactor running" in that thread because it's not part of our tokio runtime. That symptom isn't filed upstream; the work was deferred after surfacing three independent upstream blockers that need to clear first.
 
 Gating conditions before this work is worth picking up:
 
@@ -330,4 +330,4 @@ Investigation paths to consider once the upstream picture is clearer:
 - **Path A: configure zbus to share our tokio runtime** — the `tokio::runtime::Handle::try_current()` route, possibly wrapping `accesskit_unix`'s connection setup with `tokio::task::block_in_place` or by handing it a pre-built `zbus::Connection` from our runtime.
 - **Path B: switch zbus to async-io for accesskit only** — zbus has feature-flag selection between tokio and async-io. Whether two runtimes can coexist in one process is the open question.
 
-Independent of all of the above, our test infrastructure does **not** depend on this — Slint's testing backend reads `accessible-*` properties via the internal element tree, not via AT-SPI, so the `accessible-label` / `accessible-id` audit pass already in flight (per `docs/plan2.md`) works regardless of the production feature state.
+Independent of all of the above, our test infrastructure does **not** depend on this — Slint's testing backend reads `accessible-*` properties via the internal element tree, not via AT-SPI, so the shipped `accessible-label` / `accessible-id` surface (see [`docs/testing.md`](testing.md)'s "GUI testing" section) works regardless of the production feature state.
