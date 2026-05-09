@@ -5,10 +5,17 @@
 //! so it crosses the tokio→Slint thread boundary as `Send`. The Slint
 //! event-loop closure then wraps the inner per-row lists into
 //! `ModelRc` (which holds `Rc`, `!Send`).
+//!
+//! [`fetch_state`] does the IO (daemon + session bus calls) and hands
+//! a [`SnapshotInputs`] off to the pure [`convert_snapshot`] function.
+//! Tests construct `SnapshotInputs` directly and assert on the
+//! resulting `StateSnapshot` without touching D-Bus.
+
+use std::collections::HashMap;
 
 use anyhow::Result;
 use slint::SharedString;
-use tisvlay_core::{DaemonClient, SessionClient};
+use tisvlay_core::{DaemonClient, SessionClient, TvInfo};
 use tracing::debug;
 
 /// Per-TV view-model row in a thread-safe shape (no `Rc` inside).
@@ -63,6 +70,21 @@ pub(crate) struct StateSnapshot {
     pub user_profiles: Vec<SharedString>,
 }
 
+/// Pure-data inputs the renderer needs from one IO pass. Decoupled
+/// from D-Bus so [`convert_snapshot`] can be exercised by unit tests.
+pub(crate) struct SnapshotInputs {
+    pub tvs: Vec<TvInfo>,
+    /// `(name, description)` pairs from `Manager1.ListSystemProfiles`.
+    pub system_profiles: Vec<(String, String)>,
+    /// `(name, description)` pairs from `Session1.ListUserProfiles`.
+    /// Empty when the session bus isn't available.
+    pub user_profiles: Vec<(String, String)>,
+    /// Per-TV user-profile assignment, keyed by TV UUID. Missing
+    /// entries (no session, fetch failed, or no assignment) surface
+    /// as `""` in the resulting `TvViewRaw.user_profile`.
+    pub user_profile_by_uuid: HashMap<String, String>,
+}
+
 /// Fetch every configured TV's state plus session-side user-profile
 /// assignment + global profile lists for ComboBox population.
 ///
@@ -77,35 +99,47 @@ pub(crate) async fn fetch_state(
     let tvs = daemon.list_tvs().await?;
     debug!(count = tvs.len(), "Fetched TVs from daemon");
 
-    let system_profiles: Vec<SharedString> = daemon
-        .list_system_profiles()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(name, _)| SharedString::from(name))
-        .collect();
+    let system_profiles = daemon.list_system_profiles().await.unwrap_or_default();
 
-    let user_profiles: Vec<SharedString> = match session {
-        Some(s) => s
-            .list_user_profiles()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(name, _)| SharedString::from(name))
-            .collect(),
+    let user_profiles = match session {
+        Some(s) => s.list_user_profiles().await.unwrap_or_default(),
         None => Vec::new(),
     };
 
+    let mut user_profile_by_uuid = HashMap::new();
+    if let Some(s) = session {
+        for tv in &tvs {
+            if let Ok(profile) = s.get_tv_user_profile(&tv.uuid).await {
+                user_profile_by_uuid.insert(tv.uuid.clone(), profile);
+            }
+        }
+    }
+
+    Ok(convert_snapshot(SnapshotInputs {
+        tvs,
+        system_profiles,
+        user_profiles,
+        user_profile_by_uuid,
+    }))
+}
+
+/// Pure renderer: shape `SnapshotInputs` (per-TV info + profile
+/// lists + per-TV user-profile assignments) into the `StateSnapshot`
+/// the GUI consumes. No IO; testable without an event loop.
+pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
+    let SnapshotInputs {
+        tvs,
+        system_profiles,
+        user_profiles,
+        user_profile_by_uuid,
+    } = inputs;
+
     let mut models = Vec::with_capacity(tvs.len());
     for tv in tvs {
-        let user_profile = match session {
-            Some(s) => s
-                .get_tv_user_profile(&tv.uuid)
-                .await
-                .ok()
-                .unwrap_or_default(),
-            None => String::new(),
-        };
+        let user_profile = user_profile_by_uuid
+            .get(&tv.uuid)
+            .cloned()
+            .unwrap_or_default();
 
         let available_input_ids: Vec<SharedString> = tv
             .inputs
@@ -156,9 +190,227 @@ pub(crate) async fn fetch_state(
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
 
-    Ok(StateSnapshot {
+    let system_profiles = system_profiles
+        .into_iter()
+        .map(|(name, _)| SharedString::from(name))
+        .collect();
+    let user_profiles = user_profiles
+        .into_iter()
+        .map(|(name, _)| SharedString::from(name))
+        .collect();
+
+    StateSnapshot {
         tvs: models,
         system_profiles,
         user_profiles,
-    })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tisvlay_core::{DesktopMapping, HardwareId};
+
+    /// Build a `TvInfo` with sensible defaults so each test only
+    /// names the fields it cares about. `TvInfo` doesn't derive
+    /// `Default` upstream (its fields would all be valid as defaults
+    /// but the type's home crate hasn't opted in).
+    fn sample_tv(uuid: &str, name: &str) -> TvInfo {
+        TvInfo {
+            uuid: uuid.into(),
+            name: name.into(),
+            vendor: "lg".into(),
+            connected: false,
+            managed: false,
+            automated: false,
+            system_profile: String::new(),
+            primary_input: String::new(),
+            hardware_id: HardwareId::default(),
+            vendor_config: Vec::new(),
+            vendor_info: Vec::new(),
+            desktop: DesktopMapping::default(),
+            path: String::new(),
+            power_state: "unknown".into(),
+            supports_wake: false,
+            is_screen_on: false,
+            volume: 0,
+            muted: false,
+            current_input: String::new(),
+            backlight: 0,
+            inputs: Vec::new(),
+        }
+    }
+
+    fn empty_inputs() -> SnapshotInputs {
+        SnapshotInputs {
+            tvs: Vec::new(),
+            system_profiles: Vec::new(),
+            user_profiles: Vec::new(),
+            user_profile_by_uuid: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn empty_inputs_produce_empty_snapshot() {
+        let snap = convert_snapshot(empty_inputs());
+        assert!(snap.tvs.is_empty());
+        assert!(snap.system_profiles.is_empty());
+        assert!(snap.user_profiles.is_empty());
+    }
+
+    #[test]
+    fn single_tv_round_trips_through_conversion() {
+        let mut tv = sample_tv("uuid-1", "Living Room");
+        tv.connected = true;
+        tv.power_state = "active".into();
+        tv.volume = 42;
+        tv.backlight = 80;
+        tv.muted = true;
+        tv.is_screen_on = true;
+        tv.current_input = "HDMI_2".into();
+        tv.inputs = vec![
+            ("HDMI_1".into(), "HDMI 1".into()),
+            ("HDMI_2".into(), "HDMI 2".into()),
+        ];
+        tv.system_profile = "default".into();
+        tv.hardware_id = HardwareId {
+            manufacturer: Some("GSM".into()),
+            model: Some("OLED65G4SUB".into()),
+            serial: Some("XYZ123".into()),
+        };
+
+        let inputs = SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+
+        assert_eq!(snap.tvs.len(), 1);
+        let row = &snap.tvs[0];
+        assert_eq!(row.uuid.as_str(), "uuid-1");
+        assert_eq!(row.name.as_str(), "Living Room");
+        assert!(row.connected);
+        assert_eq!(row.power_state.as_str(), "active");
+        assert_eq!(row.volume, 42);
+        assert_eq!(row.backlight, 80);
+        assert!(row.muted);
+        assert!(row.is_screen_on);
+        assert_eq!(row.current_input.as_str(), "HDMI_2");
+        assert_eq!(
+            row.available_input_ids,
+            vec![SharedString::from("HDMI_1"), SharedString::from("HDMI_2")]
+        );
+        assert_eq!(row.system_profile.as_str(), "default");
+        assert_eq!(row.hw_manufacturer.as_str(), "GSM");
+        assert_eq!(row.hw_model.as_str(), "OLED65G4SUB");
+        assert_eq!(row.hw_serial.as_str(), "XYZ123");
+    }
+
+    #[test]
+    fn missing_hardware_id_fields_become_empty_strings() {
+        let tv = sample_tv("uuid-1", "TV");
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        let row = &snap.tvs[0];
+        assert_eq!(row.hw_manufacturer.as_str(), "");
+        assert_eq!(row.hw_model.as_str(), "");
+        assert_eq!(row.hw_serial.as_str(), "");
+    }
+
+    #[test]
+    fn primary_descriptor_prefers_vendor_config_first_entry() {
+        let mut tv = sample_tv("uuid-1", "TV");
+        tv.vendor_config = vec![
+            ("ip".into(), "192.168.1.10".into()),
+            ("mac".into(), "AA:BB:CC:DD:EE:FF".into()),
+        ];
+        tv.vendor_info = vec![("scheme".into(), "wss".into())];
+
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        assert_eq!(snap.tvs[0].primary_descriptor.as_str(), "192.168.1.10");
+    }
+
+    #[test]
+    fn primary_descriptor_falls_back_to_vendor_info_when_config_empty() {
+        let mut tv = sample_tv("uuid-1", "TV");
+        // vendor_config empty; vendor_info has the only candidate.
+        tv.vendor_info = vec![("scheme".into(), "wss".into())];
+
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        assert_eq!(snap.tvs[0].primary_descriptor.as_str(), "wss");
+    }
+
+    #[test]
+    fn primary_descriptor_empty_when_both_lists_empty() {
+        let tv = sample_tv("uuid-1", "TV");
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        assert_eq!(snap.tvs[0].primary_descriptor.as_str(), "");
+    }
+
+    #[test]
+    fn tvs_sort_by_name_alphabetically() {
+        let inputs = SnapshotInputs {
+            tvs: vec![
+                sample_tv("uuid-c", "Bedroom"),
+                sample_tv("uuid-a", "Office"),
+                sample_tv("uuid-b", "Attic"),
+            ],
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        let names: Vec<_> = snap.tvs.iter().map(|t| t.name.to_string()).collect();
+        assert_eq!(names, vec!["Attic", "Bedroom", "Office"]);
+    }
+
+    #[test]
+    fn user_profile_assignment_resolves_by_uuid() {
+        let inputs = SnapshotInputs {
+            tvs: vec![
+                sample_tv("uuid-a", "TV-A"),
+                sample_tv("uuid-b", "TV-B"),
+            ],
+            user_profile_by_uuid: HashMap::from([
+                ("uuid-a".into(), "movies".into()),
+                // uuid-b deliberately absent — surfaces as "" below.
+            ]),
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        let by_uuid: HashMap<_, _> = snap
+            .tvs
+            .iter()
+            .map(|t| (t.uuid.to_string(), t.user_profile.to_string()))
+            .collect();
+        assert_eq!(by_uuid["uuid-a"], "movies");
+        assert_eq!(by_uuid["uuid-b"], "");
+    }
+
+    #[test]
+    fn profile_lists_drop_descriptions_and_keep_names() {
+        let inputs = SnapshotInputs {
+            system_profiles: vec![
+                ("default".into(), "Default profile".into()),
+                ("evening".into(), "Dim + warm".into()),
+            ],
+            user_profiles: vec![("movies".into(), "User: dark".into())],
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        assert_eq!(
+            snap.system_profiles,
+            vec![SharedString::from("default"), SharedString::from("evening")]
+        );
+        assert_eq!(snap.user_profiles, vec![SharedString::from("movies")]);
+    }
 }
