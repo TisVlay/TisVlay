@@ -60,9 +60,9 @@ jobs:
             --skip clippy
             --skip test
 
-      - name: Clippy
-        run: just clippy
-
+      # Single instrumented build for clippy + tests + doc tests +
+      # coverage report — see `just test-ci` and
+      # `docs/plans/ci-shared-target.md` for the show-env design.
       - name: Test
         run: just test-ci
 

@@ -65,9 +65,9 @@ Lift the literal `tisvlay-backends/mock,tisvlayd/mock` into a `ci_features` just
 | 1 | Add `ci_features := "..."` justfile variable + comment block | done | Defined alongside test-ci recipe; comment block carries rationale + extension triggers. |
 | 2 | Switch existing `_cov-collect` and `test-ci` cargo invocations to `{{ ci_features }}` (still using current pipeline shape) | done | All four call sites updated. Also fixed `_cov-collect`'s doc-test step which still used `--all-features` (inconsistent with the test-ci fix from the previous sprint). Verified: `just test-ci` passes locally, coverage 52.48% unchanged. |
 | 3 | Refactor `test-ci` to the `cargo llvm-cov show-env` single-build shape (clippy + nextest + doc-test under instrumentation) | done | Multi-line bash recipe under `#!/usr/bin/env bash`; `eval "$(cargo llvm-cov show-env --export-prefix)"` exports RUSTFLAGS + CARGO_TARGET_DIR; clippy / nextest / doc-test all share `target/llvm-cov-target/`. Cold local wall: **97 s** (single-target single-pass). Coverage 52.27% (was 52.48%; -0.21 pp, well above 52 ratchet). 328/328 tests still run. |
-| 4 | Update `.github/workflows/ci.yml` — drop the separate `Clippy` step; `Test` step alone now covers both | todo | Watch CI run for the wall-time delta. |
-| 5 | Update `docs/testing.md` and `CLAUDE.md` with pointers | todo | One-line each. |
-| 6 | Measure: cold CI wall before vs after; record in this plan's discussion log | todo | Compare against the most recent green CI run on `master`. |
+| 4 | Update `.github/workflows/ci.yml` — drop the separate `Clippy` step; `Test` step alone now covers both | done | Single `Test` step running `just test-ci` now covers everything. Comment in the workflow points back at the recipe + plan. |
+| 5 | Update `docs/testing.md` and `CLAUDE.md` with pointers | done | Short paragraph in `docs/testing.md` `## Coverage` section and a comment in `CLAUDE.md`'s `## Linting & CI`. Both link back to this plan and to `ci_features`. |
+| 6 | Measure: cold CI wall before vs after; record in this plan's discussion log | todo | Wait for first push to compare against the most recent green CI run on `master`. |
 
 ## Risks / unknowns to watch
 
