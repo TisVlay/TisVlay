@@ -51,22 +51,33 @@ test:
 #   `<crate>/mock` here.
 ci_features := "tisvlay-backends/mock,tisvlayd/mock"
 
-# Run tests under coverage instrumentation (CI): produces JUnit XML
-# via the 'ci' nextest profile, coverage data, then generates
-# lcov.info and checks the ratchet - all from one test run. Doc tests
-# run separately without coverage (stable rustc doesn't support
-# doctest coverage).
+# Run the full check pipeline (clippy + tests + doc tests + coverage
+# report) under a single coverage-instrumented build. `cargo llvm-cov
+# show-env --export-prefix` exports RUSTFLAGS=-C instrument-coverage
+# and CARGO_TARGET_DIR=target/llvm-cov-target/; the subsequent cargo
+# commands all share that target dir. Without this, clippy and the
+# coverage build would each compile the workspace independently
+# (different RUSTFLAGS → different cargo fingerprints, no artifact
+# reuse). See `docs/plans/ci-shared-target.md` for the design and
+# upstream tracking.
 #
 # `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the instrumented
 # `target/llvm-cov-target/` to fit the runner's free-disk ceiling.
-# `llvm-cov` only needs line tables to map regions to source; full
-# DWARF is overkill.
+# `llvm-cov` only needs line tables to map regions to source.
+#
+# Doc tests run under the same env, but stable rustc doesn't emit
+# coverage data for doctest harnesses — they execute but don't
+# contribute to the report.
 [group('check')]
 test-ci:
-    NEXTEST_PROFILE=ci \
-        CARGO_PROFILE_DEV_DEBUG=line-tables-only \
-        cargo llvm-cov --no-report nextest --workspace \
-            --features {{ ci_features }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CARGO_PROFILE_DEV_DEBUG=line-tables-only
+    export NEXTEST_PROFILE=ci
+    eval "$(cargo llvm-cov show-env --export-prefix)"
+    cargo clippy --workspace --all-targets \
+        --features {{ ci_features }} -- -D warnings
+    cargo nextest run --workspace --features {{ ci_features }}
     cargo test --workspace --features {{ ci_features }} --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
     cargo llvm-cov report {{ cov_exclude }} \

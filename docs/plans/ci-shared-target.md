@@ -64,7 +64,7 @@ Lift the literal `tisvlay-backends/mock,tisvlayd/mock` into a `ci_features` just
 |---|---|---|---|
 | 1 | Add `ci_features := "..."` justfile variable + comment block | done | Defined alongside test-ci recipe; comment block carries rationale + extension triggers. |
 | 2 | Switch existing `_cov-collect` and `test-ci` cargo invocations to `{{ ci_features }}` (still using current pipeline shape) | done | All four call sites updated. Also fixed `_cov-collect`'s doc-test step which still used `--all-features` (inconsistent with the test-ci fix from the previous sprint). Verified: `just test-ci` passes locally, coverage 52.48% unchanged. |
-| 3 | Refactor `test-ci` to the `cargo llvm-cov show-env` single-build shape (clippy + nextest + doc-test under instrumentation) | todo | The actual win. |
+| 3 | Refactor `test-ci` to the `cargo llvm-cov show-env` single-build shape (clippy + nextest + doc-test under instrumentation) | done | Multi-line bash recipe under `#!/usr/bin/env bash`; `eval "$(cargo llvm-cov show-env --export-prefix)"` exports RUSTFLAGS + CARGO_TARGET_DIR; clippy / nextest / doc-test all share `target/llvm-cov-target/`. Cold local wall: **97 s** (single-target single-pass). Coverage 52.27% (was 52.48%; -0.21 pp, well above 52 ratchet). 328/328 tests still run. |
 | 4 | Update `.github/workflows/ci.yml` — drop the separate `Clippy` step; `Test` step alone now covers both | todo | Watch CI run for the wall-time delta. |
 | 5 | Update `docs/testing.md` and `CLAUDE.md` with pointers | todo | One-line each. |
 | 6 | Measure: cold CI wall before vs after; record in this plan's discussion log | todo | Compare against the most recent green CI run on `master`. |
@@ -82,6 +82,7 @@ Append findings as we go. Keep terse — full data lives in CI logs.
 
 - **2026-05-09** — plan drafted. No steps started yet.
 - **2026-05-09 — steps 1–2** (centralize `ci_features`): pure refactor, four call sites unified (`test-ci` × 2, `_cov-collect` × 2). Side-fix: `_cov-collect`'s doc-test step was still on `--all-features`, missed in the previous sprint's `test-ci` fix; aligned to `ci_features` for consistency. Behavior preserved (`just test-ci` passes, coverage 52.48%, ratchet baseline 52).
+- **2026-05-09 — step 3** (`show-env` single build): swapped `test-ci` to a multi-line bash recipe that `eval`s `cargo llvm-cov show-env --export-prefix`, then runs clippy, nextest, doc-test, and the two report invocations under the same exported env. All artifacts share `target/llvm-cov-target/`. Cold local wall: **97 s** (vs ~100 s for the previous test-ci alone, BEFORE separately running `just clippy`'s ~50–60 s on top). 328/328 tests pass. Coverage shifted 52.48% → 52.27% — likely from clippy's `--all-targets` instrumented compile producing slightly different region/line counts than nextest alone; still solidly above the 52 ratchet, no test count change. Will see the real CI delta on next push (CI's 2-core runner gives a much bigger asymmetry than the 32-core local box).
 
 ## Out of scope
 
