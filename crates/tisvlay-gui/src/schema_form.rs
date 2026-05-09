@@ -296,7 +296,13 @@ mod tests {
         }
     }
 
-    fn row(name: &str, field_type: &str, required: bool, value: &str, state: &str) -> PairingFieldRow {
+    fn row(
+        name: &str,
+        field_type: &str,
+        required: bool,
+        value: &str,
+        state: &str,
+    ) -> PairingFieldRow {
         PairingFieldRow {
             name: SharedString::from(name),
             label: SharedString::default(),
@@ -520,7 +526,8 @@ mod tests {
             row("retries", "int", false, "5", "valid"),
             row("ip", "ip", true, "10.0.0.1", "valid"),
         ]);
-        let parsed: serde_json::Value = serde_json::from_str(&build_config_json_from_schema(&m)).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&build_config_json_from_schema(&m)).unwrap();
         assert_eq!(parsed["automated"], serde_json::Value::Bool(true));
         assert_eq!(parsed["port"].as_i64(), Some(3001));
         assert_eq!(parsed["retries"].as_i64(), Some(5));
@@ -530,7 +537,11 @@ mod tests {
     #[test]
     fn build_config_json_falls_back_to_string_for_unparseable_numerics() {
         let m = model(vec![row("port", "port", false, "not-a-number", "invalid")]);
-        let parsed: serde_json::Value = serde_json::from_str(&build_config_json_from_schema(&m)).unwrap();
-        assert_eq!(parsed["port"], serde_json::Value::String("not-a-number".into()));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&build_config_json_from_schema(&m)).unwrap();
+        assert_eq!(
+            parsed["port"],
+            serde_json::Value::String("not-a-number".into())
+        );
     }
 }

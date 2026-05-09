@@ -376,10 +376,7 @@ mod tests {
     #[test]
     fn user_profile_assignment_resolves_by_uuid() {
         let inputs = SnapshotInputs {
-            tvs: vec![
-                sample_tv("uuid-a", "TV-A"),
-                sample_tv("uuid-b", "TV-B"),
-            ],
+            tvs: vec![sample_tv("uuid-a", "TV-A"), sample_tv("uuid-b", "TV-B")],
             user_profile_by_uuid: HashMap::from([
                 ("uuid-a".into(), "movies".into()),
                 // uuid-b deliberately absent — surfaces as "" below.
