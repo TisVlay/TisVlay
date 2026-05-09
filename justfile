@@ -123,7 +123,7 @@ i18n-update: i18n-extract
 # --- Coverage -----------------------------------------------------------
 
 # Baseline line-coverage percentage. Bump on PRs that improve coverage.
-cov_baseline_lines := "49"
+cov_baseline_lines := "52"
 
 # Exclude test infrastructure from coverage reports - measure production
 # code only. Matches crate names and test-only modules.
