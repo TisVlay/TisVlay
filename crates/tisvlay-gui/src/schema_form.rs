@@ -282,3 +282,255 @@ pub fn build_config_json_from_schema(model: &ModelRc<PairingFieldRow>) -> String
     }
     serde_json::Value::Object(obj).to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn field(name: &str, field_type: PairingFieldType, required: bool) -> PairingField {
+        PairingField {
+            name: name.into(),
+            field_type,
+            required,
+            ..Default::default()
+        }
+    }
+
+    fn row(name: &str, field_type: &str, required: bool, value: &str, state: &str) -> PairingFieldRow {
+        PairingFieldRow {
+            name: SharedString::from(name),
+            label: SharedString::default(),
+            helper: SharedString::default(),
+            field_type: SharedString::from(field_type),
+            required,
+            placeholder: SharedString::default(),
+            options: ModelRc::new(VecModel::<SharedString>::default()),
+            value: SharedString::from(value),
+            state: SharedString::from(state),
+            error: SharedString::default(),
+        }
+    }
+
+    fn model(rows: Vec<PairingFieldRow>) -> ModelRc<PairingFieldRow> {
+        ModelRc::new(VecModel::from(rows))
+    }
+
+    // ---------- parse_field_type ----------
+
+    #[test]
+    fn parse_field_type_maps_known_kebab_strings() {
+        for (input, expected) in [
+            ("password", PairingFieldType::Password),
+            ("ip", PairingFieldType::Ip),
+            ("mac", PairingFieldType::Mac),
+            ("port", PairingFieldType::Port),
+            ("int", PairingFieldType::Int),
+            ("bool", PairingFieldType::Bool),
+            ("select", PairingFieldType::Select),
+            ("path", PairingFieldType::Path),
+        ] {
+            assert_eq!(parse_field_type(input), expected, "input={input}");
+        }
+    }
+
+    #[test]
+    fn parse_field_type_falls_back_to_string_for_unknown() {
+        // Forward-compat: a future schema variant the GUI hasn't
+        // learned about yet still renders, treated as plain text.
+        assert_eq!(parse_field_type("future-field"), PairingFieldType::String);
+        assert_eq!(parse_field_type(""), PairingFieldType::String);
+    }
+
+    // ---------- validate_value ----------
+
+    #[test]
+    fn validate_value_pristine_when_empty_and_optional() {
+        let (state, error) = validate_value("ip", PairingFieldType::Ip, false, &[], "");
+        assert_eq!(state, "pristine");
+        assert!(error.is_empty());
+    }
+
+    #[test]
+    fn validate_value_invalid_when_empty_and_required() {
+        let (state, _err) = validate_value("ip", PairingFieldType::Ip, true, &[], "");
+        assert_eq!(state, "invalid");
+    }
+
+    #[test]
+    fn validate_value_routes_typed_errors_through_invalid_vendor_config() {
+        let (state, error) = validate_value("ip", PairingFieldType::Ip, true, &[], "not-an-ip");
+        assert_eq!(state, "invalid");
+        assert!(!error.is_empty(), "should surface a reason");
+    }
+
+    #[test]
+    fn validate_value_passes_well_formed_inputs() {
+        let cases = [
+            ("ip", PairingFieldType::Ip, "192.168.1.10"),
+            ("mac", PairingFieldType::Mac, "AA:BB:CC:DD:EE:FF"),
+            ("port", PairingFieldType::Port, "3000"),
+            ("int", PairingFieldType::Int, "42"),
+            ("bool", PairingFieldType::Bool, "true"),
+        ];
+        for (name, ty, value) in cases {
+            let (state, _err) = validate_value(name, ty, true, &[], value);
+            assert_eq!(state, "valid", "{name}={value} should validate");
+        }
+    }
+
+    #[test]
+    fn validate_value_select_must_match_an_option() {
+        let opts = vec!["wss".into(), "ws".into()];
+        let (ok, _) = validate_value("scheme", PairingFieldType::Select, true, &opts, "wss");
+        assert_eq!(ok, "valid");
+        let (bad, _) = validate_value("scheme", PairingFieldType::Select, true, &opts, "smtp");
+        assert_eq!(bad, "invalid");
+    }
+
+    // ---------- autofill_schema ----------
+
+    #[test]
+    fn autofill_schema_uses_field_default_without_directives() {
+        let mut f = field("name", PairingFieldType::String, false);
+        f.default = "Living Room".into();
+        let rows = autofill_schema(&[f], &HashMap::new(), "");
+        assert_eq!(rows[0].value, "Living Room");
+    }
+
+    #[test]
+    fn autofill_schema_resolves_discovery_keys() {
+        let mut f = field("scheme", PairingFieldType::String, false);
+        f.autofill = "discovery.scheme".into();
+        let vendor = HashMap::from([("scheme".to_string(), "wss".to_string())]);
+        let rows = autofill_schema(&[f], &vendor, "");
+        assert_eq!(rows[0].value, "wss");
+    }
+
+    #[test]
+    fn autofill_schema_falls_back_to_address_for_discovery_ip_alias() {
+        // `autofill = "discovery.ip"` with empty vendor_data uses the
+        // discovered SSDP address. Same for `discovery.address`.
+        let mut f = field("ip", PairingFieldType::Ip, true);
+        f.autofill = "discovery.ip".into();
+        let rows = autofill_schema(&[f], &HashMap::new(), "192.168.1.10");
+        assert_eq!(rows[0].value, "192.168.1.10");
+    }
+
+    #[test]
+    fn autofill_schema_seeds_address_for_conventionally_named_fields() {
+        // Field literally named "ip" / "address" gets the SSDP address
+        // even without an explicit `autofill` directive.
+        let f = field("ip", PairingFieldType::Ip, true);
+        let rows = autofill_schema(&[f], &HashMap::new(), "192.168.1.10");
+        assert_eq!(rows[0].value, "192.168.1.10");
+    }
+
+    #[test]
+    fn autofill_schema_leaves_value_empty_when_no_source_matches() {
+        let f = field("port", PairingFieldType::Port, false);
+        let rows = autofill_schema(&[f], &HashMap::new(), "192.168.1.10");
+        assert_eq!(rows[0].value, "");
+    }
+
+    // ---------- prefill_schema_from_config ----------
+
+    #[test]
+    fn prefill_schema_from_config_projects_string_values() {
+        let f = field("ip", PairingFieldType::Ip, true);
+        let cfg = serde_json::json!({ "ip": "10.0.0.5" });
+        let rows = prefill_schema_from_config(&[f], &cfg);
+        assert_eq!(rows[0].value, "10.0.0.5");
+    }
+
+    #[test]
+    fn prefill_schema_from_config_stringifies_numbers_and_bools() {
+        let port = field("port", PairingFieldType::Port, false);
+        let auto = field("automated", PairingFieldType::Bool, false);
+        let cfg = serde_json::json!({ "port": 3001, "automated": true });
+        let rows = prefill_schema_from_config(&[port, auto], &cfg);
+        assert_eq!(rows[0].value, "3001");
+        assert_eq!(rows[1].value, "true");
+    }
+
+    #[test]
+    fn prefill_schema_from_config_falls_back_to_default_for_missing_or_empty() {
+        let mut f = field("ip", PairingFieldType::Ip, false);
+        f.default = "0.0.0.0".into();
+        let missing = serde_json::json!({});
+        let rows = prefill_schema_from_config(&[f.clone()], &missing);
+        assert_eq!(rows[0].value, "0.0.0.0");
+
+        let empty = serde_json::json!({ "ip": "" });
+        let rows = prefill_schema_from_config(&[f.clone()], &empty);
+        assert_eq!(rows[0].value, "0.0.0.0");
+
+        let null = serde_json::json!({ "ip": null });
+        let rows = prefill_schema_from_config(&[f], &null);
+        assert_eq!(rows[0].value, "0.0.0.0");
+    }
+
+    // ---------- compute_schema_valid ----------
+
+    #[test]
+    fn compute_schema_valid_all_valid_rows_return_true() {
+        let m = model(vec![
+            row("ip", "ip", true, "10.0.0.1", "valid"),
+            row("port", "port", false, "3001", "valid"),
+        ]);
+        assert!(compute_schema_valid(&m));
+    }
+
+    #[test]
+    fn compute_schema_valid_required_empty_returns_false() {
+        let m = model(vec![row("ip", "ip", true, "", "pristine")]);
+        assert!(!compute_schema_valid(&m));
+    }
+
+    #[test]
+    fn compute_schema_valid_optional_empty_returns_true() {
+        let m = model(vec![row("port", "port", false, "", "pristine")]);
+        assert!(compute_schema_valid(&m));
+    }
+
+    #[test]
+    fn compute_schema_valid_invalid_state_returns_false() {
+        let m = model(vec![row("ip", "ip", true, "not-an-ip", "invalid")]);
+        assert!(!compute_schema_valid(&m));
+    }
+
+    // ---------- build_config_json_from_schema ----------
+
+    #[test]
+    fn build_config_json_skips_empty_optional_rows() {
+        let m = model(vec![
+            row("ip", "ip", true, "10.0.0.1", "valid"),
+            row("name", "string", false, "", "pristine"),
+        ]);
+        let json = build_config_json_from_schema(&m);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["ip"], "10.0.0.1");
+        assert!(parsed.get("name").is_none(), "empty optional row dropped");
+    }
+
+    #[test]
+    fn build_config_json_emits_typed_scalars_for_bool_and_numeric() {
+        let m = model(vec![
+            row("automated", "bool", false, "true", "valid"),
+            row("port", "port", false, "3001", "valid"),
+            row("retries", "int", false, "5", "valid"),
+            row("ip", "ip", true, "10.0.0.1", "valid"),
+        ]);
+        let parsed: serde_json::Value = serde_json::from_str(&build_config_json_from_schema(&m)).unwrap();
+        assert_eq!(parsed["automated"], serde_json::Value::Bool(true));
+        assert_eq!(parsed["port"].as_i64(), Some(3001));
+        assert_eq!(parsed["retries"].as_i64(), Some(5));
+        assert_eq!(parsed["ip"], serde_json::Value::String("10.0.0.1".into()));
+    }
+
+    #[test]
+    fn build_config_json_falls_back_to_string_for_unparseable_numerics() {
+        let m = model(vec![row("port", "port", false, "not-a-number", "invalid")]);
+        let parsed: serde_json::Value = serde_json::from_str(&build_config_json_from_schema(&m)).unwrap();
+        assert_eq!(parsed["port"], serde_json::Value::String("not-a-number".into()));
+    }
+}
