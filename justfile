@@ -38,21 +38,34 @@ test:
 # checks the ratchet - all from one test run. Doc tests run separately
 # without coverage (stable rustc doesn't support doctest coverage).
 #
-# `--all-features` is *omitted* from the instrumented run on purpose:
-# `tisvlay-gui`'s `dev-mcp` Cargo feature pulls in
-# `i-slint-backend-selector` MCP-server code that's dev-only (AI
-# introspection during local development), and combined with coverage
-# instrumentation tips GitHub's `ubuntu-latest` runner (~7 GB RAM) over
-# its link-memory ceiling. `just build` runs `--all-targets --all-features`
-# without instrumentation to catch feature-flag breakage, and the
-# doc-test line below keeps `--all-features` because it doesn't link
-# the bin so it doesn't OOM.
+# Two cargo-flag choices accommodate GitHub `ubuntu-latest`'s
+# resource ceilings:
+#
+# - `--features tisvlay-backends/mock,tisvlayd/mock` instead of
+#   `--all-features`. `tisvlay-gui`'s `dev-mcp` feature pulls in
+#   dev-only MCP-server code that combined with coverage
+#   instrumentation OOMs the runner's linker. Naming `mock`
+#   explicitly preserves the coverage signal from feature-gated test
+#   binaries without re-pulling `dev-mcp`'s surface.
+#
+# - `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the
+#   instrumented `target/llvm-cov-target/` to fit the runner's
+#   free-disk ceiling. `llvm-cov` only needs line tables to map
+#   regions to source; full DWARF is overkill.
+#
+# `just build` runs `--all-targets --all-features` without coverage
+# instrumentation to catch feature-flag breakage; doc tests keep
+# `--all-features` because they don't link the bin.
 [group('check')]
 test-ci:
-    NEXTEST_PROFILE=ci cargo llvm-cov --no-report nextest --workspace
+    NEXTEST_PROFILE=ci \
+        CARGO_PROFILE_DEV_DEBUG=line-tables-only \
+        cargo llvm-cov --no-report nextest --workspace \
+            --features tisvlay-backends/mock,tisvlayd/mock
     cargo test --workspace --all-features --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
-    cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ cov_baseline_lines }} --summary-only
+    cargo llvm-cov report {{ cov_exclude }} \
+        --fail-under-lines {{ cov_baseline_lines }} --summary-only
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
@@ -140,11 +153,13 @@ cov_baseline_lines := "52"
 cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock|harness)/|test_server)'"
 
 # Run tests under coverage instrumentation (shared by all cov-* recipes).
-# Mirrors `test-ci` — see that recipe's comment for why `--all-features`
-# is omitted from the instrumented run.
+# Mirrors `test-ci` — see that recipe's comment for the feature flag
+# choice and the `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale.
 [private]
 _cov-collect:
-    cargo llvm-cov --no-report nextest --workspace
+    CARGO_PROFILE_DEV_DEBUG=line-tables-only \
+        cargo llvm-cov --no-report nextest --workspace \
+            --features tisvlay-backends/mock,tisvlayd/mock
     cargo test --workspace --all-features --doc
 
 # Text summary of workspace coverage
@@ -184,9 +199,8 @@ cov-ratchet lines=cov_baseline_lines: _cov-collect
 bus := env("BUS", "user")
 
 # GUI only. "true" → build with the `dev-mcp` Cargo feature and start
-# the Slint MCP server on http://127.0.0.1:9315/mcp. Note that
-# `SLINT_EMIT_DEBUG_INFO=1` must be set at *build time*, not just at
-# runtime — the element tree is dead without it. See `.claude/slint.md`.
+# the Slint MCP server on http://127.0.0.1:9315/mcp. See
+# `.claude/slint.md`.
 gui_mcp := env("GUI_MCP", "false")
 
 _daemon_log := "debug,zbus=warn,rustls=warn,tungstenite=warn"
@@ -209,15 +223,21 @@ daemon-start:
     set -euo pipefail
     if [ "{{ bus }}" = "system" ]; then
         cargo build --bin tisvlayd
-        RUST_LOG="{{ _daemon_log }}" sudo -E ./target/debug/tisvlayd --config docs/configs/daemon.toml
+        RUST_LOG="{{ _daemon_log }}" \
+            sudo -E ./target/debug/tisvlayd \
+                --config docs/configs/daemon.toml
     else
-        RUST_LOG="{{ _daemon_log }}" cargo run --bin tisvlayd -- --session --config docs/configs/daemon.toml
+        RUST_LOG="{{ _daemon_log }}" \
+            cargo run --bin tisvlayd -- --session \
+                --config docs/configs/daemon.toml
     fi
 
 # Start the session service.
 [group('dev')]
 session-start:
-    RUST_LOG="{{ _session_log }}" cargo run --bin tisvlay-session -- {{ _user_flag }} --config docs/configs/session.toml
+    RUST_LOG="{{ _session_log }}" \
+        cargo run --bin tisvlay-session -- {{ _user_flag }} \
+            --config docs/configs/session.toml
 
 # Start the tray.
 [group('dev')]
@@ -227,7 +247,7 @@ tray-start:
 # Start the GUI (paired with `daemon-start`).
 [group('dev')]
 gui-start:
-    {{ if gui_mcp == "true" { "SLINT_EMIT_DEBUG_INFO=1 SLINT_MCP_PORT=9315" } else { "" } }} \
+    {{ if gui_mcp == "true" { "SLINT_MCP_PORT=9315" } else { "" } }} \
         RUST_LOG="{{ _gui_log }}" \
         cargo run {{ if gui_mcp == "true" { "--features dev-mcp" } else { "" } }} \
         --bin tisvlay-gui -- {{ _user_flag }}
