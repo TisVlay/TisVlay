@@ -53,13 +53,15 @@ ci_features := "tisvlay-backends/mock,tisvlayd/mock"
 
 # Run the full check pipeline (clippy + tests + doc tests + coverage
 # report) under a single coverage-instrumented build. `cargo llvm-cov
-# show-env --export-prefix` exports RUSTFLAGS=-C instrument-coverage
-# and CARGO_TARGET_DIR=target/llvm-cov-target/; the subsequent cargo
-# commands all share that target dir. Without this, clippy and the
-# coverage build would each compile the workspace independently
-# (different RUSTFLAGS → different cargo fingerprints, no artifact
-# reuse). See `docs/plans/ci-shared-target.md` for the design and
-# upstream tracking.
+# show-env --sh` emits the `export VAR=…` lines for
+# RUSTFLAGS=-C instrument-coverage and
+# CARGO_TARGET_DIR=target/llvm-cov-target/; `eval`-ing them in this
+# bash recipe means subsequent cargo commands all share that target
+# dir. Without this, clippy and the coverage build would each
+# compile the workspace independently (different RUSTFLAGS →
+# different cargo fingerprints, no artifact reuse). See
+# `docs/plans/ci-shared-target.md` for the design and upstream
+# tracking.
 #
 # `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the instrumented
 # `target/llvm-cov-target/` to fit the runner's free-disk ceiling.
@@ -74,7 +76,7 @@ test-ci:
     set -euo pipefail
     export CARGO_PROFILE_DEV_DEBUG=line-tables-only
     export NEXTEST_PROFILE=ci
-    eval "$(cargo llvm-cov show-env --export-prefix)"
+    eval "$(cargo llvm-cov show-env --sh)"
     cargo clippy --workspace --all-targets \
         --features {{ ci_features }} -- -D warnings
     cargo nextest run --workspace --features {{ ci_features }}

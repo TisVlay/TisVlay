@@ -10,13 +10,13 @@ Realistic timeline for a stable upstream solution that obsoletes this sprint's w
 
 ## Approach: option (A) — instrumented single build
 
-Run **clippy + nextest + doc-test** all under the same instrumented env via `cargo llvm-cov show-env --export-prefix`. Single target dir. Single feature set. Estimated wall savings ~3–4 min cold CI; estimated disk savings ~4 GB.
+Run **clippy + nextest + doc-test** all under the same instrumented env via `cargo llvm-cov show-env --sh`. Single target dir. Single feature set. Estimated wall savings ~3–4 min cold CI; estimated disk savings ~4 GB.
 
 Pseudo-code for the new `test-ci` recipe shape:
 
 ```
 test-ci:
-    eval "$(cargo llvm-cov show-env --export-prefix)"
+    eval "$(cargo llvm-cov show-env --sh)"
     cargo clippy --workspace --all-targets \
         --features {{ ci_features }} -- -D warnings
     cargo llvm-cov --no-report nextest --workspace \
@@ -74,7 +74,7 @@ Lift the literal `tisvlay-backends/mock,tisvlayd/mock` into a `ci_features` just
 - **Clippy under `-C instrument-coverage`** — no public benchmark for the slowdown on our workspace. If it's > 30% the wall savings narrow.
 - **Clippy lint output under instrumentation** — should be identical (instrumentation is a codegen pass; clippy runs at HIR level). No known reports of mismatch, but worth eyeballing the first CI run.
 - **Disk watermark mid-run** — `cargo clippy` populates `target/llvm-cov-target/` partially before nextest starts. If the partial population peaks bigger than full instrumented build, we could regress disk pressure. Most likely fine but measurable.
-- **`show-env --export-prefix` shell-quoting** — `eval` of its output across `bash -euo pipefail` (justfile shell) needs verification. May need `set -a` or quoting tweaks.
+- **`show-env --sh` shell-quoting** — `eval` of its output across `bash -euo pipefail` (justfile shell) needs verification. May need `set -a` or quoting tweaks.
 
 ## Discussion log
 
@@ -92,7 +92,7 @@ Append findings as we go. Keep terse — full data lives in CI logs.
 
 ## References
 
-- [taiki-e/cargo-llvm-cov `show-env`](https://github.com/taiki-e/cargo-llvm-cov?tab=readme-ov-file#get-coverage-of-cc-code-linked-to-rust-libtest-binary) — the `--export-prefix` flag is the contract this plan rests on.
+- [taiki-e/cargo-llvm-cov `show-env`](https://github.com/taiki-e/cargo-llvm-cov?tab=readme-ov-file#get-coverage-of-cc-code-linked-to-rust-libtest-binary) — the `show-env --sh` invocation is the contract this plan rests on.
 - [cargo issue #8716](https://github.com/rust-lang/cargo/issues/8716) — RUSTFLAGS in fingerprint, the upstream constraint that forces this restructure.
 - Upstream cargo work on the broader artifact-sharing problem (status of these affects when this sprint's workaround can retire):
   - [Rework Cargo Build Dir Layout (issue 401, 2025h2, closed)](https://github.com/rust-lang/rust-project-goals/issues/401) — read the comment thread for the actual shipping cadence.
