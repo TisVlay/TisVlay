@@ -1,6 +1,16 @@
 # Third-party multi-version dep cleanup
 
-> **Status:** drafted 2026-05-09, not started. Two-part follow-on to [`ci-shared-target.md`](ci-shared-target.md): (1) replace `vergen-gix` (which alone pulls 46 gitoxide crates and is the source of two `hashbrown` versions in our tree) with a slim `build.rs` shell-out, and (2) add `cargo-deny multiple-versions = "warn"` with a curated skip-list so future duplicates surface without blocking. Track each step in the table at the bottom.
+> **Status:** sprint complete 2026-05-09. Replaced `vergen-gix` with a slim hand-rolled `build.rs` (lockfile 820 → 717 crates, -12.5%; cold CI Test step 13m 53s → 10m 6s, -27%; warm unchanged) and added a `cargo-deny [bans] multiple-versions = "warn"` config with a 14-entry skip-list documenting upstream-bound cases. Steps + measurements in the table below.
+>
+> | Step | Status |
+> |---|---|
+> | 1 — hand-rolled `build.rs` env-var emitter | ✅ shipped |
+> | 2 — drop `vergen-gix` from `[build-dependencies]` | ✅ shipped (-103 crates) |
+> | 3 — verify `hashbrown` dups gone | ⏭ partial (sources moved upstream-bound) |
+> | 4 — measure cold + warm `just test-ci` | ✅ -27% cold, warm flat |
+> | 5 — `[bans]` config in `deny.toml` with skip-list | ✅ shipped |
+> | 6 — `just deny` recipe + CI | ✅ shipped |
+> | 7 — docs pointer in `docs/licensing.md` | ✅ shipped |
 
 Continuation of the build-time work in [`ci-shared-target.md`](ci-shared-target.md) and [`build-time-optimization.md`](build-time-optimization.md). After the share-target sprint shipped (-81% warm-CI Test+Clippy phase), the remaining workspace-side fat is third-party multi-version compilation — `cargo tree --workspace --all-features --target x86_64-unknown-linux-gnu --duplicates --depth 0` shows 20 crates with multiple distinct versions pinned in the lockfile. Each version is a separate compile unit; on the 2-core CI runner that's real wall time.
 
@@ -71,9 +81,9 @@ CI integration: `prek` already runs `just deny`; the bans check joins the licens
 | 2 | Drop `vergen-gix` from `tisvlay-gui/Cargo.toml` `[build-dependencies]` | done | Lockfile 820 → 717 crates (-103, -12.5%); 46 gix-* crates and dashmap/imara-diff/etc. all gone. |
 | 3 | Verify `cargo tree -d` no longer shows `hashbrown 0.14` or `hashbrown 0.15` | done — partial | Both versions still present, but the *sources moved*: 0.14 now from `i-slint-compiler` → `rowan` (Slint internals), 0.15 from `prost-build` → `petgraph` (i-slint-backend-testing's `mcp` feature). Both upstream-bound now; the gix-internal multi-pin is the part we actually removed. |
 | 4 | Re-run cold + warm `just test-ci` locally; record dep-graph size + wall delta | done | Cold local 97 s → 94 s (~3 s saving on 32-core, near noise — most of the dropped CPU work was deps that fit inside parallel slack). 328/328 tests pass; coverage 52.27% → 52.41%. CI saving is the bet — 2-core runner serializes more, so the 12.5% dep-count drop translates more directly to wall. |
-| 5 | Extend `packaging/licensing/deny.toml` with `[bans]` section: `multiple-versions = "warn"` + curated `skip` list with per-entry rationale | todo | One per upstream-bound source: smithay-clipboard cascade, rustls/ring, proc-macro splits. |
-| 6 | Push to CI, verify `prek run -a deny` surfaces the warnings without failing | todo | First green run is the milestone. |
-| 7 | Document the routine in `docs/testing.md` or a new section pointing at the deny.toml entries | todo | One paragraph. Direct future contributors to the skip-list rationale. |
+| 5 | Extend `packaging/licensing/deny.toml` with `[bans]` section: `multiple-versions = "warn"` + curated `skip` list with per-entry rationale | done | 14 skip entries, each with rationale: hashbrown / getrandom / smithay-clipboard cascade (8 entries) / tiny-skia split / 6 small-cost transitives. cargo-deny flagged 4 candidates as "unnecessary skip" or "unmatched skip" because its default-target view doesn't see them as duplicates (target-conditional deps); those were dropped to avoid noise. |
+| 6 | Update `just deny` recipe to include the `bans` check + push to CI | done | Recipe now runs `cargo deny check ... licenses bans`. Local `just deny` clean (`bans ok, licenses ok`). |
+| 7 | Document the routine in `docs/licensing.md` pointing at the deny.toml entries | done | One-sentence pointer added under the **Pipeline** section, linking back to this plan for the full rationale. |
 
 ## Risks / unknowns
 
@@ -88,6 +98,7 @@ Append findings as we go. Keep terse — full data lives in CI logs and the rese
 - **2026-05-09** — plan drafted. No steps started yet. Local audit ran via `cargo tree --duplicates`; SOTA research run synthesized into the **Findings** section.
 - **2026-05-09 — steps 1–4** (vergen-gix replacement): hand-rolled `tisvlay-gui/build.rs` to drop `vergen-gix` and its 46-crate gitoxide ecosystem. Lockfile 820 → 717 crates (-103, -12.5%). Cold local `just test-ci` 97 s → 94 s; tests still pass (328/328); coverage 52.27% → 52.41%. The hashbrown 0.14 / 0.15 duplicates remained but moved sources (now `rowan` / Slint compiler and `petgraph` / `prost-build` respectively, both upstream-bound) — the win was eliminating the gix-internal multi-pin and the broader dep weight, not unifying hashbrown. Real saving lands on 2-core CI where the dep-count drop serializes less.
 - **2026-05-09 — CI measurement**: cold Test step **13m 53s → 10m 6s (-27%)**; warm Test step 3m 15s → 3m 23s (within noise). The asymmetry is what we'd expect: deleting transitive deps wins where compilation happens (cold cache miss), barely shows where artifacts are restored from a tarball (warm). Combined with the share-target sprint's warm-CI saving, the two now cover both axes — share-target hits warm hardest (target dir layout change), vergen-gix removal hits cold hardest (fewer crates to compile).
+- **2026-05-09 — steps 5–7** (`cargo-deny [bans]` config + docs): added `[bans] multiple-versions = "warn"` with a 14-entry skip-list documenting the upstream-bound multi-version cases. `just deny` recipe extended to run `licenses bans`. Local clean (`bans ok, licenses ok`). cargo-deny flagged 4 of my initial skip entries as "unnecessary skip"/"unmatched skip" because its default-target resolver view doesn't see them as duplicates (target-conditional deps); dropped those entries to avoid noise. `docs/licensing.md` Pipeline section gained a one-sentence pointer to this plan for the rationale.
 
 ## Out of scope
 

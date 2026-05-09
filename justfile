@@ -103,10 +103,14 @@ test-snapshot-accept:
 #
 # Pipeline rationale + maintenance reference: `docs/licensing.md`.
 
-# Enforce the SPDX allow-list on every crate in the workspace dep graph.
+# Enforce the SPDX allow-list (`licenses`) and surface multi-version
+# dep duplication as warnings (`bans`) — see `deny.toml` for the
+# skip-list rationale and `docs/plans/dep-version-dedup.md` for the
+# routine. `bans` is `multiple-versions = "warn"`, so it never
+# fails the build; output is informational.
 [group('check')]
 deny:
-    cargo deny check --config packaging/licensing/deny.toml licenses
+    cargo deny check --config packaging/licensing/deny.toml licenses bans
 
 # Regenerate THIRD-PARTY-LICENSES.html for packaging (gitignored;
 # consumed by the package-* recipes).

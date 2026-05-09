@@ -1,10 +1,10 @@
-# cargo-deny config — license-policy gate. Pipeline rationale +
-# maintenance reference: `docs/licensing.md`.
+# cargo-deny config — license-policy + multi-version-awareness gate.
+# Pipeline rationale + maintenance reference: `docs/licensing.md`.
 #
-# Only the `[licenses]` section is enabled here. The other cargo-deny
-# checks (`bans`, `advisories`, `sources`) are out of scope for the
-# initial attribution scaffolding; they can be enabled in a follow-up
-# if security policy or supply-chain pinning becomes a need.
+# `[licenses]` enforces the SPDX allow-list. `[bans]` surfaces
+# multi-version dep duplication as warnings (non-blocking) with a
+# curated skip-list documenting known-and-accepted offenders. The
+# other cargo-deny checks (`advisories`, `sources`) are out of scope.
 
 [licenses]
 # Near-mirror of about.toml's `accepted` list. The two configs'
@@ -49,4 +49,50 @@ exceptions = [
     { name = "i-slint-renderer-skia", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "option-ext", allow = ["MPL-2.0"] },
     { name = "libfuzzer-sys", allow = ["NCSA"] },
+]
+
+# Multi-version dep duplication. `warn` keeps the build green while
+# surfacing the offender in `just deny` output, so a new duplicate
+# is visible without blocking PRs. The `skip` list documents
+# already-evaluated cases — re-audit when the upstream consumer
+# moves (Slint bumps, rustls/ring updates, etc.). Background:
+# `docs/plans/dep-version-dedup.md`.
+[bans]
+multiple-versions = "warn"
+skip = [
+    # Slint compiler internals — `i-slint-compiler` → `rowan` pins
+    # 0.14; `prost-build` → `petgraph` (via `i-slint-backend-testing`'s
+    # `mcp` feature) pins 0.15. Re-audit on Slint bump.
+    { crate = "hashbrown", reason = "Slint compiler (rowan / prost-build's petgraph)" },
+
+    # rustls/ring keeps `getrandom 0.2`. Switching to aws-lc-rs
+    # changes the dep graph but isn't obviously a win.
+    { crate = "getrandom", reason = "rustls/ring keeps getrandom 0.2" },
+
+    # `smithay-clipboard 0.7.3` pins both SCTK 0.19 and SCTK 0.20
+    # internally; pulled transitively via Slint's `copypasta`. The
+    # SCTK 0.19 path cascades these duplicates. Re-audit on Slint /
+    # smithay-clipboard upgrade.
+    { crate = "smithay-client-toolkit", reason = "smithay-clipboard pins both 0.19 + 0.20" },
+    { crate = "calloop", reason = "smithay-clipboard SCTK 0.19/0.20 split" },
+    { crate = "calloop-wayland-source", reason = "smithay-clipboard SCTK 0.19/0.20 split" },
+    { crate = "rustix", reason = "smithay-clipboard SCTK 0.19 path keeps rustix 0.38" },
+    { crate = "linux-raw-sys", reason = "smithay-clipboard SCTK 0.19 path" },
+    { crate = "thiserror", reason = "smithay-clipboard SCTK 0.19 path keeps thiserror 1" },
+    { crate = "thiserror-impl", reason = "thiserror's proc-macro counterpart" },
+
+    # Slint's `resvg` pins `tiny-skia 0.12`; `sctk-adwaita` (via
+    # SCTK 0.19) pins `tiny-skia 0.11`.
+    { crate = "tiny-skia", reason = "resvg 0.12 vs sctk-adwaita 0.11 (SCTK 0.19 path)" },
+    { crate = "tiny-skia-path", reason = "tiny-skia counterpart" },
+
+    # Smaller offenders — single-line attribution lookup hasn't
+    # surfaced an obvious upstream lever, but compile cost is
+    # negligible. Re-audit if any of these become hot.
+    { crate = "dirs-sys", reason = "transitive churn; low compile cost" },
+    { crate = "foldhash", reason = "transitive churn; low compile cost" },
+    { crate = "pastey", reason = "transitive churn; low compile cost" },
+    { crate = "smol_str", reason = "transitive churn; low compile cost" },
+    { crate = "zune-core", reason = "image decoder ecosystem churn" },
+    { crate = "zune-jpeg", reason = "image decoder ecosystem churn" },
 ]
