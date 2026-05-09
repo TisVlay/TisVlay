@@ -5,41 +5,40 @@
 //! pixels — just element-tree queries against the rendered Slint
 //! component graph.
 //!
-//! `slint::include_modules!()` in an integration test compiles the
-//! same `ui/main.slint` graph that `main.rs` does, against the same
-//! `$OUT_DIR` that the package build script populates. Tests
-//! instantiate their own `AppWindow` and exercise it directly; the
-//! binary's Rust callbacks aren't wired here (those are Layer-C
-//! work via `tisvlay-harness::TestGui`).
-
-// Slint's generated `include_modules!()` output trips workspace
-// lints we suppress in `main.rs` for the same reason.
-#![allow(unreachable_pub, missing_debug_implementations)]
-
-slint::include_modules!();
+//! Imports the `AppWindow` and row types from the `tisvlay_gui`
+//! library target. Layer-C end-to-end tests that need a live D-Bus
+//! daemon use `tisvlay_harness::gui::TestGui` instead — see
+//! `tisvlay-harness/tests/gui_*.rs`.
 
 use i_slint_backend_testing::{ElementHandle, ElementQuery};
 use slint::{ModelRc, SharedString, VecModel};
+use tisvlay_gui::{AboutComponentRow, AppWindow, Pane};
 
-/// Mirror of the production `make_about_components` shape with a
-/// pre-canned multi-row state. Tests don't reach into the binary's
-/// `about::make_about_components` (the GUI crate has no library
-/// target to import from); duplication is bounded since the
-/// COMPONENTS schema is small + stable.
+/// Pre-canned multi-row state mirroring `about::make_about_components`'s
+/// production output. Inlined rather than calling the library's
+/// helper because the helper takes a `PeerInfo` (a real D-Bus probe
+/// result); tests want full control over the synthetic shape.
 fn make_synthetic_components() -> Vec<AboutComponentRow> {
-    let row = |name: &str, friendly: &str, bus: &str, online: bool, version: &str| AboutComponentRow {
-        name: SharedString::from(name),
-        friendly_name: SharedString::from(friendly),
-        bus_address: SharedString::from(bus),
-        description: SharedString::from(""),
-        version: SharedString::from(version),
-        tone: SharedString::from("info"),
-        online,
-        config_path: SharedString::from(""),
-    };
+    let row =
+        |name: &str, friendly: &str, bus: &str, online: bool, version: &str| AboutComponentRow {
+            name: SharedString::from(name),
+            friendly_name: SharedString::from(friendly),
+            bus_address: SharedString::from(bus),
+            description: SharedString::from(""),
+            version: SharedString::from(version),
+            tone: SharedString::from("info"),
+            online,
+            config_path: SharedString::from(""),
+        };
     vec![
         row("tisvlayd", "Daemon", "(org.tisvlay.Daemon)", true, "0.1.0"),
-        row("tisvlay-session", "Session", "(org.tisvlay.Session)", true, "0.1.0"),
+        row(
+            "tisvlay-session",
+            "Session",
+            "(org.tisvlay.Session)",
+            true,
+            "0.1.0",
+        ),
         row("tisvlay-tray", "Tray", "(org.tisvlay.Tray)", false, ""),
         row("tisvlay-gui", "GUI", "(org.tisvlay.Gui)", true, "0.1.0"),
         row("tisvlay", "CLI", "", true, "0.1.0"),

@@ -6824,9 +6824,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
+ "i-slint-backend-testing",
+ "slint",
  "tempfile",
  "tisvlay-backends",
  "tisvlay-core",
+ "tisvlay-gui",
  "tisvlay-session",
  "tisvlay-test",
  "tisvlayd",

@@ -21,7 +21,7 @@ use tracing::debug;
 /// Per-TV view-model row in a thread-safe shape (no `Rc` inside).
 /// Converted to the Slint-generated `TvViewModel` inside the event
 /// loop, where `ModelRc::new` is allowed.
-pub(crate) struct TvViewRaw {
+pub struct TvViewRaw {
     pub uuid: SharedString,
     pub name: SharedString,
     pub vendor: SharedString,
@@ -64,7 +64,7 @@ pub(crate) struct TvViewRaw {
 }
 
 /// Snapshot of fetched state for one refresh pass.
-pub(crate) struct StateSnapshot {
+pub struct StateSnapshot {
     pub tvs: Vec<TvViewRaw>,
     pub system_profiles: Vec<SharedString>,
     pub user_profiles: Vec<SharedString>,
@@ -72,7 +72,7 @@ pub(crate) struct StateSnapshot {
 
 /// Pure-data inputs the renderer needs from one IO pass. Decoupled
 /// from D-Bus so [`convert_snapshot`] can be exercised by unit tests.
-pub(crate) struct SnapshotInputs {
+pub struct SnapshotInputs {
     pub tvs: Vec<TvInfo>,
     /// `(name, description)` pairs from `Manager1.ListSystemProfiles`.
     pub system_profiles: Vec<(String, String)>,
@@ -92,7 +92,7 @@ pub(crate) struct SnapshotInputs {
 /// `DaemonClient::list_tvs`), one daemon call for system profiles,
 /// one optional session-bus call for user profiles, and one optional
 /// session-bus call per TV for the user-profile assignment.
-pub(crate) async fn fetch_state(
+pub async fn fetch_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
 ) -> Result<StateSnapshot> {
@@ -126,7 +126,7 @@ pub(crate) async fn fetch_state(
 /// Pure renderer: shape `SnapshotInputs` (per-TV info + profile
 /// lists + per-TV user-profile assignments) into the `StateSnapshot`
 /// the GUI consumes. No IO; testable without an event loop.
-pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
+pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
     let SnapshotInputs {
         tvs,
         system_profiles,

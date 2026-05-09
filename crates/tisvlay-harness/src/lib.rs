@@ -20,5 +20,6 @@
 
 pub mod common;
 pub mod daemon;
+pub mod gui;
 pub mod session;
 pub mod tray;

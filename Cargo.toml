@@ -100,6 +100,7 @@ tisvlay-harness = { path = "crates/tisvlay-harness", version = "0.1.0" }
 # currently bin-only; add here when its lib surface is exposed.
 tisvlayd = { path = "crates/tisvlayd", version = "0.1.0" }
 tisvlay-session = { path = "crates/tisvlay-session", version = "0.1.0" }
+tisvlay-gui = { path = "crates/tisvlay-gui", version = "0.1.0" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml", "filters"] }
