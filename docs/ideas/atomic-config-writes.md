@@ -9,4 +9,3 @@ Scoped out of the Phase 8.1 UUID work because no failure mode has been observed;
 - We add an automated edit pipeline (e.g., GUI batch-edits) where the user wouldn't easily know which edit was in flight.
 
 Implementation is small (~20 LOC: extract a `write_atomic(path, contents)` helper, swap call sites).
-

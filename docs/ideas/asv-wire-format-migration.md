@@ -9,4 +9,3 @@ Triggers for reconsidering:
 3. A vendor config grows nested structure that `a{sv}` would handle awkwardly but JSON would handle cleanly (which would *strengthen* the case for staying on JSON, not weaken it).
 
 Cost of locking in `a{sv}` now is migrating `AddTv` callers during peak-development churn for no concrete user-visible benefit. Cost of staying on JSON is a future wire-flip whose blast radius grows with each shipped consumer. Revisit when the second vendor backend is in flight.
-

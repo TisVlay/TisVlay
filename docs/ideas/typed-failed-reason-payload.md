@@ -9,4 +9,3 @@ Path forward:
 - Migrate `tisvlay-cli` and the GUI's inline-error surface to render the typed variant rather than the raw string.
 
 Useful when the GUI grows kind-based recovery actions ("Edit MAC", "Open firewall settings", etc.) — each action ID is gated on the corresponding `Failed::*` variant.
-

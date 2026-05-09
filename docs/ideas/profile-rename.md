@@ -10,4 +10,3 @@ Path forward when this becomes a concern:
 - GUI-side: rename input on the profile editor with the same validation feedback the new-profile flow has.
 
 Skipped in v1 simply because no user has asked for it; the create-new-then-reassign-then-delete-old workflow covers the same need with three clicks.
-

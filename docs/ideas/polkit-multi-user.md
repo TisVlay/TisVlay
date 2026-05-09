@@ -9,4 +9,3 @@ For multi-user shared workstations (lab machines, family PCs where one user's ed
 3. Document the action IDs in the NixOS module so admins can pin the auth rules per their tenancy model.
 
 No GUI-side changes — polkit prompts surface through the existing freedesktop polkit agent (KDE / GNOME both ship one). Adds zero overhead in the single-user case (polkit's `check_authorization` short-circuits when the caller is root or the daemon's own user).
-

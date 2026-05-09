@@ -11,4 +11,3 @@ Three paths for future research:
 3. **Extend X11 / Wayland protocols.** Lobby for a Wayland protocol that lets non-master clients receive output state notifications across all connectors. Strictly upstream effort, no in-tree work for tisvlay.
 
 The expectation is that someone hits the detached-TV use case in practice, gauges the cost-benefit, and either builds option 1 or accepts a per-TV idle-timer fallback in the event-driven redesign above.
-
