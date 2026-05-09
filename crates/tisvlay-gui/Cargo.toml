@@ -38,7 +38,14 @@ serde_json = { workspace = true }
 #     flamegraph-dominant; the test infra (Slint's testing backend
 #     reads `accessible-*` properties via the internal element tree,
 #     not AT-SPI) doesn't depend on this feature being on.
-slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "compat-1-2", "renderer-femtovg", "gettext"] }
+# Wayland-only winit backend. tisvlay-session's greeter-wake support
+# is already Wayland-only (see `wayland_idle.rs`), so we lean into
+# Wayland-only for the GUI too — that lets us drop the X11 backend's
+# `x11rb-protocol` (10+ s on the cold-build critical path) and several
+# winit/glutin/copypasta X11 paths. X11 users still get the daemon,
+# CLI, and tray (ksni works on X11); only the settings window goes
+# away.
+slint = { version = "1.16", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext"] }
 zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -57,8 +64,10 @@ ashpd = { version = "0.13", default-features = false, features = ["tokio", "sett
 # Clipboard write for the "copy" button on identifier fields (TV ID,
 # serial, MAC, …). Slint exposes a `Platform::set_clipboard_text`
 # trait method but no public app-facing helper, so we go through
-# `arboard` (the de facto Rust clipboard crate).
-arboard = { version = "3", default-features = false }
+# `wl-clipboard-rs`. Wayland-only by design — pairs with the
+# `backend-winit-wayland` Slint feature above to keep `x11rb` out
+# of the build entirely.
+wl-clipboard-rs = "0.9"
 # Localization for Rust-side dynamic strings (errors that surface
 # to the user, schema labels pushed from vendor backends, etc.).
 # Slint's `@tr()` macro covers literal strings inside `.slint`
@@ -90,8 +99,12 @@ libc = "0.2"
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection
 # during dev. Pinned to the exact slint version because the backend
-# selector does not follow semver.
-i-slint-backend-selector = { version = "=1.16.1", features = ["mcp"], optional = true }
+# selector does not follow semver. `default-features = false` is
+# critical — the selector's default is `backend-winit` which is
+# x11+wayland, and unifying that with our Wayland-only slint config
+# would silently re-enable x11rb on `--features dev-mcp` (and thus
+# on `--all-features` builds like `just check`).
+i-slint-backend-selector = { version = "=1.16.1", default-features = false, features = ["mcp"], optional = true }
 
 [features]
 dev-mcp = ["dep:i-slint-backend-selector"]
