@@ -1,6 +1,15 @@
 # CI shared target sprint
 
-> **Status:** drafted 2026-05-09, not started. Restructure `just clippy` + `just test-ci` so they share `target/llvm-cov-target/` instead of compiling the workspace twice with different rustflags. Centralize the `mock`-only feature subset so it can't drift across recipes. Track each step in the table at the bottom.
+> **Status:** sprint complete 2026-05-09. Cumulative warm-CI saving on the Test+Clippy phase: **16m 45s → 3m 15s (-81%)**. Two wins: (1) the `show-env` single-build collapses what were two cargo invocations with mismatched rustflags into one shared target dir; (2) dropping `cargo-about` from the CI toolchain install lets the build script fall back to a stub blob, skipping a 3-minute `cargo-about generate --workspace --all-features` walk on every cold build. Steps + measurements in the table below.
+>
+> | Step | Status |
+> |---|---|
+> | 1 — `ci_features` justfile var + comment | ✅ shipped |
+> | 2 — switch existing recipes to `{{ ci_features }}` | ✅ shipped |
+> | 3 — `cargo llvm-cov show-env` single-build refactor | ✅ shipped |
+> | 4 — drop separate Clippy step from `ci.yml` | ✅ shipped |
+> | 5 — doc pointers in `docs/testing.md` + `CLAUDE.md` | ✅ shipped |
+> | 6 — measure CI delta vs main | ✅ -81% warm; -3 min from cargo-about drop bonus |
 
 Continuation of [`build-time-optimization.md`](build-time-optimization.md). That sprint shipped knob 1 (profile tweaks, -12% cold), knob 3 (`cache-on-failure`), knob 4 (machete cleanup), and knob 10 (Wayland-only GUI, -90 s CPU per cold). The remaining duplication is the **double workspace compile** in CI: `just clippy` builds the entire workspace under `--profile test --all-features` to populate `target/debug/`, then `just test-ci` rebuilds it under `RUSTFLAGS=-C instrument-coverage --features mock,mock` into `target/llvm-cov-target/`. Cargo can't share artifacts because rustflags are part of the fingerprint — this is by design today.
 
@@ -67,7 +76,7 @@ Lift the literal `tisvlay-backends/mock,tisvlayd/mock` into a `ci_features` just
 | 3 | Refactor `test-ci` to the `cargo llvm-cov show-env` single-build shape (clippy + nextest + doc-test under instrumentation) | done | Multi-line bash recipe under `#!/usr/bin/env bash`; `eval "$(cargo llvm-cov show-env --export-prefix)"` exports RUSTFLAGS + CARGO_TARGET_DIR; clippy / nextest / doc-test all share `target/llvm-cov-target/`. Cold local wall: **97 s** (single-target single-pass). Coverage 52.27% (was 52.48%; -0.21 pp, well above 52 ratchet). 328/328 tests still run. |
 | 4 | Update `.github/workflows/ci.yml` — drop the separate `Clippy` step; `Test` step alone now covers both | done | Single `Test` step running `just test-ci` now covers everything. Comment in the workflow points back at the recipe + plan. |
 | 5 | Update `docs/testing.md` and `CLAUDE.md` with pointers | done | Short paragraph in `docs/testing.md` `## Coverage` section and a comment in `CLAUDE.md`'s `## Linting & CI`. Both link back to this plan and to `ci_features`. |
-| 6 | Measure: cold CI wall before vs after; record in this plan's discussion log | todo | Wait for first push to compare against the most recent green CI run on `master`. |
+| 6 | Measure: cold CI wall before vs after; record in this plan's discussion log | done | Cumulative warm-CI Test+Clippy phase wall: 16m 45s (main) → 6m 27s (share-target) → 3m 15s (+ cargo-about drop). Numbers in the discussion log below. |
 
 ## Risks / unknowns to watch
 
@@ -111,6 +120,8 @@ Append findings as we go. Keep terse — full data lives in CI logs.
 - **2026-05-09** — plan drafted. No steps started yet.
 - **2026-05-09 — steps 1–2** (centralize `ci_features`): pure refactor, four call sites unified (`test-ci` × 2, `_cov-collect` × 2). Side-fix: `_cov-collect`'s doc-test step was still on `--all-features`, missed in the previous sprint's `test-ci` fix; aligned to `ci_features` for consistency. Behavior preserved (`just test-ci` passes, coverage 52.48%, ratchet baseline 52).
 - **2026-05-09 — step 3** (`show-env` single build): swapped `test-ci` to a multi-line bash recipe that `eval`s `cargo llvm-cov show-env --export-prefix`, then runs clippy, nextest, doc-test, and the two report invocations under the same exported env. All artifacts share `target/llvm-cov-target/`. Cold local wall: **97 s** (vs ~100 s for the previous test-ci alone, BEFORE separately running `just clippy`'s ~50–60 s on top). 328/328 tests pass. Coverage shifted 52.48% → 52.27% — likely from clippy's `--all-targets` instrumented compile producing slightly different region/line counts than nextest alone; still solidly above the 52 ratchet, no test count change. Will see the real CI delta on next push (CI's 2-core runner gives a much bigger asymmetry than the 32-core local box).
+- **2026-05-09 — step 6** (CI measurement, post-show-env, cargo-about still installed): on warm CI (cache hit from prior run), Test step dropped from **14m 4s → 6m 27s** vs the most recent green main run; combined Clippy+Test phase 16m 45s → 6m 27s (-10m 18s, -61%). The bigger-than-expected warm win comes from the cache now storing instrumented artifacts: previously, the cache held non-instrumented `target/debug/` from the separate clippy step, so the test-ci step always paid full instrumented-compile cost; now the cache itself is the instrumented `target/llvm-cov-target/` and warm restores actually warm the path test-ci hits.
+- **2026-05-09 — bonus: drop cargo-about from CI install**: warm-CI Test step dropped further **6m 27s → 3m 15s** (-3m 12s) on the next run. Estimate was ~10–30 s; reality was an order of magnitude bigger. Most of it isn't the cargo-about *install* (~5 s in Setup) but the build-script invocation itself: `cargo-about generate --workspace --all-features --locked --fail` walks the full 820-dep license graph every cold build, and the 2-core CI runner feels that as raw wall time. Build-script falls back to a stub-blob HTML when cargo-about isn't on `$PATH` (`Err(e)` branch in `generate_third_party_licenses`), and CI tests check About-pane structure, not embedded content. **Cumulative warm-CI saving across the sprint: ~13.5 minutes (-81%).**
 
 ## Out of scope
 
