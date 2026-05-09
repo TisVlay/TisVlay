@@ -6,6 +6,25 @@
 # curated skip-list documenting known-and-accepted offenders. The
 # other cargo-deny checks (`advisories`, `sources`) are out of scope.
 
+# Restrict resolution to the platforms we ship for. Without this,
+# cargo-deny's default view considers every target triple and
+# surfaces ~20 duplicate warnings for crates we never compile
+# (objc2-* on Apple, windows-* / windows-targets on Windows,
+# jni-sys on Android, r-efi / redox_* on niche targets). All
+# workspace binaries are Linux-only — daemon/tray/CLI use D-Bus +
+# systemd, GUI is Wayland-only since the share-target sprint.
+#
+# Default-feature resolution intentionally — matches the dep graph
+# we actually ship. Dev-only features (`dev-mcp` on `tisvlay-gui`)
+# pull `i-slint-backend-testing/mcp`'s prost chain which contains
+# crates we don't audit for production (e.g. `generational-arena`
+# under MPL-2.0). Those pollutants are kept out of the licenses
+# check by leaving `all-features` unset.
+[graph]
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+]
+
 [licenses]
 # Near-mirror of about.toml's `accepted` list. The two configs'
 # per-crate exception sets can differ in one direction (cargo-about
@@ -21,7 +40,6 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Zlib",
-    "BSL-1.0",
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
     "Unlicense",
@@ -46,9 +64,7 @@ exceptions = [
     { name = "i-slint-core", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-core-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "i-slint-renderer-femtovg", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
-    { name = "i-slint-renderer-skia", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
     { name = "option-ext", allow = ["MPL-2.0"] },
-    { name = "libfuzzer-sys", allow = ["NCSA"] },
 ]
 
 # Multi-version dep duplication. `warn` keeps the build green while
