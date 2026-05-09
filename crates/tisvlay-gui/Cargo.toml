@@ -24,13 +24,23 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 directories = { workspace = true }
-# `accessibility` is dropped from the default features. It pulls in
-# `accesskit_unix`, which spawns its own thread to talk to the
-# accessibility bus via zbus. That thread isn't a tokio worker, and
-# zbus's tokio backend panics with "no reactor running" when it tries
-# to spawn its blocking I/O work from there. Re-enabling accessibility
-# requires running zbus on async-io rather than tokio (workspace-wide
-# decision), or configuring accesskit to share our tokio runtime.
+# `accessibility` is dropped from the default features. The local
+# blocker is a runtime conflict — `accesskit_unix` spawns a thread
+# that uses zbus, and zbus's tokio backend panics with "no reactor
+# running" because the spawned thread isn't part of our runtime — but
+# resolving that alone wouldn't be enough. Three independent upstream
+# blockers gate re-enable, tracked in `docs/ideas.md`'s "Re-enable
+# Slint `accessibility` feature" entry:
+#   - slint-ui/slint#11663 — winit 0.31 port has accesskit
+#     temporarily disabled awaiting upstream changes.
+#   - slint-ui/slint#10269 — `accesskit_consumer` panics when
+#     `LineEdit` / `Slider` is clicked after a state mutation driven
+#     by `upgrade_in_event_loop`. tisvlay-gui runs that pattern
+#     continuously, so we'd hit this independent of any local fix.
+#   - slint-ui/slint#3867 — perf cost on big `ListView`s remains
+#     flamegraph-dominant; the test infra (Slint's testing backend
+#     reads `accessible-*` properties via the internal element tree,
+#     not AT-SPI) doesn't depend on this feature being on.
 slint = { version = "1.16", default-features = false, features = ["std", "backend-default", "compat-1-2", "renderer-femtovg", "gettext"] }
 zbus = { workspace = true }
 anyhow = { workspace = true }
