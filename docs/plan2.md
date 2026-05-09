@@ -11,7 +11,6 @@ Three threads bundle into one sprint because they're mutually-enabling: tests ne
 1. **End-to-end testable GUI in headless CI** — boot an `AppWindow` against a real `tisvlay-harness::TestSession` (private dbus + daemon + session + mock TV backend), drive interactions, assert state. No display server, no GPU.
 2. **Accessibility-labeled widgets** — every interactive element (buttons, list rows, pane-nav chips, edit-mode triplet, pair flow, etc.) carries the right pair of `accessible-*` properties: `accessible-label` for screen readers (translated via `@tr(...)`), and `accessible-id` for stable test selectors (literal, untranslated). Upstream split per [slint-ui/slint#9940](https://github.com/slint-ui/slint/pull/9940), merged 2025-11-05; the maintainer there explicitly recommends `accessible-id` over `accessible-label` for automation. Toast / status-region elements additionally take `accessible-live` ([#11646](https://github.com/slint-ui/slint/pull/11646)) so screen readers announce dynamic content.
 3. **Smaller Rust source files** — `crates/tisvlay-gui/src/main.rs` is **2486 lines**, with `register_callbacks` alone at ~800 LoC. Carve into focused submodules so each future feature lands in a file with one concern. First-pass extractions identified below; deeper sub-splits (e.g. `register_callbacks` itself by pane) are tabled. The big `.slint` files (`tvs_pane.slint` 1180 lines, `pairing_wizard.slint` 1037 lines, `widgets.slint` 847 lines) are also long but each deserves its own focused PR; tabled to `docs/ideas.md`.
-4. **Re-enable Slint's `accessibility` feature** — investigate the `accesskit_unix` / zbus-tokio conflict documented in `tisvlay-gui/Cargo.toml` and either resolve it or document the current upstream blockers more durably.
 
 ## Non-goals
 
@@ -52,25 +51,7 @@ Three reach-ins to make the GUI testable without a full event loop, plus the acc
 
 Target after extraction: `main.rs` ≈ 1100 lines (`Args` + `main()` + `register_callbacks`), the rest distributed across the new modules. `register_callbacks` itself stays in `main.rs` for this PR; sub-splitting it by pane is tabled.
 4. **Accessibility-property audit** — every interactive element gets the right combination of `accessible-label` (translated, for screen readers) and `accessible-id` (literal, stable test selector). Toast + inline-error regions add `accessible-live`. Worst-case ~30 widgets across `main.slint`, `tvs_pane.slint`, `about_pane.slint`, `pairing_wizard.slint`, `profiles_pane.slint`, `session_pane.slint`, `settings_pane.slint`, `widgets.slint`. Where the visible label is a glyph (sidebar status dots, edit/save/cancel triplet, copy-icon button) `accessible-label` is the spelled-out action. `accessible-id` values follow a `<pane>-<element>` convention (e.g. `"about-diagnostics-button"`, `"tvs-row-{uuid}"`) so test selectors don't collide with translated UI strings.
-
-## Slint `accessibility` feature investigation
-
-The current Cargo.toml comment captures the symptom (`accesskit_unix` spawns a thread → `zbus` tokio backend panics with "no reactor running"). Upstream context worth surfacing:
-
-- **The runtime conflict isn't filed upstream yet** — `gh search issues --repo slint-ui/slint "no reactor"` returns zero hits. If we want this fixed at the source we'd be the ones to file it, ideally with a minimal repro.
-- **AccessKit on Slint is currently fragile by upstream's own admission** — [slint-ui/slint#11663](https://github.com/slint-ui/slint/pull/11663) (open, 2026-05-08) ports to winit 0.31 and **temporarily disables accesskit** because it requires upstream changes. Our "feature off" posture aligns with maintainers' own current stance.
-- **A concrete pre-existing bug for our exact usage pattern** — [slint-ui/slint#10269](https://github.com/slint-ui/slint/issues/10269) (open since 2025-12-11) reports a panic in `accesskit_consumer` when `LineEdit`/`Slider` is clicked after a state mutation driven by `upgrade_in_event_loop`. `tisvlay-gui` runs that pattern continuously (Daemon-event → Slint property update → user clicks). Re-enabling the feature today would expose this independent of any zbus-runtime fix.
-- **One regression class is already gone** — [slint-ui/slint#9864](https://github.com/slint-ui/slint/pull/9864) (merged 2025-10-28) stops the `accessibility` feature from force-enabling `winit/x11`, so Wayland-only NixOS builds finally work cleanly when we *do* turn it on.
-- **Heavy perf cost on big ListViews remains open** — [slint-ui/slint#3867](https://github.com/slint-ui/slint/issues/3867) flags `i_slint_backend_winit::accesskit` as flamegraph-dominant on large lists. Reinforces "feature off in production until needed" as the right default even if we resolve the runtime issue.
-
-For this sprint:
-
-- **Reproduce + isolate** — flip the feature on, capture the exact stack trace under current zbus 5.x + accesskit. Confirm the panic still happens; record whether [#10269](https://github.com/slint-ui/slint/issues/10269) also reproduces in our pattern.
-- **Triage paths**:
-  - **Path A: configure zbus to share our tokio runtime** — the `tokio::runtime::Handle::try_current()` route, possibly wrapping `accesskit_unix`'s connection setup with `tokio::task::block_in_place` or by handing it a pre-built `zbus::Connection` from our runtime.
-  - **Path B: switch zbus to async-io for accesskit only** — zbus has feature-flag selection between tokio and async-io. Whether two runtimes can coexist in one process is the open question.
-  - **Path C: file an upstream issue against `accesskit_unix` and/or slint with a minimal repro** — even if A or B pan out, surfacing the symptom upstream helps the next user hitting it.
-- **Definition of done** — at minimum, the comment block in `Cargo.toml` updates to reference the verified-as-of-this-sprint root cause + links to [#11663](https://github.com/slint-ui/slint/pull/11663) / [#10269](https://github.com/slint-ui/slint/issues/10269) / [#3867](https://github.com/slint-ui/slint/issues/3867). Best case: the feature re-enables with a workaround AND we file an upstream issue. The test infrastructure does **not** depend on this — Slint's testing backend reads `accessible-*` properties via the internal element tree, not via AT-SPI, so labels and ids work in tests regardless of the production feature state.
+5. **Refresh the Slint `accessibility`-feature comment in `tisvlay-gui/Cargo.toml`** — replace the standalone "zbus tokio panic" symptom note with a comment that cites the three upstream blockers ([slint#11663](https://github.com/slint-ui/slint/pull/11663) winit 0.31 port disabled accesskit, [slint#10269](https://github.com/slint-ui/slint/issues/10269) `upgrade_in_event_loop`-pattern crash, [slint#3867](https://github.com/slint-ui/slint/issues/3867) ListView perf). Re-enabling the feature itself is tabled to `docs/ideas.md` — three concrete upstream issues need to clear before a workaround on our side would even be useful.
 
 ## Sequencing inside the PR
 
@@ -83,9 +64,7 @@ So the diff doesn't sprawl, internal commits land in this order:
 5. **`feat(gui): wire i-slint-backend-testing for headless tests`** + Layer-B smoke tests (`AppWindow` boots, About-pane components render, Diagnostics button click round-trips).
 6. **`feat(harness): add TestGui fixture`** — `tisvlay-harness/src/gui.rs`, the once-per-process init guard, and the canonical e2e test (`tisvlay-harness/tests/gui_pair_flow.rs`).
 7. **`ci: set SLINT_EMIT_DEBUG_INFO=1; document GUI test path`** — `.cargo/config.toml [env]` + workflow env + `docs/testing.md` "GUI tests" section.
-8. **`chore(gui): investigate accessibility feature; document findings`** — Cargo.toml comment refresh, optional re-enable if a workaround panned out.
-
-The investigation in step 8 is fact-finding-bounded — if it lands at "no clean workaround, here's why," that's a legitimate result; the comment block + an `docs/ideas.md` entry capture the state. The other seven steps proceed independently.
+8. **`chore(gui): refresh accessibility-feature comment with upstream blocker links`** — `tisvlay-gui/Cargo.toml` comment swap (~10 lines). Pure docs change.
 
 ## Out of scope (tabled to `docs/ideas.md`)
 
