@@ -58,10 +58,14 @@ test:
 # `--all-features` because they don't link the bin.
 [group('check')]
 test-ci:
-    NEXTEST_PROFILE=ci CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo llvm-cov --no-report nextest --workspace --features tisvlay-backends/mock,tisvlayd/mock
+    NEXTEST_PROFILE=ci \
+        CARGO_PROFILE_DEV_DEBUG=line-tables-only \
+        cargo llvm-cov --no-report nextest --workspace \
+            --features tisvlay-backends/mock,tisvlayd/mock
     cargo test --workspace --all-features --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
-    cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ cov_baseline_lines }} --summary-only
+    cargo llvm-cov report {{ cov_exclude }} \
+        --fail-under-lines {{ cov_baseline_lines }} --summary-only
 
 # Run all fast checks in order (what prek runs)
 [group('check')]
@@ -153,7 +157,9 @@ cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock|harness)/|test_serv
 # choice and the `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale.
 [private]
 _cov-collect:
-    CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo llvm-cov --no-report nextest --workspace --features tisvlay-backends/mock,tisvlayd/mock
+    CARGO_PROFILE_DEV_DEBUG=line-tables-only \
+        cargo llvm-cov --no-report nextest --workspace \
+            --features tisvlay-backends/mock,tisvlayd/mock
     cargo test --workspace --all-features --doc
 
 # Text summary of workspace coverage
@@ -217,15 +223,21 @@ daemon-start:
     set -euo pipefail
     if [ "{{ bus }}" = "system" ]; then
         cargo build --bin tisvlayd
-        RUST_LOG="{{ _daemon_log }}" sudo -E ./target/debug/tisvlayd --config docs/configs/daemon.toml
+        RUST_LOG="{{ _daemon_log }}" \
+            sudo -E ./target/debug/tisvlayd \
+                --config docs/configs/daemon.toml
     else
-        RUST_LOG="{{ _daemon_log }}" cargo run --bin tisvlayd -- --session --config docs/configs/daemon.toml
+        RUST_LOG="{{ _daemon_log }}" \
+            cargo run --bin tisvlayd -- --session \
+                --config docs/configs/daemon.toml
     fi
 
 # Start the session service.
 [group('dev')]
 session-start:
-    RUST_LOG="{{ _session_log }}" cargo run --bin tisvlay-session -- {{ _user_flag }} --config docs/configs/session.toml
+    RUST_LOG="{{ _session_log }}" \
+        cargo run --bin tisvlay-session -- {{ _user_flag }} \
+            --config docs/configs/session.toml
 
 # Start the tray.
 [group('dev')]
