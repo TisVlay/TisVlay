@@ -38,18 +38,30 @@ test:
 # checks the ratchet - all from one test run. Doc tests run separately
 # without coverage (stable rustc doesn't support doctest coverage).
 #
-# `--all-features` is *omitted* from the instrumented run on purpose:
-# `tisvlay-gui`'s `dev-mcp` Cargo feature pulls in
-# `i-slint-backend-selector` MCP-server code that's dev-only (AI
-# introspection during local development), and combined with coverage
-# instrumentation tips GitHub's `ubuntu-latest` runner (~7 GB RAM) over
-# its link-memory ceiling. `just build` runs `--all-targets --all-features`
-# without instrumentation to catch feature-flag breakage, and the
-# doc-test line below keeps `--all-features` because it doesn't link
-# the bin so it doesn't OOM.
+# Two CI-resource workarounds bake into the cargo flags:
+#
+# - `--features tisvlay-backends/mock,tisvlayd/mock` instead of
+#   `--all-features`. `tisvlay-gui`'s `dev-mcp` feature pulls in
+#   `i-slint-backend-selector` MCP-server code that's dev-only (AI
+#   introspection during local development); combined with coverage
+#   instrumentation it tipped GitHub's `ubuntu-latest` runner (~7 GB RAM)
+#   over its link-memory ceiling. Naming `mock` explicitly restores the
+#   ~5 pp coverage signal that `--all-features` previously gave us via
+#   the workspace `mock_backend.rs` / `mock_discovery.rs` test binaries
+#   (which gate on `cfg(feature = "mock")`) without re-pulling
+#   `dev-mcp`'s MCP surface.
+#
+# - `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the instrumented
+#   `target/llvm-cov-target/` from ~12 GB to ~6-7 GB. `llvm-cov` only
+#   needs line tables to map regions to source; full DWARF is overkill
+#   and was tipping the runner's ~14 GB free disk over.
+#
+# `just build` runs `--all-targets --all-features` without coverage
+# instrumentation to catch feature-flag breakage; doc tests keep
+# `--all-features` because they don't link the bin and aren't OOM-prone.
 [group('check')]
 test-ci:
-    NEXTEST_PROFILE=ci cargo llvm-cov --no-report nextest --workspace
+    NEXTEST_PROFILE=ci CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo llvm-cov --no-report nextest --workspace --features tisvlay-backends/mock,tisvlayd/mock
     cargo test --workspace --all-features --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
     cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ cov_baseline_lines }} --summary-only
@@ -140,11 +152,11 @@ cov_baseline_lines := "52"
 cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock|harness)/|test_server)'"
 
 # Run tests under coverage instrumentation (shared by all cov-* recipes).
-# Mirrors `test-ci` — see that recipe's comment for why `--all-features`
-# is omitted from the instrumented run.
+# Mirrors `test-ci` — see that recipe's comment for the feature flag
+# choice and the `CARGO_PROFILE_DEV_DEBUG=line-tables-only` rationale.
 [private]
 _cov-collect:
-    cargo llvm-cov --no-report nextest --workspace
+    CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo llvm-cov --no-report nextest --workspace --features tisvlay-backends/mock,tisvlayd/mock
     cargo test --workspace --all-features --doc
 
 # Text summary of workspace coverage
