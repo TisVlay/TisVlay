@@ -67,10 +67,10 @@ CI integration: `prek` already runs `just deny`; the bans check joins the licens
 
 | # | Step | Status | Notes |
 |---|---|---|---|
-| 1 | Hand-roll a slim `build.rs` git-rev / target / rustc env-var helper for `tisvlay-gui` | todo | Replace `vergen-gix` invocations with `Command::new("git")` and `env::var("TARGET")` / `rustc -V` parse. Keep `VERGEN_IDEMPOTENT_OUTPUT` sentinel fallback for vendored builds. Should preserve existing diagnostic-blob field semantics. |
-| 2 | Drop `vergen-gix` from `tisvlay-gui/Cargo.toml` `[build-dependencies]` | todo | Pure removal once step 1 lands and the lib still compiles + emits the same env vars. |
-| 3 | Verify `cargo tree -d` no longer shows `hashbrown 0.14` or `hashbrown 0.15` | todo | If either remains, identify the new source and document. |
-| 4 | Re-run cold + warm `just test-ci` locally; record dep-graph size + wall delta | todo | Compare against current baseline. |
+| 1 | Hand-roll a slim `build.rs` git-rev / target / rustc env-var helper for `tisvlay-gui` | done | ~25 lines covering all three env vars: `TARGET` from cargo's env, `rustc -V` parsed for semver, `git rev-parse --short=7 HEAD` with the `VERGEN_IDEMPOTENT_OUTPUT` sentinel preserved for vendored builds. `cargo:rerun-if-changed=.git/HEAD` for branch-switch invalidation. |
+| 2 | Drop `vergen-gix` from `tisvlay-gui/Cargo.toml` `[build-dependencies]` | done | Lockfile 820 → 717 crates (-103, -12.5%); 46 gix-* crates and dashmap/imara-diff/etc. all gone. |
+| 3 | Verify `cargo tree -d` no longer shows `hashbrown 0.14` or `hashbrown 0.15` | done — partial | Both versions still present, but the *sources moved*: 0.14 now from `i-slint-compiler` → `rowan` (Slint internals), 0.15 from `prost-build` → `petgraph` (i-slint-backend-testing's `mcp` feature). Both upstream-bound now; the gix-internal multi-pin is the part we actually removed. |
+| 4 | Re-run cold + warm `just test-ci` locally; record dep-graph size + wall delta | done | Cold local 97 s → 94 s (~3 s saving on 32-core, near noise — most of the dropped CPU work was deps that fit inside parallel slack). 328/328 tests pass; coverage 52.27% → 52.41%. CI saving is the bet — 2-core runner serializes more, so the 12.5% dep-count drop translates more directly to wall. |
 | 5 | Extend `packaging/licensing/deny.toml` with `[bans]` section: `multiple-versions = "warn"` + curated `skip` list with per-entry rationale | todo | One per upstream-bound source: smithay-clipboard cascade, rustls/ring, proc-macro splits. |
 | 6 | Push to CI, verify `prek run -a deny` surfaces the warnings without failing | todo | First green run is the milestone. |
 | 7 | Document the routine in `docs/testing.md` or a new section pointing at the deny.toml entries | todo | One paragraph. Direct future contributors to the skip-list rationale. |
@@ -86,6 +86,7 @@ CI integration: `prek` already runs `just deny`; the bans check joins the licens
 Append findings as we go. Keep terse — full data lives in CI logs and the research output.
 
 - **2026-05-09** — plan drafted. No steps started yet. Local audit ran via `cargo tree --duplicates`; SOTA research run synthesized into the **Findings** section.
+- **2026-05-09 — steps 1–4** (vergen-gix replacement): hand-rolled `tisvlay-gui/build.rs` to drop `vergen-gix` and its 46-crate gitoxide ecosystem. Lockfile 820 → 717 crates (-103, -12.5%). Cold local `just test-ci` 97 s → 94 s; tests still pass (328/328); coverage 52.27% → 52.41%. The hashbrown 0.14 / 0.15 duplicates remained but moved sources (now `rowan` / Slint compiler and `petgraph` / `prost-build` respectively, both upstream-bound) — the win was eliminating the gix-internal multi-pin and the broader dep weight, not unifying hashbrown. Real saving lands on 2-core CI where the dep-count drop serializes less.
 
 ## Out of scope
 

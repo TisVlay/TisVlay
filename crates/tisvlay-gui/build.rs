@@ -5,44 +5,70 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use vergen_gix::{CargoBuilder, Emitter, GixBuilder, RustcBuilder};
-
 fn main() {
     slint_build::compile("ui/main.slint").unwrap();
 
-    emit_vergen_env_vars();
+    emit_build_env_vars();
     generate_third_party_licenses();
 }
 
-/// Emit `VERGEN_CARGO_TARGET_TRIPLE`, `VERGEN_RUSTC_SEMVER`, and
-/// `VERGEN_GIT_SHA` (short) for the diagnostic blob's `gui.{target,
-/// rustc, git_sha}` fields. Failures are deliberately swallowed —
-/// vergen falls back to `VERGEN_IDEMPOTENT_OUTPUT` when `.git/` is
-/// missing (release tarball, Nix sandbox without git history), and
-/// the diagnostic builder treats that sentinel as a non-fatal absence.
-fn emit_vergen_env_vars() {
-    let cargo = CargoBuilder::default().target_triple(true).build();
-    let rustc = RustcBuilder::default().semver(true).build();
-    // `.sha(true)` = 7-char short sha. False = full 40-char.
-    let gix = GixBuilder::default().sha(true).build();
+/// Sentinel emitted when git or rustc info isn't available
+/// (vendored tarball, Nix sandbox without `.git/`, parse failure).
+/// Kept on the same string contract `vergen-gix` previously
+/// produced so `diagnostic::maybe_git_sha` can collapse it to JSON
+/// `null` without changes.
+const IDEMPOTENT_SENTINEL: &str = "VERGEN_IDEMPOTENT_OUTPUT";
 
-    let mut emitter = Emitter::default();
-    let mut chain = Ok(&mut emitter);
-    if let Ok(c) = &cargo {
-        chain = chain.and_then(|e| e.add_instructions(c));
+/// Emit `VERGEN_CARGO_TARGET_TRIPLE`, `VERGEN_RUSTC_SEMVER`, and
+/// `VERGEN_GIT_SHA` (7-char short) for the diagnostic blob's
+/// `gui.{target, rustc, git_sha}` fields. Hand-rolled rather than
+/// pulled from `vergen-gix` because that crate's gitoxide backend
+/// drags 46 transitive crates and pins two `hashbrown` versions
+/// (`gix-tempfile` → `dashmap@6` → `hashbrown 0.14`; `gix-diff` →
+/// `imara-diff` → `hashbrown 0.15`). All three env vars are trivial
+/// to derive from cargo's own `TARGET`/`RUSTC` env vars and one
+/// `git rev-parse` shell-out.
+fn emit_build_env_vars() {
+    // Target triple — cargo always sets `TARGET` for build scripts.
+    let target = std::env::var("TARGET").unwrap_or_else(|_| IDEMPOTENT_SENTINEL.to_string());
+    println!("cargo:rustc-env=VERGEN_CARGO_TARGET_TRIPLE={target}");
+
+    // Rustc semver — parse `rustc -V` output, e.g.
+    //     rustc 1.95.0 (59807616e 2026-04-14)
+    // → "1.95.0". cargo sets `RUSTC` to the rustc binary path.
+    let rustc_bin = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let rustc_v = Command::new(&rustc_bin)
+        .arg("-V")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.split_whitespace().nth(1).map(str::to_string))
+        .unwrap_or_else(|| IDEMPOTENT_SENTINEL.to_string());
+    println!("cargo:rustc-env=VERGEN_RUSTC_SEMVER={rustc_v}");
+
+    // Git SHA. Watch `.git/HEAD` so a branch switch invalidates the
+    // build script; per-commit invalidation needs the active ref's
+    // path which we don't know at build time, so the SHA can be
+    // stale by a commit or two on local dev — acceptable for a
+    // diagnostic field. Failures (vendored tarball, Nix sandbox,
+    // missing `git` binary, detached state with empty output) emit
+    // the sentinel.
+    let workspace = workspace_root();
+    let git_head = workspace.join(".git/HEAD");
+    if git_head.exists() {
+        println!("cargo:rerun-if-changed={}", git_head.display());
     }
-    if let Ok(r) = &rustc {
-        chain = chain.and_then(|e| e.add_instructions(r));
-    }
-    if let Ok(g) = &gix {
-        chain = chain.and_then(|e| e.add_instructions(g));
-    }
-    if let Err(err) = chain.and_then(|e| e.emit()) {
-        // Don't fail the build; the diagnostic blob will surface
-        // `VERGEN_IDEMPOTENT_OUTPUT` as `null` so consumers can tell
-        // a non-pristine build apart from a clean one.
-        println!("cargo:warning=vergen-gix instructions failed: {err}");
-    }
+    let git_sha = Command::new("git")
+        .args(["-C", workspace.to_str().unwrap_or(".")])
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| IDEMPOTENT_SENTINEL.to_string());
+    println!("cargo:rustc-env=VERGEN_GIT_SHA={git_sha}");
 }
 
 /// Generate `$OUT_DIR/THIRD-PARTY-LICENSES.html` for `include_str!`

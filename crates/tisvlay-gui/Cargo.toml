@@ -120,12 +120,6 @@ i-slint-backend-testing = "=1.16.1"
 
 [build-dependencies]
 slint-build = "1.16"
-# Build-time emission of `VERGEN_*` env vars for the diagnostic blob's
-# `gui.{target,rustc,git_sha}` fields. The `gix` flavor uses the
-# pure-Rust gitoxide backend so the build doesn't need a system `git`
-# binary on PATH — Nix sandbox / vendored tarball builds work as-is.
-# Falls back to `VERGEN_IDEMPOTENT_OUTPUT` when run outside a checkout.
-vergen-gix = { version = "9.1", default-features = false, features = ["cargo", "rustc"] }
 
 [lints]
 workspace = true
