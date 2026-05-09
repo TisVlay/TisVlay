@@ -68,8 +68,8 @@ jobs:
             --skip test
 
       # Single instrumented build for clippy + tests + doc tests +
-      # coverage report — see `just test-ci` and
-      # `docs/plans/ci-shared-target.md` for the show-env design.
+      # coverage report — see `just test-ci` and `docs/build.md`
+      # "Build pipeline" for the show-env design.
       - name: Test
         run: just test-ci
 

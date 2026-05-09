@@ -72,7 +72,7 @@ exceptions = [
 # is visible without blocking PRs. The `skip` list documents
 # already-evaluated cases — re-audit when the upstream consumer
 # moves (Slint bumps, rustls/ring updates, etc.). Background:
-# `docs/plans/dep-version-dedup.md`.
+# `docs/build.md` "Dep-graph posture".
 [bans]
 multiple-versions = "warn"
 skip = [

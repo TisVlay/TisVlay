@@ -381,7 +381,7 @@ prek run -a clippy
 # instrumented build (`cargo llvm-cov show-env`). Mock-only feature
 # subset for CI lives in `justfile` as `ci_features`; rationale and
 # extension triggers are in its comment block. Design notes:
-# `docs/plans/ci-shared-target.md`.
+# `docs/build.md`.
 ```
 
 ### Dead Code Detection

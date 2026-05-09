@@ -7,7 +7,7 @@ Developer-facing reference for the third-party-license attribution and policy-ga
 Two complementary tools, each with one job:
 
 - **[`cargo-about`](https://github.com/EmbarkStudios/cargo-about)** generates the bundled-deps attribution artifact (`THIRD-PARTY-LICENSES.html`) used both at runtime in the GUI and in the distro packages.
-- **[`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny)** runs two checks: `licenses` enforces the SPDX allow-list (a forbidden license — GPL, LGPL, MPL not on the exception list — fails the build); `bans` surfaces multi-version dep duplication as warnings (`multiple-versions = "warn"`, never fails). Both are wired into `prek` via `just deny`. The `bans` skip-list in [`deny.toml`](../packaging/licensing/deny.toml) documents already-evaluated multi-version cases — see [`docs/plans/dep-version-dedup.md`](plans/dep-version-dedup.md) for the routine and rationale.
+- **[`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny)** runs two checks: `licenses` enforces the SPDX allow-list (a forbidden license — GPL, LGPL, MPL not on the exception list — fails the build); `bans` surfaces multi-version dep duplication as warnings (`multiple-versions = "warn"`, never fails). Both are wired into `prek` via `just deny`. The `bans` skip-list and `[graph] targets` filter in [`deny.toml`](../packaging/licensing/deny.toml) document already-evaluated multi-version cases — see [`docs/build.md`](build.md) "Dep-graph posture" for the routine and rationale.
 
 Both tools live in the Nix dev shell ([`flake.nix`](../flake.nix) `nativeBuildInputs`). The Nix package derivation also pulls them in for sandbox-time generation.
 

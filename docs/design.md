@@ -690,6 +690,7 @@ Today's `tisvlay-session` listener path drives `Tv1.Power.SetIsScreenOn` / `Powe
 | Screen on/off returns 500 when idempotent | LG backend treats application errors as success for screen commands |
 | DHCP IP changes | Use MAC for WoL; re-discover via SSDP |
 | Greeter wake unavailable on X11 | Wayland `ext-idle-notify-v1` only; falls back gracefully |
+| GUI is Wayland-only | `tisvlay-gui` builds against `slint = ["backend-winit-wayland"]` and `wl-clipboard-rs`; X11 sessions run the daemon, CLI, and tray (ksni) but the settings window doesn't launch. Aligns with `tisvlay-session`'s Wayland-best-effort posture above and trims `x11rb` from the dep graph. See [build.md](build.md). |
 | Backlight write requires workaround | SSAP subscriptions work for reading; writing requires Luna `createAlert` workaround (direct setSystemSettings returns 401) |
 
 ---

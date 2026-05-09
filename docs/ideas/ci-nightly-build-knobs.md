@@ -1,6 +1,6 @@
 # Switch CI (or workspace) to nightly Rust for build-time knobs
 
-The build-time optimization sprint ([`docs/plans/build-time-optimization.md`](../plans/build-time-optimization.md)) ruled out two candidates *because the workspace pins to stable Rust*:
+The build-system design ([`docs/build.md`](../build.md)) leaves two candidates on the table because the workspace pins to stable Rust:
 
 - **`-Zthreads=N` parallel rustc frontend** — flagged as 10–30% cold-build win in the SOTA survey; nightly-only as of rustc 1.95.
 - **`-Zcodegen-backend=cranelift`** — 10–20% codegen-time reduction; nightly-only.
@@ -9,7 +9,7 @@ Greenfield, pre-release projects can absorb nightly's risk more cheaply than pub
 
 ## What this would buy
 
-Honest expected gain on this workspace, with the share-target restructure ([`docs/plans/ci-shared-target.md`](../plans/ci-shared-target.md)) already in place:
+Honest expected gain on this workspace, with the share-target restructure ([`docs/build.md`](../build.md) "Build pipeline") already in place:
 
 | Knob | Local (32-core) | CI (2-core ubuntu-latest) | Compatibility |
 |---|---|---|---|

@@ -59,9 +59,9 @@ ci_features := "tisvlay-backends/mock,tisvlayd/mock"
 # bash recipe means subsequent cargo commands all share that target
 # dir. Without this, clippy and the coverage build would each
 # compile the workspace independently (different RUSTFLAGS →
-# different cargo fingerprints, no artifact reuse). See
-# `docs/plans/ci-shared-target.md` for the design and upstream
-# tracking.
+# different cargo fingerprints, no artifact reuse). Design + the
+# residual clippy-vs-build dual-compile finding live in
+# `docs/build.md` "Build pipeline".
 #
 # `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the instrumented
 # `target/llvm-cov-target/` to fit the runner's free-disk ceiling.
@@ -105,7 +105,7 @@ test-snapshot-accept:
 
 # Enforce the SPDX allow-list (`licenses`) and surface multi-version
 # dep duplication as warnings (`bans`) — see `deny.toml` for the
-# skip-list rationale and `docs/plans/dep-version-dedup.md` for the
+# skip-list and `docs/build.md` "Dep-graph posture" for the
 # routine. `bans` is `multiple-versions = "warn"`, so it never
 # fails the build; output is informational.
 [group('check')]

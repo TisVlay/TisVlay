@@ -141,7 +141,7 @@ just cov-ratchet  # fails if below baseline (CI uses this)
 
 The baseline lives in `justfile` as `cov_baseline_lines`. Bump it on PRs that improve coverage; never lower it. Run `just cov` to see the current number.
 
-CI runs the full check pipeline (`clippy` + `nextest` + doc tests + coverage report) under a single coverage-instrumented build via `cargo llvm-cov show-env --sh`, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice. The mock-only feature subset CI uses lives in `justfile` as `ci_features`; its comment block is the canonical place to document feature-graph trade-offs and trigger conditions for extending the set. Local `prek` still runs `--all-features` clippy via `just clippy`. See [docs/plans/ci-shared-target.md](plans/ci-shared-target.md) for design rationale and upstream tracking.
+CI runs the full check pipeline (`clippy` + `nextest` + doc tests + coverage report) under a single coverage-instrumented build via `cargo llvm-cov show-env --sh`, so all four stages share `target/llvm-cov-target/` instead of recompiling the workspace twice. The mock-only feature subset CI uses lives in `justfile` as `ci_features`; its comment block is the canonical place to document feature-graph trade-offs and trigger conditions for extending the set. Local `prek` still runs `--all-features` clippy via `just clippy`. See [docs/build.md](build.md) "Build pipeline" for design rationale and upstream tracking.
 
 ## Mock backend (tisvlay-mock)
 

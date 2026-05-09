@@ -2,7 +2,7 @@
 
 Today `tisvlayd` has 12 integration test files under `crates/tisvlayd/tests/` (`pair_round_trip`, `profile_dispatch`, `update_config_round_trip`, `remove_tv_round_trip`, `backlight_emit_ordering`, `reload_resolves_system_profile`, `scroll_apply_under_ramp`, `automated_gate`, `concurrent_tvs`, `shutdown_cancel`, `test_harness_smoke`, `dbus_contract`). Each is its own integration-test binary, so cargo links 12 separate ELFs every time the test surface is touched.
 
-The build-time optimization sprint (`docs/plans/build-time-optimization.md` knob #7) measured this. On the local 32-core box, all 12 link in parallel — start at t≈48.85 s, finish by t≈53.4 s — so the whole batch costs ~5 s wall. But each binary is 4–5 s of CPU, so 12 × 4.5 ≈ 54 s of CPU work that on a 2-core CI runner would serialize into ~25 s wall.
+The build-time work measured this. On the local 32-core box, all 12 link in parallel — start at t≈48.85 s, finish by t≈53.4 s — so the whole batch costs ~5 s wall. But each binary is 4–5 s of CPU, so 12 × 4.5 ≈ 54 s of CPU work that on a 2-core CI runner would serialize into ~25 s wall. See [`docs/build.md`](../build.md) for the broader build-system context.
 
 **Estimated CI saving from consolidating into ~4 logical groups:** 5–10 s of `just test-ci` wall time. **Estimated local saving:** 0–2 s. Effort: medium (group tests by topic, update imports, rename test functions to keep `nextest` filter strings sensible). Risk: medium — process-per-test isolation under nextest is preserved (test isolation isn't lost), but a poorly-grouped consolidation can make a local test failure harder to triage when twelve unrelated tests share one binary.
 
