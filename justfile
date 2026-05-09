@@ -37,9 +37,19 @@ test:
 # the 'ci' nextest profile, coverage data, then generates lcov.info and
 # checks the ratchet - all from one test run. Doc tests run separately
 # without coverage (stable rustc doesn't support doctest coverage).
+#
+# `--all-features` is *omitted* from the instrumented run on purpose:
+# `tisvlay-gui`'s `dev-mcp` Cargo feature pulls in
+# `i-slint-backend-selector` MCP-server code that's dev-only (AI
+# introspection during local development), and combined with coverage
+# instrumentation tips GitHub's `ubuntu-latest` runner (~7 GB RAM) over
+# its link-memory ceiling. `just build` runs `--all-targets --all-features`
+# without instrumentation to catch feature-flag breakage, and the
+# doc-test line below keeps `--all-features` because it doesn't link
+# the bin so it doesn't OOM.
 [group('check')]
 test-ci:
-    NEXTEST_PROFILE=ci cargo llvm-cov --no-report nextest --workspace --all-features
+    NEXTEST_PROFILE=ci cargo llvm-cov --no-report nextest --workspace
     cargo test --workspace --all-features --doc
     cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
     cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ cov_baseline_lines }} --summary-only
@@ -130,9 +140,11 @@ cov_baseline_lines := "52"
 cov_exclude := "--ignore-filename-regex '(tisvlay-(test|mock|harness)/|test_server)'"
 
 # Run tests under coverage instrumentation (shared by all cov-* recipes).
+# Mirrors `test-ci` — see that recipe's comment for why `--all-features`
+# is omitted from the instrumented run.
 [private]
 _cov-collect:
-    cargo llvm-cov --no-report nextest --workspace --all-features
+    cargo llvm-cov --no-report nextest --workspace
     cargo test --workspace --all-features --doc
 
 # Text summary of workspace coverage
