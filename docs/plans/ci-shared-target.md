@@ -80,13 +80,24 @@ Lift the literal `tisvlay-backends/mock,tisvlayd/mock` into a `ci_features` just
 
 ### The remaining `tisvlay-gui` dual-compile is from `cargo clippy` vs `cargo nextest`, not from `cfg(test)`
 
-A clean cold `just test-ci` after the show-env work shows two `Compiling tisvlay-gui` lines (and similarly two compiles of every workspace crate). Initial hypothesis was the lib's `cfg(test)` blocks producing a separate test-mode lib variant; an experiment moving the four `cfg(test)` modules from `src/` to `tests/` integration-test files and adding `[lib] test = false` to the manifest **did not** eliminate the second compile. Wall time was unchanged (~98 s cold) and `cargo-llvm-cov` coverage *dropped* from 52.27% → 50.34% because the report excludes `tests/*.rs` files, so the ~800 lines of test code that previously counted (when sitting inside `cfg(test) mod tests` blocks compiled into the lib) stopped counting toward both numerator and denominator. The experiment was reverted.
+A clean cold `just test-ci` after the show-env work shows two `Compiling tisvlay-gui` lines, while every other workspace crate's `Compiling X` count is one. The initial hypothesis was the lib's `cfg(test)` blocks producing a separate test-mode lib variant; an experiment moving the four `cfg(test)` modules from `src/` to `tests/` integration-test files and adding `[lib] test = false` to the manifest **did not** eliminate the second compile. Wall time was unchanged (~98 s cold) and `cargo-llvm-cov` coverage *dropped* from 52.27% → 50.34% because the report excludes `tests/*.rs` files, so the ~800 lines of test code that previously counted (when sitting inside `cfg(test) mod tests` blocks compiled into the lib) stopped counting toward both numerator and denominator. The experiment was reverted.
 
-The real cause is that **`cargo clippy` and `cargo nextest run` are different cargo "modes" with separate fingerprint kinds**. clippy invokes `clippy-driver`, which produces artifacts cargo cannot reuse for a subsequent `cargo build`/`cargo test` call. Both invocations share the `RUSTFLAGS` and target dir we set up via show-env, but they re-compile the workspace fully because clippy's artifact kind doesn't match the build/test kind in cargo's fingerprint cache.
+The real cause, confirmed by `cargo clippy ... -v` showing rustc invocations: **`cargo clippy` and `cargo nextest run` are different cargo "modes" that emit different artifact kinds**. clippy emits `--emit=dep-info,metadata` (rmeta only — interface, no machine code); nextest emits `--emit=dep-info,metadata,link` (rmeta + `.rlib`). cargo's fingerprint distinguishes the two artifact kinds, so the rmeta clippy produced cannot satisfy the link nextest needs, and **every workspace crate is recompiled in the second cargo invocation**.
+
+This applies to all 11 workspace crates, not just `tisvlay-gui`. The reason `tisvlay-gui` *looks* uniquely dual-compiled when you grep for "Compiling X v0.1.0" is purely cosmetic:
+
+| Crate | clippy step verb | nextest step verb |
+|---|---|---|
+| `tisvlay-core`, `-test`, `-lg`, `-mock`, `-session`, `-cli`, `-tray`, `-backends`, `-harness`, `tisvlayd` | **Checking** (the rmeta-only emit) | **Compiling** (the link emit) |
+| `tisvlay-gui` | **Compiling** | **Compiling** |
+
+`tisvlay-gui` shows "Compiling" in *both* steps because it is the only workspace crate with a `build.rs` (slint-build's `compile()` produces source via `OUT_DIR` that `slint::include_modules!()` `include!()`s). The build script must be compiled to a *binary* and *run* before clippy can check the lib — and cargo prints "Compiling" once per crate whenever any unit needs link-mode compilation, which the build script binary always does. Other workspace crates have no build script, so clippy's first touch of them is a lib rmeta-check, which cargo labels "Checking".
+
+Net: there's nothing special about `tisvlay-gui`'s dual-compile. The whole workspace is dual-compiled by clippy → nextest. We just notice tisvlay-gui because the verbs collide.
 
 What this means for the related earlier work:
 
-- Knob 6 of `build-time-optimization.md` (the cfg(test) refactor) was dropped citing "parallelism on 32-core hides this". The deeper reason it would not have helped on CI either: even with cfg(test) gone, the clippy-vs-build cache mismatch keeps the second compile around. Knob 6's dropped status is correct; the rationale captured here supersedes the earlier "parallelism" framing.
+- Knob 6 of `build-time-optimization.md` (the cfg(test) refactor) was dropped citing "parallelism on 32-core hides this". The deeper reason it would not have helped on CI either: even with cfg(test) gone and `[lib] test = false`, the clippy-vs-build cache-kind mismatch keeps the second compile around. Knob 6's dropped status is correct; the rationale captured here supersedes the earlier "parallelism" framing.
 - Step 3's discussion-log line about clippy's `--all-targets` "slightly different region/line counts" is the surface-level effect of the same cause: clippy's separate compile contributes its own instrumentation regions, which is what `cargo-llvm-cov report` reflects.
 
 ### Why we're accepting it
