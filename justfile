@@ -38,27 +38,24 @@ test:
 # checks the ratchet - all from one test run. Doc tests run separately
 # without coverage (stable rustc doesn't support doctest coverage).
 #
-# Two CI-resource workarounds bake into the cargo flags:
+# Two cargo-flag choices accommodate GitHub `ubuntu-latest`'s
+# resource ceilings:
 #
 # - `--features tisvlay-backends/mock,tisvlayd/mock` instead of
 #   `--all-features`. `tisvlay-gui`'s `dev-mcp` feature pulls in
-#   `i-slint-backend-selector` MCP-server code that's dev-only (AI
-#   introspection during local development); combined with coverage
-#   instrumentation it tipped GitHub's `ubuntu-latest` runner (~7 GB RAM)
-#   over its link-memory ceiling. Naming `mock` explicitly restores the
-#   ~5 pp coverage signal that `--all-features` previously gave us via
-#   the workspace `mock_backend.rs` / `mock_discovery.rs` test binaries
-#   (which gate on `cfg(feature = "mock")`) without re-pulling
-#   `dev-mcp`'s MCP surface.
+#   dev-only MCP-server code that combined with coverage
+#   instrumentation OOMs the runner's linker. Naming `mock`
+#   explicitly preserves the coverage signal from feature-gated test
+#   binaries without re-pulling `dev-mcp`'s surface.
 #
-# - `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the instrumented
-#   `target/llvm-cov-target/` from ~12 GB to ~6-7 GB. `llvm-cov` only
-#   needs line tables to map regions to source; full DWARF is overkill
-#   and was tipping the runner's ~14 GB free disk over.
+# - `CARGO_PROFILE_DEV_DEBUG=line-tables-only` shrinks the
+#   instrumented `target/llvm-cov-target/` to fit the runner's
+#   free-disk ceiling. `llvm-cov` only needs line tables to map
+#   regions to source; full DWARF is overkill.
 #
 # `just build` runs `--all-targets --all-features` without coverage
 # instrumentation to catch feature-flag breakage; doc tests keep
-# `--all-features` because they don't link the bin and aren't OOM-prone.
+# `--all-features` because they don't link the bin.
 [group('check')]
 test-ci:
     NEXTEST_PROFILE=ci CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo llvm-cov --no-report nextest --workspace --features tisvlay-backends/mock,tisvlayd/mock
@@ -196,9 +193,8 @@ cov-ratchet lines=cov_baseline_lines: _cov-collect
 bus := env("BUS", "user")
 
 # GUI only. "true" → build with the `dev-mcp` Cargo feature and start
-# the Slint MCP server on http://127.0.0.1:9315/mcp. Note that
-# `SLINT_EMIT_DEBUG_INFO=1` must be set at *build time*, not just at
-# runtime — the element tree is dead without it. See `.claude/slint.md`.
+# the Slint MCP server on http://127.0.0.1:9315/mcp. See
+# `.claude/slint.md`.
 gui_mcp := env("GUI_MCP", "false")
 
 _daemon_log := "debug,zbus=warn,rustls=warn,tungstenite=warn"
@@ -239,7 +235,7 @@ tray-start:
 # Start the GUI (paired with `daemon-start`).
 [group('dev')]
 gui-start:
-    {{ if gui_mcp == "true" { "SLINT_EMIT_DEBUG_INFO=1 SLINT_MCP_PORT=9315" } else { "" } }} \
+    {{ if gui_mcp == "true" { "SLINT_MCP_PORT=9315" } else { "" } }} \
         RUST_LOG="{{ _gui_log }}" \
         cargo run {{ if gui_mcp == "true" { "--features dev-mcp" } else { "" } }} \
         --bin tisvlay-gui -- {{ _user_flag }}
