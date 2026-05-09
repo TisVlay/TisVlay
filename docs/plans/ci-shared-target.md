@@ -76,6 +76,23 @@ Lift the literal `tisvlay-backends/mock,tisvlayd/mock` into a `ci_features` just
 - **Disk watermark mid-run** — `cargo clippy` populates `target/llvm-cov-target/` partially before nextest starts. If the partial population peaks bigger than full instrumented build, we could regress disk pressure. Most likely fine but measurable.
 - **`show-env --sh` shell-quoting** — `eval` of its output across `bash -euo pipefail` (justfile shell) needs verification. May need `set -a` or quoting tweaks.
 
+## Findings
+
+### The remaining `tisvlay-gui` dual-compile is from `cargo clippy` vs `cargo nextest`, not from `cfg(test)`
+
+A clean cold `just test-ci` after the show-env work shows two `Compiling tisvlay-gui` lines (and similarly two compiles of every workspace crate). Initial hypothesis was the lib's `cfg(test)` blocks producing a separate test-mode lib variant; an experiment moving the four `cfg(test)` modules from `src/` to `tests/` integration-test files and adding `[lib] test = false` to the manifest **did not** eliminate the second compile. Wall time was unchanged (~98 s cold) and `cargo-llvm-cov` coverage *dropped* from 52.27% → 50.34% because the report excludes `tests/*.rs` files, so the ~800 lines of test code that previously counted (when sitting inside `cfg(test) mod tests` blocks compiled into the lib) stopped counting toward both numerator and denominator. The experiment was reverted.
+
+The real cause is that **`cargo clippy` and `cargo nextest run` are different cargo "modes" with separate fingerprint kinds**. clippy invokes `clippy-driver`, which produces artifacts cargo cannot reuse for a subsequent `cargo build`/`cargo test` call. Both invocations share the `RUSTFLAGS` and target dir we set up via show-env, but they re-compile the workspace fully because clippy's artifact kind doesn't match the build/test kind in cargo's fingerprint cache.
+
+What this means for the related earlier work:
+
+- Knob 6 of `build-time-optimization.md` (the cfg(test) refactor) was dropped citing "parallelism on 32-core hides this". The deeper reason it would not have helped on CI either: even with cfg(test) gone, the clippy-vs-build cache mismatch keeps the second compile around. Knob 6's dropped status is correct; the rationale captured here supersedes the earlier "parallelism" framing.
+- Step 3's discussion-log line about clippy's `--all-targets` "slightly different region/line counts" is the surface-level effect of the same cause: clippy's separate compile contributes its own instrumentation regions, which is what `cargo-llvm-cov report` reflects.
+
+### Why we're accepting it
+
+The big-doubling case (clippy in `target/debug/` with `--all-features`, then test-ci in `target/llvm-cov-target/` with mock features) was the ~50 s saving the show-env work captured. The remaining clippy-vs-build dual is smaller (~20–30 s of CPU on cold), upstream-cargo-design-bound, and the available local fixes (drop clippy from CI; split into parallel jobs; replace clippy with check) each carry a coverage / safety-net trade-off larger than the saving. The trigger conditions to re-open are in the **Risks / unknowns** section above.
+
 ## Discussion log
 
 Append findings as we go. Keep terse — full data lives in CI logs.
