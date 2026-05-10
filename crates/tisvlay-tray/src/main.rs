@@ -386,15 +386,15 @@ async fn process_commands(
 
         match cmd {
             TrayCommand::Quit => break,
-            TrayCommand::Refresh => {
+            TrayCommand::Reload => {
                 // Reload config on both services, then immediately refresh state
                 if let Err(e) = daemon.reload_config().await {
-                    warn!(error = %e, "Refresh: daemon reload failed");
+                    warn!(error = %e, "Reload: daemon reload failed");
                 }
                 let session_ref = session.read().await;
                 if let Some(ref session_client) = *session_ref {
                     if let Err(e) = session_client.reload_config().await {
-                        warn!(error = %e, "Refresh: session reload failed");
+                        warn!(error = %e, "Reload: session reload failed");
                     }
                 }
                 drop(session_ref);

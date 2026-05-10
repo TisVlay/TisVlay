@@ -2,7 +2,7 @@
 //!
 //! Implements `org.tisvlay.Manager1` for TV discovery and management.
 
-use crate::dbus::{DaemonError, register_tv_interfaces};
+use crate::dbus::{DaemonError, apply_reload_diff, register_tv_interfaces};
 use crate::json_toml::json_to_toml;
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
@@ -269,10 +269,22 @@ impl ManagerService {
     }
 
     /// Reload configuration from disk.
-    async fn reload_config(&self) -> Result<(), DaemonError> {
+    ///
+    /// In addition to refreshing the in-memory state, syncs the D-Bus
+    /// object server: any TV that vanished from the config gets its
+    /// `Tv1.*` interfaces unregistered, any TV that appeared via a
+    /// direct file edit gets fresh interfaces registered. Mirrors
+    /// what `Manager1.AddTv` and `Tv1.Remove` already do for their
+    /// respective single-TV paths.
+    async fn reload_config(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), DaemonError> {
         info!("D-Bus: ReloadConfig");
         let manager = &self.manager;
-        manager.reload_config().await.map_err(DaemonError::from)
+        let diff = manager.reload_config().await.map_err(DaemonError::from)?;
+        apply_reload_diff(connection, manager, &diff).await;
+        Ok(())
     }
 
     // -------------------------------------------------------------------------
