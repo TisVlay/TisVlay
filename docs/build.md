@@ -75,6 +75,7 @@ Patterns to revisit when their gating condition fires:
 - **`rustls`/`ring` getrandom** — re-audit when `rustls` upgrades its default crypto backend or when `ring` updates getrandom.
 - **`vergen-gix` reintroduction** — only if `vergen-gix` ever drops the dashmap/imara-diff pins itself, or if `git` becomes unavailable on a build target we care about.
 - **Cargo cross-workspace-cache (2026 goal)** — tracked in [concerns.md](concerns.md). When the nightly preview lands, evaluate whether its cache-key design generalizes to "instrumented vs not"; that would obsolete the show-env workaround.
+- **`LLVM_PROFILE_FILE` defaulting in `.cargo/config.toml`** — tracked in [concerns/profraw-stray-files-outside-target.md](concerns/profraw-stray-files-outside-target.md). The workspace defaults this env var so stray instrumented runs (lingering binaries in `target/debug/deps/` from past coverage builds) write under `target/profraw/` instead of leaking `default_<hash>_<pid>.profraw` to per-crate cwds. Cargo-team posture is "user-side responsibility"; revisit if [rust-lang/cargo#13040](https://github.com/rust-lang/cargo/issues/13040) or [#13136](https://github.com/rust-lang/cargo/issues/13136) progress.
 - **Switching to nightly Rust** — tracked in [ideas/ci-nightly-build-knobs.md](ideas/ci-nightly-build-knobs.md). Worth re-opening if CI cycle time becomes a real bottleneck for PR turnaround.
 - **`tisvlayd` integration test consolidation** — tracked in [ideas/tisvlayd-test-consolidation.md](ideas/tisvlayd-test-consolidation.md). Same trigger.
 

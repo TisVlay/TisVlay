@@ -127,3 +127,28 @@ separate cargo invocations.
   show-env workaround becomes deletable.
 - Any further `cargo-llvm-cov` upstream API change would surface in
   the `just test-ci` recipe — easy to track.
+
+### See also
+
+- [Stray `.profraw` files outside `target/`](concerns/profraw-stray-files-outside-target.md) — sibling concern, same root cause (cargo's RUSTFLAGS-fingerprint coupling) but different surface (runtime artifacts produced by lingering instrumented test binaries vs. pipeline-rebuild cost).
+
+---
+
+## Stray `.profraw` files outside `target/` from instrumented binaries
+
+**Priority**: low
+**Found by**: post-merge audit of working-tree artifacts, 2026-05
+
+### Context
+
+LLVM's coverage runtime (`compiler-rt`'s profile library, linked into binaries built with `-C instrument-coverage`) writes a `default_<hash>_<pid>.profraw` to the test binary's *current working directory* whenever `LLVM_PROFILE_FILE` is unset. Under nextest that cwd is the per-crate directory, so stray artifacts accumulate in `crates/*/` — outside `target/`, surviving `cargo clean` / `rm -rf target/`, and showing up as untracked files in `git status`.
+
+The leak path: a past `cargo llvm-cov` (or manual `RUSTFLAGS=...` invocation) that didn't isolate to `target/llvm-cov-target/` left instrumented test binaries lingering in `target/debug/deps/`. Cargo's fingerprinting eventually built fresh uninstrumented siblings but didn't garbage-collect the old instrumented ones. Anything that runs them outside the cargo-llvm-cov flow (plain `cargo test`, IDE test actions, doctest harnesses, CI steps that bypass the recipe) leaks profraw to cwd.
+
+The workspace's `.cargo/config.toml` `[env]` block defaults `LLVM_PROFILE_FILE` to `target/profraw/default_%m_%p.profraw` (`relative = true`). Cargo `[env]` only applies when the var isn't already in the calling shell, so coverage-tool paths that export their own `LLVM_PROFILE_FILE` (e.g., `eval "$(cargo llvm-cov show-env --sh)"`) shadow this default — no conflict with the actual coverage pipeline. Every other test path inherits the default and writes under `target/`, restoring the invariant that `rm -rf target/` removes all build-time outputs.
+
+See [concerns/profraw-stray-files-outside-target.md](concerns/profraw-stray-files-outside-target.md) for the full layering analysis, upstream issue survey, comparison with cargo-tarpaulin, and re-evaluation triggers.
+
+### See also
+
+- [CI test-ci pipeline depends on `cargo llvm-cov show-env` workaround](#ci-test-ci-pipeline-depends-on-cargo-llvm-cov-show-env-workaround) — sibling concern, same root cause.
