@@ -73,6 +73,16 @@ pub(crate) async fn initial_fetch_and_watch(
                 name: SharedString::from(name),
             })
             .collect();
+        // Seed `manual-vendor` to the first registered backend so the
+        // wizard's vendor ComboBox renders with a sensible default
+        // (its `current-value` is bound to `vendor-display(manual-vendor)`,
+        // which would otherwise resolve to empty text). Only seed if
+        // unset — preserve any vendor the user already picked.
+        if wizard.get_manual_vendor().is_empty()
+            && let Some(first) = vendors.first()
+        {
+            wizard.set_manual_vendor(first.id.clone());
+        }
         wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
         wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
         app.set_daemon_available(initial_daemon_available);

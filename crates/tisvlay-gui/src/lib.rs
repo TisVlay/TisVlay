@@ -1204,10 +1204,22 @@ fn register_callbacks(
         let wizard = app.global::<PairingWizard>();
         let mut vendor = wizard.get_manual_vendor().to_string();
         if vendor.is_empty() {
-            // Slint property defaults can drop through `<=>` chains in
-            // some configurations — fall back to LG since that's the
-            // only vendor the manual UI currently offers.
-            vendor = "lg".to_string();
+            // ComboBox `current-value` is bound to a `vendor-display`
+            // projection of `manual-vendor`; if the user opens the
+            // wizard's "Add manually" path without explicitly clicking
+            // the dropdown, `manual-vendor` is empty and the
+            // `selected(...)` callback never fires. Fall back to the
+            // first registered backend rather than a hardcoded vendor —
+            // otherwise a multi-vendor daemon (e.g. mock + lg) silently
+            // routes the pair to whichever was hardcoded.
+            let supported = wizard.get_supported_vendors();
+            if let Some(first) = supported.row_data(0) {
+                vendor = first.id.to_string();
+            }
+        }
+        if vendor.is_empty() {
+            warn!("wizard: manual add with no vendors registered, ignoring");
+            return;
         }
         let ip = wizard.get_manual_ip().to_string();
         if ip.is_empty() {
