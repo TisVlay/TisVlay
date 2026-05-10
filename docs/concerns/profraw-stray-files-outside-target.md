@@ -87,4 +87,4 @@ Patterns to revisit when their gating condition fires:
 - [Cargo Book: `[env]` table](https://doc.rust-lang.org/cargo/reference/config.html#env) — `relative = true` and precedence-vs-shell-env documentation.
 - [rustc Book: Instrumentation-based Code Coverage](https://doc.rust-lang.org/rustc/instrument-coverage.html) — the `LLVM_PROFILE_FILE` env var and its `%m`/`%p` substitutions.
 - [taiki-e/cargo-llvm-cov `show-env`](https://github.com/taiki-e/cargo-llvm-cov?tab=readme-ov-file#get-coverage-of-cc-code-linked-to-rust-libtest-binary) — the upstream API our pipeline depends on.
-- Sibling concern: [CI test-ci pipeline depends on `cargo llvm-cov show-env` workaround](../concerns.md#ci-test-ci-pipeline-depends-on-cargo-llvm-cov-show-env-workaround) — same root cause, different surface.
+- Sibling concern: [CI test-ci pipeline depends on `cargo llvm-cov show-env` workaround](test-ci-cargo-llvm-cov-show-env.md) — same root cause, different surface.
