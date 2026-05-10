@@ -1665,6 +1665,51 @@ impl TvManager {
     }
 
     /// Remove a TV.
+    ///
+    /// # Drain semantics for in-flight `Tv1.*` calls
+    ///
+    /// The per-TV `Mutex<ManagedTv>` (the `Arc<Mutex<ManagedTv>>` stored in
+    /// the `tvs` map) is the de-facto drain layer between this method
+    /// and concurrent `Tv1.*` D-Bus method calls against the same TV.
+    /// zbus 5.x has no drain primitive (`ObjectServer::remove` mutates
+    /// its routing map and returns; in-flight handlers complete against
+    /// a previously-cloned `Arc<RwLock<dyn Interface>>`), so the
+    /// observable correctness of "remove during in-flight call" rests
+    /// on this Mutex pattern.
+    ///
+    /// Three sub-cases for an in-flight `Tv1.SetVolume`-like call
+    /// dispatched while `remove_tv` runs:
+    ///
+    /// - **(a) Call hasn't reached `get_tv` yet.** The outer write
+    ///   lock on `tvs` removes the entry before the call's lookup; the
+    ///   call's `get_tv` returns `Err(TvNotFound)`. Client sees
+    ///   `zbus::fdo::Error::Failed("TV not found: ...")`.
+    ///
+    /// - **(b) Call holds the `Arc<Mutex<ManagedTv>>` (post-`get_tv`)
+    ///   but is awaiting the inner Mutex.** Removal acquires the
+    ///   Mutex first (after `shift_remove` releases the outer write
+    ///   lock), closes the connection inside the lock, drops it. The
+    ///   in-flight call then acquires the Mutex, finds
+    ///   `connection = None`, returns `Err(NotConnected)`. Client sees
+    ///   `zbus::fdo::Error::Failed("Not connected to TV: ...")`.
+    ///
+    /// - **(c) Call holds the Mutex during SSAP work.** Removal
+    ///   *blocks* waiting on the Mutex until the in-flight write
+    ///   completes. The in-flight call returns `Ok` against the still-
+    ///   open connection. Removal then proceeds, closes the connection,
+    ///   and finishes. Client sees the write succeed; the subsequent
+    ///   removal is invisible to that caller.
+    ///
+    /// Every observable outcome is coherent — no stale-Ok-with-no-effect
+    /// scenario exists. The Mutex-held-across-await pattern (in
+    /// `with_connection` and similar helpers) is what makes case (c)
+    /// safe; a future refactor that drops it (e.g., releases the
+    /// Mutex before the SSAP send) would re-introduce the race.
+    ///
+    /// `apply_reload_diff`'s removed-half loop uses the same
+    /// `tv_manager.remove_tv` path indirectly (via `tv_manager::reload_config`),
+    /// so the same drain semantics apply to direct config-file
+    /// edits that drop a TV.
     pub async fn remove_tv(&self, tv_id: &str) -> Result<(), TvManagerError> {
         info!(tv_id = %tv_id, "Removing TV");
 

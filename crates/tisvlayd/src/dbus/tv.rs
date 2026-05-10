@@ -238,6 +238,14 @@ impl TvService {
     // -------------------------------------------------------------------------
 
     /// Force reconnection to the TV.
+    /// Reconnect to the TV by closing and reopening the underlying
+    /// vendor connection. The D-Bus object path stays registered
+    /// throughout — only the connection changes — so no
+    /// `register_tv_interfaces` / `unregister_tv_interfaces` calls
+    /// are needed here. In-flight `Tv1.*` calls against this path
+    /// during reconnect participate in the same per-TV `Mutex<ManagedTv>`
+    /// drain semantics that `Tv1.Remove` and `apply_reload_diff`
+    /// document (see `tv_manager::remove_tv`).
     async fn reconnect(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: Reconnect");
         self.manager
@@ -301,7 +309,15 @@ impl TvService {
     /// patch — atomicity covers in-memory + disk persistence.
     ///
     /// Vendor field changes drop the live connection and trigger a
-    /// reconnect with the new parameters.
+    /// reconnect with the new parameters. The D-Bus object path
+    /// stays registered throughout — the `Tv1.*` interface set
+    /// doesn't depend on which vendor is active (capability
+    /// differences surface via the `Capabilities` property, not the
+    /// interface schema), so no `register_tv_interfaces` /
+    /// `unregister_tv_interfaces` call is needed. In-flight `Tv1.*`
+    /// calls during the reconnect participate in the same per-TV
+    /// `Mutex<ManagedTv>` drain semantics documented at
+    /// `tv_manager::remove_tv`.
     async fn update_config(&self, json_patch: &str) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: UpdateConfig");
         self.manager

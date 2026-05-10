@@ -84,6 +84,20 @@ pub async fn build_dbus_connection(
 /// path collision is no longer an error mode) are logged. Callers
 /// can't recover meaningfully from a broken connection mid-reload, so
 /// no aggregate failure type propagates upward.
+///
+/// # Drain semantics for the `removed` half
+///
+/// The unregister loop interacts with in-flight `Tv1.*` calls against
+/// the same paths via the per-TV `Mutex<ManagedTv>` discipline
+/// documented at [`crate::tv_manager::TvManager::remove_tv`]. The
+/// removed-half handler here calls `unregister_tv_interfaces` (which
+/// hits the zbus `ObjectServer`'s routing map but doesn't touch
+/// `tv_manager`'s in-memory state); the corresponding `tv_manager`
+/// removal happened earlier in [`crate::tv_manager::TvManager::reload_config`]'s
+/// Phase 2 under the per-TV Mutex, so by the time we reach this
+/// unregister loop, in-flight calls have already either completed,
+/// hit `TvNotFound`, or hit `NotConnected`. See `remove_tv`'s
+/// docstring for the three sub-cases.
 pub async fn apply_reload_diff(
     connection: &zbus::Connection,
     tv_manager: &Arc<TvManager>,
