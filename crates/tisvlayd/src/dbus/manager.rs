@@ -2,7 +2,9 @@
 //!
 //! Implements `org.tisvlay.Manager1` for TV discovery and management.
 
-use crate::dbus::{DaemonError, apply_reload_diff, register_tv_interfaces};
+use crate::dbus::{
+    DaemonError, apply_reload_diff, register_tv_interfaces, unregister_tv_interfaces,
+};
 use crate::json_toml::json_to_toml;
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
@@ -253,6 +255,17 @@ impl ManagerService {
         // GetManagedObjects call would show volume=0, backlight=0, etc.
         let state = manager.get_current_state(&tv_id).await;
         let path = tv_path(&tv_id);
+
+        // Flush any stale interface state at the path before
+        // registering fresh. zbus's `ObjectServer::at` returns
+        // `Ok(false)` rather than `Err` when an interface is already
+        // there, so a fresh register against a stale path silently
+        // fails to refresh state (the pre-existing interface keeps
+        // serving with old field values). unregister_tv_interfaces
+        // is infallible by construction; this is cheap when there's
+        // nothing to clean.
+        let _ = unregister_tv_interfaces(connection, &path).await;
+
         if let Err(e) = register_tv_interfaces(
             connection,
             &path,
