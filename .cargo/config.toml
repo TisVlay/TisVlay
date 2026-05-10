@@ -16,3 +16,24 @@
 # `crates/tisvlay-harness/tests/gui_*.rs` for consumers.
 [env]
 SLINT_EMIT_DEBUG_INFO = "1"
+# Default LLVM coverage-runtime output path. Without this,
+# instrumented test binaries (which can sneak into `target/debug/`
+# from past `cargo llvm-cov` invocations that didn't isolate to
+# `target/llvm-cov-target/`) write `default_<hash>_<pid>.profraw`
+# to whatever cwd they're spawned from — under nextest that's the
+# per-crate directory, leaving stray artifacts outside `target/`
+# that survive `cargo clean` / `rm -rf target/`.
+#
+# Routing the default under `target/` keeps the workspace clean by
+# default and preserves the invariant that `rm -rf target/` removes
+# all build-time outputs. The `cargo llvm-cov` tool exports its own
+# `LLVM_PROFILE_FILE` before invoking cargo, which shadows this
+# default (cargo `[env]` only applies when the var isn't already
+# set), so coverage runs through `just cov` / `just test-ci`
+# continue to write wherever the tool expects.
+#
+# `%m` (module hash) and `%p` (pid) are compiler-rt's standard
+# substitutions; they prevent collisions across parallel test
+# processes. `relative = true` resolves the value against the
+# workspace root.
+LLVM_PROFILE_FILE = { value = "target/profraw/default_%m_%p.profraw", relative = true }
