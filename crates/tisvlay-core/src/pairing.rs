@@ -438,6 +438,18 @@ impl PairingSession {
         self.state_rx.clone()
     }
 
+    /// Clone the session's command sender.
+    ///
+    /// Allows callers outside the session's owning scope to send
+    /// `PairingCommand::Cancel` (and future commands) without holding
+    /// the session itself. Used by `tisvlayd::tv_manager`'s
+    /// `pairing_sessions` map so `Manager1.CancelPair(tv_id)` can
+    /// reach in-flight pair handshakes owned by `pair_tv` /
+    /// `re_pair_tv`.
+    pub fn command_sender(&self) -> mpsc::Sender<PairingCommand> {
+        self.command_tx.clone()
+    }
+
     /// Get the current pairing state.
     pub fn state(&self) -> PairingState {
         self.state_rx.borrow().clone()

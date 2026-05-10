@@ -49,6 +49,11 @@ pub enum DaemonError {
     UnknownVendor(String),
     /// Pairing error.
     PairingFailed(String),
+    /// `Manager1.CancelPair(tv_id)` called against a tv_id that isn't
+    /// currently pairing. Maps from `TvManagerError::NotPairing` —
+    /// strict variant matching the BlueZ `Adapter.RemoveDevice`
+    /// on-unknown-device convention. See `docs/plans/re-pair-tv.md` DR7b.
+    NotPairing(String),
 
     // -- Power-cycle (typed; mirrors `errors::PowerErrorCode`) --
     /// TV has no wake method configured (no MAC for WoL).
@@ -134,6 +139,7 @@ impl From<TvManagerError> for DaemonError {
                 }
             }
             TvManagerError::PairingFailed(source) => DaemonError::PairingFailed(source.to_string()),
+            TvManagerError::NotPairing(tv_id) => DaemonError::NotPairing(tv_id),
             TvManagerError::ConfigError(msg) => DaemonError::OperationFailed(msg),
         }
     }

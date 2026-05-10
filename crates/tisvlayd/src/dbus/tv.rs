@@ -254,6 +254,35 @@ impl TvService {
             .map_err(DaemonError::from)
     }
 
+    /// Re-pair the TV: run the vendor backend's pairing handshake
+    /// against the TV's existing `vendor_config`, persist the refreshed
+    /// credentials in place, and reconnect. Top-level fields (`name`,
+    /// `profile`, `managed`, `primary_input`) stay intact.
+    ///
+    /// Used by clients to recover from expired credentials (LG WebOS
+    /// client-key revocation, future Samsung token expiry, etc.)
+    /// without forcing the user to `Tv1.Remove` + `Manager1.AddTv`
+    /// from scratch.
+    ///
+    /// The call blocks for the full handshake duration (10–30s
+    /// typical: TV wake + SSAP TLS + user accept on TV). Progress
+    /// surfaces via `Manager1.PairingProgress` signals (same channel
+    /// AddTv's flow uses); the call itself returns when the handshake
+    /// terminates. Cancel an in-flight re-pair via
+    /// `Manager1.CancelPair(tv_id)`.
+    ///
+    /// Concurrent re-pair attempts against the same TV are rejected
+    /// with `PairingFailed("already pairing")` per the
+    /// `pairing_in_flight` gate on `ManagedTv`. See
+    /// `docs/plans/re-pair-tv.md` for the architectural rationale.
+    async fn re_pair(&self) -> Result<(), DaemonError> {
+        info!(tv_id = %self.tv_id, "D-Bus: RePair");
+        self.manager
+            .re_pair_tv(&self.tv_id)
+            .await
+            .map_err(DaemonError::from)
+    }
+
     /// Remove this TV from the daemon's configuration.
     ///
     /// Drops the in-memory TV map entry, deletes the entry from the

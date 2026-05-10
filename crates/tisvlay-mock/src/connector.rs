@@ -252,3 +252,57 @@ impl TvConnector for MockConnector {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // start_pairing accepts already-credentialed vendor_config
+    //
+    // Re-pair (per `docs/plans/re-pair-tv.md`) calls `start_pairing` with
+    // a TV's existing vendor_config — which may include a `client_key`-like
+    // field from a prior pair. Mock's `MockVendorConfig` doesn't have a
+    // `client_key` field of its own, but serde lenience (no
+    // `deny_unknown_fields`) means extra fields parse fine. Verify both
+    // a clean re-pair-shaped config and a config with unknown extras are
+    // accepted, and that calling twice in succession is idempotent.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn start_pairing_accepts_credentialed_vendor_config() {
+        let connector = MockConnector::new();
+
+        // `pairing = "accept"` so the spawned task terminates immediately
+        // rather than hanging on cancel-receive (default `manual` mode).
+        let mut table = toml::value::Table::new();
+        table.insert(
+            "address".into(),
+            toml::Value::String("mock://repair_verify".into()),
+        );
+        table.insert("pairing".into(), toml::Value::String("accept".into()));
+        // Extra credentialing-shaped field that re-pair might carry through
+        // from a prior pair; the mock's serde is lenient so this just gets
+        // ignored on parse.
+        table.insert(
+            "client_key".into(),
+            toml::Value::String("preexisting-mock-key".into()),
+        );
+        let vendor_config = toml::Value::Table(table);
+
+        let session1 = connector.start_pairing(&vendor_config);
+        assert!(
+            session1.is_ok(),
+            "first start_pairing with credentialed config should return Ok; got {:?}",
+            session1.as_ref().err(),
+        );
+        drop(session1);
+
+        let session2 = connector.start_pairing(&vendor_config);
+        assert!(
+            session2.is_ok(),
+            "second start_pairing with the same credentialed config should return Ok; got {:?}",
+            session2.as_ref().err(),
+        );
+    }
+}

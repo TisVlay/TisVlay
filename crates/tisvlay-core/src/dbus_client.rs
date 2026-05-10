@@ -148,6 +148,13 @@ trait TisvlayManager {
     /// Reload configuration.
     fn reload_config(&self) -> zbus::Result<()>;
 
+    /// Cancel an in-flight pairing handshake for the given TV.
+    /// Returns `Err(NotPairing)` if no in-flight session exists.
+    /// Works for both `AddTv` (blocks the AddTv handler — the cancel
+    /// resolves its `wait_for_completion`) and `Tv1.RePair` (resolves
+    /// the re-pair handler's handshake similarly).
+    fn cancel_pair(&self, tv_id: &str) -> zbus::Result<()>;
+
     /// Get the admin baseline for user profiles as JSON.
     fn get_user_profile_default(&self) -> zbus::Result<String>;
 
@@ -258,6 +265,13 @@ trait TisvlayTv {
 
     /// Force reconnection.
     fn reconnect(&self) -> zbus::Result<()>;
+
+    /// Re-pair this TV: refresh credentials in place without losing
+    /// top-level config (name, profile, managed, primary_input).
+    /// Blocks for the full pairing handshake duration (10–30s);
+    /// progress surfaces via `Manager1.PairingProgress` signals.
+    /// Cancel an in-flight re-pair via `Manager1.CancelPair(tv_id)`.
+    fn re_pair(&self) -> zbus::Result<()>;
 
     /// Remove this TV from the daemon's configuration.
     ///
@@ -1072,6 +1086,29 @@ impl DaemonClient {
 
         let mut cache = self.tv_proxies.write().await;
         cache.remove(tv_id);
+        Ok(())
+    }
+
+    /// Re-pair the TV: refresh credentials in place without losing
+    /// top-level config. Blocks for the full pairing handshake
+    /// duration (10–30s typical). Cancel via [`Self::cancel_pair`].
+    pub async fn re_pair(&self, tv_id: &str) -> Result<()> {
+        self.with_proxies(tv_id, "re_pair", |p| Box::pin(p.base.re_pair()))
+            .await
+    }
+
+    /// Cancel an in-flight pairing handshake for the given TV.
+    ///
+    /// Works for both AddTv-in-flight and re-pair-in-flight. Returns
+    /// `Err(NotPairing)` (carried via the underlying zbus error
+    /// surface as `org.tisvlay.Error.NotPairing`) if no in-flight
+    /// session exists for the tv_id.
+    pub async fn cancel_pair(&self, tv_id: &str) -> Result<()> {
+        debug!(tv_id = %tv_id, "Calling CancelPair on daemon");
+        self.manager
+            .cancel_pair(tv_id)
+            .await
+            .context("Failed to cancel pair")?;
         Ok(())
     }
 

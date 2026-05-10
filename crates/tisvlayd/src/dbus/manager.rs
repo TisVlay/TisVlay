@@ -300,6 +300,37 @@ impl ManagerService {
         Ok(())
     }
 
+    /// Cancel an in-flight pairing handshake for the given TV.
+    ///
+    /// Reaches into the daemon's `pairing_sessions` map (registered
+    /// at the start of `pair_tv` / `re_pair_tv`, removed on
+    /// completion) and sends `PairingCommand::Cancel` via the
+    /// session's command channel. The handshake task observes the
+    /// cancel command, resolves the session with
+    /// `PairingError::cancelled`, and the originating
+    /// `Manager1.AddTv` or `Tv1.RePair` call returns `Err`.
+    ///
+    /// Returns `Err(DaemonError::NotPairing(tv_id))` if no in-flight
+    /// session exists for the given tv_id (already completed, never
+    /// started, wrong id). Matches BlueZ's `Adapter.RemoveDevice`-
+    /// on-unknown-device convention. Clients only fire cancel when
+    /// they know a pair is in flight (they're listening to
+    /// `PairingProgress` signals); the typed error helps debugging
+    /// if that invariant is ever broken.
+    ///
+    /// Works for both AddTv (the blocking handler holds the session;
+    /// cancel resolves wait_for_completion) and re-pair (the
+    /// non-blocking handler also holds the session via
+    /// `run_pairing_handshake`; same mechanism). See
+    /// `docs/plans/re-pair-tv.md` DR7 / DR7b / DR7c.
+    async fn cancel_pair(&self, tv_id: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, "D-Bus: CancelPair");
+        self.manager
+            .cancel_pair(tv_id)
+            .await
+            .map_err(DaemonError::from)
+    }
+
     // -------------------------------------------------------------------------
     // System Config Management
     // -------------------------------------------------------------------------
