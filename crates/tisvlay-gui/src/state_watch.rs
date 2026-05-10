@@ -42,15 +42,53 @@ pub(crate) async fn initial_fetch_and_watch(
         }
     };
 
-    // Fetch the daemon's vendor list once at startup. Used by the
-    // pairing wizard's manual-entry vendor selector and cached for
-    // the diagnostic blob. Failures are tolerable — the wizard falls
-    // back to its hardcoded "lg" default; the diagnostic blob renders
-    // an empty `vendors_supported` array.
+    // Fetch + publish the daemon's vendor list. If the daemon is
+    // offline at startup the call returns an empty list and the
+    // wizard's ComboBox renders blank; `watch_state` re-runs this on
+    // `DaemonAppeared` so a GUI launched before the daemon recovers
+    // once the daemon comes up.
+    fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
+
+    let initial_daemon_available = initial_snapshot.is_some();
+    on_ui(&app_weak, move |app| {
+        if let Some(snapshot) = initial_snapshot {
+            push_snapshot(&app, snapshot);
+        }
+        app.set_daemon_available(initial_daemon_available);
+        app.set_session_available(initial_session_available);
+        app.set_tray_available(initial_tray_available);
+    });
+
+    refresh_about_components(&daemon, &session, &tray, &app_weak).await;
+    watch_state(
+        daemon,
+        session,
+        tray,
+        reconcilers,
+        app_weak,
+        supported_vendors_cache,
+    )
+    .await;
+}
+
+/// Fetch the daemon's supported-vendor list (`Manager1.GetSupportedVendors`)
+/// and publish it to the pairing-wizard global plus the diagnostic-blob
+/// cache. Sorted by display name (case-insensitive) so the wizard's
+/// ComboBox renders in stable, scannable order regardless of registration
+/// order.
+///
+/// Idempotent — safe to call multiple times. Vendor lists are static
+/// per daemon binary today, so the second call is wasted work in the
+/// common case. Re-running on `DaemonAppeared` covers the regression
+/// case where the GUI started before the daemon: the initial fetch
+/// returns empty (`unwrap_or_default()`), without a re-fetch the
+/// wizard's vendor ComboBox stays blank until the GUI restarts.
+async fn fetch_and_publish_vendors(
+    daemon: &DaemonClient,
+    app_weak: &slint::Weak<AppWindow>,
+    supported_vendors_cache: &SupportedVendorsCache,
+) {
     let mut vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
-    // Sort by display name (case-insensitive) so the wizard's vendor
-    // ComboBox renders in stable, scannable order regardless of which
-    // order the daemon's registry happens to return them in.
     vendor_pairs.sort_by_key(|a| a.1.to_lowercase());
     debug!(
         count = vendor_pairs.len(),
@@ -59,13 +97,8 @@ pub(crate) async fn initial_fetch_and_watch(
     if let Ok(mut cache) = supported_vendors_cache.write() {
         *cache = vendor_pairs.iter().map(|(id, _)| id.clone()).collect();
     }
-
-    let initial_daemon_available = initial_snapshot.is_some();
-    on_ui(&app_weak, move |app| {
+    on_ui(app_weak, move |app| {
         let wizard = app.global::<PairingWizard>();
-        if let Some(snapshot) = initial_snapshot {
-            push_snapshot(&app, snapshot);
-        }
         let names: Vec<SharedString> = vendor_pairs
             .iter()
             .map(|(_, name)| SharedString::from(name.as_str()))
@@ -79,16 +112,7 @@ pub(crate) async fn initial_fetch_and_watch(
             .collect();
         wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
         wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
-        // `manual-vendor-index` defaults to 0 in the global, which
-        // selects the alpha-first vendor once `supported-vendors` is
-        // published above. No explicit seed needed.
-        app.set_daemon_available(initial_daemon_available);
-        app.set_session_available(initial_session_available);
-        app.set_tray_available(initial_tray_available);
     });
-
-    refresh_about_components(&daemon, &session, &tray, &app_weak).await;
-    watch_state(daemon, session, tray, reconcilers, app_weak).await;
 }
 
 async fn watch_state(
@@ -97,6 +121,7 @@ async fn watch_state(
     tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
+    supported_vendors_cache: SupportedVendorsCache,
 ) {
     // No debounce: every D-Bus state signal triggers a refresh fire.
     // The default 100ms (originally a flood guard before
@@ -154,8 +179,16 @@ async fn watch_state(
         };
 
         match event {
+            StateEvent::DaemonAppeared => {
+                // Republish the vendor list — covers the GUI-started-
+                // before-the-daemon case where the initial fetch
+                // returned empty. Vendor lists are static per daemon
+                // binary, so a duplicate fetch is wasted work but
+                // cheap; `DaemonAppeared` isn't high-frequency.
+                fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
+                trigger_refresh();
+            }
             StateEvent::DaemonStateChanged(_)
-            | StateEvent::DaemonAppeared
             | StateEvent::SessionProfileChanged
             | StateEvent::FallbackPoll => {
                 trigger_refresh();
