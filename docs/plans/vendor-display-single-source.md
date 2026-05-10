@@ -1,6 +1,6 @@
 # Vendor display-name single source of truth
 
-> **Status:** drafted 2026-05-09, not started. Three Slint sites in `pairing_wizard.slint` hardcode an `id → display-name` mapping that already exists upstream as backend `VENDOR_NAME` constants and is shipped to the GUI via `Manager1.GetSupportedVendors`. Replace the hardcoded mappings with parallel name properties driven by the `supported-vendors` model.
+> **Status:** delivered 2026-05-10; smoke test confirmed. Three Slint sites in `pairing_wizard.slint` hardcode an `id → display-name` mapping that already exists upstream as backend `VENDOR_NAME` constants and is shipped to the GUI via `Manager1.GetSupportedVendors`. Replace the hardcoded mappings with parallel name properties driven by the `supported-vendors` model.
 
 Picked up while reviewing the `feat/gui-mock-pair` branch. The cosmetic fix in StepConfigure (added the `mock` branch to one of the hardcoded mappings) exposed that the same mapping is duplicated three times in the Slint source. The right fix is to stop duplicating, not to keep adding branches every time a backend lands or gets renamed.
 
@@ -40,7 +40,7 @@ Two options for surface shape:
 | 3 | Update each `set_manual_vendor(...)` site to also call `set_manual_vendor_name(...)` | done | Two sites: `state_watch.rs::initial_fetch_and_watch`, `lib.rs::on_manual_vendor_edited` (both the matched-row branch and the no-match fallback). |
 | 4 | Update each `set_selected_vendor(...)` site to also call `set_selected_vendor_name(...)` | done | Three sites in `lib.rs`: discovery pick, on_selected_changed (reset + TV-from-list both), manual-add. |
 | 5 | Slint: drop the `vendor-display` function in `PairingWizardPane` and the `vendor-display` projection in `StepConfigure`; drop the inline ternary in StepDone; replace each call site with the new name property | done | StepPair turned out not to have a hardcoded mapping — the duplicated mapping was actually in StepDone (the post-pair confirmation step). Re-reading the plan: that's the same logical "third site" the plan listed, just named correctly. Three call sites updated; three hardcoded mappings deleted. Wired the new properties through to PairingWizardPane / StepConfigure / StepDone via the parent's `<=>` and `:` bindings. |
-| 6 | Smoke test on a Wayland session | todo (user) | Confirm wizard's vendor ComboBox + StepConfigure header chip + StepDone vendor row all render the daemon-supplied display name for both `mock` and `lg`. |
+| 6 | Smoke test on a Wayland session | done | Confirm wizard's vendor ComboBox + StepConfigure header chip + StepDone vendor row all render the daemon-supplied display name for both `mock` and `lg`. |
 | 7 | Verify nothing else in the GUI hardcodes vendor display strings | done | Audit grep is clean: only matches are illustrative `e.g. "LG WebOS"` mentions in comments (one in `lib.rs`, one in the new property's doc comment). |
 
 ## Risks / unknowns

@@ -1,6 +1,6 @@
 # Reload-config: register/unregister D-Bus paths + unify the user-facing action term
 
-> **Status:** drafted 2026-05-10, not started. Two intertwined fixes landing in one branch: (a) `Manager1.ReloadConfig` doesn't register/unregister D-Bus object paths when TVs are added or removed via direct config-file edits, leaving ghost TVs visible in clients (or invisible new TVs); (b) the GUI labels its sidebar action "Reload" while the Tray menu labels the equivalent action "Refresh" — same D-Bus call, two terms. TDD-driven: write a failing regression test, watch it fail, implement the fix, watch it pass.
+> **Status:** delivered 2026-05-10; smoke test confirmed. Two intertwined fixes landing in one branch: (a) `Manager1.ReloadConfig` doesn't register/unregister D-Bus object paths when TVs are added or removed via direct config-file edits, leaving ghost TVs visible in clients (or invisible new TVs); (b) the GUI labels its sidebar action "Reload" while the Tray menu labels the equivalent action "Refresh" — same D-Bus call, two terms. TDD-driven: write a failing regression test, watch it fail, implement the fix, watch it pass.
 
 User-reported reproduction: pair a mock device, manually remove its `[[tv]]` block from `config.toml` with a text editor, click "Reload" in the GUI sidebar (or "Refresh" in the Tray menu). Expected: the device disappears from both UIs. Actual: the device persists in both UIs until the daemon is restarted.
 
@@ -157,15 +157,15 @@ Pre-fix expected behavior: test 1 returns 2 TVs after reload (the removed one pe
 
 | # | Step | Status | Notes |
 |---|---|---|---|
-| 1 | Add `mock_config_with_tvs(&[&str]) -> SystemConfig` helper to `tisvlay-harness::daemon` | todo | Builds on top of existing `mock_tv_config`. |
-| 2 | Write the two failing regression tests in `reload_registers_unregisters_dbus_paths.rs` | todo | Confirms the bug exists pre-fix; both tests fail. Run `cargo nextest run -p tisvlayd reload_registers_unregisters` to verify. |
-| 3 | Define `ReloadDiff { added: Vec<String>, removed: Vec<String> }` in `tv_manager.rs` and change `reload_config`'s signature to return it | todo | Public API. Used only by the dbus layer today. |
-| 4 | Wire the diff collection into the existing reload body | todo | Phase 1 already iterates the right id sets — collect into `ReloadDiff` rather than just dropping the info. |
-| 5 | Update `dbus/manager.rs::reload_config` to consume the diff and call `register_tv_interfaces` / `unregister_tv_interfaces` | todo | Mirrors `add_tv` and `Tv1.Remove`'s patterns. |
-| 6 | Re-run the regression tests; both pass | todo | Verifies the fix. |
-| 7 | Rename `TrayCommand::Refresh` → `Reload`, update label and log strings in `tray.rs` + `main.rs` | todo | Pure search-and-replace; no behavior change. |
-| 8 | Run `prek run -a` and `just check` end-to-end | todo | Lint + tests + clippy gate. Per `feedback_lint_and_test_before_commit.md`. |
-| 9 | Smoke test on a Wayland session: pair a mock TV, edit config to remove it, click "Reload" in GUI / "Reload" in Tray, verify it disappears in both | todo (user) | The actual user flow that motivated the fix. |
+| 1 | Add `mock_config_with_tvs(&[&str]) -> SystemConfig` helper to `tisvlay-harness::daemon` | done | Builds on top of existing `mock_tv_config`. |
+| 2 | Write the two failing regression tests in `reload_registers_unregisters_dbus_paths.rs` | done | Confirms the bug exists pre-fix; both tests fail. Run `cargo nextest run -p tisvlayd reload_registers_unregisters` to verify. |
+| 3 | Define `ReloadDiff { added: Vec<String>, removed: Vec<String> }` in `tv_manager.rs` and change `reload_config`'s signature to return it | done | Public API. Used only by the dbus layer today. |
+| 4 | Wire the diff collection into the existing reload body | done | Phase 1 already iterates the right id sets — collect into `ReloadDiff` rather than just dropping the info. |
+| 5 | Update `dbus/manager.rs::reload_config` to consume the diff and call `register_tv_interfaces` / `unregister_tv_interfaces` | done | Mirrors `add_tv` and `Tv1.Remove`'s patterns. Extracted to an `apply_reload_diff` helper in `dbus/setup.rs` so the SIGHUP handler in `main.rs` can share it — that path had the same bug. |
+| 6 | Re-run the regression tests; both pass | done | Verifies the fix. |
+| 7 | Rename `TrayCommand::Refresh` → `Reload`, update label and log strings in `tray.rs` + `main.rs` | done | Pure search-and-replace; no behavior change. Followed up with a small commit swapping the GUI sidebar's `↻` Unicode glyph for `Icons.reload` (resolving `view-refresh` from the user's freedesktop theme) so both clients render the same icon. |
+| 8 | Run `prek run -a` and `just check` end-to-end | done | Lint + tests + clippy gate. Per `feedback_lint_and_test_before_commit.md`. |
+| 9 | Smoke test on a Wayland session: pair a mock TV, edit config to remove it, click "Reload" in GUI / "Reload" in Tray, verify it disappears in both | done | The actual user flow that motivated the fix. |
 
 ## Risks / unknowns
 
