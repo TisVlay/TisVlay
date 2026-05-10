@@ -113,7 +113,13 @@ export global PairingWizard {
     in-out property <string> tv-name;
     in-out property <string> system-profile;
     in-out property <bool> managed: true;
-    in-out property <string> manual-vendor: "lg";
+    // Initial value is empty — Rust seeds it to the first registered
+    // backend in `state_watch::initial_fetch_and_watch` once
+    // `supported-vendors` is populated. A hardcoded default here
+    // would defeat that seed (the `is_empty` guard would never fire)
+    // and re-introduce the same drift the
+    // `vendor-display-single-source` plan removed.
+    in-out property <string> manual-vendor;
     // Display name for `manual-vendor` — see `selected-vendor-name`
     // above for the rationale.
     in-out property <string> manual-vendor-name;
