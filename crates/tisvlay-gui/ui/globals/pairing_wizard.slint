@@ -113,16 +113,17 @@ export global PairingWizard {
     in-out property <string> tv-name;
     in-out property <string> system-profile;
     in-out property <bool> managed: true;
-    // Initial value is empty — Rust seeds it to the first registered
-    // backend in `state_watch::initial_fetch_and_watch` once
-    // `supported-vendors` is populated. A hardcoded default here
-    // would defeat that seed (the `is_empty` guard would never fire)
-    // and re-introduce the same drift the
-    // `vendor-display-single-source` plan removed.
-    in-out property <string> manual-vendor;
-    // Display name for `manual-vendor` — see `selected-vendor-name`
-    // above for the rationale.
-    in-out property <string> manual-vendor-name;
+    // Index into `supported-vendors` for the vendor the user picked
+    // in the manual-add path's ComboBox. Default 0 = first
+    // alphabetically-sorted vendor (the `state_watch` publisher
+    // sorts before publishing). The ComboBox is bound via
+    // `current-index <=>` so user picks write back here directly,
+    // and Rust at `manual-add` time reads
+    // `supported-vendors[manual-vendor-index]` to recover the id +
+    // display name. Single source of truth replaces the prior
+    // `manual-vendor` (id) + `manual-vendor-name` (display) pair —
+    // see `docs/plans/vendor-state-single-property.md`.
+    in-out property <int> manual-vendor-index: 0;
     in-out property <string> manual-ip;
 
     // -- Callbacks --
@@ -136,7 +137,6 @@ export global PairingWizard {
     callback name-edited(string);
     callback profile-selected(string);
     callback managed-toggled(bool);
-    callback manual-vendor-edited(string);
     callback manual-ip-edited(string);
     callback manual-add();
 }

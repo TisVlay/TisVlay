@@ -51,7 +51,7 @@ pub(crate) async fn initial_fetch_and_watch(
     // Sort by display name (case-insensitive) so the wizard's vendor
     // ComboBox renders in stable, scannable order regardless of which
     // order the daemon's registry happens to return them in.
-    vendor_pairs.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    vendor_pairs.sort_by_key(|a| a.1.to_lowercase());
     debug!(
         count = vendor_pairs.len(),
         "Fetched supported vendors from daemon"
@@ -77,18 +77,12 @@ pub(crate) async fn initial_fetch_and_watch(
                 name: SharedString::from(name),
             })
             .collect();
-        // Seed `manual-vendor` (and its parallel display name) to the
-        // first registered backend so the wizard's vendor ComboBox
-        // renders with a sensible default. Only seed if unset —
-        // preserve any vendor the user already picked.
-        if wizard.get_manual_vendor().is_empty()
-            && let Some(first) = vendors.first()
-        {
-            wizard.set_manual_vendor(first.id.clone());
-            wizard.set_manual_vendor_name(first.name.clone());
-        }
         wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
         wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
+        // `manual-vendor-index` defaults to 0 in the global, which
+        // selects the alpha-first vendor once `supported-vendors` is
+        // published above. No explicit seed needed — see
+        // `docs/plans/vendor-state-single-property.md`.
         app.set_daemon_available(initial_daemon_available);
         app.set_session_available(initial_session_available);
         app.set_tray_available(initial_tray_available);

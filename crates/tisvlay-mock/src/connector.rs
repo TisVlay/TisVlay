@@ -236,7 +236,8 @@ impl TvConnector for MockConnector {
                          GUI testing. 'reject' and 'timeout' exercise \
                          the wizard's error paths. 'manual' waits for \
                          a test-handle call (used by integration \
-                         tests).".into(),
+                         tests)."
+                    .into(),
                 field_type: PairingFieldType::Select,
                 required: false,
                 default: "accept".into(),

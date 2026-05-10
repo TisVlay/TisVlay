@@ -234,14 +234,13 @@ component StepDiscover {
     in property <bool> streaming;
     in property <string> error-message;
     in-out property <int> selected-index;
-    in-out property <string> manual-vendor;
-    // Display name for `manual-vendor`, computed in Rust at every
-    // setter site by looking up the id in `supported-vendors`. See
-    // `docs/plans/vendor-display-single-source.md`.
-    in-out property <string> manual-vendor-name;
+    // Index into `supported-vendors`; ComboBox is bound to it via
+    // `current-index <=>` so user picks round-trip without a Rust
+    // callback. Rationale and migration in
+    // `docs/plans/vendor-state-single-property.md`.
+    in-out property <int> manual-vendor-index;
     in-out property <string> manual-ip;
     callback selection-changed(int);
-    callback manual-vendor-edited(string);
     callback manual-ip-edited(string);
     callback manual-add();
 
@@ -428,10 +427,13 @@ component StepDiscover {
                             font-weight: 500;
                         }
                         // ≤ 1 vendor: static chip (no point in a
-                        // single-option dropdown). > 1: ComboBox; the
-                        // manual-vendor-edited callback fires with the
-                        // selected display name, and Rust resolves it
-                        // to the vendor id.
+                        // single-option dropdown). > 1: ComboBox bound
+                        // by `current-index <=>` — user picks write
+                        // straight back to `manual-vendor-index` with
+                        // no Rust callback in the path. Rust at
+                        // manual-add time reads `supported-vendors[idx]`
+                        // for both id and display name. See
+                        // `docs/plans/vendor-state-single-property.md`.
                         if root.supported-vendors.length <= 1: Rectangle {
                             background: Theme.surface;
                             border-color: Theme.border-strong;
@@ -446,7 +448,7 @@ component StepDiscover {
                                 Text {
                                     text: root.supported-vendors.length == 1
                                         ? root.supported-vendors[0].name
-                                        : root.manual-vendor-name;
+                                        : "";
                                     color: Theme.text;
                                     font-size: Design.font-body;
                                     vertical-alignment: center;
@@ -455,8 +457,7 @@ component StepDiscover {
                         }
                         if root.supported-vendors.length > 1: ComboBox {
                             model: root.supported-vendor-names;
-                            current-value: root.manual-vendor-name;
-                            selected(v) => { root.manual-vendor-edited(v); }
+                            current-index <=> root.manual-vendor-index;
                         }
                     }
 
@@ -949,11 +950,9 @@ export component PairingWizardPane inherits Rectangle {
                     streaming: PairingWizard.discovery-streaming;
                     error-message: PairingWizard.discovery-error;
                     selected-index: PairingWizard.selected-index;
-                    manual-vendor <=> PairingWizard.manual-vendor;
-                    manual-vendor-name <=> PairingWizard.manual-vendor-name;
+                    manual-vendor-index <=> PairingWizard.manual-vendor-index;
                     manual-ip <=> PairingWizard.manual-ip;
                     selection-changed(i) => { PairingWizard.selected-changed(i); }
-                    manual-vendor-edited(v) => { PairingWizard.manual-vendor-edited(v); }
                     manual-ip-edited(v) => { PairingWizard.manual-ip-edited(v); }
                     manual-add => { PairingWizard.manual-add(); }
                 }

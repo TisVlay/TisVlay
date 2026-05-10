@@ -956,33 +956,10 @@ fn register_callbacks(
     wizard.on_profile_selected(|_| {});
     wizard.on_managed_toggled(|_| {});
 
-    // Manual-entry: edits flush back via two-way binding; the explicit
-    // edited callbacks are wire-only no-ops to satisfy LineEdit.
-    // The vendor ComboBox emits the *display name* (e.g. "LG WebOS").
-    // Resolve back to the canonical vendor id by looking up in
-    // `wizard_supported_vendors`.
-    let app_weak = app.as_weak();
-    wizard.on_manual_vendor_edited(move |display_name| {
-        let Some(app) = app_weak.upgrade() else {
-            return;
-        };
-        let wizard = app.global::<PairingWizard>();
-        let model = wizard.get_supported_vendors();
-        for i in 0..model.row_count() {
-            if let Some(opt) = model.row_data(i)
-                && opt.name == display_name
-            {
-                wizard.set_manual_vendor(opt.id);
-                wizard.set_manual_vendor_name(opt.name);
-                return;
-            }
-        }
-        // No match — accept the display name as-is so a future
-        // backend doesn't get silently dropped. Both id and name
-        // get the same string in this fallback.
-        wizard.set_manual_vendor(display_name.clone());
-        wizard.set_manual_vendor_name(display_name);
-    });
+    // Manual-entry: the vendor ComboBox writes its `current-index`
+    // straight into `manual-vendor-index` via two-way binding (no
+    // callback in the path). The IP LineEdit still needs an explicit
+    // edited callback to flush its string into `manual-ip`.
     let app_weak = app.as_weak();
     wizard.on_manual_ip_edited(move |v| {
         if let Some(app) = app_weak.upgrade() {
@@ -1230,25 +1207,21 @@ fn register_callbacks(
             return;
         };
         let wizard = app.global::<PairingWizard>();
-        let mut vendor = wizard.get_manual_vendor().to_string();
-        if vendor.is_empty() {
-            // ComboBox `current-value` is bound to a `vendor-display`
-            // projection of `manual-vendor`; if the user opens the
-            // wizard's "Add manually" path without explicitly clicking
-            // the dropdown, `manual-vendor` is empty and the
-            // `selected(...)` callback never fires. Fall back to the
-            // first registered backend rather than a hardcoded vendor —
-            // otherwise a multi-vendor daemon (e.g. mock + lg) silently
-            // routes the pair to whichever was hardcoded.
-            let supported = wizard.get_supported_vendors();
-            if let Some(first) = supported.row_data(0) {
-                vendor = first.id.to_string();
-            }
-        }
-        if vendor.is_empty() {
-            warn!("wizard: manual add with no vendors registered, ignoring");
+        let supported = wizard.get_supported_vendors();
+        let idx = wizard.get_manual_vendor_index();
+        let Some(option) = (if idx >= 0 {
+            supported.row_data(idx as usize)
+        } else {
+            None
+        }) else {
+            warn!(
+                idx,
+                rows = supported.row_count(),
+                "wizard: manual add with no vendors registered or out-of-range index, ignoring"
+            );
             return;
-        }
+        };
+        let vendor = option.id.to_string();
         let ip = wizard.get_manual_ip().to_string();
         if ip.is_empty() {
             return;
@@ -1276,10 +1249,8 @@ fn register_callbacks(
             return;
         };
         wizard.set_selected_index(new_index);
-        let vendor_id = SharedString::from(vendor.as_str());
-        let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
-        wizard.set_selected_vendor(vendor_id);
-        wizard.set_selected_vendor_name(vendor_name);
+        wizard.set_selected_vendor(option.id);
+        wizard.set_selected_vendor_name(option.name);
         wizard.set_selected_address(SharedString::from(ip.as_str()));
         wizard.set_selected_hw_model(SharedString::default());
         if wizard.get_tv_name().is_empty() {

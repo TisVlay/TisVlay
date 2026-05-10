@@ -70,23 +70,12 @@ pub(crate) fn reset_wizard(app: &AppWindow) {
     wizard.set_tv_name(SharedString::default());
     wizard.set_system_profile(SharedString::default());
     wizard.set_managed(true);
-    // Reset `manual-vendor` (id) and `manual-vendor-name` (display)
-    // together — they feed the same ComboBox (id drives step-2
-    // dispatch, name drives `current-value` rendering) and any drift
-    // between them desyncs what the user sees from what the wizard
-    // advances with. Pick the alpha-first entry from `supported-vendors`
-    // so reopening the wizard mirrors the seed in
-    // `state_watch::initial_fetch_and_watch`. If no vendors are
-    // registered yet (race against startup), clear both so the seed
-    // fires when the daemon reply lands.
-    let supported = wizard.get_supported_vendors();
-    if let Some(first) = supported.row_data(0) {
-        wizard.set_manual_vendor(first.id);
-        wizard.set_manual_vendor_name(first.name);
-    } else {
-        wizard.set_manual_vendor(SharedString::default());
-        wizard.set_manual_vendor_name(SharedString::default());
-    }
+    // Reset to the alpha-first vendor (index 0) — `supported-vendors`
+    // is sorted by display name in `state_watch::initial_fetch_and_watch`.
+    // The ComboBox's `current-index <=> manual-vendor-index` binding
+    // updates the visible selection in lockstep. See
+    // `docs/plans/vendor-state-single-property.md`.
+    wizard.set_manual_vendor_index(0);
     wizard.set_manual_ip(SharedString::default());
     wizard.set_selected_vendor(SharedString::default());
     wizard.set_selected_vendor_name(SharedString::default());
