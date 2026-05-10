@@ -96,6 +96,25 @@ where
     .ok();
 }
 
+/// Look up a vendor's display name in the `supported-vendors` model
+/// shipped from the daemon's `Manager1.GetSupportedVendors`. Falls
+/// back to `id` if no row matches — keeps the GUI rendering through a
+/// transient empty model on startup. See
+/// `docs/plans/vendor-display-single-source.md`.
+pub(crate) fn vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> SharedString {
+    if id.is_empty() {
+        return SharedString::default();
+    }
+    for i in 0..model.row_count() {
+        if let Some(row) = model.row_data(i)
+            && row.id.as_str() == id
+        {
+            return row.name;
+        }
+    }
+    SharedString::from(id)
+}
+
 /// Push a user-initiated daemon-callback failure into the TVs
 /// pane's inline-error slot (see `Errors.tvs` global). The widget
 /// is sticky until dismissed, mirroring KDE's Kirigami inline-message
@@ -795,7 +814,10 @@ fn register_callbacks(
                     };
                     wizard.set_tv_name(SharedString::from(default));
                 }
-                wizard.set_selected_vendor(SharedString::from(entry.vendor.as_str()));
+                let vendor_id = SharedString::from(entry.vendor.as_str());
+                let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
+                wizard.set_selected_vendor(vendor_id);
+                wizard.set_selected_vendor_name(vendor_name);
                 wizard.set_selected_address(SharedString::from(entry.address.as_str()));
                 wizard.set_selected_hw_model(SharedString::from(entry.hw_model.as_str()));
                 if wizard.get_system_profile().is_empty() {
@@ -913,13 +935,16 @@ fn register_callbacks(
         wizard.set_selected_index(i);
         if i < 0 {
             wizard.set_selected_vendor(SharedString::default());
+            wizard.set_selected_vendor_name(SharedString::default());
             wizard.set_selected_address(SharedString::default());
             wizard.set_selected_hw_model(SharedString::default());
             return;
         }
         let model = wizard.get_discovered();
         if let Some(tv) = model.row_data(i as usize) {
+            let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &tv.vendor);
             wizard.set_selected_vendor(tv.vendor);
+            wizard.set_selected_vendor_name(vendor_name);
             wizard.set_selected_address(tv.address);
             wizard.set_selected_hw_model(tv.hw_model);
         }
@@ -948,12 +973,15 @@ fn register_callbacks(
                 && opt.name == display_name
             {
                 wizard.set_manual_vendor(opt.id);
+                wizard.set_manual_vendor_name(opt.name);
                 return;
             }
         }
         // No match — accept the display name as-is so a future
-        // backend doesn't get silently dropped.
-        wizard.set_manual_vendor(display_name);
+        // backend doesn't get silently dropped. Both id and name
+        // get the same string in this fallback.
+        wizard.set_manual_vendor(display_name.clone());
+        wizard.set_manual_vendor_name(display_name);
     });
     let app_weak = app.as_weak();
     wizard.on_manual_ip_edited(move |v| {
@@ -1248,7 +1276,10 @@ fn register_callbacks(
             return;
         };
         wizard.set_selected_index(new_index);
-        wizard.set_selected_vendor(SharedString::from(vendor.as_str()));
+        let vendor_id = SharedString::from(vendor.as_str());
+        let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
+        wizard.set_selected_vendor(vendor_id);
+        wizard.set_selected_vendor_name(vendor_name);
         wizard.set_selected_address(SharedString::from(ip.as_str()));
         wizard.set_selected_hw_model(SharedString::default());
         if wizard.get_tv_name().is_empty() {

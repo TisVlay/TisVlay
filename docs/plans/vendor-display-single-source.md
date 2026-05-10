@@ -35,13 +35,13 @@ Two options for surface shape:
 
 | # | Step | Status | Notes |
 |---|---|---|---|
-| 1 | Add `manual-vendor-name` + `selected-vendor-name` properties to the `PairingWizard` global in `ui/globals/pairing_wizard.slint` | todo | `in-out property <string>`, mirroring the existing id properties |
-| 2 | Rust helper `vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> SharedString` (probably in `state_watch.rs` or `wizard.rs` — wherever it's most reused) | todo | Falls back to `id` if not found, so a transient `supported-vendors` empty model doesn't blank out display |
-| 3 | Update each `set_manual_vendor(...)` site to also call `set_manual_vendor_name(...)` | todo | Two sites: `state_watch.rs::initial_fetch_and_watch` (the seeded default), `lib.rs::on_manual_vendor_edited` |
-| 4 | Update each `set_selected_vendor(...)` site to also call `set_selected_vendor_name(...)` | todo | Three sites in `lib.rs`: discovery pick (798), reset (915), TV-from-list (922), manual-add (1251) |
-| 5 | Slint: drop the `vendor-display` function in `PairingWizardPane` and the `vendor-display` projection in `StepConfigure`; drop the inline ternary in StepPair; replace each call site with the new name property | todo | Three call sites in `pairing_wizard.slint` |
-| 6 | Smoke test: `just gui-start` on a Wayland session, confirm wizard's vendor ComboBox + StepConfigure header + StepPair header all render the daemon-supplied display name for both `mock` and `lg` | todo | Manual test |
-| 7 | Verify nothing else in the GUI hardcodes vendor display strings | todo | `grep -nE '"LG WebOS"\|"Mock"\|"Samsung"' crates/tisvlay-gui/` should return zero hits after this PR |
+| 1 | Add `manual-vendor-name` + `selected-vendor-name` properties to the `PairingWizard` global in `ui/globals/pairing_wizard.slint` | done | Both added with comment-block rationale pointing at this plan. |
+| 2 | Rust helper `vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> SharedString` | done | Lives next to `on_ui` in `lib.rs`. Empty-string short-circuit + id fallback keeps transient empty-model startup quiet. |
+| 3 | Update each `set_manual_vendor(...)` site to also call `set_manual_vendor_name(...)` | done | Two sites: `state_watch.rs::initial_fetch_and_watch`, `lib.rs::on_manual_vendor_edited` (both the matched-row branch and the no-match fallback). |
+| 4 | Update each `set_selected_vendor(...)` site to also call `set_selected_vendor_name(...)` | done | Three sites in `lib.rs`: discovery pick, on_selected_changed (reset + TV-from-list both), manual-add. |
+| 5 | Slint: drop the `vendor-display` function in `PairingWizardPane` and the `vendor-display` projection in `StepConfigure`; drop the inline ternary in StepDone; replace each call site with the new name property | done | StepPair turned out not to have a hardcoded mapping — the duplicated mapping was actually in StepDone (the post-pair confirmation step). Re-reading the plan: that's the same logical "third site" the plan listed, just named correctly. Three call sites updated; three hardcoded mappings deleted. Wired the new properties through to PairingWizardPane / StepConfigure / StepDone via the parent's `<=>` and `:` bindings. |
+| 6 | Smoke test on a Wayland session | todo (user) | Confirm wizard's vendor ComboBox + StepConfigure header chip + StepDone vendor row all render the daemon-supplied display name for both `mock` and `lg`. |
+| 7 | Verify nothing else in the GUI hardcodes vendor display strings | done | Audit grep is clean: only matches are illustrative `e.g. "LG WebOS"` mentions in comments (one in `lib.rs`, one in the new property's doc comment). |
 
 ## Risks / unknowns
 

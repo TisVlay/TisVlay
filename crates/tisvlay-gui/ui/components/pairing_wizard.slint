@@ -235,21 +235,15 @@ component StepDiscover {
     in property <string> error-message;
     in-out property <int> selected-index;
     in-out property <string> manual-vendor;
+    // Display name for `manual-vendor`, computed in Rust at every
+    // setter site by looking up the id in `supported-vendors`. See
+    // `docs/plans/vendor-display-single-source.md`.
+    in-out property <string> manual-vendor-name;
     in-out property <string> manual-ip;
     callback selection-changed(int);
     callback manual-vendor-edited(string);
     callback manual-ip-edited(string);
     callback manual-add();
-
-    // Display name for the currently-selected vendor id. Falls back to
-    // the id itself if the vendor list hasn't loaded yet.
-    pure function vendor-display(id: string) -> string {
-        if (id == "lg") { return "LG WebOS"; }
-        if (id == "samsung") { return "Samsung"; }
-        if (id == "sony") { return "Sony"; }
-        if (id == "mock") { return "Mock (testing)"; }
-        return id;
-    }
 
     VerticalLayout {
         spacing: 12px;
@@ -452,7 +446,7 @@ component StepDiscover {
                                 Text {
                                     text: root.supported-vendors.length == 1
                                         ? root.supported-vendors[0].name
-                                        : root.vendor-display(root.manual-vendor);
+                                        : root.manual-vendor-name;
                                     color: Theme.text;
                                     font-size: Design.font-body;
                                     vertical-alignment: center;
@@ -461,7 +455,7 @@ component StepDiscover {
                         }
                         if root.supported-vendors.length > 1: ComboBox {
                             model: root.supported-vendor-names;
-                            current-value: root.vendor-display(root.manual-vendor);
+                            current-value: root.manual-vendor-name;
                             selected(v) => { root.manual-vendor-edited(v); }
                         }
                     }
@@ -512,6 +506,10 @@ component StepConfigure {
     // model-row-into-struct binding edge cases and makes the values
     // explicit at the call site.
     in property <string> selected-vendor;
+    // Display name for `selected-vendor`, looked up in Rust via the
+    // wizard's `supported-vendors` model. See
+    // `docs/plans/vendor-display-single-source.md`.
+    in property <string> selected-vendor-name;
     in property <string> selected-address;
     in property <string> selected-hw-model;
     in-out property <string> tv-name;
@@ -527,13 +525,6 @@ component StepConfigure {
     callback profile-selected(string);
     callback managed-toggled(bool);
     callback field-value-edited(int, string);
-
-    property <string> vendor-display:
-        selected-vendor == "lg" ? "LG WebOS"
-      : selected-vendor == "samsung" ? "Samsung"
-      : selected-vendor == "sony" ? "Sony"
-      : selected-vendor == "mock" ? "Mock (testing)"
-      : selected-vendor;
 
     VerticalLayout {
         spacing: Design.gap-row;
@@ -590,7 +581,7 @@ component StepConfigure {
                 VerticalLayout {
                     alignment: center;
                     Chip {
-                        label: root.vendor-display == "" ? "—" : root.vendor-display;
+                        label: root.selected-vendor-name == "" ? "—" : root.selected-vendor-name;
                         tone: "neutral";
                     }
                 }
@@ -784,6 +775,10 @@ component StepPair {
 component StepDone {
     in property <string> tv-name;
     in property <string> tv-vendor;
+    // Display name for `tv-vendor`, looked up in Rust via the
+    // wizard's `supported-vendors` model. See
+    // `docs/plans/vendor-display-single-source.md`.
+    in property <string> tv-vendor-name;
     in property <string> tv-address;
     in property <bool> managed;
 
@@ -855,13 +850,11 @@ component StepDone {
                     font-size: Design.font-caption;
                 }
                 Text {
-                    // Vendor display names — brand names, intentionally
-                    // not translated. The `tv-vendor` value itself is a
-                    // machine identifier (`"lg"` etc.).
-                    text: root.tv-vendor == "lg" ? "LG WebOS"
-                        : root.tv-vendor == "samsung" ? "Samsung"
-                        : root.tv-vendor == "sony" ? "Sony"
-                        : root.tv-vendor;
+                    // Vendor display name — supplied by the daemon via
+                    // `Manager1.GetSupportedVendors` and looked up
+                    // Rust-side at every setter site. Falls back to
+                    // the id (machine identifier) if the model is empty.
+                    text: root.tv-vendor-name == "" ? root.tv-vendor : root.tv-vendor-name;
                     color: Theme.text-dim;
                     font-size: Design.font-caption;
                     font-weight: 600;
@@ -957,6 +950,7 @@ export component PairingWizardPane inherits Rectangle {
                     error-message: PairingWizard.discovery-error;
                     selected-index: PairingWizard.selected-index;
                     manual-vendor <=> PairingWizard.manual-vendor;
+                    manual-vendor-name <=> PairingWizard.manual-vendor-name;
                     manual-ip <=> PairingWizard.manual-ip;
                     selection-changed(i) => { PairingWizard.selected-changed(i); }
                     manual-vendor-edited(v) => { PairingWizard.manual-vendor-edited(v); }
@@ -965,6 +959,7 @@ export component PairingWizardPane inherits Rectangle {
                 }
                 if PairingWizard.step == 2: StepConfigure {
                     selected-vendor: PairingWizard.selected-vendor;
+                    selected-vendor-name: PairingWizard.selected-vendor-name;
                     selected-address: PairingWizard.selected-address;
                     selected-hw-model: PairingWizard.selected-hw-model;
                     tv-name <=> PairingWizard.tv-name;
@@ -987,6 +982,7 @@ export component PairingWizardPane inherits Rectangle {
                 if PairingWizard.step == 4: StepDone {
                     tv-name: PairingWizard.tv-name;
                     tv-vendor: PairingWizard.selected-vendor;
+                    tv-vendor-name: PairingWizard.selected-vendor-name;
                     tv-address: PairingWizard.selected-address;
                     managed: PairingWizard.managed;
                 }
