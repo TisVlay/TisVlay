@@ -211,20 +211,43 @@ impl TvConnector for MockConnector {
 
     fn config_schema(&self) -> Vec<tisvlay_core::PairingField> {
         use tisvlay_core::{PairingField, PairingFieldType};
-        // Just the address field — the mock's other config knobs
-        // (`pairing`, `initial_volume`, ramp injectors, etc.) are
-        // test-fixture inputs, not user-editable settings, so they
-        // don't appear in the schema. Keeps the round-trip surface
-        // minimal while still exercising the schema-driven edit
-        // pipeline (UpdateConfig + GetConfig).
-        vec![PairingField {
-            name: "address".into(),
-            label: "Address".into(),
-            helper: "Mock-vendor address (`mock://<id>`).".into(),
-            field_type: PairingFieldType::String,
-            required: true,
-            placeholder: "mock://living_room".into(),
-            ..Default::default()
-        }]
+        // The mock's other config knobs (`initial_volume`, ramp
+        // injectors, etc.) are test-fixture inputs, not user-editable
+        // settings, so they don't appear here. `pairing` is the
+        // exception — surfaced so the GUI can drive a manual pairing
+        // flow without a real TV (and exercise the wizard's
+        // reject/timeout paths). Tests that prefer handle-driven
+        // pairing pass `pairing = "manual"` in their TOML config.
+        vec![
+            PairingField {
+                name: "address".into(),
+                label: "Address".into(),
+                helper: "Mock-vendor address (`mock://<id>`).".into(),
+                field_type: PairingFieldType::String,
+                required: true,
+                placeholder: "mock://living_room".into(),
+                ..Default::default()
+            },
+            PairingField {
+                name: "pairing".into(),
+                label: "Pairing behavior (mock only)".into(),
+                helper: "How the mock resolves a pairing prompt. \
+                         'accept' is the friendly default for manual \
+                         GUI testing. 'reject' and 'timeout' exercise \
+                         the wizard's error paths. 'manual' waits for \
+                         a test-handle call (used by integration \
+                         tests).".into(),
+                field_type: PairingFieldType::Select,
+                required: false,
+                default: "accept".into(),
+                options: vec![
+                    "accept".into(),
+                    "reject".into(),
+                    "timeout".into(),
+                    "manual".into(),
+                ],
+                ..Default::default()
+            },
+        ]
     }
 }
