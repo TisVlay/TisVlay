@@ -72,6 +72,15 @@ export global PairingWizard {
     in-out property <string> discovery-error;
     in-out property <string> pair-phase;
     in-out property <string> pair-message;
+    /// TV id of the currently-running pair handshake, used by the
+    /// wizard's `cancel` callback to invoke `Manager1.CancelPair`.
+    /// For re-pair, set at invoke time (the GUI knows the tv_id).
+    /// For AddTv, set by the `PairingProgress` signal drainer on
+    /// first arrival (the daemon generates the UUID upfront and
+    /// ships it with every progress signal). Cleared by
+    /// `reset_wizard`. Empty means no pair in flight (or AddTv
+    /// hasn't produced its first signal yet — accepted race window).
+    in-out property <string> pair-tv-id;
     /// Vendors registered on the running daemon, fetched via
     /// `Manager1.GetSupportedVendors`. Pushed once at startup.
     in-out property <[VendorOption]> supported-vendors;

@@ -84,6 +84,7 @@ pub(crate) fn reset_wizard(app: &AppWindow) {
     wizard.set_discovery_error(SharedString::default());
     wizard.set_pair_phase(SharedString::default());
     wizard.set_pair_message(SharedString::default());
+    wizard.set_pair_tv_id(SharedString::default());
     wizard.set_discovered(ModelRc::new(VecModel::<WizardDiscoveredTv>::default()));
     wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
     wizard.set_schema_valid(false);
@@ -207,9 +208,16 @@ pub(crate) async fn run_wizard_pair(
     let drainer_weak = app_weak.clone();
     let drainer = tokio::spawn(async move {
         let mut s = std::pin::pin!(stream);
-        while let Some((_tv_id, phase, message)) = s.next().await {
+        while let Some((tv_id, phase, message)) = s.next().await {
             on_ui(&drainer_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
+                // Capture the tv_id from the first arriving signal
+                // so the wizard's cancel callback can invoke
+                // `Manager1.CancelPair`. Subsequent signals carry
+                // the same tv_id; re-writing is harmless.
+                if wizard.get_pair_tv_id().is_empty() {
+                    wizard.set_pair_tv_id(SharedString::from(tv_id.as_str()));
+                }
                 wizard.set_pair_phase(SharedString::from(phase));
                 wizard.set_pair_message(SharedString::from(message));
             });
@@ -235,6 +243,59 @@ async fn run_pair_no_progress(
 ) {
     let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
     publish_pair_outcome(app_weak, result, false);
+}
+
+/// Run a `Tv1.RePair(tv_id)` call with live progress updates streamed
+/// into the wizard's `pair_phase` / `pair_message` fields. Parallel
+/// to [`run_wizard_pair`] but for the re-pair flow:
+///
+/// - No name / vendor / config arguments — the daemon refreshes
+///   the existing TV's credentials in place. The wizard's
+///   StepPair UI was pre-filled with display-only labels by the
+///   `on_request_re_pair` handler.
+/// - Returns `()` on success (no new tv_id is generated;
+///   `publish_pair_outcome` ignores the `Ok` payload). Mapped to
+///   `Result<String>` at the call site so the shared outcome
+///   helper applies unchanged.
+/// - Errors route through the same `publish_pair_outcome` path,
+///   so re-pair surfaces failures with the same UI as AddTv. In
+///   practice the typed errors are different (re-pair won't fail
+///   with `ConfigInvalidVendorConfig` since there's no
+///   user-supplied schema input), but the generic-failure path
+///   handles every other case identically.
+pub(crate) async fn run_wizard_re_pair(
+    daemon: Arc<DaemonClient>,
+    app_weak: slint::Weak<AppWindow>,
+    tv_id: String,
+) {
+    use futures_util::StreamExt;
+
+    let stream = match daemon.pairing_progress_stream().await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "PairingProgress subscribe failed; falling back to phase-less re-pair");
+            let result = daemon.re_pair(&tv_id).await.map(|()| String::new());
+            publish_pair_outcome(app_weak, result, false);
+            return;
+        }
+    };
+
+    let drainer_weak = app_weak.clone();
+    let drainer = tokio::spawn(async move {
+        let mut s = std::pin::pin!(stream);
+        while let Some((_tv_id, phase, message)) = s.next().await {
+            on_ui(&drainer_weak, move |app| {
+                let wizard = app.global::<PairingWizard>();
+                wizard.set_pair_phase(SharedString::from(phase));
+                wizard.set_pair_message(SharedString::from(message));
+            });
+        }
+    });
+
+    let result = daemon.re_pair(&tv_id).await.map(|()| String::new());
+    drainer.abort();
+
+    publish_pair_outcome(app_weak, result, true);
 }
 
 /// Push the pair-flow outcome into the wizard. Routes typed

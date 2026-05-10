@@ -553,6 +553,10 @@ component TvDetail inherits Rectangle {
     /// `Daemon.remove-tv(...)` on confirm). All other writes go
     /// straight to the Daemon global from the leaf widgets.
     callback request-remove();
+    /// Local — fires when the user hits "Re-pair". TvsPane catches
+    /// this and shows the confirm dialog (re-pair disconnects the
+    /// active connection and requires user interaction on the TV).
+    callback request-re-pair();
 
     background: Theme.surface-alt;
 
@@ -935,8 +939,37 @@ component TvDetail inherits Rectangle {
                 }
 
                 // -- Danger zone --
+                //
+                // Re-pair sits above Remove because both are
+                // destructive-ish actions (disconnect → handshake)
+                // but re-pair preserves top-level config while
+                // Remove drops everything. The vertical order
+                // matches escalation: try re-pair first if creds
+                // are stale, then Remove as last resort.
                 Group {
                     title: @tr("DANGER ZONE");
+
+                    HorizontalLayout {
+                        spacing: Design.gap-row;
+                        alignment: stretch;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: @tr("Refreshes vendor credentials by running the pairing handshake again. Top-level settings (name, profile, primary input) are preserved.");
+                                color: Theme.text-dim;
+                                font-size: Design.font-meta;
+                                wrap: word-wrap;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: @tr("Re-pair");
+                                clicked => { root.request-re-pair(); }
+                            }
+                        }
+                    }
 
                     HorizontalLayout {
                         spacing: Design.gap-row;
@@ -1082,6 +1115,8 @@ export component TvsPane {
 
     property <string> pending-remove-id: "";
     property <string> pending-remove-name: "";
+    property <string> pending-re-pair-id: "";
+    property <string> pending-re-pair-name: "";
 
     // Pairing wizard takes over the whole pane when active.
     if PairingWizard.active: PairingWizardPane {
@@ -1157,6 +1192,10 @@ export component TvsPane {
                         root.pending-remove-id = tv.uuid;
                         root.pending-remove-name = tv.name;
                     }
+                    request-re-pair => {
+                        root.pending-re-pair-id = tv.uuid;
+                        root.pending-re-pair-name = tv.name;
+                    }
                 }
             }
         }
@@ -1175,6 +1214,22 @@ export component TvsPane {
         cancelled => {
             root.pending-remove-id = "";
             root.pending-remove-name = "";
+        }
+    }
+
+    ConfirmDialog {
+        open: root.pending-re-pair-id != "";
+        title: @tr("Re-pair TV");
+        message: @tr("Re-pair '{}'? This will briefly disconnect the TV and prompt you to confirm the pairing on the TV screen. Your TV name, profile, and other settings are preserved.", root.pending-re-pair-name);
+        confirm-label: @tr("Re-pair");
+        confirmed => {
+            Daemon.request-re-pair(root.pending-re-pair-id);
+            root.pending-re-pair-id = "";
+            root.pending-re-pair-name = "";
+        }
+        cancelled => {
+            root.pending-re-pair-id = "";
+            root.pending-re-pair-name = "";
         }
     }
 }

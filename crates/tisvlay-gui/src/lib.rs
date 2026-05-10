@@ -50,7 +50,7 @@ use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
     WizardEntries, WizardEntry, fetch_and_publish_schema, publish_wizard_entries, reset_wizard,
-    run_wizard_discovery, run_wizard_pair,
+    run_wizard_discovery, run_wizard_pair, run_wizard_re_pair,
 };
 
 use schema_form::{
@@ -73,7 +73,7 @@ use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{Coalescer, DaemonClient, ReconcilerMap, SessionClient, TrayClient};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::state::StateSnapshot;
 
@@ -772,12 +772,104 @@ fn register_callbacks(
         });
     });
 
+    // Re-pair an existing TV: open the wizard directly at StepPair
+    // with vendor / address / name prefilled from the existing TV's
+    // state, then kick off `Tv1.RePair(tv_id)`. Mirrors the post-
+    // StepConfigure entry into the pair flow that `on_step_next`
+    // step-2 → step-3 transition uses for AddTv.
+    let d = daemon.clone();
+    let app_weak = app.as_weak();
+    daemon_global.on_request_re_pair(move |tv_id| {
+        let d = d.clone();
+        let app_weak = app_weak.clone();
+        let tv_id_str = tv_id.to_string();
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+
+        // Look up the existing TV's metadata so the wizard's
+        // StepPair UI renders with familiar vendor / address /
+        // name labels. The GUI's `tvs` model is the authoritative
+        // source — it was populated from the daemon's
+        // `ObjectManager.GetManagedObjects` at startup and stays
+        // in sync via signals.
+        let tvs = app.get_tvs();
+        let mut tv_row: Option<TvViewModel> = None;
+        for i in 0..tvs.row_count() {
+            if let Some(row) = tvs.row_data(i)
+                && row.uuid.as_str() == tv_id_str
+            {
+                tv_row = Some(row);
+                break;
+            }
+        }
+        let Some(tv) = tv_row else {
+            warn!(tv_id = %tv_id_str, "wizard: request_re_pair for unknown TV id, ignoring");
+            return;
+        };
+
+        // Reset wizard state, prefill from the existing TV, jump
+        // to StepPair. `reset_wizard` clears the schema-form rows
+        // and pair phase/message; we then seed the display
+        // properties so the live pair UI shows the right labels.
+        reset_wizard(&app);
+        let wizard = app.global::<PairingWizard>();
+        let vendor_id = tv.vendor.clone();
+        let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
+        wizard.set_selected_vendor(vendor_id);
+        wizard.set_selected_vendor_name(vendor_name);
+        wizard.set_selected_address(tv.primary_descriptor.clone());
+        // Hardware model isn't carried in TvViewModel today — leave
+        // blank; the wizard's StepPair UI handles an empty value.
+        wizard.set_selected_hw_model(SharedString::default());
+        wizard.set_tv_name(tv.name.clone());
+        wizard.set_pair_tv_id(SharedString::from(tv_id_str.as_str()));
+        wizard.set_step(3);
+        wizard.set_active(true);
+
+        tokio::spawn(async move {
+            run_wizard_re_pair(d, app_weak, tv_id_str).await;
+        });
+    });
+
+    // Wizard cancel: route the in-flight pair's tv_id (if any) to
+    // `Manager1.CancelPair` so the daemon-side handshake actually
+    // aborts rather than continuing until natural completion/
+    // timeout. Then reset the wizard's UI state. Works for both
+    // re-pair (tv_id is set at invoke time) and AddTv (tv_id is
+    // set by the PairingProgress signal drainer on first arrival).
+    // Empty `pair-tv-id` means no in-flight pair to cancel —
+    // common when cancelling from steps 1 or 2 of the wizard.
+    let d = daemon.clone();
     let app_weak = app.as_weak();
     wizard.on_cancel(move || {
         info!("wizard: cancel fired");
-        if let Some(app) = app_weak.upgrade() {
-            reset_wizard(&app);
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let wizard = app.global::<PairingWizard>();
+        let tv_id = wizard.get_pair_tv_id().to_string();
+        // Reset the UI immediately so the user sees the wizard
+        // close without waiting on the daemon round-trip.
+        reset_wizard(&app);
+        if tv_id.is_empty() {
+            return;
         }
+        let d = d.clone();
+        tokio::spawn(async move {
+            if let Err(e) = d.cancel_pair(&tv_id).await {
+                // NotPairing is the expected error if the pair
+                // already completed in the small window between
+                // the user clicking Cancel and our D-Bus call —
+                // log at debug rather than warn for that case.
+                let msg = format!("{e:#}");
+                if msg.contains("not currently pairing") {
+                    debug!(tv_id = %tv_id, "wizard cancel: pair already completed");
+                } else {
+                    warn!(tv_id = %tv_id, error = %e, "wizard cancel: cancel_pair failed");
+                }
+            }
+        });
     });
 
     // Step transitions. Driven entirely from Slint property reads.
