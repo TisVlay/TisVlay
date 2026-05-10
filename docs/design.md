@@ -196,7 +196,7 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 ├── /org/tisvlay                    ObjectManager
 ├── /org/tisvlay/Manager            org.tisvlay.Manager1
 │   ├── Methods:  GetSupportedVendors, GetPairingSchema, AddTv,
-│   │             ReloadConfig, ListSystemProfiles,
+│   │             CancelPair, ReloadConfig, ListSystemProfiles,
 │   │             GetUserProfileDefault, ListUserProfiles, DiscoverTvs
 │   └── Signals:  ConfigReloaded
 └── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
@@ -206,7 +206,7 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
     ├── Properties (ro): Uuid, Vendor, Connected, Capabilities,
     │                     VendorInfo, AutomateWhen, Automated,
     │                     PowerState, CurrentInput, AvailableInputs
-    ├── Methods:  Reconnect, Remove, GetConfig, UpdateConfig,
+    ├── Methods:  Reconnect, RePair, Remove, GetConfig, UpdateConfig,
     │             PowerOn, PowerOff, SwitchInput
     └── Signals:  (standard PropertiesChanged only)
 
@@ -232,8 +232,9 @@ org.tisvlay.Session  (session bus)
 Methods:
 - `GetSupportedVendors() → a(ss)` — list `(vendor_id, vendor_name)` pairs
 - `GetPairingSchema(vendor: s) → s` — JSON-serialized `Vec<PairingField>` describing the pairing-form fields the GUI should render for the given vendor
-- `AddTv(name: s, vendor: s, config_json: s, managed: b) → (os)` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation. Returns `(object_path, tv_uuid)`. Per-TV lifecycle (`Remove`, `GetConfig`, `UpdateConfig`) lives on `Tv1` after pair.
+- `AddTv(name: s, vendor: s, config_json: s, managed: b) → (os)` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation. Returns `(object_path, tv_uuid)`. Per-TV lifecycle (`Remove`, `RePair`, `GetConfig`, `UpdateConfig`) lives on `Tv1` after pair.
 - `ReloadConfig()` — reload config from disk
+- `CancelPair(tv_id: s)` — cancel an in-flight pairing handshake. Works for both `AddTv` (the blocking handler holds the session; cancel resolves its `wait_for_completion`) and `Tv1.RePair` (same mechanism). Returns `NotPairing` (typed) if the tv_id isn't currently pairing — matches the BlueZ `Adapter.RemoveDevice`-on-unknown-device convention.
 - `ListSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
 - `GetUserProfileDefault() → s` — admin baseline user profile as JSON; used by session services to inherit defaults
 - `ListUserProfiles() → a(ss)` — all user profiles (admin-defined) as `(name, json)` pairs
@@ -247,6 +248,7 @@ The per-TV `Tv1` interface owns the methods that take a TV identifier — they r
 
 Methods:
 - `Reconnect()` — drop and re-establish the connection
+- `RePair()` — refresh vendor credentials by re-running the backend's pairing handshake against the existing `vendor_config`. Top-level fields (`name`, `profile`, `managed`, `primary_input`) stay intact; only the per-vendor credentialing fields (e.g. LG's `client_key`) get replaced. Blocks for the full handshake duration (10–30s typical); progress surfaces via `Manager1.PairingProgress` signals. Cancel an in-flight re-pair via `Manager1.CancelPair(tv_id)`. Concurrent re-pair against the same TV is rejected with `PairingFailed("already pairing")`.
 - `Remove()` — drop the TV from in-memory + on-disk config and unregister every `Tv1.*` interface at this path (fires `ObjectManager.InterfacesRemoved`)
 - `GetConfig() → s` — return current config (top-level + non-`Secret` vendor fields) as a JSON object suitable for prefilling an edit form
 - `UpdateConfig(json_patch: s)` — atomic batch edit. Top-level keys (`name`, `managed`, `system_profile`, `primary_input`) plus any `UserInput`-visibility vendor schema field. Server-side schema-validated; vendor-field changes drop and reconnect. `Diagnostic`/`Secret` keys are rejected.
@@ -272,7 +274,7 @@ Properties (read-write): `Name`, `Managed`, `SystemProfile`, `PrimaryInput`
 
 Properties (read-only, computed): `AutomateWhen` (from resolved system profile), `Automated` (computed gate: `managed && automate_when.should_automate(primary_input, current_input)`)
 
-Methods: `Reconnect()`
+Methods: `Reconnect()`, `RePair()`, `Remove()`, `GetConfig()`, `UpdateConfig(json_patch: s)` — see the section above for full signatures.
 
 No custom signals — uses standard `org.freedesktop.DBus.Properties.PropertiesChanged` for all state notifications. TV state is cached in the D-Bus interface structs and updated by backend subscription pushes via `InterfaceRef::get_mut()`.
 
