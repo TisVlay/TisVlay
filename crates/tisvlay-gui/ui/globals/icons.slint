@@ -21,4 +21,9 @@ export global Icons {
     /// Folder-open glyph. Used by the About pane's COMPONENTS
     /// rows to reveal each peer's config file in the file manager.
     in property <image> folder_open;
+    /// Reload glyph (circular arrow). Used by the sidebar's
+    /// "Reload daemon config" affordance. Matches the `view-refresh`
+    /// icon the Tray uses for the same action — both clients invoke
+    /// `Manager1.ReloadConfig`.
+    in property <image> reload;
 }

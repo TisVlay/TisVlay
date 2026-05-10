@@ -235,12 +235,13 @@ export component AppWindow inherits Window {
                         alignment: center;
                         VerticalLayout {
                             alignment: center;
-                            Text {
-                                text: "↻";
-                                color: root.daemon-available
+                            Image {
+                                source: Icons.reload;
+                                width: 16px;
+                                height: 16px;
+                                colorize: root.daemon-available
                                     ? Theme.sidebar-text
                                     : Theme.sidebar-text-dim;
-                                font-size: Design.font-section;
                             }
                         }
                         VerticalLayout {

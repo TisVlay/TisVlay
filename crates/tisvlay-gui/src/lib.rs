@@ -245,6 +245,11 @@ pub fn run() -> Result<()> {
     // manager" buttons. `document-open-folder` is the Breeze name;
     // `folder-open` is the Adwaita / hicolor fallback.
     icons.set_folder_open(load_themed_icon(&["document-open-folder", "folder-open"]));
+    // Reload glyph for the sidebar's "Reload daemon config" button.
+    // `view-refresh` is the canonical freedesktop name (per the icon
+    // naming spec) and is present in every shipped theme. Same icon
+    // the Tray uses for its `Manager1.ReloadConfig` affordance.
+    icons.set_reload(load_themed_icon(&["view-refresh"]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing
