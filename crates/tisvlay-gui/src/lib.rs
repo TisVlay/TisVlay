@@ -96,6 +96,24 @@ where
     .ok();
 }
 
+/// Look up a vendor's display name in the `supported-vendors` model
+/// shipped from the daemon's `Manager1.GetSupportedVendors`. Falls
+/// back to `id` if no row matches — keeps the GUI rendering through a
+/// transient empty model on startup.
+pub(crate) fn vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> SharedString {
+    if id.is_empty() {
+        return SharedString::default();
+    }
+    for i in 0..model.row_count() {
+        if let Some(row) = model.row_data(i)
+            && row.id.as_str() == id
+        {
+            return row.name;
+        }
+    }
+    SharedString::from(id)
+}
+
 /// Push a user-initiated daemon-callback failure into the TVs
 /// pane's inline-error slot (see `Errors.tvs` global). The widget
 /// is sticky until dismissed, mirroring KDE's Kirigami inline-message
@@ -226,6 +244,11 @@ pub fn run() -> Result<()> {
     // manager" buttons. `document-open-folder` is the Breeze name;
     // `folder-open` is the Adwaita / hicolor fallback.
     icons.set_folder_open(load_themed_icon(&["document-open-folder", "folder-open"]));
+    // Reload glyph for the sidebar's "Reload daemon config" button.
+    // `view-refresh` is the canonical freedesktop name (per the icon
+    // naming spec) and is present in every shipped theme. Same icon
+    // the Tray uses for its `Manager1.ReloadConfig` affordance.
+    icons.set_reload(load_themed_icon(&["view-refresh"]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing
@@ -795,7 +818,10 @@ fn register_callbacks(
                     };
                     wizard.set_tv_name(SharedString::from(default));
                 }
-                wizard.set_selected_vendor(SharedString::from(entry.vendor.as_str()));
+                let vendor_id = SharedString::from(entry.vendor.as_str());
+                let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
+                wizard.set_selected_vendor(vendor_id);
+                wizard.set_selected_vendor_name(vendor_name);
                 wizard.set_selected_address(SharedString::from(entry.address.as_str()));
                 wizard.set_selected_hw_model(SharedString::from(entry.hw_model.as_str()));
                 if wizard.get_system_profile().is_empty() {
@@ -913,13 +939,16 @@ fn register_callbacks(
         wizard.set_selected_index(i);
         if i < 0 {
             wizard.set_selected_vendor(SharedString::default());
+            wizard.set_selected_vendor_name(SharedString::default());
             wizard.set_selected_address(SharedString::default());
             wizard.set_selected_hw_model(SharedString::default());
             return;
         }
         let model = wizard.get_discovered();
         if let Some(tv) = model.row_data(i as usize) {
+            let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &tv.vendor);
             wizard.set_selected_vendor(tv.vendor);
+            wizard.set_selected_vendor_name(vendor_name);
             wizard.set_selected_address(tv.address);
             wizard.set_selected_hw_model(tv.hw_model);
         }
@@ -931,30 +960,10 @@ fn register_callbacks(
     wizard.on_profile_selected(|_| {});
     wizard.on_managed_toggled(|_| {});
 
-    // Manual-entry: edits flush back via two-way binding; the explicit
-    // edited callbacks are wire-only no-ops to satisfy LineEdit.
-    // The vendor ComboBox emits the *display name* (e.g. "LG WebOS").
-    // Resolve back to the canonical vendor id by looking up in
-    // `wizard_supported_vendors`.
-    let app_weak = app.as_weak();
-    wizard.on_manual_vendor_edited(move |display_name| {
-        let Some(app) = app_weak.upgrade() else {
-            return;
-        };
-        let wizard = app.global::<PairingWizard>();
-        let model = wizard.get_supported_vendors();
-        for i in 0..model.row_count() {
-            if let Some(opt) = model.row_data(i)
-                && opt.name == display_name
-            {
-                wizard.set_manual_vendor(opt.id);
-                return;
-            }
-        }
-        // No match — accept the display name as-is so a future
-        // backend doesn't get silently dropped.
-        wizard.set_manual_vendor(display_name);
-    });
+    // Manual-entry: the vendor ComboBox writes its `current-index`
+    // straight into `manual-vendor-index` via two-way binding (no
+    // callback in the path). The IP LineEdit still needs an explicit
+    // edited callback to flush its string into `manual-ip`.
     let app_weak = app.as_weak();
     wizard.on_manual_ip_edited(move |v| {
         if let Some(app) = app_weak.upgrade() {
@@ -1202,13 +1211,21 @@ fn register_callbacks(
             return;
         };
         let wizard = app.global::<PairingWizard>();
-        let mut vendor = wizard.get_manual_vendor().to_string();
-        if vendor.is_empty() {
-            // Slint property defaults can drop through `<=>` chains in
-            // some configurations — fall back to LG since that's the
-            // only vendor the manual UI currently offers.
-            vendor = "lg".to_string();
-        }
+        let supported = wizard.get_supported_vendors();
+        let idx = wizard.get_manual_vendor_index();
+        let Some(option) = (if idx >= 0 {
+            supported.row_data(idx as usize)
+        } else {
+            None
+        }) else {
+            warn!(
+                idx,
+                rows = supported.row_count(),
+                "wizard: manual add with no vendors registered or out-of-range index, ignoring"
+            );
+            return;
+        };
+        let vendor = option.id.to_string();
         let ip = wizard.get_manual_ip().to_string();
         if ip.is_empty() {
             return;
@@ -1236,7 +1253,8 @@ fn register_callbacks(
             return;
         };
         wizard.set_selected_index(new_index);
-        wizard.set_selected_vendor(SharedString::from(vendor.as_str()));
+        wizard.set_selected_vendor(option.id);
+        wizard.set_selected_vendor_name(option.name);
         wizard.set_selected_address(SharedString::from(ip.as_str()));
         wizard.set_selected_hw_model(SharedString::default());
         if wizard.get_tv_name().is_empty() {

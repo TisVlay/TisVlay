@@ -81,6 +81,12 @@ export global PairingWizard {
     /// the model from Slint) because struct-from-model bindings
     /// have been unreliable across step transitions.
     in-out property <string> selected-vendor;
+    // Display name for `selected-vendor` (e.g. "LG WebOS"), looked
+    // up from `supported-vendors` by Rust at every setter site.
+    // Slint can't iterate a model in pure-binding context, so this
+    // parallel property avoids hardcoding `id → name` mappings on
+    // the UI side.
+    in-out property <string> selected-vendor-name;
     in-out property <string> selected-address;
     in-out property <string> selected-hw-model;
 
@@ -107,7 +113,16 @@ export global PairingWizard {
     in-out property <string> tv-name;
     in-out property <string> system-profile;
     in-out property <bool> managed: true;
-    in-out property <string> manual-vendor: "lg";
+    // Index into `supported-vendors` for the vendor the user picked
+    // in the manual-add path's ComboBox. Default 0 = first
+    // alphabetically-sorted vendor (the `state_watch` publisher
+    // sorts before publishing). The ComboBox is bound via
+    // `current-index <=>` so user picks write back here directly,
+    // and Rust at `manual-add` time reads
+    // `supported-vendors[manual-vendor-index]` to recover the id +
+    // display name. Single source of truth replaces the prior
+    // `manual-vendor` (id) + `manual-vendor-name` (display) pair.
+    in-out property <int> manual-vendor-index: 0;
     in-out property <string> manual-ip;
 
     // -- Callbacks --
@@ -121,7 +136,6 @@ export global PairingWizard {
     callback name-edited(string);
     callback profile-selected(string);
     callback managed-toggled(bool);
-    callback manual-vendor-edited(string);
     callback manual-ip-edited(string);
     callback manual-add();
 }

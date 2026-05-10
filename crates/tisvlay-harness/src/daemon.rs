@@ -59,6 +59,26 @@ pub fn test_tv_uuid(tv_id: &str) -> Uuid {
 /// used as the TV's `name` and to derive a deterministic UUID via
 /// [`test_tv_uuid`].
 pub fn mock_tv_config(tv_id: &str, managed: bool, primary_input: Option<&str>) -> SystemConfig {
+    let mut config = SystemConfig::default();
+    config.tv.push(build_mock_tv(tv_id, managed, primary_input));
+    config
+}
+
+/// Build a `SystemConfig` containing one managed mock TV per entry in
+/// `tv_ids`, in the given order. Each TV uses default profile, no
+/// primary input, and the canonical `mock://<id>` vendor address.
+///
+/// Used by reload-path regression tests that need to seed an initial
+/// config with N TVs and then mutate it on disk.
+pub fn mock_config_with_tvs(tv_ids: &[&str]) -> SystemConfig {
+    let mut config = SystemConfig::default();
+    for tv_id in tv_ids {
+        config.tv.push(build_mock_tv(tv_id, true, None));
+    }
+    config
+}
+
+fn build_mock_tv(tv_id: &str, managed: bool, primary_input: Option<&str>) -> TvConfig {
     let mut tv = TvConfig::with_uuid(test_tv_uuid(tv_id), tv_id, "mock", managed);
     if let Some(input) = primary_input {
         tv = tv.with_primary_input(input);
@@ -72,10 +92,7 @@ pub fn mock_tv_config(tv_id: &str, managed: bool, primary_input: Option<&str>) -
         "mock".to_string(),
         toml::Value::Table(vendor_table.into_iter().collect()),
     );
-
-    let mut config = SystemConfig::default();
-    config.tv.push(tv);
-    config
+    tv
 }
 
 /// A fully wired daemon instance running on the shared private bus.

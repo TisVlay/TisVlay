@@ -10,7 +10,9 @@ use std::sync::Arc;
 use tisvlay_core::{SystemConfig, UserConfig, absolutize};
 use tracing::{info, warn};
 
-use tisvlayd::dbus::{BusKind, DBUS_NAME, ManagerService, build_dbus_connection};
+use tisvlayd::dbus::{
+    BusKind, DBUS_NAME, ManagerService, apply_reload_diff, build_dbus_connection,
+};
 use tisvlayd::registry::create_registry;
 use tisvlayd::state_forwarder::state_change_forwarder;
 use tisvlayd::tv_manager::TvManager;
@@ -138,7 +140,7 @@ async fn main() -> Result<()> {
 
     // Wait for shutdown or reload signal
     let shutdown_manager = shared_manager.clone();
-    wait_for_signals(shared_manager).await;
+    wait_for_signals(shared_manager, connection.clone()).await;
 
     info!("Shutting down...");
 
@@ -158,7 +160,11 @@ async fn main() -> Result<()> {
 }
 
 /// Wait for SIGTERM, SIGINT (shutdown) or SIGHUP (reload).
-async fn wait_for_signals(manager: Arc<TvManager>) {
+///
+/// SIGHUP threads the D-Bus `connection` so the reload can sync the
+/// per-TV object server to the new config alongside the in-memory
+/// state — symmetric with `Manager1.ReloadConfig`.
+async fn wait_for_signals(manager: Arc<TvManager>, connection: zbus::Connection) {
     use tokio::signal::unix::{SignalKind, signal};
 
     let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
@@ -177,8 +183,13 @@ async fn wait_for_signals(manager: Arc<TvManager>) {
             }
             _ = sighup.recv() => {
                 info!("Received SIGHUP, reloading configuration...");
-                if let Err(e) = manager.reload_config().await {
-                    warn!("Failed to reload config: {}", e);
+                match manager.reload_config().await {
+                    Ok(diff) => {
+                        apply_reload_diff(&connection, &manager, &diff).await;
+                    }
+                    Err(e) => {
+                        warn!("Failed to reload config: {}", e);
+                    }
                 }
             }
         }

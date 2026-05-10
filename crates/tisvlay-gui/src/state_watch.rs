@@ -47,7 +47,11 @@ pub(crate) async fn initial_fetch_and_watch(
     // the diagnostic blob. Failures are tolerable — the wizard falls
     // back to its hardcoded "lg" default; the diagnostic blob renders
     // an empty `vendors_supported` array.
-    let vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
+    let mut vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
+    // Sort by display name (case-insensitive) so the wizard's vendor
+    // ComboBox renders in stable, scannable order regardless of which
+    // order the daemon's registry happens to return them in.
+    vendor_pairs.sort_by_key(|a| a.1.to_lowercase());
     debug!(
         count = vendor_pairs.len(),
         "Fetched supported vendors from daemon"
@@ -75,6 +79,9 @@ pub(crate) async fn initial_fetch_and_watch(
             .collect();
         wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));
         wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
+        // `manual-vendor-index` defaults to 0 in the global, which
+        // selects the alpha-first vendor once `supported-vendors` is
+        // published above. No explicit seed needed.
         app.set_daemon_available(initial_daemon_available);
         app.set_session_available(initial_session_available);
         app.set_tray_available(initial_tray_available);

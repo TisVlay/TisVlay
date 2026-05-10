@@ -180,6 +180,18 @@ pub struct TvInfo {
     pub managed: bool,
 }
 
+/// TV ids that appeared or disappeared during a [`TvManager::reload_config`]
+/// call, returned so the dbus layer can register / unregister the
+/// corresponding `Tv1.*` object paths in lockstep with the in-memory
+/// state. The `Manager1.AddTv` and `Tv1.Remove` flows already keep
+/// path lifecycle and manager state symmetric; reload was the only
+/// mutation site that diverged.
+#[derive(Debug, Clone, Default)]
+pub struct ReloadDiff {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+}
+
 /// Managed TV connection state.
 struct ManagedTv {
     /// TV configuration.
@@ -2114,7 +2126,11 @@ impl TvManager {
     ///
     /// Uses `spawn_blocking` to avoid blocking the async executor on disk I/O,
     /// consistent with all other config-load sites in this file.
-    pub async fn reload_config(&self) -> Result<(), TvManagerError> {
+    ///
+    /// Returns a [`ReloadDiff`] of TV ids that appeared or disappeared so
+    /// callers (the dbus layer, the SIGHUP handler) can register or
+    /// unregister the corresponding `Tv1.*` object paths.
+    pub async fn reload_config(&self) -> Result<ReloadDiff, TvManagerError> {
         info!("Reloading configuration");
 
         let config_path = self.config_path.clone();
@@ -2134,6 +2150,7 @@ impl TvManager {
         // We do NOT close connections here; the write lock must not be held across
         // async WebSocket close operations that can block for hundreds of milliseconds.
         let mut to_update: Vec<(Arc<Mutex<ManagedTv>>, Option<TvConfig>)> = Vec::new();
+        let mut diff = ReloadDiff::default();
         let tv_count;
         {
             let mut tvs = self.tvs.write().await;
@@ -2145,6 +2162,7 @@ impl TvManager {
                     info!(tv_id = %old_id, "Removing TV (no longer in config)");
                     if let Some((_, arc)) = tvs.shift_remove(&old_id) {
                         to_update.push((arc, None)); // None = removed, close connection
+                        diff.removed.push(old_id);
                     }
                 }
             }
@@ -2163,12 +2181,13 @@ impl TvManager {
                     let system_profile =
                         new_config.system.resolve_profile(&tv_config.profile.system);
                     tvs.insert(
-                        tv_id,
+                        tv_id.clone(),
                         (
                             tv_config.managed,
                             Arc::new(Mutex::new(ManagedTv::new(tv_config, system_profile))),
                         ),
                     );
+                    diff.added.push(tv_id);
                 }
             }
 
@@ -2231,7 +2250,7 @@ impl TvManager {
         // (profile lists, TV names, managed flags may all differ).
         self.emit_state_change(StateChangeEvent::ConfigReloaded);
 
-        Ok(())
+        Ok(diff)
     }
 }
 

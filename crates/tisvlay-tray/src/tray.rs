@@ -112,7 +112,7 @@ pub(crate) enum TrayCommand {
     ScrollBy(String, ScrollTarget, i32),
     ToggleMute(String),
     SetManaged(String, bool),
-    Refresh,
+    Reload,
     Quit,
 }
 
@@ -319,8 +319,8 @@ impl Tray for TisvlayTray {
         }
 
         items.push(MenuItem::Separator);
-        items.push(tv_item("Refresh", "view-refresh", &self.cmd_tx, || {
-            TrayCommand::Refresh
+        items.push(tv_item("Reload", "view-refresh", &self.cmd_tx, || {
+            TrayCommand::Reload
         }));
         items.push(MenuItem::Separator);
         items.push(tv_item("Quit", "application-exit", &self.cmd_tx, || {

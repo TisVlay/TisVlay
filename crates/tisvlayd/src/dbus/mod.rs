@@ -9,7 +9,7 @@ mod setup;
 mod tv;
 
 pub use manager::ManagerService;
-pub use setup::build_dbus_connection;
+pub use setup::{apply_reload_diff, build_dbus_connection};
 pub use tisvlay_core::BusKind;
 pub use tv::{
     TvBacklightService, TvDesktopService, TvInputService, TvPowerService, TvScreenService,

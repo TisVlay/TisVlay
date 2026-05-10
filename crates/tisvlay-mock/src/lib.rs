@@ -63,7 +63,7 @@ use state::MockState;
 pub const VENDOR_ID: &str = "mock";
 
 /// Human-readable name for the mock backend.
-pub const VENDOR_NAME: &str = "Mock (in-memory)";
+pub const VENDOR_NAME: &str = "Mock (testing)";
 
 /// Build a [`MockConnector`] and [`MockDiscovery`] pair that share a
 /// fresh, empty state, along with a [`MockHandle`] for driving them.
