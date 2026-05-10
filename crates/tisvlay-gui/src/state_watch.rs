@@ -81,8 +81,7 @@ pub(crate) async fn initial_fetch_and_watch(
         wizard.set_supported_vendor_names(ModelRc::new(VecModel::from(names)));
         // `manual-vendor-index` defaults to 0 in the global, which
         // selects the alpha-first vendor once `supported-vendors` is
-        // published above. No explicit seed needed — see
-        // `docs/plans/vendor-state-single-property.md`.
+        // published above. No explicit seed needed.
         app.set_daemon_available(initial_daemon_available);
         app.set_session_available(initial_session_available);
         app.set_tray_available(initial_tray_available);

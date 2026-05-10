@@ -185,8 +185,7 @@ pub struct TvInfo {
 /// corresponding `Tv1.*` object paths in lockstep with the in-memory
 /// state. The `Manager1.AddTv` and `Tv1.Remove` flows already keep
 /// path lifecycle and manager state symmetric; reload was the only
-/// mutation site that diverged. See
-/// `docs/plans/reload-config-and-action-terminology.md`.
+/// mutation site that diverged.
 #[derive(Debug, Clone, Default)]
 pub struct ReloadDiff {
     pub added: Vec<String>,

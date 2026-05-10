@@ -263,6 +263,56 @@ inner component. Trace the chain in the slint sources end-to-end when
 this happens — `grep -nE 'wizard-selected-vendor' ui/` is enough to
 spot the missing layer.
 
+### ComboBox: `current-index` is the canonical state, not `current-value`
+
+Std `ComboBox` exposes both `current-index: int` and `current-value:
+string`, and they look interchangeable for two-way state. They aren't.
+[`combobox-base.slint`](https://github.com/slint-ui/slint/blob/master/internal/compiler/widgets/common/combobox-base.slint)
+defines `current-value` as a default-bound expression off
+`current-index`/`model`, but `update-current-value()` *imperatively
+overwrites* it on every user select. So a binding like
+`current-value: my-derived-expression(...)` works on first render and
+then dies the moment the user clicks an item — the imperative write
+clobbers the binding, and `current-value` becomes plain state divorced
+from whatever you derived it from.
+
+Symptom: display reads correctly until the user picks an item, then
+the ComboBox shows the picked label but downstream state advances
+with whatever the binding *would have* computed for the previous
+selection. Hard to spot because the visible state looks consistent
+in isolation.
+
+Bind `current-index <=> some-int-property` for two-way state. Read
+the id / display / whatever-derived data via `model[some-int-property]`.
+The struct-model pattern (`[VendorOption { id, name }]` + `current-index`
+selection + `model[i].field` reads) is the
+[idiomatic upstream shape](https://github.com/slint-ui/slint/blob/master/examples/layouts/flexbox-interactive.slint) —
+single integer of state, all derivations declarative.
+
+### Pure callbacks: dependency tracking is shallow
+
+Tempting pattern: declare `pure callback foo(string) -> string;` on
+a global, bind it from Rust, use it as a binding source like
+`current-value: foo(some-state)`. It works mechanically; what isn't
+obvious is that **Slint's dependency tracker only sees properties
+accessed in the binding *expression*, not data the Rust closure
+captures**. So if the closure scans some other property (e.g., a
+`[T]` model), the binding doesn't re-evaluate when that model
+changes — only when `some-state` changes.
+
+Workarounds: pass model-shape into the binding expression so Slint
+tracks it (`foo(some-state, some-model.length)`), or maintain a
+"salt" int that you bump from Rust whenever the model changes.
+[Issue #9551](https://github.com/slint-ui/slint/issues/9551) (open
+in 1.16) confirms a related case: re-binding the callback handler
+in Rust doesn't dirty existing bindings either.
+
+In practice the right answer is usually to skip pure callbacks in
+binding context entirely and use the `current-index` + struct-model
+pattern above. The pure-callback path is fine for one-shot lookups
+called from event handlers (`=>` arrows); just don't trust it as a
+binding source for state that depends on multiple properties.
+
 ### `dev-mcp` feature gating
 
 Keep the MCP server gated behind a Cargo feature. Production builds

@@ -236,8 +236,7 @@ component StepDiscover {
     in-out property <int> selected-index;
     // Index into `supported-vendors`; ComboBox is bound to it via
     // `current-index <=>` so user picks round-trip without a Rust
-    // callback. Rationale and migration in
-    // `docs/plans/vendor-state-single-property.md`.
+    // callback.
     in-out property <int> manual-vendor-index;
     in-out property <string> manual-ip;
     callback selection-changed(int);
@@ -432,8 +431,7 @@ component StepDiscover {
                         // straight back to `manual-vendor-index` with
                         // no Rust callback in the path. Rust at
                         // manual-add time reads `supported-vendors[idx]`
-                        // for both id and display name. See
-                        // `docs/plans/vendor-state-single-property.md`.
+                        // for both id and display name.
                         if root.supported-vendors.length <= 1: Rectangle {
                             background: Theme.surface;
                             border-color: Theme.border-strong;
@@ -508,8 +506,7 @@ component StepConfigure {
     // explicit at the call site.
     in property <string> selected-vendor;
     // Display name for `selected-vendor`, looked up in Rust via the
-    // wizard's `supported-vendors` model. See
-    // `docs/plans/vendor-display-single-source.md`.
+    // wizard's `supported-vendors` model.
     in property <string> selected-vendor-name;
     in property <string> selected-address;
     in property <string> selected-hw-model;
@@ -777,8 +774,7 @@ component StepDone {
     in property <string> tv-name;
     in property <string> tv-vendor;
     // Display name for `tv-vendor`, looked up in Rust via the
-    // wizard's `supported-vendors` model. See
-    // `docs/plans/vendor-display-single-source.md`.
+    // wizard's `supported-vendors` model.
     in property <string> tv-vendor-name;
     in property <string> tv-address;
     in property <bool> managed;

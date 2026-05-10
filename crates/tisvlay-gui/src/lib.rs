@@ -99,8 +99,7 @@ where
 /// Look up a vendor's display name in the `supported-vendors` model
 /// shipped from the daemon's `Manager1.GetSupportedVendors`. Falls
 /// back to `id` if no row matches — keeps the GUI rendering through a
-/// transient empty model on startup. See
-/// `docs/plans/vendor-display-single-source.md`.
+/// transient empty model on startup.
 pub(crate) fn vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> SharedString {
     if id.is_empty() {
         return SharedString::default();
