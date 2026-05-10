@@ -47,7 +47,11 @@ pub(crate) async fn initial_fetch_and_watch(
     // the diagnostic blob. Failures are tolerable — the wizard falls
     // back to its hardcoded "lg" default; the diagnostic blob renders
     // an empty `vendors_supported` array.
-    let vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
+    let mut vendor_pairs = daemon.get_supported_vendors().await.unwrap_or_default();
+    // Sort by display name (case-insensitive) so the wizard's vendor
+    // ComboBox renders in stable, scannable order regardless of which
+    // order the daemon's registry happens to return them in.
+    vendor_pairs.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
     debug!(
         count = vendor_pairs.len(),
         "Fetched supported vendors from daemon"
