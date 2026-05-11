@@ -260,9 +260,9 @@ mod tests {
     // -----------------------------------------------------------------------
     // start_pairing accepts already-credentialed vendor_config
     //
-    // Re-pair (per `docs/plans/re-pair-tv.md`) calls `start_pairing` with
-    // a TV's existing vendor_config — which may include a `client_key`-like
-    // field from a prior pair. Mock's `MockVendorConfig` doesn't have a
+    // Re-pair calls `start_pairing` with a TV's existing
+    // vendor_config — which may include a `client_key`-like field
+    // from a prior pair. Mock's `MockVendorConfig` doesn't have a
     // `client_key` field of its own, but serde lenience (no
     // `deny_unknown_fields`) means extra fields parse fine. Verify both
     // a clean re-pair-shaped config and a config with unknown extras are

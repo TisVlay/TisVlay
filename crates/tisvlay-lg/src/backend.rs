@@ -1148,9 +1148,9 @@ mod tests {
     // -----------------------------------------------------------------------
     // start_pairing accepts already-credentialed vendor_config
     //
-    // Re-pair (per `docs/plans/re-pair-tv.md`) calls `start_pairing` against
-    // a TV's existing vendor_config — which may include a `client_key` from
-    // a prior pair. Verify the LG backend doesn't error on that input. Note:
+    // Re-pair calls `start_pairing` against a TV's existing
+    // vendor_config — which may include a `client_key` from a prior
+    // pair. Verify the LG backend doesn't error on that input. Note:
     // LG's implementation hardcodes `WebOsClient::connect(&ip, None)` (the
     // existing key is ignored), so every re-pair triggers a fresh TV prompt;
     // that's documented behavior, not a bug to fix here.

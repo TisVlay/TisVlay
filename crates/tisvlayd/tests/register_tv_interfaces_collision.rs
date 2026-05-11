@@ -16,9 +16,6 @@
 //! whether the path was already registered, and (b)
 //! `unregister_tv_interfaces` followed by `register_tv_interfaces`
 //! succeeds — the foundation of the defensive flush.
-//!
-//! See [`docs/plans/per-tv-lifecycle-correctness.md`](../../docs/plans/per-tv-lifecycle-correctness.md)
-//! Phase 1 for the architectural rationale.
 
 #![cfg(feature = "mock")]
 

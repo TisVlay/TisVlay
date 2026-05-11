@@ -52,7 +52,7 @@ pub enum DaemonError {
     /// `Manager1.CancelPair(tv_id)` called against a tv_id that isn't
     /// currently pairing. Maps from `TvManagerError::NotPairing` —
     /// strict variant matching the BlueZ `Adapter.RemoveDevice`
-    /// on-unknown-device convention. See `docs/plans/re-pair-tv.md` DR7b.
+    /// on-unknown-device convention.
     NotPairing(String),
 
     // -- Power-cycle (typed; mirrors `errors::PowerErrorCode`) --

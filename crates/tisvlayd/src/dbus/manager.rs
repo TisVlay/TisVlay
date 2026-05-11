@@ -321,8 +321,7 @@ impl ManagerService {
     /// Works for both AddTv (the blocking handler holds the session;
     /// cancel resolves wait_for_completion) and re-pair (the
     /// non-blocking handler also holds the session via
-    /// `run_pairing_handshake`; same mechanism). See
-    /// `docs/plans/re-pair-tv.md` DR7 / DR7b / DR7c.
+    /// `run_pairing_handshake`; same mechanism).
     async fn cancel_pair(&self, tv_id: &str) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, "D-Bus: CancelPair");
         self.manager

@@ -273,8 +273,7 @@ impl TvService {
     ///
     /// Concurrent re-pair attempts against the same TV are rejected
     /// with `PairingFailed("already pairing")` per the
-    /// `pairing_in_flight` gate on `ManagedTv`. See
-    /// `docs/plans/re-pair-tv.md` for the architectural rationale.
+    /// `pairing_in_flight` gate on `ManagedTv`.
     async fn re_pair(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: RePair");
         self.manager

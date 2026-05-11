@@ -1625,7 +1625,7 @@ impl TvManager {
         // Run the pairing handshake — start_pairing + progress-signal
         // forwarding + wait_for_completion + build_config_from_pairing.
         // Extracted as a private helper so `re_pair_tv` can share the
-        // same flow (see `docs/plans/re-pair-tv.md`).
+        // same flow.
         let final_config = self
             .run_pairing_handshake(&tv_id, vendor, &vendor_config)
             .await?;
@@ -1778,8 +1778,7 @@ impl TvManager {
     /// as a fresh pair regardless of the existing `client_key`
     /// (see `crates/tisvlay-lg/src/backend.rs::start_pairing` —
     /// `WebOsClient::connect(&ip, None)`). So every re-pair triggers
-    /// a fresh permission prompt on the TV. Documented behavior per
-    /// `docs/plans/re-pair-tv.md` DR3.
+    /// a fresh permission prompt on the TV.
     pub async fn re_pair_tv(&self, tv_id: &str) -> Result<(), TvManagerError> {
         info!(tv_id = %tv_id, "Re-pairing TV");
 
