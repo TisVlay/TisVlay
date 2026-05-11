@@ -50,6 +50,8 @@ zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
+# Sync mutex without poisoning for the wizard's discovery sidecar.
+parking_lot = { workspace = true }
 # Resolve sidebar icon names against the user's freedesktop icon
 # theme (Breeze on KDE Plasma, Adwaita on GNOME, hicolor as
 # fallback). Same pattern the tray already uses, just done in-

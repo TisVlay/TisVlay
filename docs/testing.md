@@ -391,7 +391,7 @@ async fn my_test() {
 
 ### Pairing round-trip flow
 
-This is the full code path exercised by `pair_round_trip.rs` — the test that discovered the TV ID bug.
+This is the full code path exercised by `pair_round_trip.rs`. With the async-spawn AddTv contract, the test subscribes to `PairingProgress` first, calls `AddTv` to get the reserved tv_id immediately, then drains the filtered stream to a terminal phase. The handshake itself + post-handshake setup (config persist, install in `tvs` map, register per-TV D-Bus interfaces) all run in a daemon-side spawned `run_pair_task`; the terminal `complete` only fires after every step finishes, so the test can call into the new TV's `Tv1.*` interfaces immediately after `drain_pair_to_terminal` returns `Complete`.
 
 ```mermaid
 sequenceDiagram
@@ -400,23 +400,34 @@ sequenceDiagram
     participant Client as DaemonClient
     participant DBus as D-Bus (private bus)
     participant Mgr as TvManager
+    participant Task as run_pair_task (spawned)
     participant Conn as MockConnector
 
     Test->>Handle: simulate_user_accept("mock://lr")
     Note over Handle: seeds PairingOutcome::Accept<br/>in shared MockState
 
+    Test->>Client: pairing_progress_stream()
+    Client-->>Test: Stream
+
     Test->>Client: pair_tv("Living Room", "mock", config, true)
     Client->>DBus: AddTv(name, vendor, json, managed)
-    DBus->>Mgr: pair_tv(name, vendor, config, None, true)
-    Mgr->>Conn: start_pairing(vendor_config)
-    Note over Conn: removes pre-seeded Accept<br/>from MockState
-    Conn-->>Mgr: PairingSession
-    Mgr->>Mgr: session.wait_for_completion()
-    Mgr-->>Mgr: Credentials returned
-    Mgr->>Mgr: save config + register D-Bus interfaces
+    DBus->>Mgr: pair_tv(self_arc, ..., connection.clone())
+    Mgr->>Mgr: validate vendor, generate tv_id
+    Mgr->>Task: tokio::spawn(run_pair_task(...))
     Mgr-->>DBus: (ObjectPath, tv_id)
-    DBus-->>Client: (ObjectPath, "living_room")
-    Client-->>Test: Ok("living_room")
+    DBus-->>Client: (ObjectPath, tv_id)
+    Client-->>Test: Ok(tv_id)
+
+    Task->>Conn: start_pairing(vendor_config)
+    Note over Conn: removes pre-seeded Accept<br/>from MockState
+    Conn-->>Task: PairingSession (emits non-terminal phases<br/>via state_change_tx → PairingProgress signal)
+    Task->>Task: wait_for_completion → Credentials
+    Task->>Task: connect, install in tvs map, save config
+    Task->>DBus: register_tv_interfaces(tv_id)
+    Task->>DBus: emit PairingProgress(tv_id, "complete", ...)
+
+    Test->>Client: drain_pair_to_terminal(stream, tv_id, ...)
+    Client-->>Test: PairTerminal::Complete { tv_id, ... }
 ```
 
 ### BusKind and from_connection constructors
@@ -630,7 +641,7 @@ These document **why** the framework is shaped this way:
 
 1. **Private dbus-daemon per test binary** (not per test, not shared across binaries). Avoids zbus's `OnceCell` connection cache; amortizes 15-40ms spawn cost via `LazyLock`.
 
-2. **`std::sync::Mutex` for MockState** (not tokio). Brief critical sections never held across `.await` — async mutex overhead unnecessary.
+2. **`parking_lot::Mutex` for MockState** (not `tokio::sync::Mutex`, not `std::sync::Mutex`). Brief critical sections never held across `.await` — async mutex overhead unnecessary. `parking_lot` over `std` because it has no poison state, which eliminates `.expect("…poisoned")` boilerplate at every call site. Migration applies workspace-wide for short non-async critical sections.
 
 3. **Rust-native fakes** (not Python dbusmock). Keeps toolchain Rust-only; zbus `ObjectServer` is expressive enough for the few services we mock.
 

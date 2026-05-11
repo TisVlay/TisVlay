@@ -31,4 +31,10 @@ export global Daemon {
     /// Open the pairing wizard. Implemented in Rust by setting
     /// `PairingWizard.active = true` after seeding initial state.
     callback request-pair();
+    /// Re-pair an existing TV: refresh vendor credentials in place
+    /// without losing top-level config. Routes to `Tv1.RePair(tv_id)`
+    /// on the daemon side. The Rust handler opens the wizard at
+    /// `StepPair` with vendor/address/name prefilled from the
+    /// existing TV's state.
+    callback request-re-pair(string);
 }

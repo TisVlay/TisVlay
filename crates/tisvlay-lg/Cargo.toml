@@ -33,6 +33,9 @@ toml = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
+# Sync mutex without poisoning (request-pending map + test server).
+parking_lot = { workspace = true }
+
 # Optional: SSDP discovery
 ssdp-client = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }

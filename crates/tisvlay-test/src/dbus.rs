@@ -21,9 +21,10 @@
 //! [`zbus::connection::Builder::address`] so they bypass zbus's
 //! per-process `OnceCell` connection cache.
 
+use parking_lot::Mutex;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use tempfile::TempDir;

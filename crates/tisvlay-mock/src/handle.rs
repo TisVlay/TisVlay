@@ -37,7 +37,8 @@
 //! mock.simulate_user_accept("mock://living_room");
 //! ```
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tisvlay_core::{DiscoveredTv, HardwareId};
 use tracing::instrument;
 
@@ -70,7 +71,7 @@ impl MockHandle {
     /// Subsequent calls append; publishing is order-preserving.
     #[instrument(skip(self), fields(tv_id = %tv.id, address = %tv.address))]
     pub fn publish_tv(&self, tv: DiscoveredTv) {
-        let mut state = self.state.lock().expect("mock state lock poisoned");
+        let mut state = self.state.lock();
         tracing::debug!("publishing TV onto mock network");
         state.discovered.push(tv);
     }
@@ -78,18 +79,14 @@ impl MockHandle {
     /// Remove all discoverable TVs from the mock "network".
     #[instrument(skip(self))]
     pub fn clear_discovered(&self) {
-        let mut state = self.state.lock().expect("mock state lock poisoned");
+        let mut state = self.state.lock();
         tracing::debug!(count = state.discovered.len(), "clearing discovered TVs");
         state.discovered.clear();
     }
 
     /// Number of TVs currently published on the mock network.
     pub fn discovered_count(&self) -> usize {
-        self.state
-            .lock()
-            .expect("mock state lock poisoned")
-            .discovered
-            .len()
+        self.state.lock().discovered.len()
     }
 
     // ------------------------------------------------------------------
@@ -132,14 +129,14 @@ impl MockHandle {
     /// hardware identity across reconnects without re-seeding.
     #[instrument(skip(self), fields(tv_id = %tv_id))]
     pub fn set_hardware_id(&self, tv_id: &str, id: HardwareId) {
-        let mut state = self.state.lock().expect("mock state lock poisoned");
+        let mut state = self.state.lock();
         tracing::debug!(?id, "seeding hardware identity");
         state.hardware_ids.insert(tv_id.to_string(), id);
     }
 
     /// Remove a previously seeded hardware identity.
     pub fn clear_hardware_id(&self, tv_id: &str) {
-        let mut state = self.state.lock().expect("mock state lock poisoned");
+        let mut state = self.state.lock();
         state.hardware_ids.remove(tv_id);
     }
 
@@ -154,14 +151,14 @@ impl MockHandle {
     /// attempts.
     #[instrument(skip(self))]
     pub fn set_connect_delay(&self, delay: std::time::Duration) {
-        let mut state = self.state.lock().expect("mock state lock poisoned");
+        let mut state = self.state.lock();
         tracing::debug!(?delay, "setting connect delay");
         state.connect_delay = Some(delay);
     }
 
     /// Remove any previously set connect delay.
     pub fn clear_connect_delay(&self) {
-        let mut state = self.state.lock().expect("mock state lock poisoned");
+        let mut state = self.state.lock();
         state.connect_delay = None;
     }
 
@@ -170,7 +167,7 @@ impl MockHandle {
     // ------------------------------------------------------------------
 
     fn set_pairing_outcome(&self, tv_id: &str, outcome: PairingOutcome) {
-        let mut state = self.state.lock().expect("mock state lock poisoned");
+        let mut state = self.state.lock();
         tracing::debug!(?outcome, "seeding pairing outcome");
         state.pairing_outcomes.insert(tv_id.to_string(), outcome);
     }

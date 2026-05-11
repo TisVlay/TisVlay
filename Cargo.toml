@@ -66,6 +66,16 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 # Networking (for WoL)
 socket2 = "0.6"
 
+# Sync primitives without poisoning. Used for short, non-`.await`
+# critical sections that guard small data structures (HashMaps,
+# Vecs, RefCells around plain state). The std `Mutex` poisoning
+# behavior is intentionally elided — a panic-while-holding implies
+# a logic bug we want to surface, not transient state to recover
+# from, and our critical sections are panic-free by inspection
+# (HashMap ops on owned strings + channel senders). For locks
+# held across `.await` we still use `tokio::sync::Mutex`.
+parking_lot = "0.12"
+
 # XDG directories
 directories = "6"
 

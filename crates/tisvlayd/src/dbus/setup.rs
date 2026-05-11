@@ -67,9 +67,37 @@ pub async fn build_dbus_connection(
 /// SIGHUP handler (the out-of-band signal path) so both reload entry
 /// points keep the on-bus object set in sync with the config file.
 /// Mirrors the symmetric register/unregister already done by
-/// `Manager1.AddTv` and `Tv1.Remove`. Errors per TV are logged and
-/// the loop continues — a partial reload is preferable to an early
-/// abort that would leave the bus in a half-synced state.
+/// `Manager1.AddTv` and `Tv1.Remove`.
+///
+/// Each `register` is preceded by a defensive `unregister` to flush
+/// any stale interface state at the path. Background: zbus 5.x's
+/// [`ObjectServer::at`] returns `Ok(false)` rather than `Err` when an
+/// interface is already registered at the path, so a fresh `register`
+/// against a stale path *silently fails to refresh state* — the
+/// pre-existing interface keeps serving with its old field values.
+/// Calling `unregister` first ensures the new register's state takes
+/// effect. `unregister_tv_interfaces` is infallible by construction
+/// ([`tv.rs::599-613`](super::tv) swallows per-interface errors), so
+/// the defensive call is effectively free when nothing's there.
+///
+/// Per-TV register errors (from underlying D-Bus connection issues —
+/// path collision is no longer an error mode) are logged. Callers
+/// can't recover meaningfully from a broken connection mid-reload, so
+/// no aggregate failure type propagates upward.
+///
+/// # Drain semantics for the `removed` half
+///
+/// The unregister loop interacts with in-flight `Tv1.*` calls against
+/// the same paths via the per-TV `Mutex<ManagedTv>` discipline
+/// documented at [`crate::tv_manager::TvManager::remove_tv`]. The
+/// removed-half handler here calls `unregister_tv_interfaces` (which
+/// hits the zbus `ObjectServer`'s routing map but doesn't touch
+/// `tv_manager`'s in-memory state); the corresponding `tv_manager`
+/// removal happened earlier in [`crate::tv_manager::TvManager::reload_config`]'s
+/// Stage 2 under the per-TV Mutex, so by the time we reach this
+/// unregister loop, in-flight calls have already either completed,
+/// hit `TvNotFound`, or hit `NotConnected`. See `remove_tv`'s
+/// docstring for the three sub-cases.
 pub async fn apply_reload_diff(
     connection: &zbus::Connection,
     tv_manager: &Arc<TvManager>,
@@ -83,6 +111,10 @@ pub async fn apply_reload_diff(
     }
     for tv_id in &diff.added {
         let path = tv_path(tv_id);
+        // Flush any stale interface state at the path before
+        // registering fresh. See function-level comment for the
+        // zbus `Ok(false)`-on-collision rationale.
+        let _ = unregister_tv_interfaces(connection, &path).await;
         let state = tv_manager.get_current_state(tv_id).await;
         if let Err(e) = register_tv_interfaces(
             connection,

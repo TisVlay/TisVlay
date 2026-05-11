@@ -1,14 +1,14 @@
 //! Regression: removing a UUID-keyed TV through the GUI/CLI surface
 //! must not silently miss the daemon's in-memory TV map.
 //!
-//! After the Phase 8.1 UUID identity migration, every TV's canonical
-//! ID is a hyphenated UUID v4 (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+//! Every TV's canonical ID is a hyphenated UUID v4
+//! (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
 //! D-Bus path components forbid hyphens, so an early implementation
 //! that took the path on `Manager1.RemoveTv(o)` and stripped the
 //! prefix — without reversing the `-` → `_` sanitization that
 //! [`tv_path`] applies — looked up the underscored form against an
 //! `IndexMap` keyed by the hyphenated UUID and returned `TvNotFound`.
-//! Pre-8.1 sanitized-name IDs had no hyphens so the round-trip was
+//! Earlier sanitized-name IDs had no hyphens so the round-trip was
 //! lossless and the bug was invisible.
 //!
 //! The fix routed removal through a per-object `Tv1.Remove()` method,
@@ -39,10 +39,21 @@ async fn remove_tv_succeeds_for_uuid_keyed_tv() {
     daemon.handle().simulate_user_accept("mock://to_remove");
 
     let config_json = r#"{"address": "mock://to_remove"}"#;
+    // Subscribe before pairing so we can drain to the terminal
+    // phase; AddTv is async-spawn, so the TV isn't registered via
+    // ObjectManager until `complete` arrives.
+    let stream = client.pairing_progress_stream().await.unwrap();
     let tv_id = client
         .pair_tv("To Remove", "mock", config_json, true)
         .await
-        .expect("pairing should succeed");
+        .expect("AddTv RPC should succeed");
+    let terminal = tisvlay_core::DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .expect("drain should reach terminal");
+    assert!(
+        matches!(terminal, tisvlay_core::PairTerminal::Complete { .. }),
+        "expected Complete, got {terminal:?}"
+    );
 
     // Sanity: the TV is present and identified by a hyphenated UUID.
     assert!(

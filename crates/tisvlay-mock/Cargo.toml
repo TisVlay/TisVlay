@@ -23,5 +23,8 @@ toml = { workspace = true }
 
 tracing = { workspace = true }
 
+# Sync mutex without poisoning for the in-memory state map.
+parking_lot = { workspace = true }
+
 [lints]
 workspace = true

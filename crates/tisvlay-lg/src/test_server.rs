@@ -19,9 +19,10 @@
 
 use crate::protocol::{Request, RequestType};
 use futures_util::{SinkExt, StreamExt};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -82,7 +83,7 @@ impl FakeSsapHandle {
 
     /// Set the registration outcome for the next connection.
     pub(crate) fn set_registration_outcome(&self, outcome: RegistrationOutcome) {
-        self.state.lock().unwrap().registration = outcome;
+        self.state.lock().registration = outcome;
     }
 
     /// Push a subscription update into the active connection.
@@ -219,7 +220,7 @@ impl FakeSsapServer {
 
         match request.msg_type {
             RequestType::Register => {
-                let outcome = state.lock().unwrap().registration.clone();
+                let outcome = state.lock().registration.clone();
                 match outcome {
                     RegistrationOutcome::Accept { client_key } => {
                         // Two-phase: Response then Registered.

@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 /// Optimistic-value reconciliation gate.
 ///
@@ -47,8 +49,9 @@ use std::sync::{Arc, Mutex};
 /// # Concurrency
 ///
 /// `Clone` is cheap (shares an `Arc`); pass clones into closures.
-/// Internal state is guarded by a `std::sync::Mutex` — operations are
-/// non-blocking in the runtime sense (no `.await`).
+/// Internal state is guarded by a `parking_lot::Mutex` — operations are
+/// non-blocking in the runtime sense (no `.await`) and the lock has no
+/// poisoning, so we never need to think about recovery semantics.
 pub struct Reconciler<V> {
     inner: Arc<Mutex<ReconcilerInner<V>>>,
 }
@@ -81,17 +84,14 @@ where
     /// Get the current optimistic value (what UI should display, what
     /// new commands should compute deltas against).
     pub fn current(&self) -> V {
-        self.inner
-            .lock()
-            .expect("Reconciler mutex poisoned")
-            .optimistic
+        self.inner.lock().optimistic
     }
 
     /// Record a user-driven dispatch. The optimistic value updates
     /// immediately; a subsequent `observe(value)` matching this value
     /// will close the gate.
     pub fn dispatch(&self, value: V) {
-        let mut inner = self.inner.lock().expect("Reconciler mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.optimistic = value;
         inner.last_sent = value;
         inner.pending = true;
@@ -106,7 +106,7 @@ where
     /// - If not pending, the observation represents an external
     ///   change: update the optimistic value to match.
     pub fn observe(&self, value: V) {
-        let mut inner = self.inner.lock().expect("Reconciler mutex poisoned");
+        let mut inner = self.inner.lock();
         if inner.pending {
             if value == inner.last_sent {
                 inner.pending = false;
@@ -130,18 +130,11 @@ impl<V> Clone for Reconciler<V> {
 impl<V: std::fmt::Debug> std::fmt::Debug for Reconciler<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let inner = self.inner.lock();
-        match inner {
-            Ok(inner) => f
-                .debug_struct("Reconciler")
-                .field("optimistic", &inner.optimistic)
-                .field("last_sent", &inner.last_sent)
-                .field("pending", &inner.pending)
-                .finish(),
-            Err(_) => f
-                .debug_struct("Reconciler")
-                .field("poisoned", &true)
-                .finish(),
-        }
+        f.debug_struct("Reconciler")
+            .field("optimistic", &inner.optimistic)
+            .field("last_sent", &inner.last_sent)
+            .field("pending", &inner.pending)
+            .finish()
     }
 }
 
@@ -193,7 +186,7 @@ where
     /// post-observation `current()` so callers can write the gated
     /// value into their own caches (`CachedTvState`, `TvViewModel`).
     pub fn observe(&self, key: &K, value: V) -> V {
-        let mut map = self.inner.lock().expect("ReconcilerMap mutex poisoned");
+        let mut map = self.inner.lock();
         let r = map
             .entry(key.clone())
             .or_insert_with(|| Reconciler::new(value));
@@ -207,7 +200,6 @@ where
     pub fn current(&self, key: &K, fallback: V) -> V {
         self.inner
             .lock()
-            .expect("ReconcilerMap mutex poisoned")
             .get(key)
             .map(|r| r.current())
             .unwrap_or(fallback)
@@ -216,7 +208,7 @@ where
     /// Record a user-driven dispatch for the gate. Lazily creates the
     /// reconciler if none exists yet.
     pub fn dispatch(&self, key: &K, target: V) {
-        let mut map = self.inner.lock().expect("ReconcilerMap mutex poisoned");
+        let mut map = self.inner.lock();
         let r = map
             .entry(key.clone())
             .or_insert_with(|| Reconciler::new(target));
@@ -227,10 +219,7 @@ where
 impl<K: std::fmt::Debug, V> std::fmt::Debug for ReconcilerMap<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReconcilerMap")
-            .field(
-                "active_keys",
-                &self.inner.lock().map(|m| m.len()).unwrap_or(0),
-            )
+            .field("active_keys", &self.inner.lock().len())
             .finish()
     }
 }

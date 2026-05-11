@@ -47,7 +47,8 @@ mod handle;
 mod pairing;
 mod state;
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 pub use backend::MockBackend;
 pub use config::MockVendorConfig;

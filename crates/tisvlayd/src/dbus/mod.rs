@@ -49,6 +49,11 @@ pub enum DaemonError {
     UnknownVendor(String),
     /// Pairing error.
     PairingFailed(String),
+    /// `Manager1.CancelPair(tv_id)` called against a tv_id that isn't
+    /// currently pairing. Maps from `TvManagerError::NotPairing` —
+    /// strict variant matching the BlueZ `Adapter.RemoveDevice`
+    /// on-unknown-device convention.
+    NotPairing(String),
 
     // -- Power-cycle (typed; mirrors `errors::PowerErrorCode`) --
     /// TV has no wake method configured (no MAC for WoL).
@@ -134,6 +139,15 @@ impl From<TvManagerError> for DaemonError {
                 }
             }
             TvManagerError::PairingFailed(source) => DaemonError::PairingFailed(source.to_string()),
+            TvManagerError::NotPairing(tv_id) => {
+                // Mirror `TvManagerError::NotPairing`'s Display so
+                // the D-Bus detail is self-explanatory in CLI / log
+                // output (raw tv_ids alone are opaque UUIDs). The
+                // error name (`org.tisvlay.Error.NotPairing`) stays
+                // stable for programmatic routing via
+                // `is_not_pairing`.
+                DaemonError::NotPairing(format!("TV {} is not currently pairing", tv_id))
+            }
             TvManagerError::ConfigError(msg) => DaemonError::OperationFailed(msg),
         }
     }

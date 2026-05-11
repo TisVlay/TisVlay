@@ -45,10 +45,22 @@ async fn empty_daemon() -> (TestDaemon, DaemonClient) {
 async fn pair_one(daemon: &TestDaemon, client: &DaemonClient, address: &str) -> String {
     daemon.handle().simulate_user_accept(address);
     let config_json = format!(r#"{{"address": "{}"}}"#, address);
-    client
+    // Subscribe before pairing — AddTv is async-spawn, so the
+    // per-TV interfaces (which `get_tv_config` reads through) only
+    // exist after the terminal `complete` PairingProgress arrives.
+    let stream = client.pairing_progress_stream().await.unwrap();
+    let tv_id = client
         .pair_tv("Edit Target", "mock", &config_json, true)
         .await
-        .expect("pairing should succeed")
+        .expect("AddTv RPC should succeed");
+    let terminal = DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .expect("drain should reach terminal");
+    assert!(
+        matches!(terminal, tisvlay_core::PairTerminal::Complete { .. }),
+        "expected Complete, got {terminal:?}"
+    );
+    tv_id
 }
 
 #[tokio::test]

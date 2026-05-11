@@ -238,10 +238,48 @@ impl TvService {
     // -------------------------------------------------------------------------
 
     /// Force reconnection to the TV.
+    /// Reconnect to the TV by closing and reopening the underlying
+    /// vendor connection. The D-Bus object path stays registered
+    /// throughout — only the connection changes — so no
+    /// `register_tv_interfaces` / `unregister_tv_interfaces` calls
+    /// are needed here. In-flight `Tv1.*` calls against this path
+    /// during reconnect participate in the same per-TV `Mutex<ManagedTv>`
+    /// drain semantics that `Tv1.Remove` and `apply_reload_diff`
+    /// document (see `tv_manager::remove_tv`).
     async fn reconnect(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: Reconnect");
         self.manager
             .reconnect(&self.tv_id)
+            .await
+            .map_err(DaemonError::from)
+    }
+
+    /// Re-pair the TV: run the vendor backend's pairing handshake
+    /// against the TV's existing `vendor_config`, persist the refreshed
+    /// credentials in place, and reconnect. Top-level fields (`name`,
+    /// `profile`, `managed`, `primary_input`) stay intact.
+    ///
+    /// Used by clients to recover from expired credentials (LG WebOS
+    /// client-key revocation, future Samsung token expiry, etc.)
+    /// without forcing the user to `Tv1.Remove` + `Manager1.AddTv`
+    /// from scratch.
+    ///
+    /// RPC returns immediately after sync validation (TV exists,
+    /// `pairing_in_flight` slot available); the handshake (TV wake +
+    /// SSAP TLS + user accept on TV, 10–30s typical) runs in a
+    /// daemon-side spawned task. Outcome surfaces via
+    /// `Manager1.PairingProgress` filtered on this TV's `tv_id` to a
+    /// terminal `complete` / `failed` phase (same channel `AddTv`'s
+    /// flow uses). Cancel an in-flight re-pair via
+    /// `Manager1.CancelPair(tv_id)`.
+    ///
+    /// Concurrent re-pair attempts against the same TV are rejected
+    /// with `PairingFailed("already pairing")` per the
+    /// `pairing_in_flight` gate on `ManagedTv`.
+    async fn re_pair(&self) -> Result<(), DaemonError> {
+        info!(tv_id = %self.tv_id, "D-Bus: RePair");
+        self.manager
+            .re_pair_tv(&self.tv_id)
             .await
             .map_err(DaemonError::from)
     }
@@ -301,7 +339,15 @@ impl TvService {
     /// patch — atomicity covers in-memory + disk persistence.
     ///
     /// Vendor field changes drop the live connection and trigger a
-    /// reconnect with the new parameters.
+    /// reconnect with the new parameters. The D-Bus object path
+    /// stays registered throughout — the `Tv1.*` interface set
+    /// doesn't depend on which vendor is active (capability
+    /// differences surface via the `Capabilities` property, not the
+    /// interface schema), so no `register_tv_interfaces` /
+    /// `unregister_tv_interfaces` call is needed. In-flight `Tv1.*`
+    /// calls during the reconnect participate in the same per-TV
+    /// `Mutex<ManagedTv>` drain semantics documented at
+    /// `tv_manager::remove_tv`.
     async fn update_config(&self, json_patch: &str) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: UpdateConfig");
         self.manager

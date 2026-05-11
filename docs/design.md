@@ -196,7 +196,7 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 ├── /org/tisvlay                    ObjectManager
 ├── /org/tisvlay/Manager            org.tisvlay.Manager1
 │   ├── Methods:  GetSupportedVendors, GetPairingSchema, AddTv,
-│   │             ReloadConfig, ListSystemProfiles,
+│   │             CancelPair, ReloadConfig, ListSystemProfiles,
 │   │             GetUserProfileDefault, ListUserProfiles, DiscoverTvs
 │   └── Signals:  ConfigReloaded
 └── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
@@ -206,7 +206,7 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
     ├── Properties (ro): Uuid, Vendor, Connected, Capabilities,
     │                     VendorInfo, AutomateWhen, Automated,
     │                     PowerState, CurrentInput, AvailableInputs
-    ├── Methods:  Reconnect, Remove, GetConfig, UpdateConfig,
+    ├── Methods:  Reconnect, RePair, Remove, GetConfig, UpdateConfig,
     │             PowerOn, PowerOff, SwitchInput
     └── Signals:  (standard PropertiesChanged only)
 
@@ -232,8 +232,9 @@ org.tisvlay.Session  (session bus)
 Methods:
 - `GetSupportedVendors() → a(ss)` — list `(vendor_id, vendor_name)` pairs
 - `GetPairingSchema(vendor: s) → s` — JSON-serialized `Vec<PairingField>` describing the pairing-form fields the GUI should render for the given vendor
-- `AddTv(name: s, vendor: s, config_json: s, managed: b) → (os)` — add and pair a TV; `config_json` contains vendor-specific connection params as JSON (e.g., `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation. Returns `(object_path, tv_uuid)`. Per-TV lifecycle (`Remove`, `GetConfig`, `UpdateConfig`) lives on `Tv1` after pair.
+- `AddTv(name: s, vendor: s, config_json: s, managed: b) → (os)` — reserve a TV id and start pairing. **Returns immediately** after sync validation (unknown-vendor / `ConfigInvalidVendorConfig` surface as RPC errors); the handshake itself runs in a daemon-side spawned task. Outcome is reported via `Manager1.PairingProgress` filtered on the returned `tv_uuid` to a terminal phase (`complete` or `failed`). `complete` only fires after the per-TV `Tv1.*` interfaces are registered, so clients observing it can immediately call into the new TV without racing the registration. `config_json` carries vendor-specific connection params as JSON (e.g. `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation. Per-TV lifecycle (`Remove`, `RePair`, `GetConfig`, `UpdateConfig`) lives on `Tv1` after pair.
 - `ReloadConfig()` — reload config from disk
+- `CancelPair(tv_id: s)` — cancel an in-flight pairing handshake. Works for both `AddTv` and `Tv1.RePair` via the daemon-side `pairing_sessions` registry. Returns `NotPairing` (typed) if the tv_id isn't currently pairing — matches the BlueZ `Adapter.RemoveDevice`-on-unknown-device convention.
 - `ListSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
 - `GetUserProfileDefault() → s` — admin baseline user profile as JSON; used by session services to inherit defaults
 - `ListUserProfiles() → a(ss)` — all user profiles (admin-defined) as `(name, json)` pairs
@@ -241,12 +242,15 @@ Methods:
 
 Signals: `ConfigReloaded`, `PairingProgress`, `DiscoveryFound`. (Per-TV add/remove fires standard `ObjectManager.InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay`.)
 
+`PairingProgress(tv_id: s, phase: s, message: s)` is bus-wide — any client may be running a concurrent pairing. Clients filter on the `tv_id` they got from `Manager1.AddTv` (or passed to `Tv1.RePair`) and drain to a terminal phase (`complete` or `failed`). Non-terminal phases are `awaiting_tv` and `awaiting_input`. `tisvlay-core` exposes `DaemonClient::drain_pair_to_terminal(stream, target_tv_id, on_progress) -> Result<PairTerminal>` as the canonical client-side drain — used by the GUI wizard, the `tisvlay pair` / `tisvlay re-pair` CLI subcommands, and the integration test suite.
+
 ### org.tisvlay.Tv1 (per-TV lifecycle)
 
 The per-TV `Tv1` interface owns the methods that take a TV identifier — they read `&self.tv_id` directly from the interface impl rather than decoding it from a path argument, which avoided a class of `tv_path()` round-trip bugs around UUID hyphens.
 
 Methods:
 - `Reconnect()` — drop and re-establish the connection
+- `RePair()` — refresh vendor credentials by re-running the backend's pairing handshake against the existing `vendor_config`. Top-level fields (`name`, `profile`, `managed`, `primary_input`) stay intact; only the per-vendor credentialing fields (e.g. LG's `client_key`) get replaced. **Returns immediately** after sync validation (TV not found / already pairing surface as RPC errors); the handshake itself runs in a daemon-side spawned task. Outcome via `Manager1.PairingProgress` filtered on this TV's `tv_id` to a terminal phase. Cancel an in-flight re-pair via `Manager1.CancelPair(tv_id)`. Concurrent re-pair against the same TV is rejected synchronously with `PairingFailed("already pairing")`.
 - `Remove()` — drop the TV from in-memory + on-disk config and unregister every `Tv1.*` interface at this path (fires `ObjectManager.InterfacesRemoved`)
 - `GetConfig() → s` — return current config (top-level + non-`Secret` vendor fields) as a JSON object suitable for prefilling an edit form
 - `UpdateConfig(json_patch: s)` — atomic batch edit. Top-level keys (`name`, `managed`, `system_profile`, `primary_input`) plus any `UserInput`-visibility vendor schema field. Server-side schema-validated; vendor-field changes drop and reconnect. `Diagnostic`/`Secret` keys are rejected.
@@ -272,7 +276,7 @@ Properties (read-write): `Name`, `Managed`, `SystemProfile`, `PrimaryInput`
 
 Properties (read-only, computed): `AutomateWhen` (from resolved system profile), `Automated` (computed gate: `managed && automate_when.should_automate(primary_input, current_input)`)
 
-Methods: `Reconnect()`
+Methods: `Reconnect()`, `RePair()`, `Remove()`, `GetConfig()`, `UpdateConfig(json_patch: s)` — see the section above for full signatures.
 
 No custom signals — uses standard `org.freedesktop.DBus.Properties.PropertiesChanged` for all state notifications. TV state is cached in the D-Bus interface structs and updated by backend subscription pushes via `InterfaceRef::get_mut()`.
 
@@ -462,6 +466,7 @@ COMMANDS:
     backlight       Backlight control
     status          Show TV status (includes managed flag)
     pair            Pair a new TV
+    re-pair <ID>    Refresh vendor credentials in place (preserves name, profile, etc.)
     list            List configured TVs (shows [unmanaged] suffix)
     remove          Remove a TV
     manage          Show or set automated management for a TV (true/false)
@@ -486,6 +491,7 @@ EXAMPLES:
     tisvlay input                                                   # list available inputs
     tisvlay pair 192.168.1.100 --name "Living Room" --vendor lg --wake-id AA:BB:CC:DD:EE:FF
     tisvlay pair 192.168.1.101 --name "Office" --vendor lg --unmanaged
+    tisvlay re-pair living-room                                     # refresh expired credentials
     tisvlay volume 30
     tisvlay backlight 80
     tisvlay manage                                                      # show current

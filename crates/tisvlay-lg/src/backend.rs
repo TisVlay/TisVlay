@@ -1144,4 +1144,53 @@ mod tests {
         conn.close().await.unwrap();
         assert!(!conn.is_connected());
     }
+
+    // -----------------------------------------------------------------------
+    // start_pairing accepts already-credentialed vendor_config
+    //
+    // Re-pair calls `start_pairing` against a TV's existing
+    // vendor_config — which may include a `client_key` from a prior
+    // pair. Verify the LG backend doesn't error on that input. Note:
+    // LG's implementation hardcodes `WebOsClient::connect(&ip, None)` (the
+    // existing key is ignored), so every re-pair triggers a fresh TV prompt;
+    // that's documented behavior, not a bug to fix here.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn start_pairing_accepts_credentialed_vendor_config() {
+        let connector = LgConnector;
+
+        // Construct a vendor_config that includes a pre-existing client_key
+        // (i.e., what re-pair would supply). The fake IP means the spawned
+        // WebSocket task will fail asynchronously, but `start_pairing` itself
+        // returns immediately with a session — that's what we're verifying.
+        let mut table = toml::value::Table::new();
+        table.insert("ip".into(), toml::Value::String("192.0.2.99".into()));
+        table.insert(
+            "client_key".into(),
+            toml::Value::String("preexisting-key".into()),
+        );
+        table.insert(
+            "mac".into(),
+            toml::Value::String("AA:BB:CC:DD:EE:FF".into()),
+        );
+        let vendor_config = toml::Value::Table(table);
+
+        let session1 = connector.start_pairing(&vendor_config);
+        assert!(
+            session1.is_ok(),
+            "first start_pairing with credentialed config should return Ok; got {:?}",
+            session1.as_ref().err(),
+        );
+        drop(session1);
+
+        // Second call with the same input must also return Ok — re-pair
+        // may be invoked multiple times against the same vendor_config.
+        let session2 = connector.start_pairing(&vendor_config);
+        assert!(
+            session2.is_ok(),
+            "second start_pairing with the same credentialed config should return Ok; got {:?}",
+            session2.as_ref().err(),
+        );
+    }
 }

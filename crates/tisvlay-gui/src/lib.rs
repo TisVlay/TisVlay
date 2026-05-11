@@ -42,15 +42,16 @@ use about::{
 };
 use accent::watch_accent_color;
 use edit_pane::{
-    compute_edit_valid, extract_invalid_vendor_config, mark_edit_field_invalid, publish_edit_error,
+    compute_edit_valid, extract_invalid_vendor_config, is_not_pairing, mark_edit_field_invalid,
+    publish_edit_error,
 };
 use icon_theme::load_themed_icon;
 use power_cycle::run_power_on_with_progress;
 use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
-    WizardEntries, WizardEntry, fetch_and_publish_schema, publish_wizard_entries, reset_wizard,
-    run_wizard_discovery, run_wizard_pair,
+    WizardEntries, WizardEntry, WizardGen, fetch_and_publish_schema, publish_wizard_entries,
+    reset_wizard, run_wizard_discovery, run_wizard_pair, run_wizard_re_pair,
 };
 
 use schema_form::{
@@ -59,7 +60,7 @@ use schema_form::{
 };
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -73,7 +74,7 @@ use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{Coalescer, DaemonClient, ReconcilerMap, SessionClient, TrayClient};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::state::StateSnapshot;
 
@@ -415,7 +416,15 @@ pub fn run() -> Result<()> {
     // Source-of-truth for the wizard's discovery list. Slint sees
     // a derived `[WizardDiscoveredTv]` model; Rust reads
     // `vendor_data` and other map-typed columns from this.
-    let wizard_entries: WizardEntries = Arc::new(Mutex::new(Vec::new()));
+    let wizard_entries: WizardEntries = Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+    // Generation counter for in-flight pair / re-pair tasks. Bumped
+    // by `reset_wizard`; captured by each spawned pair-flow task at
+    // start. Callbacks no-op when the live counter no longer matches
+    // the captured one — stops a late `PairingProgress` event from
+    // a cancelled session from bleeding into a freshly-reopened
+    // wizard. See `wizard::WizardGen`.
+    let wizard_gen: WizardGen = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     // Wire callbacks before the event loop starts so they're ready when
     // the user interacts with controls.
@@ -425,6 +434,7 @@ pub fn run() -> Result<()> {
         session.clone(),
         reconcilers.clone(),
         wizard_entries.clone(),
+        wizard_gen.clone(),
     );
 
     // Background watcher: refresh on every signal-driven state change.
@@ -459,6 +469,7 @@ fn register_callbacks(
     session: Arc<RwLock<Option<SessionClient>>>,
     reconcilers: Reconcilers,
     wizard_entries: WizardEntries,
+    wizard_gen: WizardGen,
 ) {
     // Slint global handles. Bound once for the registration phase;
     // closures captured by `move` re-acquire from the upgraded
@@ -748,15 +759,17 @@ fn register_callbacks(
     let d = daemon.clone();
     let app_weak = app.as_weak();
     let we = wizard_entries.clone();
+    let wg = wizard_gen.clone();
     daemon_global.on_request_pair(move || {
         let d = d.clone();
         let we = we.clone();
+        let wg = wg.clone();
         let app_weak = app_weak.clone();
         // Reset wizard state on the Slint side first so the user sees
         // the wizard immediately, then kick off discovery.
         if let Some(app) = app_weak.upgrade() {
             let wizard = app.global::<PairingWizard>();
-            reset_wizard(&app);
+            reset_wizard(&app, &wg);
             wizard.set_active(true);
             wizard.set_step(1);
             wizard.set_discovery_streaming(true);
@@ -764,26 +777,126 @@ fn register_callbacks(
         // Clear the Rust-owned source-of-truth too — the Slint model
         // gets cleared by `reset_wizard`, but the sidecar lives
         // outside Slint and must be reset in lockstep.
-        if let Ok(mut e) = we.lock() {
-            e.clear();
-        }
+        we.lock().clear();
         tokio::spawn(async move {
             run_wizard_discovery(d, we, app_weak).await;
         });
     });
 
+    // Re-pair an existing TV: open the wizard directly at StepPair
+    // with vendor / address / name prefilled from the existing TV's
+    // state, then kick off `Tv1.RePair(tv_id)`. Mirrors the post-
+    // StepConfigure entry into the pair flow that `on_step_next`
+    // step-2 → step-3 transition uses for AddTv.
+    let d = daemon.clone();
     let app_weak = app.as_weak();
+    let wg = wizard_gen.clone();
+    daemon_global.on_request_re_pair(move |tv_id| {
+        let d = d.clone();
+        let wg = wg.clone();
+        let app_weak = app_weak.clone();
+        let tv_id_str = tv_id.to_string();
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+
+        // Look up the existing TV's metadata so the wizard's
+        // StepPair UI renders with familiar vendor / address /
+        // name labels. The GUI's `tvs` model is the authoritative
+        // source — it was populated from the daemon's
+        // `ObjectManager.GetManagedObjects` at startup and stays
+        // in sync via signals.
+        let tvs = app.get_tvs();
+        let mut tv_row: Option<TvViewModel> = None;
+        for i in 0..tvs.row_count() {
+            if let Some(row) = tvs.row_data(i)
+                && row.uuid.as_str() == tv_id_str
+            {
+                tv_row = Some(row);
+                break;
+            }
+        }
+        let Some(tv) = tv_row else {
+            warn!(tv_id = %tv_id_str, "wizard: request_re_pair for unknown TV id, ignoring");
+            return;
+        };
+
+        // Reset wizard state, prefill from the existing TV, jump
+        // to StepPair. `reset_wizard` clears the schema-form rows
+        // and pair phase/message; we then seed the display
+        // properties so the live pair UI shows the right labels.
+        // The gen bump also invalidates any in-flight pair task
+        // from a prior session.
+        reset_wizard(&app, &wg);
+        let wizard = app.global::<PairingWizard>();
+        let vendor_id = tv.vendor.clone();
+        let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
+        wizard.set_selected_vendor(vendor_id);
+        wizard.set_selected_vendor_name(vendor_name);
+        wizard.set_selected_address(tv.primary_descriptor.clone());
+        // Hardware model isn't carried in TvViewModel today — leave
+        // blank; the wizard's StepPair UI handles an empty value.
+        wizard.set_selected_hw_model(SharedString::default());
+        wizard.set_tv_name(tv.name.clone());
+        wizard.set_pair_tv_id(SharedString::from(tv_id_str.as_str()));
+        wizard.set_step(3);
+        wizard.set_active(true);
+
+        tokio::spawn(async move {
+            run_wizard_re_pair(d, app_weak, wg, tv_id_str).await;
+        });
+    });
+
+    // Wizard cancel: route the in-flight pair's tv_id (if any) to
+    // `Manager1.CancelPair` so the daemon-side handshake actually
+    // aborts rather than continuing until natural completion/
+    // timeout. Then reset the wizard's UI state. Works for both
+    // re-pair (tv_id is set at invoke time) and AddTv (tv_id is
+    // set by `run_wizard_pair` from the pair_tv RPC return).
+    // Empty `pair-tv-id` means no in-flight pair to cancel —
+    // common when cancelling from steps 1 or 2 of the wizard.
+    let d = daemon.clone();
+    let app_weak = app.as_weak();
+    let wg = wizard_gen.clone();
     wizard.on_cancel(move || {
         info!("wizard: cancel fired");
-        if let Some(app) = app_weak.upgrade() {
-            reset_wizard(&app);
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let wizard = app.global::<PairingWizard>();
+        let tv_id = wizard.get_pair_tv_id().to_string();
+        // Reset the UI immediately so the user sees the wizard
+        // close without waiting on the daemon round-trip. The gen
+        // bump inside `reset_wizard` makes any in-flight pair
+        // task's late callbacks no-op.
+        reset_wizard(&app, &wg);
+        if tv_id.is_empty() {
+            return;
         }
+        let d = d.clone();
+        tokio::spawn(async move {
+            if let Err(e) = d.cancel_pair(&tv_id).await {
+                // NotPairing is the expected error if the pair
+                // already completed in the small window between
+                // the user clicking Cancel and our D-Bus call —
+                // log at debug rather than warn for that case.
+                // Detected via the typed D-Bus error name
+                // (`org.tisvlay.Error.NotPairing`) so the check is
+                // stable across message wording / localization.
+                if is_not_pairing(&e) {
+                    debug!(tv_id = %tv_id, "wizard cancel: pair already completed");
+                } else {
+                    warn!(tv_id = %tv_id, error = %e, "wizard cancel: cancel_pair failed");
+                }
+            }
+        });
     });
 
     // Step transitions. Driven entirely from Slint property reads.
     let d = daemon.clone();
     let app_weak = app.as_weak();
     let we = wizard_entries.clone();
+    let wg = wizard_gen.clone();
     wizard.on_step_next(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -802,10 +915,7 @@ fn register_callbacks(
                 if i < 0 {
                     return;
                 }
-                let entry = we
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.get(i as usize).cloned());
+                let entry = we.lock().get(i as usize).cloned();
                 let Some(entry) = entry else {
                     return;
                 };
@@ -858,9 +968,10 @@ fn register_callbacks(
                 wizard.set_pair_message(SharedString::default());
 
                 let d = d.clone();
+                let wg = wg.clone();
                 let app_weak = app.as_weak();
                 tokio::spawn(async move {
-                    run_wizard_pair(d, app_weak, name, vendor, config_json, managed).await;
+                    run_wizard_pair(d, app_weak, wg, name, vendor, config_json, managed).await;
                 });
             }
             // Pair → Done. Only allowed when pair_phase == "complete".
@@ -896,6 +1007,7 @@ fn register_callbacks(
     // Pair-failed → retry: restart pair_tv with the same parameters.
     let d = daemon.clone();
     let app_weak = app.as_weak();
+    let wg = wizard_gen.clone();
     wizard.on_retry_pair(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -913,16 +1025,18 @@ fn register_callbacks(
         wizard.set_pair_message(SharedString::default());
 
         let d = d.clone();
+        let wg = wg.clone();
         let app_weak = app.as_weak();
         tokio::spawn(async move {
-            run_wizard_pair(d, app_weak, name, vendor, config_json, managed).await;
+            run_wizard_pair(d, app_weak, wg, name, vendor, config_json, managed).await;
         });
     });
 
     let app_weak = app.as_weak();
+    let wg = wizard_gen.clone();
     wizard.on_finish(move || {
         if let Some(app) = app_weak.upgrade() {
-            reset_wizard(&app);
+            reset_wizard(&app, &wg);
         }
     });
 
@@ -1244,13 +1358,12 @@ fn register_callbacks(
         // Append to both the Rust-owned source-of-truth and the
         // Slint model so the new row participates in selection /
         // step transitions like a discovered one.
-        let new_index = if let Ok(mut entries) = we.lock() {
+        let new_index = {
+            let mut entries = we.lock();
             entries.push(entry.clone());
             let idx = (entries.len() - 1) as i32;
             publish_wizard_entries(&wizard, &entries);
             idx
-        } else {
-            return;
         };
         wizard.set_selected_index(new_index);
         wizard.set_selected_vendor(option.id);

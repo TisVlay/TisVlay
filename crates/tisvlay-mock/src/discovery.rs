@@ -12,7 +12,8 @@
 //!
 //! [`MockState::discovered`]: crate::state::MockState::discovered
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 use tisvlay_core::{DiscoveredTv, Result, TvDiscovery};
 
@@ -39,7 +40,7 @@ impl MockDiscovery {
 
 impl TvDiscovery for MockDiscovery {
     async fn discover(&self, _timeout: Duration) -> Result<Vec<DiscoveredTv>> {
-        let state = self.state.lock().expect("mock state lock poisoned");
+        let state = self.state.lock();
         tracing::debug!(count = state.discovered.len(), "mock discovery");
         Ok(state.discovered.clone())
     }

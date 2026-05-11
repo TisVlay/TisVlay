@@ -2,7 +2,7 @@
 //!
 //! Implements `org.tisvlay.Manager1` for TV discovery and management.
 
-use crate::dbus::{DaemonError, apply_reload_diff, register_tv_interfaces};
+use crate::dbus::{DaemonError, apply_reload_diff};
 use crate::json_toml::json_to_toml;
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tisvlay_core::dbus_paths::tv_path;
 
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::ObjectPath;
@@ -241,30 +241,22 @@ impl ManagerService {
             DaemonError::OperationFailed(format!("Failed to convert config: {}", e))
         })?;
 
-        let manager = &self.manager;
-        let tv_id = manager
-            .pair_tv(name, vendor, vendor_config, managed)
+        // Spawn the pairing handshake. `pair_tv` returns the
+        // reserved tv_id immediately (sync validation only); the
+        // handshake itself runs in the background. Outcome surfaces
+        // via `Manager1.PairingProgress` signals (filtered on
+        // tv_id by clients) and via `ObjectManager.InterfacesAdded`
+        // when the per-TV `Tv1.*` interfaces register on success.
+        // The cloned `connection` is moved into the spawned task so
+        // it can register interfaces without going back through
+        // this handler.
+        let tv_id = self
+            .manager
+            .pair_tv(name, vendor, vendor_config, managed, connection.clone())
             .await
             .map_err(DaemonError::from)?;
 
-        // Fetch live state from the connection established during pairing
-        // so D-Bus interfaces are registered with real values, not zeroed
-        // defaults. Without this, the InterfacesAdded signal and the first
-        // GetManagedObjects call would show volume=0, backlight=0, etc.
-        let state = manager.get_current_state(&tv_id).await;
         let path = tv_path(&tv_id);
-        if let Err(e) = register_tv_interfaces(
-            connection,
-            &path,
-            tv_id.clone(),
-            manager.clone(),
-            state.as_ref(),
-        )
-        .await
-        {
-            warn!(tv_id = %tv_id, error = %e, "Failed to register D-Bus interfaces for new TV");
-        }
-
         Ok((ObjectPath::try_from(path).unwrap(), tv_id))
     }
 
@@ -285,6 +277,50 @@ impl ManagerService {
         let diff = manager.reload_config().await.map_err(DaemonError::from)?;
         apply_reload_diff(connection, manager, &diff).await;
         Ok(())
+    }
+
+    /// Cancel an in-flight pairing handshake for the given TV.
+    ///
+    /// Reaches into the daemon's `pairing_sessions` map (populated
+    /// inside the spawned `run_pairing_handshake` of `pair_tv` /
+    /// `re_pair_tv`, removed on completion via the RAII
+    /// `PairingSessionGuard`) and sends `PairingCommand::Cancel`
+    /// via the session's command channel. The handshake task
+    /// observes the cancel command, resolves the session with
+    /// `PairingError::cancelled`, and the outer `run_pair_task` /
+    /// `run_re_pair_task` emits a terminal `failed`
+    /// `Manager1.PairingProgress` carrying the cancellation reason.
+    /// The originating `Manager1.AddTv` / `Tv1.RePair` RPC has
+    /// already returned `Ok` long before this — both methods are
+    /// async-spawn, so cancellation outcomes surface via the
+    /// `PairingProgress` channel, never as an RPC `Err`.
+    ///
+    /// Returns `Err(DaemonError::NotPairing(...))` if no in-flight
+    /// session exists for the given tv_id (already completed, never
+    /// started, wrong id). The error name is the stable routing key
+    /// (`org.tisvlay.Error.NotPairing`); the detail body carries the
+    /// `TvManagerError::NotPairing` Display message so CLI / logs
+    /// are self-explanatory. Matches BlueZ's `Adapter.RemoveDevice`-
+    /// on-unknown-device convention. Clients only fire cancel when
+    /// they know a pair is in flight (they're listening to
+    /// `PairingProgress` signals); the typed error helps debugging
+    /// if that invariant is ever broken.
+    ///
+    /// Works for both `AddTv` and `Tv1.RePair`: each spawned task
+    /// inserts its session's command sender into `pairing_sessions`
+    /// when it reaches `run_pairing_handshake`, so cancel reaches
+    /// the task via that map regardless of which RPC initiated the
+    /// pair. The brief gap between the RPC returning and the insert
+    /// landing is documented at
+    /// [`crate::tv_manager::TvManager::cancel_pair`] ("Cancel during
+    /// the spawn gap"); a cancel arriving in that window returns
+    /// `NotPairing`.
+    async fn cancel_pair(&self, tv_id: &str) -> Result<(), DaemonError> {
+        info!(tv_id = %tv_id, "D-Bus: CancelPair");
+        self.manager
+            .cancel_pair(tv_id)
+            .await
+            .map_err(DaemonError::from)
     }
 
     // -------------------------------------------------------------------------
@@ -371,9 +407,11 @@ impl ManagerService {
     /// human-readable detail (e.g., "Please accept the pairing
     /// request on your TV", or the failure reason).
     ///
-    /// Pair this with the synchronous `AddTv` RPC: subscribe to the
-    /// signal first, then call `AddTv`, draining phases until the
-    /// call returns.
+    /// Pair this with the async-spawn `AddTv` / `Tv1.RePair` RPCs:
+    /// subscribe to the signal first, call the RPC to get the
+    /// reserved `tv_id`, then drain the signal stream filtered on
+    /// that tv_id to a terminal `complete` / `failed` phase (see
+    /// `DaemonClient::drain_pair_to_terminal`).
     #[zbus(signal)]
     pub async fn pairing_progress(
         emitter: &SignalEmitter<'_>,
