@@ -1,6 +1,6 @@
 # Async pair API: AddTv/RePair return immediately, outcome via signals
 
-> **Status:** drafted 2026-05-11, not started. Continuation of the [re-pair TV plan](../../docs/plan.md) follow-up work; addresses Copilot review feedback on PR #51 around tv_id correlation under concurrent pairings, wizard task cleanup, lost-update during re-pair, and `pairing_sessions` entry cleanup.
+> **Status:** delivered 2026-05-11. All six phases landed; design as written matches what shipped except as noted in step status. Originated from Copilot review feedback on PR #51 around tv_id correlation under concurrent pairings, wizard task cleanup, lost-update during re-pair, and `pairing_sessions` entry cleanup.
 
 ## Context
 

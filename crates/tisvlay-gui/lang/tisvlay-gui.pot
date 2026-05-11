@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-05-10 17:40-0500\n"
+"POT-Creation-Date: 2026-05-11 00:46-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -16,92 +16,92 @@ msgstr ""
 "Content-Type: text/plain; charset=CHARSET\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: crates/tisvlay-gui/src/wizard.rs:319
+#: crates/tisvlay-gui/src/wizard.rs:426
 msgid "Client key stored."
 msgstr ""
 
-#: crates/tisvlay-gui/src/wizard.rs:321
+#: crates/tisvlay-gui/src/wizard.rs:428
 msgid "Paired successfully."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:275
+#: crates/tisvlay-gui/src/lib.rs:276
 msgid "Copied to clipboard."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:277
+#: crates/tisvlay-gui/src/lib.rs:278
 #, rust-format
 msgid "Copied {0}."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:341
+#: crates/tisvlay-gui/src/lib.rs:342
 msgid "diagnostic info"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:499
+#: crates/tisvlay-gui/src/lib.rs:510
 msgid "Couldn't change volume"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:517
+#: crates/tisvlay-gui/src/lib.rs:528
 msgid "Couldn't change backlight"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:538
+#: crates/tisvlay-gui/src/lib.rs:549
 msgid "Couldn't change mute"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:566
+#: crates/tisvlay-gui/src/lib.rs:577
 msgid "Couldn't turn screen on"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:568
+#: crates/tisvlay-gui/src/lib.rs:579
 msgid "Couldn't turn screen off"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:587
+#: crates/tisvlay-gui/src/lib.rs:598
 msgid "Couldn't switch input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:606
+#: crates/tisvlay-gui/src/lib.rs:617
 msgid "Power on failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:621
+#: crates/tisvlay-gui/src/lib.rs:632
 msgid "Power off failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:636
+#: crates/tisvlay-gui/src/lib.rs:647
 msgid "Couldn't update managed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:652
+#: crates/tisvlay-gui/src/lib.rs:663
 msgid "Couldn't change system profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:671
+#: crates/tisvlay-gui/src/lib.rs:682
 msgid "Couldn't change user profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:678
+#: crates/tisvlay-gui/src/lib.rs:689
 msgid "Session service unavailable"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:680
+#: crates/tisvlay-gui/src/lib.rs:691
 msgid "User-profile assignments require the per-user tisvlay-session service."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:699
+#: crates/tisvlay-gui/src/lib.rs:710
 msgid "Couldn't change primary input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:714
+#: crates/tisvlay-gui/src/lib.rs:725
 msgid "Couldn't remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:730
+#: crates/tisvlay-gui/src/lib.rs:741
 msgid "Reload config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:738
+#: crates/tisvlay-gui/src/lib.rs:749
 msgid "Reload session config failed"
 msgstr ""
 
