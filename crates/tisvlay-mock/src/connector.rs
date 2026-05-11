@@ -7,7 +7,8 @@
 //! empty network and no pre-seeded pairing outcomes.
 
 use async_trait::async_trait;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tisvlay_core::{
     Credentials, Error, PairingCommand, PairingError, PairingSession, PairingState, Result,
     Transport, TvConnection, TvConnector,
@@ -82,7 +83,7 @@ impl TvConnector for MockConnector {
         // Honour any test-injected connect delay (simulates slow/unreachable TV),
         // and pick up any test-seeded hardware identity keyed by address.
         let (delay, hardware_id) = {
-            let state = self.state.lock().expect("mock state lock poisoned");
+            let state = self.state.lock();
             (
                 state.connect_delay,
                 state.hardware_ids.get(&config.address).cloned(),
@@ -137,7 +138,7 @@ impl TvConnector for MockConnector {
 
         // Look up any pre-seeded outcome.
         let outcome = {
-            let mut state = self.state.lock().expect("mock state lock poisoned");
+            let mut state = self.state.lock();
             // If the handle already set an outcome for this TV, take it.
             // Otherwise, fall back to the config shorthand (if any).
             state

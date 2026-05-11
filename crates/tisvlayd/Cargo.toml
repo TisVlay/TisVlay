@@ -44,6 +44,9 @@ netlink-packet-core = "0.8"
 netlink-packet-route = "0.28"
 async-trait = { workspace = true }
 
+# Sync mutex without poisoning for the in-flight pairing session map.
+parking_lot = { workspace = true }
+
 # EDID parsing for the desktop probe (DRM-connector ↔ TV matching)
 edidkit = "0.1"
 

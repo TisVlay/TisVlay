@@ -19,6 +19,9 @@ tracing-mock = { workspace = true }
 tempfile = { workspace = true }
 libc = "0.2"
 
+# Sync mutex without poisoning for the cached dbus-daemon Child handle.
+parking_lot = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 futures-util = { workspace = true }

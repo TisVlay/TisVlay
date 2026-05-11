@@ -26,6 +26,26 @@ fn parse_invalid_vendor_config(msg: &str) -> Option<(String, String)> {
     Some((field.to_string(), reason.to_string()))
 }
 
+/// Walk an `anyhow::Error` chain looking for a `zbus::MethodError`
+/// whose D-Bus error name matches `target_name`. Returns the detail
+/// string (or empty) on match, `None` otherwise. Underpins the typed
+/// per-error helpers below — clients route on the stable D-Bus error
+/// name rather than the localized message body.
+fn find_dbus_method_error(err: &anyhow::Error, target_name: &str) -> Option<String> {
+    let mut cur: &dyn std::error::Error = err.as_ref();
+    loop {
+        if let Some(zbus::Error::MethodError(name, detail, _)) = cur.downcast_ref::<zbus::Error>()
+            && name.as_str() == target_name
+        {
+            return Some(detail.clone().unwrap_or_default());
+        }
+        match cur.source() {
+            Some(s) => cur = s,
+            None => return None,
+        }
+    }
+}
+
 /// Inspect an `anyhow::Error` chain for the daemon's typed
 /// `org.tisvlay.Error.ConfigInvalidVendorConfig` D-Bus error and,
 /// if found, extract the `(field, reason)` pair. Returns `None`
@@ -33,18 +53,16 @@ fn parse_invalid_vendor_config(msg: &str) -> Option<(String, String)> {
 /// can fall back to surface the message in the wizard's generic
 /// pair-failed slot.
 pub(crate) fn extract_invalid_vendor_config(err: &anyhow::Error) -> Option<(String, String)> {
-    let mut cur: &dyn std::error::Error = err.as_ref();
-    loop {
-        if let Some(zbus::Error::MethodError(name, detail, _)) = cur.downcast_ref::<zbus::Error>()
-            && name.as_str() == "org.tisvlay.Error.ConfigInvalidVendorConfig"
-        {
-            return parse_invalid_vendor_config(detail.as_deref().unwrap_or(""));
-        }
-        match cur.source() {
-            Some(s) => cur = s,
-            None => return None,
-        }
-    }
+    let detail = find_dbus_method_error(err, "org.tisvlay.Error.ConfigInvalidVendorConfig")?;
+    parse_invalid_vendor_config(&detail)
+}
+
+/// True when the error chain contains the daemon's typed
+/// `org.tisvlay.Error.NotPairing` D-Bus error — i.e., a Cancel call
+/// raced normal completion. Callers downgrade the log level instead
+/// of treating it as a real failure.
+pub(crate) fn is_not_pairing(err: &anyhow::Error) -> bool {
+    find_dbus_method_error(err, "org.tisvlay.Error.NotPairing").is_some()
 }
 
 /// Edit-form gate. Mirrors the wizard's [`compute_schema_valid`]

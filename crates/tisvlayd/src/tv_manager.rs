@@ -342,11 +342,13 @@ pub struct TvManager {
     /// daemon-side `PairingSession::cancel()` exists but had no D-Bus
     /// surface to invoke it until the re-pair plan landed.
     ///
-    /// `std::sync::Mutex` because critical sections are brief
+    /// `parking_lot::Mutex` because critical sections are brief
     /// (insert / lookup-and-clone / remove) and never span an
     /// `.await` point. Holding it across await would risk deadlock
-    /// against the per-TV `Mutex<ManagedTv>`.
-    pairing_sessions: std::sync::Mutex<
+    /// against the per-TV `Mutex<ManagedTv>`. parking_lot also has
+    /// no poison state, so a panic in some unrelated task can never
+    /// take down the daemon through this lock.
+    pairing_sessions: parking_lot::Mutex<
         std::collections::HashMap<String, mpsc::Sender<tisvlay_core::PairingCommand>>,
     >,
 }
@@ -508,7 +510,7 @@ impl TvManager {
             disk_write_lock: Mutex::new(()),
             state_change_tx,
             desktop_mappings: RwLock::new(std::collections::HashMap::new()),
-            pairing_sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
+            pairing_sessions: parking_lot::Mutex::new(std::collections::HashMap::new()),
         };
 
         (manager, state_change_rx)
@@ -1704,7 +1706,6 @@ impl TvManager {
         // regardless of outcome.
         self.pairing_sessions
             .lock()
-            .expect("pairing_sessions lock poisoned")
             .insert(tv_id.to_string(), session.command_sender());
 
         // Spawn a watcher that forwards PairingState changes as
@@ -1741,10 +1742,7 @@ impl TvManager {
         // Clean up the session-tracking entry now that the handshake
         // is done. Done regardless of success/failure/cancel so the
         // map doesn't leak entries for completed pairs.
-        self.pairing_sessions
-            .lock()
-            .expect("pairing_sessions lock poisoned")
-            .remove(tv_id);
+        self.pairing_sessions.lock().remove(tv_id);
 
         let credentials = result.map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
@@ -1876,12 +1874,7 @@ impl TvManager {
     /// Strict variant per the re-pair plan's DR7b — matches BlueZ's
     /// `Adapter.RemoveDevice` on-unknown-device convention.
     pub async fn cancel_pair(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        let sender = self
-            .pairing_sessions
-            .lock()
-            .expect("pairing_sessions lock poisoned")
-            .get(tv_id)
-            .cloned();
+        let sender = self.pairing_sessions.lock().get(tv_id).cloned();
         let Some(sender) = sender else {
             return Err(TvManagerError::NotPairing(tv_id.to_string()));
         };

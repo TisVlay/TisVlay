@@ -36,7 +36,8 @@ type ApplyFn<K, V> = Box<
 >;
 
 struct CoalescerInner<K, V> {
-    senders: std::sync::Mutex<std::collections::HashMap<K, tokio::sync::mpsc::UnboundedSender<V>>>,
+    senders:
+        parking_lot::Mutex<std::collections::HashMap<K, tokio::sync::mpsc::UnboundedSender<V>>>,
     merge: Box<dyn Fn(V, V) -> V + Send + Sync>,
     apply: ApplyFn<K, V>,
 }
@@ -70,7 +71,7 @@ where
     {
         Self {
             inner: std::sync::Arc::new(CoalescerInner {
-                senders: std::sync::Mutex::new(std::collections::HashMap::new()),
+                senders: parking_lot::Mutex::new(std::collections::HashMap::new()),
                 merge: Box::new(merge),
                 apply: Box::new(move |k, v| Box::pin(apply(k, v))),
             }),
@@ -80,11 +81,7 @@ where
     /// Push `value` for `key`. Spawns a worker for this key if none
     /// exists yet. Non-blocking: returns immediately after enqueueing.
     pub fn fire(&self, key: K, value: V) {
-        let mut map = self
-            .inner
-            .senders
-            .lock()
-            .expect("Coalescer senders mutex poisoned");
+        let mut map = self.inner.senders.lock();
         let tx = if let Some(tx) = map.get(&key) {
             tx.clone()
         } else {
@@ -110,10 +107,7 @@ where
 impl<K, V> std::fmt::Debug for Coalescer<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Coalescer")
-            .field(
-                "active_keys",
-                &self.inner.senders.lock().map(|m| m.len()).unwrap_or(0),
-            )
+            .field("active_keys", &self.inner.senders.lock().len())
             .finish()
     }
 }

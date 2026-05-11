@@ -11,13 +11,14 @@
 //!
 //! # Concurrency
 //!
-//! The state is guarded by a `std::sync::Mutex`, not a
+//! The state is guarded by a `parking_lot::Mutex`, not a
 //! `tokio::sync::Mutex`. Critical sections are brief (single-method
 //! scope) and must never span an `.await` point. Tests call handle
 //! methods synchronously between awaits, so there is no deadlock
-//! risk by construction. Using `std::sync::Mutex` avoids pulling
-//! tokio's async-aware mutex into hot code paths and matches how
-//! real backends keep their internal state.
+//! risk by construction. `parking_lot::Mutex` has no poisoning and
+//! a smaller / faster implementation than `std::sync::Mutex` for
+//! hot code paths, matching how real backends keep their internal
+//! state.
 //!
 //! # Invariants
 //!

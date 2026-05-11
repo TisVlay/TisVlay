@@ -6,9 +6,10 @@
 //! per-field errors back into the wizard's UI surface.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use gettextrs::gettext;
+use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::DaemonClient;
 use tracing::warn;
@@ -123,9 +124,7 @@ pub(crate) async fn run_wizard_discovery(
                 .collect();
             // Replace the Rust-owned source-of-truth before Slint sees
             // anything — the Slint view is derived from it.
-            if let Ok(mut e) = wizard_entries.lock() {
-                *e = entries.clone();
-            }
+            *wizard_entries.lock() = entries.clone();
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
                 publish_wizard_entries(&wizard, &entries);
@@ -208,19 +207,36 @@ pub(crate) async fn run_wizard_pair(
     let drainer_weak = app_weak.clone();
     let drainer = tokio::spawn(async move {
         let mut s = std::pin::pin!(stream);
+        // `PairingProgress` is a bus-wide signal; another client
+        // running a concurrent AddTv/RePair could interleave events
+        // for a different tv_id. Capture the first tv_id we see (the
+        // one for our pair) and ignore everything else, so we never
+        // route a foreign pair's phase/message — or worse, its tv_id —
+        // into our wizard's UI or our Cancel button.
+        let mut captured_tv_id: Option<String> = None;
         while let Some((tv_id, phase, message)) = s.next().await {
-            on_ui(&drainer_weak, move |app| {
-                let wizard = app.global::<PairingWizard>();
-                // Capture the tv_id from the first arriving signal
-                // so the wizard's cancel callback can invoke
-                // `Manager1.CancelPair`. Subsequent signals carry
-                // the same tv_id; re-writing is harmless.
-                if wizard.get_pair_tv_id().is_empty() {
-                    wizard.set_pair_tv_id(SharedString::from(tv_id.as_str()));
+            match captured_tv_id.as_deref() {
+                None => {
+                    captured_tv_id = Some(tv_id.clone());
+                    let tv_id_for_ui = tv_id;
+                    on_ui(&drainer_weak, move |app| {
+                        let wizard = app.global::<PairingWizard>();
+                        wizard.set_pair_tv_id(SharedString::from(tv_id_for_ui.as_str()));
+                        wizard.set_pair_phase(SharedString::from(phase));
+                        wizard.set_pair_message(SharedString::from(message));
+                    });
                 }
-                wizard.set_pair_phase(SharedString::from(phase));
-                wizard.set_pair_message(SharedString::from(message));
-            });
+                Some(captured) if captured == tv_id => {
+                    on_ui(&drainer_weak, move |app| {
+                        let wizard = app.global::<PairingWizard>();
+                        wizard.set_pair_phase(SharedString::from(phase));
+                        wizard.set_pair_message(SharedString::from(message));
+                    });
+                }
+                Some(_) => {
+                    // Foreign tv_id — silently drop.
+                }
+            }
         }
     });
 
@@ -281,9 +297,18 @@ pub(crate) async fn run_wizard_re_pair(
     };
 
     let drainer_weak = app_weak.clone();
+    let target_tv_id = tv_id.clone();
     let drainer = tokio::spawn(async move {
         let mut s = std::pin::pin!(stream);
-        while let Some((_tv_id, phase, message)) = s.next().await {
+        // Re-pair already knows the target tv_id (the wizard was
+        // prefilled with it before this drainer started). Filter the
+        // bus-wide `PairingProgress` stream so only events for our
+        // target update phase/message; otherwise a concurrent AddTv/
+        // RePair on the same bus would bleed into our UI.
+        while let Some((event_tv_id, phase, message)) = s.next().await {
+            if event_tv_id != target_tv_id {
+                continue;
+            }
             on_ui(&drainer_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
                 wizard.set_pair_phase(SharedString::from(phase));

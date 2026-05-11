@@ -5,7 +5,8 @@
 //! reconnection logic all exercise real code paths against it.
 
 use async_trait::async_trait;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tisvlay_core::{
     Capabilities, Error, HardwareId, InputInfo, PowerState, Result, TvConnection, TvState,
 };
@@ -95,7 +96,7 @@ fn push_state(
     f: impl FnOnce(&mut TvState),
 ) {
     let snapshot = {
-        let mut state = state.lock().expect("mock state lock poisoned");
+        let mut state = state.lock();
         f(&mut state);
         state.clone()
     };
@@ -115,7 +116,7 @@ impl TvConnection for MockConnection {
     }
 
     async fn get_state(&mut self) -> Result<TvState> {
-        Ok(self.state.lock().expect("mock state lock poisoned").clone())
+        Ok(self.state.lock().clone())
     }
 
     async fn close(&mut self) -> Result<()> {
@@ -146,7 +147,7 @@ impl TvConnection for MockConnection {
     }
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
-        let state = self.state.lock().expect("mock state lock poisoned");
+        let state = self.state.lock();
         if state.is_on {
             if state.is_screen_on {
                 Ok(PowerState::Active)
@@ -173,11 +174,7 @@ impl TvConnection for MockConnection {
     }
 
     async fn is_screen_on(&mut self) -> Result<bool> {
-        Ok(self
-            .state
-            .lock()
-            .expect("mock state lock poisoned")
-            .is_screen_on)
+        Ok(self.state.lock().is_screen_on)
     }
 
     // ------------------------------------------------------------------
@@ -191,12 +188,7 @@ impl TvConnection for MockConnection {
     }
 
     async fn get_volume(&mut self) -> Result<u8> {
-        Ok(self
-            .state
-            .lock()
-            .expect("mock state lock poisoned")
-            .volume
-            .unwrap_or(0))
+        Ok(self.state.lock().volume.unwrap_or(0))
     }
 
     async fn set_mute(&mut self, mute: bool) -> Result<()> {
@@ -205,12 +197,7 @@ impl TvConnection for MockConnection {
     }
 
     async fn is_muted(&mut self) -> Result<bool> {
-        Ok(self
-            .state
-            .lock()
-            .expect("mock state lock poisoned")
-            .muted
-            .unwrap_or(false))
+        Ok(self.state.lock().muted.unwrap_or(false))
     }
 
     // ------------------------------------------------------------------
@@ -220,7 +207,7 @@ impl TvConnection for MockConnection {
     async fn switch_input(&mut self, input_id: &str) -> Result<()> {
         // Validate against the known input list, matching LG's behavior.
         let exists = {
-            let state = self.state.lock().expect("mock state lock poisoned");
+            let state = self.state.lock();
             state.inputs.iter().any(|i| i.id == input_id)
         };
         if !exists {
@@ -235,21 +222,11 @@ impl TvConnection for MockConnection {
     }
 
     async fn get_current_input(&mut self) -> Result<Option<String>> {
-        Ok(self
-            .state
-            .lock()
-            .expect("mock state lock poisoned")
-            .current_input
-            .clone())
+        Ok(self.state.lock().current_input.clone())
     }
 
     async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> {
-        Ok(self
-            .state
-            .lock()
-            .expect("mock state lock poisoned")
-            .inputs
-            .clone())
+        Ok(self.state.lock().inputs.clone())
     }
 
     // ------------------------------------------------------------------
@@ -294,12 +271,7 @@ impl TvConnection for MockConnection {
     }
 
     async fn get_backlight(&mut self) -> Result<u8> {
-        Ok(self
-            .state
-            .lock()
-            .expect("mock state lock poisoned")
-            .backlight
-            .unwrap_or(0))
+        Ok(self.state.lock().backlight.unwrap_or(0))
     }
 
     // ------------------------------------------------------------------
@@ -310,7 +282,7 @@ impl TvConnection for MockConnection {
         let (tx, rx) = mpsc::unbounded_channel();
         // Send an initial snapshot so subscribers see the current state
         // immediately — LG does the same after SSAP subscribe.
-        let snapshot = self.state.lock().expect("mock state lock poisoned").clone();
+        let snapshot = self.state.lock().clone();
         let _ = tx.send(snapshot);
         self.subscription_tx = Some(tx);
         Ok(rx)

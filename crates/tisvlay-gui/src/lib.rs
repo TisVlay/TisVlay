@@ -42,7 +42,8 @@ use about::{
 };
 use accent::watch_accent_color;
 use edit_pane::{
-    compute_edit_valid, extract_invalid_vendor_config, mark_edit_field_invalid, publish_edit_error,
+    compute_edit_valid, extract_invalid_vendor_config, is_not_pairing, mark_edit_field_invalid,
+    publish_edit_error,
 };
 use icon_theme::load_themed_icon;
 use power_cycle::run_power_on_with_progress;
@@ -59,7 +60,7 @@ use schema_form::{
 };
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -415,7 +416,7 @@ pub fn run() -> Result<()> {
     // Source-of-truth for the wizard's discovery list. Slint sees
     // a derived `[WizardDiscoveredTv]` model; Rust reads
     // `vendor_data` and other map-typed columns from this.
-    let wizard_entries: WizardEntries = Arc::new(Mutex::new(Vec::new()));
+    let wizard_entries: WizardEntries = Arc::new(parking_lot::Mutex::new(Vec::new()));
 
     // Wire callbacks before the event loop starts so they're ready when
     // the user interacts with controls.
@@ -764,9 +765,7 @@ fn register_callbacks(
         // Clear the Rust-owned source-of-truth too — the Slint model
         // gets cleared by `reset_wizard`, but the sidecar lives
         // outside Slint and must be reset in lockstep.
-        if let Ok(mut e) = we.lock() {
-            e.clear();
-        }
+        we.lock().clear();
         tokio::spawn(async move {
             run_wizard_discovery(d, we, app_weak).await;
         });
@@ -862,8 +861,10 @@ fn register_callbacks(
                 // already completed in the small window between
                 // the user clicking Cancel and our D-Bus call —
                 // log at debug rather than warn for that case.
-                let msg = format!("{e:#}");
-                if msg.contains("not currently pairing") {
+                // Detected via the typed D-Bus error name
+                // (`org.tisvlay.Error.NotPairing`) so the check is
+                // stable across message wording / localization.
+                if is_not_pairing(&e) {
                     debug!(tv_id = %tv_id, "wizard cancel: pair already completed");
                 } else {
                     warn!(tv_id = %tv_id, error = %e, "wizard cancel: cancel_pair failed");
@@ -894,10 +895,7 @@ fn register_callbacks(
                 if i < 0 {
                     return;
                 }
-                let entry = we
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.get(i as usize).cloned());
+                let entry = we.lock().get(i as usize).cloned();
                 let Some(entry) = entry else {
                     return;
                 };
@@ -1336,13 +1334,12 @@ fn register_callbacks(
         // Append to both the Rust-owned source-of-truth and the
         // Slint model so the new row participates in selection /
         // step transitions like a discovered one.
-        let new_index = if let Ok(mut entries) = we.lock() {
+        let new_index = {
+            let mut entries = we.lock();
             entries.push(entry.clone());
             let idx = (entries.len() - 1) as i32;
             publish_wizard_entries(&wizard, &entries);
             idx
-        } else {
-            return;
         };
         wizard.set_selected_index(new_index);
         wizard.set_selected_vendor(option.id);

@@ -29,7 +29,7 @@ pub(crate) type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsSink = SplitSink<WsStream, Message>;
 
 /// Pending request waiters keyed by request ID.
-type PendingMap = Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Response>>>>;
+type PendingMap = Arc<parking_lot::Mutex<HashMap<String, oneshot::Sender<Response>>>>;
 
 /// WebSocket connection to an LG TV.
 ///
@@ -155,7 +155,7 @@ impl Connection {
     fn from_stream(stream: WsStream) -> Self {
         let (sink, reader) = stream.split();
         let writer = Arc::new(Mutex::new(sink));
-        let pending: PendingMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let pending: PendingMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let (subscription_tx, subscription_rx) = mpsc::unbounded_channel();
 
         let reader_handle = tokio::spawn(Self::reader_loop(
@@ -271,7 +271,7 @@ impl Connection {
                     let waiter = response
                         .id
                         .as_ref()
-                        .and_then(|id| pending.lock().unwrap().remove(id));
+                        .and_then(|id| pending.lock().remove(id));
 
                     if let Some(tx) = waiter {
                         // Matched a pending request — deliver directly.
@@ -300,7 +300,7 @@ impl Connection {
 
         // When the reader exits, fail all pending waiters so they don't hang.
         let waiters: Vec<oneshot::Sender<Response>> =
-            pending.lock().unwrap().drain().map(|(_, tx)| tx).collect();
+            pending.lock().drain().map(|(_, tx)| tx).collect();
         // Drop them (receivers get RecvError, which callers interpret as ConnectionClosed).
         drop(waiters);
     }
@@ -331,11 +331,11 @@ impl Connection {
         let (tx, rx) = oneshot::channel();
 
         // Register the waiter before sending to avoid race conditions.
-        self.pending.lock().unwrap().insert(request.id.clone(), tx);
+        self.pending.lock().insert(request.id.clone(), tx);
 
         if let Err(e) = self.send(request).await {
             // Remove the waiter on send failure.
-            self.pending.lock().unwrap().remove(&request.id);
+            self.pending.lock().remove(&request.id);
             return Err(e);
         }
 
@@ -347,7 +347,7 @@ impl Connection {
             }
             Err(_) => {
                 // Timeout — remove the stale waiter.
-                self.pending.lock().unwrap().remove(&request.id);
+                self.pending.lock().remove(&request.id);
                 Err(Error::RequestTimeout)
             }
         }
@@ -361,13 +361,13 @@ impl Connection {
     /// with the client key after the user accepts the TV prompt).
     pub(crate) async fn request_wait(&self, id: &str, timeout_dur: Duration) -> Result<Response> {
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id.to_string(), tx);
+        self.pending.lock().insert(id.to_string(), tx);
 
         match timeout(timeout_dur, rx).await {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(_)) => Err(Error::ConnectionClosed),
             Err(_) => {
-                self.pending.lock().unwrap().remove(id);
+                self.pending.lock().remove(id);
                 Err(Error::RequestTimeout)
             }
         }
