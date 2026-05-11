@@ -286,10 +286,15 @@ pub(crate) async fn run_wizard_pair(
 }
 
 /// Fallback pair flow when the PairingProgress subscription fails
-/// to set up. Just calls pair_tv and reflects the immediate return
-/// in the wizard — no phase updates are visible. The `pair_tv` RPC
-/// return is just "spawn succeeded", not a final outcome; without
-/// progress we can only report the sync-validation outcome.
+/// to set up. The `pair_tv` RPC is async-spawn — its `Ok(tv_id)`
+/// return only means "the daemon spawned the handshake", not
+/// "the TV is paired." Without a progress stream we have no
+/// reliable signal to determine the actual outcome, so we
+/// convert RPC-success into an explicit error rather than risk
+/// showing a `complete` phase that lets the user click Done over
+/// a pair that may still be in flight or fail. Sync-validation
+/// errors (unknown vendor, ConfigInvalidVendorConfig) still
+/// route through their normal field-mapping path.
 #[allow(clippy::too_many_arguments)]
 async fn run_pair_no_progress(
     daemon: Arc<DaemonClient>,
@@ -301,7 +306,15 @@ async fn run_pair_no_progress(
     config_json: String,
     managed: bool,
 ) {
-    let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
+    let result = match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
+        Err(e) => Err(e),
+        Ok(_) => {
+            let msg = gettext(
+                "Pairing started but progress signal is unavailable. Check the TV list and retry the wizard to confirm.",
+            );
+            Err(anyhow::anyhow!("{msg}"))
+        }
+    };
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, false);
 }
 

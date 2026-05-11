@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-05-11 00:46-0500\n"
+"POT-Creation-Date: 2026-05-11 02:08-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -16,11 +16,17 @@ msgstr ""
 "Content-Type: text/plain; charset=CHARSET\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: crates/tisvlay-gui/src/wizard.rs:426
+#: crates/tisvlay-gui/src/wizard.rs:312
+msgid ""
+"Pairing started but progress signal is unavailable. Check the TV list and "
+"retry the wizard to confirm."
+msgstr ""
+
+#: crates/tisvlay-gui/src/wizard.rs:447
 msgid "Client key stored."
 msgstr ""
 
-#: crates/tisvlay-gui/src/wizard.rs:428
+#: crates/tisvlay-gui/src/wizard.rs:449
 msgid "Paired successfully."
 msgstr ""
 
