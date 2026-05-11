@@ -281,13 +281,19 @@ impl ManagerService {
 
     /// Cancel an in-flight pairing handshake for the given TV.
     ///
-    /// Reaches into the daemon's `pairing_sessions` map (registered
-    /// at the start of `pair_tv` / `re_pair_tv`, removed on
-    /// completion) and sends `PairingCommand::Cancel` via the
-    /// session's command channel. The handshake task observes the
-    /// cancel command, resolves the session with
-    /// `PairingError::cancelled`, and the originating
-    /// `Manager1.AddTv` or `Tv1.RePair` call returns `Err`.
+    /// Reaches into the daemon's `pairing_sessions` map (populated
+    /// inside the spawned `run_pairing_handshake` of `pair_tv` /
+    /// `re_pair_tv`, removed on completion via the RAII
+    /// `PairingSessionGuard`) and sends `PairingCommand::Cancel`
+    /// via the session's command channel. The handshake task
+    /// observes the cancel command, resolves the session with
+    /// `PairingError::cancelled`, and the outer `run_pair_task` /
+    /// `run_re_pair_task` emits a terminal `failed`
+    /// `Manager1.PairingProgress` carrying the cancellation reason.
+    /// The originating `Manager1.AddTv` / `Tv1.RePair` RPC has
+    /// already returned `Ok` long before this — both methods are
+    /// async-spawn, so cancellation outcomes surface via the
+    /// `PairingProgress` channel, never as an RPC `Err`.
     ///
     /// Returns `Err(DaemonError::NotPairing(...))` if no in-flight
     /// session exists for the given tv_id (already completed, never
@@ -300,10 +306,15 @@ impl ManagerService {
     /// `PairingProgress` signals); the typed error helps debugging
     /// if that invariant is ever broken.
     ///
-    /// Works for both `AddTv` and `Tv1.RePair`: both register their
-    /// session's command sender in `pairing_sessions` before
-    /// spawning the handshake task, so cancel reaches the task via
-    /// that map regardless of which RPC initiated the pair.
+    /// Works for both `AddTv` and `Tv1.RePair`: each spawned task
+    /// inserts its session's command sender into `pairing_sessions`
+    /// when it reaches `run_pairing_handshake`, so cancel reaches
+    /// the task via that map regardless of which RPC initiated the
+    /// pair. The brief gap between the RPC returning and the insert
+    /// landing is documented at
+    /// [`crate::tv_manager::TvManager::cancel_pair`] ("Cancel during
+    /// the spawn gap"); a cancel arriving in that window returns
+    /// `NotPairing`.
     async fn cancel_pair(&self, tv_id: &str) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, "D-Bus: CancelPair");
         self.manager

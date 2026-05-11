@@ -367,7 +367,18 @@ fn make_progress_callback(
         let phase = phase.to_string();
         let message = message.to_string();
         let app_weak = app_weak.clone();
+        let wizard_gen = wizard_gen.clone();
         on_ui(&app_weak, move |app| {
+            // Re-check inside the closure too: the outer check
+            // happens *before* `on_ui` schedules onto the Slint
+            // event loop; if the user clicks Cancel (bumping
+            // `wizard_gen`) between scheduling and the loop
+            // running this closure, we'd otherwise stomp the new
+            // session with a stale phase/message. Matches the
+            // double-guard pattern elsewhere in this file.
+            if wizard_gen.load(Ordering::SeqCst) != captured_gen {
+                return;
+            }
             let wizard = app.global::<PairingWizard>();
             wizard.set_pair_phase(SharedString::from(phase));
             wizard.set_pair_message(SharedString::from(message));

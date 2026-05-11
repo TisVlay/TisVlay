@@ -1822,11 +1822,14 @@ impl TvManager {
         // Register per-TV D-Bus interfaces. Failure here means the
         // TV is in the managed set but invisible via
         // `ObjectManager.GetManagedObjects` — that's a hard failure
-        // from the client's perspective, so surface it.
+        // from the client's perspective. Roll the insert and the
+        // disk write back so the terminal `failed` PairingProgress
+        // truly means "no TV was added" (no orphan invisible TV
+        // surviving across daemon restart).
         let state = self.get_current_state(tv_id).await;
         let path = tv_path(tv_id);
         let _ = unregister_tv_interfaces(connection, &path).await;
-        register_tv_interfaces(
+        if let Err(register_err) = register_tv_interfaces(
             connection,
             &path,
             tv_id.to_string(),
@@ -1834,9 +1837,27 @@ impl TvManager {
             state.as_ref(),
         )
         .await
-        .map_err(|e| {
-            TvManagerError::ConfigError(format!("Failed to register D-Bus interfaces: {}", e))
-        })?;
+        {
+            warn!(
+                tv_id = %tv_id,
+                error = %register_err,
+                "pair_tv: register_tv_interfaces failed; rolling back in-memory + on-disk state",
+            );
+            {
+                let mut tvs = self.tvs.write().await;
+                tvs.shift_remove(tv_id);
+            }
+            if let Err(disk_err) = self.delete_tv_config(tv_id).await {
+                warn!(
+                    tv_id = %tv_id,
+                    error = %disk_err,
+                    "pair_tv rollback: failed to delete config from disk; disk state may persist until daemon restart",
+                );
+            }
+            return Err(TvManagerError::ConfigError(format!(
+                "Failed to register D-Bus interfaces (rolled back): {register_err}"
+            )));
+        }
 
         Ok(())
     }

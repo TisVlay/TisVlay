@@ -12,7 +12,7 @@
 
 #![cfg(feature = "mock")]
 
-use tisvlay_core::DaemonClient;
+use tisvlay_core::{DaemonClient, PairTerminal};
 use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 
@@ -50,10 +50,31 @@ async fn re_pair_preserves_top_level_config() {
     // top-level fields are intact.
     handle.simulate_user_accept("mock://repair_test");
 
+    // Subscribe to PairingProgress BEFORE issuing re_pair so we
+    // capture the terminal phase emitted by the spawned task. With
+    // the async-spawn shape, `re_pair` returns immediately after
+    // sync validation; the spawned task applies the config update,
+    // persists, reconnects, then emits PairingProgress(complete).
+    // Reading after_json without draining first would race the
+    // spawned task and miss any regression that mutates top-level
+    // fields during the handshake-window.
+    let stream = client
+        .pairing_progress_stream()
+        .await
+        .expect("pairing progress stream");
+
     client
         .re_pair(&tv_uuid)
         .await
-        .expect("re_pair should succeed");
+        .expect("re_pair RPC should succeed");
+
+    let terminal = DaemonClient::drain_pair_to_terminal(stream, &tv_uuid, |_, _| {})
+        .await
+        .expect("drain should reach terminal");
+    assert!(
+        matches!(terminal, PairTerminal::Complete { .. }),
+        "expected Complete terminal, got {terminal:?}",
+    );
 
     let after_json = client.get_tv_config(&tv_uuid).await.expect("get_config");
     let after: serde_json::Value = serde_json::from_str(&after_json).expect("parse after json");
