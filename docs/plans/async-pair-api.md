@@ -34,9 +34,58 @@ Validation errors still surface as RPC errors (`UnknownVendor`, `ConfigInvalidVe
 
 Same shape as AddTv. The synchronous part claims the per-TV `pairing_in_flight` slot, validates state, then spawns the handshake. Outcome via PairingProgress filtered on the TV's existing `tv_id` (which the client already knows since it's the per-TV path).
 
+**Lifecycle breakdown** — what's caller-visible (RPC return) vs. signal-driven:
+
+```
+Sync part (caller awaits, can return Err):
+  1. get_tv(tv_id)                       → Err(TvNotFound) on miss
+  2. lock tv, check pairing_in_flight    → Err(AlreadyPairing) if set
+  3. set pairing_in_flight = true,
+     capture was_connected,
+     close existing connection,
+     snapshot (vendor, vendor_config)
+  4. release lock
+  5. if was_connected:
+       emit_connection_changed(tv_id, false)  → client sees Connected=false during handshake
+  6. spawn run_re_pair_task(...)
+  7. return Ok(())                       → RPC resolves; client subscribes/awaits signals
+
+Async part (run_re_pair_task, signal-driven):
+  run_pairing_handshake emits PairingProgress phases throughout the handshake.
+
+  ├── Ok(new_inner_config):
+  │     lock tv → clear pairing_in_flight, insert new_inner_config
+  │     save_tv_config              (warn on fail; in-memory state still good)
+  │     emit TvVendorConfigChanged  (refreshes Tv1.VendorConfig cache)
+  │     reconnect(tv_id):
+  │       ├── Ok:  reconnect emits ConnectionChanged{true} itself  → Connected flips to true
+  │       └── Err: log warn; Connected stays false; property reflects truth
+  │
+  └── Err(handshake_err):                  ← PairingProgress::failed already emitted internally
+        lock tv → clear pairing_in_flight
+        if was_connected:
+          best-effort reconnect with OLD vendor_config:
+            ├── Ok:  reconnect emits ConnectionChanged{true} → session restored
+            └── Err: log warn; Connected stays false
+        (No further PairingProgress; already terminal at failed.)
+```
+
+**Observable terminal outcomes (client perspective):**
+
+| Path                              | RPC return | PairingProgress terminal | Connected property |
+|-----------------------------------|------------|--------------------------|--------------------|
+| Success                           | `Ok(())`   | `complete`               | flips false → true (via reconnect) |
+| Handshake failed, old credentials work | `Ok(())` | `failed` w/ reason | false → true (best-effort reconnect) |
+| Handshake failed, old credentials dead | `Ok(())` | `failed` w/ reason | false → stays false |
+| Sync validation error             | `Err(...)` | (no signal)              | unchanged |
+
+The best-effort reconnect outcome is **not** surfaced through PairingProgress — that's about TV reachability, conceptually orthogonal to whether re-pair succeeded. Clients that care about reachability watch `Tv1.Connected`, which already reflects the truth.
+
 ### DR3: Eliminates the wizard's tv_id correlation heuristic
 
 Both AddTv and RePair flows in the GUI now know their `tv_id` *before* any signal arrives — AddTv learns it from the RPC return, RePair learns it from the caller-provided argument. The wizard's signal drainer filters `PairingProgress` strictly on `tv_id == known_tv_id` and ignores everything else. No more "first signal wins" heuristic; no more captured-tv_id race window. Concurrent pairings from multiple clients are supported by construction.
+
+The drain logic itself lives in the shared `DaemonClient::drain_pair_to_terminal` helper (DR14) — wizard, CLI, and tests all use the same implementation.
 
 ### DR4: Post-handshake work moves into the spawned task
 
@@ -99,6 +148,35 @@ Add a check at the top of `update_tv_config`: if `tv.pairing_in_flight`, return 
 
 Add a `PairingSessionGuard` struct held in `run_pairing_handshake`. Its `Drop` impl removes the entry from `pairing_sessions`. Replaces the manual cleanup; survives every return path (Ok, Err, future-dropped, panic-unwind). Also: `cancel_pair` removes the entry on `sender.send(Cancel).await.is_err()` so a permanently-dead sender doesn't leak. Resolves Copilot #4.
 
+### DR14: Shared `drain_pair_to_terminal` in `tisvlay-core::dbus_client`
+
+Both the CLI (`tisvlay pair`, soon `tisvlay re-pair`), the GUI wizard, and integration tests all need the same "drain a pre-subscribed `pairing_progress_stream` filtering on tv_id, return on first terminal phase" loop. Extracting it into `tisvlay-core::dbus_client` collapses that duplication and gives the new clients (CLI re-pair, future automations) a one-call surface.
+
+```rust
+pub enum PairTerminal {
+    Complete { tv_id: String, message: String },
+    Failed   { tv_id: String, message: String },
+}
+
+impl DaemonClient {
+    /// Drain a pre-subscribed `pairing_progress_stream` filtering on
+    /// `target_tv_id`, calling `on_progress` for each non-terminal
+    /// event, returning on the first terminal phase. Stream is
+    /// consumed; caller subscribes before the originating
+    /// `pair_tv`/`re_pair` call to avoid missing the burst.
+    pub async fn drain_pair_to_terminal<S>(
+        stream: S,
+        target_tv_id: &str,
+        mut on_progress: impl FnMut(&str /*phase*/, &str /*message*/),
+    ) -> Result<PairTerminal>
+    where S: Stream<Item = (String, String, String)> + Unpin;
+}
+```
+
+CLI passes `|phase, msg| eprintln!("  {phase}: {msg}")`. GUI wizard passes an `on_ui(...)`-into-Slint closure plus a captured generation-counter check (DR11). Tests pass `|_, _| {}`. The helper itself doesn't know about Slint, tracing, or stdout — it's a generic filter+match-terminal loop.
+
+Filter logic is centralized: `event_tv_id != target_tv_id` → ignore. Terminal phases (`complete`, `failed`) → return.
+
 ## Source-of-truth audit
 
 | Site | Today | After this PR |
@@ -119,7 +197,17 @@ Add a `PairingSessionGuard` struct held in `run_pairing_handshake`. Its `Drop` i
 | `crates/tisvlayd/tests/cancel_pair_aborts_in_flight.rs` | Starts an in-flight pair, cancels, asserts on result | Subscribes to PairingProgress, kicks off pair (returns tv_id), waits for `awaiting_tv`, calls cancel, drains to terminal `failed`, asserts on cancellation reason |
 | `crates/tisvlayd/tests/re_pair_preserves_top_level_config.rs` | Calls `manager.re_pair_tv(tv_id).await?` blocking, asserts config | Subscribes to PairingProgress, kicks off re-pair, drains to terminal `complete`, asserts config |
 | `crates/tisvlayd/tests/re_pair_blocks_when_already_pairing.rs` | Starts first re-pair, attempts second, asserts AlreadyPairing | First re-pair returns Ok immediately (queued); second returns Err synchronously (`AlreadyPairing`); drain the in-flight pair's terminal phase to clean up |
-| `crates/tisvlay-core/src/dbus_client.rs::pairing_progress_stream` | Returns `Stream<Item = (tv_id, phase, message)>` | No change. Filter logic moves to the wizard call site. |
+| `crates/tisvlay-core/src/dbus_client.rs::pairing_progress_stream` | Returns `Stream<Item = (tv_id, phase, message)>` | No change. The filter-and-match-terminal loop on top of this stream moves into the new shared helper. |
+| `crates/tisvlay-core/src/dbus_client.rs` | (no shared drain helper; wizard had inline drainer) | Add `PairTerminal` enum + `DaemonClient::drain_pair_to_terminal(stream, target_tv_id, on_progress)` per DR14. |
+| `crates/tisvlay-cli/src/main.rs::Pair` handler | Calls `client.pair_tv(...).await?` blocking; prints success line | Subscribes to PairingProgress first, calls `pair_tv` to get tv_id, calls `drain_pair_to_terminal(stream, tv_id, |phase, msg| eprintln!("  {phase}: {msg}"))`, maps `PairTerminal::Complete` → success print, `Failed` → `anyhow::bail!`. |
+| `crates/tisvlay-cli/src/main.rs` | (no `re-pair` subcommand) | Add `tisvlay re-pair <tv_id>` subcommand. Reuses the same drain helper. |
+| `crates/tisvlay-harness/src/pairing.rs` | (does not exist) | New submodule. `wait_for_pair_phase(stream, tv_id, phase)` returns the matching event + the remaining stream so tests that need to trigger mid-flight cancellation can pause at e.g. `awaiting_tv` and resume the drain after. |
+
+## Phase 0 — shared `drain_pair_to_terminal` helper
+
+| # | Step | Status | Notes |
+|---|---|---|---|
+| 0 | Add `PairTerminal` enum + `DaemonClient::drain_pair_to_terminal(stream, target_tv_id, on_progress) -> Result<PairTerminal>` to `crates/tisvlay-core/src/dbus_client.rs` per DR14. Pure consumer of the existing `pairing_progress_stream`; no daemon-side changes yet. | todo | Lands before Phase 1 so Phases 2 (GUI), 3 (CLI), 4 (tests) can all call it. Unit-testable in isolation with a hand-built stream. |
 
 ## Phase 1 — daemon refactor (async pair_tv + re_pair_tv)
 
@@ -140,30 +228,37 @@ Add a `PairingSessionGuard` struct held in `run_pairing_handshake`. Its `Drop` i
 | # | Step | Status | Notes |
 |---|---|---|---|
 | 10 | Add `wizard_gen: Arc<AtomicU64>` to the wizard module. Construct at `register_callbacks` time; pass into `reset_wizard` and into `run_wizard_pair` / `run_wizard_re_pair`. | todo | Each spawned task captures `.load(Ordering::SeqCst)` at start; `reset_wizard` does `.fetch_add(1, ...)`. |
-| 11 | Refactor `run_wizard_pair`: subscribe to PairingProgress, call `daemon.pair_tv(...)` to get tv_id, set `wizard.pair_tv_id = tv_id`, drain stream filtered on `event_tv_id == tv_id`, return outcome based on the first terminal phase (`complete` → Ok, `failed` → Err with message). Each `on_ui` / `publish_pair_outcome` checks `gen` against captured value first. | todo | The drainer logic becomes a synchronous loop inside the task (no separate tokio::spawn for the drainer). |
-| 12 | Refactor `run_wizard_re_pair`: same shape as run_wizard_pair but tv_id is the function argument; call `daemon.re_pair(tv_id)`, drain stream filtered on tv_id, return outcome from terminal phase. | todo | Mirror structure. |
+| 11 | Refactor `run_wizard_pair`: subscribe to PairingProgress, call `daemon.pair_tv(...)` to get tv_id, set `wizard.pair_tv_id = tv_id`, call `DaemonClient::drain_pair_to_terminal(stream, tv_id, on_progress)` with an `on_progress` closure that does `on_ui(...)`-into-Slint with a captured-gen check. Map the returned `PairTerminal` to the wizard's existing outcome shape. | todo | DR14's helper does the filter + match-terminal loop. Drops ~30 lines of inline drainer code from wizard.rs. |
+| 12 | Refactor `run_wizard_re_pair`: same shape as run_wizard_pair but tv_id is the function argument; same `drain_pair_to_terminal` call site, same closure pattern. | todo | Mirror structure; no duplication of the drain logic. |
 | 13 | Update `publish_pair_outcome`: check generation; no-op if drifted. | todo | Already publishes via `on_ui`; the check goes there. |
 | 14 | Smoke test: open wizard, click Cancel mid-pair, immediately re-open wizard for a new pair, verify the old task's late updates don't bleed into the new session. (Mock backend with `pairing = "manual"` makes this reproducible.) | todo | This is the canary for the gen counter. |
 
-## Phase 3 — test refactor (drain to terminal pattern)
+## Phase 3 — CLI catch-up
 
 | # | Step | Status | Notes |
 |---|---|---|---|
-| 15 | Add a `wait_for_pair_terminal` test helper in `crates/tisvlay-harness/src/`: takes a `DaemonClient`, subscribes to `pairing_progress_stream`, filters on tv_id, returns the first terminal phase + message. | todo | Reusable across the four affected tests. |
-| 16 | Update `pair_round_trip.rs`: subscribe stream first, call `pair_tv`, drain to terminal, assert. | todo | |
-| 17 | Update `cancel_pair_aborts_in_flight.rs`: subscribe stream first, call `pair_tv`, wait for `awaiting_tv` phase, call `cancel_pair`, drain to `failed`, assert on cancellation. | todo | Mock's `pairing = "manual"` mode gives a deterministic "awaiting_tv" state. |
-| 18 | Update `re_pair_preserves_top_level_config.rs`: subscribe stream first, call `re_pair_tv`, drain to `complete`, assert config preservation. | todo | |
-| 19 | Update `re_pair_blocks_when_already_pairing.rs`: kick off first re-pair (returns Ok), call second re-pair (returns Err `AlreadyPairing` synchronously), drain first's terminal phase to clean up. | todo | The "already pairing" check is now synchronous-only, which is cleaner. |
-| 20 | Add a new test `update_config_blocked_during_pairing.rs` (or extend existing): verify `Tv1.UpdateConfig` returns an error while `pairing_in_flight` is true. | todo | Covers DR12. |
+| 15 | Refactor `tisvlay pair` handler in `crates/tisvlay-cli/src/main.rs`: subscribe to PairingProgress first, call `client.pair_tv(...)` to get tv_id, call `DaemonClient::drain_pair_to_terminal(stream, &tv_id, |phase, msg| eprintln!("  {phase}: {msg}"))`, map `PairTerminal::Complete` to the existing success line + `Failed` to `anyhow::bail!`. | todo | Same shape as the wizard but stdout/stderr instead of Slint. |
+| 16 | Add `tisvlay re-pair <tv_id>` subcommand: gated `Commands::RePair { tv_id }` enum variant, handler that calls `client.re_pair(tv_id)` then drains progress via the shared helper. | todo | ~15 lines. Mirrors the structure of `Pair`. Closes the CLI gap with the GUI. |
 
-## Phase 4 — docs + i18n + final gate
+## Phase 4 — test refactor (drain to terminal pattern)
 
 | # | Step | Status | Notes |
 |---|---|---|---|
-| 21 | Update `docs/design.md` — note that `Manager1.AddTv` and `Tv1.RePair` are async (return immediately, outcome via signals). Update the signal section for `PairingProgress` to call out that clients should drain to a terminal phase. | todo | |
-| 22 | Update `.claude/CLAUDE.md` "Known Quirks" with: AddTv/RePair return-immediately model + drain-to-terminal pattern for clients. | todo | |
-| 23 | `just i18n-extract` — refresh gettext catalog. (Wizard messages may have changed.) | todo | Per CLAUDE.md i18n workflow. |
-| 24 | `prek run -a` + `just check` end-to-end gate. | todo | Per `feedback_lint_and_test_before_commit.md`. |
+| 17 | Add a `tisvlay-harness::pairing` submodule with `wait_for_pair_phase(stream, tv_id, phase) -> (event, remaining_stream)`. Used by `cancel_pair_aborts_in_flight` to pause at `awaiting_tv` before triggering cancel, then resume draining via the shared `drain_pair_to_terminal` helper. | todo | Test-specific shape; production code uses the shared helper directly without a "wait-for-this-intermediate" step. |
+| 18 | Update `pair_round_trip.rs`: subscribe stream first, call `pair_tv`, call `DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_,_| {})`, assert on `PairTerminal::Complete`. | todo | |
+| 19 | Update `cancel_pair_aborts_in_flight.rs`: subscribe stream first, call `pair_tv`, call `wait_for_pair_phase(..., "awaiting_tv")`, call `cancel_pair`, drain remainder to `Failed`, assert on cancellation reason. | todo | Mock's `pairing = "manual"` mode gives a deterministic "awaiting_tv" state. |
+| 20 | Update `re_pair_preserves_top_level_config.rs`: subscribe stream first, call `re_pair_tv`, drain to `Complete`, assert config preservation. | todo | |
+| 21 | Update `re_pair_blocks_when_already_pairing.rs`: kick off first re-pair (returns Ok), call second re-pair (returns Err `AlreadyPairing` synchronously), drain first's terminal phase to clean up. | todo | The "already pairing" check is now synchronous-only, which is cleaner. |
+| 22 | Add a new test `update_config_blocked_during_pairing.rs` (or extend existing): verify `Tv1.UpdateConfig` returns an error while `pairing_in_flight` is true. | todo | Covers DR12. |
+
+## Phase 5 — docs + i18n + final gate
+
+| # | Step | Status | Notes |
+|---|---|---|---|
+| 23 | Update `docs/design.md` — note that `Manager1.AddTv` and `Tv1.RePair` are async (return immediately, outcome via signals). Update the signal section for `PairingProgress` to call out that clients should drain to a terminal phase. Mention the shared `drain_pair_to_terminal` helper for new client implementations. | todo | |
+| 24 | Update `.claude/CLAUDE.md` "Known Quirks" with: AddTv/RePair return-immediately model + drain-to-terminal pattern for clients + `tisvlay re-pair` CLI subcommand. | todo | |
+| 25 | `just i18n-extract` — refresh gettext catalog. (Wizard messages may have changed.) | todo | Per CLAUDE.md i18n workflow. |
+| 26 | `prek run -a` + `just check` end-to-end gate. | todo | Per `feedback_lint_and_test_before_commit.md`. |
 
 ## Risks / unknowns
 
