@@ -1792,16 +1792,30 @@ impl TvManager {
         })?;
 
         // Install the TV in the managed set and start state
-        // subscription.
-        {
+        // subscription. Build the `ManagedTv` and subscribe to
+        // state pushes **before** taking the global `tvs.write()`
+        // lock — `subscribe_state().await` can take hundreds of ms
+        // against a real backend (LG: WebSocket round-trip), and
+        // holding the write lock that long would gate every other
+        // TV-map reader/writer.
+        let system_profile = {
             let system = self.system_section.read().await;
-            let system_profile = system.resolve_profile(&tv_config.profile.system);
+            system.resolve_profile(&tv_config.profile.system)
+        };
+        let mut managed_tv = ManagedTv::new(tv_config.clone(), system_profile);
+        managed_tv.connection = Some(conn);
+        if let Some(conn) = managed_tv.connection.as_mut() {
+            // Spawns a forwarder task that reads from `self.tvs`
+            // for `last_known_input` updates. State pushes that
+            // arrive before the insert below land in a sub-ms race
+            // window; the forwarder's existing `if let Some(...)`
+            // guard handles the miss gracefully (skips the
+            // last_known_input update, continues forwarding the
+            // SubscriptionUpdate event).
+            self.try_subscribe_state(tv_id, conn.as_mut()).await;
+        }
+        {
             let mut tvs = self.tvs.write().await;
-            let mut managed_tv = ManagedTv::new(tv_config.clone(), system_profile);
-            managed_tv.connection = Some(conn);
-            if let Some(conn) = managed_tv.connection.as_mut() {
-                self.try_subscribe_state(tv_id, conn.as_mut()).await;
-            }
             tvs.insert(
                 tv_id.to_string(),
                 (tv_config.managed, Arc::new(Mutex::new(managed_tv))),

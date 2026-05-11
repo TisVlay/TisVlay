@@ -343,7 +343,20 @@ pub(crate) async fn run_wizard_re_pair(
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "PairingProgress subscribe failed; falling back to phase-less re-pair");
-            let result = daemon.re_pair(&tv_id).await.map(|()| tv_id.clone());
+            // Same reasoning as `run_pair_no_progress`: re_pair's
+            // `Ok(())` only means "spawn succeeded" under the
+            // async-spawn contract. Without a progress stream we
+            // can't know the actual outcome, so we surface an
+            // explicit failure instead of an optimistic `complete`.
+            let result = match daemon.re_pair(&tv_id).await {
+                Err(e) => Err(e),
+                Ok(()) => {
+                    let msg = gettext(
+                        "Pairing started but progress signal is unavailable. Check the TV list and retry the wizard to confirm.",
+                    );
+                    Err(anyhow::anyhow!("{msg}"))
+                }
+            };
             publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, false);
             return;
         }
