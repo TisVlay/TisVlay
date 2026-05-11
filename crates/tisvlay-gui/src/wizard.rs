@@ -7,11 +7,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gettextrs::gettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::DaemonClient;
+use tisvlay_core::{DaemonClient, PairTerminal};
 use tracing::warn;
 
 use crate::edit_pane::extract_invalid_vendor_config;
@@ -54,6 +55,18 @@ impl WizardEntry {
 /// the discovery list. Reset to empty whenever the wizard reopens.
 pub(crate) type WizardEntries = Arc<Mutex<Vec<WizardEntry>>>;
 
+/// Generation counter for in-flight pair / re-pair tasks.
+///
+/// Bumped by [`reset_wizard`] (which fires on Cancel and on every
+/// fresh wizard open). Each spawned pair-flow task captures the
+/// value at start; subsequent `on_ui` callbacks and the final
+/// `publish_pair_outcome` no-op if the live counter no longer
+/// matches the captured one. This stops a late-arriving
+/// `PairingProgress` event (or terminal outcome) from bleeding into
+/// a freshly-opened wizard session — the classic "Cancel → reopen
+/// quickly" race.
+pub(crate) type WizardGen = Arc<AtomicU64>;
+
 /// Push `entries` into the wizard's `discovered` Slint model.
 /// Caller has already locked + mutated `entries`; this just rebuilds
 /// the visible view from the updated source-of-truth.
@@ -62,8 +75,13 @@ pub(crate) fn publish_wizard_entries(wizard: &PairingWizard<'_>, entries: &[Wiza
     wizard.set_discovered(ModelRc::new(VecModel::from(rows)));
 }
 
-/// Clear all wizard state and close the wizard.
-pub(crate) fn reset_wizard(app: &AppWindow) {
+/// Clear all wizard state and close the wizard. Also bumps the
+/// generation counter so any in-flight pair / re-pair task's
+/// callbacks become no-ops for this session.
+pub(crate) fn reset_wizard(app: &AppWindow, wizard_gen: &WizardGen) {
+    // Bump first so any callback that fires *during* the reset
+    // sequence below also sees the drift.
+    wizard_gen.fetch_add(1, Ordering::SeqCst);
     let wizard = app.global::<PairingWizard>();
     wizard.set_active(false);
     wizard.set_step(1);
@@ -179,86 +197,113 @@ pub(crate) async fn fetch_and_publish_schema(
     }
 }
 
-/// Run a `pair_tv` call with live progress updates streamed into the
-/// wizard's `wizard_pair_phase` / `wizard_pair_message` fields.
-/// Mirrors `run_power_on_with_progress` but for the pairing flow.
+/// Run a `Manager1.AddTv` flow against the daemon's async-spawn
+/// contract:
+///
+/// - `pair_tv` returns the reserved tv_id immediately (sync
+///   validation only). Errors here route via the typed-error
+///   field-mapper (`extract_invalid_vendor_config`) so per-field
+///   issues bounce back to step 2.
+/// - The handshake outcome surfaces via `PairingProgress` signals.
+///   We drain the stream filtered on our tv_id to a terminal
+///   `complete`/`failed` via the shared
+///   `DaemonClient::drain_pair_to_terminal` helper.
+/// - Every `on_ui` callback (intermediate phase updates and the
+///   final outcome publish) checks the captured generation against
+///   the live `wizard_gen`. A user who clicks Cancel + reopens the
+///   wizard before this task finishes won't get stale phase
+///   messages bleeding into the new session.
 pub(crate) async fn run_wizard_pair(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
+    wizard_gen: WizardGen,
     name: String,
     vendor: String,
     config_json: String,
     managed: bool,
 ) {
-    use futures_util::StreamExt;
+    // Capture the generation at task start. Every callback below
+    // re-reads the live gen and skips if it has drifted.
+    let captured_gen = wizard_gen.load(Ordering::SeqCst);
 
-    // Subscribe before issuing the call so we don't miss the first
-    // phase (typically `awaiting_tv` on LG).
+    // Subscribe BEFORE the AddTv call so we don't miss any phase
+    // events (the daemon may emit `awaiting_tv` within microseconds
+    // of `pair_tv` returning).
     let stream = match daemon.pairing_progress_stream().await {
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "PairingProgress subscribe failed; falling back to phase-less pair");
-            // Fall through and just call pair_tv without progress updates.
-            run_pair_no_progress(daemon, app_weak, name, vendor, config_json, managed).await;
+            run_pair_no_progress(
+                daemon,
+                app_weak,
+                wizard_gen,
+                captured_gen,
+                name,
+                vendor,
+                config_json,
+                managed,
+            )
+            .await;
             return;
         }
     };
 
-    let drainer_weak = app_weak.clone();
-    let drainer = tokio::spawn(async move {
-        let mut s = std::pin::pin!(stream);
-        // `PairingProgress` is a bus-wide signal; another client
-        // running a concurrent AddTv/RePair could interleave events
-        // for a different tv_id. Capture the first tv_id we see (the
-        // one for our pair) and ignore everything else, so we never
-        // route a foreign pair's phase/message — or worse, its tv_id —
-        // into our wizard's UI or our Cancel button.
-        let mut captured_tv_id: Option<String> = None;
-        while let Some((tv_id, phase, message)) = s.next().await {
-            match captured_tv_id.as_deref() {
-                None => {
-                    captured_tv_id = Some(tv_id.clone());
-                    let tv_id_for_ui = tv_id;
-                    on_ui(&drainer_weak, move |app| {
-                        let wizard = app.global::<PairingWizard>();
-                        wizard.set_pair_tv_id(SharedString::from(tv_id_for_ui.as_str()));
-                        wizard.set_pair_phase(SharedString::from(phase));
-                        wizard.set_pair_message(SharedString::from(message));
-                    });
-                }
-                Some(captured) if captured == tv_id => {
-                    on_ui(&drainer_weak, move |app| {
-                        let wizard = app.global::<PairingWizard>();
-                        wizard.set_pair_phase(SharedString::from(phase));
-                        wizard.set_pair_message(SharedString::from(message));
-                    });
-                }
-                Some(_) => {
-                    // Foreign tv_id — silently drop.
-                }
-            }
+    // `pair_tv` is sync-validation-only now (Approach C). Errors
+    // here are unknown-vendor / ConfigInvalidVendorConfig / etc. —
+    // route via the field-mapper so per-field problems bounce back
+    // to step 2.
+    let tv_id = match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
+        Ok(id) => id,
+        Err(e) => {
+            publish_pair_outcome(app_weak, &wizard_gen, captured_gen, Err(e), true);
+            return;
         }
-    });
+    };
 
-    let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
-    drainer.abort();
+    // Set tv_id on the wizard so the Cancel button can route
+    // `Manager1.CancelPair(tv_id)`. The same pair_tv_id is consumed
+    // by the cancel handler in `lib.rs::on_cancel`.
+    {
+        let tv_id_for_ui = tv_id.clone();
+        let app_weak = app_weak.clone();
+        let wizard_gen = wizard_gen.clone();
+        on_ui(&app_weak, move |app| {
+            if wizard_gen.load(Ordering::SeqCst) != captured_gen {
+                return;
+            }
+            app.global::<PairingWizard>()
+                .set_pair_tv_id(SharedString::from(tv_id_for_ui.as_str()));
+        });
+    }
 
-    publish_pair_outcome(app_weak, result, true);
+    // Drain to terminal, dispatching non-terminal phases into the
+    // wizard's phase/message fields with the gen-guarded callback.
+    let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, on_progress).await;
+
+    let result = terminal_to_result(outcome, tv_id);
+    publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
 }
 
 /// Fallback pair flow when the PairingProgress subscription fails to
-/// set up. Just calls pair_tv synchronously and reflects the final
-/// success/failure outcome in the wizard.
+/// set up. Just calls pair_tv and reflects the immediate return in
+/// the wizard — no phase updates are visible. With Approach C the
+/// `pair_tv` RPC return is just "spawn succeeded", not a final
+/// outcome; without progress we can only report the sync-validation
+/// outcome.
+#[allow(clippy::too_many_arguments)]
 async fn run_pair_no_progress(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
+    wizard_gen: WizardGen,
+    captured_gen: u64,
     name: String,
     vendor: String,
     config_json: String,
     managed: bool,
 ) {
     let result = daemon.pair_tv(&name, &vendor, &config_json, managed).await;
-    publish_pair_outcome(app_weak, result, false);
+    publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, false);
 }
 
 /// Run a `Tv1.RePair(tv_id)` call with live progress updates streamed
@@ -269,58 +314,84 @@ async fn run_pair_no_progress(
 ///   the existing TV's credentials in place. The wizard's
 ///   StepPair UI was pre-filled with display-only labels by the
 ///   `on_request_re_pair` handler.
-/// - Returns `()` on success (no new tv_id is generated;
-///   `publish_pair_outcome` ignores the `Ok` payload). Mapped to
-///   `Result<String>` at the call site so the shared outcome
-///   helper applies unchanged.
+/// - tv_id is the caller-provided argument (we already know it),
+///   so the drain filter is straightforward — no "first signal
+///   wins" heuristic needed.
 /// - Errors route through the same `publish_pair_outcome` path,
-///   so re-pair surfaces failures with the same UI as AddTv. In
-///   practice the typed errors are different (re-pair won't fail
-///   with `ConfigInvalidVendorConfig` since there's no
-///   user-supplied schema input), but the generic-failure path
-///   handles every other case identically.
+///   so re-pair surfaces failures with the same UI as AddTv.
 pub(crate) async fn run_wizard_re_pair(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
+    wizard_gen: WizardGen,
     tv_id: String,
 ) {
-    use futures_util::StreamExt;
+    let captured_gen = wizard_gen.load(Ordering::SeqCst);
 
     let stream = match daemon.pairing_progress_stream().await {
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "PairingProgress subscribe failed; falling back to phase-less re-pair");
-            let result = daemon.re_pair(&tv_id).await.map(|()| String::new());
-            publish_pair_outcome(app_weak, result, false);
+            let result = daemon.re_pair(&tv_id).await.map(|()| tv_id.clone());
+            publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, false);
             return;
         }
     };
 
-    let drainer_weak = app_weak.clone();
-    let target_tv_id = tv_id.clone();
-    let drainer = tokio::spawn(async move {
-        let mut s = std::pin::pin!(stream);
-        // Re-pair already knows the target tv_id (the wizard was
-        // prefilled with it before this drainer started). Filter the
-        // bus-wide `PairingProgress` stream so only events for our
-        // target update phase/message; otherwise a concurrent AddTv/
-        // RePair on the same bus would bleed into our UI.
-        while let Some((event_tv_id, phase, message)) = s.next().await {
-            if event_tv_id != target_tv_id {
-                continue;
-            }
-            on_ui(&drainer_weak, move |app| {
-                let wizard = app.global::<PairingWizard>();
-                wizard.set_pair_phase(SharedString::from(phase));
-                wizard.set_pair_message(SharedString::from(message));
-            });
+    // Re-pair's sync RPC errors are TvNotFound / AlreadyPairing —
+    // route them through the same outcome publisher.
+    if let Err(e) = daemon.re_pair(&tv_id).await {
+        publish_pair_outcome(app_weak, &wizard_gen, captured_gen, Err(e), true);
+        return;
+    }
+
+    let on_progress = make_progress_callback(app_weak.clone(), wizard_gen.clone(), captured_gen);
+    let outcome = DaemonClient::drain_pair_to_terminal(stream, &tv_id, on_progress).await;
+
+    let result = terminal_to_result(outcome, tv_id);
+    publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
+}
+
+/// Build the `on_progress` callback shared by AddTv and RePair
+/// drain loops. Each non-terminal phase update routes into the
+/// wizard's phase/message Slint properties, gated by the generation
+/// counter so late updates from a cancelled-and-reopened wizard
+/// session are dropped.
+fn make_progress_callback(
+    app_weak: slint::Weak<AppWindow>,
+    wizard_gen: WizardGen,
+    captured_gen: u64,
+) -> impl FnMut(&str, &str) + Send + 'static {
+    move |phase: &str, message: &str| {
+        if wizard_gen.load(Ordering::SeqCst) != captured_gen {
+            return;
         }
-    });
+        let phase = phase.to_string();
+        let message = message.to_string();
+        let app_weak = app_weak.clone();
+        on_ui(&app_weak, move |app| {
+            let wizard = app.global::<PairingWizard>();
+            wizard.set_pair_phase(SharedString::from(phase));
+            wizard.set_pair_message(SharedString::from(message));
+        });
+    }
+}
 
-    let result = daemon.re_pair(&tv_id).await.map(|()| String::new());
-    drainer.abort();
-
-    publish_pair_outcome(app_weak, result, true);
+/// Translate `drain_pair_to_terminal`'s `Result<PairTerminal>` into
+/// the shape `publish_pair_outcome` expects: `Result<tv_id,
+/// anyhow::Error>`. `PairTerminal::Failed`'s message becomes a
+/// plain anyhow error — typed-error routing (per-field) doesn't
+/// apply to handshake-level failures because the daemon's
+/// post-validation errors don't carry the zbus::Error::MethodError
+/// shape in the message string.
+fn terminal_to_result(
+    outcome: anyhow::Result<PairTerminal>,
+    tv_id: String,
+) -> anyhow::Result<String> {
+    match outcome {
+        Ok(PairTerminal::Complete { .. }) => Ok(tv_id),
+        Ok(PairTerminal::Failed { message, .. }) => Err(anyhow::anyhow!("{message}")),
+        Err(e) => Err(e),
+    }
 }
 
 /// Push the pair-flow outcome into the wizard. Routes typed
@@ -329,12 +400,23 @@ pub(crate) async fn run_wizard_re_pair(
 /// red-text error directly under the offending field, then bounces
 /// back to step 2 for correction. Anything else surfaces as a
 /// generic step-3 failure.
+///
+/// Gated by the generation counter: if the wizard has been reset
+/// (and `wizard_gen` bumped) since the captured value, the
+/// callback no-ops so a cancelled-and-reopened wizard isn't
+/// stomped by a late terminal outcome from the prior session.
 fn publish_pair_outcome(
     app_weak: slint::Weak<AppWindow>,
+    wizard_gen: &WizardGen,
+    captured_gen: u64,
     result: anyhow::Result<String>,
     had_progress_stream: bool,
 ) {
+    let wizard_gen = wizard_gen.clone();
     on_ui(&app_weak, move |app| {
+        if wizard_gen.load(Ordering::SeqCst) != captured_gen {
+            return;
+        }
         let wizard = app.global::<PairingWizard>();
         match result {
             Ok(_) => {

@@ -50,8 +50,8 @@ use power_cycle::run_power_on_with_progress;
 use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
-    WizardEntries, WizardEntry, fetch_and_publish_schema, publish_wizard_entries, reset_wizard,
-    run_wizard_discovery, run_wizard_pair, run_wizard_re_pair,
+    WizardEntries, WizardEntry, WizardGen, fetch_and_publish_schema, publish_wizard_entries,
+    reset_wizard, run_wizard_discovery, run_wizard_pair, run_wizard_re_pair,
 };
 
 use schema_form::{
@@ -418,6 +418,14 @@ pub fn run() -> Result<()> {
     // `vendor_data` and other map-typed columns from this.
     let wizard_entries: WizardEntries = Arc::new(parking_lot::Mutex::new(Vec::new()));
 
+    // Generation counter for in-flight pair / re-pair tasks. Bumped
+    // by `reset_wizard`; captured by each spawned pair-flow task at
+    // start. Callbacks no-op when the live counter no longer matches
+    // the captured one — stops a late `PairingProgress` event from
+    // a cancelled session from bleeding into a freshly-reopened
+    // wizard. See `wizard::WizardGen`.
+    let wizard_gen: WizardGen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     // Wire callbacks before the event loop starts so they're ready when
     // the user interacts with controls.
     register_callbacks(
@@ -426,6 +434,7 @@ pub fn run() -> Result<()> {
         session.clone(),
         reconcilers.clone(),
         wizard_entries.clone(),
+        wizard_gen.clone(),
     );
 
     // Background watcher: refresh on every signal-driven state change.
@@ -460,6 +469,7 @@ fn register_callbacks(
     session: Arc<RwLock<Option<SessionClient>>>,
     reconcilers: Reconcilers,
     wizard_entries: WizardEntries,
+    wizard_gen: WizardGen,
 ) {
     // Slint global handles. Bound once for the registration phase;
     // closures captured by `move` re-acquire from the upgraded
@@ -749,15 +759,17 @@ fn register_callbacks(
     let d = daemon.clone();
     let app_weak = app.as_weak();
     let we = wizard_entries.clone();
+    let wg = wizard_gen.clone();
     daemon_global.on_request_pair(move || {
         let d = d.clone();
         let we = we.clone();
+        let wg = wg.clone();
         let app_weak = app_weak.clone();
         // Reset wizard state on the Slint side first so the user sees
         // the wizard immediately, then kick off discovery.
         if let Some(app) = app_weak.upgrade() {
             let wizard = app.global::<PairingWizard>();
-            reset_wizard(&app);
+            reset_wizard(&app, &wg);
             wizard.set_active(true);
             wizard.set_step(1);
             wizard.set_discovery_streaming(true);
@@ -778,8 +790,10 @@ fn register_callbacks(
     // step-2 → step-3 transition uses for AddTv.
     let d = daemon.clone();
     let app_weak = app.as_weak();
+    let wg = wizard_gen.clone();
     daemon_global.on_request_re_pair(move |tv_id| {
         let d = d.clone();
+        let wg = wg.clone();
         let app_weak = app_weak.clone();
         let tv_id_str = tv_id.to_string();
         let Some(app) = app_weak.upgrade() else {
@@ -811,7 +825,9 @@ fn register_callbacks(
         // to StepPair. `reset_wizard` clears the schema-form rows
         // and pair phase/message; we then seed the display
         // properties so the live pair UI shows the right labels.
-        reset_wizard(&app);
+        // The gen bump also invalidates any in-flight pair task
+        // from a prior session.
+        reset_wizard(&app, &wg);
         let wizard = app.global::<PairingWizard>();
         let vendor_id = tv.vendor.clone();
         let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
@@ -827,7 +843,7 @@ fn register_callbacks(
         wizard.set_active(true);
 
         tokio::spawn(async move {
-            run_wizard_re_pair(d, app_weak, tv_id_str).await;
+            run_wizard_re_pair(d, app_weak, wg, tv_id_str).await;
         });
     });
 
@@ -836,11 +852,12 @@ fn register_callbacks(
     // aborts rather than continuing until natural completion/
     // timeout. Then reset the wizard's UI state. Works for both
     // re-pair (tv_id is set at invoke time) and AddTv (tv_id is
-    // set by the PairingProgress signal drainer on first arrival).
+    // set by `run_wizard_pair` from the pair_tv RPC return).
     // Empty `pair-tv-id` means no in-flight pair to cancel —
     // common when cancelling from steps 1 or 2 of the wizard.
     let d = daemon.clone();
     let app_weak = app.as_weak();
+    let wg = wizard_gen.clone();
     wizard.on_cancel(move || {
         info!("wizard: cancel fired");
         let Some(app) = app_weak.upgrade() else {
@@ -849,8 +866,10 @@ fn register_callbacks(
         let wizard = app.global::<PairingWizard>();
         let tv_id = wizard.get_pair_tv_id().to_string();
         // Reset the UI immediately so the user sees the wizard
-        // close without waiting on the daemon round-trip.
-        reset_wizard(&app);
+        // close without waiting on the daemon round-trip. The gen
+        // bump inside `reset_wizard` makes any in-flight pair
+        // task's late callbacks no-op.
+        reset_wizard(&app, &wg);
         if tv_id.is_empty() {
             return;
         }
@@ -877,6 +896,7 @@ fn register_callbacks(
     let d = daemon.clone();
     let app_weak = app.as_weak();
     let we = wizard_entries.clone();
+    let wg = wizard_gen.clone();
     wizard.on_step_next(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -948,9 +968,10 @@ fn register_callbacks(
                 wizard.set_pair_message(SharedString::default());
 
                 let d = d.clone();
+                let wg = wg.clone();
                 let app_weak = app.as_weak();
                 tokio::spawn(async move {
-                    run_wizard_pair(d, app_weak, name, vendor, config_json, managed).await;
+                    run_wizard_pair(d, app_weak, wg, name, vendor, config_json, managed).await;
                 });
             }
             // Pair → Done. Only allowed when pair_phase == "complete".
@@ -986,6 +1007,7 @@ fn register_callbacks(
     // Pair-failed → retry: restart pair_tv with the same parameters.
     let d = daemon.clone();
     let app_weak = app.as_weak();
+    let wg = wizard_gen.clone();
     wizard.on_retry_pair(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -1003,16 +1025,18 @@ fn register_callbacks(
         wizard.set_pair_message(SharedString::default());
 
         let d = d.clone();
+        let wg = wg.clone();
         let app_weak = app.as_weak();
         tokio::spawn(async move {
-            run_wizard_pair(d, app_weak, name, vendor, config_json, managed).await;
+            run_wizard_pair(d, app_weak, wg, name, vendor, config_json, managed).await;
         });
     });
 
     let app_weak = app.as_weak();
+    let wg = wizard_gen.clone();
     wizard.on_finish(move || {
         if let Some(app) = app_weak.upgrade() {
-            reset_wizard(&app);
+            reset_wizard(&app, &wg);
         }
     });
 
