@@ -1786,7 +1786,10 @@ impl TvManager {
         // Mutex. Capture the vendor + existing vendor_config under
         // the same lock so the handshake works against a consistent
         // snapshot even if some other path mutates `tv.config`.
-        let (vendor, vendor_config) = {
+        // `was_connected` lets us decide whether the error path
+        // should attempt a best-effort reconnect with the old
+        // (still-on-disk) credentials.
+        let (vendor, vendor_config, was_connected) = {
             let mut tv = tv_arc.lock().await;
             if tv.pairing_in_flight {
                 return Err(TvManagerError::PairingFailed(Box::new(
@@ -1797,6 +1800,7 @@ impl TvManager {
             // Close existing connection so the handshake starts fresh.
             // Failing to close cleanly isn't fatal — the connection
             // is being replaced regardless.
+            let was_connected = tv.connection.is_some();
             if let Some(mut conn) = tv.connection.take() {
                 let _ = conn.close().await;
             }
@@ -1807,8 +1811,17 @@ impl TvManager {
                 .get(&vendor)
                 .cloned()
                 .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
-            (vendor, vendor_config)
+            (vendor, vendor_config, was_connected)
         };
+
+        // Tell clients the TV is disconnected for the duration of
+        // the handshake. Without this the D-Bus `Connected` property
+        // cache + GUI Connected indicator stay stale-true for the
+        // 10-30s handshake window. The matching `true` event is
+        // emitted by `self.reconnect()` below on success.
+        if was_connected {
+            self.emit_connection_changed(tv_id, false);
+        }
 
         // Run the handshake without holding the per-TV Mutex.
         let handshake_result = self
@@ -1828,7 +1841,25 @@ impl TvManager {
                         .insert(vendor.clone(), new_inner_config);
                     tv.config.clone()
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Handshake failed (user cancelled, TV rejected,
+                    // timeout). If we'd been connected, attempt a
+                    // best-effort reconnect with the unchanged
+                    // `vendor_config` so a stray Cancel doesn't tear
+                    // down a working session. If the old credentials
+                    // were genuinely expired the reconnect fails too,
+                    // and the user sees both errors via logs — the
+                    // original re-pair error still bubbles up.
+                    drop(tv);
+                    if was_connected && let Err(reconn_err) = self.reconnect(tv_id).await {
+                        warn!(
+                            tv_id = %tv_id,
+                            error = %reconn_err,
+                            "Re-pair: best-effort reconnect after handshake error failed",
+                        );
+                    }
+                    return Err(e);
+                }
             }
         };
 

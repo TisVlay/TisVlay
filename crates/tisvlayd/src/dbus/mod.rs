@@ -139,7 +139,15 @@ impl From<TvManagerError> for DaemonError {
                 }
             }
             TvManagerError::PairingFailed(source) => DaemonError::PairingFailed(source.to_string()),
-            TvManagerError::NotPairing(tv_id) => DaemonError::NotPairing(tv_id),
+            TvManagerError::NotPairing(tv_id) => {
+                // Mirror `TvManagerError::NotPairing`'s Display so
+                // the D-Bus detail is self-explanatory in CLI / log
+                // output (raw tv_ids alone are opaque UUIDs). The
+                // error name (`org.tisvlay.Error.NotPairing`) stays
+                // stable for programmatic routing via
+                // `is_not_pairing`.
+                DaemonError::NotPairing(format!("TV {} is not currently pairing", tv_id))
+            }
             TvManagerError::ConfigError(msg) => DaemonError::OperationFailed(msg),
         }
     }

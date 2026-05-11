@@ -310,9 +310,12 @@ impl ManagerService {
     /// `PairingError::cancelled`, and the originating
     /// `Manager1.AddTv` or `Tv1.RePair` call returns `Err`.
     ///
-    /// Returns `Err(DaemonError::NotPairing(tv_id))` if no in-flight
+    /// Returns `Err(DaemonError::NotPairing(...))` if no in-flight
     /// session exists for the given tv_id (already completed, never
-    /// started, wrong id). Matches BlueZ's `Adapter.RemoveDevice`-
+    /// started, wrong id). The error name is the stable routing key
+    /// (`org.tisvlay.Error.NotPairing`); the detail body carries the
+    /// `TvManagerError::NotPairing` Display message so CLI / logs
+    /// are self-explanatory. Matches BlueZ's `Adapter.RemoveDevice`-
     /// on-unknown-device convention. Clients only fire cancel when
     /// they know a pair is in flight (they're listening to
     /// `PairingProgress` signals); the typed error helps debugging
