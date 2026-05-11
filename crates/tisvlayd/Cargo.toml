@@ -117,10 +117,11 @@ postinstall = "packaging/scripts/postinstall.sh"
 preremove = "packaging/scripts/preremove.sh"
 
 # Runtime deps. Daemons / CLI / session / tray only need glibc; the GUI
-# additionally links fontconfig at load time and dlopens libGL/libEGL,
-# libwayland-{client,egl}, and libxcb at startup (Slint femtovg + winit).
-# Names follow Debian/Ubuntu (deb) and Fedora/RHEL (rpm) conventions —
-# verify against the target distro before each release.
+# additionally links fontconfig at load time and dlopens libGL/libEGL
+# and libwayland-{client,egl} at startup (Slint femtovg + winit's
+# Wayland backend). Names follow Debian/Ubuntu (deb) and Fedora/RHEL
+# (rpm) conventions — verify against the target distro before each
+# release.
 [package.metadata.nfpm.deb]
 depends = [
     "libc6",
@@ -129,7 +130,6 @@ depends = [
     "libegl1",
     "libwayland-client0",
     "libwayland-egl1",
-    "libxcb1",
 ]
 
 [package.metadata.nfpm.rpm]
@@ -140,7 +140,6 @@ depends = [
     "mesa-libEGL",
     "libwayland-client",
     "libwayland-egl",
-    "libxcb",
 ]
 
 [lints]

@@ -64,7 +64,7 @@ Bumping the baseline is a one-line change in `glibc_baseline`. The 2.34 anchor w
 `tisvlay-gui` is the only binary that pulls non-glibc deps. Two categories:
 
 - **Link-time (`NEEDED` in the ELF)** — appears in `ldd <binary>`. Must be present on the host at exactly the soname the binary requests. Currently: `libfontconfig.so.1`.
-- **Runtime dlopen** — loaded via `libloading` from inside the binary at startup. Failure to resolve manifests as an application-level error rather than the loader refusing to start. Currently: `libGL.so.1`, `libEGL.so.1`, `libwayland-client.so.0`, `libwayland-egl.so.1`, `libxcb.so` (probed by Slint's `i-slint-renderer-femtovg` + `winit` wayland/x11 backends).
+- **Runtime dlopen** — loaded via `libloading` from inside the binary at startup. Failure to resolve manifests as an application-level error rather than the loader refusing to start. Currently: `libGL.so.1`, `libEGL.so.1`, `libwayland-client.so.0`, `libwayland-egl.so.1` (probed by Slint's `i-slint-renderer-femtovg` + `winit`'s Wayland backend).
 
 Both categories must be reflected in the per-format `depends` lists in [`crates/tisvlayd/Cargo.toml`](../crates/tisvlayd/Cargo.toml). The package manager only knows about declared deps; if the user installs the `.rpm` on a minimal headless distro, missing libGL/libwayland will surface at first GUI launch.
 
@@ -82,7 +82,7 @@ It collapses for any GUI binary because **musl static binaries cannot dlopen sha
 
 > Loading shared libraries from a static binary is not supported by design.
 
-Slint's renderer dlopens libGL/libEGL via [`libloading`](https://crates.io/crates/libloading); winit dlopens libwayland-client; libxcb is dlopened as a fallback. All of these silently no-op when called from a musl-static binary — `dlopen()` returns NULL without ever invoking the loader. The first user-visible failure is `winit` reporting "the wayland library could not be loaded" even though the host has libwayland-client installed.
+Slint's renderer dlopens libGL/libEGL via [`libloading`](https://crates.io/crates/libloading); winit dlopens libwayland-client. Both silently no-op when called from a musl-static binary — `dlopen()` returns NULL without ever invoking the loader. The first user-visible failure is `winit` reporting "the wayland library could not be loaded" even though the host has libwayland-client installed.
 
 Even working around the *link-time* fontconfig dependency (e.g., `fontique`'s `fontconfig-dlopen` feature) doesn't help: fontconfig would then fail at runtime in the same silent way — degraded font matching rather than a missing window, but still broken. The musl-static path is fundamentally incompatible with any Rust GUI library that uses libloading at runtime.
 
