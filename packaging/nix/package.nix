@@ -15,11 +15,16 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   cargoLock.lockFile = ../../Cargo.lock;
 
-  # tisvlay-gui dlopens Slint's femtovg + winit runtime libs. patchelf
-  # doesn't see dlopen targets, so they don't end up on the default
-  # rpath — splice them on explicitly in postFixup and disable the
-  # default patchelf pass so it doesn't strip them back out. The lib
-  # set is shared with flake.nix's dev shell via slint-runtime.nix.
+  # tisvlay-gui dlopens Slint's femtovg + winit runtime libs;
+  # tisvlay-session dlopens libwayland-client.so via wayland-sys for
+  # its greeter-wake idle notifier. patchelf doesn't see dlopen
+  # targets, so they don't end up on the default rpath — splice them
+  # on explicitly in postFixup and disable the default patchelf pass
+  # so it doesn't strip them back out. The session technically only
+  # needs wayland; sharing the GUI's lib set keeps the rpath plumbing
+  # single-sourced (the unused entries are stat()'d once at startup
+  # and the libs are already in the closure). The set is shared with
+  # flake.nix's dev shell via slint-runtime.nix.
   rpathLibs = callPackage ./slint-runtime.nix { };
 
   nativeBuildInputs = [
@@ -57,7 +62,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   postFixup = ''
     patchelf --add-rpath "${lib.makeLibraryPath finalAttrs.rpathLibs}" \
-      $out/bin/tisvlay-gui
+      $out/bin/tisvlay-gui \
+      $out/bin/tisvlay-session
   '';
   dontPatchELF = true;
 
