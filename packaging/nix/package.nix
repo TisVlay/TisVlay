@@ -1,19 +1,26 @@
 {
   lib,
   rustPlatform,
+  callPackage,
   cargo-about,
   pkg-config,
   dbus,
-  fontconfig,
 }:
 
-rustPlatform.buildRustPackage {
+rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tisvlay";
   version = "0.1.0";
 
   src = lib.cleanSource ../../.;
 
   cargoLock.lockFile = ../../Cargo.lock;
+
+  # tisvlay-gui dlopens Slint's femtovg + winit runtime libs. patchelf
+  # doesn't see dlopen targets, so they don't end up on the default
+  # rpath — splice them on explicitly in postFixup and disable the
+  # default patchelf pass so it doesn't strip them back out. The lib
+  # set is shared with flake.nix's dev shell via slint-runtime.nix.
+  rpathLibs = callPackage ./slint-runtime.nix { };
 
   nativeBuildInputs = [
     # build.rs (tisvlay-gui) and preBuild both invoke cargo-about for
@@ -23,16 +30,7 @@ rustPlatform.buildRustPackage {
     pkg-config
   ];
 
-  buildInputs = [
-    # Slint's femtovg renderer pulls `yeslogic-fontconfig-sys`, a
-    # `-sys` crate that resolves `fontconfig.pc` via pkg-config at
-    # compile time. Slint's other runtime libs (libGL, libxkbcommon,
-    # wayland) are dlopened by femtovg/winit and don't surface in the
-    # build phase — they're handled by the dev-shell's
-    # `LD_LIBRARY_PATH` for `cargo run`, and at runtime on shipped
-    # distro packages by the system loader's own search paths.
-    fontconfig
-  ];
+  buildInputs = finalAttrs.rpathLibs;
 
   nativeCheckInputs = [
     dbus
@@ -57,6 +55,12 @@ rustPlatform.buildRustPackage {
     install -Dm0644 packaging/licensing/THIRD-PARTY-LICENSES.html -t $out/share/doc/tisvlay/
   '';
 
+  postFixup = ''
+    patchelf --add-rpath "${lib.makeLibraryPath finalAttrs.rpathLibs}" \
+      $out/bin/tisvlay-gui
+  '';
+  dontPatchELF = true;
+
   useNextest = true;
 
   # Tests need the `mock` feature (and other test-only features) across
@@ -77,4 +81,4 @@ rustPlatform.buildRustPackage {
     platforms = lib.platforms.linux;
     mainProgram = "tisvlay";
   };
-}
+})

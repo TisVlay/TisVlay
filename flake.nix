@@ -46,25 +46,7 @@
 
         devShells.default =
           let
-            # System libs Slint dlopens at build + run time on Linux.
-            # Tracks the runtime-libs set in upstream's own dev shell at
-            # libs/slint/flake.nix so we don't drift on what's needed.
-            #   - fontconfig: femtovg renderer (default)
-            #   - libGL:      OpenGL ES backend
-            #   - libxkbcommon + wayland: winit Wayland backend
-            #   - libxcb / libX11 / libXcursor / libXi / libXrandr:
-            #     winit X11 backend (X11 sessions only)
-            slintRuntimeLibs = with pkgs; [
-              fontconfig
-              libGL
-              libxkbcommon
-              wayland
-              libxcb
-              libx11
-              libxcursor
-              libxi
-              libxrandr
-            ];
+            slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
           in
           pkgs.mkShell {
             packages = with pkgs; [
