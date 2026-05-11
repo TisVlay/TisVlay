@@ -4,8 +4,8 @@
 //! `ManagedTv` (set true at start of `re_pair_tv` under the
 //! per-TV `Mutex`, cleared on completion).
 //!
-//! With Approach C's async-spawn shape, `re_pair_tv`'s synchronous
-//! prelude claims the `pairing_in_flight` slot before spawning the
+//! With the async-spawn shape, `re_pair_tv`'s synchronous prelude
+//! claims the `pairing_in_flight` slot before spawning the
 //! handshake. The RPC returns `Ok(())` immediately. The second call
 //! sees `pairing_in_flight = true` synchronously and returns the
 //! typed error — no race window between the two RPCs.

@@ -3,7 +3,7 @@
 ## Open
 
 - [Session event handler `last_action` cache survives daemon reconnects](bugs/last-action-cache-survives-reconnect.md)
-- [`TvManager::pair_tv` has no timeout on `wait_for_completion`](bugs/pair-tv-no-timeout.md)
+- [`run_pairing_handshake` has no timeout on `wait_for_completion`](bugs/pair-tv-no-timeout.md)
 
 ## Closed
 

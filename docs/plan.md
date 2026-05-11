@@ -93,7 +93,7 @@ The handoff ships its design as React/JSX prototypes; treat them as visual refer
 - `DiscoverTvs(timeout_ms) -> Vec<(id, name, address, (manufacturer, model, serial), vendor, vendor_data)>` — `vendor_data` is the kernel-resolved MAC + any other autofill keys.
 - `GetSupportedVendors() -> Vec<(vendor_id, vendor_name)>`
 - `GetPairingSchema(vendor) -> json: s` — JSON-serialized `Vec<PairingField>` declaring the form fields the wizard renders dynamically.
-- `AddTv(name, vendor, config_json, managed) -> (path, tv_id)` — schema-validated server-side via `PairingField::validate`. `tv_id` is a hyphenated UUID v4.
+- `AddTv(name, vendor, config_json, managed) -> (path, tv_id)` — schema-validated server-side via `PairingField::validate`. `tv_id` is a hyphenated UUID v4. Returns immediately after sync validation; the handshake runs in a daemon-side spawned task and outcome surfaces via `PairingProgress` (drain to terminal).
 - `ReloadConfig()`
 - `GetUserProfileDefault() -> json: s` — admin baseline user profile.
 - `ListSystemProfiles() -> Vec<(name, json)>`
@@ -186,7 +186,7 @@ Modal flow, four steps:
 
 1. **Discover.** Calls `Manager1.DiscoverTvs(timeout_ms=5000)` and concurrently subscribes to `Manager1.DiscoveryFound` signals. Results stream into a list as the daemon emits them. Manual-entry fallback at the bottom: vendor dropdown + IP textbox for users on networks where SSDP is blocked.
 2. **Configure.** Selected TV pre-fills name (from discovery) and vendor; user can override name, set managed checkbox, choose initial system profile.
-3. **Pair.** Calls `Manager1.AddTv(name, vendor, config_json, managed)`, subscribes to `Manager1.PairingProgress(tv_id, phase)`. UI shows phase-by-phase: "Confirm prompt on TV…" (`prompting`) → "Registering…" (`registering`) → "Complete" or "Failed: <reason>". Cancel button drops the call (best-effort; the daemon may already be mid-handshake).
+3. **Pair.** Subscribes to `Manager1.PairingProgress(tv_id, phase)` first, calls `Manager1.AddTv(name, vendor, config_json, managed)` (returns the reserved `tv_id` immediately after sync validation), then drains the filtered stream to a terminal phase via `DaemonClient::drain_pair_to_terminal`. UI shows phase-by-phase: `awaiting_tv` ("Confirm prompt on TV…") → `awaiting_input` (when the vendor needs a PIN, etc.) → `complete` / `failed`. Cancel button calls `Manager1.CancelPair(tv_id)` to abort the daemon-side handshake.
 4. **Done.** Wizard closes; new TV is selected in the TVs list.
 
 ## State sync model

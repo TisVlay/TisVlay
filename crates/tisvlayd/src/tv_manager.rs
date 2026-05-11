@@ -1943,31 +1943,49 @@ impl TvManager {
     /// fields (`name`, `profile`, `managed`, `primary_input`) stay
     /// intact.
     ///
-    /// Concurrency:
-    /// - `pairing_in_flight` per-TV flag prevents two re-pair calls
-    ///   against the same TV from running in parallel. Checked +
-    ///   set atomically under the per-TV `Mutex<ManagedTv>` at the
-    ///   start; cleared in the cleanup section.
-    /// - The Mutex is **released before** `run_pairing_handshake`
-    ///   awaits the 10–30s handshake. Holding it that long would
-    ///   block every other `Tv1.*` call against this TV during the
-    ///   pair. Other calls observe `NotConnected` (we close the
-    ///   connection before handshake) until the handshake finishes
-    ///   and the new connection is installed.
+    /// # Lifecycle
     ///
-    /// Behavior note: LG's `start_pairing` always treats the call
-    /// as a fresh pair regardless of the existing `client_key`
-    /// (see `crates/tisvlay-lg/src/backend.rs::start_pairing` —
+    /// Sync part — the caller's `.await` returns immediately after
+    /// these steps; failures here surface as RPC `Err`:
+    ///
+    /// 1. `get_tv(tv_id)` — `Err(TvNotFound)` on miss.
+    /// 2. Lock the per-TV `Mutex<ManagedTv>`, check
+    ///    `pairing_in_flight` — `Err(PairingFailed("already
+    ///    pairing"))` if a re-pair is already in flight.
+    /// 3. Claim the slot, capture `was_connected`, close existing
+    ///    connection, snapshot `(vendor, vendor_config)`.
+    /// 4. Release the lock.
+    /// 5. If `was_connected`: emit `ConnectionChanged{false}` so
+    ///    clients reflect the intended disconnect during the
+    ///    handshake window.
+    /// 6. Spawn `run_re_pair_task` and return `Ok(())`.
+    ///
+    /// Async part (`run_re_pair_task`, signal-driven; no caller is
+    /// awaiting this): handshake → on Ok, update `vendor_config` +
+    /// persist + emit `TvVendorConfigChanged` + reconnect with new
+    /// credentials. On Err, attempt best-effort reconnect with the
+    /// unchanged old `vendor_config`. Terminal `PairingProgress` is
+    /// emitted at the end:
+    ///
+    /// | Path                                       | RPC return | Terminal phase | Connected |
+    /// |--------------------------------------------|------------|----------------|-----------|
+    /// | Success                                    | `Ok(())`   | `complete`     | false → true (via reconnect) |
+    /// | Handshake failed, old credentials work     | `Ok(())`   | `failed`       | false → true (best-effort reconnect) |
+    /// | Handshake failed, old credentials dead     | `Ok(())`   | `failed`       | false → stays false |
+    /// | Sync validation error (steps 1–2 above)    | `Err(...)` | (no signal)    | unchanged |
+    ///
+    /// The best-effort reconnect outcome is **not** surfaced through
+    /// `PairingProgress` — that's about TV reachability, conceptually
+    /// orthogonal to whether re-pair succeeded. Clients that care
+    /// about reachability watch `Tv1.Connected`.
+    ///
+    /// # Behavior note (LG)
+    ///
+    /// LG's `start_pairing` always treats the call as a fresh pair
+    /// regardless of the existing `client_key` (see
+    /// `crates/tisvlay-lg/src/backend.rs::start_pairing` —
     /// `WebOsClient::connect(&ip, None)`). So every re-pair triggers
     /// a fresh permission prompt on the TV.
-    ///
-    /// Async-spawn shape (mirrors `pair_tv`): sync validation +
-    /// pairing-in-flight claim + connection close + ConnectionChanged
-    /// emit happens in the caller's await; the long handshake +
-    /// persist + reconnect runs in a spawned task. Outcome surfaces
-    /// via `Manager1.PairingProgress` filtered on `tv_id` to a
-    /// terminal phase. RPC returns `Ok(())` as soon as the task is
-    /// spawned.
     pub async fn re_pair_tv(self: &Arc<Self>, tv_id: &str) -> Result<(), TvManagerError> {
         info!(tv_id = %tv_id, "Re-pairing TV");
 
@@ -2152,15 +2170,29 @@ impl TvManager {
     /// Looks up the session's command sender in `pairing_sessions`
     /// and sends `PairingCommand::Cancel`. The session's
     /// `wait_for_completion` will then resolve with
-    /// `PairingError::cancelled`, the `run_pairing_handshake` helper
-    /// will return `Err(PairingFailed)`, and the outer
-    /// `pair_tv` / `re_pair_tv` flow returns the cancellation to its
-    /// caller.
+    /// `PairingError::cancelled`, `run_pairing_handshake` will
+    /// return `Err(PairingFailed)`, and the outer
+    /// `run_pair_task` / `run_re_pair_task` will emit a terminal
+    /// `failed` `PairingProgress` carrying the cancellation reason.
     ///
     /// Returns `Err(NotPairing)` if no in-flight session exists for
     /// the tv_id (already completed, never started, wrong id).
-    /// Strict variant per the re-pair plan's DR7b — matches BlueZ's
-    /// `Adapter.RemoveDevice` on-unknown-device convention.
+    /// Strict variant matching BlueZ's `Adapter.RemoveDevice`
+    /// on-unknown-device convention.
+    ///
+    /// # Cancel during the spawn gap
+    ///
+    /// `pair_tv` / `re_pair_tv` return the reserved tv_id (or
+    /// `Ok(())`) before the spawned task has reached
+    /// `run_pairing_handshake`'s `pairing_sessions.insert(...)`. A
+    /// `CancelPair(tv_id)` call landing in that microsecond window
+    /// returns `NotPairing` because the map entry doesn't exist
+    /// yet. In practice the GUI's Cancel button is only enabled
+    /// after the first `PairingProgress` signal arrives, which
+    /// only fires after the entry exists — the gap is invisible to
+    /// human-driven cancels. Closing it would require a pre-emit
+    /// insert on the caller's stack; not worth the complexity for
+    /// the rare machine-driven race.
     pub async fn cancel_pair(&self, tv_id: &str) -> Result<(), TvManagerError> {
         let sender = self.pairing_sessions.lock().get(tv_id).cloned();
         let Some(sender) = sender else {

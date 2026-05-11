@@ -264,11 +264,13 @@ impl TvService {
     /// without forcing the user to `Tv1.Remove` + `Manager1.AddTv`
     /// from scratch.
     ///
-    /// The call blocks for the full handshake duration (10–30s
-    /// typical: TV wake + SSAP TLS + user accept on TV). Progress
-    /// surfaces via `Manager1.PairingProgress` signals (same channel
-    /// AddTv's flow uses); the call itself returns when the handshake
-    /// terminates. Cancel an in-flight re-pair via
+    /// RPC returns immediately after sync validation (TV exists,
+    /// `pairing_in_flight` slot available); the handshake (TV wake +
+    /// SSAP TLS + user accept on TV, 10–30s typical) runs in a
+    /// daemon-side spawned task. Outcome surfaces via
+    /// `Manager1.PairingProgress` filtered on this TV's `tv_id` to a
+    /// terminal `complete` / `failed` phase (same channel `AddTv`'s
+    /// flow uses). Cancel an in-flight re-pair via
     /// `Manager1.CancelPair(tv_id)`.
     ///
     /// Concurrent re-pair attempts against the same TV are rejected

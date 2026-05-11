@@ -300,10 +300,10 @@ impl ManagerService {
     /// `PairingProgress` signals); the typed error helps debugging
     /// if that invariant is ever broken.
     ///
-    /// Works for both AddTv (the blocking handler holds the session;
-    /// cancel resolves wait_for_completion) and re-pair (the
-    /// non-blocking handler also holds the session via
-    /// `run_pairing_handshake`; same mechanism).
+    /// Works for both `AddTv` and `Tv1.RePair`: both register their
+    /// session's command sender in `pairing_sessions` before
+    /// spawning the handshake task, so cancel reaches the task via
+    /// that map regardless of which RPC initiated the pair.
     async fn cancel_pair(&self, tv_id: &str) -> Result<(), DaemonError> {
         info!(tv_id = %tv_id, "D-Bus: CancelPair");
         self.manager
@@ -396,9 +396,11 @@ impl ManagerService {
     /// human-readable detail (e.g., "Please accept the pairing
     /// request on your TV", or the failure reason).
     ///
-    /// Pair this with the synchronous `AddTv` RPC: subscribe to the
-    /// signal first, then call `AddTv`, draining phases until the
-    /// call returns.
+    /// Pair this with the async-spawn `AddTv` / `Tv1.RePair` RPCs:
+    /// subscribe to the signal first, call the RPC to get the
+    /// reserved `tv_id`, then drain the signal stream filtered on
+    /// that tv_id to a terminal `complete` / `failed` phase (see
+    /// `DaemonClient::drain_pair_to_terminal`).
     #[zbus(signal)]
     pub async fn pairing_progress(
         emitter: &SignalEmitter<'_>,

@@ -174,9 +174,11 @@ trait TisvlayManager {
 
     /// Cancel an in-flight pairing handshake for the given TV.
     /// Returns `Err(NotPairing)` if no in-flight session exists.
-    /// Works for both `AddTv` (blocks the AddTv handler — the cancel
-    /// resolves its `wait_for_completion`) and `Tv1.RePair` (resolves
-    /// the re-pair handler's handshake similarly).
+    /// Works for both `AddTv` and `Tv1.RePair`: cancel reaches the
+    /// spawned task's pairing session via the daemon's
+    /// `pairing_sessions` map and resolves the handshake with a
+    /// cancelled error, surfacing as a terminal `failed`
+    /// `PairingProgress`.
     fn cancel_pair(&self, tv_id: &str) -> zbus::Result<()>;
 
     /// Get the admin baseline for user profiles as JSON.
@@ -292,9 +294,12 @@ trait TisvlayTv {
 
     /// Re-pair this TV: refresh credentials in place without losing
     /// top-level config (name, profile, managed, primary_input).
-    /// Blocks for the full pairing handshake duration (10–30s);
-    /// progress surfaces via `Manager1.PairingProgress` signals.
-    /// Cancel an in-flight re-pair via `Manager1.CancelPair(tv_id)`.
+    /// Returns immediately after sync validation; the handshake
+    /// runs in a daemon-side task. Outcome surfaces via
+    /// `Manager1.PairingProgress` filtered on this TV's `tv_id` to
+    /// a terminal `complete` / `failed` phase — drain via
+    /// `DaemonClient::drain_pair_to_terminal`. Cancel an in-flight
+    /// re-pair via `Manager1.CancelPair(tv_id)`.
     fn re_pair(&self) -> zbus::Result<()>;
 
     /// Remove this TV from the daemon's configuration.
@@ -1114,8 +1119,10 @@ impl DaemonClient {
     }
 
     /// Re-pair the TV: refresh credentials in place without losing
-    /// top-level config. Blocks for the full pairing handshake
-    /// duration (10–30s typical). Cancel via [`Self::cancel_pair`].
+    /// top-level config. Returns immediately after sync validation;
+    /// outcome surfaces via `Manager1.PairingProgress`. Use
+    /// [`Self::drain_pair_to_terminal`] to await a terminal phase.
+    /// Cancel via [`Self::cancel_pair`].
     pub async fn re_pair(&self, tv_id: &str) -> Result<()> {
         self.with_proxies(tv_id, "re_pair", |p| Box::pin(p.base.re_pair()))
             .await

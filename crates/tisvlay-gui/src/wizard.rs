@@ -248,10 +248,10 @@ pub(crate) async fn run_wizard_pair(
         }
     };
 
-    // `pair_tv` is sync-validation-only now (Approach C). Errors
-    // here are unknown-vendor / ConfigInvalidVendorConfig / etc. —
-    // route via the field-mapper so per-field problems bounce back
-    // to step 2.
+    // `pair_tv` is sync-validation-only — it returns the reserved
+    // tv_id immediately. Errors here are unknown-vendor /
+    // ConfigInvalidVendorConfig / etc. — route via the field-mapper
+    // so per-field problems bounce back to step 2.
     let tv_id = match daemon.pair_tv(&name, &vendor, &config_json, managed).await {
         Ok(id) => id,
         Err(e) => {
@@ -285,12 +285,11 @@ pub(crate) async fn run_wizard_pair(
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
 }
 
-/// Fallback pair flow when the PairingProgress subscription fails to
-/// set up. Just calls pair_tv and reflects the immediate return in
-/// the wizard — no phase updates are visible. With Approach C the
-/// `pair_tv` RPC return is just "spawn succeeded", not a final
-/// outcome; without progress we can only report the sync-validation
-/// outcome.
+/// Fallback pair flow when the PairingProgress subscription fails
+/// to set up. Just calls pair_tv and reflects the immediate return
+/// in the wizard — no phase updates are visible. The `pair_tv` RPC
+/// return is just "spawn succeeded", not a final outcome; without
+/// progress we can only report the sync-validation outcome.
 #[allow(clippy::too_many_arguments)]
 async fn run_pair_no_progress(
     daemon: Arc<DaemonClient>,

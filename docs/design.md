@@ -466,6 +466,7 @@ COMMANDS:
     backlight       Backlight control
     status          Show TV status (includes managed flag)
     pair            Pair a new TV
+    re-pair <ID>    Refresh vendor credentials in place (preserves name, profile, etc.)
     list            List configured TVs (shows [unmanaged] suffix)
     remove          Remove a TV
     manage          Show or set automated management for a TV (true/false)
@@ -490,6 +491,7 @@ EXAMPLES:
     tisvlay input                                                   # list available inputs
     tisvlay pair 192.168.1.100 --name "Living Room" --vendor lg --wake-id AA:BB:CC:DD:EE:FF
     tisvlay pair 192.168.1.101 --name "Office" --vendor lg --unmanaged
+    tisvlay re-pair living-room                                     # refresh expired credentials
     tisvlay volume 30
     tisvlay backlight 80
     tisvlay manage                                                      # show current
