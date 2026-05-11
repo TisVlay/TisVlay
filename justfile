@@ -70,6 +70,10 @@ ci_features := "tisvlay-backends/mock,tisvlayd/mock"
 # Doc tests run under the same env, but stable rustc doesn't emit
 # coverage data for doctest harnesses — they execute but don't
 # contribute to the report.
+#
+# Each run clears stale `.profraw` first so `report` aggregates only
+# this run. No rebuild cost. If coverage still looks off, escalate
+# to `cargo clean` (compile-cache, separate axis).
 [group('check')]
 test-ci:
     #!/usr/bin/env bash
@@ -77,6 +81,7 @@ test-ci:
     export CARGO_PROFILE_DEV_DEBUG=line-tables-only
     export NEXTEST_PROFILE=ci
     eval "$(cargo llvm-cov show-env --sh)"
+    cargo llvm-cov clean --profraw-only
     cargo clippy --workspace --all-targets \
         --features {{ ci_features }} -- -D warnings
     cargo nextest run --workspace --features {{ ci_features }}
