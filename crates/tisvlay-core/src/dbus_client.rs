@@ -70,6 +70,30 @@ impl BusKind<'_> {
 }
 
 // =============================================================================
+// Pairing terminal outcome
+// =============================================================================
+
+/// Terminal outcome of a `Manager1.PairingProgress` stream for a
+/// single `tv_id`.
+///
+/// Returned by [`DaemonClient::drain_pair_to_terminal`] when the
+/// stream reaches a `complete` or `failed` phase for the target
+/// tv_id. The `tv_id` field echoes the value the caller filtered
+/// against (so the same tuple is self-contained for logging). The
+/// `message` field is the success confirmation for `Complete` and
+/// the failure reason for `Failed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairTerminal {
+    /// Pairing completed successfully. `message` carries the
+    /// backend's confirmation string (typically `"Pairing complete"`).
+    Complete { tv_id: String, message: String },
+    /// Pairing failed (TV rejected, timeout, cancelled, network
+    /// error, …). `message` carries the human-readable failure
+    /// reason from the originating `PairingError`.
+    Failed { tv_id: String, message: String },
+}
+
+// =============================================================================
 // Manager Interface Proxy
 // =============================================================================
 
@@ -1243,6 +1267,51 @@ impl DaemonClient {
         }))
     }
 
+    /// Drain a pre-subscribed `pairing_progress_stream` until a
+    /// terminal phase for `target_tv_id` arrives, calling
+    /// `on_progress(phase, message)` for each non-terminal event.
+    ///
+    /// Events with a different `tv_id` are silently dropped — the
+    /// signal is bus-wide and any number of clients may be running
+    /// concurrent pairings, but the caller already knows which
+    /// `tv_id` is theirs (from the `pair_tv` RPC return, or the
+    /// `Tv1.RePair` argument).
+    ///
+    /// Returns:
+    /// - `Ok(PairTerminal::Complete { … })` on `complete` phase.
+    /// - `Ok(PairTerminal::Failed { … })` on `failed` phase.
+    /// - `Err(...)` if the stream ends without reaching a terminal
+    ///   phase (e.g., daemon disconnected mid-handshake).
+    ///
+    /// Subscribe to the stream **before** calling `pair_tv` /
+    /// `re_pair` — `PairingProgress` signals emitted before the
+    /// subscription is active are dropped.
+    pub async fn drain_pair_to_terminal<S>(
+        stream: S,
+        target_tv_id: &str,
+        mut on_progress: impl FnMut(&str, &str),
+    ) -> Result<PairTerminal>
+    where
+        S: futures_util::Stream<Item = (String, String, String)>,
+    {
+        use futures_util::StreamExt;
+
+        let mut stream = std::pin::pin!(stream);
+        while let Some((tv_id, phase, message)) = stream.next().await {
+            if tv_id != target_tv_id {
+                continue;
+            }
+            match phase.as_str() {
+                "complete" => return Ok(PairTerminal::Complete { tv_id, message }),
+                "failed" => return Ok(PairTerminal::Failed { tv_id, message }),
+                _ => on_progress(&phase, &message),
+            }
+        }
+        anyhow::bail!(
+            "PairingProgress stream ended before reaching a terminal phase for tv_id `{target_tv_id}`"
+        );
+    }
+
     /// Subscribe to `Manager1.DiscoveryFound` signals.
     ///
     /// Returns a stream of `(id, name, address, hardware_id, vendor,
@@ -2164,5 +2233,157 @@ impl StateWatcher {
                 Some(StateEvent::FallbackPoll)
             }
         }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a stream from owned tuples for unit-testing the drain helper.
+    fn stream_from(
+        events: Vec<(&str, &str, &str)>,
+    ) -> impl futures_util::Stream<Item = (String, String, String)> {
+        futures_util::stream::iter(
+            events
+                .into_iter()
+                .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string())),
+        )
+    }
+
+    // ---------------------------------------------------------------------
+    // drain_pair_to_terminal: success returns Complete with the tv_id +
+    // message echoed from the terminal phase.
+    // ---------------------------------------------------------------------
+    #[tokio::test]
+    async fn drain_pair_to_terminal_returns_complete_on_success() {
+        let stream = stream_from(vec![
+            ("tv-1", "awaiting_tv", "Accept on TV"),
+            ("tv-1", "complete", "Pairing complete"),
+        ]);
+        let mut phases = Vec::new();
+        let outcome = DaemonClient::drain_pair_to_terminal(stream, "tv-1", |p, m| {
+            phases.push((p.to_string(), m.to_string()));
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome,
+            PairTerminal::Complete {
+                tv_id: "tv-1".to_string(),
+                message: "Pairing complete".to_string(),
+            }
+        );
+        assert_eq!(
+            phases,
+            vec![("awaiting_tv".to_string(), "Accept on TV".to_string())]
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // drain_pair_to_terminal: failure returns Failed with the reason from
+    // the terminal phase's message field.
+    // ---------------------------------------------------------------------
+    #[tokio::test]
+    async fn drain_pair_to_terminal_returns_failed_on_rejection() {
+        let stream = stream_from(vec![
+            ("tv-1", "awaiting_tv", "Accept on TV"),
+            ("tv-1", "failed", "Pairing rejected by TV"),
+        ]);
+        let outcome = DaemonClient::drain_pair_to_terminal(stream, "tv-1", |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            PairTerminal::Failed {
+                tv_id: "tv-1".to_string(),
+                message: "Pairing rejected by TV".to_string(),
+            }
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // drain_pair_to_terminal: events for a different tv_id are silently
+    // dropped — neither dispatched to `on_progress` nor used to resolve.
+    // This is the property that lets concurrent pairings from multiple
+    // clients coexist without bleeding into each other's UIs.
+    // ---------------------------------------------------------------------
+    #[tokio::test]
+    async fn drain_pair_to_terminal_ignores_foreign_tv_ids() {
+        let stream = stream_from(vec![
+            // Concurrent foreign pair — drainer ignores all of these.
+            ("tv-other", "awaiting_tv", "Other client's TV"),
+            ("tv-other", "complete", "Other pair complete"),
+            // Our pair starts after.
+            ("tv-1", "awaiting_tv", "Accept on TV"),
+            ("tv-1", "complete", "Pairing complete"),
+        ]);
+        let mut phases = Vec::new();
+        let outcome = DaemonClient::drain_pair_to_terminal(stream, "tv-1", |p, m| {
+            phases.push((p.to_string(), m.to_string()));
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome,
+            PairTerminal::Complete {
+                tv_id: "tv-1".to_string(),
+                message: "Pairing complete".to_string(),
+            }
+        );
+        assert_eq!(
+            phases,
+            vec![("awaiting_tv".to_string(), "Accept on TV".to_string())],
+            "on_progress must not receive foreign tv_id events"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // drain_pair_to_terminal: on_progress is called for every non-terminal
+    // matching event in order; awaiting_input is a non-terminal phase that
+    // exercises the multi-event path.
+    // ---------------------------------------------------------------------
+    #[tokio::test]
+    async fn drain_pair_to_terminal_dispatches_all_non_terminal_phases() {
+        let stream = stream_from(vec![
+            ("tv-1", "awaiting_tv", "Step 1"),
+            ("tv-1", "awaiting_input", "Step 2"),
+            ("tv-1", "complete", "Pairing complete"),
+        ]);
+        let mut phases = Vec::new();
+        let _ = DaemonClient::drain_pair_to_terminal(stream, "tv-1", |p, m| {
+            phases.push((p.to_string(), m.to_string()));
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            phases,
+            vec![
+                ("awaiting_tv".to_string(), "Step 1".to_string()),
+                ("awaiting_input".to_string(), "Step 2".to_string()),
+            ]
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // drain_pair_to_terminal: stream ending without a terminal phase
+    // returns an error rather than hanging. This is the daemon-disconnect
+    // failure mode — clients need to surface it as a generic failure.
+    // ---------------------------------------------------------------------
+    #[tokio::test]
+    async fn drain_pair_to_terminal_errors_on_stream_end_before_terminal() {
+        let stream = stream_from(vec![("tv-1", "awaiting_tv", "Accept on TV")]);
+        let err = DaemonClient::drain_pair_to_terminal(stream, "tv-1", |_, _| {})
+            .await
+            .unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("ended before") && chain.contains("tv-1"),
+            "error should explain the stream-end mode; got: {chain}"
+        );
     }
 }
