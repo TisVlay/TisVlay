@@ -39,10 +39,21 @@ async fn remove_tv_succeeds_for_uuid_keyed_tv() {
     daemon.handle().simulate_user_accept("mock://to_remove");
 
     let config_json = r#"{"address": "mock://to_remove"}"#;
+    // Subscribe before pairing so we can drain to the terminal
+    // phase; AddTv is async-spawn, so the TV isn't registered via
+    // ObjectManager until `complete` arrives.
+    let stream = client.pairing_progress_stream().await.unwrap();
     let tv_id = client
         .pair_tv("To Remove", "mock", config_json, true)
         .await
-        .expect("pairing should succeed");
+        .expect("AddTv RPC should succeed");
+    let terminal = tisvlay_core::DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .expect("drain should reach terminal");
+    assert!(
+        matches!(terminal, tisvlay_core::PairTerminal::Complete { .. }),
+        "expected Complete, got {terminal:?}"
+    );
 
     // Sanity: the TV is present and identified by a hyphenated UUID.
     assert!(

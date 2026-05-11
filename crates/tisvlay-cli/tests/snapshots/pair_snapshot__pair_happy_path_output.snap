@@ -11,7 +11,7 @@ info:
     - "--name"
     - Living Room
   env:
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-DxmIBk/bus.sock,guid=cd8e2ff7f5eb33a6362f8e9169f652a1"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-RrB5dH/bus.sock,guid=2bde2636b7e0c87c4e453b5a6a016a08"
 ---
 success: true
 exit_code: 0

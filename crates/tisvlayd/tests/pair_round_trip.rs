@@ -3,17 +3,21 @@
 //! Exercises the same code path the CLI `tisvlay pair` command uses:
 //!
 //!   DaemonClient::pair_tv()
-//!     → Manager1.AddTv (D-Bus)
-//!     → TvManager::pair_tv()
+//!     → Manager1.AddTv (D-Bus, returns tv_id immediately)
+//!     → TvManager::pair_tv() (spawns run_pair_task)
 //!     → MockConnector::start_pairing() (pre-seeded accept)
-//!     → save config + register D-Bus interfaces
+//!     → run_pair_task persists, installs, registers, emits
+//!       PairingProgress("complete")
 //!
-//! The paired TV should appear in the TV list with correct properties,
-//! and the client should be able to control it immediately.
+//! Tests subscribe to `Manager1.PairingProgress` *before* calling
+//! `pair_tv` and drain to the terminal phase via
+//! `DaemonClient::drain_pair_to_terminal` — that single round-trip
+//! guarantees the spawned task has finished registering the per-TV
+//! D-Bus interfaces by the time the client moves on.
 
 #![cfg(feature = "mock")]
 
-use tisvlay_core::DaemonClient;
+use tisvlay_core::{DaemonClient, PairTerminal};
 use tisvlay_harness::daemon::TestDaemon;
 
 /// Build a TestDaemon with no pre-configured TVs — a clean slate for
@@ -35,18 +39,35 @@ async fn pair_mock_tv_appears_in_tv_list() {
     // Pre-seed mock with an accept for this address.
     daemon.handle().simulate_user_accept("mock://living_room");
 
+    // Subscribe to PairingProgress before kicking off the pair so we
+    // catch the terminal phase from the spawned task.
+    let stream = client.pairing_progress_stream().await.unwrap();
+
     // Pair through the D-Bus interface — same call the CLI makes.
+    // Returns the reserved tv_id immediately; the handshake itself
+    // runs in the daemon's spawned task.
     let config_json = r#"{"address": "mock://living_room"}"#;
     let tv_id = client
         .pair_tv("Living Room", "mock", config_json, true)
         .await
-        .expect("pairing should succeed");
+        .expect("AddTv RPC should succeed (sync validation)");
 
     // AddTv returns a freshly generated UUID v4 — opaque, but it must
     // round-trip to the Tv1.Uuid property from list_tvs().
     assert!(
         uuid::Uuid::parse_str(&tv_id).is_ok(),
         "AddTv should return a valid UUID, got {tv_id:?}"
+    );
+
+    // Drain to the terminal phase. `complete` only fires after the
+    // spawned task has finished installing + registering, so by the
+    // time this returns the per-TV interfaces are live.
+    let terminal = DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .expect("drain should reach terminal");
+    assert!(
+        matches!(terminal, PairTerminal::Complete { .. }),
+        "expected Complete, got {terminal:?}"
     );
 
     // The paired TV should now appear in the list.
@@ -65,6 +86,7 @@ async fn pair_then_control_screen() {
 
     daemon.handle().simulate_user_accept("mock://office");
 
+    let stream = client.pairing_progress_stream().await.unwrap();
     let config_json = r#"{"address": "mock://office"}"#;
     let tv_id = client
         .pair_tv("Office TV", "mock", config_json, true)
@@ -74,6 +96,10 @@ async fn pair_then_control_screen() {
         uuid::Uuid::parse_str(&tv_id).is_ok(),
         "AddTv should return a valid UUID, got {tv_id:?}"
     );
+    let terminal = DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .unwrap();
+    assert!(matches!(terminal, PairTerminal::Complete { .. }));
 
     // Screen should default to on.
     let tvs = client.list_tvs().await.unwrap();
@@ -98,12 +124,32 @@ async fn pair_with_rejected_pairing_returns_error() {
 
     daemon.handle().simulate_user_reject("mock://denied");
 
+    let stream = client.pairing_progress_stream().await.unwrap();
     let config_json = r#"{"address": "mock://denied"}"#;
-    let result = client.pair_tv("Denied TV", "mock", config_json, true).await;
 
-    assert!(result.is_err(), "pairing should fail when user rejects");
+    // AddTv itself succeeds (sync validation passes). The failure
+    // surfaces via the PairingProgress::failed terminal phase.
+    let tv_id = client
+        .pair_tv("Denied TV", "mock", config_json, true)
+        .await
+        .expect("AddTv RPC should succeed (sync validation); handshake fails async");
 
-    // TV should NOT appear in the list.
+    let terminal = DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .expect("drain should reach terminal");
+    let message = match terminal {
+        PairTerminal::Failed { message, .. } => message,
+        PairTerminal::Complete { .. } => {
+            panic!("expected Failed terminal, got Complete")
+        }
+    };
+    assert!(
+        message.to_lowercase().contains("reject") || message.to_lowercase().contains("denied"),
+        "failure message should mention rejection; got {message:?}"
+    );
+
+    // TV should NOT appear in the list — run_pair_task only inserts
+    // on the handshake-Ok path.
     let tvs = client.list_tvs().await.unwrap();
     assert!(tvs.is_empty(), "rejected TV should not be in list");
 }
@@ -124,13 +170,19 @@ async fn pair_state_reflects_mock_defaults_not_zeroed() {
 
     daemon.handle().simulate_user_accept("mock://living_room");
 
+    let stream = client.pairing_progress_stream().await.unwrap();
     let config_json = r#"{"address": "mock://living_room"}"#;
     let tv_id = client
         .pair_tv("Living Room", "mock", config_json, true)
         .await
-        .expect("pairing should succeed");
+        .expect("pairing RPC should succeed");
+    let terminal = DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .unwrap();
+    assert!(matches!(terminal, PairTerminal::Complete { .. }));
 
-    // Brief settle for state forwarder to process any queued updates.
+    // Brief settle for state forwarder to process any queued
+    // subscription updates that arrived during pair_task.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let tvs = client.list_tvs().await.unwrap();
@@ -166,6 +218,7 @@ async fn pair_unmanaged_tv() {
 
     daemon.handle().simulate_user_accept("mock://bedroom");
 
+    let stream = client.pairing_progress_stream().await.unwrap();
     let config_json = r#"{"address": "mock://bedroom"}"#;
     let tv_id = client
         .pair_tv("Bedroom", "mock", config_json, false)
@@ -175,6 +228,10 @@ async fn pair_unmanaged_tv() {
         uuid::Uuid::parse_str(&tv_id).is_ok(),
         "AddTv should return a valid UUID, got {tv_id:?}"
     );
+    let terminal = DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .unwrap();
+    assert!(matches!(terminal, PairTerminal::Complete { .. }));
 
     let tvs = client.list_tvs().await.unwrap();
     assert_eq!(tvs.len(), 1);

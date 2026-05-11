@@ -9,7 +9,7 @@ info:
     - "--vendor"
     - mock
   env:
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-iRoMmT/bus.sock,guid=4bb593d5c14070a12b18498669f652a1"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-pwreQd/bus.sock,guid=8f16d118d2e06fabeb38a90f6a016a08"
 ---
 success: true
 exit_code: 0

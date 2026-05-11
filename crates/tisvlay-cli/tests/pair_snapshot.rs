@@ -21,6 +21,16 @@ fn redactions() -> insta::Settings {
     );
     s.add_filter(r"unix:path=[^,]+", "unix:path=<BUS_SOCKET>");
     s.add_filter(r"guid=[0-9a-f]+", "guid=<GUID>");
+    // `tisvlay pair` echoes PairingProgress phases to stderr as
+    // `  <phase>: <message>` lines while it drains the signal stream.
+    // Both the count and content of those lines depend on scheduling:
+    // the initial PairingState::default() emit and the backend's
+    // first transition can interleave any-which-way, and a fast mock
+    // can reach terminal before any non-terminal phase escapes. Drop
+    // every `  <phase>: <message>` progress line so snapshots cover
+    // only the deterministic outcome — the lines before/after still
+    // verify what the CLI emits for the user.
+    s.add_filter(r"(?m)^  awaiting_(?:tv|input): [^\n]*\n", "");
     s
 }
 

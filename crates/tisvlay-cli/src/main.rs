@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tisvlay_core::{DaemonClient, SessionClient, TvInfo};
+use tisvlay_core::{DaemonClient, PairTerminal, SessionClient, TvInfo};
 
 #[derive(Parser)]
 #[command(name = "tisvlay")]
@@ -94,6 +94,12 @@ enum Commands {
         /// Pass --managed false to pair for manual control only.
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         managed: bool,
+    },
+
+    /// Re-pair an existing TV (refresh expired credentials in place)
+    RePair {
+        /// TV ID to re-pair
+        tv_id: String,
     },
 
     /// List configured TVs
@@ -277,16 +283,66 @@ async fn main() -> Result<()> {
             println!("Connecting to TV at {}...", address);
             println!("Please accept the pairing request on your TV.");
 
-            // Build vendor-agnostic config JSON for the daemon
+            // Subscribe to PairingProgress BEFORE calling AddTv so
+            // we don't miss the awaiting_tv / failed phase. AddTv
+            // returns the reserved tv_id immediately (sync
+            // validation); the handshake outcome surfaces via the
+            // terminal `PairingProgress` phase.
+            let stream = client
+                .pairing_progress_stream()
+                .await
+                .context("subscribe to PairingProgress")?;
+
             let config_json = build_pairing_config_json(&address, wake_id.as_deref());
             let tv_id = client
                 .pair_tv(&tv_name, &vendor, &config_json, managed)
                 .await?;
-            println!("TV '{}' paired successfully with ID: {}", tv_name, tv_id);
 
-            if wake_id.is_none() {
-                println!("\nNote: No wake ID (MAC address) provided. Wake-on-LAN will not work.");
-                println!("You can update the MAC address in the config file.");
+            let terminal =
+                DaemonClient::drain_pair_to_terminal(stream, &tv_id, |phase, message| {
+                    eprintln!("  {phase}: {message}");
+                })
+                .await
+                .context("drain PairingProgress to terminal")?;
+            match terminal {
+                PairTerminal::Complete { .. } => {
+                    println!("TV '{}' paired successfully with ID: {}", tv_name, tv_id);
+                    if wake_id.is_none() {
+                        println!(
+                            "\nNote: No wake ID (MAC address) provided. Wake-on-LAN will not work."
+                        );
+                        println!("You can update the MAC address in the config file.");
+                    }
+                }
+                PairTerminal::Failed { message, .. } => {
+                    // The terminal message already carries the
+                    // failure reason (e.g. "Pairing failed: Pairing
+                    // was rejected on the TV"); bubble it up as-is
+                    // without an extra prefix.
+                    anyhow::bail!("{message}");
+                }
+            }
+        }
+
+        Commands::RePair { tv_id } => {
+            let stream = client
+                .pairing_progress_stream()
+                .await
+                .context("subscribe to PairingProgress")?;
+            client.re_pair(&tv_id).await.context("re-pair RPC failed")?;
+            let terminal =
+                DaemonClient::drain_pair_to_terminal(stream, &tv_id, |phase, message| {
+                    eprintln!("  {phase}: {message}");
+                })
+                .await
+                .context("drain PairingProgress to terminal")?;
+            match terminal {
+                PairTerminal::Complete { .. } => {
+                    println!("TV '{}' re-paired successfully", tv_id);
+                }
+                PairTerminal::Failed { message, .. } => {
+                    anyhow::bail!("{message}");
+                }
             }
         }
 

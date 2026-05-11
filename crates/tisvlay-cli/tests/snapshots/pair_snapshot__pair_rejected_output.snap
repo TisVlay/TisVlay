@@ -11,7 +11,7 @@ info:
     - "--name"
     - Denied TV
   env:
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/nix-shell.rmf30I/tisvlay-test-bus-BXX3HF/bus.sock,guid=e5f5a4b023228f1ad96f56ec69dbde26"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/tisvlay-test-bus-nDI7pL/bus.sock,guid=bf453789263497dd2ef7034d6a016a08"
 ---
 success: false
 exit_code: 1
@@ -20,7 +20,4 @@ Connecting to TV at mock://denied...
 Please accept the pairing request on your TV.
 
 ----- stderr -----
-Error: Failed to pair TV 'Denied TV'
-
-Caused by:
-    org.tisvlay.Error.PairingFailed: Pairing was rejected on the TV
+Error: Pairing failed: Pairing was rejected on the TV

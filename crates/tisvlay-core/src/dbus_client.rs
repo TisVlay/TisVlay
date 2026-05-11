@@ -1286,8 +1286,29 @@ impl DaemonClient {
     /// Subscribe to the stream **before** calling `pair_tv` /
     /// `re_pair` — `PairingProgress` signals emitted before the
     /// subscription is active are dropped.
+    ///
+    /// One-shot variant that consumes the stream. Callers that need
+    /// to combine multiple drain passes (e.g. tests that wait for an
+    /// intermediate phase, trigger a side-effect, then resume) use
+    /// [`Self::drain_pair_to_terminal_pinned`] with a pinned borrow.
     pub async fn drain_pair_to_terminal<S>(
         stream: S,
+        target_tv_id: &str,
+        on_progress: impl FnMut(&str, &str),
+    ) -> Result<PairTerminal>
+    where
+        S: futures_util::Stream<Item = (String, String, String)>,
+    {
+        let mut stream = std::pin::pin!(stream);
+        Self::drain_pair_to_terminal_pinned(stream.as_mut(), target_tv_id, on_progress).await
+    }
+
+    /// Pinned-borrow workhorse for [`Self::drain_pair_to_terminal`].
+    /// Useful when the caller needs to keep the stream alive across
+    /// multiple operations on it (e.g. wait for `awaiting_tv`, trigger
+    /// `CancelPair`, then drain the remainder to `failed`).
+    pub async fn drain_pair_to_terminal_pinned<S>(
+        mut stream: std::pin::Pin<&mut S>,
         target_tv_id: &str,
         mut on_progress: impl FnMut(&str, &str),
     ) -> Result<PairTerminal>
@@ -1295,9 +1316,7 @@ impl DaemonClient {
         S: futures_util::Stream<Item = (String, String, String)>,
     {
         use futures_util::StreamExt;
-
-        let mut stream = std::pin::pin!(stream);
-        while let Some((tv_id, phase, message)) = stream.next().await {
+        while let Some((tv_id, phase, message)) = stream.as_mut().next().await {
             if tv_id != target_tv_id {
                 continue;
             }

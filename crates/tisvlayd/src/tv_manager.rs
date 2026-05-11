@@ -6,6 +6,7 @@
 //! concurrently. The outer `RwLock<HashMap>` is held only briefly for
 //! lookup; network I/O runs under a per-TV `tokio::sync::Mutex`.
 
+use crate::dbus::{register_tv_interfaces, tv_path, unregister_tv_interfaces};
 use crate::registry::BackendRegistry;
 use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
@@ -358,6 +359,30 @@ impl std::fmt::Debug for TvManager {
         f.debug_struct("TvManager")
             .field("config_path", &self.config_path)
             .finish_non_exhaustive()
+    }
+}
+
+/// RAII guard that removes a `pairing_sessions` entry on `Drop`.
+///
+/// `run_pairing_handshake` inserts a session's command-sender into
+/// the map so `Manager1.CancelPair(tv_id)` can reach it. The entry
+/// must be removed when the handshake ends — on normal Ok/Err
+/// return, on panic-unwind through the await, **and** if the
+/// surrounding future is dropped mid-handshake (e.g., the daemon
+/// shuts down). A manual `pairing_sessions.lock().remove(tv_id)` at
+/// the end of the function would handle the Ok/Err cases but
+/// silently leak the entry on future-drop. The guard's `Drop` impl
+/// covers every path.
+struct PairingSessionGuard<'a> {
+    pairing_sessions: &'a parking_lot::Mutex<
+        std::collections::HashMap<String, mpsc::Sender<tisvlay_core::PairingCommand>>,
+    >,
+    tv_id: String,
+}
+
+impl Drop for PairingSessionGuard<'_> {
+    fn drop(&mut self) {
+        self.pairing_sessions.lock().remove(&self.tv_id);
     }
 }
 
@@ -1607,70 +1632,213 @@ impl TvManager {
     // TV Management
     // -------------------------------------------------------------------------
 
-    /// Pair a new TV.
+    /// Pair a new TV — async-spawn shape.
+    ///
+    /// Validates the vendor synchronously, reserves a fresh UUID, and
+    /// spawns the pairing handshake into a background task. Returns
+    /// the reserved tv_id immediately; clients drain
+    /// `Manager1.PairingProgress(tv_id, …)` filtered on the returned
+    /// tv_id to a terminal phase (`complete` or `failed`) to observe
+    /// the outcome.
+    ///
+    /// On successful handshake the spawned task persists the config,
+    /// installs the TV in the managed set, subscribes to backend
+    /// state pushes, and registers the per-TV `Tv1.*` D-Bus
+    /// interfaces — at which point the TV becomes visible via
+    /// `ObjectManager.GetManagedObjects` + `InterfacesAdded`. On
+    /// failed handshake the task does nothing further (PairingProgress
+    /// already emitted `failed`); no TV is added.
+    ///
+    /// The `connection` is cloned into the spawned task so the task
+    /// can register interfaces without going back through the D-Bus
+    /// handler. `zbus::Connection` is `Clone` (Arc internally), so
+    /// this is cheap.
     pub async fn pair_tv(
-        &self,
+        self: &Arc<Self>,
         name: &str,
         vendor: &str,
         vendor_config: toml::Value,
         managed: bool,
+        connection: zbus::Connection,
     ) -> Result<String, TvManagerError> {
         info!(name = %name, vendor = %vendor, "Pairing TV");
 
+        // Synchronous validation: reject unknown vendor before
+        // spawning anything.
+        if self.registry.get(vendor).is_none() {
+            return Err(TvManagerError::ConfigError(format!(
+                "Unknown vendor: {}",
+                vendor
+            )));
+        }
+
         // Generate a fresh UUID v4 upfront so PairingProgress signals
-        // can carry a stable identifier even before the connection is
-        // established. Decoupled from `name` so renames don't churn
-        // cross-references.
+        // can carry a stable identifier and the client knows its
+        // tv_id before any signal arrives. Decoupled from `name` so
+        // renames don't churn cross-references.
         let uuid = uuid::Uuid::new_v4();
         let tv_id = uuid.to_string();
 
-        // Run the pairing handshake — start_pairing + progress-signal
-        // forwarding + wait_for_completion + build_config_from_pairing.
-        // Extracted as a private helper so `re_pair_tv` can share the
-        // same flow.
+        // Spawn the handshake. The task owns clones of the
+        // arguments; reports outcome via PairingProgress signals
+        // (`run_pairing_handshake`'s internal progress task does the
+        // emit). The RPC return doesn't wait for it.
+        let self_arc = Arc::clone(self);
+        let task_tv_id = tv_id.clone();
+        let name_owned = name.to_string();
+        let vendor_owned = vendor.to_string();
+        tokio::spawn(async move {
+            self_arc
+                .run_pair_task(
+                    connection,
+                    uuid,
+                    task_tv_id,
+                    name_owned,
+                    vendor_owned,
+                    vendor_config,
+                    managed,
+                )
+                .await;
+        });
+
+        Ok(tv_id)
+    }
+
+    /// Handshake + post-handshake registration for a new TV. Spawned
+    /// by [`Self::pair_tv`]; runs the vendor pairing flow, persists
+    /// the resulting config, installs the TV in the managed set, and
+    /// registers per-TV `Tv1.*` D-Bus interfaces. Emits a terminal
+    /// `PairingProgress` phase at the end — `complete` only if every
+    /// step succeeded, `failed` otherwise. Clients observing
+    /// `complete` can immediately call into the new Tv1.* interfaces
+    /// without racing the registration.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_pair_task(
+        self: Arc<Self>,
+        connection: zbus::Connection,
+        uuid: uuid::Uuid,
+        tv_id: String,
+        name: String,
+        vendor: String,
+        vendor_config: toml::Value,
+        managed: bool,
+    ) {
+        let result = self
+            .try_run_pair_task(
+                &connection,
+                uuid,
+                &tv_id,
+                &name,
+                &vendor,
+                vendor_config,
+                managed,
+            )
+            .await;
+
+        // Single terminal-emit point. `run_pairing_handshake` no
+        // longer emits terminal phases — they live here so they
+        // never fire before the per-TV interfaces are registered
+        // (the success case) or before the failure reason is
+        // composed from any post-handshake step (the failure case).
+        let (phase, message) = match &result {
+            Ok(()) => ("complete", "Pairing complete".to_string()),
+            Err(e) => ("failed", e.to_string()),
+        };
+        self.emit_state_change(StateChangeEvent::PairingProgress {
+            tv_id: tv_id.clone(),
+            phase: phase.to_string(),
+            message,
+        });
+
+        match result {
+            Ok(()) => info!(tv_id = %tv_id, "TV paired successfully"),
+            Err(e) => warn!(tv_id = %tv_id, error = %e, "pair_tv task failed"),
+        }
+    }
+
+    /// Inner body of [`Self::run_pair_task`]. Bubbles up any failure
+    /// (handshake, post-pair connect, register-interfaces) as a
+    /// `TvManagerError` so the outer task can emit a single
+    /// `failed` PairingProgress with the composed reason.
+    #[allow(clippy::too_many_arguments)]
+    async fn try_run_pair_task(
+        self: &Arc<Self>,
+        connection: &zbus::Connection,
+        uuid: uuid::Uuid,
+        tv_id: &str,
+        name: &str,
+        vendor: &str,
+        vendor_config: toml::Value,
+        managed: bool,
+    ) -> Result<(), TvManagerError> {
+        // Handshake — emits awaiting_tv/awaiting_input along the way;
+        // terminal is held back for the outer task.
         let final_config = self
-            .run_pairing_handshake(&tv_id, vendor, &vendor_config)
+            .run_pairing_handshake(tv_id, vendor, &vendor_config)
             .await?;
 
-        // Create TV config with vendor-specific connection parameters.
-        // The UUID was generated upfront so the persisted config
-        // matches the identifier emitted in PairingProgress signals.
+        // Build the persisted config from the handshake output.
         let mut tv_config = TvConfig::with_uuid(uuid, name, vendor, managed);
-
-        // Store the vendor config
         tv_config
             .vendor_config
             .insert(vendor.to_string(), final_config);
 
-        // Connect with the new config
-        let connection = self.registry.connect_tv(&tv_config).await.map_err(|e| {
+        // Open the post-pair connection.
+        let conn = self.registry.connect_tv(&tv_config).await.map_err(|e| {
             TvManagerError::ConnectionFailed {
-                tv_id: tv_id.clone(),
+                tv_id: tv_id.to_string(),
                 source: e,
             }
         })?;
 
-        // Add to managed TVs and subscribe to state updates
+        // Install the TV in the managed set and start state
+        // subscription.
         {
             let system = self.system_section.read().await;
             let system_profile = system.resolve_profile(&tv_config.profile.system);
             let mut tvs = self.tvs.write().await;
-            let mut managed = ManagedTv::new(tv_config.clone(), system_profile);
-            managed.connection = Some(connection);
-            if let Some(conn) = managed.connection.as_mut() {
-                self.try_subscribe_state(&tv_id, conn.as_mut()).await;
+            let mut managed_tv = ManagedTv::new(tv_config.clone(), system_profile);
+            managed_tv.connection = Some(conn);
+            if let Some(conn) = managed_tv.connection.as_mut() {
+                self.try_subscribe_state(tv_id, conn.as_mut()).await;
             }
             tvs.insert(
-                tv_id.clone(),
-                (tv_config.managed, Arc::new(Mutex::new(managed))),
+                tv_id.to_string(),
+                (tv_config.managed, Arc::new(Mutex::new(managed_tv))),
             );
         }
 
-        // Save config
-        self.save_tv_config(&tv_config).await?;
+        // Persist. Disk-failure is logged but not fatal — in-memory
+        // state is consistent and a future ReloadConfig will pick it
+        // up. Don't fail the whole pair on a disk hiccup.
+        if let Err(e) = self.save_tv_config(&tv_config).await {
+            warn!(
+                tv_id = %tv_id,
+                error = %e,
+                "pair_tv: failed to persist config; in-memory state is still valid",
+            );
+        }
 
-        info!(tv_id = %tv_id, "TV paired successfully");
-        Ok(tv_id)
+        // Register per-TV D-Bus interfaces. Failure here means the
+        // TV is in the managed set but invisible via
+        // `ObjectManager.GetManagedObjects` — that's a hard failure
+        // from the client's perspective, so surface it.
+        let state = self.get_current_state(tv_id).await;
+        let path = tv_path(tv_id);
+        let _ = unregister_tv_interfaces(connection, &path).await;
+        register_tv_interfaces(
+            connection,
+            &path,
+            tv_id.to_string(),
+            Arc::clone(self),
+            state.as_ref(),
+        )
+        .await
+        .map_err(|e| {
+            TvManagerError::ConfigError(format!("Failed to register D-Bus interfaces: {}", e))
+        })?;
+
+        Ok(())
     }
 
     /// Run a pairing handshake against `vendor` with the given
@@ -1702,21 +1870,39 @@ impl TvManager {
 
         // Register the session's command sender in `pairing_sessions`
         // so `Manager1.CancelPair(tv_id)` can reach the in-flight
-        // session via `cancel_pair`. Removed on completion below
-        // regardless of outcome.
+        // session via `cancel_pair`. The RAII `PairingSessionGuard`
+        // below removes the entry on every exit path — Ok return,
+        // Err return, panic-unwind, or future-dropped mid-handshake.
         self.pairing_sessions
             .lock()
             .insert(tv_id.to_string(), session.command_sender());
+        let _session_guard = PairingSessionGuard {
+            pairing_sessions: &self.pairing_sessions,
+            tv_id: tv_id.to_string(),
+        };
 
-        // Spawn a watcher that forwards PairingState changes as
-        // `Manager1.PairingProgress` events. Bounded by the session's
-        // lifetime — when wait_for_completion returns and the session
-        // drops, the watch channel closes and the task exits.
+        // Spawn a watcher that forwards non-terminal `PairingState`
+        // changes as `Manager1.PairingProgress` events. Terminal
+        // phases (`complete` / `failed`) are **not** emitted here —
+        // they are the caller's responsibility (`run_pair_task` /
+        // `run_re_pair_task`) so that:
+        //
+        // - `complete` only fires after the caller's post-handshake
+        //   setup (connect, install, register interfaces) finishes.
+        //   Clients seeing `complete` can immediately call into the
+        //   per-TV `Tv1.*` interfaces without racing the registration.
+        // - `failed` from a post-handshake setup failure (connect,
+        //   registration, etc.) is also surfaced — the watcher can't
+        //   see those.
+        //
+        // The watcher still observes the terminal state internally
+        // (to know when to exit the loop), it just doesn't emit it.
         let mut state_rx = session.subscribe();
         let progress_tx = self.state_change_tx.clone();
         let progress_tv_id = tv_id.to_string();
         let progress_task = tokio::spawn(async move {
-            // Emit the initial state before the first .changed() call.
+            // Initial state is never terminal (sessions start in
+            // `AwaitingTvPrompt`); emit unconditionally.
             let initial = state_rx.borrow().clone();
             let _ = progress_tx.send(StateChangeEvent::PairingProgress {
                 tv_id: progress_tv_id.clone(),
@@ -1725,25 +1911,22 @@ impl TvManager {
             });
             while state_rx.changed().await.is_ok() {
                 let s = state_rx.borrow().clone();
+                if s.is_terminal() {
+                    break;
+                }
                 let _ = progress_tx.send(StateChangeEvent::PairingProgress {
                     tv_id: progress_tv_id.clone(),
                     phase: s.to_dbus_state().to_string(),
                     message: s.message().to_string(),
                 });
-                if s.is_terminal() {
-                    break;
-                }
             }
         });
 
         let result = session.wait_for_completion().await;
         progress_task.abort();
 
-        // Clean up the session-tracking entry now that the handshake
-        // is done. Done regardless of success/failure/cancel so the
-        // map doesn't leak entries for completed pairs.
-        self.pairing_sessions.lock().remove(tv_id);
-
+        // _session_guard drops here, removing the entry from
+        // `pairing_sessions`.
         let credentials = result.map_err(|e| TvManagerError::PairingFailed(Box::new(e)))?;
 
         self.registry
@@ -1777,7 +1960,15 @@ impl TvManager {
     /// (see `crates/tisvlay-lg/src/backend.rs::start_pairing` —
     /// `WebOsClient::connect(&ip, None)`). So every re-pair triggers
     /// a fresh permission prompt on the TV.
-    pub async fn re_pair_tv(&self, tv_id: &str) -> Result<(), TvManagerError> {
+    ///
+    /// Async-spawn shape (mirrors `pair_tv`): sync validation +
+    /// pairing-in-flight claim + connection close + ConnectionChanged
+    /// emit happens in the caller's await; the long handshake +
+    /// persist + reconnect runs in a spawned task. Outcome surfaces
+    /// via `Manager1.PairingProgress` filtered on `tv_id` to a
+    /// terminal phase. RPC returns `Ok(())` as soon as the task is
+    /// spawned.
+    pub async fn re_pair_tv(self: &Arc<Self>, tv_id: &str) -> Result<(), TvManagerError> {
         info!(tv_id = %tv_id, "Re-pairing TV");
 
         let tv_arc = self.get_tv(tv_id).await?;
@@ -1818,14 +2009,56 @@ impl TvManager {
         // the handshake. Without this the D-Bus `Connected` property
         // cache + GUI Connected indicator stay stale-true for the
         // 10-30s handshake window. The matching `true` event is
-        // emitted by `self.reconnect()` below on success.
+        // emitted by `self.reconnect()` on success (inside the task).
         if was_connected {
             self.emit_connection_changed(tv_id, false);
         }
 
-        // Run the handshake without holding the per-TV Mutex.
+        // Spawn the handshake. The task owns its arguments and
+        // reports outcomes via PairingProgress signals; this RPC
+        // returns Ok as soon as the spawn is in flight.
+        let self_arc = Arc::clone(self);
+        let task_tv_id = tv_id.to_string();
+        let task_tv_arc = Arc::clone(&tv_arc);
+        tokio::spawn(async move {
+            self_arc
+                .run_re_pair_task(
+                    task_tv_id,
+                    vendor,
+                    vendor_config,
+                    was_connected,
+                    task_tv_arc,
+                )
+                .await;
+        });
+
+        Ok(())
+    }
+
+    /// Handshake + post-handshake reconnect for `re_pair_tv`. Spawned
+    /// by [`Self::re_pair_tv`]; runs the vendor pairing handshake
+    /// against the existing `vendor_config`, persists refreshed
+    /// credentials on success, attempts a reconnect to bring the TV
+    /// back online. On failure, attempts a best-effort reconnect
+    /// with the unchanged old `vendor_config` so a cancelled re-pair
+    /// doesn't tear down a working session.
+    ///
+    /// Emits a terminal `PairingProgress` phase at the end:
+    /// `complete` if the handshake succeeded (regardless of the
+    /// post-handshake reconnect outcome — re-pair is about
+    /// credentials, not reachability; clients observe reachability
+    /// via `Tv1.Connected`), `failed` if the handshake itself
+    /// failed.
+    async fn run_re_pair_task(
+        self: Arc<Self>,
+        tv_id: String,
+        vendor: String,
+        vendor_config: toml::Value,
+        was_connected: bool,
+        tv_arc: Arc<Mutex<ManagedTv>>,
+    ) {
         let handshake_result = self
-            .run_pairing_handshake(tv_id, &vendor, &vendor_config)
+            .run_pairing_handshake(&tv_id, &vendor, &vendor_config)
             .await;
 
         // Clear the flag + apply result. Done in one critical
@@ -1847,18 +2080,23 @@ impl TvManager {
                     // best-effort reconnect with the unchanged
                     // `vendor_config` so a stray Cancel doesn't tear
                     // down a working session. If the old credentials
-                    // were genuinely expired the reconnect fails too,
-                    // and the user sees both errors via logs — the
-                    // original re-pair error still bubbles up.
+                    // were genuinely expired the reconnect fails too;
+                    // the user sees the truth via `Tv1.Connected`.
                     drop(tv);
-                    if was_connected && let Err(reconn_err) = self.reconnect(tv_id).await {
+                    if was_connected && let Err(reconn_err) = self.reconnect(&tv_id).await {
                         warn!(
                             tv_id = %tv_id,
                             error = %reconn_err,
                             "Re-pair: best-effort reconnect after handshake error failed",
                         );
                     }
-                    return Err(e);
+                    warn!(tv_id = %tv_id, error = %e, "Re-pair handshake failed");
+                    self.emit_state_change(StateChangeEvent::PairingProgress {
+                        tv_id: tv_id.clone(),
+                        phase: "failed".to_string(),
+                        message: e.to_string(),
+                    });
+                    return;
                 }
             }
         };
@@ -1866,19 +2104,34 @@ impl TvManager {
         // Persist the refreshed credentials so a daemon restart picks
         // them up automatically. Disk I/O outside the per-TV Mutex —
         // `save_tv_config` serializes via its own `disk_write_lock`.
-        self.save_tv_config(&new_tv_config).await?;
+        // Persist-failure is logged but not fatal: in-memory state
+        // is consistent, and the next ReloadConfig (or daemon
+        // restart with the new disk write that succeeded later) will
+        // sync it.
+        if let Err(e) = self.save_tv_config(&new_tv_config).await {
+            warn!(
+                tv_id = %tv_id,
+                error = %e,
+                "Re-pair: failed to persist refreshed config; in-memory state still valid",
+            );
+        }
 
         // Tell the state forwarder that vendor_config changed so the
         // per-TV `Tv1.*` cached fields get refreshed (same path
         // `Tv1.UpdateConfig` uses for vendor-side edits).
         self.emit_state_change(StateChangeEvent::TvVendorConfigChanged {
-            tv_id: tv_id.to_string(),
+            tv_id: tv_id.clone(),
         });
 
         // Reconnect with the new credentials. Reuses the standard
         // `reconnect` flow which handles WoL + connection-retry +
-        // subscribe-state under the per-TV Mutex.
-        if let Err(e) = self.reconnect(tv_id).await {
+        // subscribe-state under the per-TV Mutex. Failure here
+        // doesn't roll back the re-pair: credentials were refreshed,
+        // but the TV is unreachable for some other reason. Clients
+        // see this via `Tv1.Connected = false`. The terminal
+        // PairingProgress below is still `complete` because the
+        // re-pair operation itself succeeded.
+        if let Err(e) = self.reconnect(&tv_id).await {
             warn!(
                 tv_id = %tv_id,
                 error = %e,
@@ -1887,7 +2140,11 @@ impl TvManager {
         }
 
         info!(tv_id = %tv_id, "Re-pair complete");
-        Ok(())
+        self.emit_state_change(StateChangeEvent::PairingProgress {
+            tv_id: tv_id.clone(),
+            phase: "complete".to_string(),
+            message: "Re-pair complete".to_string(),
+        });
     }
 
     /// Cancel an in-flight pairing handshake for the given TV.
@@ -1915,11 +2172,19 @@ impl TvManager {
         // result the client would see if they called CancelPair a
         // moment later. tisvlay_core::PairingCommand is re-exported
         // from the crate root.
+        //
+        // Also evict the stale entry on send failure so a permanently
+        // dead receiver doesn't leak in the map. `PairingSessionGuard`
+        // normally handles cleanup, but if the handshake future was
+        // dropped *between* the guard's insert and its drop (e.g.,
+        // task aborted mid-await), the entry can survive with a dead
+        // sender until a future cancel_pair stumbles on it.
         if sender
             .send(tisvlay_core::PairingCommand::Cancel)
             .await
             .is_err()
         {
+            self.pairing_sessions.lock().remove(tv_id);
             return Err(TvManagerError::NotPairing(tv_id.to_string()));
         }
         Ok(())
@@ -2292,6 +2557,21 @@ impl TvManager {
         let mut system_profile_changed = false;
         {
             let mut tv = tv_arc.lock().await;
+            // Re-pair runs its handshake outside the per-TV lock for
+            // the ~10-30s handshake duration; a concurrent UpdateConfig
+            // that modifies vendor_config during that window would be
+            // silently overwritten when `re_pair_tv` re-acquires the
+            // lock and inserts its handshake-derived table. Reject
+            // outright while pairing is in flight — the client retries
+            // after re-pair completes.
+            if tv.pairing_in_flight {
+                // Re-routes to `DaemonError::OperationFailed` at the
+                // D-Bus layer (see `dbus::mod::From<TvManagerError>`).
+                return Err(TvManagerError::ConfigError(format!(
+                    "TV {} is currently pairing; config edits are blocked until pairing completes",
+                    tv_id
+                )));
+            }
             for (key, value) in &top_level {
                 let internal_key = if key == "system_profile" {
                     "profile.system"

@@ -11,10 +11,9 @@
 
 #![cfg(feature = "mock")]
 
-use std::time::Duration;
-
-use tisvlay_core::DaemonClient;
+use tisvlay_core::{DaemonClient, PairTerminal};
 use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
+use tisvlay_harness::pairing::wait_for_pair_phase;
 use tisvlay_test::PrivateBus;
 
 async fn client() -> DaemonClient {
@@ -31,34 +30,50 @@ async fn cancel_pair_aborts_in_flight_re_pair() {
     let client = client().await;
     let tv_uuid = test_tv_uuid("cancel_test").to_string();
 
-    // Start a re-pair against the mock TV in `pairing = "manual"`
-    // mode (the default): `start_pairing` waits for an explicit
-    // cancel or submit command, so this call hangs.
-    let client_a = client.clone();
-    let tv_a = tv_uuid.clone();
-    let pair_task = tokio::spawn(async move { client_a.re_pair(&tv_a).await });
+    // Subscribe first so we capture the awaiting_tv phase as soon
+    // as the daemon's spawned re-pair task reaches `start_pairing`.
+    let stream = client
+        .pairing_progress_stream()
+        .await
+        .expect("pairing progress stream");
+    let mut stream = std::pin::pin!(stream);
 
-    // Settle window so the re-pair task has reached the
-    // `start_pairing` await point and the session's command sender
-    // is registered in `pairing_sessions` before we try to cancel.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Start re-pair against the mock TV. `pairing = "manual"`
+    // (mock's default) means `start_pairing` waits for an explicit
+    // cancel/submit command — the spawned task parks at
+    // awaiting_tv. RPC returns Ok immediately (async-spawn shape).
+    client
+        .re_pair(&tv_uuid)
+        .await
+        .expect("re_pair RPC should succeed (sync validation)");
 
-    // Cancel via Manager1.CancelPair. Must succeed since the
-    // pair is in flight.
+    // Wait for the awaiting_tv phase — confirms the spawned task
+    // has reached `start_pairing` and registered its command sender
+    // in `pairing_sessions` so CancelPair can find it.
+    wait_for_pair_phase(stream.as_mut(), &tv_uuid, "awaiting_tv")
+        .await
+        .expect("daemon should reach awaiting_tv before cancel");
+
+    // Cancel via Manager1.CancelPair. Must succeed since the pair
+    // is in flight.
     client
         .cancel_pair(&tv_uuid)
         .await
         .expect("cancel_pair on in-flight session should succeed");
 
-    // The re-pair task should resolve with an error (cancelled).
-    // We don't assert the exact message — the cancel ladder
-    // through PairingError → TvManagerError → DaemonError may
-    // format it differently across versions. What matters is
-    // termination.
-    let pair_result = pair_task.await.expect("pair task joins");
+    // Drain to terminal. With the cancel propagating through, the
+    // re-pair must terminate with `failed` carrying a cancel
+    // message. We don't assert the exact wording — the cancel
+    // ladder through PairingError → TvManagerError → DaemonError
+    // may format it differently across versions. What matters is
+    // that we reach `Failed` rather than `Complete`.
+    let terminal =
+        DaemonClient::drain_pair_to_terminal_pinned(stream.as_mut(), &tv_uuid, |_, _| {})
+            .await
+            .expect("drain should reach terminal");
     assert!(
-        pair_result.is_err(),
-        "in-flight re_pair must resolve with an error after cancel; got Ok",
+        matches!(terminal, PairTerminal::Failed { .. }),
+        "in-flight re_pair must reach Failed terminal after cancel; got {terminal:?}",
     );
 }
 
