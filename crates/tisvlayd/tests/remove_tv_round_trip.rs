@@ -1,14 +1,14 @@
 //! Regression: removing a UUID-keyed TV through the GUI/CLI surface
 //! must not silently miss the daemon's in-memory TV map.
 //!
-//! After the Phase 8.1 UUID identity migration, every TV's canonical
-//! ID is a hyphenated UUID v4 (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+//! Every TV's canonical ID is a hyphenated UUID v4
+//! (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
 //! D-Bus path components forbid hyphens, so an early implementation
 //! that took the path on `Manager1.RemoveTv(o)` and stripped the
 //! prefix — without reversing the `-` → `_` sanitization that
 //! [`tv_path`] applies — looked up the underscored form against an
 //! `IndexMap` keyed by the hyphenated UUID and returned `TvNotFound`.
-//! Pre-8.1 sanitized-name IDs had no hyphens so the round-trip was
+//! Earlier sanitized-name IDs had no hyphens so the round-trip was
 //! lossless and the bug was invisible.
 //!
 //! The fix routed removal through a per-object `Tv1.Remove()` method,

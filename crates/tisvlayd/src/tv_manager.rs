@@ -2775,7 +2775,7 @@ impl TvManager {
         let new_ids: std::collections::HashSet<_> =
             new_config.tv.iter().map(|t| t.uuid.to_string()).collect();
 
-        // Phase 1: update the IndexMap under write lock (map mutations only — no I/O).
+        // Stage 1: update the IndexMap under write lock (map mutations only — no I/O).
         // Collect Arcs for removed TVs and existing TVs that need config updates.
         // We do NOT close connections here; the write lock must not be held across
         // async WebSocket close operations that can block for hundreds of milliseconds.
@@ -2802,7 +2802,7 @@ impl TvManager {
                 let tv_id = tv_config.uuid.to_string();
                 if let Some((managed_flag, tv_arc)) = tvs.get_mut(&tv_id) {
                     // Existing TV: update outer managed flag immediately under the write
-                    // lock, then defer the rest of the config update to Phase 2.
+                    // lock, then defer the rest of the config update to Stage 2.
                     *managed_flag = tv_config.managed;
                     to_update.push((tv_arc.clone(), Some(tv_config)));
                 } else {
@@ -2824,7 +2824,7 @@ impl TvManager {
             tv_count = tvs.len();
         } // write lock released
 
-        // Phase 2: update configs and close connections without holding the outer lock.
+        // Stage 2: update configs and close connections without holding the outer lock.
         // Each per-TV lock is held only for the duration of its own operation.
         for (tv_arc, new_tv_config) in to_update {
             let mut tv = tv_arc.lock().await;
@@ -2864,7 +2864,7 @@ impl TvManager {
             *user = new_config.user;
         }
 
-        // Phase 3: re-resolve system profiles for all TVs.
+        // Stage 3: re-resolve system profiles for all TVs.
         // The system section may have changed, so every TV's resolved profile
         // needs to be recomputed from the new system profiles.
         {

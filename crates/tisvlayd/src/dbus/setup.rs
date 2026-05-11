@@ -94,7 +94,7 @@ pub async fn build_dbus_connection(
 /// hits the zbus `ObjectServer`'s routing map but doesn't touch
 /// `tv_manager`'s in-memory state); the corresponding `tv_manager`
 /// removal happened earlier in [`crate::tv_manager::TvManager::reload_config`]'s
-/// Phase 2 under the per-TV Mutex, so by the time we reach this
+/// Stage 2 under the per-TV Mutex, so by the time we reach this
 /// unregister loop, in-flight calls have already either completed,
 /// hit `TvNotFound`, or hit `NotConnected`. See `remove_tv`'s
 /// docstring for the three sub-cases.
