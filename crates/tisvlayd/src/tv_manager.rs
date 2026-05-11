@@ -1901,14 +1901,26 @@ impl TvManager {
         let progress_tx = self.state_change_tx.clone();
         let progress_tv_id = tv_id.to_string();
         let progress_task = tokio::spawn(async move {
-            // Initial state is never terminal (sessions start in
-            // `AwaitingTvPrompt`); emit unconditionally.
+            // Initial state is *usually* `AwaitingTvPrompt`, but
+            // there's a race against fast backends (mock with a
+            // pre-seeded reject/accept outcome) that can flip the
+            // state to terminal before this task reads `.borrow()`.
+            // Suppress the emit if so — the outer task owns terminal
+            // emission. Without this guard, a CI-fast race produces
+            // a different `failed` message wire format than the
+            // slow-path (the inner task emits the bare backend
+            // reason; the outer task wraps it in
+            // `TvManagerError::PairingFailed`'s `Pairing failed: …`
+            // Display), which the GUI / CLI then surface
+            // differently — flaky snapshots, confused users.
             let initial = state_rx.borrow().clone();
-            let _ = progress_tx.send(StateChangeEvent::PairingProgress {
-                tv_id: progress_tv_id.clone(),
-                phase: initial.to_dbus_state().to_string(),
-                message: initial.message().to_string(),
-            });
+            if !initial.is_terminal() {
+                let _ = progress_tx.send(StateChangeEvent::PairingProgress {
+                    tv_id: progress_tv_id.clone(),
+                    phase: initial.to_dbus_state().to_string(),
+                    message: initial.message().to_string(),
+                });
+            }
             while state_rx.changed().await.is_ok() {
                 let s = state_rx.borrow().clone();
                 if s.is_terminal() {
