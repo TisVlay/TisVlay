@@ -113,6 +113,11 @@ pub(crate) enum TrayCommand {
     ToggleMute(String),
     SetManaged(String, bool),
     Reload,
+    /// Activate the GUI: spawn a new window if none, raise the
+    /// existing one otherwise. Routes through the GUI's
+    /// `org.freedesktop.Application` interface so the same path
+    /// serves launcher entries (KRunner, app menu) and the tray.
+    OpenGui,
     Quit,
 }
 
@@ -319,13 +324,26 @@ impl Tray for TisvlayTray {
         }
 
         items.push(MenuItem::Separator);
+        items.push(tv_item(
+            "Open Settings",
+            "preferences-system",
+            &self.cmd_tx,
+            || TrayCommand::OpenGui,
+        ));
         items.push(tv_item("Reload", "view-refresh", &self.cmd_tx, || {
             TrayCommand::Reload
         }));
-        items.push(MenuItem::Separator);
-        items.push(tv_item("Quit", "application-exit", &self.cmd_tx, || {
-            TrayCommand::Quit
-        }));
+
+        // Quit is dev-only. In release builds the tray runs as a
+        // systemd user service and end users should stop it via
+        // `systemctl --user stop tisvlay-tray`, not from the menu.
+        #[cfg(debug_assertions)]
+        {
+            items.push(MenuItem::Separator);
+            items.push(tv_item("Quit", "application-exit", &self.cmd_tx, || {
+                TrayCommand::Quit
+            }));
+        }
 
         items
     }

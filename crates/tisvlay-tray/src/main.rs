@@ -4,6 +4,7 @@
 //! via the tisvlayd D-Bus daemon. Communicates exclusively through
 //! `DaemonClient` — no vendor crate dependencies.
 
+mod activation_token;
 mod dbus;
 mod state;
 mod tray;
@@ -386,6 +387,22 @@ async fn process_commands(
 
         match cmd {
             TrayCommand::Quit => break,
+            TrayCommand::OpenGui => {
+                // Acquire an xdg-activation-v1 token on the
+                // blocking pool (the wayland-client dispatch is
+                // sync), then call the GUI's standard freedesktop
+                // Application.Activate. Empty platform_data is
+                // OK on X11 / older Plasma; only the raise-
+                // existing path under Plasma 6.5+ Extreme FSP
+                // needs the token to actually focus.
+                let token = tokio::task::spawn_blocking(activation_token::try_acquire)
+                    .await
+                    .ok()
+                    .flatten();
+                if let Err(e) = activate_gui(token).await {
+                    warn!(error = %e, "Open GUI failed");
+                }
+            }
             TrayCommand::Reload => {
                 // Reload config on both services, then immediately refresh state
                 if let Err(e) = daemon.reload_config().await {
@@ -491,6 +508,40 @@ async fn process_commands(
                 .await;
         }
     }
+}
+
+/// Invoke `org.freedesktop.Application.Activate` on the running
+/// GUI (or auto-spawn one via D-Bus session activation if the
+/// `.service` file is installed). Carries an xdg-activation-v1
+/// token in `platform_data["activation-token"]` when available so
+/// KWin Plasma 6.5+ raises the existing window past focus-stealing
+/// prevention; empty `platform_data` is the spec-compliant fallback
+/// for X11 / surfaceless callers and older compositors.
+async fn activate_gui(activation_token: Option<String>) -> Result<()> {
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+
+    let conn = zbus::Connection::session()
+        .await
+        .context("Connect to session bus")?;
+    let proxy = zbus::Proxy::new(
+        &conn,
+        "org.tisvlay.Gui",
+        "/org/tisvlay/Gui",
+        "org.freedesktop.Application",
+    )
+    .await
+    .context("Build org.freedesktop.Application proxy")?;
+
+    let mut platform_data: HashMap<String, Value<'_>> = HashMap::new();
+    if let Some(token) = activation_token {
+        platform_data.insert("activation-token".to_string(), Value::from(token));
+    }
+    let _: () = proxy
+        .call("Activate", &(platform_data,))
+        .await
+        .context("Call org.freedesktop.Application.Activate")?;
+    Ok(())
 }
 
 /// Read volume from cached tray state.

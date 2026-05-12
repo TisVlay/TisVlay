@@ -5728,6 +5728,8 @@ dependencies = [
  "tisvlay-core",
  "tokio",
  "tracing",
+ "wayland-client",
+ "wayland-protocols",
  "zbus",
 ]
 
