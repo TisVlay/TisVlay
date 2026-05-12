@@ -204,11 +204,22 @@ pub fn run() -> Result<()> {
         .context("Failed to build tokio runtime")?;
     let _enter = rt.enter();
 
-    // Claim `org.tisvlay.Gui` on the user bus *before* the Slint
-    // window is created. A second tisvlay-gui process discovers
-    // the name is taken, proxies `org.freedesktop.Application.
-    // Activate` to us, and exits — no duplicate window flash.
-    let gui_dbus = match rt.block_on(dbus::try_claim())? {
+    // Register the D-Bus interfaces and claim `org.tisvlay.Gui`
+    // on the user bus atomically *before* the Slint window is
+    // created. The atomic order (interfaces first, then name) is
+    // critical for KDE's KIO launcher path: KIO sends an Activate
+    // call to the well-known name during cold-spawn auto-
+    // activation; if the interfaces aren't registered when we
+    // claim the name, zbus drops the queued call and the
+    // launcher times out at 25 s — "Did not receive a reply" /
+    // "Remote peer disconnected". See try_claim_and_serve's
+    // docstring for the full rationale.
+    //
+    // A second tisvlay-gui process discovers the name is taken,
+    // proxies `org.freedesktop.Application.Activate` to us, and
+    // exits — no duplicate window flash.
+    let (claim, activation_token_rx) = rt.block_on(dbus::try_claim_and_serve(None))?;
+    let gui_dbus = match claim {
         dbus::ClaimResult::Primary(connection) => connection,
         dbus::ClaimResult::Proxied => {
             info!("tisvlay-gui shutting down (handed off to existing instance)");
@@ -390,8 +401,7 @@ pub fn run() -> Result<()> {
     // can capture them at registration time. This briefly blocks the
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
-    let conn_for_serve = gui_dbus.clone();
-    let (daemon, session, tray, activation_token_rx) = rt.block_on(async move {
+    let (daemon, session, tray) = rt.block_on(async move {
         let daemon = if args.user {
             info!("Connecting to daemon on session bus (development mode)");
             DaemonClient::new_session().await
@@ -414,23 +424,7 @@ pub fn run() -> Result<()> {
                 _ => None,
             }));
 
-        // The bus name is already claimed (see try_claim above).
-        // Register both interfaces on the pre-claimed connection:
-        // `Gui1` for peer introspection, and `org.freedesktop.
-        // Application` so launchers and the tray can dispatch
-        // activation requests at the standard path. The Activate
-        // handler is intentionally a no-op pending a Slint raise
-        // API; cold-spawn via app.run() still shows the window
-        // in the normal startup path. No config file yet — pass
-        // `None`. The returned receiver carries the first inbound
-        // Activate call's activation-token, which we drain below
-        // before showing the window so winit can complete the
-        // launcher's startup-notification handshake.
-        let activation_token_rx = dbus::serve(&conn_for_serve, None)
-            .await
-            .context("Failed to register GUI D-Bus interfaces")?;
-
-        anyhow::Ok((daemon, session, tray, activation_token_rx))
+        anyhow::Ok((daemon, session, tray))
     })?;
 
     // Drain the activation-token receiver with a short timeout. In

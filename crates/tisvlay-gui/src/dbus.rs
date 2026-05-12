@@ -53,13 +53,51 @@ pub(crate) enum ClaimResult {
     Proxied,
 }
 
-/// Connect to the user bus and attempt to claim `org.tisvlay.Gui`
-/// with `DO_NOT_QUEUE` semantics. Runs *before* the Slint window is
-/// constructed so a duplicate launch never flashes a half-built UI.
-pub(crate) async fn try_claim() -> Result<ClaimResult> {
+/// Connect to the user bus, register the `Gui1` and
+/// `org.freedesktop.Application` interfaces, *then* claim
+/// `org.tisvlay.Gui` with `DO_NOT_QUEUE` semantics.
+///
+/// **Order matters.** KDE's KIO launcher (`DBusActivationRunner`
+/// in `kio/src/gui/dbusactivationrunner.cpp`) calls
+/// `org.freedesktop.Application.Activate` on our bus name as part
+/// of cold-spawn. `dbus-daemon` queues that call waiting for the
+/// well-known name to be claimed. If we claim the name first and
+/// register the interfaces later, the queued call is delivered
+/// during the gap — and `zbus` drops it (per its own warning,
+/// "Method calls arriving before interfaces are registered may
+/// be lost"). The launcher times out at 25 s waiting for a reply,
+/// surfacing as "Did not receive a reply" / "Remote peer
+/// disconnected" notifications. Registering interfaces first
+/// ensures the queued call hits a ready handler the moment the
+/// name is claimed.
+///
+/// The returned `oneshot::Receiver` carries the first inbound
+/// Activate's `activation-token` (per DR4 / DR5) for the caller
+/// to set in `$XDG_ACTIVATION_TOKEN` before showing the window.
+///
+/// In the `Proxied` path (another instance owns the name), the
+/// registered interfaces sit on a connection we're about to drop
+/// — unused but cheap.
+pub(crate) async fn try_claim_and_serve(
+    config_path: Option<PathBuf>,
+) -> Result<(ClaimResult, oneshot::Receiver<String>)> {
     let connection = zbus::Connection::session()
         .await
         .context("Failed to connect to user D-Bus")?;
+
+    let gui_service = GuiService::new(config_path);
+    let (app_service, activation_token_rx) = ApplicationService::new();
+
+    connection
+        .object_server()
+        .at(GUI_OBJECT_PATH, gui_service)
+        .await
+        .context("Failed to serve Gui1 interface")?;
+    connection
+        .object_server()
+        .at(GUI_OBJECT_PATH, app_service)
+        .await
+        .context("Failed to serve org.freedesktop.Application interface")?;
 
     let name = WellKnownName::try_from(GUI_BUS_NAME).expect("static bus name is well-formed");
     let reply = connection
@@ -69,8 +107,12 @@ pub(crate) async fn try_claim() -> Result<ClaimResult> {
 
     match reply {
         RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => {
-            info!(bus_name = GUI_BUS_NAME, "Owning GUI bus name");
-            Ok(ClaimResult::Primary(connection))
+            info!(
+                bus_name = GUI_BUS_NAME,
+                path = GUI_OBJECT_PATH,
+                "GUI D-Bus interfaces registered and bus name claimed"
+            );
+            Ok((ClaimResult::Primary(connection), activation_token_rx))
         }
         RequestNameReply::Exists | RequestNameReply::InQueue => {
             info!(
@@ -78,7 +120,7 @@ pub(crate) async fn try_claim() -> Result<ClaimResult> {
                 "Another tisvlay-gui instance is running; proxying Activate and exiting"
             );
             proxy_activate(&connection).await?;
-            Ok(ClaimResult::Proxied)
+            Ok((ClaimResult::Proxied, activation_token_rx))
         }
     }
 }
@@ -109,41 +151,6 @@ async fn proxy_activate(connection: &zbus::Connection) -> Result<()> {
         .await
         .context("Failed to call Activate on existing GUI instance")?;
     Ok(())
-}
-
-/// Register `Gui1` + `Application` on the connection's object
-/// server. Returns a `oneshot::Receiver` for the first inbound
-/// `Activate` call's `activation-token`, if `platform_data` carried
-/// one. The caller awaits this with a short timeout before showing
-/// the window so winit's first surface mapping can complete the
-/// launcher's xdg-activation-v1 startup-notification handshake —
-/// without it, KDE's app menu reports "Remote peer disconnected"
-/// when the user later closes the window because the launch was
-/// never marked complete.
-pub(crate) async fn serve(
-    connection: &zbus::Connection,
-    config_path: Option<PathBuf>,
-) -> Result<oneshot::Receiver<String>> {
-    let gui_service = GuiService::new(config_path);
-    let (app_service, activation_token_rx) = ApplicationService::new();
-
-    connection
-        .object_server()
-        .at(GUI_OBJECT_PATH, gui_service)
-        .await
-        .context("Failed to serve Gui1 interface")?;
-    connection
-        .object_server()
-        .at(GUI_OBJECT_PATH, app_service)
-        .await
-        .context("Failed to serve org.freedesktop.Application interface")?;
-
-    info!(
-        bus_name = GUI_BUS_NAME,
-        path = GUI_OBJECT_PATH,
-        "GUI D-Bus interfaces registered"
-    );
-    Ok(activation_token_rx)
 }
 
 // ----------------------------------------------------------------
