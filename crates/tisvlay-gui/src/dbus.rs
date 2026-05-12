@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
-use tracing::{debug, info};
+use tracing::info;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::interface;
 use zbus::names::WellKnownName;
@@ -39,10 +39,10 @@ const APPLICATION_INTERFACE: &str = "org.freedesktop.Application";
 /// Result of attempting to claim the GUI's well-known bus name.
 ///
 /// The caller dispatches on this: [`Primary`](Self::Primary)
-/// proceeds with normal startup and must later call [`serve`] to
-/// register the interfaces; [`Proxied`](Self::Proxied) means
-/// another instance already owns the name and was handed the
-/// activation request — the caller should return from `run()`.
+/// proceeds with normal startup (interfaces are already
+/// registered by [`try_claim_and_serve`]); [`Proxied`](Self::Proxied)
+/// means another instance already owns the name and was handed
+/// the activation request — the caller should return from `run()`.
 pub(crate) enum ClaimResult {
     /// This process won the bus name. Hold onto the connection for
     /// the lifetime of the GUI — dropping it tears down the name
@@ -72,8 +72,10 @@ pub(crate) enum ClaimResult {
 /// name is claimed.
 ///
 /// The returned `oneshot::Receiver` carries the first inbound
-/// Activate's `activation-token` (per DR4 / DR5) for the caller
-/// to set in `$XDG_ACTIVATION_TOKEN` before showing the window.
+/// Activate's `activation-token` for the caller to set in
+/// `$XDG_ACTIVATION_TOKEN` before showing the window — see F1 and
+/// F4 in docs/plans/gui-desktop-integration.md for the mechanism
+/// and KDE-source-of-truth pointers.
 ///
 /// In the `Proxied` path (another instance owns the name), the
 /// registered interfaces sit on a connection we're about to drop
@@ -134,7 +136,7 @@ pub(crate) async fn try_claim_and_serve(
 /// Callers that *do* have a surface (the tray) should call
 /// `org.freedesktop.Application.Activate` directly with a token in
 /// `platform_data["activation-token"]` instead of going through
-/// `try_claim` → `proxy_activate`.
+/// `try_claim_and_serve` → `proxy_activate`.
 async fn proxy_activate(connection: &zbus::Connection) -> Result<()> {
     let proxy = zbus::Proxy::new(
         connection,
@@ -154,8 +156,9 @@ async fn proxy_activate(connection: &zbus::Connection) -> Result<()> {
 }
 
 // ----------------------------------------------------------------
-// org.tisvlay.Gui1 — peer introspection (unchanged from the
-// pre-single-instance version of this module).
+// org.tisvlay.Gui1 — peer introspection. Mirrors the daemon's
+// and session's `*1` interfaces; external tooling probes them
+// uniformly across all four peers (daemon, session, tray, GUI).
 // ----------------------------------------------------------------
 
 pub(crate) struct GuiService {
@@ -228,13 +231,11 @@ impl ApplicationService {
 #[interface(name = "org.freedesktop.Application")]
 impl ApplicationService {
     fn activate(&self, platform_data: HashMap<String, OwnedValue>) {
-        let keys: Vec<&str> = platform_data.keys().map(String::as_str).collect();
         let token = extract_activation_token(&platform_data);
         info!(
             method = "Activate",
-            keys = ?keys,
             token_present = token.is_some(),
-            "freedesktop.Application call received"
+            "Application call received"
         );
         self.raise(token);
     }
@@ -242,15 +243,12 @@ impl ApplicationService {
     /// We register no MIME types and don't handle URIs today;
     /// treat as a plain activation so launchers that prefer
     /// `Open` still bring the window forward.
-    fn open(&self, uris: Vec<String>, platform_data: HashMap<String, OwnedValue>) {
-        let keys: Vec<&str> = platform_data.keys().map(String::as_str).collect();
+    fn open(&self, _uris: Vec<String>, platform_data: HashMap<String, OwnedValue>) {
         let token = extract_activation_token(&platform_data);
         info!(
             method = "Open",
-            uri_count = uris.len(),
-            keys = ?keys,
             token_present = token.is_some(),
-            "freedesktop.Application call received"
+            "Application call received"
         );
         self.raise(token);
     }
@@ -263,14 +261,12 @@ impl ApplicationService {
         _parameter: Vec<OwnedValue>,
         platform_data: HashMap<String, OwnedValue>,
     ) {
-        let keys: Vec<&str> = platform_data.keys().map(String::as_str).collect();
         let token = extract_activation_token(&platform_data);
         info!(
             method = "ActivateAction",
             action = %action_name,
-            keys = ?keys,
             token_present = token.is_some(),
-            "freedesktop.Application call received"
+            "Application call received"
         );
         self.raise(token);
     }
@@ -327,13 +323,15 @@ impl ApplicationService {
         //     KWin raise the window from the taskbar / app menu
         //     / KRunner without going through this handler.
         //
-        // The unused-prefix on `_activation_token` documents that
-        // we intentionally drop the token rather than missing it.
-        // When Slint exposes a raise API, the handler should
-        // gain `slint::invoke_from_event_loop` + the activation-
-        // token plumbing per docs/plans/gui-desktop-integration.md
-        // DR4 / DR5.
-        debug!("org.freedesktop.Application.Activate received (no-op; see comment)");
+        // When Slint exposes a raise/focus API (tracked at
+        // slint-ui/slint#4382, dormant as of 2026-05), the
+        // handler can re-introduce `slint::invoke_from_event_
+        // loop` + a window-raise call against the proper API.
+        // Until then, only the cold-spawn path consumes the
+        // activation token; re-activations on a running GUI
+        // are intentionally inert (the info!() in the calling
+        // `activate` / `open` / `activate_action` already
+        // records the fact that the call arrived).
     }
 }
 
