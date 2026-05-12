@@ -204,6 +204,18 @@ pub fn run() -> Result<()> {
         .context("Failed to build tokio runtime")?;
     let _enter = rt.enter();
 
+    // Claim `org.tisvlay.Gui` on the user bus *before* the Slint
+    // window is created. A second tisvlay-gui process discovers
+    // the name is taken, proxies `org.freedesktop.Application.
+    // Activate` to us, and exits — no duplicate window flash.
+    let gui_dbus = match rt.block_on(dbus::try_claim())? {
+        dbus::ClaimResult::Primary(connection) => connection,
+        dbus::ClaimResult::Proxied => {
+            info!("tisvlay-gui shutting down (handed off to existing instance)");
+            return Ok(());
+        }
+    };
+
     let app = AppWindow::new()?;
 
     // Resolve sidebar icons against the user's freedesktop icon
@@ -351,7 +363,9 @@ pub fn run() -> Result<()> {
     // can capture them at registration time. This briefly blocks the
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
-    let (daemon, session, tray, gui_dbus) = rt.block_on(async {
+    let conn_for_serve = gui_dbus.clone();
+    let app_weak_for_serve = app.as_weak();
+    let (daemon, session, tray) = rt.block_on(async move {
         let daemon = if args.user {
             info!("Connecting to daemon on session bus (development mode)");
             DaemonClient::new_session().await
@@ -374,15 +388,17 @@ pub fn run() -> Result<()> {
                 _ => None,
             }));
 
-        // Register `org.tisvlay.Gui` on the user bus so external
-        // tools can probe our version + (eventual) config path
-        // symmetrically with the daemon, session, and tray.
+        // The bus name is already claimed (see try_claim above).
+        // Register both interfaces on the pre-claimed connection:
+        // `Gui1` for peer introspection, and `org.freedesktop.
+        // Application` so launchers and the tray can raise the
+        // existing window via the standard activation protocol.
         // No config file yet — pass `None`.
-        let gui_dbus = dbus::register(None)
+        dbus::serve(&conn_for_serve, None, app_weak_for_serve)
             .await
-            .context("Failed to register GUI D-Bus interface")?;
+            .context("Failed to register GUI D-Bus interfaces")?;
 
-        anyhow::Ok((daemon, session, tray, gui_dbus))
+        anyhow::Ok((daemon, session, tray))
     })?;
 
     // Wire the per-row "reveal config in file manager" callback now
