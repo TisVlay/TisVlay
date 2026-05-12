@@ -97,10 +97,22 @@ contents = [
     # Systemd user services
     { src = "packaging/systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
     { src = "packaging/systemd/tisvlay-tray.service", dst = "/usr/lib/systemd/user/tisvlay-tray.service" },
-    # D-Bus activation service
+    # D-Bus activation service on the system bus. The activated
+    # tisvlayd runs as the dedicated `tisvlay` system user (set
+    # via `User=tisvlay` in the .service file and matched by
+    # tisvlayd.service's `User=tisvlay`); the postinstall.sh
+    # creates the user. Not root.
     { src = "packaging/systemd/org.tisvlay.Daemon.service", dst = "/usr/share/dbus-1/system-services/org.tisvlay.Daemon.service" },
     # D-Bus policy
     { src = "packaging/systemd/org.tisvlay.Daemon.conf", dst = "/etc/dbus-1/system.d/org.tisvlay.Daemon.conf", type = "config" },
+    # D-Bus activation service on the session bus — tisvlay-gui
+    # runs as the calling user. Auto-spawns on Activate() from
+    # KRunner / Plasma app menu / the tray's "Open Settings" /
+    # `gdbus call …` against the org.tisvlay.Gui bus name.
+    { src = "packaging/systemd/org.tisvlay.Gui.service", dst = "/usr/share/dbus-1/services/org.tisvlay.Gui.service" },
+    # Desktop entry — the basename must match the bus name when
+    # DBusActivatable=true (freedesktop Desktop Entry spec).
+    { src = "packaging/freedesktop/org.tisvlay.Gui.desktop", dst = "/usr/share/applications/org.tisvlay.Gui.desktop" },
     # Third-party FOSS attribution. Regenerated at the repo root by
     # `just licenses-html` (a prerequisite of every `package-*`
     # recipe), gitignored so it doesn't churn between dep bumps. Lives

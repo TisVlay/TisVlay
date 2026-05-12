@@ -177,7 +177,11 @@ in
       (pkgs.writeTextDir "share/dbus-1/system.d/org.tisvlay.Daemon.conf" dbusPolicy)
     ];
 
-    # Make the CLI available system-wide.
+    # Make the CLI available system-wide. The GUI .desktop entry
+    # and D-Bus session activation file ship with the package
+    # (see package.nix): the .desktop via makeDesktopItem +
+    # copyDesktopItems (the 622-package nixpkgs idiom), the
+    # .service via postInstall + substituteInPlace.
     environment.systemPackages = [ cfg.package ];
 
     # System daemon: manages TV connections, exposes D-Bus API.

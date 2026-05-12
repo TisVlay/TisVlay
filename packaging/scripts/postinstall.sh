@@ -27,6 +27,12 @@ systemctl reload dbus 2>/dev/null || dbus-send --system --type=method_call \
     --dest=org.freedesktop.DBus /org/freedesktop/DBus \
     org.freedesktop.DBus.ReloadConfig 2>/dev/null || true
 
+# Refresh the application database so the GUI's new .desktop
+# entry shows up in launchers. Redundant on dpkg/rpm (their
+# triggers run this automatically) but harmless and useful on
+# minimal distros without those triggers configured.
+update-desktop-database /usr/share/applications 2>/dev/null || true
+
 # Enable (but don't start) the system daemon.
 # The user should pair a TV before starting:
 #   sudo systemctl start tisvlayd
