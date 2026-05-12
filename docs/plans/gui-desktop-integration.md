@@ -48,7 +48,7 @@ Beyond the basics, four Desktop Entry spec keys (additions across the 2024–202
 - **`Implements=org.freedesktop.Application;`** — spec-recommended when implementing an optional D-Bus interface; surfaces capability to launchers.
 - **`Keywords=tv;television;remote;hdmi;webos;lg;`** — improves KRunner / GNOME-Shell search hit rate. Cheap addition.
 
-Slint's `app_id` support has been spotty historically (tracked at slint-ui/slint#1332). Verify the current API surface via the Slint MCP during implementation before committing to a specific call. If Slint can't yet set `app_id` reliably from public API, KWin's fallback heuristic matches the binary name against `StartupWMClass` as a last resort — degraded but not broken. File a follow-up to wire Slint properly once support lands.
+Slint 1.16 ships `slint::set_xdg_app_id(app_id) -> Result<(), PlatformError>` (PR slint-ui/slint#6851, merged Nov 2024, fixed #1332). Call it in `tisvlay_gui::run()` before constructing `AppWindow`; the winit backend folds it into `WindowAttributes::with_name()` for Wayland `app_id` and X11 `WM_CLASS`. With this in place the `.desktop` entry's `StartupWMClass=org.tisvlay.Gui` matches the live window, and combined with `SingleMainWindow=true` KWin / GNOME Shell can raise the existing window from the taskbar / app menu / KRunner without going through our D-Bus `Activate` handler.
 
 ### DR4: `Activate` handler bridges into Slint via `slint::invoke_from_event_loop`
 
@@ -148,7 +148,7 @@ Verification:
 
 ## Open questions
 
-- **Slint Wayland `app_id` support.** Confirm via the Slint MCP what the current public API is for setting `app_id` on the surface. If it lands cleanly, the `StartupWMClass` value in the `.desktop` entry matches a Slint-set `app_id`. If not, document the workaround (rely on KWin's process-name fallback) and file a follow-up upstream. Tracked at slint-ui/slint#1332 as of audit date.
+- **Slint window raise / focus API.** Slint 1.16 has *no* public method to bring an existing window to the foreground (tracked at slint-ui/slint#4382, open). The naive workaround — `window.show()` from inside `slint::invoke_from_event_loop` on an already-mapped surface — destroys the Wayland surface and exits the event loop, killing the GUI process (confirmed in live testing on Plasma 6 Wayland). Our `Activate` handler therefore no-ops on already-running GUIs; users rely on the `.desktop` entry's `StartupWMClass` match + `SingleMainWindow=true` to let KWin raise the window from the taskbar / app menu / KRunner. When #4382 lands, the handler can re-introduce `slint::invoke_from_event_loop` + the activation-token consumption from DR4 against the proper raise API.
 - **Window-on-close behavior.** Today `tisvlay_gui::run()` returns when the Slint window closes, ending the process. With D-Bus activation, this is fine: subsequent activations auto-spawn. Worth a quick check that an `Activate` arriving microseconds before window close doesn't drop the window-raise instruction.
 - **Tray activation surface availability.** Ksni's underlying StatusNotifierItem surface is what we'd use to scope the `xdg-activation-v1` request. Verify during implementation that ksni exposes the `wayland-client` `Surface` handle (or equivalent) to consumers — if not, we may need to upstream a tiny accessor or fall back to a "best-effort no-token" path on systems where the surface isn't reachable.
 - **Whether to capture the baseline `.deb` contents (DR7 verification step) into a file in the repo, or do it ad-hoc during PR review.** Leaning ad-hoc — the file would decay.

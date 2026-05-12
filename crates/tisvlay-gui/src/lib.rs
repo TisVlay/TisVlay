@@ -216,6 +216,18 @@ pub fn run() -> Result<()> {
         }
     };
 
+    // Set the Wayland app_id / X11 WM_CLASS to match the .desktop
+    // entry's `StartupWMClass=org.tisvlay.Gui`. This lets KWin /
+    // GNOME Shell associate the live window with the launcher
+    // entry — correct taskbar icon, task-grouping, and (combined
+    // with `SingleMainWindow=true` in the .desktop) the taskbar /
+    // app menu / KRunner can raise the existing window when the
+    // user re-launches without going through our D-Bus Activate
+    // handler. PR slint-ui/slint#6851 (merged 2024-11) exposed
+    // this in slint::set_xdg_app_id; must be called before any
+    // AppWindow is constructed.
+    slint::set_xdg_app_id(dbus::GUI_BUS_NAME).context("Failed to set Wayland app_id")?;
+
     let app = AppWindow::new()?;
 
     // Resolve sidebar icons against the user's freedesktop icon
@@ -364,7 +376,6 @@ pub fn run() -> Result<()> {
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
     let conn_for_serve = gui_dbus.clone();
-    let app_weak_for_serve = app.as_weak();
     let (daemon, session, tray) = rt.block_on(async move {
         let daemon = if args.user {
             info!("Connecting to daemon on session bus (development mode)");
@@ -391,10 +402,13 @@ pub fn run() -> Result<()> {
         // The bus name is already claimed (see try_claim above).
         // Register both interfaces on the pre-claimed connection:
         // `Gui1` for peer introspection, and `org.freedesktop.
-        // Application` so launchers and the tray can raise the
-        // existing window via the standard activation protocol.
-        // No config file yet — pass `None`.
-        dbus::serve(&conn_for_serve, None, app_weak_for_serve)
+        // Application` so launchers and the tray can dispatch
+        // activation requests at the standard path. The Activate
+        // handler is intentionally a no-op pending a Slint raise
+        // API; cold-spawn via app.run() still shows the window
+        // in the normal startup path. No config file yet — pass
+        // `None`.
+        dbus::serve(&conn_for_serve, None)
             .await
             .context("Failed to register GUI D-Bus interfaces")?;
 

@@ -22,18 +22,15 @@
 //! flashing a half-built window.
 
 use anyhow::{Context, Result};
-use slint::ComponentHandle;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::{info, warn};
+use tracing::{debug, info};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::interface;
 use zbus::names::WellKnownName;
 use zbus::zvariant::{OwnedValue, Value};
 
-use crate::AppWindow;
-
-const GUI_BUS_NAME: &str = "org.tisvlay.Gui";
+pub(crate) const GUI_BUS_NAME: &str = "org.tisvlay.Gui";
 const GUI_OBJECT_PATH: &str = "/org/tisvlay/Gui";
 const APPLICATION_INTERFACE: &str = "org.freedesktop.Application";
 
@@ -113,17 +110,18 @@ async fn proxy_activate(connection: &zbus::Connection) -> Result<()> {
 }
 
 /// Register `Gui1` + `Application` on the connection's object
-/// server. Called after [`AppWindow`] is constructed so we can hand
-/// the Application handler a [`slint::Weak`] for the window-raise
-/// path. Holds no return value — registration ownership is the
-/// `connection` returned by [`try_claim`].
+/// server. Holds no return value — registration ownership is the
+/// `connection` returned by [`try_claim`]. The handler for
+/// `org.freedesktop.Application.Activate` is currently a no-op
+/// (see [`ApplicationService::raise`]), so this function takes no
+/// `slint::Weak<AppWindow>` argument. When Slint exposes a public
+/// raise API and `raise()` regains its body, thread one through.
 pub(crate) async fn serve(
     connection: &zbus::Connection,
     config_path: Option<PathBuf>,
-    app_weak: slint::Weak<AppWindow>,
 ) -> Result<()> {
     let gui_service = GuiService::new(config_path);
-    let app_service = ApplicationService { app_weak };
+    let app_service = ApplicationService;
 
     connection
         .object_server()
@@ -194,9 +192,7 @@ impl GuiService {
 // `$XDG_ACTIVATION_TOKEN` so Slint's underlying winit picks it up
 // inside the window-raise call.
 
-pub(crate) struct ApplicationService {
-    app_weak: slint::Weak<AppWindow>,
-}
+pub(crate) struct ApplicationService;
 
 #[interface(name = "org.freedesktop.Application")]
 impl ApplicationService {
@@ -224,24 +220,46 @@ impl ApplicationService {
 }
 
 impl ApplicationService {
-    fn raise(&self, activation_token: Option<String>) {
-        let weak = self.app_weak.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(token) = activation_token {
-                // SAFETY: setenv is unsound in multi-threaded
-                // contexts if another thread is concurrently
-                // reading the same var. We're on the Slint event-
-                // loop thread, and XDG_ACTIVATION_TOKEN is only
-                // consumed by winit inside the show() call below.
-                // No other code in tisvlay-gui reads it.
-                unsafe { std::env::set_var("XDG_ACTIVATION_TOKEN", &token) };
-            }
-            if let Some(app) = weak.upgrade() {
-                if let Err(err) = app.window().show() {
-                    warn!(error = %err, "Failed to raise GUI window on Activate");
-                }
-            }
-        });
+    fn raise(&self, _activation_token: Option<String>) {
+        // Deliberate no-op on already-running GUIs.
+        //
+        // The "obvious" implementation — `slint::invoke_from_
+        // event_loop(|| window.show())` with $XDG_ACTIVATION_TOKEN
+        // set from `platform_data["activation-token"]` — destroys
+        // the GUI process on every re-activation under Slint 1.16
+        // + winit Wayland on Plasma 6 Wayland. Observed: each
+        // Activate received on a mapped surface causes the
+        // surface to disappear and the event loop to exit, taking
+        // the process down. Tray retries then respawn via D-Bus
+        // auto-activation, which dies on its next Activate, ad
+        // infinitum.
+        //
+        // Slint 1.16 has no public raise/focus API (tracked at
+        // slint-ui/slint#4382, open). Until upstream lands one,
+        // treat the Activate call as advisory only:
+        //
+        //   - Cold-spawn case: D-Bus auto-activates tisvlay-gui
+        //     via the .service file. `tisvlay_gui::run()` calls
+        //     `app.run()` which maps and shows the window in the
+        //     normal startup path. The Activate from the caller
+        //     completes successfully because we DO own
+        //     org.freedesktop.Application at this point — the
+        //     handler just declines to do anything beyond that.
+        //
+        //   - Re-activate case: silent no-op. The window stays
+        //     in its current Z-order. The .desktop entry's
+        //     StartupWMClass match (enabled via
+        //     slint::set_xdg_app_id in tisvlay_gui::run()) lets
+        //     KWin raise the window from the taskbar / app menu
+        //     / KRunner without going through this handler.
+        //
+        // The unused-prefix on `_activation_token` documents that
+        // we intentionally drop the token rather than missing it.
+        // When Slint exposes a raise API, the handler should
+        // gain `slint::invoke_from_event_loop` + the activation-
+        // token plumbing per docs/plans/gui-desktop-integration.md
+        // DR4 / DR5.
+        debug!("org.freedesktop.Application.Activate received (no-op; see comment)");
     }
 }
 
