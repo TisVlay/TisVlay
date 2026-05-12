@@ -13,5 +13,4 @@ StartupNotify=true
 StartupWMClass=org.tisvlay.Gui
 DBusActivatable=true
 SingleMainWindow=true
-X-GNOME-SingleWindow=true
 Implements=org.freedesktop.Application;

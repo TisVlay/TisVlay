@@ -61,6 +61,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
       comment = "Control connected TVs from the desktop";
       exec = "tisvlay-gui";
       tryExec = "tisvlay-gui";
+      # Freedesktop icon-theme name (no bundled artwork yet — the
+      # tray uses the same placeholder). Swap to a packaged
+      # icon name when custom art lands.
       icon = "video-display";
       categories = [
         "Settings"
@@ -75,12 +78,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
       startupNotify = true;
       startupWMClass = "org.tisvlay.Gui";
       dbusActivatable = true;
+      # Emits SingleMainWindow=true per spec 1.5. The helper also
+      # writes Version=1.5 automatically, so neither needs an
+      # extraConfig override.
       singleMainWindow = true;
       implements = [ "org.freedesktop.Application" ];
-      extraConfig = {
-        "X-GNOME-SingleWindow" = "true";
-        Version = "1.5";
-      };
     })
   ];
 
