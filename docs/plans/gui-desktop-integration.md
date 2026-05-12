@@ -1,6 +1,6 @@
 # GUI desktop integration: single-instance, tray launch, .desktop entry
 
-> **Status:** drafted 2026-05-11, revised same day after a 2026 best-practices audit against current KDE Plasma 6 / Wayland reality. Not started. One PR, three commits. Lands on top of PR #47's Wayland-only GUI and the runtime-deps fixes in ce8c2d2 / ddda197 / the in-flight session rpath patch.
+> **Status:** drafted 2026-05-11, revised same day after a 2026 best-practices audit, **implemented and validated 2026-05-11/12 on live KDE Plasma 6 Wayland**. The original three-commit design landed plus five follow-up fix commits resolving live-test bugs (Slint `show()` kill-on-mapped-surface, multi-spawn cascade on rapid clicks, KIO queue-drop race during interface registration, activation-token propagation, and citation corrections). See [Post-implementation findings](#post-implementation-findings) for what we learned vs the original plan, and [Cleanup follow-ups](#cleanup-follow-ups) for churn-debt the implementation accumulated.
 
 ## Context
 
@@ -152,3 +152,80 @@ Verification:
 - **Window-on-close behavior.** Today `tisvlay_gui::run()` returns when the Slint window closes, ending the process. With D-Bus activation, this is fine: subsequent activations auto-spawn. Worth a quick check that an `Activate` arriving microseconds before window close doesn't drop the window-raise instruction.
 - **Tray activation surface availability.** Ksni's underlying StatusNotifierItem surface is what we'd use to scope the `xdg-activation-v1` request. Verify during implementation that ksni exposes the `wayland-client` `Surface` handle (or equivalent) to consumers — if not, we may need to upstream a tiny accessor or fall back to a "best-effort no-token" path on systems where the surface isn't reachable.
 - **Whether to capture the baseline `.deb` contents (DR7 verification step) into a file in the repo, or do it ad-hoc during PR review.** Leaning ad-hoc — the file would decay.
+
+## Post-implementation findings
+
+Five substantive bugs surfaced during live testing on KDE Plasma 6 Wayland that the original plan didn't anticipate. Each is documented here as a permanent reference because some intersect with non-obvious upstream behavior (zbus, Slint, KIO, KWin); without the source-of-truth pointers below, the fixes look arbitrary.
+
+### F1: zbus drops queued calls if interfaces aren't registered before claiming the bus name
+
+Confirmed root cause of the "Did not receive a reply" KIO dialog and the "Remote peer disconnected" Plasma notification on close. KDE's KIO launcher (`KIO::ApplicationLauncherJob` → `DBusActivationRunner::startProcess`) issues an `org.freedesktop.Application.Activate` call on the well-known bus name *during* cold-spawn auto-activation. `dbus-daemon` queues the call waiting for the name to be claimed; once we claim it, the daemon resolves the destination to our unique connection name and delivers the queued call.
+
+If we claimed the name *first* and registered the `Application` interface *later* (the original plan's order — `try_claim()` early, `serve()` inside the daemon-client `block_on` ~100ms later), zbus dropped the queued call during the gap — per its own warning:
+
+> Requesting name `X` before setting up the object server. Method calls arriving before interfaces are registered may be lost.
+
+KIO waited 25 s for the reply, timed out, and surfaced both notifications. We mistakenly ignored that warning as cosmetic; it was the root cause.
+
+**Fix:** merge `try_claim` + `serve` into `try_claim_and_serve` with order: connect → register interfaces → claim name. By the time we own the name, the object server is ready; queued calls hit the handler immediately.
+
+**Source-of-truth pointers** (for re-verification when KDE versions move):
+
+- KIO launcher: [`~/ws/lgtv/libs/kio/src/gui/dbusactivationrunner.cpp`](../../../libs/kio/src/gui/dbusactivationrunner.cpp) — see `startProcess()`. Object-path derivation, interface name, the three methods called (`Activate` / `Open` / `ActivateAction`), and the `activation-token` packing from the spawn-process env all live here.
+- zbus warning emitter: [`~/ws/lgtv/libs/zbus/zbus/src/connection/mod.rs:633`](../../../libs/zbus/zbus/src/connection/mod.rs#L633).
+- zbus's atomic alternative: `Builder::session().name().serve_at().build()` — rejected because the builder forces `DoNotQueue` and errors on conflict, which kills our graceful-proxy-on-Exists path. The manual register-before-claim approach preserves both.
+
+### F2: Slint 1.16 `window.show()` on an already-mapped Wayland surface destroys the surface and exits the event loop
+
+Discovered when the first version of the `Activate` handler called `window.show()` via `slint::invoke_from_event_loop` to raise the existing window. Observed cascade in journal: every Activate killed the process (`tisvlay-gui shutting down` within 1 s of receiving Activate), and the next click respawned via D-Bus auto-activation — repeating until the user closed every zombie window. The tracking upstream issue is [slint-ui/slint#4382](https://github.com/slint-ui/slint/issues/4382) (open) for a proper raise/focus API.
+
+**Fix:** the `Activate` handler is intentionally inert on already-mapped windows — it only consumes the `activation-token` from `platform_data` for the *cold-spawn* path (via a `oneshot::channel` to the main thread; main thread sets `$XDG_ACTIVATION_TOKEN` before `app.run()`). For re-activation while running, users rely on KWin's `StartupWMClass` match + `SingleMainWindow=true` to raise from the taskbar / KRunner / app menu without going through our handler at all.
+
+### F3: Multi-spawn cascade from rapid tray clicks with slow dispatch
+
+The `OpenGui` tray dispatch arm took ~500 ms per click (mostly the `xdg-activation-v1` token request inside `spawn_blocking`). Rapid clicks queued in the mpsc; if the user closed the GUI mid-queue, each remaining `Activate` respawned a fresh GUI via D-Bus auto-activation. Observed cascade: 5 rapid clicks → 5 GUIs to close in sequence.
+
+**Fix:** `Arc<AtomicBool>` shared between the menu callback (sender, check-and-set) and the dispatch arm (clears flag once `activate_gui` returns) — drops bursts at the source. Plus tightened `activation_token::TIMEOUT` from 500 ms to 100 ms (Plasma either grants in <1 ms or never; the previous bound was wasteful).
+
+### F4: KIO *does* pass `activation-token` in `platform_data` — but only when KDE has one to issue
+
+`DBusActivationRunner::startProcess` reads `XDG_ACTIVATION_TOKEN` from the *spawn process's* environment and includes it in `platform_data`. KDE sets that env var on the spawn when the launch context has a token (e.g., Plasma kickoff has a surface with seat focus). Confirmed from `/proc/$PID/environ` capture: sometimes the var is unset → KIO passes empty string → our handler captures empty string → winit's mapping doesn't see a useful token → the launch handshake degrades to "best effort" (same as no token).
+
+**Implication:** the activation-token plumbing is correct-by-construction now (F1 unblocked delivery), but its *value* depends on whether KDE had a token to issue. We log "Propagating launcher activation token to window mapping" on every non-empty token. On empty tokens, the call still succeeds and KIO's `processStarted` still fires — which is what stops the "Remote peer disconnected" tracking on close. So even with an empty token, F1's fix alone resolves the user-visible symptom.
+
+### F5: Slint `set_xdg_app_id` requires the backend to be initialized
+
+When we added `slint::set_xdg_app_id("org.tisvlay.Gui")` early in `run()`, it failed with `PlatformError::NoPlatform`. The implementation at [`i-slint-core/api.rs:1374`](../../../libs/slint/internal/core/api.rs#L1374) passes `|| Err(NoPlatform)` as the lazy-init factory — it deliberately requires the backend to be already-set.
+
+**Fix:** call `slint::BackendSelector::new().select()?` first (the documented public init path). Subsequent `AppWindow::new()` reuses the same context via `with_platform`.
+
+## Reconciliation with original DRs
+
+Two prior DRs are now stale or partial; flagging for future readers:
+
+- **DR4** ("Activate handler bridges into Slint via `slint::invoke_from_event_loop`") describes `window.upgrade().unwrap().window().show()` as the handler body. **Stale**: F2 makes this fatal on Wayland; the handler is no-op on raise and only forwards the activation-token for cold-spawn (F4 mechanism).
+- **DR8** ("`request_name` is synchronous, before Slint spinup") implied claim-then-serve. **Revised by F1**: it's now register-then-claim, still synchronous and still before Slint spinup. The `Proxied` early-exit semantics are unchanged.
+
+DR5 (tray-side `xdg-activation-v1` token acquisition) shipped, but in practice yields empty tokens most of the time (tray is surfaceless and the compositor's policy decides). It still functions correctly as a best-effort. Considered a known limitation.
+
+## Cleanup follow-ups
+
+PR churn-debt to be addressed in a small follow-up PR after this lands:
+
+| Item | What | Where | Effort |
+|---|---|---|---|
+| Diagnostic logging downgrade | The `info!(method=…, keys=…, token_present=…)` fields in `Activate` / `Open` / `ActivateAction` were added for live debugging; useful but verbose in production. Either downgrade to `debug!` or trim the fields to just `method=` and `token_present=`. | `crates/tisvlay-gui/src/dbus.rs` | 5 min |
+| Stale plan refs in code | A few `// per docs/plans/...` references mention "DR4/DR5" with the pre-F2 semantics. Update to point at the post-implementation findings sections. | `crates/tisvlay-gui/src/dbus.rs`, `crates/tisvlay-gui/src/lib.rs` | 10 min |
+| 50 ms timeout tuning | The `tokio::time::timeout(50ms, activation_token_rx)` in `lib.rs` is now a safety net — F1's fix means the Activate is delivered almost atomically with name claim, so the receiver wakes in <5 ms typically. Could lower to 20 ms for snappier startup, or even remove the timeout if we can guarantee the Activate is always delivered (it isn't — direct `cargo run` has no inbound Activate). 50 ms is a reasonable default; only tune if startup latency becomes a complaint. | `crates/tisvlay-gui/src/lib.rs` | 5 min if changed |
+| Open / ActivateAction simplification | Both methods delegate to `raise(extract_activation_token(...))` — they're spec-required. The current implementation is fine; flagged only because the boilerplate triplicates. Could fold into a single dispatch helper if it grows further. | `crates/tisvlay-gui/src/dbus.rs` | skip unless KIO adds more methods |
+| zbus claim-before-serve warning | F1's fix removes the underlying race but the warning itself still fires from zbus because `request_name` is called after the bus connection exists. The warning has no functional impact now (interfaces ARE registered before the name claim, so calls don't get lost) — it's just noise. Filter or accept. | `crates/tisvlay-gui/src/dbus.rs` log filter or upstream tracking | 5 min if filtered |
+| Plan doc condensation | This doc is now ~250 lines with both forward-looking design and historical findings. Consider splitting into `docs/plans/gui-desktop-integration.md` (design) and `docs/findings/gui-desktop-integration.md` (post-impl learnings), or condensing after the PR merges. | `docs/plans/` reorg | 30 min |
+| Custom icon | `Icon=video-display` is a freedesktop-theme placeholder. Swap for bundled artwork once available. The `.desktop` line and `module.nix`'s reference both update without code changes. | `packaging/freedesktop/org.tisvlay.Gui.desktop`, plan/PR-ready when art lands | trivial once art exists |
+
+## Open questions — resolution status
+
+- **Slint Wayland `app_id` support.** RESOLVED — `slint::set_xdg_app_id` exists in 1.16 (PR slint-ui/slint#6851). Used in `tisvlay_gui::run()`. Combined with `StartupWMClass=org.tisvlay.Gui` in the `.desktop`, KWin correctly associates the live window with the launcher entry.
+- **Slint window raise / focus API.** STILL OPEN — [slint-ui/slint#4382](https://github.com/slint-ui/slint/issues/4382). Re-activation while running can't visibly raise the window via D-Bus; users rely on the taskbar / KRunner / app menu (which raise via `StartupWMClass` match, not via our `Activate` handler).
+- **Window-on-close behavior.** RESOLVED indirectly via F1 — the Activate is delivered atomically with name claim, so the "Activate arriving microseconds before window close" race no longer exists in practice (the Activate has always already been handled before the user can interact with the window).
+- **Tray activation surface availability.** PARTIAL — the tray uses its own `wayland-client` connection (not via ksni's surface, since ksni's surface is owned by the panel process, not us). The compositor decides whether to grant a token to a surface-less requester; in practice, tokens often come back empty. Acceptable per F4 — the call still succeeds, and the launch handshake is best-effort.
+- **`.deb` contents baseline file.** Decided: ad-hoc verification at PR review, no committed baseline file.
