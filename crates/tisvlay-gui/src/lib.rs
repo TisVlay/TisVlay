@@ -216,6 +216,19 @@ pub fn run() -> Result<()> {
         }
     };
 
+    // Initialize Slint's backend explicitly so the global context
+    // exists when we call set_xdg_app_id below. set_xdg_app_id's
+    // factory closure returns NoPlatform unconditionally — by
+    // design, it requires the backend to be already-initialized.
+    // BackendSelector::select() is Slint's documented public path
+    // for explicit backend init (i-slint-backend-selector/api.rs);
+    // it auto-picks via the SLINT_BACKEND env var or compile-time
+    // features (we have backend-winit-wayland on). The subsequent
+    // AppWindow::new() re-uses the same context via with_platform.
+    slint::BackendSelector::new()
+        .select()
+        .context("Failed to initialize Slint backend")?;
+
     // Set the Wayland app_id / X11 WM_CLASS to match the .desktop
     // entry's `StartupWMClass=org.tisvlay.Gui`. This lets KWin /
     // GNOME Shell associate the live window with the launcher
@@ -224,8 +237,10 @@ pub fn run() -> Result<()> {
     // app menu / KRunner can raise the existing window when the
     // user re-launches without going through our D-Bus Activate
     // handler. PR slint-ui/slint#6851 (merged 2024-11) exposed
-    // this in slint::set_xdg_app_id; must be called before any
-    // AppWindow is constructed.
+    // this in slint::set_xdg_app_id; must be called before the
+    // AppWindow is shown — winit reads xdg_app_id when building
+    // WindowAttributes for the first show() (winitwindowadapter
+    // .rs:445).
     slint::set_xdg_app_id(dbus::GUI_BUS_NAME).context("Failed to set Wayland app_id")?;
 
     let app = AppWindow::new()?;
