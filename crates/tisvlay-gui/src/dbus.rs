@@ -221,25 +221,51 @@ impl ApplicationService {
 #[interface(name = "org.freedesktop.Application")]
 impl ApplicationService {
     fn activate(&self, platform_data: HashMap<String, OwnedValue>) {
-        self.raise(extract_activation_token(&platform_data));
+        let keys: Vec<&str> = platform_data.keys().map(String::as_str).collect();
+        let token = extract_activation_token(&platform_data);
+        info!(
+            method = "Activate",
+            keys = ?keys,
+            token_present = token.is_some(),
+            "freedesktop.Application call received"
+        );
+        self.raise(token);
     }
 
     /// We register no MIME types and don't handle URIs today;
     /// treat as a plain activation so launchers that prefer
     /// `Open` still bring the window forward.
-    fn open(&self, _uris: Vec<String>, platform_data: HashMap<String, OwnedValue>) {
-        self.raise(extract_activation_token(&platform_data));
+    fn open(&self, uris: Vec<String>, platform_data: HashMap<String, OwnedValue>) {
+        let keys: Vec<&str> = platform_data.keys().map(String::as_str).collect();
+        let token = extract_activation_token(&platform_data);
+        info!(
+            method = "Open",
+            uri_count = uris.len(),
+            keys = ?keys,
+            token_present = token.is_some(),
+            "freedesktop.Application call received"
+        );
+        self.raise(token);
     }
 
     /// The `.desktop` entry declares no `Actions` yet; required by
     /// the spec to implement the method.
     fn activate_action(
         &self,
-        _action_name: String,
+        action_name: String,
         _parameter: Vec<OwnedValue>,
         platform_data: HashMap<String, OwnedValue>,
     ) {
-        self.raise(extract_activation_token(&platform_data));
+        let keys: Vec<&str> = platform_data.keys().map(String::as_str).collect();
+        let token = extract_activation_token(&platform_data);
+        info!(
+            method = "ActivateAction",
+            action = %action_name,
+            keys = ?keys,
+            token_present = token.is_some(),
+            "freedesktop.Application call received"
+        );
+        self.raise(token);
     }
 }
 
