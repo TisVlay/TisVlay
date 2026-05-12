@@ -6,6 +6,8 @@
 
 use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{MenuItem, ToolTip, Tray};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -136,6 +138,13 @@ pub(crate) struct TisvlayTray {
     pub scroll_target: ScrollTarget,
     /// TV ID last interacted with via volume/backlight; scroll targets this TV.
     pub scroll_tv_id: Option<String>,
+    /// Coalescer for the "Open Settings" menu item — set to `true`
+    /// when an `OpenGui` is enqueued, cleared by the dispatch arm
+    /// once `activate_gui` returns. Drops further clicks while one
+    /// is in flight so a burst of clicks can't queue multiple
+    /// Activates that would each respawn a fresh GUI if the user
+    /// closes the window between calls.
+    pub open_gui_pending: Arc<AtomicBool>,
 }
 
 impl Tray for TisvlayTray {
@@ -324,12 +333,37 @@ impl Tray for TisvlayTray {
         }
 
         items.push(MenuItem::Separator);
-        items.push(tv_item(
-            "Open Settings",
-            "preferences-system",
-            &self.cmd_tx,
-            || TrayCommand::OpenGui,
-        ));
+        items.push({
+            // Open Settings uses a coalescing callback instead of
+            // the plain tv_item helper: rapid clicks while an
+            // OpenGui is already in flight are dropped at the
+            // source, so the tray's mpsc never holds more than
+            // one pending Activate. Without this, a burst of
+            // clicks queues per-click ~500ms-of-dispatch, and if
+            // the user closes the GUI mid-queue, each remaining
+            // Activate respawns a fresh GUI via D-Bus session
+            // auto-activation — observed cascade of 2–3 windows
+            // the user has to close in sequence.
+            let tx = self.cmd_tx.clone();
+            let pending = self.open_gui_pending.clone();
+            StandardItem {
+                label: "Open Settings".into(),
+                icon_name: "preferences-system".into(),
+                activate: Box::new(move |_tray| {
+                    if pending.swap(true, Ordering::Relaxed) {
+                        debug!("Open Settings click dropped — previous OpenGui still in flight");
+                        return;
+                    }
+                    if tx.send(TrayCommand::OpenGui).is_err() {
+                        // Channel closed (tray shutting down); clear so we
+                        // don't leak the locked state.
+                        pending.store(false, Ordering::Relaxed);
+                    }
+                }),
+                ..Default::default()
+            }
+            .into()
+        });
         items.push(tv_item("Reload", "view-refresh", &self.cmd_tx, || {
             TrayCommand::Reload
         }));

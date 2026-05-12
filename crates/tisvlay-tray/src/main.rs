@@ -10,6 +10,7 @@ mod state;
 mod tray;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -102,6 +103,12 @@ async fn main() -> Result<()> {
     // Create command channel
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
+    // OpenGui coalescer: set by the menu callback when an Activate
+    // is enqueued, cleared by the dispatch arm. Shared via Arc
+    // between the (sync) ksni menu callback and the (async)
+    // process_commands task.
+    let open_gui_pending = Arc::new(AtomicBool::new(false));
+
     // Create tray with initial state
     let tray = TisvlayTray {
         tvs: initial_tvs,
@@ -109,6 +116,7 @@ async fn main() -> Result<()> {
         cmd_tx,
         scroll_target: Default::default(),
         scroll_tv_id: None,
+        open_gui_pending: open_gui_pending.clone(),
     };
 
     // Spawn the tray icon
@@ -209,6 +217,7 @@ async fn main() -> Result<()> {
             volume_scroll,
             backlight_scroll,
             cmd_reconcilers,
+            open_gui_pending,
         )
         .await;
     });
@@ -373,6 +382,7 @@ async fn watch_state(
 }
 
 /// Process commands from tray menu callbacks.
+#[allow(clippy::too_many_arguments)]
 async fn process_commands(
     mut cmd_rx: mpsc::UnboundedReceiver<TrayCommand>,
     daemon: Arc<DaemonClient>,
@@ -381,6 +391,7 @@ async fn process_commands(
     volume_scroll: Coalescer<String, i32>,
     backlight_scroll: Coalescer<String, i32>,
     reconcilers: Reconcilers,
+    open_gui_pending: Arc<AtomicBool>,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         debug!(cmd = ?cmd, "Processing tray command");
@@ -395,6 +406,11 @@ async fn process_commands(
                 // OK on X11 / older Plasma; only the raise-
                 // existing path under Plasma 6.5+ Extreme FSP
                 // needs the token to actually focus.
+                //
+                // The menu callback (tray.rs) check-and-set the
+                // `open_gui_pending` flag before sending us this
+                // command. Clear it once the call completes so
+                // the next click can enqueue again.
                 let token = tokio::task::spawn_blocking(activation_token::try_acquire)
                     .await
                     .ok()
@@ -402,6 +418,7 @@ async fn process_commands(
                 if let Err(e) = activate_gui(token).await {
                     warn!(error = %e, "Open GUI failed");
                 }
+                open_gui_pending.store(false, Ordering::Relaxed);
             }
             TrayCommand::Reload => {
                 // Reload config on both services, then immediately refresh state

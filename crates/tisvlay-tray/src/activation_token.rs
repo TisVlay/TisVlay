@@ -36,10 +36,13 @@ use wayland_protocols::xdg::activation::v1::client::xdg_activation_token_v1::{
 use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
 
 /// Maximum time we'll block waiting for the compositor's `done`
-/// event. Typical response is sub-millisecond; the timeout exists
-/// to keep us from hanging if the compositor decides to neither
-/// grant nor deny.
-const TIMEOUT: Duration = Duration::from_millis(500);
+/// event. Plasma 6 either grants in sub-millisecond or never
+/// (denial is silent — the token never arrives). 100ms keeps the
+/// tray dispatch responsive: every TrayCommand::OpenGui that
+/// arrives at the dispatch loop currently pauses here, so a
+/// slow timeout widens the window in which a queued click can
+/// hit a closing GUI and trigger a respawn cascade.
+const TIMEOUT: Duration = Duration::from_millis(100);
 
 struct TokenState {
     token: Option<String>,
