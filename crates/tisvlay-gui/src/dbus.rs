@@ -24,6 +24,8 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use tokio::sync::oneshot;
 use tracing::{debug, info};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::interface;
@@ -110,18 +112,20 @@ async fn proxy_activate(connection: &zbus::Connection) -> Result<()> {
 }
 
 /// Register `Gui1` + `Application` on the connection's object
-/// server. Holds no return value — registration ownership is the
-/// `connection` returned by [`try_claim`]. The handler for
-/// `org.freedesktop.Application.Activate` is currently a no-op
-/// (see [`ApplicationService::raise`]), so this function takes no
-/// `slint::Weak<AppWindow>` argument. When Slint exposes a public
-/// raise API and `raise()` regains its body, thread one through.
+/// server. Returns a `oneshot::Receiver` for the first inbound
+/// `Activate` call's `activation-token`, if `platform_data` carried
+/// one. The caller awaits this with a short timeout before showing
+/// the window so winit's first surface mapping can complete the
+/// launcher's xdg-activation-v1 startup-notification handshake —
+/// without it, KDE's app menu reports "Remote peer disconnected"
+/// when the user later closes the window because the launch was
+/// never marked complete.
 pub(crate) async fn serve(
     connection: &zbus::Connection,
     config_path: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<oneshot::Receiver<String>> {
     let gui_service = GuiService::new(config_path);
-    let app_service = ApplicationService;
+    let (app_service, activation_token_rx) = ApplicationService::new();
 
     connection
         .object_server()
@@ -139,7 +143,7 @@ pub(crate) async fn serve(
         path = GUI_OBJECT_PATH,
         "GUI D-Bus interfaces registered"
     );
-    Ok(())
+    Ok(activation_token_rx)
 }
 
 // ----------------------------------------------------------------
@@ -192,7 +196,27 @@ impl GuiService {
 // `$XDG_ACTIVATION_TOKEN` so Slint's underlying winit picks it up
 // inside the window-raise call.
 
-pub(crate) struct ApplicationService;
+pub(crate) struct ApplicationService {
+    /// Sender for the first inbound `Activate` call's
+    /// `activation-token`. `Mutex<Option<…>>` because the zbus
+    /// interface method takes `&self` (no `&mut`) and `oneshot`
+    /// senders are consumed by `send`. Subsequent activations
+    /// find `None` here and skip — the token only matters for
+    /// the cold-spawn startup-notification handshake.
+    activation_token_tx: Mutex<Option<oneshot::Sender<String>>>,
+}
+
+impl ApplicationService {
+    pub(crate) fn new() -> (Self, oneshot::Receiver<String>) {
+        let (tx, rx) = oneshot::channel();
+        (
+            Self {
+                activation_token_tx: Mutex::new(Some(tx)),
+            },
+            rx,
+        )
+    }
+}
 
 #[interface(name = "org.freedesktop.Application")]
 impl ApplicationService {
@@ -220,7 +244,24 @@ impl ApplicationService {
 }
 
 impl ApplicationService {
-    fn raise(&self, _activation_token: Option<String>) {
+    fn raise(&self, activation_token: Option<String>) {
+        // Forward the *first* inbound activation-token to the
+        // main thread so it can be set in $XDG_ACTIVATION_TOKEN
+        // before winit's first window mapping. Critical for the
+        // KDE launcher path: without this, KDE's xdg-activation
+        // startup-notification handshake never completes, and on
+        // window close KDE reports "Launching TisVlay (Failed):
+        // Remote peer disconnected". Subsequent activations find
+        // the sender already taken and skip — the token only
+        // matters for the *first* surface mapping (cold-spawn).
+        if let Some(token) = activation_token {
+            if let Ok(mut guard) = self.activation_token_tx.lock() {
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(token);
+                }
+            }
+        }
+
         // Deliberate no-op on already-running GUIs.
         //
         // The "obvious" implementation — `slint::invoke_from_

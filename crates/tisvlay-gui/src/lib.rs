@@ -391,7 +391,7 @@ pub fn run() -> Result<()> {
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
     let conn_for_serve = gui_dbus.clone();
-    let (daemon, session, tray) = rt.block_on(async move {
+    let (daemon, session, tray, activation_token_rx) = rt.block_on(async move {
         let daemon = if args.user {
             info!("Connecting to daemon on session bus (development mode)");
             DaemonClient::new_session().await
@@ -422,13 +422,48 @@ pub fn run() -> Result<()> {
         // handler is intentionally a no-op pending a Slint raise
         // API; cold-spawn via app.run() still shows the window
         // in the normal startup path. No config file yet — pass
-        // `None`.
-        dbus::serve(&conn_for_serve, None)
+        // `None`. The returned receiver carries the first inbound
+        // Activate call's activation-token, which we drain below
+        // before showing the window so winit can complete the
+        // launcher's startup-notification handshake.
+        let activation_token_rx = dbus::serve(&conn_for_serve, None)
             .await
             .context("Failed to register GUI D-Bus interfaces")?;
 
-        anyhow::Ok((daemon, session, tray))
+        anyhow::Ok((daemon, session, tray, activation_token_rx))
     })?;
+
+    // Drain the activation-token receiver with a short timeout. In
+    // the cold-spawn-from-launcher path, KDE / GNOME / etc. send an
+    // Activate call with `platform_data["activation-token"]` as
+    // soon as they see the .service file's auto-spawn complete the
+    // bus-name claim. The Activate handler stashes the token via
+    // the oneshot sender; this block_on receives it. Setting
+    // $XDG_ACTIVATION_TOKEN before app.run() lets winit consume
+    // the token when it maps the surface, completing the
+    // launcher's xdg-activation-v1 startup-notification —
+    // otherwise KDE reports "Remote peer disconnected" on window
+    // close because it thinks the launch never completed.
+    //
+    // 50ms is a worst-case bound: queued Activates from D-Bus
+    // session auto-activation typically arrive in <10ms. Direct
+    // `cargo run` (no inbound Activate) pays the full 50ms once
+    // at startup — acceptable for the correctness gain.
+    let activation_token = rt.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_millis(50), activation_token_rx)
+            .await
+            .ok()
+            .and_then(Result::ok)
+    });
+    if let Some(token) = activation_token {
+        info!(token = %token, "Propagating launcher activation token to window mapping");
+        // SAFETY: env mutation on the main thread before winit
+        // reads XDG_ACTIVATION_TOKEN via getenv inside Slint's
+        // first window.show() (called from app.run() below). No
+        // other thread reads this var; the zbus handler that
+        // produced the token is done with it.
+        unsafe { std::env::set_var("XDG_ACTIVATION_TOKEN", &token) };
+    }
 
     // Wire the per-row "reveal config in file manager" callback now
     // that we have a live user-bus connection. `gui_dbus` is the
