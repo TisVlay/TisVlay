@@ -22,15 +22,18 @@
 //! flashing a half-built window.
 
 use anyhow::{Context, Result};
+use slint::ComponentHandle;
+use slint::winit_030::WinitWindowAccessor;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use tokio::sync::oneshot;
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::info;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::interface;
 use zbus::names::WellKnownName;
 use zbus::zvariant::{OwnedValue, Value};
+
+use crate::AppWindow;
 
 pub(crate) const GUI_BUS_NAME: &str = "org.tisvlay.Gui";
 const GUI_OBJECT_PATH: &str = "/org/tisvlay/Gui";
@@ -71,24 +74,31 @@ pub(crate) enum ClaimResult {
 /// ensures the queued call hits a ready handler the moment the
 /// name is claimed.
 ///
-/// The returned `oneshot::Receiver` carries the first inbound
-/// Activate's `activation-token` for the caller to set in
-/// `$XDG_ACTIVATION_TOKEN` before showing the window — see F1 and
-/// F4 in docs/plans/gui-desktop-integration.md for the mechanism
-/// and KDE-source-of-truth pointers.
+/// The returned [`Activation`] handle is the cross-thread wiring
+/// between the D-Bus interface methods (which run on zbus worker
+/// tasks) and the Slint main thread:
+///
+/// - `cold_spawn_token` carries the first inbound Activate's
+///   `activation-token` to the `BackendSelector::with_winit_window_
+///   attributes_hook` closure (read at `AppWindow::new()`).
+/// - `window` is populated by the caller after `AppWindow::new()`
+///   returns; subsequent re-activation handlers read it to call
+///   `winit::Window::request_user_attention` for the taskbar
+///   pulse.
 ///
 /// In the `Proxied` path (another instance owns the name), the
 /// registered interfaces sit on a connection we're about to drop
-/// — unused but cheap.
+/// — unused but cheap. The activation handle is still returned
+/// but never used.
 pub(crate) async fn try_claim_and_serve(
     config_path: Option<PathBuf>,
-) -> Result<(ClaimResult, oneshot::Receiver<String>)> {
+) -> Result<(ClaimResult, Activation)> {
     let connection = zbus::Connection::session()
         .await
         .context("Failed to connect to user D-Bus")?;
 
     let gui_service = GuiService::new(config_path);
-    let (app_service, activation_token_rx) = ApplicationService::new();
+    let (app_service, activation) = ApplicationService::new();
 
     connection
         .object_server()
@@ -114,7 +124,7 @@ pub(crate) async fn try_claim_and_serve(
                 path = GUI_OBJECT_PATH,
                 "GUI D-Bus interfaces registered and bus name claimed"
             );
-            Ok((ClaimResult::Primary(connection), activation_token_rx))
+            Ok((ClaimResult::Primary(connection), activation))
         }
         RequestNameReply::Exists | RequestNameReply::InQueue => {
             info!(
@@ -122,7 +132,7 @@ pub(crate) async fn try_claim_and_serve(
                 "Another tisvlay-gui instance is running; proxying Activate and exiting"
             );
             proxy_activate(&connection).await?;
-            Ok((ClaimResult::Proxied, activation_token_rx))
+            Ok((ClaimResult::Proxied, activation))
         }
     }
 }
@@ -206,24 +216,48 @@ impl GuiService {
 // `$XDG_ACTIVATION_TOKEN` so Slint's underlying winit picks it up
 // inside the window-raise call.
 
+/// Cross-thread state shared between the zbus interface handlers
+/// (worker threads) and the Slint main thread. Cloneable — both
+/// sides hold their own [`Arc`]-cloned handles.
+#[derive(Clone)]
+pub(crate) struct Activation {
+    /// First-Activate `activation-token`, captured by the handler
+    /// before the AppWindow exists. Read once by the
+    /// `BackendSelector::with_winit_window_attributes_hook`
+    /// closure at `AppWindow::new()` time, applied to the
+    /// surface via `WindowAttributesExtStartupNotify::
+    /// with_activation_token`. Cleared by the hook on `take()`.
+    pub(crate) cold_spawn_token: Arc<Mutex<Option<String>>>,
+    /// `AppWindow` weak reference, set by the caller once
+    /// `AppWindow::new()` returns. Read by `raise()` on re-
+    /// activations to post a `request_user_attention` via
+    /// `slint::invoke_from_event_loop`. Empty until set —
+    /// re-activations arriving before this point fall into
+    /// the cold-spawn branch (token stashed for the hook).
+    pub(crate) window: Arc<OnceLock<slint::Weak<AppWindow>>>,
+}
+
+impl Activation {
+    fn new() -> Self {
+        Self {
+            cold_spawn_token: Arc::new(Mutex::new(None)),
+            window: Arc::new(OnceLock::new()),
+        }
+    }
+}
+
 pub(crate) struct ApplicationService {
-    /// Sender for the first inbound `Activate` call's
-    /// `activation-token`. `Mutex<Option<…>>` because the zbus
-    /// interface method takes `&self` (no `&mut`) and `oneshot`
-    /// senders are consumed by `send`. Subsequent activations
-    /// find `None` here and skip — the token only matters for
-    /// the cold-spawn startup-notification handshake.
-    activation_token_tx: Mutex<Option<oneshot::Sender<String>>>,
+    activation: Activation,
 }
 
 impl ApplicationService {
-    pub(crate) fn new() -> (Self, oneshot::Receiver<String>) {
-        let (tx, rx) = oneshot::channel();
+    pub(crate) fn new() -> (Self, Activation) {
+        let activation = Activation::new();
         (
             Self {
-                activation_token_tx: Mutex::new(Some(tx)),
+                activation: activation.clone(),
             },
-            rx,
+            activation,
         )
     }
 }
@@ -274,64 +308,53 @@ impl ApplicationService {
 
 impl ApplicationService {
     fn raise(&self, activation_token: Option<String>) {
-        // Forward the *first* inbound activation-token to the
-        // main thread so it can be set in $XDG_ACTIVATION_TOKEN
-        // before winit's first window mapping. Critical for the
-        // KDE launcher path: without this, KDE's xdg-activation
-        // startup-notification handshake never completes, and on
-        // window close KDE reports "Launching TisVlay (Failed):
-        // Remote peer disconnected". Subsequent activations find
-        // the sender already taken and skip — the token only
-        // matters for the *first* surface mapping (cold-spawn).
-        if let Some(token) = activation_token {
-            if let Ok(mut guard) = self.activation_token_tx.lock() {
-                if let Some(tx) = guard.take() {
-                    let _ = tx.send(token);
+        // Dispatch on AppWindow existence.
+        //
+        // - **Re-activation path** (window exists): user relaunched
+        //   from the tray / app menu / KRunner while we're already
+        //   running. Pulse the taskbar entry via
+        //   `winit::Window::request_user_attention(Informational)`.
+        //   On Wayland, winit's impl issues an `xdg_activation_v1`
+        //   request bound to our surface with an
+        //   `XdgActivationTokenData::Attention(...)` token; KWin
+        //   maps `Attention`-flagged tokens onto the
+        //   `demands_attention` window state (taskbar pulse on
+        //   Extreme FSP; on permissive policies KWin may raise
+        //   directly). The `activation_token` from `platform_data`
+        //   is ignored on this path — winit's own Attention token
+        //   is what drives the response. Resolves finding F2 from
+        //   docs/plans/gui-desktop-integration.md (the prior
+        //   `window.show()`-on-mapped-surface bug that killed the
+        //   process every re-activation).
+        //
+        // - **Cold-spawn path** (window not yet constructed):
+        //   stash the inbound `activation-token` in the shared
+        //   `Activation::cold_spawn_token`. The
+        //   `BackendSelector::with_winit_window_attributes_hook`
+        //   in `lib.rs` reads it during `AppWindow::new()` and
+        //   applies it via `WindowAttributesExtStartupNotify::
+        //   with_activation_token` — winit sends the activation
+        //   request itself when the surface maps, completing the
+        //   launcher's startup-notification handshake. Multiple
+        //   cold-spawn Activates overwrite the slot; the most
+        //   recent wins at hook time.
+        if let Some(weak) = self.activation.window.get() {
+            let weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(app) = weak.upgrade() {
+                    use slint::winit_030::winit::window::UserAttentionType;
+                    app.window().with_winit_window(|w| {
+                        w.request_user_attention(Some(UserAttentionType::Informational));
+                    });
                 }
+            });
+            return;
+        }
+        if let Some(token) = activation_token {
+            if let Ok(mut guard) = self.activation.cold_spawn_token.lock() {
+                *guard = Some(token);
             }
         }
-
-        // Deliberate no-op on already-running GUIs.
-        //
-        // The "obvious" implementation — `slint::invoke_from_
-        // event_loop(|| window.show())` with $XDG_ACTIVATION_TOKEN
-        // set from `platform_data["activation-token"]` — destroys
-        // the GUI process on every re-activation under Slint 1.16
-        // + winit Wayland on Plasma 6 Wayland. Observed: each
-        // Activate received on a mapped surface causes the
-        // surface to disappear and the event loop to exit, taking
-        // the process down. Tray retries then respawn via D-Bus
-        // auto-activation, which dies on its next Activate, ad
-        // infinitum.
-        //
-        // Slint 1.16 has no public raise/focus API (tracked at
-        // slint-ui/slint#4382, open). Until upstream lands one,
-        // treat the Activate call as advisory only:
-        //
-        //   - Cold-spawn case: D-Bus auto-activates tisvlay-gui
-        //     via the .service file. `tisvlay_gui::run()` calls
-        //     `app.run()` which maps and shows the window in the
-        //     normal startup path. The Activate from the caller
-        //     completes successfully because we DO own
-        //     org.freedesktop.Application at this point — the
-        //     handler just declines to do anything beyond that.
-        //
-        //   - Re-activate case: silent no-op. The window stays
-        //     in its current Z-order. The .desktop entry's
-        //     StartupWMClass match (enabled via
-        //     slint::set_xdg_app_id in tisvlay_gui::run()) lets
-        //     KWin raise the window from the taskbar / app menu
-        //     / KRunner without going through this handler.
-        //
-        // When Slint exposes a raise/focus API (tracked at
-        // slint-ui/slint#4382, dormant as of 2026-05), the
-        // handler can re-introduce `slint::invoke_from_event_
-        // loop` + a window-raise call against the proper API.
-        // Until then, only the cold-spawn path consumes the
-        // activation token; re-activations on a running GUI
-        // are intentionally inert (the info!() in the calling
-        // `activate` / `open` / `activate_action` already
-        // records the fact that the call arrived).
     }
 }
 

@@ -218,7 +218,7 @@ pub fn run() -> Result<()> {
     // A second tisvlay-gui process discovers the name is taken,
     // proxies `org.freedesktop.Application.Activate` to us, and
     // exits — no duplicate window flash.
-    let (claim, activation_token_rx) = rt.block_on(dbus::try_claim_and_serve(None))?;
+    let (claim, activation) = rt.block_on(dbus::try_claim_and_serve(None))?;
     let gui_dbus = match claim {
         dbus::ClaimResult::Primary(connection) => connection,
         dbus::ClaimResult::Proxied => {
@@ -227,16 +227,33 @@ pub fn run() -> Result<()> {
         }
     };
 
-    // Initialize Slint's backend explicitly so the global context
-    // exists when we call set_xdg_app_id below. set_xdg_app_id's
-    // factory closure returns NoPlatform unconditionally — by
-    // design, it requires the backend to be already-initialized.
-    // BackendSelector::select() is Slint's documented public path
-    // for explicit backend init (i-slint-backend-selector/api.rs);
-    // it auto-picks via the SLINT_BACKEND env var or compile-time
-    // features (we have backend-winit-wayland on). The subsequent
-    // AppWindow::new() re-uses the same context via with_platform.
+    // Initialize Slint's backend explicitly (otherwise
+    // set_xdg_app_id below would error with PlatformError::
+    // NoPlatform — its lazy-init factory returns NoPlatform by
+    // design). Also installs a window-attributes hook so the
+    // cold-spawn `activation-token` captured by the Activate
+    // handler is plumbed into `WindowAttributes::with_activation_
+    // token` at AppWindow::new() time — winit then sends the
+    // xdg_activation_v1 activate request on first surface map,
+    // completing the launcher's startup-notification handshake
+    // (resolves F1+F4 in docs/plans/gui-desktop-integration.md
+    // without the previous `unsafe { std::env::set_var }` trick).
+    let cold_spawn_token = activation.cold_spawn_token.clone();
     slint::BackendSelector::new()
+        .with_winit_window_attributes_hook(move |attrs| {
+            use slint::winit_030::winit::platform::startup_notify::WindowAttributesExtStartupNotify;
+            use slint::winit_030::winit::window::ActivationToken;
+            let token = cold_spawn_token.lock().ok().and_then(|mut g| g.take());
+            if let Some(token) = token {
+                info!(
+                    token_len = token.len(),
+                    "Applying cold-spawn activation-token to window attributes"
+                );
+                attrs.with_activation_token(ActivationToken::from_raw(token))
+            } else {
+                attrs
+            }
+        })
         .select()
         .context("Failed to initialize Slint backend")?;
 
@@ -255,6 +272,15 @@ pub fn run() -> Result<()> {
     slint::set_xdg_app_id(dbus::GUI_BUS_NAME).context("Failed to set Wayland app_id")?;
 
     let app = AppWindow::new()?;
+
+    // Wire the live AppWindow into the activation handle so the
+    // D-Bus Activate handler (running on a zbus worker task) can
+    // post a `winit::Window::request_user_attention` via
+    // `slint::invoke_from_event_loop` for re-activation pulses.
+    // OnceLock::set fails if already populated — should never
+    // happen since `run()` is only invoked once per process, but
+    // we don't unwrap to stay defensive.
+    let _ = activation.window.set(app.as_weak());
 
     // Resolve sidebar icons against the user's freedesktop icon
     // theme. Mirrors the tray's approach: by-name lookup with theme
@@ -427,37 +453,13 @@ pub fn run() -> Result<()> {
         anyhow::Ok((daemon, session, tray))
     })?;
 
-    // Drain the activation-token receiver with a short timeout. In
-    // the cold-spawn-from-launcher path, KDE / GNOME / etc. send an
-    // Activate call with `platform_data["activation-token"]` as
-    // soon as they see the .service file's auto-spawn complete the
-    // bus-name claim. The Activate handler stashes the token via
-    // the oneshot sender; this block_on receives it. Setting
-    // $XDG_ACTIVATION_TOKEN before app.run() lets winit consume
-    // the token when it maps the surface, completing the
-    // launcher's xdg-activation-v1 startup-notification —
-    // otherwise KDE reports "Remote peer disconnected" on window
-    // close because it thinks the launch never completed.
-    //
-    // 50ms is a worst-case bound: queued Activates from D-Bus
-    // session auto-activation typically arrive in <10ms. Direct
-    // `cargo run` (no inbound Activate) pays the full 50ms once
-    // at startup — acceptable for the correctness gain.
-    let activation_token = rt.block_on(async {
-        tokio::time::timeout(std::time::Duration::from_millis(50), activation_token_rx)
-            .await
-            .ok()
-            .and_then(Result::ok)
-    });
-    if let Some(token) = activation_token {
-        info!(token = %token, "Propagating launcher activation token to window mapping");
-        // SAFETY: env mutation on the main thread before winit
-        // reads XDG_ACTIVATION_TOKEN via getenv inside Slint's
-        // first window.show() (called from app.run() below). No
-        // other thread reads this var; the zbus handler that
-        // produced the token is done with it.
-        unsafe { std::env::set_var("XDG_ACTIVATION_TOKEN", &token) };
-    }
+    // (Activation-token handling moved up: the
+    // BackendSelector::with_winit_window_attributes_hook above
+    // consumes the cold-spawn token at AppWindow::new() time via
+    // WindowAttributesExtStartupNotify::with_activation_token —
+    // no env-var setter, no `unsafe` block, no timeout race.
+    // Re-activation pulses are handled by the Activate handler
+    // in dbus.rs::raise() via winit's request_user_attention.)
 
     // Wire the per-row "reveal config in file manager" callback now
     // that we have a live user-bus connection. `gui_dbus` is the

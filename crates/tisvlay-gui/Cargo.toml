@@ -45,7 +45,20 @@ serde_json = { workspace = true }
 # winit/glutin/copypasta X11 paths. X11 users still get the daemon,
 # CLI, and tray (ksni works on X11); only the settings window goes
 # away.
-slint = { version = "1.16", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext"] }
+# `unstable-winit-030` exposes the `slint::winit_030` re-exports
+# (winit types + `WinitWindowAccessor::with_winit_window`) and
+# `BackendSelector::with_winit_window_attributes_hook` — used in
+# src/dbus.rs to call `winit::Window::request_user_attention` on
+# tray re-activations (taskbar pulse / KWin demands_attention)
+# and in src/lib.rs to plumb the cold-spawn `activation-token`
+# through `WindowAttributesExtStartupNotify::with_activation_token`
+# without `unsafe { std::env::set_var }`. Slint warns the module
+# "may be removed or changed in future minor releases"
+# (slint-1.16.1/lib.rs:680), so the version is **pinned exactly**:
+# minor-version bumps must explicitly re-audit the `winit_030`
+# surface. See docs/plans/gui-pulse-on-reactivate.md DR1 for
+# rationale.
+slint = { version = "=1.16.1", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
 zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
