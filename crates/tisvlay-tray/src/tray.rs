@@ -695,7 +695,7 @@ fn build_profile_submenu(
     }
 
     SubMenu {
-        label: "Profile".into(),
+        label: "Profiles".into(),
         icon_name: "system-user-list".into(),
         submenu,
         ..Default::default()
