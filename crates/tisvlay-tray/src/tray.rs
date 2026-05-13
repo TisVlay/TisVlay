@@ -348,7 +348,7 @@ impl Tray for TisvlayTray {
             let pending = self.open_gui_pending.clone();
             StandardItem {
                 label: "Open Settings".into(),
-                icon_name: "preferences-system".into(),
+                icon_name: "settings-configure".into(),
                 activate: Box::new(move |_tray| {
                     if pending.swap(true, Ordering::Relaxed) {
                         debug!("Open Settings click dropped — previous OpenGui still in flight");
@@ -696,7 +696,7 @@ fn build_profile_submenu(
 
     SubMenu {
         label: "Profile".into(),
-        icon_name: "settings-configure".into(),
+        icon_name: "system-user-list".into(),
         submenu,
         ..Default::default()
     }

@@ -268,7 +268,7 @@ pub fn run() -> Result<()> {
         "tv",
     ]));
     app.set_profiles_icon(load_themed_icon(&[
-        "system-users",
+        "system-user-list",
         "preferences-desktop-user",
     ]));
     app.set_session_icon(load_themed_icon(&["clock", "appointment-new"]));
