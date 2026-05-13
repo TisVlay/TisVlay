@@ -4,7 +4,6 @@
 //! via the tisvlayd D-Bus daemon. Communicates exclusively through
 //! `DaemonClient` — no vendor crate dependencies.
 
-mod activation_token;
 mod dbus;
 mod state;
 mod tray;
@@ -399,23 +398,24 @@ async fn process_commands(
         match cmd {
             TrayCommand::Quit => break,
             TrayCommand::OpenGui => {
-                // Acquire an xdg-activation-v1 token on the
-                // blocking pool (the wayland-client dispatch is
-                // sync), then call the GUI's standard freedesktop
-                // Application.Activate. Empty platform_data is
-                // OK on X11 / older Plasma; only the raise-
-                // existing path under Plasma 6.5+ Extreme FSP
-                // needs the token to actually focus.
+                // Call the GUI's freedesktop `Application.Activate`
+                // with empty `platform_data`. The previous tray-side
+                // `xdg-activation-v1` token acquisition was deleted
+                // — empirically yielded empty tokens (the tray icon
+                // is surfaceless), and KIO's launcher behavior
+                // (kio/src/gui/dbusactivationrunner.cpp:70-96)
+                // already passes the same key with empty value when
+                // the spawn-env var is unset. The GUI itself now
+                // calls `winit::Window::request_user_attention` on
+                // re-activation for the taskbar pulse UX — see
+                // crates/tisvlay-gui/src/dbus.rs::raise() and
+                // docs/plans/gui-pulse-on-reactivate.md.
                 //
-                // The menu callback (tray.rs) check-and-set the
+                // The menu callback (tray.rs) check-and-sets the
                 // `open_gui_pending` flag before sending us this
                 // command. Clear it once the call completes so
                 // the next click can enqueue again.
-                let token = tokio::task::spawn_blocking(activation_token::try_acquire)
-                    .await
-                    .ok()
-                    .flatten();
-                if let Err(e) = activate_gui(token).await {
+                if let Err(e) = activate_gui().await {
                     warn!(error = %e, "Open GUI failed");
                 }
                 open_gui_pending.store(false, Ordering::Relaxed);
@@ -529,12 +529,14 @@ async fn process_commands(
 
 /// Invoke `org.freedesktop.Application.Activate` on the running
 /// GUI (or auto-spawn one via D-Bus session activation if the
-/// `.service` file is installed). Carries an xdg-activation-v1
-/// token in `platform_data["activation-token"]` when available so
-/// KWin Plasma 6.5+ raises the existing window past focus-stealing
-/// prevention; empty `platform_data` is the spec-compliant fallback
-/// for X11 / surfaceless callers and older compositors.
-async fn activate_gui(activation_token: Option<String>) -> Result<()> {
+/// `.service` file is installed). `platform_data` is empty — the
+/// tray is surfaceless (icon rendered by the panel), so it has no
+/// `xdg-activation-v1` token to pass. The GUI's Activate handler
+/// detects this and pulses the taskbar via
+/// `winit::Window::request_user_attention` instead — see
+/// `crates/tisvlay-gui/src/dbus.rs::raise()` for the rationale and
+/// `docs/plans/gui-pulse-on-reactivate.md` for the design.
+async fn activate_gui() -> Result<()> {
     use std::collections::HashMap;
     use zbus::zvariant::Value;
 
@@ -550,10 +552,7 @@ async fn activate_gui(activation_token: Option<String>) -> Result<()> {
     .await
     .context("Build org.freedesktop.Application proxy")?;
 
-    let mut platform_data: HashMap<String, Value<'_>> = HashMap::new();
-    if let Some(token) = activation_token {
-        platform_data.insert("activation-token".to_string(), Value::from(token));
-    }
+    let platform_data: HashMap<String, Value<'_>> = HashMap::new();
     let _: () = proxy
         .call("Activate", &(platform_data,))
         .await

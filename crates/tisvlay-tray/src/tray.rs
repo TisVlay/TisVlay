@@ -144,6 +144,13 @@ pub(crate) struct TisvlayTray {
     /// is in flight so a burst of clicks can't queue multiple
     /// Activates that would each respawn a fresh GUI if the user
     /// closes the window between calls.
+    ///
+    /// Per-click dispatch is now a single D-Bus round-trip (~10ms)
+    /// since "raise existing window" is handled GUI-side via
+    /// `winit::Window::request_user_attention`, so multi-spawn
+    /// pressure is low in practice. The coalescer is kept as
+    /// defense-in-depth against a slow round-trip racing with a
+    /// rapid click burst landing while the GUI is closing.
     pub open_gui_pending: Arc<AtomicBool>,
 }
 
@@ -338,12 +345,12 @@ impl Tray for TisvlayTray {
             // the plain tv_item helper: rapid clicks while an
             // OpenGui is already in flight are dropped at the
             // source, so the tray's mpsc never holds more than
-            // one pending Activate. Without this, a burst of
-            // clicks queues per-click ~500ms-of-dispatch, and if
-            // the user closes the GUI mid-queue, each remaining
-            // Activate respawns a fresh GUI via D-Bus session
-            // auto-activation — observed cascade of 2–3 windows
-            // the user has to close in sequence.
+            // one pending Activate. Without this, a click burst
+            // landing while the GUI is closing can queue
+            // multiple Activates that each respawn a fresh GUI
+            // via D-Bus session auto-activation — observed
+            // cascade of 2–3 windows the user has to close in
+            // sequence. See `open_gui_pending` for rationale.
             let tx = self.cmd_tx.clone();
             let pending = self.open_gui_pending.clone();
             StandardItem {
