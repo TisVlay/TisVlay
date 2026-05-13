@@ -1,7 +1,7 @@
-//! xdg-activation-v1 token acquisition for the "Open Settings"
+//! xdg-activation-v1 token acquisition for the "Settings"
 //! tray action.
 //!
-//! When the user clicks "Open Settings", the tray calls
+//! When the user clicks "Settings", the tray calls
 //! `org.freedesktop.Application.Activate` on the GUI. For the call
 //! to actually raise an already-running window past KWin's focus-
 //! stealing prevention (Plasma 6.5+), we pass an xdg-activation-v1

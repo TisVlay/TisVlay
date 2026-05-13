@@ -8,7 +8,7 @@
 //!   external tooling can probe peers uniformly.
 //! - `org.freedesktop.Application` — single-instance activation per
 //!   the freedesktop Desktop Entry D-Bus spec. Launchers (KRunner,
-//!   the Plasma app menu, GNOME Shell, the tray's "Open Settings"
+//!   the Plasma app menu, GNOME Shell, the tray's "Settings"
 //!   button) call `Activate(platform_data)` to either auto-spawn
 //!   the GUI (via the session `.service` file) or raise the
 //!   existing window. We implement the three required methods —

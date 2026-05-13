@@ -138,7 +138,7 @@ pub(crate) struct TisvlayTray {
     pub scroll_target: ScrollTarget,
     /// TV ID last interacted with via volume/backlight; scroll targets this TV.
     pub scroll_tv_id: Option<String>,
-    /// Coalescer for the "Open Settings" menu item — set to `true`
+    /// Coalescer for the "Settings" menu item — set to `true`
     /// when an `OpenGui` is enqueued, cleared by the dispatch arm
     /// once `activate_gui` returns. Drops further clicks while one
     /// is in flight so a burst of clicks can't queue multiple
@@ -334,7 +334,7 @@ impl Tray for TisvlayTray {
 
         items.push(MenuItem::Separator);
         items.push({
-            // Open Settings uses a coalescing callback instead of
+            // Settings uses a coalescing callback instead of
             // the plain tv_item helper: rapid clicks while an
             // OpenGui is already in flight are dropped at the
             // source, so the tray's mpsc never holds more than
@@ -347,7 +347,7 @@ impl Tray for TisvlayTray {
             let tx = self.cmd_tx.clone();
             let pending = self.open_gui_pending.clone();
             StandardItem {
-                label: "Open Settings".into(),
+                label: "Settings".into(),
                 icon_name: "settings-configure".into(),
                 activate: Box::new(move |_tray| {
                     if pending.swap(true, Ordering::Relaxed) {

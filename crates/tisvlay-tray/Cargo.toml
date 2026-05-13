@@ -27,7 +27,7 @@ clap = { workspace = true }
 # the GUI's About pane can report the tray's online status, version,
 # and resolved config path symmetrically with the daemon and session.
 zbus = { workspace = true }
-# xdg-activation-v1 token acquisition for the "Open Settings" tray
+# xdg-activation-v1 token acquisition for the "Settings" tray
 # action so KWin Plasma 6.5+ can raise the GUI window past focus-
 # stealing prevention. Same wayland-* crates the session uses for
 # the idle-notifier subscription; the staging feature group carries
