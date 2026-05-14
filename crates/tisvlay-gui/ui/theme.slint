@@ -28,6 +28,17 @@ export global Theme {
     out property <brush> surface: dark-mode ? #232730 : #ffffff;
     out property <brush> surface2: dark-mode ? #2b2f39 : #f4f5f7;
     out property <brush> surface-alt: dark-mode ? #262a33 : #f9fafb;
+    // Translucent backdrop drawn behind modal dialogs to dim the
+    // pane content underneath. Same alpha in both modes — 50%
+    // black reads as "modal scrim" over either a light or dark
+    // surface (light surfaces dim, dark surfaces gain contrast
+    // against the elevated dialog card).
+    out property <brush> scrim: #00000080;
+    // Drop-shadow tint for elevated surfaces (toasts today;
+    // popovers, menus, and floating cards in the future). Lower
+    // alpha than `scrim` — a shadow shouldn't dim, it should hint
+    // at elevation. Fed into Slint's `drop-shadow-color` property.
+    out property <brush> drop-shadow: #00000060;
 
     // -- Sidebar --
     //
