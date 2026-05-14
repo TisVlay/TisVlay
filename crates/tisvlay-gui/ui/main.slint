@@ -136,6 +136,12 @@ export component AppWindow inherits Window {
     in property <image> session-icon;
     in property <image> settings-icon;
     in property <image> about-icon;
+    // App-identity glyph for the About pane header. Resolved
+    // against `video-display` to match the `.desktop` entry's
+    // `Icon=` and the tray's connected-state icon. Decoupled from
+    // `about-icon` so the sidebar's About row keeps a distinct
+    // info-style glyph (`help-about`).
+    in property <image> app-logo;
 
     // Daemon callbacks moved to `Daemon` global (globals/daemon.slint).
     // Wizard callbacks + state moved to `PairingWizard` global
@@ -333,7 +339,7 @@ export component AppWindow inherits Window {
                 height: 100%;
                 gui-version: root.gui-version;
                 components: root.about-components;
-                logo: root.about-icon;
+                logo: root.app-logo;
                 view-source-clicked => { root.view-source-clicked(); }
                 view-release-clicked => { root.view-release-clicked(); }
                 view-notices-clicked => { root.view-notices-clicked(); }

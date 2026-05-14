@@ -305,6 +305,11 @@ pub fn run() -> Result<()> {
         "preferences-system",
     ]));
     app.set_about_icon(load_themed_icon(&["help-about", "dialog-information"]));
+    // App-identity logo for the About pane header. Matches the
+    // `.desktop` entry's `Icon=video-display` and the tray's
+    // connected-state icon, so the launcher entry / tray / About
+    // header all read as the same app visually.
+    app.set_app_logo(load_themed_icon(&["video-display"]));
 
     // Action-glyph icons resolved from the user's freedesktop theme
     // and pushed onto the `Icons` global for any pane to reach.
