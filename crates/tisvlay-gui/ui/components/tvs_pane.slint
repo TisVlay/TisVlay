@@ -97,12 +97,17 @@ component FormRow {
 
         VerticalLayout {
             width: root.label-width;
-            alignment: start;
+            // No helper → label sits in the row's vertical center so
+            // it visually aligns with the control. With a helper, the
+            // right column stacks `control + helper` taller than the
+            // control itself, so the label top-aligns to track the
+            // control's top edge (standard inline-form pattern).
+            alignment: root.helper != "" ? start : center;
             Text {
                 text: root.label;
                 color: Theme.text;
                 font-size: Design.font-body;
-                vertical-alignment: top;
+                vertical-alignment: root.helper != "" ? top : center;
             }
         }
 
