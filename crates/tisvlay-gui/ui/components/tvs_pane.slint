@@ -891,10 +891,10 @@ component TvDetail inherits Rectangle {
                     title: @tr("INFO");
 
                     LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
-                    LabeledRow { label: @tr("Manufacturer"); value: root.tv.hw-manufacturer; }
+                    LabeledRow { label: @tr("Make"); value: root.tv.hw-manufacturer; }
                     LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }
                     LabeledRow { label: @tr("Serial"); value: root.tv.hw-serial; mono: true; }
-                    LabeledRow { label: @tr("DRM connector"); value: root.tv.desktop-connector; mono: true; }
+                    LabeledRow { label: @tr("Connector"); value: root.tv.desktop-connector; mono: true; }
                     for entry in root.tv.vendor-info: LabeledRow {
                         label: entry.label;
                         value: entry.value;
