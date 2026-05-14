@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=TisVlay
+GenericName=TV Display Control
+Comment=Control connected TVs from the desktop
+Exec=tisvlay-gui
+TryExec=tisvlay-gui
+Icon=video-display
+Categories=Settings;HardwareSettings;
+Keywords=tv;television;remote;control;
+StartupNotify=true
+StartupWMClass=org.tisvlay.Gui
+DBusActivatable=true
+SingleMainWindow=true
+Implements=org.freedesktop.Application;

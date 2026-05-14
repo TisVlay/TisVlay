@@ -9,6 +9,7 @@ mod state;
 mod tray;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -101,6 +102,12 @@ async fn main() -> Result<()> {
     // Create command channel
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
+    // OpenGui coalescer: set by the menu callback when an Activate
+    // is enqueued, cleared by the dispatch arm. Shared via Arc
+    // between the (sync) ksni menu callback and the (async)
+    // process_commands task.
+    let open_gui_pending = Arc::new(AtomicBool::new(false));
+
     // Create tray with initial state
     let tray = TisvlayTray {
         tvs: initial_tvs,
@@ -108,6 +115,7 @@ async fn main() -> Result<()> {
         cmd_tx,
         scroll_target: Default::default(),
         scroll_tv_id: None,
+        open_gui_pending: open_gui_pending.clone(),
     };
 
     // Spawn the tray icon
@@ -208,6 +216,7 @@ async fn main() -> Result<()> {
             volume_scroll,
             backlight_scroll,
             cmd_reconcilers,
+            open_gui_pending,
         )
         .await;
     });
@@ -372,6 +381,7 @@ async fn watch_state(
 }
 
 /// Process commands from tray menu callbacks.
+#[allow(clippy::too_many_arguments)]
 async fn process_commands(
     mut cmd_rx: mpsc::UnboundedReceiver<TrayCommand>,
     daemon: Arc<DaemonClient>,
@@ -380,12 +390,33 @@ async fn process_commands(
     volume_scroll: Coalescer<String, i32>,
     backlight_scroll: Coalescer<String, i32>,
     reconcilers: Reconcilers,
+    open_gui_pending: Arc<AtomicBool>,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         debug!(cmd = ?cmd, "Processing tray command");
 
         match cmd {
+            #[cfg(debug_assertions)]
             TrayCommand::Quit => break,
+            TrayCommand::OpenGui => {
+                // Call the GUI's freedesktop `Application.Activate`
+                // with empty `platform_data`. The tray is surfaceless
+                // so it has no useful `xdg-activation-v1` token to
+                // pass; the GUI handles the taskbar-pulse UX itself
+                // via `request_user_attention` (see
+                // crates/tisvlay-gui/src/dbus.rs::raise()). Full
+                // KIO/KWin flow + design rationale:
+                // docs/kde/gui-application-activation.md.
+                //
+                // The menu callback (tray.rs) check-and-sets the
+                // `open_gui_pending` flag before sending us this
+                // command. Clear it once the call completes so
+                // the next click can enqueue again.
+                if let Err(e) = activate_gui().await {
+                    warn!(error = %e, "Open GUI failed");
+                }
+                open_gui_pending.store(false, Ordering::Relaxed);
+            }
             TrayCommand::Reload => {
                 // Reload config on both services, then immediately refresh state
                 if let Err(e) = daemon.reload_config().await {
@@ -491,6 +522,36 @@ async fn process_commands(
                 .await;
         }
     }
+}
+
+/// Invoke `org.freedesktop.Application.Activate` on the running
+/// GUI (or auto-spawn one via D-Bus session activation if the
+/// `.service` file is installed). `platform_data` is always empty
+/// — see `crates/tisvlay-gui/src/dbus.rs::raise()` for the GUI-
+/// side handler, and `docs/kde/gui-application-activation.md` for
+/// the surfaceless-tray rationale and the KIO/KWin activation flow.
+async fn activate_gui() -> Result<()> {
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+
+    let conn = zbus::Connection::session()
+        .await
+        .context("Connect to session bus")?;
+    let proxy = zbus::Proxy::new(
+        &conn,
+        "org.tisvlay.Gui",
+        "/org/tisvlay/Gui",
+        "org.freedesktop.Application",
+    )
+    .await
+    .context("Build org.freedesktop.Application proxy")?;
+
+    let platform_data: HashMap<String, Value<'_>> = HashMap::new();
+    let _: () = proxy
+        .call("Activate", &(platform_data,))
+        .await
+        .context("Call org.freedesktop.Application.Activate")?;
+    Ok(())
 }
 
 /// Read volume from cached tray state.

@@ -6,6 +6,8 @@
 
 use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{MenuItem, ToolTip, Tray};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -113,6 +115,16 @@ pub(crate) enum TrayCommand {
     ToggleMute(String),
     SetManaged(String, bool),
     Reload,
+    /// Activate the GUI: spawn a new window if none, raise the
+    /// existing one otherwise. Routes through the GUI's
+    /// `org.freedesktop.Application` interface so the same path
+    /// serves launcher entries (KRunner, app menu) and the tray.
+    OpenGui,
+    /// Dev-only exit-from-menu signal. Gated symmetrically with
+    /// the menu-item construction below so release builds don't
+    /// carry an always-dead variant. SIGINT/SIGTERM remain the
+    /// production shutdown path.
+    #[cfg(debug_assertions)]
     Quit,
 }
 
@@ -131,6 +143,20 @@ pub(crate) struct TisvlayTray {
     pub scroll_target: ScrollTarget,
     /// TV ID last interacted with via volume/backlight; scroll targets this TV.
     pub scroll_tv_id: Option<String>,
+    /// Coalescer for the "Settings" menu item — set to `true`
+    /// when an `OpenGui` is enqueued, cleared by the dispatch arm
+    /// once `activate_gui` returns. Drops further clicks while one
+    /// is in flight so a burst of clicks can't queue multiple
+    /// Activates that would each respawn a fresh GUI if the user
+    /// closes the window between calls.
+    ///
+    /// Per-click dispatch is now a single D-Bus round-trip (~10ms)
+    /// since "raise existing window" is handled GUI-side via
+    /// `winit::Window::request_user_attention`, so multi-spawn
+    /// pressure is low in practice. The coalescer is kept as
+    /// defense-in-depth against a slow round-trip racing with a
+    /// rapid click burst landing while the GUI is closing.
+    pub open_gui_pending: Arc<AtomicBool>,
 }
 
 impl Tray for TisvlayTray {
@@ -319,13 +345,51 @@ impl Tray for TisvlayTray {
         }
 
         items.push(MenuItem::Separator);
+        items.push({
+            // Settings uses a coalescing callback instead of
+            // the plain tv_item helper: rapid clicks while an
+            // OpenGui is already in flight are dropped at the
+            // source, so the tray's mpsc never holds more than
+            // one pending Activate. Without this, a click burst
+            // landing while the GUI is closing can queue
+            // multiple Activates that each respawn a fresh GUI
+            // via D-Bus session auto-activation — observed
+            // cascade of 2–3 windows the user has to close in
+            // sequence. See `open_gui_pending` for rationale.
+            let tx = self.cmd_tx.clone();
+            let pending = self.open_gui_pending.clone();
+            StandardItem {
+                label: "Settings".into(),
+                icon_name: "settings-configure".into(),
+                activate: Box::new(move |_tray| {
+                    if pending.swap(true, Ordering::Relaxed) {
+                        debug!("Open Settings click dropped — previous OpenGui still in flight");
+                        return;
+                    }
+                    if tx.send(TrayCommand::OpenGui).is_err() {
+                        // Channel closed (tray shutting down); clear so we
+                        // don't leak the locked state.
+                        pending.store(false, Ordering::Relaxed);
+                    }
+                }),
+                ..Default::default()
+            }
+            .into()
+        });
         items.push(tv_item("Reload", "view-refresh", &self.cmd_tx, || {
             TrayCommand::Reload
         }));
-        items.push(MenuItem::Separator);
-        items.push(tv_item("Quit", "application-exit", &self.cmd_tx, || {
-            TrayCommand::Quit
-        }));
+
+        // Quit is dev-only. In release builds the tray runs as a
+        // systemd user service and end users should stop it via
+        // `systemctl --user stop tisvlay-tray`, not from the menu.
+        #[cfg(debug_assertions)]
+        {
+            items.push(MenuItem::Separator);
+            items.push(tv_item("Quit", "application-exit", &self.cmd_tx, || {
+                TrayCommand::Quit
+            }));
+        }
 
         items
     }
@@ -643,8 +707,8 @@ fn build_profile_submenu(
     }
 
     SubMenu {
-        label: "Profile".into(),
-        icon_name: "settings-configure".into(),
+        label: "Profiles".into(),
+        icon_name: "system-user-list".into(),
         submenu,
         ..Default::default()
     }

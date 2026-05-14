@@ -5,6 +5,8 @@
   cargo-about,
   pkg-config,
   dbus,
+  makeDesktopItem,
+  copyDesktopItems,
 }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
@@ -33,6 +35,55 @@ rustPlatform.buildRustPackage (finalAttrs: {
     # installed to share/doc/ respectively.
     cargo-about
     pkg-config
+    # Setup-hook that copies `desktopItems` into $out/share/applications/.
+    # Standard nixpkgs idiom — 622 packages use this pattern.
+    copyDesktopItems
+  ];
+
+  # GUI desktop entry. Generated via makeDesktopItem (the
+  # schema-validated nixpkgs helper) rather than hand-rolling
+  # the file or inlining a string in module.nix — `.desktop`
+  # entries are application metadata, not system policy, and
+  # this is the universal convention. Mirrors the static
+  # packaging/freedesktop/org.tisvlay.Gui.desktop used verbatim
+  # by nfpm .deb / .rpm builds; the two are kept in sync by
+  # hand (drift visible at code-review time).
+  #
+  # `exec` stays relative — environment.systemPackages adds the
+  # package's bin/ to /run/current-system/sw/bin/, which is on
+  # the user's $PATH, and freedesktop launchers consult $PATH
+  # for relative Exec entries.
+  desktopItems = [
+    (makeDesktopItem {
+      name = "org.tisvlay.Gui";
+      desktopName = "TisVlay";
+      genericName = "TV Display Control";
+      comment = "Control connected TVs from the desktop";
+      exec = "tisvlay-gui";
+      tryExec = "tisvlay-gui";
+      # Freedesktop icon-theme name (no bundled artwork yet — the
+      # tray uses the same placeholder). Swap to a packaged
+      # icon name when custom art lands.
+      icon = "video-display";
+      categories = [
+        "Settings"
+        "HardwareSettings"
+      ];
+      keywords = [
+        "tv"
+        "television"
+        "remote"
+        "control"
+      ];
+      startupNotify = true;
+      startupWMClass = "org.tisvlay.Gui";
+      dbusActivatable = true;
+      # Emits SingleMainWindow=true per spec 1.5. The helper also
+      # writes Version=1.5 automatically, so neither needs an
+      # extraConfig override.
+      singleMainWindow = true;
+      implements = [ "org.freedesktop.Application" ];
+    })
   ];
 
   buildInputs = finalAttrs.rpathLibs;
@@ -55,9 +106,21 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   # Match the nfpm /usr/share/doc/tisvlay/ layout so the GUI's
   # current_exe()-relative path resolution finds the file.
+  #
+  # The D-Bus session activation file installs from the static
+  # template + substituteInPlace because dbus-daemon execs the
+  # `Exec=` line literally without consulting $PATH, so the
+  # template's `/usr/bin/tisvlay-gui` (correct on Debian /
+  # Fedora) would ENOENT on NixOS. `--replace-fail` makes the
+  # package build fail loudly if the static template's Exec
+  # format drifts — no silent breakage.
   postInstall = ''
     install -Dm0644 packaging/licensing/NOTICE -t $out/share/doc/tisvlay/
     install -Dm0644 packaging/licensing/THIRD-PARTY-LICENSES.html -t $out/share/doc/tisvlay/
+    install -Dm0644 packaging/systemd/org.tisvlay.Gui.service -t $out/share/dbus-1/services/
+
+    substituteInPlace $out/share/dbus-1/services/org.tisvlay.Gui.service \
+      --replace-fail 'Exec=/usr/bin/tisvlay-gui' "Exec=$out/bin/tisvlay-gui"
   '';
 
   postFixup = ''

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.tisvlay.Gui
+Exec=/usr/bin/tisvlay-gui

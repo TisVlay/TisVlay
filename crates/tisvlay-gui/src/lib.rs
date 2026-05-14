@@ -204,7 +204,84 @@ pub fn run() -> Result<()> {
         .context("Failed to build tokio runtime")?;
     let _enter = rt.enter();
 
+    // Register the D-Bus interfaces and claim `org.tisvlay.Gui`
+    // on the user bus atomically *before* the Slint window is
+    // created. The atomic order (interfaces first, then name) is
+    // critical for KDE's KIO launcher path: KIO sends an Activate
+    // call to the well-known name during cold-spawn auto-
+    // activation; if the interfaces aren't registered when we
+    // claim the name, zbus drops the queued call and the
+    // launcher times out at 25 s — "Did not receive a reply" /
+    // "Remote peer disconnected". See try_claim_and_serve's
+    // docstring for the full rationale.
+    //
+    // A second tisvlay-gui process discovers the name is taken,
+    // proxies `org.freedesktop.Application.Activate` to us, and
+    // exits — no duplicate window flash.
+    let (claim, activation) = rt.block_on(dbus::try_claim_and_serve(None))?;
+    let gui_dbus = match claim {
+        dbus::ClaimResult::Primary(connection) => connection,
+        dbus::ClaimResult::Proxied => {
+            info!("tisvlay-gui shutting down (handed off to existing instance)");
+            return Ok(());
+        }
+    };
+
+    // Initialize Slint's backend explicitly so `set_xdg_app_id`
+    // below has a backend to register the app-id against — its
+    // lazy-init factory returns `PlatformError::NoPlatform`,
+    // which surfaces as an error if any caller hits the lazy
+    // path. Also installs a window-attributes hook so the cold-
+    // spawn `activation-token` captured by the Activate handler
+    // is plumbed into `WindowAttributes::with_activation_token`
+    // at AppWindow::new() time; winit then issues the xdg-
+    // activation-v1 activate request on first surface map,
+    // completing the launcher's startup-notification handshake.
+    // See docs/kde/gui-application-activation.md for the full
+    // cold-spawn vs re-activation dispatch design.
+    let cold_spawn_token = activation.cold_spawn_token.clone();
+    slint::BackendSelector::new()
+        .with_winit_window_attributes_hook(move |attrs| {
+            use slint::winit_030::winit::platform::startup_notify::WindowAttributesExtStartupNotify;
+            use slint::winit_030::winit::window::ActivationToken;
+            let token = cold_spawn_token.lock().ok().and_then(|mut g| g.take());
+            if let Some(token) = token {
+                info!(
+                    token_len = token.len(),
+                    "Applying cold-spawn activation-token to window attributes"
+                );
+                attrs.with_activation_token(ActivationToken::from_raw(token))
+            } else {
+                attrs
+            }
+        })
+        .select()
+        .context("Failed to initialize Slint backend")?;
+
+    // Set the Wayland app_id / X11 WM_CLASS to match the .desktop
+    // entry's `StartupWMClass=org.tisvlay.Gui`. This lets KWin /
+    // GNOME Shell associate the live window with the launcher
+    // entry — correct taskbar icon, task-grouping, and (combined
+    // with `SingleMainWindow=true` in the .desktop) the taskbar /
+    // app menu / KRunner can raise the existing window when the
+    // user re-launches without going through our D-Bus Activate
+    // handler. PR slint-ui/slint#6851 (merged 2024-11) exposed
+    // this in slint::set_xdg_app_id; must be called before the
+    // AppWindow is shown — winit reads xdg_app_id when building
+    // WindowAttributes for the first show() (winitwindowadapter
+    // .rs:445).
+    slint::set_xdg_app_id(dbus::GUI_BUS_NAME).context("Failed to set Wayland app_id")?;
+
     let app = AppWindow::new()?;
+
+    // Wire the live AppWindow into the activation handle so the
+    // D-Bus Activate handler (running on a zbus worker task) can
+    // post a `winit::Window::request_user_attention` via
+    // `slint::invoke_from_event_loop` for re-activation pulses.
+    // OnceLock::set fails if already populated — should never
+    // happen since `run()` is only invoked once per process, but
+    // we don't unwrap to stay defensive.
+    let _ = activation.window.set(app.as_weak());
 
     // Resolve sidebar icons against the user's freedesktop icon
     // theme. Mirrors the tray's approach: by-name lookup with theme
@@ -218,7 +295,7 @@ pub fn run() -> Result<()> {
         "tv",
     ]));
     app.set_profiles_icon(load_themed_icon(&[
-        "system-users",
+        "system-user-list",
         "preferences-desktop-user",
     ]));
     app.set_session_icon(load_themed_icon(&["clock", "appointment-new"]));
@@ -228,6 +305,11 @@ pub fn run() -> Result<()> {
         "preferences-system",
     ]));
     app.set_about_icon(load_themed_icon(&["help-about", "dialog-information"]));
+    // App-identity logo for the About pane header. Matches the
+    // `.desktop` entry's `Icon=video-display` and the tray's
+    // connected-state icon, so the launcher entry / tray / About
+    // header all read as the same app visually.
+    app.set_app_logo(load_themed_icon(&["video-display"]));
 
     // Action-glyph icons resolved from the user's freedesktop theme
     // and pushed onto the `Icons` global for any pane to reach.
@@ -351,7 +433,7 @@ pub fn run() -> Result<()> {
     // can capture them at registration time. This briefly blocks the
     // main thread before `app.run()`, which is fine — these are local
     // bus connection setups, not external I/O.
-    let (daemon, session, tray, gui_dbus) = rt.block_on(async {
+    let (daemon, session, tray) = rt.block_on(async move {
         let daemon = if args.user {
             info!("Connecting to daemon on session bus (development mode)");
             DaemonClient::new_session().await
@@ -374,15 +456,7 @@ pub fn run() -> Result<()> {
                 _ => None,
             }));
 
-        // Register `org.tisvlay.Gui` on the user bus so external
-        // tools can probe our version + (eventual) config path
-        // symmetrically with the daemon, session, and tray.
-        // No config file yet — pass `None`.
-        let gui_dbus = dbus::register(None)
-            .await
-            .context("Failed to register GUI D-Bus interface")?;
-
-        anyhow::Ok((daemon, session, tray, gui_dbus))
+        anyhow::Ok((daemon, session, tray))
     })?;
 
     // Wire the per-row "reveal config in file manager" callback now
