@@ -28,7 +28,7 @@ expression: sample_connected()
   ],
   "vendor_info": [
     [
-      "WebSocket scheme",
+      "WebSocket",
       "wss"
     ]
   ],

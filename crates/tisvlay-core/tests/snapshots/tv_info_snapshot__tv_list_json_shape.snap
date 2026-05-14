@@ -29,7 +29,7 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     ],
     "vendor_info": [
       [
-        "WebSocket scheme",
+        "WebSocket",
         "wss"
       ]
     ],

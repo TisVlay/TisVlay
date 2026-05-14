@@ -725,7 +725,7 @@ impl TvConnector for LgConnector {
             },
             PairingField {
                 name: "scheme".into(),
-                label: "WebSocket scheme".into(),
+                label: "WebSocket".into(),
                 helper: "Captured at pair time — `wss` (port 3001 + TLS) \
                          or `ws` (port 3000, plain). Re-pair to refresh."
                     .into(),
