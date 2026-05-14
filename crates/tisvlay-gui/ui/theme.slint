@@ -102,4 +102,13 @@ export global Theme {
     out property <brush> row-hover: dark-mode ? #2b2f39 : #f4f5f7;
     out property <brush> row-selected: dark-mode ? #1c3a4d : #e3f3fc;
     out property <brush> row-selected-text: dark-mode ? #a5d8f0 : #0e6e9c;
+
+    // -- Vendor brand swatches --
+    // Background colors for `VendorTile`. Brand identity is mode-
+    // invariant — the dark/light ternary is intentionally omitted.
+    // Tile text is always `white` over these (set by VendorTile);
+    // unbranded vendors fall through to `chip` + `chip-text`.
+    out property <brush> vendor-lg: #a30339;
+    out property <brush> vendor-samsung: #172a92;
+    out property <brush> vendor-sony: #000000;
 }
