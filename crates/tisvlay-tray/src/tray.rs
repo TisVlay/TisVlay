@@ -120,6 +120,11 @@ pub(crate) enum TrayCommand {
     /// `org.freedesktop.Application` interface so the same path
     /// serves launcher entries (KRunner, app menu) and the tray.
     OpenGui,
+    /// Dev-only exit-from-menu signal. Gated symmetrically with
+    /// the menu-item construction below so release builds don't
+    /// carry an always-dead variant. SIGINT/SIGTERM remain the
+    /// production shutdown path.
+    #[cfg(debug_assertions)]
     Quit,
 }
 

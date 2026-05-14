@@ -396,6 +396,7 @@ async fn process_commands(
         debug!(cmd = ?cmd, "Processing tray command");
 
         match cmd {
+            #[cfg(debug_assertions)]
             TrayCommand::Quit => break,
             TrayCommand::OpenGui => {
                 // Call the GUI's freedesktop `Application.Activate`
