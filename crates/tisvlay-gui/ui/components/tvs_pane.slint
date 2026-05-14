@@ -657,30 +657,6 @@ component TvDetail inherits Rectangle {
                     }
                 }
 
-                // -- Audio --
-                Group {
-                    title: @tr("AUDIO");
-
-                    FormRow {
-                        label: @tr("Volume");
-                        OptimisticSlider {
-                            model-value: root.tv.volume;
-                            enabled: root.tv.connected && !root.tv.muted;
-                            value-visible: root.tv.connected;
-                            committed(v) => { Daemon.set-volume(root.tv.uuid, v); }
-                        }
-                    }
-
-                    FormRow {
-                        label: @tr("Mute");
-                        Switch {
-                            checked: root.tv.muted;
-                            enabled: root.tv.connected;
-                            toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
-                        }
-                    }
-                }
-
                 // -- Picture --
                 Group {
                     title: @tr("PICTURE");
@@ -708,6 +684,30 @@ component TvDetail inherits Rectangle {
                                     toggled => { Daemon.set-screen(root.tv.uuid, self.checked); }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // -- Audio --
+                Group {
+                    title: @tr("AUDIO");
+
+                    FormRow {
+                        label: @tr("Volume");
+                        OptimisticSlider {
+                            model-value: root.tv.volume;
+                            enabled: root.tv.connected && !root.tv.muted;
+                            value-visible: root.tv.connected;
+                            committed(v) => { Daemon.set-volume(root.tv.uuid, v); }
+                        }
+                    }
+
+                    FormRow {
+                        label: @tr("Mute");
+                        Switch {
+                            checked: root.tv.muted;
+                            enabled: root.tv.connected;
+                            toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
                         }
                     }
                 }
