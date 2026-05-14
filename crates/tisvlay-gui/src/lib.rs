@@ -459,14 +459,6 @@ pub fn run() -> Result<()> {
         anyhow::Ok((daemon, session, tray))
     })?;
 
-    // (Activation-token handling moved up: the
-    // BackendSelector::with_winit_window_attributes_hook above
-    // consumes the cold-spawn token at AppWindow::new() time via
-    // WindowAttributesExtStartupNotify::with_activation_token —
-    // no env-var setter, no `unsafe` block, no timeout race.
-    // Re-activation pulses are handled by the Activate handler
-    // in dbus.rs::raise() via winit's request_user_attention.)
-
     // Wire the per-row "reveal config in file manager" callback now
     // that we have a live user-bus connection. `gui_dbus` is the
     // GUI's own service registration; reusing its `Connection` for
