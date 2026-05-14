@@ -400,7 +400,7 @@ pub fn run() -> Result<()> {
         }
     });
     app.on_report_issue_clicked(|| {
-        let url = format!("{REPO_URL}/issues/new");
+        let url = format!("{REPO_URL}/issues");
         if let Err(e) = webbrowser::open(&url) {
             warn!(error = %e, %url, "open browser failed");
         }
