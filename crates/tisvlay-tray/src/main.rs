@@ -399,17 +399,13 @@ async fn process_commands(
             TrayCommand::Quit => break,
             TrayCommand::OpenGui => {
                 // Call the GUI's freedesktop `Application.Activate`
-                // with empty `platform_data`. The previous tray-side
-                // `xdg-activation-v1` token acquisition was deleted
-                // — empirically yielded empty tokens (the tray icon
-                // is surfaceless), and KIO's launcher behavior
-                // (kio/src/gui/dbusactivationrunner.cpp:70-96)
-                // already passes the same key with empty value when
-                // the spawn-env var is unset. The GUI itself now
-                // calls `winit::Window::request_user_attention` on
-                // re-activation for the taskbar pulse UX — see
-                // crates/tisvlay-gui/src/dbus.rs::raise() and
-                // docs/plans/gui-pulse-on-reactivate.md.
+                // with empty `platform_data`. The tray is surfaceless
+                // so it has no useful `xdg-activation-v1` token to
+                // pass; the GUI handles the taskbar-pulse UX itself
+                // via `request_user_attention` (see
+                // crates/tisvlay-gui/src/dbus.rs::raise()). Full
+                // KIO/KWin flow + design rationale:
+                // docs/kde/gui-application-activation.md.
                 //
                 // The menu callback (tray.rs) check-and-sets the
                 // `open_gui_pending` flag before sending us this
@@ -529,13 +525,10 @@ async fn process_commands(
 
 /// Invoke `org.freedesktop.Application.Activate` on the running
 /// GUI (or auto-spawn one via D-Bus session activation if the
-/// `.service` file is installed). `platform_data` is empty — the
-/// tray is surfaceless (icon rendered by the panel), so it has no
-/// `xdg-activation-v1` token to pass. The GUI's Activate handler
-/// detects this and pulses the taskbar via
-/// `winit::Window::request_user_attention` instead — see
-/// `crates/tisvlay-gui/src/dbus.rs::raise()` for the rationale and
-/// `docs/plans/gui-pulse-on-reactivate.md` for the design.
+/// `.service` file is installed). `platform_data` is always empty
+/// — see `crates/tisvlay-gui/src/dbus.rs::raise()` for the GUI-
+/// side handler, and `docs/kde/gui-application-activation.md` for
+/// the surfaceless-tray rationale and the KIO/KWin activation flow.
 async fn activate_gui() -> Result<()> {
     use std::collections::HashMap;
     use zbus::zvariant::Value;

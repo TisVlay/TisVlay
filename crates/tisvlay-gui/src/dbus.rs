@@ -308,36 +308,26 @@ impl ApplicationService {
 
 impl ApplicationService {
     fn raise(&self, activation_token: Option<String>) {
-        // Dispatch on AppWindow existence.
+        // Dispatch on AppWindow existence. Full design rationale,
+        // KWin FSP mapping, and the `gdbus` smoke-test caveat are
+        // in docs/kde/gui-application-activation.md.
         //
-        // - **Re-activation path** (window exists): user relaunched
-        //   from the tray / app menu / KRunner while we're already
-        //   running. Pulse the taskbar entry via
-        //   `winit::Window::request_user_attention(Informational)`.
-        //   On Wayland, winit's impl issues an `xdg_activation_v1`
-        //   request bound to our surface with an
-        //   `XdgActivationTokenData::Attention(...)` token; KWin
-        //   maps `Attention`-flagged tokens onto the
-        //   `demands_attention` window state (taskbar pulse on
-        //   Extreme FSP; on permissive policies KWin may raise
-        //   directly). The `activation_token` from `platform_data`
-        //   is ignored on this path — winit's own Attention token
-        //   is what drives the response. Resolves finding F2 from
-        //   docs/plans/gui-desktop-integration.md (the prior
-        //   `window.show()`-on-mapped-surface bug that killed the
-        //   process every re-activation).
+        // - **Re-activation path** (window exists): post to the
+        //   Slint event loop and call
+        //   `request_user_attention(Informational)` via
+        //   `WinitWindowAccessor::with_winit_window`. The
+        //   `activation_token` from `platform_data` is ignored —
+        //   winit issues its own `Attention`-flagged xdg-
+        //   activation-v1 token bound to our surface.
         //
         // - **Cold-spawn path** (window not yet constructed):
-        //   stash the inbound `activation-token` in the shared
+        //   stash the inbound `activation-token` in
         //   `Activation::cold_spawn_token`. The
         //   `BackendSelector::with_winit_window_attributes_hook`
-        //   in `lib.rs` reads it during `AppWindow::new()` and
-        //   applies it via `WindowAttributesExtStartupNotify::
-        //   with_activation_token` — winit sends the activation
-        //   request itself when the surface maps, completing the
-        //   launcher's startup-notification handshake. Multiple
-        //   cold-spawn Activates overwrite the slot; the most
-        //   recent wins at hook time.
+        //   in `lib.rs` reads it at `AppWindow::new()` time and
+        //   applies it via `with_activation_token`. Multiple
+        //   cold-spawn Activates overwrite the slot; most recent
+        //   wins at hook time.
         if let Some(weak) = self.activation.window.get() {
             let weak = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {

@@ -227,17 +227,18 @@ pub fn run() -> Result<()> {
         }
     };
 
-    // Initialize Slint's backend explicitly (otherwise
-    // set_xdg_app_id below would error with PlatformError::
-    // NoPlatform — its lazy-init factory returns NoPlatform by
-    // design). Also installs a window-attributes hook so the
-    // cold-spawn `activation-token` captured by the Activate
-    // handler is plumbed into `WindowAttributes::with_activation_
-    // token` at AppWindow::new() time — winit then sends the
-    // xdg_activation_v1 activate request on first surface map,
-    // completing the launcher's startup-notification handshake
-    // (resolves F1+F4 in docs/plans/gui-desktop-integration.md
-    // without the previous `unsafe { std::env::set_var }` trick).
+    // Initialize Slint's backend explicitly so `set_xdg_app_id`
+    // below has a backend to register the app-id against — its
+    // lazy-init factory returns `PlatformError::NoPlatform`,
+    // which surfaces as an error if any caller hits the lazy
+    // path. Also installs a window-attributes hook so the cold-
+    // spawn `activation-token` captured by the Activate handler
+    // is plumbed into `WindowAttributes::with_activation_token`
+    // at AppWindow::new() time; winit then issues the xdg-
+    // activation-v1 activate request on first surface map,
+    // completing the launcher's startup-notification handshake.
+    // See docs/kde/gui-application-activation.md for the full
+    // cold-spawn vs re-activation dispatch design.
     let cold_spawn_token = activation.cold_spawn_token.clone();
     slint::BackendSelector::new()
         .with_winit_window_attributes_hook(move |attrs| {
