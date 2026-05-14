@@ -614,6 +614,12 @@ export component OptimisticSlider {
 export component Group {
     in property <string> title;
     in property <length> body-padding: Design.pad-card;
+    /// Vertical spacing between body children. Default
+    /// `Design.gap-block` gives interactive rows (FormRow,
+    /// sliders, switches) room to breathe; tighten to 0 for
+    /// read-only data-table groups (INFO) where LabeledRow's own
+    /// padding-form suffices.
+    in property <length> body-spacing: Design.gap-block;
 
     VerticalLayout {
         width: 100%;
@@ -642,7 +648,7 @@ export component Group {
             VerticalLayout {
                 width: 100%;
                 padding: root.body-padding;
-                spacing: 12px;
+                spacing: root.body-spacing;
                 @children
             }
         }
