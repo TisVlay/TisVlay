@@ -682,7 +682,7 @@ impl TvConnector for LgConnector {
         vec![
             PairingField {
                 name: "ip".into(),
-                label: "IP address".into(),
+                label: "IP".into(),
                 helper: "LAN address of the TV's WebOS interface.".into(),
                 field_type: PairingFieldType::Ip,
                 required: true,
@@ -694,7 +694,7 @@ impl TvConnector for LgConnector {
             },
             PairingField {
                 name: "mac".into(),
-                label: "MAC address".into(),
+                label: "MAC".into(),
                 helper: "Required for Wake-on-LAN — without it the daemon \
                          can't power this TV on from deep standby."
                     .into(),

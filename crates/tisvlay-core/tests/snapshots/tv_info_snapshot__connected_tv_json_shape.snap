@@ -18,11 +18,11 @@ expression: sample_connected()
   },
   "vendor_config": [
     [
-      "IP address",
+      "IP",
       "192.168.1.100"
     ],
     [
-      "MAC address",
+      "MAC",
       "AA:BB:CC:DD:EE:FF"
     ]
   ],

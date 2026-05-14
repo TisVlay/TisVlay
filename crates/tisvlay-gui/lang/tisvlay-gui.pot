@@ -558,7 +558,7 @@ msgstr ""
 
 #: crates/tisvlay-gui/ui/components/pairing_wizard.slint:466
 msgctxt "StepDiscover"
-msgid "IP address"
+msgid "IP"
 msgstr ""
 
 #: crates/tisvlay-gui/ui/components/pairing_wizard.slint:482

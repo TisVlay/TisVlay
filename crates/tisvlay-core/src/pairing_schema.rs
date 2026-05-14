@@ -24,7 +24,7 @@
 //! vec![
 //!     PairingField {
 //!         name: "ip".into(),
-//!         label: "IP address".into(),
+//!         label: "IP".into(),
 //!         field_type: PairingFieldType::Ip,
 //!         required: true,
 //!         autofill: "discovery.address".into(),
@@ -32,7 +32,7 @@
 //!     },
 //!     PairingField {
 //!         name: "mac".into(),
-//!         label: "MAC address".into(),
+//!         label: "MAC".into(),
 //!         helper: "Required for Wake-on-LAN.".into(),
 //!         field_type: PairingFieldType::Mac,
 //!         required: false,
@@ -385,7 +385,7 @@ mod tests {
     fn field_default_round_trips() {
         let f = PairingField {
             name: "ip".into(),
-            label: "IP address".into(),
+            label: "IP".into(),
             field_type: PairingFieldType::Ip,
             required: true,
             ..Default::default()
