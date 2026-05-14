@@ -795,17 +795,23 @@ component TvDetail inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; }
                         if !root.in-edit-mode: IconBtn {
                             source: Icons.edit;
+                            label: @tr("Edit");
+                            accessible-id: "tv-detail-" + root.tv.uuid + "-edit-button";
                             clicked => { EditPane.start(root.tv.uuid); }
                         }
                         if root.in-edit-mode: IconBtn {
                             source: Icons.cancel;
+                            label: @tr("Cancel");
                             enabled: !EditPane.saving;
+                            accessible-id: "tv-detail-" + root.tv.uuid + "-cancel-button";
                             clicked => { EditPane.cancel(); }
                         }
                         if root.in-edit-mode: IconBtn {
                             source: Icons.save;
+                            label: @tr("Save");
                             enabled: EditPane.valid;
                             loading: EditPane.saving;
+                            accessible-id: "tv-detail-" + root.tv.uuid + "-save-button";
                             clicked => { EditPane.save(); }
                         }
                     }
