@@ -372,9 +372,13 @@ component LabeledRow {
         padding-top: Design.gap-form;
         padding-bottom: Design.gap-form;
 
+        // Both text columns vertical-center so they align with the
+        // CopyBtn's centered position when a value-side button is
+        // present (24px button vs ~14px text — top-alignment would
+        // leave the texts hanging ~5px above the button's middle).
         VerticalLayout {
             width: Design.width-label-col;
-            alignment: start;
+            alignment: center;
             Text {
                 text: root.label;
                 color: Theme.text-dim;
@@ -384,7 +388,7 @@ component LabeledRow {
 
         VerticalLayout {
             horizontal-stretch: 1;
-            alignment: start;
+            alignment: center;
             Text {
                 text: root.value == "" ? "—" : root.value;
                 color: Theme.text;
@@ -667,26 +671,12 @@ component TvDetail inherits Rectangle {
                         }
                     }
 
-                    HorizontalLayout {
-                        width: 100%;
-                        spacing: Design.gap-row;
-                        VerticalLayout {
-                            width: Design.width-label-col;
-                            alignment: center;
-                            Text {
-                                text: @tr("Mute");
-                                color: Theme.text;
-                                font-size: Design.font-body;
-                            }
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            Switch {
-                                checked: root.tv.muted;
-                                enabled: root.tv.connected;
-                                toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
-                            }
+                    FormRow {
+                        label: @tr("Mute");
+                        Switch {
+                            checked: root.tv.muted;
+                            enabled: root.tv.connected;
+                            toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
                         }
                     }
                 }
@@ -726,28 +716,14 @@ component TvDetail inherits Rectangle {
                 Group {
                     title: @tr("INPUT");
 
-                    HorizontalLayout {
-                        width: 100%;
-                        spacing: Design.gap-row;
-                        VerticalLayout {
-                            width: Design.width-label-col;
-                            alignment: center;
-                            Text {
-                                text: @tr("Current");
-                                color: Theme.text;
-                                font-size: Design.font-body;
-                            }
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            ComboBox {
-                                model: root.tv.available-input-ids;
-                                current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
-                                enabled: root.tv.connected
-                                      && root.tv.available-input-ids.length > 0;
-                                selected(v) => { Daemon.switch-input(root.tv.uuid, v); }
-                            }
+                    FormRow {
+                        label: @tr("Current");
+                        ComboBox {
+                            model: root.tv.available-input-ids;
+                            current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
+                            enabled: root.tv.connected
+                                  && root.tv.available-input-ids.length > 0;
+                            selected(v) => { Daemon.switch-input(root.tv.uuid, v); }
                         }
                     }
 
