@@ -137,16 +137,12 @@ pub(crate) async fn try_claim_and_serve(
     }
 }
 
-/// Build a proxy to the existing GUI owner and call `Activate(a{sv})`
-/// with empty `platform_data`. The second instance has no Wayland
-/// surface to derive an `xdg-activation-v1` token from, so it
-/// cannot pass one through — the existing instance falls through
-/// to a best-effort `window.show()` (today's behavior).
-///
-/// Callers that *do* have a surface (the tray) should call
-/// `org.freedesktop.Application.Activate` directly with a token in
-/// `platform_data["activation-token"]` instead of going through
-/// `try_claim_and_serve` → `proxy_activate`.
+/// Hand off to the existing GUI owner: build a proxy and call
+/// `Activate(a{sv})` with empty `platform_data`. The receiving
+/// instance dispatches through [`ApplicationService::raise`],
+/// which pulses the taskbar via `request_user_attention` — no
+/// token from us needed, since the existing instance owns the
+/// surface that issues the xdg-activation request.
 async fn proxy_activate(connection: &zbus::Connection) -> Result<()> {
     let proxy = zbus::Proxy::new(
         connection,
@@ -208,13 +204,11 @@ impl GuiService {
 //
 // Spec: https://specifications.freedesktop.org/desktop-entry/latest/dbus.html
 //
-// On Plasma 6.5+ (Aug 2025+) KWin tightened focus-stealing
-// prevention: a bare `window.show()` will not raise an already-
-// mapped window without a valid `xdg-activation-v1` token. The
-// `platform_data` dict carries the token under the key
-// "activation-token"; we read it and stash it in
-// `$XDG_ACTIVATION_TOKEN` so Slint's underlying winit picks it up
-// inside the window-raise call.
+// Activate / Open / ActivateAction all extract the optional
+// `platform_data["activation-token"]` and dispatch through
+// `ApplicationService::raise`, which routes on whether the
+// AppWindow exists yet (cold-spawn vs re-activation). Full design
+// rationale lives in docs/kde/gui-application-activation.md.
 
 /// Cross-thread state shared between the zbus interface handlers
 /// (worker threads) and the Slint main thread. Cloneable — both
