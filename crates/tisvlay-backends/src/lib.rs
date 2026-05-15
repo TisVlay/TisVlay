@@ -15,8 +15,10 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+#[cfg(test)]
+use tisvlay_core::Capabilities;
 use tisvlay_core::{
-    Capabilities, Credentials, DiscoveredTv, PairingSession, TvConfig, TvConnection, TvConnector,
+    Credentials, DiscoveredTv, PairingSession, TvBackend, TvConfig, TvConnection, TvConnector,
 };
 
 // Re-export under the mock feature so consumers (e.g., the daemon
@@ -38,13 +40,18 @@ type DiscoverFn = dyn Fn(
     + Sync;
 
 /// A registered vendor backend.
+///
+/// Holds the vendor's [`TvBackend`] trait object as the single source of
+/// truth for per-vendor metadata (id, name, capabilities, reliable-tier
+/// tuning, future fields). The trait object is `Arc<dyn TvBackend>`
+/// rather than the denormalized fields the registry previously stored —
+/// every new metadata field is now a single trait method addition,
+/// avoiding the trait/struct/register triple-touch that mirroring
+/// requires.
 pub struct RegisteredBackend {
-    /// Vendor identifier (e.g., "lg", "samsung").
-    pub vendor_id: &'static str,
-    /// Human-readable vendor name (e.g., "LG WebOS").
-    pub vendor_name: &'static str,
-    /// Capabilities supported by this backend.
-    pub capabilities: Capabilities,
+    /// Vendor metadata. Use `backend.vendor_id()`, `backend.vendor_name()`,
+    /// `backend.capabilities()`, etc.
+    pub backend: Arc<dyn TvBackend>,
     /// Factory for creating connections.
     pub connector: Arc<dyn TvConnector>,
     /// Discovery function (if supported).
@@ -57,9 +64,9 @@ pub struct RegisteredBackend {
 impl std::fmt::Debug for RegisteredBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RegisteredBackend")
-            .field("vendor_id", &self.vendor_id)
-            .field("vendor_name", &self.vendor_name)
-            .field("capabilities", &self.capabilities)
+            .field("vendor_id", &self.backend.vendor_id())
+            .field("vendor_name", &self.backend.vendor_name())
+            .field("capabilities", &self.backend.capabilities())
             .field("has_discover_fn", &self.discover_fn.is_some())
             .finish_non_exhaustive()
     }
@@ -84,20 +91,24 @@ impl BackendRegistry {
     }
 
     /// Register a vendor backend.
+    ///
+    /// `backend` is the single source of truth for vendor metadata —
+    /// `vendor_id`, `vendor_name`, `capabilities`, the reliable-tier
+    /// tuning knobs, and any future per-vendor static facts. The
+    /// registry stores the trait object directly so adding a new field
+    /// to [`TvBackend`] surfaces it to every caller without changes to
+    /// this function or `RegisteredBackend`.
     pub fn register(
         &mut self,
-        vendor_id: &'static str,
-        vendor_name: &'static str,
-        capabilities: Capabilities,
+        backend: Arc<dyn TvBackend>,
         connector: Arc<dyn TvConnector>,
         discover_fn: Option<Arc<DiscoverFn>>,
     ) {
+        let vendor_id = backend.vendor_id();
         self.backends.insert(
             vendor_id,
             RegisteredBackend {
-                vendor_id,
-                vendor_name,
-                capabilities,
+                backend,
                 connector,
                 discover_fn,
             },
@@ -126,7 +137,7 @@ impl BackendRegistry {
     pub fn supported_vendors(&self) -> Vec<(&'static str, &'static str)> {
         self.backends
             .values()
-            .map(|b| (b.vendor_id, b.vendor_name))
+            .map(|b| (b.backend.vendor_id(), b.backend.vendor_name()))
             .collect()
     }
 
@@ -314,7 +325,7 @@ impl BackendRegistry {
                     Ok(tvs) => all_tvs.extend(tvs),
                     Err(e) => {
                         tracing::warn!(
-                            vendor = backend.vendor_id,
+                            vendor = backend.backend.vendor_id(),
                             error = %e,
                             "Discovery failed for backend"
                         );
@@ -355,9 +366,7 @@ fn register_lg(registry: &mut BackendRegistry) {
     let lg_discover_fn: Option<Arc<DiscoverFn>> = None;
 
     registry.register(
-        tisvlay_lg::VENDOR_ID,
-        tisvlay_lg::VENDOR_NAME,
-        Capabilities::ALL,
+        Arc::new(tisvlay_lg::LgBackend::new()),
         lg_connector,
         lg_discover_fn,
     );
@@ -377,9 +386,7 @@ fn register_mock_production(registry: &mut BackendRegistry) {
         Box::pin(async move { discovery.discover(timeout).await })
     });
     registry.register(
-        tisvlay_mock::VENDOR_ID,
-        tisvlay_mock::VENDOR_NAME,
-        Capabilities::ALL,
+        Arc::new(tisvlay_mock::MockBackend::new()),
         connector,
         Some(discover_fn),
     );
@@ -400,14 +407,9 @@ pub fn create_registry() -> BackendRegistry {
     // =========================================================================
     // Future: Register Samsung backend
     // =========================================================================
+    // let samsung_backend = Arc::new(tisvlay_samsung::SamsungBackend::new());
     // let samsung_connector = Arc::new(tisvlay_samsung::SamsungConnector::new());
-    // registry.register(
-    //     tisvlay_samsung::VENDOR_ID,
-    //     tisvlay_samsung::VENDOR_NAME,
-    //     Capabilities::SAMSUNG_ALL,
-    //     samsung_connector,
-    //     None,
-    // );
+    // registry.register(samsung_backend, samsung_connector, None);
 
     registry
 }
@@ -440,9 +442,7 @@ pub fn create_test_registry() -> (BackendRegistry, tisvlay_mock::MockHandle) {
         Box::pin(async move { discovery.discover(timeout).await })
     });
     registry.register(
-        tisvlay_mock::VENDOR_ID,
-        tisvlay_mock::VENDOR_NAME,
-        Capabilities::ALL,
+        Arc::new(tisvlay_mock::MockBackend::new()),
         connector,
         Some(discover_fn),
     );
@@ -472,9 +472,9 @@ mod tests {
     fn test_lg_backend_registered() {
         let registry = create_registry();
         let lg = registry.get("lg").expect("LG backend should be registered");
-        assert_eq!(lg.vendor_id, "lg");
-        assert_eq!(lg.vendor_name, "LG WebOS");
-        assert!(lg.capabilities.contains(Capabilities::POWER));
-        assert!(lg.capabilities.contains(Capabilities::SCREEN));
+        assert_eq!(lg.backend.vendor_id(), "lg");
+        assert_eq!(lg.backend.vendor_name(), "LG WebOS");
+        assert!(lg.backend.capabilities().contains(Capabilities::POWER));
+        assert!(lg.backend.capabilities().contains(Capabilities::SCREEN));
     }
 }

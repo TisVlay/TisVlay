@@ -42,8 +42,8 @@ async fn mock_backend_registered() {
     let backend = registry
         .get("mock")
         .expect("mock backend should be registered when the `mock` feature is enabled");
-    assert_eq!(backend.vendor_id, "mock");
-    assert_eq!(backend.vendor_name, "Mock (testing)");
+    assert_eq!(backend.backend.vendor_id(), "mock");
+    assert_eq!(backend.backend.vendor_name(), "Mock (testing)");
 }
 
 #[tokio::test]

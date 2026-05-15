@@ -96,6 +96,30 @@ pub trait TvBackend: Send + Sync + 'static {
     ///
     /// This determines which feature interfaces are available for TVs using this backend.
     fn capabilities(&self) -> Capabilities;
+
+    /// How long the reliable dispatch tier waits after a state-change
+    /// command before reading cached PowerState back to verify the
+    /// transition.
+    ///
+    /// Tuned to the backend's push-update latency. LG's `getPowerState`
+    /// subscription is sub-100 ms; the 300 ms default gives the cache a
+    /// comfortable window to refresh. Backends with slower or
+    /// differently-shaped state-push semantics override.
+    fn reliable_verify_delay(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(300)
+    }
+
+    /// Max `screen_on` attempts the reliable dispatch tier makes before
+    /// escalating to `power_on` (with WoL).
+    ///
+    /// Two attempts cover the racy "TV processed the request but the
+    /// PowerState push lagged" case; further retries are pointless once
+    /// the TV has slipped past Screen Off — only WoL can recover.
+    /// Backends whose state-push semantics make more or fewer retries
+    /// productive override.
+    fn reliable_max_attempts(&self) -> usize {
+        2
+    }
 }
 
 /// Connection to a specific TV instance.
@@ -507,6 +531,7 @@ pub trait TvDiscovery: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     // Compile-time test that traits are object-safe
     // (TvDiscovery uses native async fn with impl Future and is NOT object-safe)
@@ -514,5 +539,70 @@ mod tests {
         fn _backend(_: &dyn TvBackend) {}
         fn _connection(_: &dyn TvConnection) {}
         fn _connector(_: &dyn TvConnector) {}
+    }
+
+    /// Stub `TvBackend` that takes the trait defaults for every method
+    /// it can. Used to verify the reliable-tier constants resolve to the
+    /// documented values when a backend doesn't override.
+    struct DefaultBackend;
+
+    impl TvBackend for DefaultBackend {
+        fn vendor_id(&self) -> &'static str {
+            "default-stub"
+        }
+        fn vendor_name(&self) -> &'static str {
+            "Default Stub"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::empty()
+        }
+    }
+
+    /// Stub backend that overrides both reliable-tier knobs, to confirm
+    /// the override path compiles and dispatches correctly.
+    struct PatientBackend;
+
+    impl TvBackend for PatientBackend {
+        fn vendor_id(&self) -> &'static str {
+            "patient-stub"
+        }
+        fn vendor_name(&self) -> &'static str {
+            "Patient Stub"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::empty()
+        }
+        fn reliable_verify_delay(&self) -> Duration {
+            Duration::from_millis(750)
+        }
+        fn reliable_max_attempts(&self) -> usize {
+            5
+        }
+    }
+
+    #[test]
+    fn reliable_tier_defaults_match_documented_lg_tuning() {
+        let backend = DefaultBackend;
+        assert_eq!(backend.reliable_verify_delay(), Duration::from_millis(300));
+        assert_eq!(backend.reliable_max_attempts(), 2);
+    }
+
+    #[test]
+    fn reliable_tier_backend_can_override_both_knobs() {
+        let backend = PatientBackend;
+        assert_eq!(backend.reliable_verify_delay(), Duration::from_millis(750));
+        assert_eq!(backend.reliable_max_attempts(), 5);
+    }
+
+    /// Dispatching via `&dyn TvBackend` resolves to the override, not
+    /// the default — pins that the trait methods are virtual, so the
+    /// daemon's `registry.backend(...).reliable_verify_delay()` call
+    /// path sees per-backend values.
+    #[test]
+    fn reliable_tier_knobs_dispatch_virtually() {
+        let patient: Box<dyn TvBackend> = Box::new(PatientBackend);
+        assert_eq!(patient.reliable_verify_delay(), Duration::from_millis(750));
+        let default: Box<dyn TvBackend> = Box::new(DefaultBackend);
+        assert_eq!(default.reliable_verify_delay(), Duration::from_millis(300));
     }
 }
