@@ -46,67 +46,78 @@ The QoS feature has at least four orthogonal dimensions, each with a real design
 
 ## Data model — per-event storage with action-derived QoS defaults
 
-Storage is **per event**, table-typed. Each `on_*` slot grows from `Option<SessionAction>` to `Option<EventAction>` where `EventAction` itself has optional inner fields:
+Storage is **per event**, table-typed. Each `on_*` slot grows from `Option<SessionAction>` to `Option<EventAction>`, where `EventAction` holds an action plus a nested `QosConfig`:
 
 ```rust
 pub struct EventAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<SessionAction>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub qos: Option<Qos>,
+    #[serde(default, skip_serializing_if = "QosConfig::is_empty")]
+    pub qos: QosConfig,
 }
 
-pub enum Qos {
+#[derive(Default)]
+pub struct QosConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reliability: Option<Reliability>,
+    // Future siblings (not part of v1):
+    //   pub deadline: Option<Duration>,
+    //   pub durability: Option<Durability>,
+}
+
+pub enum Reliability {
     BestEffort,
     Reliable,
 }
 ```
 
-Bare-string backward compatibility via `#[serde(untagged)]` — accept `on_session_unlock = "screen_on"` as `EventAction { action: Some(ScreenOn), qos: None }`. New configs may use any of: dotted keys (`on_session_unlock.action`, `on_session_unlock.qos`), inline tables (`{ action = "...", qos = "..." }`), or table headers. The toml crate emits inline tables when both fields fit on one line; the GUI saver prefers that form for readability.
+The `qos` field is nested-but-flattened-friendly: `#[serde(skip_serializing_if = "QosConfig::is_empty")]` keeps the table absent from emitted TOML when no qos field is set, so default configs stay terse. As more dimensions land (deadline, durability), they're sibling fields on `QosConfig` — no schema break.
 
-`merge_with_base` recurses into each event slot, independently merging `action` and `qos` via `.or()`. The user can override either dimension at any tier (per-TV profile → named profile → "default" → cross-scope fallback) without touching the other.
+Bare-string back-compat via `#[serde(untagged)]` — `on_session_unlock = "screen_on"` parses as `EventAction { action: Some(ScreenOn), qos: QosConfig::default() }`. New configs may use any of: dotted keys (`on_session_unlock.action`, `on_session_unlock.qos.reliability`), inline tables (`{ action = "...", qos = { reliability = "..." } }`), or table headers. The toml crate emits inline tables when fields fit on one line; the GUI saver prefers that form.
+
+`merge_with_base` recurses through `EventAction` then `QosConfig`, independently merging each leaf via `.or()`. The user can override action, reliability, or any future qos dimension at any tier (per-TV profile → named profile → "default" → cross-scope fallback) without touching the others.
 
 The asymmetric default lives in ONE function:
 
 ```rust
-fn default_qos_for(action: SessionAction) -> Qos {
+fn default_reliability_for(action: SessionAction) -> Reliability {
     match action {
-        SessionAction::ScreenOn  | SessionAction::PowerOn  => Qos::Reliable,
-        SessionAction::ScreenOff | SessionAction::PowerOff | SessionAction::None => Qos::BestEffort,
+        SessionAction::ScreenOn  | SessionAction::PowerOn  => Reliability::Reliable,
+        SessionAction::ScreenOff | SessionAction::PowerOff | SessionAction::None => Reliability::BestEffort,
     }
 }
 ```
 
-`ResolvedEventAction { action: SessionAction, qos: Qos }` is the fully-resolved value. The resolve chain is:
+`ResolvedEventAction { action: SessionAction, qos: ResolvedQos }` where `ResolvedQos { reliability: Reliability, … }` is the fully-resolved value. The resolve chain:
 
-1. Resolve `action` via the existing `.or()` chain → `ResolvedAction`.
-2. Resolve `qos` via the same `.or()` chain → `Option<Qos>`.
-3. If `qos` is still `None`, derive via `default_qos_for(ResolvedAction)`.
+1. Resolve `action` via the existing `.or()` chain → `SessionAction`.
+2. Resolve `qos.reliability` via the same `.or()` chain → `Option<Reliability>`.
+3. If still `None`, derive via `default_reliability_for(action)`.
 
-The asymmetric default is *type-driven*, not slot-driven: overriding `on_session_lock.action = "power_off"` automatically gives that slot best-effort qos (matching the per-action-type rule), no manual qos field needed. To keep an action but flip its qos, set `on_session_lock.qos = "reliable"` and let `action` fall through.
+The asymmetric default is *type-driven*, not slot-driven: overriding `on_session_lock.action = "power_off"` automatically gives best-effort reliability (matching the per-action-type rule). To keep an action but flip reliability, set `on_session_lock.qos.reliability = "reliable"` and let `action` fall through.
 
 ### Example configs
 
-Defaults expand cleanly when written out (this is what `--write-defaults` would emit):
+Defaults expand cleanly when written out (`--write-defaults` form):
 
 ```toml
 [user.profiles.default]
-on_session_lock   = { action = "screen_off", qos = "best-effort" }
-on_session_unlock = { action = "screen_on",  qos = "reliable" }
-on_greeter_wake   = { action = "screen_on",  qos = "reliable" }
-on_idle_timeout   = { action = "screen_off", qos = "best-effort" }
-on_idle_resume    = { action = "screen_on",  qos = "reliable" }
+on_session_lock   = { action = "screen_off", qos = { reliability = "best_effort" } }
+on_session_unlock = { action = "screen_on",  qos = { reliability = "reliable"    } }
+on_greeter_wake   = { action = "screen_on",  qos = { reliability = "reliable"    } }
+on_idle_timeout   = { action = "screen_off", qos = { reliability = "best_effort" } }
+on_idle_resume    = { action = "screen_on",  qos = { reliability = "reliable"    } }
 idle_timeout_seconds = 0
 ```
 
-A "gaming" profile that overrides just one slot's qos:
+A "gaming" profile that overrides just one event's reliability:
 
 ```toml
 [user.profiles.gaming]
-on_session_lock.qos = "reliable"  # action falls through to default profile's screen_off
+on_session_lock.qos.reliability = "reliable"  # action falls through to default profile's screen_off
 ```
 
-A profile that takes the bare-string short form (action only, qos derived):
+Bare-string short form (action only; reliability derived from action):
 
 ```toml
 [user.profiles.minimal]
