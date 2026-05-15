@@ -235,6 +235,7 @@ component TvListRow inherits Rectangle {
 
 component TvList inherits Rectangle {
     in property <[TvViewModel]> tvs;
+    in property <int> connected-count;
     in property <bool> daemon-available;
     in-out property <int> selected-index;
 
@@ -276,9 +277,12 @@ component TvList inherits Rectangle {
                     horizontal-stretch: 1;
                     alignment: center;
                     Text {
-                        text: root.tvs.length == 1
-                            ? "1 CONFIGURED"
-                            : root.tvs.length + " CONFIGURED";
+                        // "N/M CONNECTED" — N connected of M configured.
+                        // Connected count comes from Rust via the
+                        // `tvs-connected-count` plumb on AppWindow,
+                        // since Slint can't aggregate `tv.connected`
+                        // across the model in a pure-binding context.
+                        text: root.connected-count + "/" + root.tvs.length + " CONNECTED";
                         color: Theme.text-dim;
                         font-size: Design.font-mini;
                         font-weight: 600;
@@ -1053,6 +1057,7 @@ component ConfirmDialog inherits Rectangle {
 
 export component TvsPane {
     in property <[TvViewModel]> tvs;
+    in property <int> tvs-connected-count;
     in property <bool> daemon-available;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
@@ -1113,6 +1118,7 @@ export component TvsPane {
 
             TvList {
                 tvs: root.tvs;
+                connected-count: root.tvs-connected-count;
                 daemon-available: root.daemon-available;
                 selected-index <=> root.selected-index;
             }

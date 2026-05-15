@@ -197,6 +197,7 @@ async fn watch_state(
                 on_ui(&app_weak, move |app| {
                     app.set_daemon_available(false);
                     app.set_tvs(ModelRc::new(VecModel::<TvViewModel>::default()));
+                    app.set_tvs_connected_count(0);
                 });
                 refresh_about_components(&daemon, &session, &tray, &app_weak).await;
             }
@@ -363,7 +364,12 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
             power_cycle_phase: SharedString::default(),
         })
         .collect();
+    // Aggregate `tv.connected` here — Slint can't fold over a model
+    // in a pure-binding context, so the GUI's master-list header
+    // reads this precomputed value.
+    let connected_count = tvs.iter().filter(|t| t.connected).count() as i32;
     sync_vec_model(&app.get_tvs(), tvs, |m| app.set_tvs(m));
+    app.set_tvs_connected_count(connected_count);
     sync_vec_model(&app.get_system_profiles(), snapshot.system_profiles, |m| {
         app.set_system_profiles(m)
     });

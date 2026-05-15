@@ -107,6 +107,11 @@ export component AppWindow inherits Window {
     // updates via `app.set_tvs(...)`). Writes go through the Daemon
     // global's callbacks.
     in property <[TvViewModel]> tvs;
+    // Precomputed count of TVs with `connected == true`. Pushed by
+    // Rust alongside `tvs` because Slint can't aggregate over a
+    // model in pure-binding context. Drives the master-list header's
+    // "N/M CONNECTED" ratio.
+    in property <int> tvs-connected-count;
     in property <bool> daemon-available: false;
     in property <bool> session-available: false;
     in property <bool> tray-available: false;
@@ -317,6 +322,7 @@ export component AppWindow inherits Window {
                 width: 100%;
                 height: 100%;
                 tvs: root.tvs;
+                tvs-connected-count: root.tvs-connected-count;
                 selected-index <=> root.selected-tv-index;
                 daemon-available: root.daemon-available;
                 system-profiles: root.system-profiles;
