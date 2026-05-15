@@ -1,9 +1,9 @@
 [user.profiles.foo]
-on_session_lock = "screen_off"
-on_session_unlock = "screen_on"
-on_greeter_wake = "screen_on"
+on_session_lock = { action = "screen_off" }
+on_session_unlock = { action = "screen_on" }
+on_greeter_wake = { action = "screen_on" }
 idle_timeout_seconds = 0
-on_idle_timeout = "screen_off"
+on_idle_timeout = { action = "screen_off" }
 
 [[tv]]
 # Must match `[[tv]] uuid` in the system config (docs/configs/daemon.toml).
