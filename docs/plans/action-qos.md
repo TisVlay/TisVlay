@@ -205,13 +205,13 @@ Every `TvError` becomes `Ok(())`. That's correct for the 500 "screen already in 
 
 The reliable tier's verify check exists to catch this — but Bug A defeats it on the cached-property side. Fixing only one of these still leaves the failure mode latent under the other.
 
-### Regression coverage
+### Regression coverage — landed
 
-Three tests planned, each tighter than the user's full scenario:
+All three tests are in:
 
-1. **`tisvlay-core/src/state.rs` unit test** — `PowerState::ActiveStandby.update_power()` should yield `is_screen_on = false`. Fails on current `main`; trivial to fix.
-2. **`tisvlay-session/tests/session_events.rs` integration test** — extends the existing escalation test with `mock.inject_power_state("mock://...", PowerState::ActiveStandby)` instead of `Standby`. Captures the user's exact wire-level scenario; fails today because Bug A produces `"active"` on the cached property.
-3. **`tisvlay-lg` client test** — `screen_on` should propagate `-102` rather than masking it. Needs the fake-SSAP fixture to confirm the LG error-code shape (idempotent-success 500 vs slipped-past-Screen-Off `-102`); deferred to a follow-up commit since the fix requires error-code discrimination.
+1. **`tisvlay-core/src/state.rs`** — `active_standby_marks_screen_off` (focused regression) + `update_power_screen_on_mapping_is_complete` (table-driven mapping pin). Bug A fix: `ActiveStandby` joined the screen-off suppression list in `update_power`.
+2. **`tisvlay-session/tests/session_events.rs`** — `reliable_screen_on_escalates_when_tv_slipped_to_active_standby` injects `PowerState::ActiveStandby` and asserts the cached property is NOT `"active"` and the reliable tier escalates to `power_on`.
+3. **`tisvlay-lg` client** — `screen_on_propagates_minus_102_not_in_screen_off_substate` (regression for Bug B) + `screen_on_masks_500_idempotent_error` (preserves the no-op UX for direct callers). Bug B fix: the LG client now discriminates by leading error code via `is_idempotent_screen_error(error)` — only `500 <message>` is masked as success; everything else (including `-102`) propagates so the reliable tier can react. The `FakeSsapServer` grew a `set_command_error(uri, error_str)` knob to drive the regression tests.
 
 ## Deferred — TV-side prevention
 
