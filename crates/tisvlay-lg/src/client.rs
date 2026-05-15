@@ -34,6 +34,23 @@ impl std::fmt::Debug for WebOsClient {
     }
 }
 
+/// Whether an LG error string represents the idempotent "screen
+/// already in target state" case (`500 <message>`).
+///
+/// LG returns errors as `"<code> <message>"`. The `500` family is the
+/// "method not allowed in current state" path that fires when
+/// `turnOnScreen` / `turnOffScreen` is called while the TV is already
+/// in the requested state. Masking it preserves the no-op UX for
+/// direct callers (tray, GUI).
+///
+/// Other codes — notably `-102 not in screen-off substate`, which
+/// fires when the TV has slipped past Screen Off into a deeper power
+/// state — must NOT be masked: the reliable dispatch tier reads them
+/// to decide whether to escalate to `power_on` with WoL.
+fn is_idempotent_screen_error(error: &str) -> bool {
+    error.split_whitespace().next() == Some("500")
+}
+
 impl WebOsClient {
     /// Connect to a TV and register, trying `wss://` first and
     /// falling back to `ws://`. Used during pairing and for legacy
@@ -371,14 +388,17 @@ impl WebOsClient {
 
     /// Turn off the screen (OLED-safe blank, TV stays on).
     ///
-    /// Idempotent: if the screen is already off, the TV returns a 500 error
-    /// which is treated as success.
+    /// Idempotent on the `500` "already in target state" path — masked
+    /// as success so direct callers (tray, GUI) don't see spurious
+    /// errors when toggling a no-op. Other error codes propagate so the
+    /// reliable dispatch tier can react.
     pub async fn screen_off(&mut self) -> Result<()> {
         match self.command(power::TURN_OFF_SCREEN, json!({})).await {
             Ok(_) => Ok(()),
-            Err(Error::TvError(_)) => {
+            Err(Error::TvError(msg)) if is_idempotent_screen_error(&msg) => {
                 tracing::debug!(
-                    "screen_off returned error (screen likely already off), treating as success"
+                    error = %msg,
+                    "screen_off returned idempotent 500 (screen likely already off), treating as success",
                 );
                 Ok(())
             }
@@ -388,14 +408,19 @@ impl WebOsClient {
 
     /// Turn on the screen (resume from blank).
     ///
-    /// Idempotent: if the screen is already on, the TV returns a 500 error
-    /// which is treated as success.
+    /// Idempotent on the `500` "already in target state" path. **Does
+    /// not** mask `-102 not in screen-off substate` — that error means
+    /// the TV has slipped past Screen Off into a deeper power state
+    /// (Active Standby etc.) and the screen-on command was refused; the
+    /// reliable dispatch tier needs the error so it can escalate to
+    /// `power_on` with WoL. See `docs/lg/firmware-quirks.md` — "Bug B".
     pub async fn screen_on(&mut self) -> Result<()> {
         match self.command(power::TURN_ON_SCREEN, json!({})).await {
             Ok(_) => Ok(()),
-            Err(Error::TvError(_)) => {
+            Err(Error::TvError(msg)) if is_idempotent_screen_error(&msg) => {
                 tracing::debug!(
-                    "screen_on returned error (screen likely already on), treating as success"
+                    error = %msg,
+                    "screen_on returned idempotent 500 (screen likely already on), treating as success",
                 );
                 Ok(())
             }
@@ -754,6 +779,60 @@ mod tests {
 
         client.screen_off().await.unwrap();
         client.screen_on().await.unwrap();
+    }
+
+    /// Idempotent-UX preservation: when the TV is already in the target
+    /// state, LG returns `500 <message>` and the client masks that as
+    /// success so direct callers (tray, GUI) don't see spurious errors
+    /// on a no-op.
+    #[tokio::test]
+    async fn screen_on_masks_500_idempotent_error() {
+        let server = FakeSsapServer::start().await;
+        server.set_command_error(
+            crate::endpoints::power::TURN_ON_SCREEN,
+            "500 method not allowed",
+        );
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        // `500` is the "already in target state" idempotent case;
+        // client should swallow it and return Ok.
+        client
+            .screen_on()
+            .await
+            .expect("500 idempotent error must be masked as success");
+    }
+
+    /// Bug B regression: `-102 not in screen-off substate` means the TV
+    /// transitioned past Screen Off (to Active Standby / Standby / etc.)
+    /// and the screen-on command was refused. This is NOT an idempotent
+    /// success — the panel is dark and the caller needs to escalate to
+    /// `power_on` with WoL. The original implementation masked every
+    /// `TvError(_)` as success, hiding this signal from the reliable
+    /// dispatch tier. See `docs/lg/firmware-quirks.md` — "Bug B".
+    #[tokio::test]
+    async fn screen_on_propagates_minus_102_not_in_screen_off_substate() {
+        let server = FakeSsapServer::start().await;
+        server.set_command_error(
+            crate::endpoints::power::TURN_ON_SCREEN,
+            "-102 not in screen-off substate",
+        );
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        let err = client
+            .screen_on()
+            .await
+            .expect_err("`-102` must propagate as Err so the reliable tier can escalate");
+        match err {
+            Error::TvError(msg) => assert!(
+                msg.contains("-102"),
+                "expected error to carry the -102 code, got {msg:?}",
+            ),
+            other => panic!("expected Error::TvError, got {other:?}"),
+        }
     }
 
     #[tokio::test]
