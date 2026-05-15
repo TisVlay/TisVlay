@@ -44,10 +44,81 @@ The QoS feature has at least four orthogonal dimensions, each with a real design
 2. **Reliability tiers** — binary: `best-effort` (today's single dispatch) and `reliable` (verify state via `getPowerState`, retry the same command up to N times with backoff, escalate to WoL + power-on if the TV has slipped past Screen Off, bounded by an overall timeout). `reliable` is an opaque bundle; tunable knobs (retry count, timeout) can be added later if needed.
 3. **Default** — asymmetric: wake-side actions (`screen_on`, `power_on`) default to `reliable`; sleep-side actions (`screen_off`, `power_off`) default to `best-effort`. Rationale: a dark TV when you expected bright is a bug the user immediately notices; the reverse is rarely catastrophic.
 
+## Data model — per-event storage with action-derived QoS defaults
+
+Storage is **per event**, table-typed. Each `on_*` slot grows from `Option<SessionAction>` to `Option<EventAction>` where `EventAction` itself has optional inner fields:
+
+```rust
+pub struct EventAction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<SessionAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qos: Option<Qos>,
+}
+
+pub enum Qos {
+    BestEffort,
+    Reliable,
+}
+```
+
+Bare-string backward compatibility via `#[serde(untagged)]` — accept `on_session_unlock = "screen_on"` as `EventAction { action: Some(ScreenOn), qos: None }`. New configs may use any of: dotted keys (`on_session_unlock.action`, `on_session_unlock.qos`), inline tables (`{ action = "...", qos = "..." }`), or table headers. The toml crate emits inline tables when both fields fit on one line; the GUI saver prefers that form for readability.
+
+`merge_with_base` recurses into each event slot, independently merging `action` and `qos` via `.or()`. The user can override either dimension at any tier (per-TV profile → named profile → "default" → cross-scope fallback) without touching the other.
+
+The asymmetric default lives in ONE function:
+
+```rust
+fn default_qos_for(action: SessionAction) -> Qos {
+    match action {
+        SessionAction::ScreenOn  | SessionAction::PowerOn  => Qos::Reliable,
+        SessionAction::ScreenOff | SessionAction::PowerOff | SessionAction::None => Qos::BestEffort,
+    }
+}
+```
+
+`ResolvedEventAction { action: SessionAction, qos: Qos }` is the fully-resolved value. The resolve chain is:
+
+1. Resolve `action` via the existing `.or()` chain → `ResolvedAction`.
+2. Resolve `qos` via the same `.or()` chain → `Option<Qos>`.
+3. If `qos` is still `None`, derive via `default_qos_for(ResolvedAction)`.
+
+The asymmetric default is *type-driven*, not slot-driven: overriding `on_session_lock.action = "power_off"` automatically gives that slot best-effort qos (matching the per-action-type rule), no manual qos field needed. To keep an action but flip its qos, set `on_session_lock.qos = "reliable"` and let `action` fall through.
+
+### Example configs
+
+Defaults expand cleanly when written out (this is what `--write-defaults` would emit):
+
+```toml
+[user.profiles.default]
+on_session_lock   = { action = "screen_off", qos = "best-effort" }
+on_session_unlock = { action = "screen_on",  qos = "reliable" }
+on_greeter_wake   = { action = "screen_on",  qos = "reliable" }
+on_idle_timeout   = { action = "screen_off", qos = "best-effort" }
+on_idle_resume    = { action = "screen_on",  qos = "reliable" }
+idle_timeout_seconds = 0
+```
+
+A "gaming" profile that overrides just one slot's qos:
+
+```toml
+[user.profiles.gaming]
+on_session_lock.qos = "reliable"  # action falls through to default profile's screen_off
+```
+
+A profile that takes the bare-string short form (action only, qos derived):
+
+```toml
+[user.profiles.minimal]
+on_session_lock   = "screen_off"
+on_session_unlock = "screen_on"
+```
+
 ## Open questions
 
-1. **Attachment point** — per action type (`screen_on_qos` at profile level), per event (`on_session_unlock_qos` sidecar), or per profile (single knob)? Each has pros and cons (analysis in PR thread). Per-TV override is orthogonal and likely a fast-follow.
-2. **Terminology** — keep "QoS" or rename to something less networking-flavored (e.g., "Reliability", "Mode")? It'll show up in TOML keys, D-Bus property names, and GUI labels.
-3. **Vendor abstraction** — reliability is naturally vendor-agnostic (verify + retry + escalate fits any backend); but TV-side prevention is vendor-specific (only some backends will have a `setAutoPowerOff`-equivalent). Should the `TvBackend` trait surface a capability flag, or keep the TV-side path inside the LG backend with a stub trait method that other backends return `Unsupported` for?
-4. **D-Bus surface** — does QoS land as a property on `Tv1` (read-only, computed from profile), a method like `Tv1.SetActionQos`, or only via `Manager1.UpdateProfile` (no Tv1 surface, profile is the only source of truth)?
-5. **Verification source for client-side reliable** — use the existing cached `Tv1.Power` PowerState property, or do an ad-hoc `getPowerState` query each time? Cached is faster but may be stale by 100-500 ms; ad-hoc is fresh but adds round-trip latency to every action.
+1. **Terminology** — keep "QoS" or rename to something less networking-flavored (e.g., "Reliability", "Mode")? It'll show up in TOML keys, D-Bus property names, and GUI labels.
+2. **Vendor abstraction** — reliability is naturally vendor-agnostic (verify + retry + escalate fits any backend); but TV-side prevention is vendor-specific (only some backends will have a `setAutoPowerOff`-equivalent). Should the `TvBackend` trait surface a capability flag, or keep the TV-side path inside the LG backend with a stub trait method that other backends return `Unsupported` for?
+3. **D-Bus surface** — does QoS land as a property on `Tv1` (read-only, computed from profile), a method like `Tv1.SetActionQos`, or only via `Manager1.UpdateProfile` (no Tv1 surface, profile is the only source of truth)?
+4. **Verification source for client-side reliable** — use the existing cached `Tv1.Power` PowerState property, or do an ad-hoc `getPowerState` query each time? Cached is faster but may be stale by 100-500 ms; ad-hoc is fresh but adds round-trip latency to every action.
+5. **TV-side prevention scope** — for the Luna prevention path, which knobs do we expose: just `automaticStandBy` (auto-power-off hours), or also `autoOff2HourOnTimer` and `noSignalScreenSaver`? And do we expose them as profile-level fields (managed-by-tisvlay) or as a one-shot "configure TV" wizard?
+6. **GUI surfacing of resolved-vs-explicit qos** — in edit mode, do unset qos values show as ghost text ("(reliable)" derived from action) or as an empty placeholder? Affects how clear it is when a value is inherited vs explicit.
