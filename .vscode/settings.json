@@ -23,6 +23,7 @@
         "nixos",
         "nixpkgs",
         "numtide",
+        "OLED",
         "oxalica",
         "pkgs",
         "polkit",

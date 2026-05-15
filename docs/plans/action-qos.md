@@ -6,6 +6,25 @@ Today the session service dispatches each TV action (`screen_off`, `screen_on`, 
 
 The proposal is a **QoS knob** on TV actions: let users declare which actions should be _reliable_ (verify state, retry, escalate to WoL+power-on if the TV has slipped past screen-off) versus _best-effort_ (today's one-shot dispatch). Reliable mode has higher worst-case latency but won't leave the desktop with a dark panel; best-effort keeps the ~100 ms snap-back when the TV is well-behaved.
 
+## V1 scope
+
+**In this PR:**
+
+- Per-event nested `qos.reliability` field in profile config (TOML + serde + merge + resolve).
+- Asymmetric default driven by action type (`screen_on` / `power_on` → reliable; `screen_off` / `power_off` → best-effort).
+- Backward-compat with bare-string action config (`on_session_unlock = "screen_on"` keeps parsing).
+- Client-side `reliable` dispatch helper: pre-action PowerState snapshot, verify post-action, retry, escalate `screen_on` → `power_on` with WoL, bounded by overall timeout.
+- Read-only D-Bus property on `Tv1` exposing the resolved per-action reliability tier.
+- `TvBackend` capability bit + trait method stub for future TV-side prevention. No implementation in v1; the stub exists so a future PR can plug in the LG implementation without API churn.
+
+**Deferred to follow-up:**
+
+- **TV-side prevention** (Luna `automaticStandBy` and friends) — see [Deferred — TV-side prevention](#deferred--tv-side-prevention) below. Slated for archival to `docs/ideas/tv-side-power-prevention.md` when this PR lands.
+- Per-TV reliability override (today: profile-level only).
+- Tunable retry count / overall timeout (today `reliable` is an opaque bundle; will become `qos.deadline` and friends).
+- Additional QoS dimensions: `deadline`, `durability` (the namespace is ready; the fields aren't).
+- GUI ghost-text behavior for unset reliability values — a small M4 detail; reasonable defaults will land with the Profiles-pane work.
+
 ## What tisvlay has today
 
 - `SessionAction` enum in [config.rs:69-81](../../crates/tisvlay-core/src/config.rs) — `None | ScreenOff | ScreenOn | PowerOff | PowerOn`. No QoS attribute.
@@ -26,27 +45,16 @@ The proposal is a **QoS knob** on TV actions: let users declare which actions sh
 
 **Python libs** (`bscpylgtv`, `aiowebostv`, `LGWebOSRemote`). All expose `turnOffScreen` with `{"standbyMode": "active"}` (passive variant documented but not recommended). All subscribe to `getPowerState` and surface the explicit "Screen Off" state. `bscpylgtv` exposes the TV's own auto-power-off knobs via Luna `setSystemSettings`: `automaticStandBy` (hours; 0 = Off), `autoOff2HourOnTimer`, `noSignalScreenSaver`, `wolwowlOnOff`. None of the three libraries implements WoL-on-wake fallback themselves — that logic always lives in the application layer.
 
-## Design space
-
-The QoS feature has at least four orthogonal dimensions, each with a real design choice:
-
-1. **Where reliability is enforced.** Client-side (we retry / verify / escalate at dispatch time, so it works on any TV state) versus TV-side (we set the TV's own `automaticStandBy` to Off via Luna so it never slips to deeper sleep, attacking root cause). These are complementary, not exclusive — but each is a chunk of work.
-
-2. **Attachment point in the config.** Per profile (one knob covers every `on_*` in that profile), per event (`on_session_unlock = "screen_on"` + sidecar `on_session_unlock_qos = "reliable"`), per action type (a profile-level `screen_on_qos`, `power_on_qos`, etc.), or per TV (override profile QoS for one device with quirky firmware). Each has a different denormalization story.
-
-3. **Semantic gradient — what "reliable" means.** Best-effort (today). Verify (dispatch + read-back, log mismatch but no remediation). Verify + retry (re-send the same command up to N times). Verify + escalate (try `screen_on`, fall back to `power_on` with WoL when the TV has slipped past Screen Off). Bounded retry window (overall timeout, like LGTVCompanion's 40 s). Each tier adds latency in the unhappy path.
-
-4. **Default policy.** Keep today's best-effort default (no behavior change for existing users). Or switch to reliable as the new default (better OOTB UX, slower worst case). Or asymmetric default (reliable on wake-side actions `screen_on` / `power_on`; best-effort on sleep-side `screen_off` / `power_off`, since dark-when-you-wanted-dark is harder to mistake than dark-when-you-wanted-bright).
-
 ## Decisions
 
-1. **Scope** — both client-side reliability *and* TV-side prevention. Defense in depth: TV-side prevention (Luna `automaticStandBy` and friends) attacks the root cause for LG fleets where it works; client-side reliability is the universal safety net that covers everything else, including future backends.
-2. **Reliability tiers** — binary: `best_effort` (today's single dispatch) and `reliable` (verify state via `getPowerState`, retry the same command up to N times with backoff, escalate to WoL + power-on if the TV has slipped past Screen Off, bounded by an overall timeout). `reliable` is an opaque bundle; tunable knobs (retry count, timeout) can be added later if needed.
+1. **Scope (v1)** — client-side reliability only. TV-side prevention is deferred to a follow-up; the architectural discussion is captured in [Deferred — TV-side prevention](#deferred--tv-side-prevention) below for eventual archival to `docs/ideas/`.
+2. **Reliability tiers** — binary: `best_effort` (today's single dispatch) and `reliable` (verify state via `getPowerState`, retry the same command up to N times with backoff, escalate to WoL + power-on if the TV has slipped past Screen Off, bounded by an overall timeout). `reliable` is an opaque bundle in v1; tunable knobs (retry count, timeout) can be added later as sibling `qos.deadline` / `qos.max_retries` fields without schema break.
 3. **Default** — asymmetric: wake-side actions (`screen_on`, `power_on`) default to `reliable`; sleep-side actions (`screen_off`, `power_off`) default to `best_effort`. Rationale: a dark TV when you expected bright is a bug the user immediately notices; the reverse is rarely catastrophic.
 4. **Attachment / namespace** — per-event storage. Each `on_*` slot is an `EventAction { action, qos }` table; QoS is a namespace (`qos.reliability` today, room for `qos.deadline`, `qos.durability` later). Asymmetric default is type-driven: `default_reliability_for(action)` derives the tier when no explicit value is set anywhere in the resolve chain.
-5. **Vendor abstraction** — TV-side prevention surfaces as a vendor-agnostic `TvBackend` trait method with a `CONFIGURE_AUTO_OFF` capability bit. LG implements via Luna `setSystemSettings`; other backends return `Unsupported`.
+5. **Vendor abstraction for the (deferred) TV-side path** — when the prevention path lands, it'll surface as a vendor-agnostic `TvBackend::configure_for_management` trait method behind a `CONFIGURE_AUTO_OFF` capability bit. v1 lands the capability bit and the trait method as a no-op stub (returning `Unsupported`) so the LG implementation can be added later without API churn. No Luna keys appear in tisvlay's TOML or D-Bus surface.
 6. **D-Bus surface** — read-only property on `Tv1` (or `Tv1.Qos`) exposing the resolved per-action reliability tier. `PropertiesChanged` fires on profile reload. All edits flow through `Manager1.UpdateProfile` / `Session1.UpdateProfile` — profile is the single source of truth.
 7. **Verification source for `reliable`** — cached `Tv1.Power` PowerState property. Snapshot pre-dispatch, send the command, wait briefly (50-200 ms), check the cached value updated. LG's `getPowerState` subscription is sub-100 ms so the cache stays fresh; no ad-hoc query needed.
+8. **TV-side prevention deferred** — writing persistent TV settings (Luna `automaticStandBy = "Off"` etc.) would be tisvlay's first such write-level API. Every existing `Tv1.*` setter is ephemeral (volume, input, screen-on/off — state the TV forgets on reboot). The persistent-settings category has a long tail (TV input names, parental controls, NTP, energy mode, no-signal screensaver…) and committing to managing it deserves more architectural deliberation than this PR allows. Client-side `reliable` handles the symptom in v1; if field use shows it's insufficient, revisit with option B in the deferred section.
 
 ## Data model — per-event storage with action-derived QoS defaults
 
@@ -129,11 +137,62 @@ on_session_lock   = "screen_off"
 on_session_unlock = "screen_on"
 ```
 
-## Open questions
+## V1 implementation outline
 
-1. **Terminology** — keep "QoS" or rename to something less networking-flavored (e.g., "Reliability", "Mode")? It'll show up in TOML keys, D-Bus property names, and GUI labels.
-2. **Vendor abstraction** — reliability is naturally vendor-agnostic (verify + retry + escalate fits any backend); but TV-side prevention is vendor-specific (only some backends will have a `setAutoPowerOff`-equivalent). Should the `TvBackend` trait surface a capability flag, or keep the TV-side path inside the LG backend with a stub trait method that other backends return `Unsupported` for?
-3. **D-Bus surface** — does QoS land as a property on `Tv1` (read-only, computed from profile), a method like `Tv1.SetActionQos`, or only via `Manager1.UpdateProfile` (no Tv1 surface, profile is the only source of truth)?
-4. **Verification source for client-side reliable** — use the existing cached `Tv1.Power` PowerState property, or do an ad-hoc `getPowerState` query each time? Cached is faster but may be stale by 100-500 ms; ad-hoc is fresh but adds round-trip latency to every action.
-5. **TV-side prevention scope** — for the Luna prevention path, which knobs do we expose: just `automaticStandBy` (auto-power-off hours), or also `autoOff2HourOnTimer` and `noSignalScreenSaver`? And do we expose them as profile-level fields (managed-by-tisvlay) or as a one-shot "configure TV" wizard?
-6. **GUI surfacing of resolved-vs-explicit qos** — in edit mode, do unset qos values show as ghost text ("(reliable)" derived from action) or as an empty placeholder? Affects how clear it is when a value is inherited vs explicit.
+Suggested commit sequence (each on its own, reviewable in isolation):
+
+1. **Core types** — `Reliability` enum, `QosConfig`, `EventAction` in `tisvlay-core/src/config.rs`; bare-string back-compat via `#[serde(untagged)]`; `default_reliability_for(action)` helper. Unit tests for the four shapes (bare string, dotted, inline table, table header).
+2. **Profile types migrate** — `SystemProfileConfig` / `UserProfileConfig` event slots from `Option<SessionAction>` to `Option<EventAction>`; `merge_with_base` recurses; `resolve` derives default reliability; new `ResolvedEventAction`, `ResolvedQos` types; all existing call sites updated.
+3. **Reliable dispatch helper** — new `dispatch_reliable_action` in `tv_manager.rs`: snapshot pre-action PowerState, dispatch, poll cached state, retry, escalate `screen_on` → `power_on` + WoL on continued failure, bounded by overall timeout (default 40 s a la LGTVCompanion).
+4. **Wire to event handler** — `tisvlay-session/src/lib.rs::event_handler` reads `ResolvedEventAction.qos.reliability` and dispatches via the right helper (existing best-effort path or new reliable path).
+5. **D-Bus surface** — new read-only `Tv1.Qos.Reliability` (or similar) property exposing the resolved per-action tier; fires `PropertiesChanged` on profile reload.
+6. **Vendor trait stub** — `Capabilities::CONFIGURE_AUTO_OFF` bit; `TvBackend::configure_for_management() -> Result<(), Unsupported>` default. No LG impl yet — this is the seam for the deferred TV-side path.
+7. **Tests** — profile resolution (per-TV → named → default → fallback with nested qos), bare-string back-compat round-trip, reliable dispatch (verify, retry, escalate, timeout), D-Bus property visibility + `PropertiesChanged` on reload.
+8. **Docs** — update `docs/design.md` with QoS section; refresh `docs/configs/daemon.toml` sample with explicit reliability values.
+9. **GUI Profiles pane** (lands as part of M4, not this PR) — per-event row with action + reliability combos; ghost-text or "(default)" hint for unset reliability values.
+
+## Deferred — TV-side prevention
+
+Archive this section to `docs/ideas/tv-side-power-prevention.md` when this PR lands. Captured here in full so the context isn't lost.
+
+### Why deferred
+
+Writing Luna persistent settings (`automaticStandBy = "Off"` and friends) would be tisvlay's **first persistent TV-setting write**. Every existing `Tv1.*` setter is ephemeral (volume, input, screen-on/off — runtime state the TV forgets on reboot or that the next remote button-press changes). The persistent-settings category has a long tail (TV input names, parental controls, NTP, energy mode, no-signal screensaver, network settings…) and committing to managing it deserves more architectural deliberation than the v1 PR allows.
+
+For v1 we ship client-side reliable only, which handles the symptom (TV slipped past Screen Off → WoL-escalate to power-on). If field use shows the symptom is common enough to warrant the prevention path, revisit with option B below.
+
+### Failure-mode taxonomy
+
+| Failure mode | Mechanism | Luna key |
+|---|---|---|
+| Idle auto-off | TV counts "no user input" hours even in Screen Off; transitions to Power Off | `category="time"`, `automaticStandBy` (hours; 0 = Off) |
+| No-signal off | HDMI handshake loss → No-Signal screensaver → eventual power off | `category="general"`, `noSignalScreenSaver` (on/off) |
+| Fixed 2-hour timer | Distinct 2-hour countdown on some firmware | `category="time"`, `autoOff2HourOnTimer` (on/off) |
+| Hidden firmware descent | "Screen Off → Active Standby" timer with no user-facing knob | — (no key; client-side reliable handles this) |
+
+The first row (`automaticStandBy`) is the dominant cause in field reports. The hidden-firmware row has no Luna remedy and is precisely what the client-side `reliable` path exists for — so even if TV-side prevention never lands, the worst cases are still covered.
+
+### Three commitment levels considered
+
+**A — Defer entirely.** Ship client-side reliable only in v1. Document "set your TV's Auto Power Off to Off via the remote" as a manual prerequisite. ← **Chosen for v1.**
+
+**B — Opaque "configure for management" capability.** Single trait method `TvBackend::configure_for_management() -> Result<ConfigSnapshot, Error>`. LG impl writes whatever Luna keys it decides (`automaticStandBy = "Off"`, `wolwowlOnOff = "true"`, possibly more) — implementation details, not surfaced in tisvlay's TOML or D-Bus. Triggered by `managed = true` on pair, with a GUI "Sync TV settings" button for re-running on demand. Snapshot original Luna values pre-write; `TvBackend::restore_pre_managed_settings(snapshot)` reverses on un-manage. ← **Expected design when this is un-deferred.**
+
+**C — Full TV-settings-management category.** Explicit `[tv.power] auto_off_hours = N` field with read-on-connect, drift detection, "(out of sync)" GUI badge. Commits tisvlay to being a TV-settings-manager. Each future setting becomes a new field. Future-flexible but bigger ongoing surface. ← **Likely overkill for the immediate need; revisit only if multiple TV settings turn out to need explicit knobs.**
+
+### Implementation sketch for the eventual un-deferral
+
+When option B is picked up:
+
+- `Capabilities::CONFIGURE_AUTO_OFF` (already added in v1 as part of the trait stub).
+- `TvBackend::configure_for_management(&self) -> Result<ConfigSnapshot, Error>` — returns a snapshot of pre-change values for later restoration.
+- `TvBackend::restore_pre_managed_settings(&self, snapshot: &ConfigSnapshot) -> Result<()>`.
+- LG impl: write `automaticStandBy = "Off"`, ensure `wolwowlOnOff = "true"`, snapshot prior values.
+- Pairing wizard step (optional checkbox): "Configure this TV for management?" — explains what gets changed, links to per-backend docs enumerating the settings.
+- GUI: per-TV "Sync TV settings" affordance for re-running on demand.
+- Persistent snapshot stored in TV's `[tv.*]` block under a managed-by-tisvlay sub-table (e.g., `[tv.managed_snapshot]`), so restoration survives daemon restarts.
+- Per-backend doc in `docs/lg/managed-settings.md` lists exactly what changes when management is enabled.
+
+### Note on bscpylgtv quirk
+
+CLAUDE.md notes that direct `setSystemSettings` returns 401 for some categories (specifically picture/backlight, hence the Luna `createAlert` workaround for that path). For `category="time"` (where `automaticStandBy` lives) and `category="general"` (where `noSignalScreenSaver` lives), bscpylgtv calls `setSystemSettings` directly without the workaround — implying these categories don't have the 401 issue. Worth verifying empirically against the user's specific firmware (LG OLED C3 2023, G4 2024) when the prevention path is un-deferred.
