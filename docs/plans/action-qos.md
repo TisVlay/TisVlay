@@ -213,6 +213,39 @@ All three tests are in:
 2. **`tisvlay-session/tests/session_events.rs`** — `reliable_screen_on_escalates_when_tv_slipped_to_active_standby` injects `PowerState::ActiveStandby` and asserts the cached property is NOT `"active"` and the reliable tier escalates to `power_on`.
 3. **`tisvlay-lg` client** — `screen_on_propagates_minus_102_not_in_screen_off_substate` (regression for Bug B) + `screen_on_masks_500_idempotent_error` (preserves the no-op UX for direct callers). Bug B fix: the LG client now discriminates by leading error code via `is_idempotent_screen_error(error)` — only `500 <message>` is masked as success; everything else (including `-102`) propagates so the reliable tier can react. The `FakeSsapServer` grew a `set_command_error(uri, error_str)` knob to drive the regression tests.
 
+### Field-test verification (post-fix)
+
+Same manual repro on the LG OLED G4: lock → remote power-off → mouse. **Panel now wakes back up.** Journal trace at the mouse-trigger moment:
+
+```
+00:20:32  SetScreen (screen_on attempt #1)        ← reliable tier dispatches
+          screen_on returned idempotent 500
+            (screen likely already on),
+            treating as success                    ← LG returned 500 (not -102)
+          [300 ms verify wait]
+          cached PowerState ≠ "active"             ← Bug A fix at work
+00:20:32  SetScreen (screen_on attempt #2)        ← retry
+          screen_on returned idempotent 500
+          cached PowerState ≠ "active"
+          attempts exhausted ─────────────────────►
+00:20:32  D-Bus: PowerOn                           ← ESCALATION FIRED
+          PowerOn requested
+          Direct-connect probe skipped/failed;
+            falling back to WoL
+          Sent Wake-on-LAN packet
+00:20:33  Registration response (phase 1)
+          Registered with TV, got client key
+          LG TV online after wake
+00:20:40  Subscribed to backend state updates
+          TV is online                             ← end-to-end ~8 s
+```
+
+Three things worth recording:
+
+1. **Bug A was the load-bearing fix on this firmware.** The G4 returned `500` (not `-102`) for `screen_on` while in Active Standby — Bug B's discrimination would have masked that as success, same as the buggy code did. What made the reliable tier escalate was the corrected `PowerState::ActiveStandby` → `is_screen_on = false` mapping, which made the cached `PowerState` property read non-`"active"` and the verify check fail.
+2. **Bug B is genuine safety net.** On other firmware revisions / other state transitions, the TV may well return `-102` instead. The new `is_idempotent_screen_error` discriminator routes those to the same escalation path that Bug A's fix unlocked. Either bug fixed in isolation would have left a latent failure under the other.
+3. **End-to-end latency is ~8 s** from mouse-trigger to TV-online. Reliable-tier overhead: 2 × 300 ms verify (~600 ms). The rest is LG's WoL → boot → SSAP registration sequence, dominated by the TV's wake-from-Active-Standby time (~7 s). Within budget for an unblank that previously failed silently.
+
 ## Deferred — TV-side prevention
 
 The full design (failure-mode taxonomy, three commitment levels considered, implementation sketch for un-deferral, Luna `setSystemSettings` 401 caveat) lives at [docs/ideas/tv-side-power-prevention.md](../ideas/tv-side-power-prevention.md). v1 ships client-side reliable only; that file captures what to revisit if and when prevention un-defers.
