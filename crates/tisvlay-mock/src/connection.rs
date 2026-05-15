@@ -13,6 +13,7 @@ use tisvlay_core::{
 use tokio::sync::mpsc;
 
 use crate::config::MockVendorConfig;
+use crate::state::MockState;
 
 /// Connection to a mock TV.
 ///
@@ -22,6 +23,14 @@ use crate::config::MockVendorConfig;
 #[derive(Debug)]
 pub struct MockConnection {
     state: Arc<Mutex<TvState>>,
+    /// Shared MockState pointer. Each new connection registers its
+    /// `state` Arc and (on subscribe) its subscription `tx` here so
+    /// `MockHandle::inject_*` methods can drive state changes outside
+    /// the normal command path. Keyed by `address` below.
+    shared: Arc<Mutex<MockState>>,
+    /// Vendor address (e.g. `mock://living_room`) — the key into
+    /// `shared.live_states` / `shared.subscription_txs`.
+    address: String,
     connected: bool,
     /// Sender for pushing state updates to subscribers. Cloned into
     /// each state-mutating method so subscribers see cumulative state
@@ -47,7 +56,14 @@ impl MockConnection {
     /// Initializes state from the config's `initial_*` fields and marks
     /// the connection as live. `hardware_id` is optionally seeded by
     /// the connector from state set via `MockHandle::set_hardware_id`.
-    pub fn new(config: &MockVendorConfig, hardware_id: Option<HardwareId>) -> Self {
+    /// Registers the live state pointer in `shared` so
+    /// `MockHandle::inject_*` can mutate it; reconnects overwrite the
+    /// prior entry.
+    pub(crate) fn new(
+        config: &MockVendorConfig,
+        hardware_id: Option<HardwareId>,
+        shared: Arc<Mutex<MockState>>,
+    ) -> Self {
         let power = PowerState::parse(&config.initial_power_state);
         let inputs: Vec<InputInfo> = config
             .inputs
@@ -66,9 +82,17 @@ impl MockConnection {
         state.current_input = Some(config.initial_input.clone());
         state.backlight = Some(config.initial_backlight);
         state.inputs = inputs;
+        let state_arc = Arc::new(Mutex::new(state));
+
+        shared
+            .lock()
+            .live_states
+            .insert(config.address.clone(), state_arc.clone());
 
         Self {
-            state: Arc::new(Mutex::new(state)),
+            state: state_arc,
+            shared,
+            address: config.address.clone(),
             connected: true,
             subscription_tx: None,
             hardware_id,
@@ -84,6 +108,25 @@ impl MockConnection {
     /// backend-initiated change results in a push event.
     fn mutate_and_push(&self, f: impl FnOnce(&mut TvState)) {
         push_state(&self.state, &self.subscription_tx, f);
+    }
+}
+
+impl Drop for MockConnection {
+    /// Remove our shared-state registrations so the subscription
+    /// channel's senders all drop together.
+    ///
+    /// Without this, the cloned sender registered in
+    /// `shared.subscription_txs` during `subscribe_state` would
+    /// outlive the connection and keep the channel alive forever —
+    /// the subscription task's `state_rx.recv()` would never return
+    /// `None`, so the `ConnectionChanged(false)` end-of-stream gate in
+    /// `tv_manager::run_subscription_task` would never fire. Tests
+    /// that assert `Tv1.Connected == false` after `power_off` would
+    /// hang or see the wrong value.
+    fn drop(&mut self) {
+        let mut shared = self.shared.lock();
+        shared.live_states.remove(&self.address);
+        shared.subscription_txs.remove(&self.address);
     }
 }
 
@@ -284,6 +327,14 @@ impl TvConnection for MockConnection {
         // immediately — LG does the same after SSAP subscribe.
         let snapshot = self.state.lock().clone();
         let _ = tx.send(snapshot);
+        // Register the sender in shared state so `MockHandle::inject_*`
+        // can push state changes to this connection's subscriber.
+        self.shared
+            .lock()
+            .subscription_txs
+            .entry(self.address.clone())
+            .or_default()
+            .push(tx.clone());
         self.subscription_tx = Some(tx);
         Ok(rx)
     }

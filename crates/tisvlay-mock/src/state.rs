@@ -29,9 +29,12 @@
 //! - `discovered` is a `Vec`, not a `HashMap`, because order matters
 //!   to some tests (e.g., "pick the first discovered TV").
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
-use tisvlay_core::{DiscoveredTv, HardwareId};
+use tisvlay_core::{DiscoveredTv, HardwareId, TvState};
+use tokio::sync::mpsc;
 
 use crate::pairing::PairingOutcome;
 
@@ -59,6 +62,21 @@ pub(crate) struct MockState {
     /// Optional delay injected before `MockConnector::connect()` returns.
     /// Simulates a slow or unreachable TV for testing shutdown behavior.
     pub(crate) connect_delay: Option<Duration>,
+
+    /// Live `TvState` per mock TV address. Inserted when
+    /// `MockConnector::connect` opens a connection so
+    /// [`MockHandle::inject_power_state`](crate::handle::MockHandle::inject_power_state)
+    /// can drive state changes that aren't a direct response to a
+    /// daemon command (e.g., the TV auto-power-off after Screen Off).
+    /// Reconnects overwrite the prior entry.
+    pub(crate) live_states: HashMap<String, Arc<Mutex<TvState>>>,
+
+    /// Live subscription senders per mock TV address. Inserted when
+    /// `MockConnection::subscribe_state` is called. Multiple entries
+    /// may exist after reconnects; closed senders harmlessly fail their
+    /// `send` and are left in place (the maps are bounded by test
+    /// lifetime).
+    pub(crate) subscription_txs: HashMap<String, Vec<mpsc::UnboundedSender<TvState>>>,
 }
 
 impl MockState {
