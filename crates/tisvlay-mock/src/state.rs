@@ -29,9 +29,12 @@
 //! - `discovered` is a `Vec`, not a `HashMap`, because order matters
 //!   to some tests (e.g., "pick the first discovered TV").
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
-use tisvlay_core::{DiscoveredTv, HardwareId};
+use tisvlay_core::{DiscoveredTv, HardwareId, TvState};
+use tokio::sync::mpsc;
 
 use crate::pairing::PairingOutcome;
 
@@ -59,6 +62,39 @@ pub(crate) struct MockState {
     /// Optional delay injected before `MockConnector::connect()` returns.
     /// Simulates a slow or unreachable TV for testing shutdown behavior.
     pub(crate) connect_delay: Option<Duration>,
+
+    /// Live `TvState` per mock TV address. Inserted when
+    /// `MockConnector::connect` opens a connection so
+    /// [`MockHandle::inject_power_state`](crate::handle::MockHandle::inject_power_state)
+    /// can drive state changes that aren't a direct response to a
+    /// daemon command (e.g., the TV auto-power-off after Screen Off).
+    /// Reconnects overwrite the prior entry.
+    pub(crate) live_states: HashMap<String, Arc<Mutex<TvState>>>,
+
+    /// Live subscription senders per mock TV address. Inserted when
+    /// `MockConnection::subscribe_state` is called. Multiple entries
+    /// may exist after reconnects; closed senders harmlessly fail their
+    /// `send` and are left in place (the maps are bounded by test
+    /// lifetime).
+    pub(crate) subscription_txs: HashMap<String, Vec<mpsc::UnboundedSender<TvState>>>,
+
+    /// Addresses where `MockConnection::screen_on` should return `Ok`
+    /// without mutating state. Set via
+    /// [`MockHandle::set_screen_on_noop`](crate::handle::MockHandle::set_screen_on_noop)
+    /// so tests can model LG firmware's "screen_on no-ops when the TV
+    /// has slipped past the screen-off substate" behavior — needed to
+    /// genuinely exercise the daemon's verify-retry-escalate path
+    /// (mock's default flips `is_screen_on=true`, which otherwise
+    /// lets verify succeed on the first attempt).
+    pub(crate) screen_on_noop: std::collections::HashSet<String>,
+
+    /// Addresses where `MockConnection::screen_off` should return
+    /// `Ok` without mutating state. Set via
+    /// [`MockHandle::set_screen_off_noop`](crate::handle::MockHandle::set_screen_off_noop)
+    /// to model firmware that returns Ok on the wire but doesn't
+    /// blank the panel. Needed for V2's reliable-`screen_off`
+    /// verify-retry tests, mirroring the `screen_on_noop` knob.
+    pub(crate) screen_off_noop: std::collections::HashSet<String>,
 }
 
 impl MockState {

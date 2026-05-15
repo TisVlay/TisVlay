@@ -158,14 +158,17 @@ The mock's three consumers share a single `Arc<Mutex<MockState>>`. The handle is
 
 ```mermaid
 flowchart TD
-    STATE["Arc&lt;Mutex&lt;MockState&gt;&gt;<br/><br/>discovered: Vec&lt;DiscoveredTv&gt;<br/>pairing_outcomes: HashMap&lt;String, PairingOutcome&gt;"]
+    STATE["Arc&lt;Mutex&lt;MockState&gt;&gt;<br/><br/>discovered: Vec&lt;DiscoveredTv&gt;<br/>pairing_outcomes: HashMap&lt;String, PairingOutcome&gt;<br/>live_states: HashMap&lt;String, Arc&lt;Mutex&lt;TvState&gt;&gt;&gt;<br/>subscription_txs: HashMap&lt;String, Vec&lt;Sender&gt;&gt;"]
 
     HANDLE["MockHandle<br/>(test code)"]
     CONN["MockConnector<br/>(TvConnector trait)"]
     DISC["MockDiscovery<br/>(TvDiscovery trait)"]
+    MC["MockConnection<br/>(TvConnection trait)"]
 
-    HANDLE -- "publish_tv()<br/>clear_discovered()<br/>simulate_user_*()" --> STATE
+    HANDLE -- "publish_tv()<br/>clear_discovered()<br/>simulate_user_*()<br/>inject_power_state()" --> STATE
     CONN -- "start_pairing()<br/>reads + removes outcome" --> STATE
+    CONN -- "connect()<br/>creates connection,<br/>registers state Arc" --> MC
+    MC -- "subscribe_state()<br/>registers subscription tx" --> STATE
     DISC -- "discover()<br/>reads discovered list" --> STATE
 
     REG["BackendRegistry"] --> CONN
@@ -214,6 +217,9 @@ let tvs = registry.discover_tvs("mock", Duration::from_secs(1)).await?;
 **Methods:**
 - `publish_tv(DiscoveredTv)` / `clear_discovered()` — populate/clear the "network"
 - `simulate_user_accept(tv_id)` / `simulate_user_reject(tv_id)` / `simulate_pairing_timeout(tv_id)` — drive pairing
+- `set_hardware_id(tv_id, HardwareId)` / `clear_hardware_id(tv_id)` — seed the identity reported by a future connection (applied on every connect, not consumed)
+- `set_connect_delay(Duration)` / `clear_connect_delay()` — simulate a slow/unreachable TV
+- `inject_power_state(address, PowerState)` — push a power-state change onto a live mock connection. Mutates the in-flight `TvState` and pushes the snapshot through every active subscription for that address, so the daemon's `state_forwarder` updates the cached `Tv1.Power.PowerState` property the same way it would for a real backend-initiated change. Used by `tisvlay-session/tests/session_events.rs::reliable_screen_on_escalates_when_tv_slipped_past_screen_off` to simulate the TV silently slipping past Screen Off to Standby.
 
 **Config shorthand:** tests that don't need fine-grained control can set `[tv.mock] pairing = "accept"|"reject"|"timeout"`. If both shorthand and handle are set, **the handle wins**.
 

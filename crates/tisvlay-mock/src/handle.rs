@@ -39,7 +39,7 @@
 
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tisvlay_core::{DiscoveredTv, HardwareId};
+use tisvlay_core::{DiscoveredTv, HardwareId, PowerState};
 use tracing::instrument;
 
 use crate::pairing::PairingOutcome;
@@ -160,6 +160,83 @@ impl MockHandle {
     pub fn clear_connect_delay(&self) {
         let mut state = self.state.lock();
         state.connect_delay = None;
+    }
+
+    // ------------------------------------------------------------------
+    // Live state injection
+    // ------------------------------------------------------------------
+
+    /// Push a [`PowerState`] change onto a live mock connection.
+    ///
+    /// Simulates a TV that changes its own power state without the
+    /// daemon having asked — for example, an LG TV that auto-powers-off
+    /// after sitting in Screen Off too long. The mutation is applied to
+    /// the live `TvState` and pushed through every active subscription
+    /// for `address`, so the daemon's `state_forwarder` updates the
+    /// cached `Tv1.Power.PowerState` property the same way it would for
+    /// a real backend-initiated state change.
+    ///
+    /// `address` is the mock vendor address (e.g. `mock://living_room`).
+    /// No-op if no connection is currently open for that address.
+    #[instrument(skip(self))]
+    pub fn inject_power_state(&self, address: &str, target: PowerState) {
+        let (state_arc, txs) = {
+            let shared = self.state.lock();
+            let state_arc = shared.live_states.get(address).cloned();
+            let txs = shared
+                .subscription_txs
+                .get(address)
+                .cloned()
+                .unwrap_or_default();
+            (state_arc, txs)
+        };
+
+        let Some(state_arc) = state_arc else {
+            tracing::debug!(address, ?target, "no live mock connection to inject into");
+            return;
+        };
+
+        let snapshot = {
+            let mut state = state_arc.lock();
+            state.update_power(target);
+            state.clone()
+        };
+        tracing::debug!(address, ?target, "injecting power state into live mock");
+        for tx in txs {
+            let _ = tx.send(snapshot.clone());
+        }
+    }
+
+    /// Make `MockConnection::screen_on` return `Ok` without mutating
+    /// state for `address` while `enabled` is true. Use this to
+    /// drive the daemon's verify-retry-escalate path without the
+    /// mock's default `is_screen_on=true` flip letting verify pass
+    /// on attempt #1. Mirrors LG firmware's behavior when `screen_on`
+    /// lands on a TV in `ActiveStandby` / `Standby` substate — the
+    /// call succeeds at the wire level but the panel stays dark.
+    /// Pass `enabled = false` to restore default mutate-and-push.
+    #[instrument(skip(self))]
+    pub fn set_screen_on_noop(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.screen_on_noop.insert(address.to_string());
+        } else {
+            state.screen_on_noop.remove(address);
+        }
+    }
+
+    /// Parallel knob for `screen_off`. Same semantic: `Ok` return,
+    /// no state mutation. Models firmware that ACKs the off command
+    /// but doesn't blank the panel. Needed for the reliable-
+    /// `screen_off` verify-retry tests.
+    #[instrument(skip(self))]
+    pub fn set_screen_off_noop(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.screen_off_noop.insert(address.to_string());
+        } else {
+            state.screen_off_noop.remove(address);
+        }
     }
 
     // ------------------------------------------------------------------
