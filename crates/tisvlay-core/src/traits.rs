@@ -96,6 +96,55 @@ pub trait TvBackend: Send + Sync + 'static {
     ///
     /// This determines which feature interfaces are available for TVs using this backend.
     fn capabilities(&self) -> Capabilities;
+
+    /// Tuning for the daemon's verify-retry-escalate dispatch loop.
+    ///
+    /// Each backend reports the post-command verify delay and the
+    /// max number of attempts that make sense for its transport.
+    /// The daemon reads this once at dispatch time and applies the
+    /// returned values to its `screen_on` / `screen_off` retry loop.
+    ///
+    /// Bundled into a single struct so adding a third tuning knob
+    /// later (e.g., per-action overrides, escalation budget) doesn't
+    /// churn the trait surface. Per-backend so future transports
+    /// (USB-CEC, RS-232) with materially different retry semantics
+    /// can override without touching the daemon.
+    ///
+    /// Default: LG-tuned (`300 ms` verify delay, `2` attempts). LG's
+    /// `getPowerState` subscription is sub-100 ms; the 300 ms window
+    /// gives the cache comfortable headroom to refresh after the
+    /// state-change command lands. Two attempts cover the racy
+    /// "TV processed the request but the PowerState push lagged"
+    /// case; further retries are pointless once the TV has slipped
+    /// past Screen Off — only WoL can recover.
+    fn verify_retry_config(&self) -> RetryConfig {
+        RetryConfig::default()
+    }
+}
+
+/// Tuning for the daemon's verify-retry-escalate dispatch loop.
+///
+/// Per-backend via [`TvBackend::verify_retry_config`]. Default values
+/// are LG-tuned; future backends override only if their state-push
+/// semantics or wake budget diverge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryConfig {
+    /// Wall-clock delay after a state-change command before the
+    /// daemon reads cached PowerState back to verify the transition.
+    pub verify_delay: std::time::Duration,
+    /// Max attempts before the daemon escalates to `power_on`
+    /// (for the wake-side `screen_on` path) or gives up (for the
+    /// already-reachable `screen_off` retry path).
+    pub max_attempts: usize,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            verify_delay: std::time::Duration::from_millis(300),
+            max_attempts: 2,
+        }
+    }
 }
 
 /// Connection to a specific TV instance.
@@ -507,6 +556,7 @@ pub trait TvDiscovery: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     // Compile-time test that traits are object-safe
     // (TvDiscovery uses native async fn with impl Future and is NOT object-safe)
@@ -514,5 +564,85 @@ mod tests {
         fn _backend(_: &dyn TvBackend) {}
         fn _connection(_: &dyn TvConnection) {}
         fn _connector(_: &dyn TvConnector) {}
+    }
+
+    /// Stub `TvBackend` that takes the trait defaults for every method
+    /// it can. Used to verify [`RetryConfig::default`] resolves to the
+    /// documented LG-tuned values when a backend doesn't override.
+    struct DefaultBackend;
+
+    impl TvBackend for DefaultBackend {
+        fn vendor_id(&self) -> &'static str {
+            "default-stub"
+        }
+        fn vendor_name(&self) -> &'static str {
+            "Default Stub"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::empty()
+        }
+    }
+
+    /// Stub backend that overrides `verify_retry_config`, to confirm
+    /// the override path compiles and dispatches correctly.
+    struct PatientBackend;
+
+    impl TvBackend for PatientBackend {
+        fn vendor_id(&self) -> &'static str {
+            "patient-stub"
+        }
+        fn vendor_name(&self) -> &'static str {
+            "Patient Stub"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::empty()
+        }
+        fn verify_retry_config(&self) -> RetryConfig {
+            RetryConfig {
+                verify_delay: Duration::from_millis(750),
+                max_attempts: 5,
+            }
+        }
+    }
+
+    #[test]
+    fn retry_config_default_matches_documented_lg_tuning() {
+        let cfg = RetryConfig::default();
+        assert_eq!(cfg.verify_delay, Duration::from_millis(300));
+        assert_eq!(cfg.max_attempts, 2);
+    }
+
+    #[test]
+    fn verify_retry_config_default_resolves_to_lg_tuning() {
+        let backend = DefaultBackend;
+        let cfg = backend.verify_retry_config();
+        assert_eq!(cfg.verify_delay, Duration::from_millis(300));
+        assert_eq!(cfg.max_attempts, 2);
+    }
+
+    #[test]
+    fn verify_retry_config_backend_can_override() {
+        let backend = PatientBackend;
+        let cfg = backend.verify_retry_config();
+        assert_eq!(cfg.verify_delay, Duration::from_millis(750));
+        assert_eq!(cfg.max_attempts, 5);
+    }
+
+    /// Dispatching via `&dyn TvBackend` resolves to the override, not
+    /// the default — pins that `verify_retry_config` is virtual, so
+    /// the daemon's `registry.get(vendor).backend.verify_retry_config()`
+    /// call path sees per-backend values.
+    #[test]
+    fn verify_retry_config_dispatches_virtually() {
+        let patient: Box<dyn TvBackend> = Box::new(PatientBackend);
+        assert_eq!(
+            patient.verify_retry_config().verify_delay,
+            Duration::from_millis(750)
+        );
+        let default: Box<dyn TvBackend> = Box::new(DefaultBackend);
+        assert_eq!(
+            default.verify_retry_config().verify_delay,
+            Duration::from_millis(300)
+        );
     }
 }
