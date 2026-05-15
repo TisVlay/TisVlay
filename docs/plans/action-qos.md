@@ -41,8 +41,12 @@ The QoS feature has at least four orthogonal dimensions, each with a real design
 ## Decisions
 
 1. **Scope** — both client-side reliability *and* TV-side prevention. Defense in depth: TV-side prevention (Luna `automaticStandBy` and friends) attacks the root cause for LG fleets where it works; client-side reliability is the universal safety net that covers everything else, including future backends.
-2. **Reliability tiers** — binary: `best-effort` (today's single dispatch) and `reliable` (verify state via `getPowerState`, retry the same command up to N times with backoff, escalate to WoL + power-on if the TV has slipped past Screen Off, bounded by an overall timeout). `reliable` is an opaque bundle; tunable knobs (retry count, timeout) can be added later if needed.
-3. **Default** — asymmetric: wake-side actions (`screen_on`, `power_on`) default to `reliable`; sleep-side actions (`screen_off`, `power_off`) default to `best-effort`. Rationale: a dark TV when you expected bright is a bug the user immediately notices; the reverse is rarely catastrophic.
+2. **Reliability tiers** — binary: `best_effort` (today's single dispatch) and `reliable` (verify state via `getPowerState`, retry the same command up to N times with backoff, escalate to WoL + power-on if the TV has slipped past Screen Off, bounded by an overall timeout). `reliable` is an opaque bundle; tunable knobs (retry count, timeout) can be added later if needed.
+3. **Default** — asymmetric: wake-side actions (`screen_on`, `power_on`) default to `reliable`; sleep-side actions (`screen_off`, `power_off`) default to `best_effort`. Rationale: a dark TV when you expected bright is a bug the user immediately notices; the reverse is rarely catastrophic.
+4. **Attachment / namespace** — per-event storage. Each `on_*` slot is an `EventAction { action, qos }` table; QoS is a namespace (`qos.reliability` today, room for `qos.deadline`, `qos.durability` later). Asymmetric default is type-driven: `default_reliability_for(action)` derives the tier when no explicit value is set anywhere in the resolve chain.
+5. **Vendor abstraction** — TV-side prevention surfaces as a vendor-agnostic `TvBackend` trait method with a `CONFIGURE_AUTO_OFF` capability bit. LG implements via Luna `setSystemSettings`; other backends return `Unsupported`.
+6. **D-Bus surface** — read-only property on `Tv1` (or `Tv1.Qos`) exposing the resolved per-action reliability tier. `PropertiesChanged` fires on profile reload. All edits flow through `Manager1.UpdateProfile` / `Session1.UpdateProfile` — profile is the single source of truth.
+7. **Verification source for `reliable`** — cached `Tv1.Power` PowerState property. Snapshot pre-dispatch, send the command, wait briefly (50-200 ms), check the cached value updated. LG's `getPowerState` subscription is sub-100 ms so the cache stays fresh; no ad-hoc query needed.
 
 ## Data model — per-event storage with action-derived QoS defaults
 
