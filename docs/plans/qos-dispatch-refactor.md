@@ -39,58 +39,77 @@ The reliable-tier state machine — verify cached state, retry, escalate `screen
 
 **Direct callers untouched.** Existing methods (`Tv1.Screen.SetScreen`, `Tv1.Power.PowerOn`, etc.) stay best-effort for the tray / GUI / CLI paths that don't want verify overhead on a manual click.
 
-## Design questions (review before implementing)
+## Decisions
 
-1. **D-Bus surface — `Tv1.Action.Dispatch` vs extending existing methods.**
-   - **Option α:** New method `Tv1.Action.Dispatch(action: s, qos: a{sv})` on a new interface. One method to plumb; future-proof for new dimensions; clean separation from manual-dispatch path.
-   - **Option β:** Add a `qos: a{sv}` parameter to existing `SetScreen`, `PowerOn`, etc. Wider blast radius (all methods change shape); same wire-format every-method-takes-qos awkwardness.
-   - **Recommendation:** Option α.
+1. **D-Bus surface — drop the redundant per-feature methods.** No back-compat constraints; cleanest answer is one entry point.
+   - DROP: `Tv1.Power.PowerOn`, `Tv1.Power.PowerOff`, `Tv1.Screen.SetScreen`.
+   - ADD: `Tv1.Action.Dispatch(action: s, qos: s)` on a new `org.tisvlay.Tv1.Action` interface (or directly on `Tv1` — see open detail below).
+   - KEEP: `Tv1.Power.PowerState` and `Tv1.Screen.IsScreenOn` read-only properties. Also every non-lifecycle-action method (`SetVolume`, `SetMuted`, `SetBacklight`, `SwitchInput`) — these aren't `SessionAction` values, have no QoS tier, and stay as direct commands.
+2. **QoS encoding — JSON string.** Matches the `GetEffectiveSystemProfile` / `GetEffectiveUserProfile` precedent already on `Tv1` / `Session1`. New dimensions (`deadline`, `durability`) slot into the JSON without a wire-format change.
+3. **Vendor-tuned constants — per-backend trait, with defaults.** Two new methods on the `TvBackend` metadata trait, both defaulted so existing backends don't have to override:
+   ```rust
+   pub trait TvBackend: Send + Sync + 'static {
+       // ... existing methods ...
 
-2. **QoS encoding on the wire — typed dict vs JSON string.**
-   - `a{sv}` (D-Bus dict of `String → Variant`): native, but variant typing across dimensions (string vs duration vs bool) is awkward.
-   - `String` carrying JSON: future dimensions slot in trivially; loses static typing at the wire.
-   - **Recommendation:** JSON string. Matches the `GetEffectiveSystemProfile` / `GetEffectiveUserProfile` precedent in this PR.
+       /// How long to wait after a state-change command before verifying
+       /// via cached PowerState. Tuned to the backend's push-update
+       /// latency. LG's getPowerState subscription is sub-100 ms; the
+       /// 300 ms default gives the cache a comfortable window.
+       fn reliable_verify_delay(&self) -> std::time::Duration {
+           std::time::Duration::from_millis(300)
+       }
 
-3. **Vendor-tuned constants — daemon-level vs per-backend.**
-   - Hardcoded in daemon for v1, matching today's session-crate placement (just moved).
-   - Per-backend via a `TvConnection::reliable_verify_delay() -> Duration { Duration::from_millis(300) }` trait method.
-   - **Recommendation:** Daemon-level for the refactor. Promote to per-backend when a second non-LG backend lands and the constants diverge.
+       /// Max `screen_on` attempts before the reliable path escalates
+       /// to `power_on`. Default 2.
+       fn reliable_max_attempts(&self) -> usize {
+           2
+       }
+   }
+   ```
+   When Samsung / Sony / etc. land with diverging timings, they override the methods and nothing else changes. Choosing this over daemon-level constants sidesteps a future refactor — we design for the long term, not for v1's single-vendor reality.
+4. **System events — direct in-process call to the helper.** No D-Bus self-call from `tv_manager`. The helper is parametrized over the dispatch primitives (a small set of closures or a trait), and `tv_manager::execute_*` plus the `Tv1.Action.Dispatch` D-Bus handler share the same code path.
+5. **Rust `DaemonClient` — convenience wrappers stay, D-Bus wrappers consolidate.**
+   - KEEP: `daemon.screen_on(tv_id)`, `daemon.screen_off(tv_id)`, `daemon.power_on(tv_id)`, `daemon.power_off(tv_id)` as Rust convenience wrappers in `tisvlay-core::dbus_client`. Internal implementation flips to `dispatch_action(tv_id, "screen_on", BEST_EFFORT_QOS)` etc. — single D-Bus method on the wire, ergonomic Rust call sites unchanged.
+   - ADD: `daemon.dispatch_action(tv_id, action, qos_json)` for explicit-QoS callers (session lib).
+   - Effect: tray, GUI, CLI, integration tests using `daemon.screen_on(...)` keep compiling and behaving as before. Only the session lib's call sites change shape, since it's the one site that wants explicit QoS control.
 
-4. **Direct dispatch from `tv_manager` (system events) — uses helper directly or via D-Bus self-call.**
-   - In-process call to the helper. No D-Bus round-trip; helper takes references it can use.
-   - **Recommendation:** Direct call.
+### Open detail: `Tv1.Action.Dispatch` vs `Tv1.Action.Dispatch` interface placement
 
-5. **What does the session lib's `DaemonClient` look like after the refactor.**
-   - New `DaemonClient::dispatch_action(tv_id, action, qos)` method invoking `Tv1.Action.Dispatch`.
-   - The existing `daemon.screen_on / screen_off / power_on / power_off` wrappers can stay for direct callers but session lib stops using them.
+Two equivalent shapes:
+- New interface `org.tisvlay.Tv1.Action` exposing `Dispatch(action: s, qos: s)` — symmetric with `Tv1.Power`, `Tv1.Screen` (each a separate interface).
+- Method directly on `org.tisvlay.Tv1` (the base interface) alongside `Reconnect`, `RePair`, `Remove`, `GetConfig`, `UpdateConfig`, `GetEffectiveSystemProfile` — these are all lifecycle / control methods.
+
+The base interface fits better — `Dispatch` is a lifecycle action like `Reconnect` and `RePair`, not a feature-bound command like `Volume` or `Input`. Recommend putting it directly on `Tv1`. Confirm during implementation.
 
 ## Implementation outline
 
 Six commits, sequenced so each one is reviewable and the orphan-plumbing rule holds (every scaffolding commit gets its first user in the same commit):
 
-1. **Daemon-side helper + D-Bus method + DaemonClient wrapper + integration test.** Add `tv_manager::dispatch_reliable_action` (verify-retry-escalate, in-process state reads, vendor-tuned constants). Add `Tv1.Action.Dispatch(action: s, qos: s)` D-Bus method that invokes it. Add `DaemonClient::dispatch_action(tv_id, action, qos)` proxy wrapper. Test: drive the new method from `tisvlayd/tests/dbus_contract.rs` via `inject_power_state` to verify the escalation fires.
+1. **`TvBackend` trait gains `reliable_verify_delay` / `reliable_max_attempts` (with defaults).** LG and mock keep the defaults (the 300 ms / 2 attempts that the v1 plan picked). Add unit tests in `tisvlay-core` that exercise the default values and confirm a backend can override them. This is the only scaffolding commit; its first user lands in commit 2.
 
-2. **Migrate session-event dispatch to call the new method.** `tisvlay-session::execute_action_for_tv` becomes a one-liner that calls `daemon.dispatch_action(tv_id, action, qos_json)`. Remove `reliable_screen_on`, `POWER_STATE_ACTIVE`, `RELIABLE_VERIFY_DELAY`, `RELIABLE_SCREEN_ON_ATTEMPTS` from the session crate. The two existing session_events integration tests still pass since the end-to-end path is equivalent.
+2. **Daemon-side helper + new `Tv1.Dispatch` D-Bus method + DaemonClient wrappers re-routed + integration test.** Add `tv_manager::dispatch_reliable_action(tv_id, action, qos)` (verify-retry-escalate, in-process cached-state reads, pulls constants from `backend.reliable_verify_delay()` / `backend.reliable_max_attempts()`). Add `Dispatch(action: s, qos: s)` method to the base `Tv1` interface (alongside `Reconnect`, `RePair`, etc.). Add `DaemonClient::dispatch_action(tv_id, action, qos_json)` proxy method. **Re-implement** `DaemonClient::{screen_on, screen_off, power_on, power_off}` as one-liner Rust wrappers that call `dispatch_action(...)` with `{"reliability":"best_effort"}`. **Remove** the now-dead D-Bus methods `Tv1.Power.PowerOn`, `Tv1.Power.PowerOff`, `Tv1.Screen.SetScreen` from both daemon and proxy. Integration test in `tisvlayd/tests/dbus_contract.rs`: drive the new `Dispatch` method with reliable qos + `MockHandle::inject_power_state(ActiveStandby)` to verify the escalation fires.
 
-3. **Wire system-event dispatch to the helper.** `tv_manager::execute_*` (or the equivalent system-event dispatch chain) calls `dispatch_reliable_action` directly (in-process, no D-Bus). System events like `on_wake = screen_on` now get the reliable tier where today they'd silently fall through to best-effort.
+3. **Migrate session-event dispatch to call `dispatch_action` directly.** `tisvlay-session::execute_action_for_tv` becomes a one-liner: `daemon.dispatch_action(tv_id, action_str, qos_json).await`. Remove `reliable_screen_on`, `POWER_STATE_ACTIVE`, `RELIABLE_VERIFY_DELAY`, `RELIABLE_SCREEN_ON_ATTEMPTS` from `tisvlay-session/src/lib.rs`. The two existing session_events integration tests still pass since the end-to-end path is equivalent.
 
-4. **Update `Session1.GetEffectiveUserProfile` consumers and any GUI code** that needs to see the new wire format (probably no-op since the JSON shape is unchanged; just sanity-check).
+4. **Wire system-event dispatch (daemon-internal) to the same helper.** `tv_manager::execute_*` (or wherever the daemon's system-event dispatch lives) calls `dispatch_reliable_action` directly (in-process, no D-Bus). System events like `on_wake = screen_on` now get the reliable tier where today they'd silently fall through to best-effort. Add a `tisvlayd/tests/profile_dispatch.rs` case: set a system profile with `on_wake = { action = "screen_on" }`, fire the wake event, inject `ActiveStandby` before the verify window, assert escalation.
 
-5. **Tests + cleanup.** Add a daemon-direct test for the helper (no D-Bus, just call `tv_manager::dispatch_reliable_action` with a mock backend). Drop redundant assertions in the session integration tests that were exercising the now-removed retry loop directly.
+5. **Tests + cleanup.** Add a daemon-direct test for the helper that exercises it without going through D-Bus (calls `tv_manager::dispatch_reliable_action` with a mock backend). Sweep the workspace for any tray / GUI / CLI call sites that touched `Tv1.Power.PowerOn` / `Tv1.Screen.SetScreen` directly (rather than via `DaemonClient`) — they should be zero, but confirm.
 
-6. **Docs.** Update [docs/plans/action-qos.md](action-qos.md) field-test verification subsection: replace "session-side helper" prose with "daemon-side helper". Update [docs/design.md](../design.md) Action QoS section similarly. Note the new `Tv1.Action.Dispatch` method in the D-Bus surface listings.
+6. **Docs.** Update [docs/plans/action-qos.md](action-qos.md) field-test verification subsection: swap "session-side helper" → "daemon-side helper", note that the same helper handles system events. Update [docs/design.md](../design.md) Action QoS section + D-Bus surface listings (Dispatch added to `Tv1`; PowerOn / PowerOff / SetScreen removed from `Tv1.Power` / `Tv1.Screen`). Update `docs/testing.md` if any wire-format examples reference the old methods.
 
 ## Out of scope for this refactor
 
 - The vendor-trait stub for TV-side prevention (still deferred per [docs/ideas/tv-side-power-prevention.md](../ideas/tv-side-power-prevention.md)).
 - New QoS dimensions (`qos.deadline`, `qos.durability`). The JSON-string wire format makes adding them trivial later.
-- Per-backend tuning of the verify delay. Promote when a second backend's constants diverge from LG's.
 - GUI Profiles pane wiring (M4).
+- Per-backend tuning beyond the verify delay and attempt count. Future dimensions of "how does this backend reliably wake" (e.g., wake retry budget, WoL packet count) get separate trait methods as the need arises.
 
 ## Acceptance
 
-- [x] All existing tests pass after the migration (365 today; net delta should be 0 or slightly positive).
+- [x] All existing tests pass after the migration (365 today; net delta should be 0 or slightly positive from the new test cases).
 - [x] The field-test repro (lock → remote power-off → mouse → TV wakes) still works end-to-end on the LG OLED G4.
-- [x] No retry-loop / verify logic in the `tisvlay-session` crate; that crate's role is reduced to "read profile, call dispatch_action".
-- [x] System-event dispatch (`on_wake`, `on_startup` etc.) goes through the same helper, so configuring `on_wake = screen_on` would also get reliable behavior.
+- [x] No retry-loop / verify logic in the `tisvlay-session` crate; that crate's role is reduced to "read profile, call `dispatch_action`".
+- [x] System-event dispatch (`on_wake`, `on_startup`, etc.) goes through the same helper. Configuring `on_wake = { action = "screen_on" }` would get reliable behavior identical to a user-session wake.
+- [x] D-Bus surface shrinks: `Tv1.Power.PowerOn`, `Tv1.Power.PowerOff`, `Tv1.Screen.SetScreen` removed; `Tv1.Dispatch` added. `busctl --user tree org.tisvlay.Daemon` reflects the new shape.
 - [x] `tisvlay-session/src/lib.rs` net LOC drops; `crates/tisvlayd/src/tv_manager.rs` (or sibling) net LOC grows by roughly the moved+adapted amount.
+- [x] `tisvlay-core` `TvBackend` trait gains `reliable_verify_delay` / `reliable_max_attempts` with defaults; LG and mock leave them at default; tests exercise the override path.
