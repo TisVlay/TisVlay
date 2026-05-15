@@ -185,3 +185,55 @@ async fn reliable_screen_on_escalates_when_tv_slipped_past_screen_off() {
         "screen should be on after the escalated power_on completes",
     );
 }
+
+/// Field-test regression: real LG OLED hardware transitions from
+/// `ScreenOff` → `ActiveStandby` (not `Standby`) when the user presses
+/// Power on the remote while the screen is blank. The subscription
+/// pushes `ActiveStandby`; before the Bug A fix to
+/// [`PowerState::update_power`], that mapped to `(is_on=true,
+/// is_screen_on=true)` which the forwarder rendered as `"active"`,
+/// silently defeating the reliable tier's verify check.
+///
+/// This test pins the wire-level scenario: with `ActiveStandby`
+/// injected, the cached PowerState must NOT read `"active"`, so the
+/// reliable path detects the mismatch and escalates to `power_on`.
+/// Mirrors the user-reported journal trace from
+/// `docs/plans/action-qos.md` — "Field-test findings".
+#[tokio::test]
+async fn reliable_screen_on_escalates_when_tv_slipped_to_active_standby() {
+    let session = TestSession::new("active_standby_tv").await.unwrap();
+
+    session.inject_event(SessionEvent::SessionLocked);
+    settle().await;
+
+    // Simulate the LG firmware's actual transition: ScreenOff →
+    // ActiveStandby when the user presses Power on the remote.
+    session
+        .daemon()
+        .handle()
+        .inject_power_state("mock://active_standby_tv", PowerState::ActiveStandby);
+    settle().await;
+
+    let tvs = session.client().list_tvs().await.unwrap();
+    let tv = tvs.iter().find(|t| t.name == "active_standby_tv").unwrap();
+    assert_ne!(
+        tv.power_state, "active",
+        "ActiveStandby must NOT map to \"active\" in the cached property — \
+         otherwise the reliable tier's verify check is fooled into thinking \
+         screen_on succeeded while the panel is dark (Bug A regression)",
+    );
+
+    session.inject_event(SessionEvent::SessionUnlocked);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let tvs = session.client().list_tvs().await.unwrap();
+    let tv = tvs.iter().find(|t| t.name == "active_standby_tv").unwrap();
+    assert_eq!(
+        tv.power_state, "active",
+        "after escalation, the new connection should come up active",
+    );
+    assert!(
+        tv.is_screen_on,
+        "screen should be on after the escalated power_on completes",
+    );
+}

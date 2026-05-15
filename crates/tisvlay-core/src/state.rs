@@ -147,11 +147,22 @@ impl TvState {
     }
 
     /// Update state from power state response.
+    ///
+    /// `ActiveStandby` is in the screen-off suppression list because it's
+    /// the state LG TVs enter when the user presses Power from Screen
+    /// Off: NIC alive (so `is_on` stays `true` for `is_on()`), panel off.
+    /// Without it the forwarder's `(is_on=true, is_screen_on=true)` →
+    /// `"active"` mapping would defeat the reliable dispatch tier's
+    /// verify check after a remote power-off. See "Bug A" in
+    /// `docs/plans/action-qos.md`.
     pub fn update_power(&mut self, state: PowerState) {
         self.is_on = state.is_on();
         self.is_screen_on = !matches!(
             state,
-            PowerState::ScreenOff | PowerState::Standby | PowerState::Suspend
+            PowerState::ScreenOff
+                | PowerState::ActiveStandby
+                | PowerState::Standby
+                | PowerState::Suspend
         );
     }
 }
@@ -231,5 +242,61 @@ impl DiscoveredTv {
     pub fn with_location(mut self, location: impl Into<String>) -> Self {
         self.location = location.into();
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the Action-QoS field-test failure: when an LG
+    /// TV transitions from `ScreenOff` to `ActiveStandby` (user presses
+    /// Power on the remote while the screen is blank), the subscription
+    /// pushes `PowerState::ActiveStandby`. The forwarder derives the
+    /// cached `Tv1.Power.PowerState` property from `(is_on, is_screen_on)`,
+    /// so `is_screen_on` MUST be `false` for `ActiveStandby` — otherwise
+    /// the cached property reads `"active"` and the reliable dispatch
+    /// tier's verify check thinks `screen_on` succeeded while the panel
+    /// is dark. See `docs/plans/action-qos.md` — "Bug A".
+    #[test]
+    fn active_standby_marks_screen_off() {
+        let mut state = TvState::new();
+        state.update_power(PowerState::ActiveStandby);
+        assert!(state.is_on, "ActiveStandby is still 'on' (NIC alive)");
+        assert!(
+            !state.is_screen_on,
+            "ActiveStandby has the panel off — `is_screen_on` must be false \
+             or the daemon's cached PowerState property would report 'active' \
+             and defeat the reliable tier's verify check",
+        );
+    }
+
+    /// Companion to [`active_standby_marks_screen_off`]: spell out the
+    /// expected mapping for every `PowerState` variant so future changes
+    /// have to touch this table.
+    #[test]
+    fn update_power_screen_on_mapping_is_complete() {
+        for (state, expected_is_on, expected_screen_on) in [
+            (PowerState::Active, true, true),
+            (PowerState::ActiveStandby, true, false),
+            (PowerState::ScreenSaver, true, true),
+            (PowerState::ScreenOff, true, false),
+            (PowerState::Standby, false, false),
+            (PowerState::Suspend, false, false),
+            (PowerState::Unknown, false, true),
+        ] {
+            let mut s = TvState::new();
+            s.update_power(state);
+            assert_eq!(
+                s.is_on, expected_is_on,
+                "is_on mismatch for {state:?}: expected {expected_is_on}, got {}",
+                s.is_on
+            );
+            assert_eq!(
+                s.is_screen_on, expected_screen_on,
+                "is_screen_on mismatch for {state:?}: expected {expected_screen_on}, got {}",
+                s.is_screen_on
+            );
+        }
     }
 }

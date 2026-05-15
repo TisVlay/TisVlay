@@ -151,6 +151,68 @@ Suggested commit sequence (each on its own, reviewable in isolation):
 7. **Docs** — update `docs/design.md` with QoS section; refresh `docs/configs/daemon.toml` sample with explicit reliability values.
 8. **GUI Profiles pane** (lands as part of M4, not this PR) — per-event row with action + reliability combos; ghost-text or "(default)" hint for unset reliability values.
 
+## Field-test findings (post-v1 wiring)
+
+First end-to-end run on real hardware (LG OLED G4) reproduced the exact failure mode this PR was supposed to fix:
+
+1. Lock desktop → `screen_off` dispatched (best-effort), TV blanks.
+2. Press Power on the LG remote → TV transitions out of Screen Off into `Active Standby` (NIC alive, panel off).
+3. Move mouse → reliable `screen_on` fires, returns Ok, TV stays dark.
+
+Journal trace at the mouse-trigger moment:
+
+```
+D-Bus: SetScreen  F_ON=true                        ← session-side dispatch
+screen_on returned error                            ← LG TV returned an error
+  (screen likely already on), treating as success  ← LG client masked it
+verify reads cached PowerState → "active"          ← (incorrectly — see Bug A)
+return Ok                                           ← no retry, no escalation
+```
+
+Two bugs collaborate to defeat the reliable tier on real hardware:
+
+### Bug A — `PowerState::ActiveStandby` mis-mapped to `is_screen_on = true`
+
+[`tisvlay-core/src/state.rs::PowerState::update_power`](../../crates/tisvlay-core/src/state.rs):
+
+```rust
+self.is_screen_on = !matches!(
+    state,
+    PowerState::ScreenOff | PowerState::Standby | PowerState::Suspend
+);
+```
+
+`ActiveStandby` falls through the suppression list with `is_screen_on = true`. The forwarder maps `(is_on=true, is_screen_on=true)` → `"active"`. The reliable tier's verify reads `"active"` and concludes `screen_on` succeeded — while the panel is dark.
+
+`ActiveStandby` is the state LG OLED firmware enters when the user presses Power from Screen Off — exactly the user-reported scenario. Belongs in the suppression list alongside `Standby` and `Suspend`.
+
+### Bug B — LG `screen_on` masks every `TvError` as idempotent-success
+
+[`tisvlay-lg/src/client.rs::screen_on`](../../crates/tisvlay-lg/src/client.rs):
+
+```rust
+match self.command(power::TURN_ON_SCREEN, json!({})).await {
+    Ok(_) => Ok(()),
+    Err(Error::TvError(_)) => {
+        tracing::debug!("screen_on returned error (screen likely already on), treating as success");
+        Ok(())
+    }
+    Err(e) => Err(e),
+}
+```
+
+Every `TvError` becomes `Ok(())`. That's correct for the 500 "screen already in target state" idempotency case, but wrong for `-102` ("not in screen-off substate") — which is exactly the signal a slipped-past-Screen-Off TV produces. The daemon never sees the failure.
+
+The reliable tier's verify check exists to catch this — but Bug A defeats it on the cached-property side. Fixing only one of these still leaves the failure mode latent under the other.
+
+### Regression coverage
+
+Three tests planned, each tighter than the user's full scenario:
+
+1. **`tisvlay-core/src/state.rs` unit test** — `PowerState::ActiveStandby.update_power()` should yield `is_screen_on = false`. Fails on current `main`; trivial to fix.
+2. **`tisvlay-session/tests/session_events.rs` integration test** — extends the existing escalation test with `mock.inject_power_state("mock://...", PowerState::ActiveStandby)` instead of `Standby`. Captures the user's exact wire-level scenario; fails today because Bug A produces `"active"` on the cached property.
+3. **`tisvlay-lg` client test** — `screen_on` should propagate `-102` rather than masking it. Needs the fake-SSAP fixture to confirm the LG error-code shape (idempotent-success 500 vs slipped-past-Screen-Off `-102`); deferred to a follow-up commit since the fix requires error-code discrimination.
+
 ## Deferred — TV-side prevention
 
 The full design (failure-mode taxonomy, three commitment levels considered, implementation sketch for un-deferral, Luna `setSystemSettings` 401 caveat) lives at [docs/ideas/tv-side-power-prevention.md](../ideas/tv-side-power-prevention.md). v1 ships client-side reliable only; that file captures what to revisit if and when prevention un-defers.
