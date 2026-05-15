@@ -957,6 +957,21 @@ impl TvManager {
         Some(tv.system_profile.automate_when)
     }
 
+    /// Get the fully resolved system profile for a TV.
+    ///
+    /// The result reflects the per-TV → named → "default" → hard-coded
+    /// chain plus the action-derived reliability defaults. Used by
+    /// `Tv1.GetEffectiveSystemProfile` to surface the resolved view to
+    /// clients (GUI, CLI) as JSON.
+    pub async fn get_resolved_system_profile(
+        &self,
+        tv_id: &str,
+    ) -> Option<tisvlay_core::ResolvedSystemProfile> {
+        let tv_arc = self.get_tv(tv_id).await.ok()?;
+        let tv = tv_arc.lock().await;
+        Some(tv.system_profile.clone())
+    }
+
     /// Get the primary input for a TV (from config).
     pub async fn get_tv_primary_input(&self, tv_id: &str) -> Option<String> {
         let tv_arc = self.get_tv(tv_id).await.ok()?;

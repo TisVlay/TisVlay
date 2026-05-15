@@ -13,7 +13,7 @@ use crate::tv_manager::TvManager;
 use std::sync::Arc;
 use tisvlay_core::TvState;
 use tisvlay_core::dbus_paths::tv_path;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
 
@@ -354,6 +354,33 @@ impl TvService {
             .update_tv_config(&self.tv_id, json_patch)
             .await
             .map_err(DaemonError::from)
+    }
+
+    /// Get the fully resolved system profile for this TV as JSON.
+    ///
+    /// Returns the profile with all inheritance applied (per-TV named
+    /// profile → "default" → hard-coded defaults) and the action-derived
+    /// reliability tier filled in for any slot that doesn't set
+    /// `qos.reliability` explicitly. Each `on_*` field is a nested
+    /// `{ action, qos: { reliability } }` table mirroring the TOML
+    /// shape. Symmetric with `Session1.GetEffectiveUserProfile`.
+    async fn get_effective_system_profile(&self) -> Result<String, DaemonError> {
+        debug!(tv_id = %self.tv_id, "D-Bus: GetEffectiveSystemProfile");
+        let resolved = self
+            .manager
+            .get_resolved_system_profile(&self.tv_id)
+            .await
+            .unwrap_or_default();
+        let json = serde_json::json!({
+            "on_startup": resolved.on_startup,
+            "on_shutdown": resolved.on_shutdown,
+            "on_reboot": resolved.on_reboot,
+            "on_no_session": resolved.on_no_session,
+            "on_sleep": resolved.on_sleep,
+            "on_wake": resolved.on_wake,
+            "automate_when": resolved.automate_when.to_string(),
+        });
+        Ok(json.to_string())
     }
 }
 

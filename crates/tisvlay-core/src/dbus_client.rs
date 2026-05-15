@@ -317,6 +317,14 @@ trait TisvlayTv {
     /// Server-side schema-validated. Vendor changes trigger a
     /// reconnect.
     fn update_config(&self, json_patch: &str) -> zbus::Result<()>;
+
+    /// Get the fully resolved system profile for this TV as JSON.
+    ///
+    /// Returns the profile with all inheritance applied and the
+    /// action-derived reliability tier filled in for any slot that
+    /// doesn't set `qos.reliability` explicitly. Symmetric with
+    /// `Session1.GetEffectiveUserProfile`.
+    fn get_effective_system_profile(&self) -> zbus::Result<String>;
 }
 
 // =============================================================================
@@ -1160,6 +1168,19 @@ impl DaemonClient {
         self.with_proxies(tv_id, "update config", move |p| {
             let patch = patch.clone();
             Box::pin(async move { p.base.update_config(&patch).await })
+        })
+        .await
+    }
+
+    /// Fetch the fully resolved system profile for a TV as JSON.
+    ///
+    /// The reply mirrors the TOML shape: each `on_*` event is a
+    /// nested `{ action, qos: { reliability } }` table. Symmetric
+    /// with `DaemonClient::get_effective_user_profile` for the
+    /// session-side equivalent.
+    pub async fn get_effective_system_profile(&self, tv_id: &str) -> Result<String> {
+        self.with_proxies(tv_id, "get effective system profile", |p| {
+            Box::pin(p.base.get_effective_system_profile())
         })
         .await
     }

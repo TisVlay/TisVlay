@@ -31,6 +31,36 @@ async fn client() -> DaemonClient {
         .expect("daemon client")
 }
 
+// ---------- Effective system profile JSON ----------
+
+#[tokio::test]
+async fn get_effective_system_profile_returns_resolved_json() {
+    let _daemon = TestDaemon::with_one_mock_tv("eff_sys_tv")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("eff_sys_tv").to_string();
+
+    let json: String = client
+        .get_effective_system_profile(&uuid)
+        .await
+        .expect("get_effective_system_profile");
+
+    // Each on_* is a nested `{ action, qos: { reliability } }` table
+    // mirroring the TOML shape. The asymmetric default is type-driven:
+    // wake-side actions resolve to reliable, sleep-side to best-effort.
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(value["on_startup"]["action"], "power_on");
+    assert_eq!(value["on_startup"]["qos"]["reliability"], "reliable");
+    assert_eq!(value["on_shutdown"]["action"], "power_off");
+    assert_eq!(value["on_shutdown"]["qos"]["reliability"], "best_effort");
+    assert_eq!(value["on_sleep"]["action"], "power_off");
+    assert_eq!(value["on_sleep"]["qos"]["reliability"], "best_effort");
+    assert_eq!(value["on_wake"]["action"], "power_on");
+    assert_eq!(value["on_wake"]["qos"]["reliability"], "reliable");
+    assert_eq!(value["automate_when"], "always");
+}
+
 // ---------- Initial state after connect ----------
 
 #[tokio::test]
