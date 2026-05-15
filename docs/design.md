@@ -254,6 +254,7 @@ Methods:
 - `Remove()` — drop the TV from in-memory + on-disk config and unregister every `Tv1.*` interface at this path (fires `ObjectManager.InterfacesRemoved`)
 - `GetConfig() → s` — return current config (top-level + non-`Secret` vendor fields) as a JSON object suitable for prefilling an edit form
 - `UpdateConfig(json_patch: s)` — atomic batch edit. Top-level keys (`name`, `managed`, `system_profile`, `primary_input`) plus any `UserInput`-visibility vendor schema field. Server-side schema-validated; vendor-field changes drop and reconnect. `Diagnostic`/`Secret` keys are rejected.
+- `GetEffectiveSystemProfile() → s` — fully resolved system profile as JSON (per-TV → named → "default" → hard-coded inheritance applied, action-derived reliability defaults filled in). Each `on_*` event serializes as a nested `{ action, qos: { reliability } }` table mirroring the TOML shape. Symmetric with `Session1.GetEffectiveUserProfile`.
 
 Single-field edits also flow through the per-property `Properties.Set` path — `Tv1.Name`, `Tv1.Managed`, `Tv1.SystemProfile`, `Tv1.PrimaryInput`, `Tv1.IsScreenOn`, `Tv1.Volume`, `Tv1.Muted`, `Tv1.Backlight` — which routes through the same internal helpers as `UpdateConfig` for top-level fields.
 
@@ -276,7 +277,7 @@ Properties (read-write): `Name`, `Managed`, `SystemProfile`, `PrimaryInput`
 
 Properties (read-only, computed): `AutomateWhen` (from resolved system profile), `Automated` (computed gate: `managed && automate_when.should_automate(primary_input, current_input)`)
 
-Methods: `Reconnect()`, `RePair()`, `Remove()`, `GetConfig()`, `UpdateConfig(json_patch: s)` — see the section above for full signatures.
+Methods: `Reconnect()`, `RePair()`, `Remove()`, `GetConfig()`, `UpdateConfig(json_patch: s)`, `GetEffectiveSystemProfile() → s` — see the section above for full signatures.
 
 No custom signals — uses standard `org.freedesktop.DBus.Properties.PropertiesChanged` for all state notifications. TV state is cached in the D-Bus interface structs and updated by backend subscription pushes via `InterfaceRef::get_mut()`.
 
@@ -322,30 +323,30 @@ Adding an editable field is a one-row schema entry — no D-Bus method changes, 
 
 # System profiles — daemon lifecycle events (per-TV via profile.system assignment)
 [system.profiles.default]
-on_startup = "power_on"          # action on system boot (default: power_on)
-on_shutdown = "power_off"        # action on poweroff/halt (default: power_off)
-on_reboot = "none"               # action on reboot/kexec (default: none)
-on_no_session = "none"           # action when all user sessions end (login screen)
-on_sleep = "power_off"           # action on system suspend/hibernate (default: power_off)
-on_wake = "power_on"             # action on system resume from sleep (default: power_on)
-automate_when = "always"         # always | on_primary | off_primary (default: always)
+on_startup = { action = "power_on" }       # action on system boot (default: power_on)
+on_shutdown = { action = "power_off" }     # action on poweroff/halt (default: power_off)
+on_reboot = { action = "none" }            # action on reboot/kexec (default: none)
+on_no_session = { action = "none" }        # action when all user sessions end (login screen)
+on_sleep = { action = "power_off" }        # action on system suspend/hibernate (default: power_off)
+on_wake = { action = "power_on" }          # action on system resume from sleep (default: power_on)
+automate_when = "always"                   # always | on_primary | off_primary (default: always)
 
 [system.profiles.shared]
-automate_when = "on_primary"     # only automate when showing the PC input
+automate_when = "on_primary"               # only automate when showing the PC input
 
 [system.profiles.guest]
-on_startup = "none"
-on_shutdown = "screen_off"
+on_startup = { action = "none" }
+on_shutdown = { action = "screen_off" }
 
 # Admin-set baseline for session behavior.
 # Users without their own config inherit this.
 [user.profiles.default]
-on_session_lock = "screen_off"   # screen_off | power_off | none
-on_session_unlock = "screen_on"  # screen_on | power_on | none
-on_greeter_wake = "screen_on"    # unblank on lock screen interaction (Wayland only)
-idle_timeout_seconds = 0         # 0 to disable
-on_idle_timeout = "none"
-on_idle_resume = "screen_on"     # action when activity resumes after idle
+on_session_lock = { action = "screen_off" }   # screen_off | power_off | none
+on_session_unlock = { action = "screen_on" }  # screen_on | power_on | none
+on_greeter_wake = { action = "screen_on" }    # unblank on lock screen interaction (Wayland only)
+idle_timeout_seconds = 0                      # 0 to disable
+on_idle_timeout = { action = "none" }
+on_idle_resume = { action = "screen_on" }     # action when activity resumes after idle
 
 [[tv]]
 uuid = "11111111-1111-4111-8111-111111111111"  # RFC 4122 v4, opaque, immutable
@@ -379,12 +380,21 @@ client_key = "abc123..."
 # User's own profiles (override or extend admin defaults)
 [user.profiles.default]
 idle_timeout_seconds = 300
-on_idle_timeout = "screen_off"
+on_idle_timeout = { action = "screen_off" }
 
 [user.profiles.gaming]
-on_session_lock = "none"          # don't interrupt gameplay
+on_session_lock = { action = "none" }    # don't interrupt gameplay
 idle_timeout_seconds = 0
-on_idle_resume = "none"
+on_idle_resume = { action = "none" }
+
+# Reliability override: keep the default screen_off action but verify the
+# state transition + retry on failure (escalates to power_on with WoL if
+# the TV slipped past Screen Off). Either dotted-key or nested-inline
+# form is valid; the resolve chain merges `action` and `qos.reliability`
+# independently.
+[user.profiles.cautious]
+on_session_unlock = { action = "screen_on", qos = { reliability = "reliable" } }
+on_session_lock.qos.reliability = "reliable"
 
 # Per-TV user profile assignments — `uuid` matches the system config.
 [[tv]]
@@ -433,7 +443,7 @@ stateDiagram-v2
 | System shutdown | Power off | `on_shutdown` (system profile) | poweroff or halt |
 | System reboot | None | `on_reboot` (system profile) | reboot or kexec; TV stays on for BIOS/TTY |
 
-All lifecycle events accept any `SessionAction` value: `power_on`, `power_off`, `screen_on`, `screen_off`, or `none`. Different TVs can respond differently to the same event via per-TV profile assignments (e.g., gaming TV ignores session lock via user profile; guest TV only blanks on shutdown via system profile).
+Each `on_*` slot is a nested table: `{ action, qos }`. The `action` field accepts any `SessionAction` value: `power_on`, `power_off`, `screen_on`, `screen_off`, or `none`. The optional `qos` namespace currently carries one dimension — `reliability` (see [Action QoS](#action-qos-reliability) below). Different TVs can respond differently to the same event via per-TV profile assignments (e.g., gaming TV ignores session lock via user profile; guest TV only blanks on shutdown via system profile).
 
 All automation (both daemon system events and session user events) is gated by the `Automated` property, which composes `managed`, `automate_when` (from system profile), `primary_input` (from config), and the TV's current input. When `automate_when = on_primary` and the TV is showing a game console, automation is skipped. Manual actions from the tray and CLI always execute regardless of the gate.
 
@@ -446,6 +456,31 @@ All automation (both daemon system events and session user events) is gated by t
 | true | on_primary | unknown (TV off) | **true** (benefit of doubt) |
 | true | off_primary | yes | **false** |
 | true | off_primary | no | **true** |
+
+### Action QoS (Reliability)
+
+Each `on_*` event slot carries a `qos` namespace alongside its action. The v1 dimension is **reliability**, with two tiers:
+
+| Tier | Semantics |
+|---|---|
+| `best_effort` | Single dispatch, no verification. Today's classic fire-and-forget behavior. ~100 ms wall-clock when the TV is well-behaved. |
+| `reliable` | Verify post-action state via the cached `Tv1.Power.PowerState`. On `screen_on`, retry up to 2 times then escalate to `power_on` (which has WoL + retry inside) if the TV slipped past Screen Off to a deeper power state. Bounded by an overall timeout. Adds ~600 ms in the unhappy path before WoL kicks in. |
+
+**Asymmetric default.** When `qos.reliability` is unset anywhere in the resolve chain, the tier derives from the action via `default_reliability_for(action)`:
+
+| Action | Default reliability |
+|---|---|
+| `screen_on`, `power_on` (wake side) | `reliable` |
+| `screen_off`, `power_off` (sleep side) | `best_effort` |
+| `none` | `best_effort` (no-op) |
+
+The default is *type-driven*, not slot-driven: overriding `on_session_lock.action = "power_off"` automatically gives best-effort reliability for that slot. To keep an action but flip its tier, set `qos.reliability` independently — see the `cautious` profile in the user-config example above.
+
+**Why the asymmetry.** A dark TV when you wanted bright is a bug the user notices immediately; the inverse failure (bright when you wanted dark) is rarely catastrophic and the verify-and-retry latency is unwanted on the lock side. Wake-side reliability addresses the user-reported failure mode: some TVs auto-power-off after Screen Off (idle auto-off, fixed timers, hidden firmware descents) — when the user returns, a bare `screen_on` either errors out as out-of-state or silently no-ops; the reliable tier detects the mismatch and escalates to a real WoL.
+
+**Resolution.** Each event's `EventAction` chain merges through per-TV profile → named profile → "default" → hard-coded defaults; `action` and `qos.reliability` merge independently. The resolved view per TV is available via `Tv1.GetEffectiveSystemProfile()` (system events) and `Session1.GetEffectiveUserProfile(tv_id)` (user events) — both return nested `{ action, qos: { reliability } }` JSON mirroring the TOML shape.
+
+The `qos` namespace is designed for future dimensions (deadline, durability) to slot in as sibling fields without schema break. See [docs/plans/action-qos.md](plans/action-qos.md) for the full design discussion, including the TV-side prevention path that's deferred to a follow-up.
 
 ---
 
