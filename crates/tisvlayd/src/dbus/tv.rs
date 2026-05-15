@@ -10,9 +10,10 @@
 
 use crate::dbus::DaemonError;
 use crate::tv_manager::TvManager;
+use std::str::FromStr;
 use std::sync::Arc;
-use tisvlay_core::TvState;
 use tisvlay_core::dbus_paths::tv_path;
+use tisvlay_core::{QosConfig, SessionAction, TvState, default_reliability_for};
 use tracing::{debug, info, warn};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
@@ -382,6 +383,37 @@ impl TvService {
         });
         Ok(json.to_string())
     }
+
+    /// Dispatch a lifecycle action on this TV with the given QoS tier.
+    ///
+    /// Single entry point for the QoS-aware action surface. Replaces
+    /// the per-feature methods `Tv1.Power.PowerOn`, `Tv1.Power.PowerOff`,
+    /// and `Tv1.Screen.SetScreen` — those are gone, and their direct
+    /// callers (tray, GUI, CLI) now route through `Tv1.Dispatch` via
+    /// `DaemonClient` Rust wrappers that pass best-effort QoS by default.
+    /// Session events flow through here too, passing the resolved
+    /// per-event reliability tier from the user profile.
+    ///
+    /// `action` is the snake-case wire form of [`SessionAction`]
+    /// (`"screen_on"`, `"screen_off"`, `"power_on"`, `"power_off"`,
+    /// `"none"`). `qos_json` is a JSON object with the `QosConfig`
+    /// shape; unset fields default to the action-derived asymmetric
+    /// default (wake-side actions → reliable; sleep-side → best-effort).
+    async fn dispatch(&self, action: &str, qos_json: &str) -> Result<(), DaemonError> {
+        debug!(tv_id = %self.tv_id, action, qos_json, "D-Bus: Dispatch");
+        let action = SessionAction::from_str(action)
+            .map_err(|e| DaemonError::OperationFailed(format!("invalid action: {e}")))?;
+        let qos_config: QosConfig = serde_json::from_str(qos_json)
+            .map_err(|e| DaemonError::OperationFailed(format!("invalid qos JSON: {e}")))?;
+        let reliability = qos_config
+            .reliability
+            .unwrap_or_else(|| default_reliability_for(action));
+        let qos = tisvlay_core::ResolvedQos { reliability };
+        self.manager
+            .dispatch_action(&self.tv_id, action, qos)
+            .await
+            .map_err(DaemonError::from)
+    }
 }
 
 // =============================================================================
@@ -389,42 +421,32 @@ impl TvService {
 // =============================================================================
 
 /// Power control interface.
+///
+/// State-changing dispatch (power on / off) moved to `Tv1.Dispatch`
+/// (see `TvService` above) so it can carry a QoS tier. This interface
+/// now exposes only the read-only `PowerState` / `SupportsWake`
+/// properties and the `PowerCycleProgress` signal — no `&self`-anchored
+/// state beyond the cached field values is needed.
 #[derive(Debug)]
 pub struct TvPowerService {
-    pub(crate) tv_id: String,
-    pub(crate) manager: Arc<TvManager>,
-
-    // Cached state
+    /// Cached power state, kept in sync by `state_forwarder`.
     pub(crate) power_state: String,
     /// Whether the vendor backend can wake the TV from standby
     /// (e.g. LG: has a MAC for WoL). GUIs use this to disable the
-    /// Power-on button when both `Connected == false` and
-    /// `SupportsWake == false` — the only state where Power-on
-    /// has no path to succeed.
+    /// Power-on dispatch when both `Connected == false` and
+    /// `SupportsWake == false` — the only state where wake has no
+    /// path to succeed.
     pub(crate) supports_wake: bool,
 }
 
 #[interface(name = "org.tisvlay.Tv1.Power")]
 impl TvPowerService {
-    /// Power on the TV (Wake-on-LAN).
-    async fn power_on(&self) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, "D-Bus: PowerOn");
-        self.manager
-            .power_on(&self.tv_id)
-            .await
-            .map_err(DaemonError::from)
-    }
-
-    /// Power off the TV.
-    async fn power_off(&self) -> Result<(), DaemonError> {
-        info!(tv_id = %self.tv_id, "D-Bus: PowerOff");
-        self.manager
-            .power_off(&self.tv_id)
-            .await
-            .map_err(DaemonError::from)
-    }
-
     /// Get current power state.
+    ///
+    /// State-changing dispatch (power on / off) now goes through
+    /// `Tv1.Dispatch` so it can carry a QoS tier — see that method's
+    /// docstring on `TvService` above. The property and the
+    /// `PowerCycleProgress` signal stay here.
     #[zbus(property)]
     fn power_state(&self) -> &str {
         &self.power_state
@@ -461,34 +483,25 @@ impl TvPowerService {
 ///
 /// `IsScreenOn` is a read-only boolean property reflecting the TV's
 /// current screen state, populated by `state_forwarder` from backend
-/// subscription pushes. Writes go through the `SetScreen(b)` method
-/// (`true` unblanks, `false` blanks).
+/// subscription pushes. State-changing dispatch (screen on / off) moved
+/// to `Tv1.Dispatch` (see `TvService` above) so it can carry a QoS tier.
 #[derive(Debug)]
 pub struct TvScreenService {
-    pub(crate) tv_id: String,
-    pub(crate) manager: Arc<TvManager>,
-
-    // Cached state
+    /// Cached screen state, kept in sync by `state_forwarder`.
     pub(crate) is_screen_on: bool,
 }
 
 #[interface(name = "org.tisvlay.Tv1.Screen")]
 impl TvScreenService {
     /// Whether the screen is currently on.
+    ///
+    /// State-changing dispatch (screen on / off) now goes through
+    /// `Tv1.Dispatch` so it can carry a QoS tier — see that method's
+    /// docstring on `TvService`. This interface keeps the read-only
+    /// property for clients that just want the current state.
     #[zbus(property)]
     fn is_screen_on(&self) -> bool {
         self.is_screen_on
-    }
-
-    /// Set the screen on (true) or off (false).
-    async fn set_screen(&self, on: bool) -> zbus::fdo::Result<()> {
-        info!(tv_id = %self.tv_id, on = on, "D-Bus: SetScreen");
-        if on {
-            self.manager.screen_on(&self.tv_id).await
-        } else {
-            self.manager.screen_off(&self.tv_id).await
-        }
-        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }
 
@@ -778,8 +791,6 @@ pub async fn register_tv_interfaces(
         .at(
             path,
             TvPowerService {
-                tv_id: tv_id.clone(),
-                manager: manager.clone(),
                 power_state,
                 supports_wake,
             },
@@ -787,14 +798,7 @@ pub async fn register_tv_interfaces(
         .await?;
 
     object_server
-        .at(
-            path,
-            TvScreenService {
-                tv_id: tv_id.clone(),
-                manager: manager.clone(),
-                is_screen_on,
-            },
-        )
+        .at(path, TvScreenService { is_screen_on })
         .await?;
 
     object_server

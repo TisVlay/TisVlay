@@ -80,6 +80,46 @@ pub enum SessionAction {
     PowerOn,
 }
 
+impl SessionAction {
+    /// Wire-format identifier for this action (matches the serde
+    /// `rename_all = "snake_case"` derivation). Used on the D-Bus
+    /// `Tv1.Dispatch(action: s, …)` interface so callers don't have to
+    /// round-trip through JSON for a single token.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ScreenOff => "screen_off",
+            Self::ScreenOn => "screen_on",
+            Self::PowerOff => "power_off",
+            Self::PowerOn => "power_on",
+        }
+    }
+}
+
+impl std::fmt::Display for SessionAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for SessionAction {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "none" => Ok(Self::None),
+            "screen_off" => Ok(Self::ScreenOff),
+            "screen_on" => Ok(Self::ScreenOn),
+            "power_off" => Ok(Self::PowerOff),
+            "power_on" => Ok(Self::PowerOn),
+            other => Err(format!(
+                "invalid SessionAction `{other}`; expected one of \
+                 none, screen_off, screen_on, power_off, power_on"
+            )),
+        }
+    }
+}
+
 // =============================================================================
 // AutomateWhen — input-aware automation gating
 // =============================================================================
@@ -183,6 +223,17 @@ impl QosConfig {
     /// stay absent from emitted TOML.
     pub fn is_empty(&self) -> bool {
         self.reliability.is_none()
+    }
+
+    /// QoS knob set with `reliability = best_effort`. Direct callers
+    /// (tray buttons, GUI controls, CLI subcommands) construct this
+    /// when invoking `DaemonClient::dispatch_action` so a manual click
+    /// gets the snap-back fire-and-forget UX rather than the verify
+    /// + retry + escalate of the reliable tier.
+    pub fn best_effort() -> Self {
+        Self {
+            reliability: Some(Reliability::BestEffort),
+        }
     }
 }
 

@@ -25,8 +25,8 @@ use std::time::Duration;
 /// here.
 const DIRECT_CONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 use tisvlay_core::{
-    Capabilities, FieldVisibility, ResolvedSystemProfile, SessionAction, SystemConfig,
-    SystemSection, TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
+    Capabilities, FieldVisibility, Reliability, ResolvedQos, ResolvedSystemProfile, SessionAction,
+    SystemConfig, SystemSection, TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -237,6 +237,16 @@ struct ManagedTv {
     /// Used by `is_automated()` to evaluate the input-aware gate without
     /// needing access to the D-Bus interface cache.
     last_known_input: Option<String>,
+    /// Last known power state from backend subscription pushes, derived
+    /// from `TvState::(is_on, is_screen_on)` via the same mapping the
+    /// `state_forwarder` uses for the `Tv1.Power.PowerState` property
+    /// (`"active"` / `"screen_off"` / `"standby"` / `"unknown"`).
+    ///
+    /// Used by `dispatch_reliable_screen_on` to verify whether a
+    /// just-dispatched `screen_on` actually woke the panel. Reading
+    /// this in-process avoids the IPC round-trip the session-side
+    /// equivalent had to take through `Tv1.Power.PowerState`.
+    last_known_power_state: String,
     /// NIC carrying traffic to this TV, resolved from the routing table.
     ///
     /// Set at connection time via `resolve_interface_for_ip()`. Used to
@@ -255,6 +265,7 @@ impl ManagedTv {
             pairing_in_flight: false,
             system_profile,
             last_known_input: None,
+            last_known_power_state: "unknown".to_string(),
             monitored_interface: None,
         }
     }
@@ -455,11 +466,24 @@ async fn run_subscription_task(
     mut state_rx: mpsc::UnboundedReceiver<TvState>,
 ) {
     while let Some(state) = state_rx.recv().await {
-        // Update last_known_input on ManagedTv for the automation gate.
-        if let Some(ref input) = state.current_input {
+        // Update cached fields on ManagedTv that the reliable dispatch
+        // helper and automation gate read in-process. Mirrors the
+        // `(is_on, is_screen_on) → "..."` derivation that
+        // `state_forwarder` applies to the D-Bus `Tv1.Power.PowerState`
+        // property — keep the two in sync.
+        let derived_power_state = match (state.is_on, state.is_screen_on) {
+            (false, _) => "standby",
+            (true, false) => "screen_off",
+            (true, true) => "active",
+        };
+        {
             let tvs_read = tvs.read().await;
             if let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) {
-                tv_arc.lock().await.last_known_input = Some(input.clone());
+                let mut tv = tv_arc.lock().await;
+                if let Some(ref input) = state.current_input {
+                    tv.last_known_input = Some(input.clone());
+                }
+                tv.last_known_power_state = derived_power_state.to_string();
             }
         }
         let event = StateChangeEvent::SubscriptionUpdate {
@@ -1592,6 +1616,100 @@ impl TvManager {
         })
         .await?;
         Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Action dispatch (QoS-aware)
+    // -------------------------------------------------------------------------
+
+    /// Dispatch a [`SessionAction`] on a TV with the given QoS tier.
+    ///
+    /// Single entry point for both the daemon-internal system-event
+    /// dispatch path and the `Tv1.Dispatch` D-Bus method (which session
+    /// events flow through). Branches on `qos.reliability`:
+    ///
+    /// - [`Reliability::BestEffort`] — single dispatch via the
+    ///   corresponding per-action method (`screen_on` / `screen_off` /
+    ///   `power_on` / `power_off`). Matches the prior fire-and-forget
+    ///   semantics.
+    /// - [`Reliability::Reliable`] on [`SessionAction::ScreenOn`] —
+    ///   verify post-action via the cached
+    ///   [`ManagedTv::last_known_power_state`]; retry up to
+    ///   `backend.reliable_max_attempts()`; escalate to `power_on`
+    ///   (with WoL) on continued failure. Other actions fall through
+    ///   to the best-effort path — `power_on` already has WoL + retry
+    ///   inside, and sleep-side actions are fire-and-forget by
+    ///   design's intent.
+    pub async fn dispatch_action(
+        &self,
+        tv_id: &str,
+        action: SessionAction,
+        qos: ResolvedQos,
+    ) -> Result<(), TvManagerError> {
+        match (action, qos.reliability) {
+            (SessionAction::None, _) => Ok(()),
+            (SessionAction::ScreenOn, Reliability::Reliable) => {
+                self.dispatch_reliable_screen_on(tv_id).await
+            }
+            (SessionAction::ScreenOn, Reliability::BestEffort) => self.screen_on(tv_id).await,
+            (SessionAction::ScreenOff, _) => self.screen_off(tv_id).await,
+            (SessionAction::PowerOn, _) => self.power_on(tv_id).await,
+            (SessionAction::PowerOff, _) => self.power_off(tv_id).await,
+        }
+    }
+
+    /// Dispatch `screen_on` reliably: verify the TV reached `"active"`,
+    /// escalate to `power_on` if it slipped past Screen Off.
+    ///
+    /// Reads `reliable_verify_delay` and `reliable_max_attempts` from
+    /// the per-vendor [`TvBackend`] via the registry, so backends with
+    /// different state-push semantics can tune independently. The
+    /// verify check is in-process (reads
+    /// [`ManagedTv::last_known_power_state`] which the subscription
+    /// task keeps fresh), so no IPC round-trip per attempt.
+    ///
+    /// [`TvBackend`]: tisvlay_core::TvBackend
+    async fn dispatch_reliable_screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        // Pull tuning from the per-vendor TvBackend. Defaults to 300 ms
+        // / 2 attempts for backends that don't override.
+        let (verify_delay, max_attempts) = {
+            let tv_arc = self.get_tv(tv_id).await?;
+            let tv = tv_arc.lock().await;
+            let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
+                TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
+            })?;
+            (
+                registered.backend.reliable_verify_delay(),
+                registered.backend.reliable_max_attempts(),
+            )
+        };
+
+        for attempt in 0..max_attempts {
+            if let Err(e) = self.screen_on(tv_id).await {
+                debug!(tv_id, attempt, error = %e, "screen_on failed; escalating to power_on");
+                break;
+            }
+            tokio::time::sleep(verify_delay).await;
+            let cached = {
+                let tv_arc = self.get_tv(tv_id).await?;
+                let tv = tv_arc.lock().await;
+                tv.last_known_power_state.clone()
+            };
+            if cached == "active" {
+                return Ok(());
+            }
+            debug!(
+                tv_id,
+                attempt,
+                cached_power_state = %cached,
+                "screen_on did not reach active state",
+            );
+        }
+        info!(
+            tv_id,
+            "reliable screen_on escalating to power_on (TV likely slipped past Screen Off)",
+        );
+        self.power_on(tv_id).await
     }
 
     // -------------------------------------------------------------------------

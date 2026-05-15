@@ -31,6 +31,68 @@ async fn client() -> DaemonClient {
         .expect("daemon client")
 }
 
+// ---------- Tv1.Dispatch ----------
+
+/// `Tv1.Dispatch` with reliable QoS on `screen_on` engages the
+/// daemon-side verify-retry-escalate helper. When the cached
+/// PowerState fails to reach `"active"` (here: we inject `Standby`
+/// via the mock handle to simulate the TV slipping past Screen Off),
+/// the helper falls through to `power_on` — the new connection comes
+/// up `"active"` per the mock's default `initial_power_state`.
+///
+/// End-to-end contract for the QoS-dispatch refactor: session events
+/// flow through this same code path with the resolved per-event QoS
+/// (migrated in a follow-up commit), and direct callers use the
+/// `DaemonClient::screen_on` / `power_on` Rust wrappers that pass
+/// best-effort QoS to the same method.
+#[tokio::test]
+async fn dispatch_reliable_screen_on_escalates_via_active_standby() {
+    use tisvlay_core::{PowerState, QosConfig, Reliability, SessionAction};
+
+    let daemon = TestDaemon::with_one_mock_tv("dispatch_escalate")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("dispatch_escalate").to_string();
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    // Simulate the TV transitioning out of Screen Off into Active
+    // Standby — same wire shape as the field-test repro on the LG G4.
+    daemon
+        .handle()
+        .inject_power_state("mock://dispatch_escalate", PowerState::ActiveStandby);
+    settle().await;
+
+    let qos = QosConfig {
+        reliability: Some(Reliability::Reliable),
+    };
+    client
+        .dispatch_action(&uuid, SessionAction::ScreenOn, qos)
+        .await
+        .expect("dispatch_action");
+
+    // Reliable path: 2 × 300 ms verify + power_on probe + new-connection
+    // state push. Match the budget the session-events integration test
+    // uses (1.5 s).
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs
+        .iter()
+        .find(|t| t.uuid == uuid)
+        .expect("dispatch_escalate TV present");
+    assert_eq!(
+        tv.power_state, "active",
+        "reliable dispatch should have escalated to power_on; new connection comes up active",
+    );
+    assert!(
+        tv.is_screen_on,
+        "screen should be on after the escalated power_on completes",
+    );
+}
+
 // ---------- Effective system profile JSON ----------
 
 #[tokio::test]

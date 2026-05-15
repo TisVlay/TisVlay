@@ -39,6 +39,7 @@ use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
+use crate::config::{QosConfig, SessionAction};
 use crate::dbus_paths::{DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH, tv_path};
 
 // =============================================================================
@@ -325,6 +326,17 @@ trait TisvlayTv {
     /// doesn't set `qos.reliability` explicitly. Symmetric with
     /// `Session1.GetEffectiveUserProfile`.
     fn get_effective_system_profile(&self) -> zbus::Result<String>;
+
+    /// Dispatch a lifecycle action with a QoS tier.
+    ///
+    /// `action` is the snake-case wire form of `SessionAction`
+    /// (`"screen_on"`, `"screen_off"`, `"power_on"`, `"power_off"`,
+    /// `"none"`). `qos` is a JSON object matching the `QosConfig`
+    /// shape (e.g. `{"reliability":"reliable"}`); empty `{}` lets the
+    /// daemon fill in the action-derived asymmetric default. Single
+    /// entry point that replaces the dropped `Tv1.Power.PowerOn` /
+    /// `Tv1.Power.PowerOff` / `Tv1.Screen.SetScreen` methods.
+    fn dispatch(&self, action: &str, qos: &str) -> zbus::Result<()>;
 }
 
 // =============================================================================
@@ -337,13 +349,12 @@ trait TisvlayTv {
     default_service = "org.tisvlay.Daemon"
 )]
 trait TisvlayTvPower {
-    /// Power on the TV (Wake-on-LAN).
-    fn power_on(&self) -> zbus::Result<()>;
-
-    /// Power off the TV.
-    fn power_off(&self) -> zbus::Result<()>;
-
     /// Get current power state.
+    ///
+    /// State-changing dispatch (power on / off) goes through
+    /// [`TisvlayTv::dispatch`] on the base `Tv1` interface so it can
+    /// carry a QoS tier. This proxy now exposes only properties + the
+    /// `PowerCycleProgress` signal.
     #[zbus(property)]
     fn power_state(&self) -> zbus::Result<String>;
 
@@ -370,11 +381,12 @@ trait TisvlayTvPower {
 )]
 trait TisvlayTvScreen {
     /// Whether screen is on.
+    ///
+    /// State-changing dispatch (screen on / off) goes through
+    /// [`TisvlayTv::dispatch`] on the base `Tv1` interface so it can
+    /// carry a QoS tier.
     #[zbus(property)]
     fn is_screen_on(&self) -> zbus::Result<bool>;
-
-    /// Set screen on/off (true = unblank, false = blank).
-    fn set_screen(&self, on: bool) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for TV volume control.
@@ -622,10 +634,15 @@ pub struct TvInfo {
 // =============================================================================
 
 /// Cached proxies for a single TV.
+///
+/// `Screen` no longer needs a proxy field here — the `IsScreenOn`
+/// property is read via the `GetManagedObjects` aggregation path in
+/// `list_tvs`, and state-changing dispatch flows through `base.dispatch`.
+/// `TisvlayTvScreenProxy` is kept defined for clients that want
+/// property/signal-only access to the screen interface.
 struct TvProxies {
     base: TisvlayTvProxy<'static>,
     power: TisvlayTvPowerProxy<'static>,
-    screen: TisvlayTvScreenProxy<'static>,
     volume: TisvlayTvVolumeProxy<'static>,
     input: TisvlayTvInputProxy<'static>,
     backlight: TisvlayTvBacklightProxy<'static>,
@@ -646,13 +663,6 @@ impl TvProxies {
             .build()
             .await
             .context("Failed to create TV power proxy")?;
-
-        let screen = TisvlayTvScreenProxy::builder(&connection)
-            .destination(DAEMON_SERVICE)?
-            .path(path.clone())?
-            .build()
-            .await
-            .context("Failed to create TV screen proxy")?;
 
         let volume = TisvlayTvVolumeProxy::builder(&connection)
             .destination(DAEMON_SERVICE)?
@@ -678,7 +688,6 @@ impl TvProxies {
         Ok(Self {
             base,
             power,
-            screen,
             volume,
             input,
             backlight,
@@ -1215,18 +1224,53 @@ impl DaemonClient {
     }
 
     // -------------------------------------------------------------------------
-    // Power Control
+    // Action dispatch
     // -------------------------------------------------------------------------
 
-    /// Power on a TV using Wake-on-LAN.
+    /// Dispatch a lifecycle action with explicit QoS — the typed
+    /// wrapper around `Tv1.Dispatch`.
+    ///
+    /// `qos` is serialized as JSON for the wire (matching the
+    /// `Get*EffectiveProfile` precedent); empty or absent fields let
+    /// the daemon fill in the action-derived asymmetric default
+    /// (wake-side actions → reliable; sleep-side → best-effort).
+    ///
+    /// Session events flow through here with the resolved per-event
+    /// QoS from the user profile. Direct callers (tray, GUI, CLI) use
+    /// the per-action convenience wrappers below, which pass
+    /// best-effort QoS so a manual click gets snap-back UX.
+    pub async fn dispatch_action(
+        &self,
+        tv_id: &str,
+        action: SessionAction,
+        qos: QosConfig,
+    ) -> Result<()> {
+        let qos_json =
+            serde_json::to_string(&qos).context("Failed to serialize qos for dispatch_action")?;
+        let action_str = action.as_str();
+        self.with_proxies(tv_id, "dispatch action", move |p| {
+            let action_str = action_str;
+            let qos_json = qos_json.clone();
+            Box::pin(async move { p.base.dispatch(action_str, &qos_json).await })
+        })
+        .await
+    }
+
+    // -------------------------------------------------------------------------
+    // Power Control — convenience wrappers around dispatch_action(best_effort)
+    // -------------------------------------------------------------------------
+
+    /// Power on a TV (Wake-on-LAN). Best-effort QoS; manual snap-back
+    /// for direct callers. Sessions passing a reliable tier should use
+    /// [`Self::dispatch_action`] directly.
     pub async fn power_on(&self, tv_id: &str) -> Result<()> {
-        self.with_proxies(tv_id, "power on", |p| Box::pin(p.power.power_on()))
+        self.dispatch_action(tv_id, SessionAction::PowerOn, QosConfig::best_effort())
             .await
     }
 
-    /// Power off a TV.
+    /// Power off a TV. Best-effort QoS.
     pub async fn power_off(&self, tv_id: &str) -> Result<()> {
-        self.with_proxies(tv_id, "power off", |p| Box::pin(p.power.power_off()))
+        self.dispatch_action(tv_id, SessionAction::PowerOff, QosConfig::best_effort())
             .await
     }
 
@@ -1401,12 +1445,11 @@ impl DaemonClient {
         }))
     }
 
-    /// Turn screen on (resume from blank).
+    /// Turn screen on (resume from blank). Best-effort QoS; for the
+    /// reliable tier use [`Self::dispatch_action`] directly.
     pub async fn screen_on(&self, tv_id: &str) -> Result<()> {
-        self.with_proxies(tv_id, "turn screen on", |p| {
-            Box::pin(p.screen.set_screen(true))
-        })
-        .await
+        self.dispatch_action(tv_id, SessionAction::ScreenOn, QosConfig::best_effort())
+            .await
     }
 
     /// Read the current `PowerState` for a TV.
@@ -1414,9 +1457,11 @@ impl DaemonClient {
     /// Returns the cached value from `org.tisvlay.Tv1.Power.PowerState`,
     /// which the daemon keeps in sync via the LG `getPowerState`
     /// subscription. Typical values: `active`, `screen_off`,
-    /// `active_standby`, `suspend`, `power_off`, `unknown`. Used by the
-    /// session-side reliable dispatch helper to verify whether a
-    /// just-dispatched action took effect.
+    /// `active_standby`, `suspend`, `power_off`, `unknown`. The
+    /// daemon-side reliable dispatch tier reads its own copy of this
+    /// in-process (via `ManagedTv::last_known_power_state`) so it
+    /// doesn't pay the round-trip; this accessor is for external
+    /// consumers (GUI, tray, CLI status display).
     pub async fn power_state(&self, tv_id: &str) -> Result<String> {
         self.with_proxies(tv_id, "read power state", |p| {
             Box::pin(p.power.power_state())
@@ -1424,12 +1469,10 @@ impl DaemonClient {
         .await
     }
 
-    /// Turn screen off (OLED-safe blank).
+    /// Turn screen off (OLED-safe blank). Best-effort QoS.
     pub async fn screen_off(&self, tv_id: &str) -> Result<()> {
-        self.with_proxies(tv_id, "turn screen off", |p| {
-            Box::pin(p.screen.set_screen(false))
-        })
-        .await
+        self.dispatch_action(tv_id, SessionAction::ScreenOff, QosConfig::best_effort())
+            .await
     }
 
     // -------------------------------------------------------------------------
