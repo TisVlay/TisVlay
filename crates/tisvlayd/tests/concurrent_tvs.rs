@@ -77,7 +77,7 @@ async fn mixed_profiles_dispatch_independently() {
     config.system.profiles.insert(
         "noop".to_string(),
         SystemProfileConfig {
-            on_shutdown: Some(SessionAction::None),
+            on_shutdown: Some(SessionAction::None.into()),
             ..Default::default()
         },
     );

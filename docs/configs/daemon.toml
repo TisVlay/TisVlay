@@ -1,10 +1,10 @@
 [system.profiles.default]
-on_startup = "power_on"
-on_shutdown = "power_off"
-on_reboot = "none"
-on_no_session = "none"
-on_sleep = "power_off"
-on_wake = "power_on"
+on_startup = { action = "power_on" }
+on_shutdown = { action = "power_off" }
+on_reboot = { action = "none" }
+on_no_session = { action = "none" }
+on_sleep = { action = "power_off" }
+on_wake = { action = "power_on" }
 automate_when = "always"
 
 [user.profiles.default]

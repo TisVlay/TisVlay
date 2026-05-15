@@ -696,12 +696,12 @@ impl TvManager {
         };
         let tv = tv_arc.lock().await;
         match event {
-            SystemEvent::Startup => tv.system_profile.on_startup,
-            SystemEvent::Shutdown => tv.system_profile.on_shutdown,
-            SystemEvent::Reboot => tv.system_profile.on_reboot,
-            SystemEvent::NoSession => tv.system_profile.on_no_session,
-            SystemEvent::Sleep => tv.system_profile.on_sleep,
-            SystemEvent::Wake => tv.system_profile.on_wake,
+            SystemEvent::Startup => tv.system_profile.on_startup.action,
+            SystemEvent::Shutdown => tv.system_profile.on_shutdown.action,
+            SystemEvent::Reboot => tv.system_profile.on_reboot.action,
+            SystemEvent::NoSession => tv.system_profile.on_no_session.action,
+            SystemEvent::Sleep => tv.system_profile.on_sleep.action,
+            SystemEvent::Wake => tv.system_profile.on_wake.action,
         }
     }
 

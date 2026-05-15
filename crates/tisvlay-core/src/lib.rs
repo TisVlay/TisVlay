@@ -90,9 +90,10 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 
 // Configuration
 pub use config::{
-    AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
-    SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
+    AutomateWhen, EventAction, QosConfig, Reliability, ResolvedEventAction, ResolvedQos,
+    ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig, SystemProfileConfig,
+    SystemSection, TvConfig, TvProfileAssignment, UserConfig, UserProfileConfig, UserSection,
+    UserTvConfig, UserTvProfileAssignment, absolutize, default_reliability_for,
 };
 
 // State

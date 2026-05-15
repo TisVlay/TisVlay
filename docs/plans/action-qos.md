@@ -12,10 +12,11 @@ The proposal is a **QoS knob** on TV actions: let users declare which actions sh
 
 - Per-event nested `qos.reliability` field in profile config (TOML + serde + merge + resolve).
 - Asymmetric default driven by action type (`screen_on` / `power_on` → reliable; `screen_off` / `power_off` → best-effort).
-- Backward-compat with bare-string action config (`on_session_unlock = "screen_on"` keeps parsing).
 - Client-side `reliable` dispatch helper: pre-action PowerState snapshot, verify post-action, retry, escalate `screen_on` → `power_on` with WoL, bounded by overall timeout.
 - Read-only D-Bus property on `Tv1` exposing the resolved per-action reliability tier.
 - `TvBackend` capability bit + trait method stub for future TV-side prevention. No implementation in v1; the stub exists so a future PR can plug in the LG implementation without API churn.
+
+No backward-compat for bare-string action config — the project has no users yet, so every `on_*` is the table form (`{ action = "..." }` or dotted-key equivalent). The sample `docs/configs/daemon.toml` and all in-repo configs ship in the table form.
 
 **Deferred to follow-up:**
 
@@ -85,7 +86,7 @@ pub enum Reliability {
 
 The `qos` field is nested-but-flattened-friendly: `#[serde(skip_serializing_if = "QosConfig::is_empty")]` keeps the table absent from emitted TOML when no qos field is set, so default configs stay terse. As more dimensions land (deadline, durability), they're sibling fields on `QosConfig` — no schema break.
 
-Bare-string back-compat via `#[serde(untagged)]` — `on_session_unlock = "screen_on"` parses as `EventAction { action: Some(ScreenOn), qos: QosConfig::default() }`. New configs may use any of: dotted keys (`on_session_unlock.action`, `on_session_unlock.qos.reliability`), inline tables (`{ action = "...", qos = { reliability = "..." } }`), or table headers. The toml crate emits inline tables when fields fit on one line; the GUI saver prefers that form.
+Configs may use any of: dotted keys (`on_session_unlock.action`, `on_session_unlock.qos.reliability`), inline tables (`{ action = "...", qos = { reliability = "..." } }`), or table headers. The toml crate emits inline tables when fields fit on one line; the GUI saver prefers that form.
 
 `merge_with_base` recurses through `EventAction` then `QosConfig`, independently merging each leaf via `.or()`. The user can override action, reliability, or any future qos dimension at any tier (per-TV profile → named profile → "default" → cross-scope fallback) without touching the others.
 
@@ -129,19 +130,19 @@ A "gaming" profile that overrides just one event's reliability:
 on_session_lock.qos.reliability = "reliable"  # action falls through to default profile's screen_off
 ```
 
-Bare-string short form (action only; reliability derived from action):
+Action-only short form (reliability derived from action via the asymmetric default):
 
 ```toml
 [user.profiles.minimal]
-on_session_lock   = "screen_off"
-on_session_unlock = "screen_on"
+on_session_lock   = { action = "screen_off" }
+on_session_unlock = { action = "screen_on" }
 ```
 
 ## V1 implementation outline
 
 Suggested commit sequence (each on its own, reviewable in isolation):
 
-1. **Core types** — `Reliability` enum, `QosConfig`, `EventAction` in `tisvlay-core/src/config.rs`; bare-string back-compat via `#[serde(untagged)]`; `default_reliability_for(action)` helper. Unit tests for the four shapes (bare string, dotted, inline table, table header).
+1. **Core types** — `Reliability` enum, `QosConfig`, `EventAction` in `tisvlay-core/src/config.rs`; `default_reliability_for(action)` helper. Unit tests for the three TOML shapes (dotted, inline table, table header).
 2. **Profile types migrate** — `SystemProfileConfig` / `UserProfileConfig` event slots from `Option<SessionAction>` to `Option<EventAction>`; `merge_with_base` recurses; `resolve` derives default reliability; new `ResolvedEventAction`, `ResolvedQos` types; all existing call sites updated.
 3. **Reliable dispatch helper** — new `dispatch_reliable_action` in `tv_manager.rs`: snapshot pre-action PowerState, dispatch, poll cached state, retry, escalate `screen_on` → `power_on` + WoL on continued failure, bounded by overall timeout (default 40 s a la LGTVCompanion).
 4. **Wire to event handler** — `tisvlay-session/src/lib.rs::event_handler` reads `ResolvedEventAction.qos.reliability` and dispatches via the right helper (existing best-effort path or new reliable path).

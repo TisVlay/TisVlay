@@ -20,7 +20,7 @@ fn config_with_automate_when(tv_id: &str, primary_input: &str, when: AutomateWhe
     config.system.profiles.insert(
         "default".to_string(),
         SystemProfileConfig {
-            on_shutdown: Some(SessionAction::PowerOff),
+            on_shutdown: Some(SessionAction::PowerOff.into()),
             automate_when: Some(when),
             ..Default::default()
         },

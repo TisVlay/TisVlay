@@ -56,7 +56,7 @@ fn on_primary_config(tv_id: &str, primary_input: &str) -> SystemConfig {
     config.system.profiles.insert(
         "default".to_string(),
         SystemProfileConfig {
-            on_shutdown: Some(SessionAction::PowerOff),
+            on_shutdown: Some(SessionAction::PowerOff.into()),
             automate_when: Some(AutomateWhen::OnPrimary),
             ..Default::default()
         },
@@ -133,7 +133,7 @@ fn off_primary_config(tv_id: &str, primary_input: &str) -> SystemConfig {
     config.system.profiles.insert(
         "default".to_string(),
         SystemProfileConfig {
-            on_shutdown: Some(SessionAction::PowerOff),
+            on_shutdown: Some(SessionAction::PowerOff.into()),
             automate_when: Some(AutomateWhen::OffPrimary),
             ..Default::default()
         },

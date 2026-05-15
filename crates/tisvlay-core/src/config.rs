@@ -11,12 +11,12 @@
 //!
 //! ```toml
 //! [system.profiles.default]
-//! on_startup = "power_on"
-//! on_shutdown = "power_off"
-//! on_reboot = "none"
-//! on_no_session = "none"
-//! on_sleep = "power_off"
-//! on_wake = "power_on"
+//! on_startup = { action = "power_on" }
+//! on_shutdown = { action = "power_off" }
+//! on_reboot = { action = "none" }
+//! on_no_session = { action = "none" }
+//! on_sleep = { action = "power_off" }
+//! on_wake = { action = "power_on" }
 //!
 //! [user.profiles.default]
 //! on_session_lock = "screen_off"
@@ -132,6 +132,173 @@ impl std::fmt::Display for AutomateWhen {
 }
 
 // =============================================================================
+// QoS — per-event quality-of-service knobs
+// =============================================================================
+
+/// Reliability tier for a TV action.
+///
+/// Future siblings under [`QosConfig`] (deadline, durability, latency budget)
+/// land as additional fields, not as new `Reliability` variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reliability {
+    /// One-shot dispatch; no verification or retry.
+    BestEffort,
+    /// Verify post-action state via cached PowerState; retry on mismatch;
+    /// escalate `screen_on` → `power_on` with WoL if the TV has slipped
+    /// past Screen Off; bounded by an overall timeout.
+    Reliable,
+}
+
+/// The action-derived default for [`Reliability`].
+///
+/// Wake-side actions (`ScreenOn`, `PowerOn`) default to [`Reliability::Reliable`]
+/// because a dark TV when you wanted bright is a bug the user immediately notices.
+/// Sleep-side actions default to [`Reliability::BestEffort`] because the inverse
+/// failure is rarely catastrophic and the verify-and-retry latency is unwanted
+/// on the lock side.
+pub fn default_reliability_for(action: SessionAction) -> Reliability {
+    match action {
+        SessionAction::ScreenOn | SessionAction::PowerOn => Reliability::Reliable,
+        SessionAction::ScreenOff | SessionAction::PowerOff | SessionAction::None => {
+            Reliability::BestEffort
+        }
+    }
+}
+
+/// Per-event QoS namespace.
+///
+/// Holds optional QoS dimensions. Today only `reliability`; future
+/// `deadline`, `durability`, etc. land as additional `Option<T>` siblings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QosConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reliability: Option<Reliability>,
+}
+
+impl QosConfig {
+    /// True when no QoS field is explicitly set.
+    ///
+    /// Used by `#[serde(skip_serializing_if)]` so empty `qos = {}` blocks
+    /// stay absent from emitted TOML.
+    pub fn is_empty(&self) -> bool {
+        self.reliability.is_none()
+    }
+}
+
+/// Resolved per-event QoS — every dimension populated with a concrete value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedQos {
+    pub reliability: Reliability,
+}
+
+/// The `{ action, qos }` table bound to each `on_*` profile slot.
+///
+/// Both fields are optional so the merge can override them independently:
+/// a "gaming" profile that wants its session-lock to be reliable can write
+/// `on_session_lock.qos.reliability = "reliable"` and let the action fall
+/// through to the default profile.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventAction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<SessionAction>,
+
+    #[serde(default, skip_serializing_if = "QosConfig::is_empty")]
+    pub qos: QosConfig,
+}
+
+impl From<SessionAction> for EventAction {
+    fn from(action: SessionAction) -> Self {
+        Self {
+            action: Some(action),
+            qos: QosConfig::default(),
+        }
+    }
+}
+
+impl EventAction {
+    /// Merge two `EventAction`s, with `self`'s explicit fields winning.
+    /// Used by the profile resolve chain.
+    fn merge(self, base: &Self) -> Self {
+        Self {
+            action: self.action.or(base.action),
+            qos: QosConfig {
+                reliability: self.qos.reliability.or(base.qos.reliability),
+            },
+        }
+    }
+}
+
+/// Resolved per-event action — both action and qos are concrete.
+///
+/// Daemon and session dispatchers read this directly; the `.action`
+/// field preserves the old field's type so existing call sites need only
+/// chase the rename, not change semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedEventAction {
+    pub action: SessionAction,
+    pub qos: ResolvedQos,
+}
+
+impl ResolvedEventAction {
+    /// Construct a resolved event from an action alone; qos defaults from
+    /// [`default_reliability_for`].
+    pub fn from_action(action: SessionAction) -> Self {
+        Self {
+            action,
+            qos: ResolvedQos {
+                reliability: default_reliability_for(action),
+            },
+        }
+    }
+
+    /// Re-encode a resolved event as a fully-explicit [`EventAction`] (both
+    /// `action` and `qos.reliability` populated). Used by `*::full_default`
+    /// to emit self-documenting TOML.
+    fn into_explicit(self) -> EventAction {
+        EventAction {
+            action: Some(self.action),
+            qos: QosConfig {
+                reliability: Some(self.qos.reliability),
+            },
+        }
+    }
+}
+
+/// Merge an `Option<EventAction>` pair (`self`'s `Some` values win).
+fn merge_event_option(s: Option<EventAction>, b: Option<EventAction>) -> Option<EventAction> {
+    match (s, b) {
+        (None, None) => None,
+        (Some(s), None) => Some(s),
+        (None, Some(b)) => Some(b),
+        (Some(s), Some(b)) => Some(s.merge(&b)),
+    }
+}
+
+/// Resolve an `Option<EventAction>` to a [`ResolvedEventAction`].
+///
+/// Missing fields fall back to `default_action` for the slot, and the
+/// reliability tier derives from [`default_reliability_for`] when not
+/// explicitly set anywhere in the resolve chain.
+fn resolve_event(opt: &Option<EventAction>, default_action: SessionAction) -> ResolvedEventAction {
+    match opt {
+        None => ResolvedEventAction::from_action(default_action),
+        Some(e) => {
+            let action = e.action.unwrap_or(default_action);
+            ResolvedEventAction {
+                action,
+                qos: ResolvedQos {
+                    reliability: e
+                        .qos
+                        .reliability
+                        .unwrap_or_else(|| default_reliability_for(action)),
+                },
+            }
+        }
+    }
+}
+
+// =============================================================================
 // SystemProfileConfig (with Option<T> fields for merge support)
 // =============================================================================
 
@@ -146,27 +313,27 @@ impl std::fmt::Display for AutomateWhen {
 pub struct SystemProfileConfig {
     /// Action on system startup/boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_startup: Option<SessionAction>,
+    pub on_startup: Option<EventAction>,
 
     /// Action when the system powers off or halts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_shutdown: Option<SessionAction>,
+    pub on_shutdown: Option<EventAction>,
 
     /// Action when the system reboots (including kexec).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_reboot: Option<SessionAction>,
+    pub on_reboot: Option<EventAction>,
 
     /// Action when all user sessions end (e.g., after logout, login screen).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_no_session: Option<SessionAction>,
+    pub on_no_session: Option<EventAction>,
 
     /// Action on system sleep/suspend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_sleep: Option<SessionAction>,
+    pub on_sleep: Option<EventAction>,
 
     /// Action on system wake/resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_wake: Option<SessionAction>,
+    pub on_wake: Option<EventAction>,
 
     /// When to apply automation relative to the TV's current input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,48 +344,56 @@ impl SystemProfileConfig {
     /// Create a profile with all fields set to the built-in sensible defaults.
     ///
     /// Use this when saving a system config to make profiles self-documenting.
+    /// Emits `EventAction`s with both `action` and `qos.reliability` populated
+    /// so the saved TOML shows every default explicitly.
     pub fn full_default() -> Self {
         let d = ResolvedSystemProfile::default();
         Self {
-            on_startup: Some(d.on_startup),
-            on_shutdown: Some(d.on_shutdown),
-            on_reboot: Some(d.on_reboot),
-            on_no_session: Some(d.on_no_session),
-            on_sleep: Some(d.on_sleep),
-            on_wake: Some(d.on_wake),
+            on_startup: Some(d.on_startup.into_explicit()),
+            on_shutdown: Some(d.on_shutdown.into_explicit()),
+            on_reboot: Some(d.on_reboot.into_explicit()),
+            on_no_session: Some(d.on_no_session.into_explicit()),
+            on_sleep: Some(d.on_sleep.into_explicit()),
+            on_wake: Some(d.on_wake.into_explicit()),
             automate_when: Some(d.automate_when),
         }
     }
 
     /// Merge this profile with a base profile.
     ///
-    /// Fields that are `None` in `self` are filled from `base`.
-    /// Fields that are `Some` in `self` take precedence.
+    /// Fields that are `None` in `self` are filled from `base`. For
+    /// `EventAction` slots the merge recurses into `action` and
+    /// `qos.reliability` so a profile can override either dimension
+    /// independently.
     pub fn merge_with_base(&self, base: &SystemProfileConfig) -> SystemProfileConfig {
         SystemProfileConfig {
-            on_startup: self.on_startup.or(base.on_startup),
-            on_shutdown: self.on_shutdown.or(base.on_shutdown),
-            on_reboot: self.on_reboot.or(base.on_reboot),
-            on_no_session: self.on_no_session.or(base.on_no_session),
-            on_sleep: self.on_sleep.or(base.on_sleep),
-            on_wake: self.on_wake.or(base.on_wake),
+            on_startup: merge_event_option(self.on_startup.clone(), base.on_startup.clone()),
+            on_shutdown: merge_event_option(self.on_shutdown.clone(), base.on_shutdown.clone()),
+            on_reboot: merge_event_option(self.on_reboot.clone(), base.on_reboot.clone()),
+            on_no_session: merge_event_option(
+                self.on_no_session.clone(),
+                base.on_no_session.clone(),
+            ),
+            on_sleep: merge_event_option(self.on_sleep.clone(), base.on_sleep.clone()),
+            on_wake: merge_event_option(self.on_wake.clone(), base.on_wake.clone()),
             automate_when: self.automate_when.or(base.automate_when),
         }
     }
 
     /// Resolve this profile to concrete values.
     ///
-    /// Any `None` fields are filled with hard-coded defaults from
-    /// [`ResolvedSystemProfile::default()`].
+    /// Any `None` action falls back to the hard-coded default for the slot;
+    /// any unset `qos.reliability` derives from the resolved action via
+    /// [`default_reliability_for`].
     pub fn resolve(&self) -> ResolvedSystemProfile {
         let d = ResolvedSystemProfile::default();
         ResolvedSystemProfile {
-            on_startup: self.on_startup.unwrap_or(d.on_startup),
-            on_shutdown: self.on_shutdown.unwrap_or(d.on_shutdown),
-            on_reboot: self.on_reboot.unwrap_or(d.on_reboot),
-            on_no_session: self.on_no_session.unwrap_or(d.on_no_session),
-            on_sleep: self.on_sleep.unwrap_or(d.on_sleep),
-            on_wake: self.on_wake.unwrap_or(d.on_wake),
+            on_startup: resolve_event(&self.on_startup, d.on_startup.action),
+            on_shutdown: resolve_event(&self.on_shutdown, d.on_shutdown.action),
+            on_reboot: resolve_event(&self.on_reboot, d.on_reboot.action),
+            on_no_session: resolve_event(&self.on_no_session, d.on_no_session.action),
+            on_sleep: resolve_event(&self.on_sleep, d.on_sleep.action),
+            on_wake: resolve_event(&self.on_wake, d.on_wake.action),
             automate_when: self.automate_when.unwrap_or(d.automate_when),
         }
     }
@@ -236,17 +411,17 @@ impl SystemProfileConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedSystemProfile {
     /// Action on system startup/boot.
-    pub on_startup: SessionAction,
+    pub on_startup: ResolvedEventAction,
     /// Action when the system powers off or halts.
-    pub on_shutdown: SessionAction,
+    pub on_shutdown: ResolvedEventAction,
     /// Action when the system reboots (including kexec).
-    pub on_reboot: SessionAction,
+    pub on_reboot: ResolvedEventAction,
     /// Action when all user sessions end.
-    pub on_no_session: SessionAction,
+    pub on_no_session: ResolvedEventAction,
     /// Action on system sleep/suspend.
-    pub on_sleep: SessionAction,
+    pub on_sleep: ResolvedEventAction,
     /// Action on system wake/resume.
-    pub on_wake: SessionAction,
+    pub on_wake: ResolvedEventAction,
     /// When to apply automation relative to the TV's current input.
     pub automate_when: AutomateWhen,
 }
@@ -254,12 +429,12 @@ pub struct ResolvedSystemProfile {
 impl Default for ResolvedSystemProfile {
     fn default() -> Self {
         Self {
-            on_startup: SessionAction::PowerOn,
-            on_shutdown: SessionAction::PowerOff,
-            on_reboot: SessionAction::None,
-            on_no_session: SessionAction::None,
-            on_sleep: SessionAction::PowerOff,
-            on_wake: SessionAction::PowerOn,
+            on_startup: ResolvedEventAction::from_action(SessionAction::PowerOn),
+            on_shutdown: ResolvedEventAction::from_action(SessionAction::PowerOff),
+            on_reboot: ResolvedEventAction::from_action(SessionAction::None),
+            on_no_session: ResolvedEventAction::from_action(SessionAction::None),
+            on_sleep: ResolvedEventAction::from_action(SessionAction::PowerOff),
+            on_wake: ResolvedEventAction::from_action(SessionAction::PowerOn),
             automate_when: AutomateWhen::Always,
         }
     }
@@ -1007,10 +1182,10 @@ mod tests {
         // With no profiles defined, resolution should give hard-coded defaults
         let tv = TvConfig::new("Test", "lg", true);
         let resolved = config.resolve_system_profile(&tv);
-        assert_eq!(resolved.on_startup, SessionAction::PowerOn);
-        assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
-        assert_eq!(resolved.on_reboot, SessionAction::None);
-        assert_eq!(resolved.on_no_session, SessionAction::None);
+        assert_eq!(resolved.on_startup.action, SessionAction::PowerOn);
+        assert_eq!(resolved.on_shutdown.action, SessionAction::PowerOff);
+        assert_eq!(resolved.on_reboot.action, SessionAction::None);
+        assert_eq!(resolved.on_no_session.action, SessionAction::None);
     }
 
     #[test]
@@ -1063,10 +1238,10 @@ default_input = "HDMI_1"
         // New-style system config with system and user profile sections
         let toml_str = r#"
 [system.profiles.default]
-on_startup = "power_on"
-on_shutdown = "power_off"
-on_reboot = "none"
-on_no_session = "screen_on"
+on_startup = { action = "power_on" }
+on_shutdown = { action = "power_off" }
+on_reboot = { action = "none" }
+on_no_session = { action = "screen_on" }
 
 [user.profiles.default]
 on_session_lock = "screen_off"
@@ -1088,10 +1263,16 @@ mac = "AA:BB:CC:DD:EE:FF"
 
         // Check system profile
         let sys_default = config.system.profiles.get("default").unwrap();
-        assert_eq!(sys_default.on_startup, Some(SessionAction::PowerOn));
-        assert_eq!(sys_default.on_shutdown, Some(SessionAction::PowerOff));
-        assert_eq!(sys_default.on_reboot, Some(SessionAction::None));
-        assert_eq!(sys_default.on_no_session, Some(SessionAction::ScreenOn));
+        assert_eq!(sys_default.on_startup, Some(SessionAction::PowerOn.into()));
+        assert_eq!(
+            sys_default.on_shutdown,
+            Some(SessionAction::PowerOff.into())
+        );
+        assert_eq!(sys_default.on_reboot, Some(SessionAction::None.into()));
+        assert_eq!(
+            sys_default.on_no_session,
+            Some(SessionAction::ScreenOn.into())
+        );
 
         // Check user profile
         let user_default = config.user.profiles.get("default").unwrap();
@@ -1110,12 +1291,12 @@ mac = "AA:BB:CC:DD:EE:FF"
         // - UserConfig sees profile.user, ignores name/vendor/etc.
         let toml_str = r#"
 [system.profiles.default]
-on_startup = "power_on"
-on_shutdown = "power_off"
+on_startup = { action = "power_on" }
+on_shutdown = { action = "power_off" }
 
 [system.profiles.guest]
-on_startup = "none"
-on_shutdown = "screen_off"
+on_startup = { action = "none" }
+on_shutdown = { action = "screen_off" }
 
 [user.profiles.default]
 on_session_lock = "screen_off"
@@ -1158,11 +1339,11 @@ ip = "192.168.1.101"
 
         // System profile resolution works
         let resolved = config.resolve_system_profile(living);
-        assert_eq!(resolved.on_startup, SessionAction::PowerOn);
+        assert_eq!(resolved.on_startup.action, SessionAction::PowerOn);
 
         let resolved = config.resolve_system_profile(guest);
-        assert_eq!(resolved.on_startup, SessionAction::None);
-        assert_eq!(resolved.on_shutdown, SessionAction::ScreenOff);
+        assert_eq!(resolved.on_startup.action, SessionAction::None);
+        assert_eq!(resolved.on_shutdown.action, SessionAction::ScreenOff);
 
         // Parse the SAME TOML as UserConfig — UserTvConfig ignores unknown
         // fields (name, vendor, managed, lg, profile.system)
@@ -1292,7 +1473,7 @@ ip = "192.168.1.101"
         config.system.profiles.insert(
             "guest".to_string(),
             SystemProfileConfig {
-                on_shutdown: Some(SessionAction::ScreenOff),
+                on_shutdown: Some(SessionAction::ScreenOff.into()),
                 ..SystemProfileConfig::default()
             },
         );
@@ -1323,10 +1504,10 @@ ip = "192.168.1.101"
     #[test]
     fn test_resolved_system_profile_default() {
         let resolved = ResolvedSystemProfile::default();
-        assert_eq!(resolved.on_startup, SessionAction::PowerOn);
-        assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
-        assert_eq!(resolved.on_reboot, SessionAction::None);
-        assert_eq!(resolved.on_no_session, SessionAction::None);
+        assert_eq!(resolved.on_startup.action, SessionAction::PowerOn);
+        assert_eq!(resolved.on_shutdown.action, SessionAction::PowerOff);
+        assert_eq!(resolved.on_reboot.action, SessionAction::None);
+        assert_eq!(resolved.on_no_session.action, SessionAction::None);
     }
 
     #[test]
@@ -1339,19 +1520,19 @@ ip = "192.168.1.101"
     #[test]
     fn test_system_profile_merge() {
         let base = SystemProfileConfig {
-            on_startup: Some(SessionAction::PowerOn),
-            on_shutdown: Some(SessionAction::PowerOff),
+            on_startup: Some(SessionAction::PowerOn.into()),
+            on_shutdown: Some(SessionAction::PowerOff.into()),
             ..SystemProfileConfig::default()
         };
 
         let override_profile = SystemProfileConfig {
-            on_shutdown: Some(SessionAction::ScreenOff),
+            on_shutdown: Some(SessionAction::ScreenOff.into()),
             ..SystemProfileConfig::default()
         };
 
         let merged = override_profile.merge_with_base(&base);
-        assert_eq!(merged.on_startup, Some(SessionAction::PowerOn)); // from base
-        assert_eq!(merged.on_shutdown, Some(SessionAction::ScreenOff)); // overridden
+        assert_eq!(merged.on_startup, Some(SessionAction::PowerOn.into())); // from base
+        assert_eq!(merged.on_shutdown, Some(SessionAction::ScreenOff.into())); // overridden
     }
 
     #[test]
@@ -1360,16 +1541,16 @@ ip = "192.168.1.101"
         config.system.profiles.insert(
             "default".to_string(),
             SystemProfileConfig {
-                on_startup: Some(SessionAction::PowerOn),
-                on_shutdown: Some(SessionAction::PowerOff),
+                on_startup: Some(SessionAction::PowerOn.into()),
+                on_shutdown: Some(SessionAction::PowerOff.into()),
                 ..SystemProfileConfig::default()
             },
         );
         config.system.profiles.insert(
             "guest".to_string(),
             SystemProfileConfig {
-                on_startup: Some(SessionAction::None),
-                on_shutdown: Some(SessionAction::ScreenOff),
+                on_startup: Some(SessionAction::None.into()),
+                on_shutdown: Some(SessionAction::ScreenOff.into()),
                 ..SystemProfileConfig::default()
             },
         );
@@ -1377,17 +1558,17 @@ ip = "192.168.1.101"
         // TV with default profile
         let tv_default = TvConfig::new("Living Room", "lg", true);
         let resolved = config.resolve_system_profile(&tv_default);
-        assert_eq!(resolved.on_startup, SessionAction::PowerOn);
-        assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
+        assert_eq!(resolved.on_startup.action, SessionAction::PowerOn);
+        assert_eq!(resolved.on_shutdown.action, SessionAction::PowerOff);
 
         // TV with guest profile
         let mut tv_guest = TvConfig::new("Guest Room", "lg", true);
         tv_guest.profile.system = "guest".to_string();
         let resolved = config.resolve_system_profile(&tv_guest);
-        assert_eq!(resolved.on_startup, SessionAction::None);
-        assert_eq!(resolved.on_shutdown, SessionAction::ScreenOff);
+        assert_eq!(resolved.on_startup.action, SessionAction::None);
+        assert_eq!(resolved.on_shutdown.action, SessionAction::ScreenOff);
         // on_reboot not set in guest, falls through to default
-        assert_eq!(resolved.on_reboot, SessionAction::None); // from default profile
+        assert_eq!(resolved.on_reboot.action, SessionAction::None); // from default profile
     }
 
     #[test]
@@ -1396,7 +1577,7 @@ ip = "192.168.1.101"
         config.system.profiles.insert(
             "default".to_string(),
             SystemProfileConfig {
-                on_startup: Some(SessionAction::PowerOn),
+                on_startup: Some(SessionAction::PowerOn.into()),
                 ..SystemProfileConfig::default()
             },
         );
@@ -1404,14 +1585,14 @@ ip = "192.168.1.101"
         let mut tv = TvConfig::new("Test", "lg", true);
         tv.profile.system = "nonexistent".to_string();
         let resolved = config.resolve_system_profile(&tv);
-        assert_eq!(resolved.on_startup, SessionAction::PowerOn); // from default
+        assert_eq!(resolved.on_startup.action, SessionAction::PowerOn); // from default
     }
 
     #[test]
     fn test_tv_profile_assignment_serialization() {
         let toml_str = r#"
 [system.profiles.default]
-on_startup = "power_on"
+on_startup = { action = "power_on" }
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
@@ -1695,8 +1876,8 @@ profile.user = "gaming"
     fn test_parse_profile_config_all_fields() {
         let toml_str = r#"
 [system.profiles.custom]
-on_sleep = "none"
-on_wake = "screen_on"
+on_sleep = { action = "none" }
+on_wake = { action = "screen_on" }
 
 [user.profiles.custom]
 on_session_lock = "power_off"
@@ -1725,8 +1906,8 @@ mac = "AA:BB:CC:DD:EE:FF"
             .get("custom")
             .cloned()
             .unwrap_or_else(SystemProfileConfig::full_default);
-        assert_eq!(sys_profile.on_sleep, Some(SessionAction::None));
-        assert_eq!(sys_profile.on_wake, Some(SessionAction::ScreenOn));
+        assert_eq!(sys_profile.on_sleep, Some(SessionAction::None.into()));
+        assert_eq!(sys_profile.on_wake, Some(SessionAction::ScreenOn.into()));
 
         // Check user profile fields
         let profile = config
@@ -1756,7 +1937,7 @@ mac = "AA:BB:CC:DD:EE:FF"
         // System config has multiple user profiles — session service should see all of them
         let toml_str = r#"
 [system.profiles.default]
-on_startup = "power_on"
+on_startup = { action = "power_on" }
 
 [user.profiles.default]
 on_session_lock = "screen_off"
@@ -1921,7 +2102,7 @@ profile.user = "gaming"
         // like name, vendor, lg, etc.
         let system_toml = r#"
 [system.profiles.default]
-on_startup = "power_on"
+on_startup = { action = "power_on" }
 
 [user.profiles.default]
 on_session_lock = "screen_off"
@@ -2054,5 +2235,180 @@ ip = "192.168.1.1"
         config.tv.push(TvConfig::new("Living Room", "lg", true));
         config.tv.push(TvConfig::new("Office", "lg", true));
         config.validate_tv_ids().unwrap();
+    }
+
+    // =========================================================================
+    // QoS — Reliability, EventAction, default_reliability_for
+    // =========================================================================
+
+    #[test]
+    fn reliability_serializes_as_snake_case() {
+        assert_eq!(
+            toml::to_string(&QosConfig {
+                reliability: Some(Reliability::BestEffort),
+            })
+            .unwrap()
+            .trim(),
+            r#"reliability = "best_effort""#
+        );
+        assert_eq!(
+            toml::to_string(&QosConfig {
+                reliability: Some(Reliability::Reliable),
+            })
+            .unwrap()
+            .trim(),
+            r#"reliability = "reliable""#
+        );
+    }
+
+    #[test]
+    fn default_reliability_for_action_is_asymmetric() {
+        // Wake-side actions default to reliable.
+        assert_eq!(
+            default_reliability_for(SessionAction::ScreenOn),
+            Reliability::Reliable
+        );
+        assert_eq!(
+            default_reliability_for(SessionAction::PowerOn),
+            Reliability::Reliable
+        );
+        // Sleep-side actions default to best-effort.
+        assert_eq!(
+            default_reliability_for(SessionAction::ScreenOff),
+            Reliability::BestEffort
+        );
+        assert_eq!(
+            default_reliability_for(SessionAction::PowerOff),
+            Reliability::BestEffort
+        );
+        // No-op defaults to best-effort (doesn't matter, but documented).
+        assert_eq!(
+            default_reliability_for(SessionAction::None),
+            Reliability::BestEffort
+        );
+    }
+
+    #[test]
+    fn event_action_parses_action_only_inline_table() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            ev: EventAction,
+        }
+        let parsed: Wrapper = toml::from_str(r#"ev = { action = "screen_on" }"#).unwrap();
+        assert_eq!(parsed.ev.action, Some(SessionAction::ScreenOn));
+        assert!(parsed.ev.qos.is_empty());
+    }
+
+    #[test]
+    fn event_action_parses_action_plus_qos_inline_table() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            ev: EventAction,
+        }
+        let parsed: Wrapper = toml::from_str(
+            r#"ev = { action = "screen_on", qos = { reliability = "best_effort" } }"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.ev.action, Some(SessionAction::ScreenOn));
+        assert_eq!(parsed.ev.qos.reliability, Some(Reliability::BestEffort));
+    }
+
+    #[test]
+    fn event_action_parses_dotted_keys() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            ev: EventAction,
+        }
+        let parsed: Wrapper = toml::from_str(
+            r#"
+ev.action = "power_on"
+ev.qos.reliability = "reliable"
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.ev.action, Some(SessionAction::PowerOn));
+        assert_eq!(parsed.ev.qos.reliability, Some(Reliability::Reliable));
+    }
+
+    #[test]
+    fn event_action_parses_qos_only_lets_action_fall_through() {
+        // The "gaming profile that only overrides reliability" shape.
+        #[derive(Deserialize)]
+        struct Wrapper {
+            ev: EventAction,
+        }
+        let parsed: Wrapper =
+            toml::from_str(r#"ev = { qos = { reliability = "reliable" } }"#).unwrap();
+        assert_eq!(parsed.ev.action, None);
+        assert_eq!(parsed.ev.qos.reliability, Some(Reliability::Reliable));
+    }
+
+    #[test]
+    fn resolve_event_derives_reliability_from_action_when_qos_unset() {
+        // No qos.reliability anywhere in the chain → derive from the resolved
+        // action. on_session_unlock dispatches ScreenOn → defaults to Reliable.
+        let resolved = resolve_event(
+            &Some(EventAction::from(SessionAction::ScreenOn)),
+            SessionAction::None,
+        );
+        assert_eq!(resolved.action, SessionAction::ScreenOn);
+        assert_eq!(resolved.qos.reliability, Reliability::Reliable);
+
+        // Same for the sleep-side action.
+        let resolved = resolve_event(
+            &Some(EventAction::from(SessionAction::ScreenOff)),
+            SessionAction::None,
+        );
+        assert_eq!(resolved.action, SessionAction::ScreenOff);
+        assert_eq!(resolved.qos.reliability, Reliability::BestEffort);
+    }
+
+    #[test]
+    fn resolve_event_uses_explicit_qos_over_default() {
+        // ScreenOff would default to BestEffort, but an explicit Reliable wins.
+        let mut e = EventAction::from(SessionAction::ScreenOff);
+        e.qos.reliability = Some(Reliability::Reliable);
+        let resolved = resolve_event(&Some(e), SessionAction::None);
+        assert_eq!(resolved.action, SessionAction::ScreenOff);
+        assert_eq!(resolved.qos.reliability, Reliability::Reliable);
+    }
+
+    #[test]
+    fn system_profile_merge_preserves_qos_dimensions_independently() {
+        // Base sets both action and qos.reliability. Override sets only
+        // qos.reliability on the same event. The merge should keep base's
+        // action and take override's reliability.
+        let base = SystemProfileConfig {
+            on_startup: Some(EventAction {
+                action: Some(SessionAction::PowerOn),
+                qos: QosConfig {
+                    reliability: Some(Reliability::BestEffort),
+                },
+            }),
+            ..SystemProfileConfig::default()
+        };
+        let override_profile = SystemProfileConfig {
+            on_startup: Some(EventAction {
+                action: None,
+                qos: QosConfig {
+                    reliability: Some(Reliability::Reliable),
+                },
+            }),
+            ..SystemProfileConfig::default()
+        };
+        let merged = override_profile.merge_with_base(&base);
+        let resolved = merged.resolve();
+        assert_eq!(resolved.on_startup.action, SessionAction::PowerOn);
+        assert_eq!(resolved.on_startup.qos.reliability, Reliability::Reliable);
+    }
+
+    #[test]
+    fn full_default_round_trips_through_toml() {
+        // The self-documenting `full_default` shape must round-trip through
+        // serde without losing any fields.
+        let full = SystemProfileConfig::full_default();
+        let toml_str = toml::to_string(&full).unwrap();
+        let reparsed: SystemProfileConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(reparsed.resolve(), full.resolve());
     }
 }
