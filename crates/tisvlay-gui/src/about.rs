@@ -18,7 +18,9 @@ pub(crate) const GUI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Project repository URL — picked up from the workspace package
 /// metadata at compile time. The About pane's `View source` button
-/// opens this; `Report issue` appends `/issues/new`.
+/// opens this; `Report issue` appends `/issues` (the list view, not
+/// `/new`, so users encounter existing reports before filing a
+/// duplicate).
 pub(crate) const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// Build-time-embedded copy of the workspace-wide third-party FOSS

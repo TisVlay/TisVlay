@@ -19,17 +19,17 @@ expression: "vec![sample_connected(), sample_disconnected()]"
     },
     "vendor_config": [
       [
-        "IP address",
+        "IP",
         "192.168.1.100"
       ],
       [
-        "MAC address",
+        "MAC",
         "AA:BB:CC:DD:EE:FF"
       ]
     ],
     "vendor_info": [
       [
-        "WebSocket scheme",
+        "WebSocket",
         "wss"
       ]
     ],

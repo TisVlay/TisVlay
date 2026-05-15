@@ -28,6 +28,17 @@ export global Theme {
     out property <brush> surface: dark-mode ? #232730 : #ffffff;
     out property <brush> surface2: dark-mode ? #2b2f39 : #f4f5f7;
     out property <brush> surface-alt: dark-mode ? #262a33 : #f9fafb;
+    // Translucent backdrop drawn behind modal dialogs to dim the
+    // pane content underneath. Same alpha in both modes — 50%
+    // black reads as "modal scrim" over either a light or dark
+    // surface (light surfaces dim, dark surfaces gain contrast
+    // against the elevated dialog card).
+    out property <brush> scrim: #00000080;
+    // Drop-shadow tint for elevated surfaces (toasts today;
+    // popovers, menus, and floating cards in the future). Lower
+    // alpha than `scrim` — a shadow shouldn't dim, it should hint
+    // at elevation. Fed into Slint's `drop-shadow-color` property.
+    out property <brush> drop-shadow: #00000060;
 
     // -- Sidebar --
     //
@@ -102,4 +113,13 @@ export global Theme {
     out property <brush> row-hover: dark-mode ? #2b2f39 : #f4f5f7;
     out property <brush> row-selected: dark-mode ? #1c3a4d : #e3f3fc;
     out property <brush> row-selected-text: dark-mode ? #a5d8f0 : #0e6e9c;
+
+    // -- Vendor brand swatches --
+    // Background colors for `VendorTile`. Brand identity is mode-
+    // invariant — the dark/light ternary is intentionally omitted.
+    // Tile text is always `white` over these (set by VendorTile);
+    // unbranded vendors fall through to `chip` + `chip-text`.
+    out property <brush> vendor-lg: #a30339;
+    out property <brush> vendor-samsung: #172a92;
+    out property <brush> vendor-sony: #000000;
 }

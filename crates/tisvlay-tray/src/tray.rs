@@ -450,6 +450,54 @@ fn build_connected_tv_menu(
         items.push(build_input_submenu(tv, cmd_tx));
     }
 
+    // Backlight section
+    items.push(MenuItem::Separator);
+    if let Some(bl) = tv.backlight {
+        items.push(
+            StandardItem {
+                label: format!("Backlight: {}", bl),
+                icon_name: "high-brightness".into(),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+        );
+    }
+
+    items.push(backlight_item(
+        "Backlight Up (+10)",
+        "high-brightness",
+        cmd_tx,
+        &id,
+        {
+            let id = id.clone();
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, 10)
+        },
+    ));
+    items.push(backlight_item(
+        "Backlight Down (-10)",
+        "low-brightness",
+        cmd_tx,
+        &id,
+        {
+            let id = id.clone();
+            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, -10)
+        },
+    ));
+
+    // Screen blank/unblank (visual mute — OLED-safe)
+    if tv.is_screen_on {
+        items.push(backlight_item("Screen Off", "view-hidden", cmd_tx, &id, {
+            let id = id.clone();
+            move || TrayCommand::ScreenOff(id.clone())
+        }));
+    } else {
+        items.push(backlight_item("Screen On", "view-visible", cmd_tx, &id, {
+            let id = id.clone();
+            move || TrayCommand::ScreenOn(id.clone())
+        }));
+    }
+
     // Volume section
     items.push(MenuItem::Separator);
     if let Some(vol) = tv.volume {
@@ -505,54 +553,6 @@ fn build_connected_tv_menu(
             move || TrayCommand::ToggleMute(id.clone())
         },
     ));
-
-    // Backlight section
-    items.push(MenuItem::Separator);
-    if let Some(bl) = tv.backlight {
-        items.push(
-            StandardItem {
-                label: format!("Backlight: {}", bl),
-                icon_name: "high-brightness".into(),
-                enabled: false,
-                ..Default::default()
-            }
-            .into(),
-        );
-    }
-
-    items.push(backlight_item(
-        "Backlight Up (+10)",
-        "high-brightness",
-        cmd_tx,
-        &id,
-        {
-            let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, 10)
-        },
-    ));
-    items.push(backlight_item(
-        "Backlight Down (-10)",
-        "low-brightness",
-        cmd_tx,
-        &id,
-        {
-            let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, -10)
-        },
-    ));
-
-    // Screen blank/unblank (visual mute — OLED-safe)
-    if tv.is_screen_on {
-        items.push(backlight_item("Screen Off", "view-hidden", cmd_tx, &id, {
-            let id = id.clone();
-            move || TrayCommand::ScreenOff(id.clone())
-        }));
-    } else {
-        items.push(backlight_item("Screen On", "view-visible", cmd_tx, &id, {
-            let id = id.clone();
-            move || TrayCommand::ScreenOn(id.clone())
-        }));
-    }
 
     items
 }

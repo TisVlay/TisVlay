@@ -32,10 +32,10 @@ fn sample_connected() -> TvInfo {
         primary_input: "HDMI_1".to_string(),
         hardware_id: HardwareId::new(Some("GSM"), Some("OLED65G4SUB"), Some("serial-1")),
         vendor_config: vec![
-            ("IP address".to_string(), "192.168.1.100".to_string()),
-            ("MAC address".to_string(), "AA:BB:CC:DD:EE:FF".to_string()),
+            ("IP".to_string(), "192.168.1.100".to_string()),
+            ("MAC".to_string(), "AA:BB:CC:DD:EE:FF".to_string()),
         ],
-        vendor_info: vec![("WebSocket scheme".to_string(), "wss".to_string())],
+        vendor_info: vec![("WebSocket".to_string(), "wss".to_string())],
         desktop: DesktopMapping {
             connector: "HDMI-A-2".to_string(),
         },

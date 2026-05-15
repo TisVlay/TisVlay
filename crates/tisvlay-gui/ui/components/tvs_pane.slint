@@ -4,8 +4,9 @@
 //   .claude/ui/design_handoff_tisvlay_gui/tvs-pane.jsx
 // using the global Theme tokens from ../theme.slint. Stick to stock
 // std-widgets (Button, Switch, Slider, ComboBox, ScrollView, ListView)
-// plus a handful of bespoke primitives below (Chip, VendorTile, Group,
-// FormRow) — no exotic styling.
+// plus a handful of bespoke primitives — shared ones (Chip,
+// VendorTile, Group, …) come from ../widgets.slint; pane-local
+// helpers like `FormRow` and `LabeledRow` live further down.
 
 import { Button, ComboBox, ListView, ScrollView, VerticalBox, HorizontalBox, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
@@ -14,7 +15,7 @@ import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
-import { DangerBtn, Chip, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField } from "../widgets.slint";
+import { DangerBtn, Chip, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 import { SchemaForm } from "schema_form.slint";
@@ -78,49 +79,6 @@ export struct TvViewModel {
 }
 
 // =============================================================================
-// Vendor tile — colored square with two-letter code.
-// =============================================================================
-//
-// Hardcoded vendor → (letters, bg, fg) map. Decorative; not pulled from
-// theme tokens. Same map used in app-shell.jsx (uploads/app-shell.jsx).
-
-component VendorTile inherits Rectangle {
-    in property <string> vendor;
-    in property <length> tile-size: 28px;
-
-    width: tile-size;
-    height: tile-size;
-    border-radius: 5px;
-
-    property <bool> is-lg: vendor == "lg";
-    property <bool> is-samsung: vendor == "samsung";
-    property <bool> is-sony: vendor == "sony";
-    property <bool> is-known: is-lg || is-samsung || is-sony;
-
-    background: is-lg ? #a50034
-              : is-samsung ? #1428a0
-              : is-sony ? #111111
-              : Theme.chip;
-    border-width: is-known ? 0 : Design.border-thin;
-    border-color: Theme.border;
-
-    Text {
-        text: root.is-lg ? "LG"
-            : root.is-samsung ? "SS"
-            : root.is-sony ? "SY"
-            : "MK";
-        color: root.is-known ? white : Theme.chip-text;
-        font-size: root.tile-size * 0.40;
-        font-weight: 700;
-        letter-spacing: 0.3px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        width: 100%;
-        height: 100%;
-    }
-}
-
-// =============================================================================
 // FormRow — labeled config row with optional helper text below.
 // =============================================================================
 //
@@ -139,12 +97,17 @@ component FormRow {
 
         VerticalLayout {
             width: root.label-width;
-            alignment: start;
+            // No helper → label sits in the row's vertical center so
+            // it visually aligns with the control. With a helper, the
+            // right column stacks `control + helper` taller than the
+            // control itself, so the label top-aligns to track the
+            // control's top edge (standard inline-form pattern).
+            alignment: root.helper != "" ? start : center;
             Text {
                 text: root.label;
                 color: Theme.text;
                 font-size: Design.font-body;
-                vertical-alignment: top;
+                vertical-alignment: root.helper != "" ? top : center;
             }
         }
 
@@ -272,6 +235,7 @@ component TvListRow inherits Rectangle {
 
 component TvList inherits Rectangle {
     in property <[TvViewModel]> tvs;
+    in property <int> connected-count;
     in property <bool> daemon-available;
     in-out property <int> selected-index;
 
@@ -313,9 +277,12 @@ component TvList inherits Rectangle {
                     horizontal-stretch: 1;
                     alignment: center;
                     Text {
-                        text: root.tvs.length == 1
-                            ? "1 CONFIGURED"
-                            : root.tvs.length + " CONFIGURED";
+                        // "N/M CONNECTED" — N connected of M configured.
+                        // Connected count comes from Rust via the
+                        // `tvs-connected-count` plumb on AppWindow,
+                        // since Slint can't aggregate `tv.connected`
+                        // across the model in a pure-binding context.
+                        text: root.connected-count + "/" + root.tvs.length + " CONNECTED";
                         color: Theme.text-dim;
                         font-size: Design.font-mini;
                         font-weight: 600;
@@ -409,9 +376,13 @@ component LabeledRow {
         padding-top: Design.gap-form;
         padding-bottom: Design.gap-form;
 
+        // Both text columns vertical-center so they align with the
+        // CopyBtn's centered position when a value-side button is
+        // present (24px button vs ~14px text — top-alignment would
+        // leave the texts hanging ~5px above the button's middle).
         VerticalLayout {
-            width: 140px;
-            alignment: start;
+            width: Design.width-label-col;
+            alignment: center;
             Text {
                 text: root.label;
                 color: Theme.text-dim;
@@ -421,7 +392,7 @@ component LabeledRow {
 
         VerticalLayout {
             horizontal-stretch: 1;
-            alignment: start;
+            alignment: center;
             Text {
                 text: root.value == "" ? "—" : root.value;
                 color: Theme.text;
@@ -690,44 +661,6 @@ component TvDetail inherits Rectangle {
                     }
                 }
 
-                // -- Audio --
-                Group {
-                    title: @tr("AUDIO");
-
-                    FormRow {
-                        label: @tr("Volume");
-                        OptimisticSlider {
-                            model-value: root.tv.volume;
-                            enabled: root.tv.connected && !root.tv.muted;
-                            value-visible: root.tv.connected;
-                            committed(v) => { Daemon.set-volume(root.tv.uuid, v); }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        width: 100%;
-                        spacing: Design.gap-row;
-                        VerticalLayout {
-                            width: Design.width-label-col;
-                            alignment: center;
-                            Text {
-                                text: @tr("Mute");
-                                color: Theme.text;
-                                font-size: Design.font-body;
-                            }
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            Switch {
-                                checked: root.tv.muted;
-                                enabled: root.tv.connected;
-                                toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
-                            }
-                        }
-                    }
-                }
-
                 // -- Picture --
                 Group {
                     title: @tr("PICTURE");
@@ -759,32 +692,42 @@ component TvDetail inherits Rectangle {
                     }
                 }
 
+                // -- Audio --
+                Group {
+                    title: @tr("AUDIO");
+
+                    FormRow {
+                        label: @tr("Volume");
+                        OptimisticSlider {
+                            model-value: root.tv.volume;
+                            enabled: root.tv.connected && !root.tv.muted;
+                            value-visible: root.tv.connected;
+                            committed(v) => { Daemon.set-volume(root.tv.uuid, v); }
+                        }
+                    }
+
+                    FormRow {
+                        label: @tr("Mute");
+                        Switch {
+                            checked: root.tv.muted;
+                            enabled: root.tv.connected;
+                            toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
+                        }
+                    }
+                }
+
                 // -- Input --
                 Group {
                     title: @tr("INPUT");
 
-                    HorizontalLayout {
-                        width: 100%;
-                        spacing: Design.gap-row;
-                        VerticalLayout {
-                            width: Design.width-label-col;
-                            alignment: center;
-                            Text {
-                                text: @tr("Current");
-                                color: Theme.text;
-                                font-size: Design.font-body;
-                            }
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            ComboBox {
-                                model: root.tv.available-input-ids;
-                                current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
-                                enabled: root.tv.connected
-                                      && root.tv.available-input-ids.length > 0;
-                                selected(v) => { Daemon.switch-input(root.tv.uuid, v); }
-                            }
+                    FormRow {
+                        label: @tr("Current");
+                        ComboBox {
+                            model: root.tv.available-input-ids;
+                            current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
+                            enabled: root.tv.connected
+                                  && root.tv.available-input-ids.length > 0;
+                            selected(v) => { Daemon.switch-input(root.tv.uuid, v); }
                         }
                     }
 
@@ -837,17 +780,23 @@ component TvDetail inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; }
                         if !root.in-edit-mode: IconBtn {
                             source: Icons.edit;
+                            label: @tr("Edit");
+                            accessible-id: "tv-detail-" + root.tv.uuid + "-edit-button";
                             clicked => { EditPane.start(root.tv.uuid); }
                         }
                         if root.in-edit-mode: IconBtn {
                             source: Icons.cancel;
+                            label: @tr("Cancel");
                             enabled: !EditPane.saving;
+                            accessible-id: "tv-detail-" + root.tv.uuid + "-cancel-button";
                             clicked => { EditPane.cancel(); }
                         }
                         if root.in-edit-mode: IconBtn {
                             source: Icons.save;
+                            label: @tr("Save");
                             enabled: EditPane.valid;
                             loading: EditPane.saving;
+                            accessible-id: "tv-detail-" + root.tv.uuid + "-save-button";
                             clicked => { EditPane.save(); }
                         }
                     }
@@ -863,7 +812,7 @@ component TvDetail inherits Rectangle {
                         VerticalLayout {
                             width: 100%;
                             padding: Design.pad-card;
-                            spacing: 12px;
+                            spacing: Design.gap-block;
 
                             if root.in-edit-mode && EditPane.error != "": InlineError {
                                 title: @tr("Couldn't save TV config");
@@ -925,12 +874,18 @@ component TvDetail inherits Rectangle {
                 // refresh only on re-pair.
                 Group {
                     title: @tr("INFO");
+                    // Read-only data-table — LabeledRow's own
+                    // `padding-form` (4+4=8px) is enough vertical
+                    // breathing room; Group's default 12px stacks
+                    // on top would feel airy next to CONFIG's
+                    // view-mode rows.
+                    body-spacing: 0;
 
                     LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
-                    LabeledRow { label: @tr("Manufacturer"); value: root.tv.hw-manufacturer; }
+                    LabeledRow { label: @tr("Make"); value: root.tv.hw-manufacturer; }
                     LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }
                     LabeledRow { label: @tr("Serial"); value: root.tv.hw-serial; mono: true; }
-                    LabeledRow { label: @tr("DRM connector"); value: root.tv.desktop-connector; mono: true; }
+                    LabeledRow { label: @tr("Connector"); value: root.tv.desktop-connector; mono: true; }
                     for entry in root.tv.vendor-info: LabeledRow {
                         label: entry.label;
                         value: entry.value;
@@ -1041,7 +996,7 @@ component ConfirmDialog inherits Rectangle {
     callback cancelled();
 
     visible: open;
-    background: #00000080;
+    background: Theme.scrim;
     width: 100%;
     height: 100%;
 
@@ -1065,7 +1020,7 @@ component ConfirmDialog inherits Rectangle {
             width: 100%;
             height: 100%;
             padding: 18px;
-            spacing: 12px;
+            spacing: Design.gap-block;
 
             Text {
                 text: root.title;
@@ -1102,6 +1057,7 @@ component ConfirmDialog inherits Rectangle {
 
 export component TvsPane {
     in property <[TvViewModel]> tvs;
+    in property <int> tvs-connected-count;
     in property <bool> daemon-available;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
@@ -1162,6 +1118,7 @@ export component TvsPane {
 
             TvList {
                 tvs: root.tvs;
+                connected-count: root.tvs-connected-count;
                 daemon-available: root.daemon-available;
                 selected-index <=> root.selected-index;
             }
