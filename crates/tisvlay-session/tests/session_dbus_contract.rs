@@ -61,11 +61,18 @@ async fn get_effective_user_profile_returns_json() {
         .await
         .unwrap();
 
-    // Should be valid JSON containing the resolved profile fields.
+    // Should be valid JSON containing the resolved profile fields. Each
+    // `on_*` is a nested `{ action, qos: { reliability } }` table matching
+    // the TOML shape.
     let value: serde_json::Value =
         serde_json::from_str(&json).expect("effective profile should be valid JSON");
-    assert_eq!(value["on_session_lock"], "screen_off");
-    assert_eq!(value["on_session_unlock"], "screen_on");
+    assert_eq!(value["on_session_lock"]["action"], "screen_off");
+    assert_eq!(
+        value["on_session_lock"]["qos"]["reliability"],
+        "best_effort"
+    );
+    assert_eq!(value["on_session_unlock"]["action"], "screen_on");
+    assert_eq!(value["on_session_unlock"]["qos"]["reliability"], "reliable");
 }
 
 #[tokio::test]

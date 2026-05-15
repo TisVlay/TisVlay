@@ -248,16 +248,20 @@ pub async fn reconcile_user_config_orphans(
 }
 
 /// Get the action for a session event from a resolved user profile.
+///
+/// Returns just the [`SessionAction`] — the per-event QoS lives on
+/// [`ResolvedEventAction`] but the dispatch path in this commit doesn't
+/// consume it yet (the reliable-tier helper lands in a later commit).
 pub fn get_action_for_event(
     event: &session_monitor::SessionEvent,
     profile: &ResolvedUserProfile,
 ) -> SessionAction {
     match event {
-        session_monitor::SessionEvent::SessionLocked => profile.on_session_lock,
-        session_monitor::SessionEvent::SessionUnlocked => profile.on_session_unlock,
-        session_monitor::SessionEvent::GreeterWake => profile.on_greeter_wake,
-        session_monitor::SessionEvent::IdleTimeout => profile.on_idle_timeout,
-        session_monitor::SessionEvent::IdleResume => profile.on_idle_resume,
+        session_monitor::SessionEvent::SessionLocked => profile.on_session_lock.action,
+        session_monitor::SessionEvent::SessionUnlocked => profile.on_session_unlock.action,
+        session_monitor::SessionEvent::GreeterWake => profile.on_greeter_wake.action,
+        session_monitor::SessionEvent::IdleTimeout => profile.on_idle_timeout.action,
+        session_monitor::SessionEvent::IdleResume => profile.on_idle_resume.action,
     }
 }
 

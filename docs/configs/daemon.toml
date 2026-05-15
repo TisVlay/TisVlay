@@ -8,12 +8,12 @@ on_wake = { action = "power_on" }
 automate_when = "always"
 
 [user.profiles.default]
-on_session_lock = "screen_off"
-on_session_unlock = "screen_on"
-on_greeter_wake = "screen_on"
+on_session_lock = { action = "screen_off" }
+on_session_unlock = { action = "screen_on" }
+on_greeter_wake = { action = "screen_on" }
 idle_timeout_seconds = 0
-on_idle_timeout = "screen_off"
-on_idle_resume = "screen_on"
+on_idle_timeout = { action = "screen_off" }
+on_idle_resume = { action = "screen_on" }
 
 [[tv]]
 uuid = "9a3f1b22-c4d8-4e90-b21f-7f1a2c8e5b40"
