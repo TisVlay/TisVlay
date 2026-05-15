@@ -1388,6 +1388,21 @@ impl DaemonClient {
         .await
     }
 
+    /// Read the current `PowerState` for a TV.
+    ///
+    /// Returns the cached value from `org.tisvlay.Tv1.Power.PowerState`,
+    /// which the daemon keeps in sync via the LG `getPowerState`
+    /// subscription. Typical values: `active`, `screen_off`,
+    /// `active_standby`, `suspend`, `power_off`, `unknown`. Used by the
+    /// session-side reliable dispatch helper to verify whether a
+    /// just-dispatched action took effect.
+    pub async fn power_state(&self, tv_id: &str) -> Result<String> {
+        self.with_proxies(tv_id, "read power state", |p| {
+            Box::pin(p.power.power_state())
+        })
+        .await
+    }
+
     /// Turn screen off (OLED-safe blank).
     pub async fn screen_off(&self, tv_id: &str) -> Result<()> {
         self.with_proxies(tv_id, "turn screen off", |p| {

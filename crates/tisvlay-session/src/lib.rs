@@ -22,11 +22,34 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tisvlay_core::{
-    DaemonClient, ResolvedUserProfile, SessionAction, UserConfig, UserProfileConfig,
+    DaemonClient, Reliability, ResolvedEventAction, ResolvedUserProfile, SessionAction, UserConfig,
+    UserProfileConfig,
 };
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
+
+/// PowerState string the LG backend pushes when the TV's panel is fully on.
+///
+/// Matches [`tisvlay_core::PowerState::Active`]'s `Display` form. Used by
+/// the reliable dispatch helper to verify a `screen_on` reached the panel
+/// rather than landing in `screen_off` or a deeper power state.
+const POWER_STATE_ACTIVE: &str = "active";
+
+/// Delay between dispatching a wake-side action and reading PowerState back.
+///
+/// LG's `getPowerState` subscription is typically sub-100 ms; 300 ms gives
+/// the subscription a comfortable window to refresh before we verify.
+const RELIABLE_VERIFY_DELAY: Duration = Duration::from_millis(300);
+
+/// Max `screen_on` attempts before the reliable path escalates to `power_on`.
+///
+/// Two attempts cover the racy "TV processed the request but the
+/// PowerState push lagged" case; further retries are pointless once we've
+/// concluded the TV slipped past Screen Off, because `screen_on` returns
+/// `-102` ("not in screen-off substate") and only WoL can recover.
+const RELIABLE_SCREEN_ON_ATTEMPTS: usize = 2;
 
 /// Session state: resolved profiles per TV, kept in sync with config reloads.
 #[derive(Debug)]
@@ -247,46 +270,97 @@ pub async fn reconcile_user_config_orphans(
     }
 }
 
-/// Get the action for a session event from a resolved user profile.
+/// Get the resolved event action for a session event from a user profile.
 ///
-/// Returns just the [`SessionAction`] — the per-event QoS lives on
-/// [`ResolvedEventAction`] but the dispatch path in this commit doesn't
-/// consume it yet (the reliable-tier helper lands in a later commit).
+/// Returns the full [`ResolvedEventAction`] (action + qos) so the caller
+/// can branch on the reliability tier when dispatching.
 pub fn get_action_for_event(
     event: &session_monitor::SessionEvent,
     profile: &ResolvedUserProfile,
-) -> SessionAction {
+) -> ResolvedEventAction {
     match event {
-        session_monitor::SessionEvent::SessionLocked => profile.on_session_lock.action,
-        session_monitor::SessionEvent::SessionUnlocked => profile.on_session_unlock.action,
-        session_monitor::SessionEvent::GreeterWake => profile.on_greeter_wake.action,
-        session_monitor::SessionEvent::IdleTimeout => profile.on_idle_timeout.action,
-        session_monitor::SessionEvent::IdleResume => profile.on_idle_resume.action,
+        session_monitor::SessionEvent::SessionLocked => profile.on_session_lock,
+        session_monitor::SessionEvent::SessionUnlocked => profile.on_session_unlock,
+        session_monitor::SessionEvent::GreeterWake => profile.on_greeter_wake,
+        session_monitor::SessionEvent::IdleTimeout => profile.on_idle_timeout,
+        session_monitor::SessionEvent::IdleResume => profile.on_idle_resume,
     }
 }
 
-/// Execute an action on a specific TV.
+/// Execute an event action on a specific TV.
+///
+/// Branches on `event_action.qos.reliability`:
+/// - [`Reliability::BestEffort`] dispatches the action once and returns.
+/// - [`Reliability::Reliable`] on `screen_on` verifies the TV reached the
+///   `active` PowerState; if it slipped past Screen Off, escalates to
+///   `power_on` (which has WoL + retry internally). Other actions don't
+///   currently benefit from the reliable path (sleep-side fire-and-forget;
+///   `power_on` already retries internally), so they fall through to the
+///   single dispatch.
 pub async fn execute_action_for_tv(
     daemon: &DaemonClient,
     tv_id: &str,
-    action: SessionAction,
+    event_action: ResolvedEventAction,
 ) -> anyhow::Result<()> {
-    match action {
-        SessionAction::ScreenOff => daemon.screen_off(tv_id).await,
-        SessionAction::ScreenOn => daemon.screen_on(tv_id).await,
-        SessionAction::PowerOff => daemon.power_off(tv_id).await,
-        SessionAction::PowerOn => daemon.power_on(tv_id).await,
-        SessionAction::None => Ok(()),
+    match (event_action.action, event_action.qos.reliability) {
+        (SessionAction::None, _) => Ok(()),
+        (SessionAction::ScreenOn, Reliability::Reliable) => reliable_screen_on(daemon, tv_id).await,
+        (SessionAction::ScreenOn, Reliability::BestEffort) => daemon.screen_on(tv_id).await,
+        (SessionAction::ScreenOff, _) => daemon.screen_off(tv_id).await,
+        (SessionAction::PowerOff, _) => daemon.power_off(tv_id).await,
+        (SessionAction::PowerOn, _) => daemon.power_on(tv_id).await,
     }
+}
+
+/// Dispatch `screen_on` reliably: verify the TV reached `active`, escalate
+/// to `power_on` (with WoL) if it slipped past Screen Off.
+///
+/// The retry budget covers the case where the SSAP `getPowerState`
+/// subscription momentarily lags behind the panel transition; the
+/// escalation covers the case the user is actually complaining about,
+/// where the TV transitioned itself from Screen Off to a deeper state
+/// while the desktop was locked.
+async fn reliable_screen_on(daemon: &DaemonClient, tv_id: &str) -> anyhow::Result<()> {
+    for attempt in 0..RELIABLE_SCREEN_ON_ATTEMPTS {
+        if let Err(e) = daemon.screen_on(tv_id).await {
+            // The daemon returning an error here usually means the
+            // WebSocket is closed (TV unreachable). No point retrying
+            // screen_on — escalate to power_on which has WoL inside.
+            debug!(tv_id, attempt, error = %e, "screen_on failed; escalating to power_on");
+            break;
+        }
+        tokio::time::sleep(RELIABLE_VERIFY_DELAY).await;
+        match daemon.power_state(tv_id).await {
+            Ok(state) if state == POWER_STATE_ACTIVE => return Ok(()),
+            Ok(state) => {
+                debug!(
+                    tv_id,
+                    attempt, %state,
+                    "screen_on did not reach active state",
+                );
+            }
+            Err(e) => {
+                debug!(tv_id, attempt, error = %e, "failed to read power state");
+            }
+        }
+    }
+    info!(
+        tv_id,
+        "reliable screen_on escalating to power_on (TV likely slipped past Screen Off)",
+    );
+    daemon.power_on(tv_id).await
 }
 
 /// Handle session events by executing configured actions.
 ///
-/// For each event, iterates through all TVs and applies the action
-/// defined in each TV's resolved profile. Different TVs can respond
+/// For each event, iterates through all TVs and applies the resolved
+/// event action defined in each TV's profile. Different TVs can respond
 /// differently to the same event (e.g., gaming TV ignores session lock).
 ///
-/// Tracks the last action sent to each TV to avoid redundant commands.
+/// Tracks the last [`SessionAction`] sent per TV to skip redundant
+/// commands. Dedup is keyed on the action alone, not the QoS tier — if
+/// the TV is already in the target state, re-dispatching at a higher
+/// reliability tier wouldn't change anything.
 pub async fn event_handler(
     mut event_rx: mpsc::UnboundedReceiver<session_monitor::SessionEvent>,
     state: Arc<RwLock<SessionState>>,
@@ -294,7 +368,6 @@ pub async fn event_handler(
 ) {
     info!("Event handler started");
 
-    // Track last successful action per TV to skip redundant commands
     let mut last_action: HashMap<String, SessionAction> = HashMap::new();
 
     while let Some(event) = event_rx.recv().await {
@@ -313,43 +386,49 @@ pub async fn event_handler(
             }
         };
 
-        // Get TV actions from resolved profiles, filtered to currently managed TVs
-        let tv_actions: Vec<(String, SessionAction)> = {
+        let tv_actions: Vec<(String, ResolvedEventAction)> = {
             let s = state.read().await;
             s.tv_ids
                 .iter()
                 .filter(|tv_id| automated_ids.contains(*tv_id))
                 .filter_map(|tv_id| {
                     let profile = s.profiles.get(tv_id)?;
-                    let action = get_action_for_event(&event, profile);
-                    Some((tv_id.clone(), action))
+                    let event_action = get_action_for_event(&event, profile);
+                    Some((tv_id.clone(), event_action))
                 })
                 .collect()
         };
 
-        // Execute action for each TV
         let mut success_count = 0;
-        for (tv_id, action) in tv_actions {
-            if action == SessionAction::None {
+        for (tv_id, event_action) in tv_actions {
+            if event_action.action == SessionAction::None {
                 debug!(tv_id = %tv_id, "Action is None, skipping");
                 continue;
             }
 
-            // Skip redundant commands
             if let Some(&prev) = last_action.get(&tv_id) {
-                if prev == action {
-                    debug!(tv_id = %tv_id, action = ?action, "Skipping redundant action");
+                if prev == event_action.action {
+                    debug!(
+                        tv_id = %tv_id,
+                        action = ?event_action.action,
+                        "Skipping redundant action",
+                    );
                     success_count += 1;
                     continue;
                 }
             }
 
-            debug!(tv_id = %tv_id, action = ?action, "Executing action");
-            if let Err(e) = execute_action_for_tv(&daemon, &tv_id, action).await {
+            debug!(
+                tv_id = %tv_id,
+                action = ?event_action.action,
+                reliability = ?event_action.qos.reliability,
+                "Executing action",
+            );
+            if let Err(e) = execute_action_for_tv(&daemon, &tv_id, event_action).await {
                 warn!(tv_id = %tv_id, error = %e, "Action failed");
                 last_action.remove(&tv_id);
             } else {
-                last_action.insert(tv_id, action);
+                last_action.insert(tv_id, event_action.action);
                 success_count += 1;
             }
         }
