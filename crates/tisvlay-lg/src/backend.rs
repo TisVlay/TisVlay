@@ -354,6 +354,37 @@ impl TvConnection for LgConnection {
 /// Returns `true` if the state was actually modified.
 fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Value) -> bool {
     if uri.contains("getPowerState") {
+        // LG's getPowerState payload carries three signals during a
+        // power transition:
+        //
+        // - `state`: settled label ("Active", "Active Standby", ...)
+        // - `processing`: in-flight transition name ("Request Power
+        //   Off", "Request Active Standby", "Prepare Active
+        //   Standby", and the literal "None" when idle).
+        // - `onOff`: authoritative "on" / "off" hint.
+        //
+        // During a remote-press power-off, LG keeps `state="Active"`
+        // for ~3 s while the transition completes, but starts pushing
+        // `processing` and `onOff="off"` within ~200 ms of the
+        // button press. Trust the discriminators over the `state`
+        // lie so the cached `PowerState` reflects reality at the
+        // moment of the press, not three seconds later. See
+        // `scripts/probe_power_state_timing.py` output for the
+        // captured payloads that motivated this.
+        let on_off = payload.get("onOff").and_then(|v| v.as_str());
+        let processing = payload.get("processing").and_then(|v| v.as_str());
+        let in_transition = on_off == Some("off")
+            || matches!(processing, Some(p) if !p.eq_ignore_ascii_case("None"));
+
+        if in_transition {
+            // Landing on `ActiveStandby` is sufficient for the
+            // daemon's wake pre-flight to fire on the off-direction;
+            // we don't enumerate every `processing` string. The
+            // on-direction (waking up) updates `state` fast enough
+            // for the existing state-field path below to handle.
+            state.update_power(PowerState::ActiveStandby);
+            return true;
+        }
         if let Some(state_str) = payload.get("state").and_then(|v| v.as_str()) {
             let power = PowerState::parse(state_str);
             state.update_power(power);
@@ -813,6 +844,94 @@ mod tests {
         );
         assert!(changed);
         assert!(!state.is_on);
+    }
+
+    /// Captured from the live TV via
+    /// `scripts/probe_power_state_timing.py`: ~191 ms after a
+    /// remote-press power-off, LG pushes a getPowerState update
+    /// that keeps `state="Active"` (still lying) but adds
+    /// `processing="Request Power Off"` + `onOff="off"`. The parser
+    /// must project to `ActiveStandby` immediately so the daemon's
+    /// reliable-dispatch pre-flight sees a non-Active substate and
+    /// wakes the TV before sending `screen_off`.
+    #[test]
+    fn subscription_power_transition_to_off_projects_active_standby() {
+        for processing in [
+            "Request Power Off",
+            "Request Active Standby",
+            "Prepare Active Standby",
+        ] {
+            let mut state = TvState::new();
+            state.update_power(PowerState::Active);
+            let changed = update_state_from_subscription(
+                &mut state,
+                "ssap://com.webos.service.tvpower/power/getPowerState",
+                &json!({
+                    "state": "Active",
+                    "processing": processing,
+                    "onOff": "off",
+                    "reason": "remoteKey",
+                }),
+            );
+            assert!(changed, "processing={processing}");
+            assert_eq!(
+                state.power_state,
+                PowerState::ActiveStandby,
+                "processing={processing} should project to ActiveStandby \
+                 regardless of the stale state=Active field",
+            );
+            assert!(state.is_on, "ActiveStandby keeps NIC alive (is_on=true)");
+            assert!(!state.is_screen_on, "ActiveStandby is panel-off");
+        }
+    }
+
+    /// `onOff="off"` alone, without `processing`, still triggers the
+    /// transition projection — the field is authoritative.
+    #[test]
+    fn subscription_power_on_off_field_alone_projects_active_standby() {
+        let mut state = TvState::new();
+        state.update_power(PowerState::Active);
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.service.tvpower/power/getPowerState",
+            &json!({"state": "Active", "onOff": "off"}),
+        );
+        assert!(changed);
+        assert_eq!(state.power_state, PowerState::ActiveStandby);
+    }
+
+    /// The literal `processing="None"` (LG's "idle, not transitioning"
+    /// sentinel) must NOT trigger the transition projection — it
+    /// means "no transition in flight", not "transitioning to None".
+    #[test]
+    fn subscription_power_processing_none_falls_through_to_state_field() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.service.tvpower/power/getPowerState",
+            &json!({"state": "Active", "processing": "None"}),
+        );
+        assert!(changed);
+        assert_eq!(state.power_state, PowerState::Active);
+        assert!(state.is_on);
+        assert!(state.is_screen_on);
+    }
+
+    /// Settled `state="Active Standby"` (no `processing` field, no
+    /// `onOff`) still routes through the existing state-field
+    /// parser to `ActiveStandby`. This is what LG pushes ~3 s after
+    /// the transition starts.
+    #[test]
+    fn subscription_power_settled_active_standby_via_state_field() {
+        let mut state = TvState::new();
+        state.update_power(PowerState::Active);
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.service.tvpower/power/getPowerState",
+            &json!({"state": "Active Standby"}),
+        );
+        assert!(changed);
+        assert_eq!(state.power_state, PowerState::ActiveStandby);
     }
 
     #[test]
