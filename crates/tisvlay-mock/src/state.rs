@@ -32,8 +32,9 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
-use tisvlay_core::{DiscoveredTv, HardwareId, TvState};
+use tisvlay_core::{DiscoveredTv, HardwareId, PowerState, TvState};
 use tokio::sync::mpsc;
 
 use crate::pairing::PairingOutcome;
@@ -95,6 +96,31 @@ pub(crate) struct MockState {
     /// blank the panel. Needed for V2's reliable-`screen_off`
     /// verify-retry tests, mirroring the `screen_on_noop` knob.
     pub(crate) screen_off_noop: std::collections::HashSet<String>,
+
+    /// Per-address override for the `PowerState` a new
+    /// `MockConnection` initializes with at construct-time. When
+    /// present, takes precedence over `MockVendorConfig::initial_power_state`
+    /// and survives across reconnects.
+    ///
+    /// Models firmware that refuses to fully wake a TV after a
+    /// recent remote-off — the daemon's `power_on` succeeds at the
+    /// WS level (a new `MockConnection` is created) but the LG
+    /// firmware reports a wake-preflight substate that never
+    /// transitions to `Active`. Needed to cover the
+    /// `screen_off`-post-wake-settle graceful-fallback branch in
+    /// `tv_manager`.
+    pub(crate) initial_power_state_overrides: HashMap<String, PowerState>,
+
+    /// Per-address call counter for `MockConnection::screen_on`
+    /// invocations. Incremented before the `screen_on_noop` short-
+    /// circuit so tests can assert the daemon's verify-retry loop
+    /// actually iterated rather than passing tautologically when
+    /// cached state happens to match.
+    pub(crate) screen_on_calls: HashMap<String, Arc<AtomicUsize>>,
+
+    /// Parallel counter for `MockConnection::screen_off`. Same
+    /// rationale.
+    pub(crate) screen_off_calls: HashMap<String, Arc<AtomicUsize>>,
 }
 
 impl MockState {

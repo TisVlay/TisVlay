@@ -64,7 +64,17 @@ impl MockConnection {
         hardware_id: Option<HardwareId>,
         shared: Arc<Mutex<MockState>>,
     ) -> Self {
-        let power = PowerState::parse(&config.initial_power_state);
+        // Per-address override (set via
+        // `MockHandle::set_initial_power_state_override`) takes
+        // precedence over the vendor-config default. Survives
+        // across reconnects so tests can model firmware that keeps
+        // refusing a clean wake.
+        let power = shared
+            .lock()
+            .initial_power_state_overrides
+            .get(&config.address)
+            .copied()
+            .unwrap_or_else(|| PowerState::parse(&config.initial_power_state));
         let inputs: Vec<InputInfo> = config
             .inputs
             .iter()
@@ -203,13 +213,25 @@ impl TvConnection for MockConnection {
     // ------------------------------------------------------------------
 
     async fn screen_on(&mut self) -> Result<()> {
+        // Bump the per-address call counter before any short-circuit
+        // so tests can assert the daemon's verify-retry loop actually
+        // iterated. Counter shared across reconnects via shared state.
+        let (noop, counter) = {
+            let mut state = self.shared.lock();
+            let counter = state
+                .screen_on_calls
+                .entry(self.address.clone())
+                .or_default()
+                .clone();
+            (state.screen_on_noop.contains(&self.address), counter)
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Tests can opt into "screen_on no-ops, returns Ok" by setting
         // the address in `screen_on_noop` via the handle. Models LG
         // firmware refusing to wake the panel from `ActiveStandby` /
         // `Standby` substates while still returning a non-Err
         // response — the exact condition the daemon's verify-retry-
         // escalate path is built to detect.
-        let noop = self.shared.lock().screen_on_noop.contains(&self.address);
         if noop {
             return Ok(());
         }
@@ -221,10 +243,19 @@ impl TvConnection for MockConnection {
     }
 
     async fn screen_off(&mut self) -> Result<()> {
+        let (noop, counter) = {
+            let mut state = self.shared.lock();
+            let counter = state
+                .screen_off_calls
+                .entry(self.address.clone())
+                .or_default()
+                .clone();
+            (state.screen_off_noop.contains(&self.address), counter)
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Parallel knob for `screen_off`: tests opt in via
         // `set_screen_off_noop` to model firmware that returns Ok
         // but doesn't blank the panel. Mirrors `screen_on_noop`.
-        let noop = self.shared.lock().screen_off_noop.contains(&self.address);
         if noop {
             return Ok(());
         }

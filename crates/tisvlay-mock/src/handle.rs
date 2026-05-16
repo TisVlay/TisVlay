@@ -273,6 +273,51 @@ impl MockHandle {
         }
     }
 
+    /// Override the `PowerState` a freshly-constructed
+    /// `MockConnection` initializes with. Takes precedence over
+    /// `MockVendorConfig::initial_power_state` and survives across
+    /// reconnects.
+    ///
+    /// Models LG firmware that refuses to fully wake after a recent
+    /// remote-off: the daemon's `power_on` succeeds at the WS level
+    /// (a new `MockConnection` is created) but the firmware reports
+    /// a wake-preflight substate (`ActiveStandby` / `Standby`) that
+    /// never transitions to `Active`. Needed to drive the daemon's
+    /// `screen_off`-post-wake-settle graceful-fallback branch.
+    #[instrument(skip(self))]
+    pub fn set_initial_power_state_override(&self, address: &str, target: PowerState) {
+        let mut state = self.state.lock();
+        state
+            .initial_power_state_overrides
+            .insert(address.to_string(), target);
+    }
+
+    /// Number of times `MockConnection::screen_on` has been called
+    /// for `address`, cumulative across reconnects.
+    ///
+    /// Lets tests assert the daemon's verify-retry loop actually
+    /// iterated instead of passing tautologically when the cached
+    /// state happens to match the target before any command was
+    /// sent. Returns 0 if the address has never had a connection.
+    pub fn screen_on_call_count(&self, address: &str) -> usize {
+        self.state
+            .lock()
+            .screen_on_calls
+            .get(address)
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Parallel counter for `MockConnection::screen_off`.
+    pub fn screen_off_call_count(&self, address: &str) -> usize {
+        self.state
+            .lock()
+            .screen_off_calls
+            .get(address)
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
     // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------

@@ -230,11 +230,12 @@ async fn screen_on_short_circuits_from_standby() {
 }
 
 /// `screen_on` runs verify-retry-escalate when cached state is
-/// not `"standby"` (so the short-circuit doesn't fire) and the
-/// mock's `screen_on` is no-op'd (so verify can't pass on
-/// attempt #1). Mirrors LG firmware refusing to wake from
-/// `ActiveStandby`. Asserts the TV ends `"active"` via the
-/// escalation path after retries exhaust.
+/// in the wake-permissive set (i.e. `ScreenOff` — NOT in
+/// `needs_wake_preflight`) and the mock's `screen_on` is no-op'd
+/// so verify can't pass. Mirrors a true-`ScreenOff` LG TV that
+/// refuses to unblank the panel via `turnOnScreen`. After
+/// `max_attempts` rejections, the loop escalates to `power_on`
+/// and the TV ends `"active"`.
 #[tokio::test]
 async fn screen_on_escalates_via_verify_retry_loop() {
     use tisvlay_core::PowerState;
@@ -244,31 +245,40 @@ async fn screen_on_escalates_via_verify_retry_loop() {
         .expect("daemon");
     let client = client().await;
     let uuid = test_tv_uuid("scr_on_esc").to_string();
+    let addr = "mock://scr_on_esc";
 
     daemon.manager().reconnect(&uuid).await.expect("reconnect");
     settle().await;
 
-    // Inject ActiveStandby → derives daemon-side cached
-    // `"screen_off"` (Bug A fix: `is_on=true, is_screen_on=false`),
-    // so the standby short-circuit deliberately does NOT fire.
+    // Inject true `ScreenOff` so `needs_wake_preflight` is FALSE
+    // and the dispatcher enters the verify-retry loop instead of
+    // pre-flight-waking. (The pre-flight wake path is covered by
+    // `screen_off_wakes_from_active_standby` and friends.)
     daemon
         .handle()
-        .inject_power_state("mock://scr_on_esc", PowerState::ActiveStandby);
+        .inject_power_state(addr, PowerState::ScreenOff);
     settle().await;
 
-    // Without this knob, mock's default `screen_on` flips
-    // `is_screen_on=true`, cached state goes to `"active"`, and
-    // verify passes on attempt #1 — defeating the escalation
-    // path this test means to exercise.
-    daemon
-        .handle()
-        .set_screen_on_noop("mock://scr_on_esc", true);
+    // Without this knob the mock's default `screen_on` would flip
+    // state to `Active` on attempt #1; verify would pass and the
+    // escalation path this test means to exercise would never run.
+    daemon.handle().set_screen_on_noop(addr, true);
 
     daemon.manager().screen_on(&uuid).await.expect("screen_on");
 
     // Verify-retry path: 2 × 300 ms verify + power_on probe +
     // new-connection state push.
     tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Pin call-count to prove the loop actually iterated
+    // `max_attempts` times — guards against future refactors
+    // making the test pass tautologically via pre-flight or an
+    // early-return shortcut.
+    let calls = daemon.handle().screen_on_call_count(addr);
+    assert_eq!(
+        calls, 2,
+        "verify-retry loop must invoke conn.screen_on() exactly max_attempts times before escalating",
+    );
 
     let tvs = client.list_tvs().await.expect("list_tvs");
     let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
@@ -343,13 +353,12 @@ async fn screen_off_verify_retry_gives_up_when_panel_refuses() {
     daemon.manager().reconnect(&uuid).await.expect("reconnect");
     settle().await;
 
+    let addr = "mock://scr_off_rf";
     // Mock starts in `"active"`. Without the noop knob, default
     // `screen_off` flips `is_screen_on=false` → cached
     // `"screen_off"` → verify passes on attempt #1, not what we
     // want to test here.
-    daemon
-        .handle()
-        .set_screen_off_noop("mock://scr_off_rf", true);
+    daemon.handle().set_screen_off_noop(addr, true);
 
     // `Ok` — the helper gives up gracefully on retry exhaustion
     // for screen_off (no escalation path).
@@ -360,6 +369,18 @@ async fn screen_off_verify_retry_gives_up_when_panel_refuses() {
         .expect("screen_off");
 
     tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Pin call-count to prove the loop actually iterated
+    // `max_attempts` times before giving up. Without this, a
+    // future refactor that early-returns from the loop before
+    // any command is sent would pass tautologically (mock starts
+    // in `Active` and stays in `Active`, which is exactly the
+    // assertion below — but for the wrong reason).
+    let calls = daemon.handle().screen_off_call_count(addr);
+    assert_eq!(
+        calls, 2,
+        "verify-retry loop must invoke conn.screen_off() exactly max_attempts times before giving up",
+    );
 
     let tvs = client.list_tvs().await.expect("list_tvs");
     let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
@@ -507,4 +528,76 @@ async fn screen_off_wakes_from_active_standby() {
         "screen_off from ActiveStandby should wake the TV then land in true ScreenOff",
     );
     assert!(!tv.is_screen_on, "panel should be off after screen_off");
+}
+
+/// `screen_off`'s graceful-fallback path: pre-flight wake fires,
+/// `power_on` "succeeds" at the WS level, but the LG firmware
+/// honors a recent remote-off latch and never settles out of
+/// `ActiveStandby`. After the settle budget expires the
+/// dispatcher accepts the wake-preflight substate as panel-off
+/// rather than burning verify-retries on `turnOffScreen`
+/// rejections.
+///
+/// Mock setup: `set_initial_power_state_override` keeps every
+/// `MockConnection` initializing in `ActiveStandby`, including
+/// the fresh connection that `power_on` creates after pre-flight
+/// fires. The settle phase polls cached state but it stays in
+/// `needs_wake_preflight`, the timeout expires, and the daemon
+/// info-logs the LG-firmware-quirk fallback and returns `Ok`.
+#[tokio::test]
+async fn screen_off_accepts_active_standby_when_wake_refuses() {
+    use tisvlay_core::PowerState;
+
+    let daemon = TestDaemon::with_one_mock_tv("scr_off_latch")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("scr_off_latch").to_string();
+    let addr = "mock://scr_off_latch";
+
+    // Force every connection (including the one `power_on` creates
+    // post-pre-flight) to come up in ActiveStandby and stay there.
+    // Models LG firmware that won't honor `turnOn` for ~1 s after a
+    // remote-press power-off.
+    daemon
+        .handle()
+        .set_initial_power_state_override(addr, PowerState::ActiveStandby);
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    // Sanity: cached is in the wake-preflight set so the
+    // `screen_off` pre-flight will fire.
+    let tvs = client.list_tvs().await.expect("list_tvs (pre)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(tv.power_state, "standby", "starts in wake-preflight set");
+
+    // Returns Ok via the graceful-fallback arm.
+    daemon
+        .manager()
+        .screen_off(&uuid)
+        .await
+        .expect("screen_off");
+
+    // Budget for: pre-flight refresh + power_on probe + settle
+    // (verify_delay × max_attempts = 600 ms).
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // The verify-retry loop must NOT have run — the settle phase
+    // exits into the graceful-fallback arm, which returns Ok
+    // before reaching the loop. A future regression that lets
+    // exec fall through to the verify-retry would bump this.
+    let calls = daemon.handle().screen_off_call_count(addr);
+    assert_eq!(
+        calls, 0,
+        "graceful-fallback should return before any `turnOffScreen` is sent (loop must not iterate)",
+    );
+
+    let tvs = client.list_tvs().await.expect("list_tvs (post)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "standby",
+        "TV stays in ActiveStandby substate (panel dark, NIC alive) when LG firmware refuses to wake",
+    );
+    assert!(!tv.is_screen_on, "panel is dark in ActiveStandby");
 }
