@@ -441,6 +441,7 @@ just test-snapshot-accept   # accept all pending snapshot changes
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
 - [docs/testing.md](docs/testing.md) - Testing guide: mock backend, harnesses, coverage, observability
+- [docs/lg/firmware-quirks.md](docs/lg/firmware-quirks.md) - LG WebOS firmware quirks (Bug A/B, `processing`/`onOff` discriminators, post-wake settle, `REQUEST_MS`-is-load-bearing)
 - [docs/watchers/network.md](docs/watchers/network.md) - Network monitoring: carrier detection, route resolution, pitfalls
 - [docs/firewall.md](docs/firewall.md) - SSDP firewall configuration
 - [docs/bugs.md](docs/bugs.md) - Known bugs and fix plans

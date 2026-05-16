@@ -5,6 +5,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 ## Architecture
 
 - [Event-driven power-management redesign](ideas/event-driven-power-management.md)
+- [TV-side power prevention (manage LG auto-off Luna settings)](ideas/tv-side-power-prevention.md)
 - [Virtual DRM connector for detached TVs](ideas/virtual-drm-connector.md)
 - [Probe library extraction (when GUI lands)](ideas/probe-library-extraction.md)
 - [Polkit gating for multi-user shared workstations](ideas/polkit-multi-user.md)
