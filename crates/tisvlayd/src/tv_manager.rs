@@ -1739,10 +1739,31 @@ impl TvManager {
             return self.power_on(tv_id).await;
         }
 
+        // Bounded screen_on call: race against a short timeout so a
+        // half-dead WebSocket can't stall the reliable path for the
+        // LG client's full 10 s `REQUEST_MS`. The happy path returns
+        // in ~10 ms; 2 s is well clear of that and well under
+        // `REQUEST_MS`. On timeout, treat the same as a backend Err —
+        // break out of the verify-retry loop and escalate to
+        // `power_on` (which has WoL + retry + reconnect inside).
+        const SCREEN_ON_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
         for attempt in 0..max_attempts {
-            if let Err(e) = self.screen_on(tv_id).await {
-                debug!(tv_id, attempt, error = %e, "screen_on failed; escalating to power_on");
-                break;
+            match tokio::time::timeout(SCREEN_ON_TIMEOUT, self.screen_on(tv_id)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    debug!(tv_id, attempt, error = %e, "screen_on failed; escalating to power_on");
+                    break;
+                }
+                Err(_) => {
+                    debug!(
+                        tv_id,
+                        attempt,
+                        timeout_ms = SCREEN_ON_TIMEOUT.as_millis() as u64,
+                        "screen_on timed out; escalating to power_on (likely stale WebSocket)",
+                    );
+                    break;
+                }
             }
             tokio::time::sleep(verify_delay).await;
             let cached = {
