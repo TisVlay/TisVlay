@@ -1,4 +1,4 @@
-# Make `screen_on` inherently reliable — drop the QoS abstraction
+# Make screen-state actions inherently reliable — drop the QoS abstraction
 
 ## Motivation
 
@@ -39,20 +39,29 @@ If cached `last_known_power_state == "standby"` (i.e., `is_on == false` — TV a
 ## V2 architecture
 
 ```
-                ┌──────────────┐
-session events ─►│ tv_manager   │
-                │   .screen_on │  ── always: send screen_on,
-system events ─►│ (always      │     verify cached PowerState,
-                │  verifies +  │     retry, escalate to .power_on
-                │  escalates)  │     if verify never sees "active"
-                └──────────────┘
+                ┌──────────────────┐
+session events ─►│ tv_manager       │
+                │  .screen_on(tv)  │  verify cached "active";
+                │  .screen_off(tv) │  verify cached "screen_off";
+system events ─►│  .power_on(tv)   │  WoL+retry+reconnect;
+                │  .power_off(tv)  │  fire-and-forget.
+                │                  │
+                │  retry budget    │  per-backend RetryConfig
+                │  + escalate via  │  (verify_delay, max_attempts)
+                │  power_on if     │
+                │  pre-flight sees │
+                │  cached "standby"│
+                └──────────────────┘
 ```
 
-- `tv_manager::screen_on(tv_id)` runs verify-retry-escalate **unconditionally**. Inline pre-flight short-circuit on cached `"standby"`. No QoS branch, no separate helper.
-- `tv_manager::power_on(tv_id)` unchanged from `main` (already has WoL+retry+reconnect).
-- `tv_manager::screen_off(tv_id)` / `power_off(tv_id)` unchanged from `main` (fire-and-forget).
+- `tv_manager::screen_on(tv_id)` runs verify-retry-escalate **unconditionally**. Inline pre-flight short-circuit on cached `"standby"` → straight to `power_on`. Target cached state: `"active"`.
+- `tv_manager::screen_off(tv_id)` runs verify-retry-escalate **unconditionally**. Inline pre-flight on cached `"standby"`: TV must be powered on to be in screen-off substate, so escalate via `power_on` first, then send `screen_off`. Target cached state: `"screen_off"`. (Side effect: locking the desktop while the TV is already off briefly powers it on before blanking — rare and acceptable, since `on_startup = "screen_off"` is the load-bearing usecase this serves.)
+- `tv_manager::power_on(tv_id)` unchanged from `main` (already has WoL + retry + reconnect inside).
+- `tv_manager::power_off(tv_id)` unchanged from `main` (fire-and-forget; no meaningful escalation path).
+- Verify-delay and max-attempts come from `TvBackend::verify_retry_config() -> RetryConfig` — single trait method returning a struct, defaulted to `{ verify_delay: 300ms, max_attempts: 2 }` (LG-tuned). Per-backend override point for transports with different latency characteristics (USB-CEC, RS-232, future Samsung).
 - **No `dispatch_action`**. Session and system event handlers call the right `tv_manager` method directly by matching on the resolved `SessionAction`.
 - **No `Tv1.Dispatch`**. D-Bus surface stays `Tv1.Power.PowerOn` / `Tv1.Power.PowerOff` / `Tv1.Screen.SetScreen` — V2's diff vs `main` doesn't touch the D-Bus surface at all on the lifecycle side.
+- **No session-side `last_action` dedup.** Every action self-verifies via its pre-flight check, so a duplicate dispatch is at worst a fast no-op when cached state already matches the target. Removing the dedup simplifies `event_handler`.
 
 ### Profile config
 
@@ -83,9 +92,14 @@ Cherry-pick or re-apply [`b69edd2`](https://github.com/ruffsl/TisVlay/commit/b69
 
 Cherry-pick or re-apply [`8dc3f44`](https://github.com/ruffsl/TisVlay/commit/8dc3f44). Touches `tisvlay-lg/src/client.rs` + `test_server.rs` (the `set_command_error` knob). Adds `screen_on_propagates_minus_102_not_in_screen_off_substate` + `screen_on_masks_500_idempotent_error`.
 
-### Commit 3 — `Arc<dyn TvBackend>` registry refactor
+### Commit 3 — `Arc<dyn TvBackend>` registry refactor + `RetryConfig` trait method
 
-Adapt from `a740ce7`. **Drop** the new `TvBackend::reliable_verify_delay()` / `reliable_max_attempts()` trait methods (those were QoS-tied). **Keep** the registry change to store `Arc<dyn TvBackend>` directly. Touches `tisvlay-backends/src/lib.rs` + the read sites in `tisvlayd`. Pure orthogonal cleanup.
+Adapt from `a740ce7`. Two changes:
+
+- **Registry change**: store `Arc<dyn TvBackend>` directly (replaces the denormalized fields). Touches `tisvlay-backends/src/lib.rs` + the read sites in `tisvlayd`.
+- **New `RetryConfig` struct in `tisvlay-core`** with `verify_delay: Duration` and `max_attempts: usize` fields, plus a single `TvBackend::verify_retry_config() -> RetryConfig` trait method defaulted to `{ 300ms, 2 }` (LG-tuned). Per-backend override point. Renamed away from V1's `reliable_*` prefix since there's no longer a `best_effort` sibling tier.
+
+Unit tests pin the default values and exercise an overridden backend (matches V1's pattern).
 
 ### Commit 4 — `power_state` module + `last_known_power_state` field
 
@@ -95,24 +109,35 @@ Adapt from `3f1adad` (the post-Copilot dedup-refactor) + the parts of `9e31c63` 
 
 Adapt from `11bbcf6` + the `set_screen_on_noop` knob from `6eceaea`. Touches `tisvlay-mock/src/{state,handle,connection}.rs`. Adds `inject_power_state`, `set_screen_on_noop`, plus the shared-state plumbing (`live_states`, `subscription_txs`).
 
-### Commit 6 — Inherently-reliable `screen_on` + integration tests
+### Commit 6 — Inherently-reliable `screen_on` and `screen_off` + integration tests
 
-The new content. Replaces `tv_manager::screen_on`'s current fire-and-forget body with the verify-retry-escalate loop inline. Includes:
+The new content. Replaces both methods' fire-and-forget bodies with verify-retry-escalate loops inline.
 
-- Pre-flight short-circuit on cached `STANDBY`.
-- The retry loop with hardcoded `Duration::from_millis(300)` verify-delay + hardcoded `2` max attempts (no per-backend trait methods — we have one vendor).
-- Escalation to `self.power_on(tv_id)` on continued failure.
-- Tests in `tisvlayd/tests/dbus_contract.rs`: `screen_on_short_circuits_from_standby`, `screen_on_escalates_via_verify_retry_loop` (using `set_screen_on_noop`).
-- Tests in `tisvlay-session/tests/session_events.rs`: end-to-end repro through the session event handler. `reliable_screen_on_escalates_when_tv_slipped_past_screen_off` (Standby injection → short-circuit), `..._slipped_to_active_standby` (ActiveStandby + `screen_on_noop` → escalate).
-- Test in `tisvlayd/tests/profile_dispatch.rs`: `wake_with_screen_on_short_circuits` (system-event path).
+**`tv_manager::screen_on`**:
+- Pre-flight short-circuit on cached `STANDBY` → dispatch `power_on` directly (which restores to `"active"` per LG's WoL behavior).
+- Verify-retry loop: send `screen_on`, sleep `RetryConfig.verify_delay`, read cached state, target `"active"`. Retry up to `max_attempts`.
+- Escalation on retry exhaustion: `self.power_on(tv_id)`.
 
-### Commit 7 — Documentation
+**`tv_manager::screen_off`**:
+- Pre-flight on cached `STANDBY`: TV must be on to be in screen-off substate, so call `self.power_on(tv_id)` first to bring it up active, then continue into the dispatch loop below.
+- Verify-retry loop: send `screen_off`, sleep `RetryConfig.verify_delay`, read cached state, target `"screen_off"`. Retry up to `max_attempts`. No escalation past retries — TV is already reachable; if it refuses to blank, log and give up.
 
-- New `docs/lg/firmware-quirks.md` (port from `feat/action-qos`, **strip the QoS-scope language**; the "10 s `REQUEST_MS` is load-bearing" section is the load-bearing part of this doc).
-- Update `docs/design.md`: add a "Reliable `screen_on`" subsection under the per-TV interface section. No QoS namespace. No `Tv1.Dispatch`. The directory tree stays as `main` had it.
+**Session-side dedup removal**: `event_handler` no longer tracks `last_action` per TV. Every dispatch self-verifies via the pre-flight check, so duplicate events are at worst a cheap cache read.
+
+Tests:
+- `tisvlayd/tests/dbus_contract.rs`: `screen_on_short_circuits_from_standby`, `screen_on_escalates_via_verify_retry_loop` (using `set_screen_on_noop`), `screen_off_escalates_via_power_on_when_standby` (new — Standby injected, screen_off called, asserts the TV ends up `"screen_off"` via `power_on` + screen_off composite), `screen_off_verify_retry_when_tv_refuses` (using `set_screen_off_noop` — new mock knob, mirrors the screen_on one).
+- `tisvlay-session/tests/session_events.rs`: end-to-end repro through the session event handler. The existing two tests (Standby short-circuit, ActiveStandby + `screen_on_noop` escalate) keep the names that better describe what they actually exercise.
+- `tisvlayd/tests/profile_dispatch.rs`: `wake_with_screen_on_short_circuits` (system-event path) + `on_startup_screen_off_powers_on_first` (system-event path verifying the `on_startup = "screen_off"` use case end-to-end).
+
+### Commit 7 — Documentation + orthogonal carry-overs
+
+- New `docs/lg/firmware-quirks.md` (port from `feat/action-qos`, **strip the QoS-scope language**; the "10 s `REQUEST_MS` is load-bearing" section is the load-bearing part of this doc). Update test-name references to V2's names.
+- Update `docs/design.md`: add a "Reliable screen-state actions" subsection under the per-TV interface section. No QoS namespace. No `Tv1.Dispatch`. The directory tree stays as `main` had it (modulo `PowerCycleProgress` being noted, see below).
 - Update `docs/testing.md`: "On-hardware triage tooling" subsection pointing at `scripts/triage_dispatch_perf.py`.
 - Update `docs/ideas/tv-side-power-prevention.md`: re-port with corrected back-references (drop the `docs/plans/action-qos.md` link; cross-reference `docs/lg/firmware-quirks.md` and `docs/design.md` instead). Include the "Prior art" section.
 - Port `scripts/triage_dispatch_perf.py` as-is.
+- Port `docs/plans/README.md` (the convention doc — plans live in `docs/plans/` while active, migrate-and-delete on merge). Has standing value regardless of which PR ships first.
+- Carry over `Tv1.Power.PowerCycleProgress` signal — orthogonal to QoS, useful for GUI wake-progress UX. Listed in the design.md directory tree's Tv1 signal line.
 
 ### Commit 8 — Delete this plan doc
 
@@ -121,24 +146,29 @@ Standard convention from `docs/plans/README.md` — once shipped, plans get migr
 ## What gets dropped from V1
 
 - `Reliability` enum, `QosConfig`, `EventAction`, `ResolvedEventAction`, `ResolvedQos`, `default_reliability_for`.
-- `tisvlay-core::TvBackend::reliable_verify_delay()` / `reliable_max_attempts()` trait methods.
 - `Tv1.Dispatch(action, qos)` D-Bus method.
-- `Tv1.GetEffectiveSystemProfile()` / `Session1.GetEffectiveUserProfile()` D-Bus methods (those returned the resolved QoS-shape JSON; without QoS, the resolved profile is just `Option<SessionAction>` per slot and the existing config-read paths suffice).
-- `dispatch_action` / `dispatch_reliable_screen_on` helpers in `tv_manager`.
-- Reliability-aware dedup carve-out in `tisvlay-session::event_handler`. Dedup keys on `(tv_id, action)` for `ScreenOff` / `PowerOff` (fire-and-forget — same-as-last-time skip is fine). `ScreenOn` and `PowerOn` always dispatch (verify-retry-escalate inside `tv_manager` handles "are we already there?"); dedup just isn't invoked for them.
+- `Tv1.GetEffectiveSystemProfile()` / `Session1.GetEffectiveUserProfile()` D-Bus methods. The GUI Profiles pane (M4) will compute its "explicit-set vs inherited-fallthrough" display client-side from `ListSystemProfiles` / `ListUserProfiles` + the known inheritance order. If client-side computation turns out cumbersome during M4 prototyping, design the right replacement D-Bus method then with the right shape informed by the actual GUI consumer.
+- `dispatch_action` / `dispatch_reliable_screen_on` helpers in `tv_manager` (their bodies fold into `screen_on` / `screen_off` directly).
+- Entire `last_action` dedup map in `tisvlay-session::event_handler`. Self-verifying actions make it redundant.
 - Profile TOML's `qos = { ... }` nested-table form. All `on_*` slots revert to bare `Option<SessionAction>`.
 - Spike commits `f384f60` + `6845097` + `4159cba` + `083fb10` — drop entirely. They live on `feat/action-qos` for the design-exploration record; V2 starts from `main`.
-- Plan/concerns/idea adjustments tied to QoS (e.g. the resolved QoS-shape JSON in `Session1` won't exist).
+- The trait-method rename: V1's `reliable_verify_delay()` / `reliable_max_attempts()` become a single `verify_retry_config() -> RetryConfig`. Same defaults, simpler surface (one method, one struct, both magic values in one place).
 
-## Open questions
+## Resolved decisions
 
-1. **Should `ScreenOff` also have inherent verify?** Today it's fire-and-forget. The symmetric argument: "a bright TV when you wanted dark isn't catastrophic, but it's still wrong" — verify could catch firmware glitches where `screen_off` returns Ok but the panel stays lit. The cost is one extra 300 ms wait + read per dispatch. Recommend: leave fire-and-forget for V2; revisit if field reports surface the inverse failure mode. (Note: the V1 asymmetric-default analysis already addressed this; we're inheriting that conclusion without the abstraction.)
+1. **`screen_off` is inherently reliable too.** Symmetric with `screen_on`. The load-bearing usecase: `on_startup = "screen_off"` — for the TV to be in screen-off substate, it must be powered on, so reliable `screen_off` escalates via `power_on` when cached state is `"standby"`. Side effect (acceptable): `on_session_lock = "screen_off"` with TV already off briefly powers it on before blanking. Rare scenario; if it surfaces as a complaint we'd revisit with explicit per-event semantic primitives rather than reintroducing QoS.
 
-2. **Should the verify-delay (300 ms) and max-attempts (2) be configurable?** V1 had them as per-backend trait methods. With one vendor, hardcoded daemon constants are fine. If Samsung lands with materially different SSAP-push timing, promote to constants in `power_state.rs` or a sibling daemon module — easy refactor.
+2. **Per-backend tunables via `RetryConfig` struct.** A single `TvBackend::verify_retry_config() -> RetryConfig { verify_delay, max_attempts }` trait method with defaults `{ 300ms, 2 }`. Per-backend so future transports (USB-CEC, RS-232) with different retry semantics can override; struct shape so adding a third tuning knob (e.g., escalation budget) doesn't churn the trait surface.
 
-3. **What about `Session1.GetEffectiveUserProfile` and `Tv1.GetEffectiveSystemProfile`?** V1 added these for GUI Profiles-pane introspection. Without QoS the resolved-profile JSON is just `{ "on_session_unlock": "screen_on", ... }` — much simpler. Open whether the GUI still needs the daemon to resolve this or can compute it client-side from `ListUserProfiles` + the TV's assigned profile. Probably keep `GetEffectiveUserProfile` (it's a fair API: "what action does this TV actually take on event X") but the implementation simplifies.
+3. **Drop `GetEffectiveSystemProfile` / `GetEffectiveUserProfile` for V2.** The GUI Profiles pane's actual UX need is "what did this profile explicitly set per slot, and what would it fall through to if unset" — a richer surface than `GetEffective`'s resolved-only return. Computing it client-side from `ListSystemProfiles` / `ListUserProfiles` + the known inheritance order is straightforward when M4 lands. If client-side cumbersome in practice, design the right replacement method then with the right shape informed by the prototype.
 
-4. **`Tv1.Power.PowerCycleProgress` signal**: V1 added this for the GUI to surface "WoL → Connecting → Connected" phases during a manual power-on. It's orthogonal to QoS and survives V2; carry it over.
+4. **`Tv1.Power.PowerCycleProgress` signal survives.** Orthogonal to QoS; useful for the GUI's wake-progress UX. Documented in the design.md directory tree on the Tv1 signal line.
+
+## Future work (out of scope for V2)
+
+- **Pre-login greeter wake event.** Today's `on_greeter_wake` fires from `tisvlay-session`, which runs per-user — so it only catches greeter activity *during* a session lock (post-login). The morning-after-overnight-reboot UX (`on_startup = "screen_off"` to avoid burn-in, then unblank when the user touches the SDDM/display-manager greeter pre-login) needs new plumbing: either a `tisvlay-greeter-session` user service running as the greeter user, or system-bus detection of display-manager input events. File as a separate idea doc once V2 ships.
+- **Per-event semantic primitives for `screen_off`.** If the "lock-while-TV-already-off briefly powers the TV on" side effect ever surfaces as a real user complaint, the right answer isn't to reintroduce QoS but to add explicit action types: `EnsureScreenOff` (composite: power_on if needed, then screen_off — what V2's `screen_off` does today) vs. `ScreenOffIfReachable` (fire-and-forget — V1's behavior). Defer until field reports justify the additional surface.
+- **Replacement for `GetEffective*` if client-side computation proves cumbersome.** Design informed by M4 GUI prototyping.
 
 ## Acceptance criteria
 
