@@ -137,3 +137,65 @@ Pre-merge manual smoke testing on the LG OLED G4 surfaced a reported wall-clock 
 Independent of root cause: ship a **pre-flight short-circuit** in `dispatch_reliable_screen_on`. If `last_known_power_state` is already past Screen Off (i.e., `standby` — the daemon's derived shorthand for the TV being more deeply asleep than just panel-blank), skip the `screen_on` attempt and dispatch `power_on` directly. Costs nothing on the happy path (cached state is `screen_off` for a normal lockscreen wake), but **erases the 10 s `REQUEST_MS` exposure** any time the TV has slipped to deep standby while we weren't looking — which is the user-reported failure mode regardless of which branch we're on.
 
 This makes the variance question moot: even if a future change re-introduces the slow path on either branch, this short-circuit makes it not matter. The inline instrumentation was reverted before merge; re-apply from the change set captured in this PR's discussion if the pattern resurfaces and you want fresh data.
+
+### Follow-up: two cold-WS fix attempts, both reverted
+
+Post-short-circuit smoke testing on the LG OLED G4 produced a slow trial that the short-circuit *didn't* catch — cached `PowerState` stayed at `"screen_off"` (so the deeper-standby predicate didn't fire), but the WS itself had gone half-dead with the TV. `screen_on` over that socket stalled the full 10 s `REQUEST_MS` before erroring out, recovery total ~13 s. We sketched three candidate fixes and ran the first two as spike branches against the live hardware. Both are archived on this branch as cherry-pick + revert pairs so future readers can read the diff. The third was deferred without implementation; see below.
+
+#### Spike A — `screen_on` timeout race ([archived](../../crates/tisvlayd/src/tv_manager.rs) at commits `f384f60` + `6845097`)
+
+Wrap `self.screen_on(tv_id)` inside the verify-retry loop with `tokio::time::timeout(Duration::from_secs(2), ...)`. Happy path returns in ~10 ms; 2 s is well clear of that and well under `REQUEST_MS`. On timeout, treat as a backend `Err` — break the loop and escalate to `power_on`.
+
+**Result: regression.** Across four smoke-test trials:
+
+| Trial | Path                              | Δ vs pre-fix 13 s slow |
+|-------|-----------------------------------|------------------------|
+| 1     | Fast `500` (TV responsive)        | 9 s                    |
+| 2     | Timed out → power_on              | **15 s (+2 s)**        |
+| 3     | Timed out → power_on              | **17 s (+4 s)**        |
+| 4     | Timed out → power_on              | **15 s (+2 s)**        |
+
+The 2 s timeout *did* fire as designed. But the recovery that follows it is consistently slower than the pre-fix recovery. Breakdown of trial 2:
+
+```
+22:04:45  Dispatch
+22:04:47  screen_on timed out (+2 s)        ← fix fired
+22:04:49  Direct-connect probe failed (+4 s)
+22:04:49  WoL packet sent
+22:04:54  Registration response (+9 s)      ← 5 s after WoL
+22:05:00  Subscribed to backend updates (+15 s)
+```
+
+Compare to the pre-fix slow path where `WoL → Registration → TV online` happened in 1 s. The 10 s `REQUEST_MS` turned out to have an accidental side effect: while it stalled, the LG client's `with_retry` ran a reconnect attempt against the existing WS, which physically "knocked" the TV awake. By the time `power_on` ran, the TV was already responsive enough that registration was nearly instant. Cancelling `screen_on` early via `tokio::time::timeout` skipped that knock — the TV slipped deeper, and full WoL recovery took 9 s instead of <1 s.
+
+Net effect: 8 s saved on `screen_on`, ~10 s lost on recovery. Slight pessimization.
+
+#### Spike B — WS liveness predicate ([archived](../../crates/tisvlayd/src/tv_manager.rs) at commits `4159cba` + `083fb10`)
+
+Track `last_rx_at` in `tisvlay-lg::connection::Connection` (`Arc<parking_lot::Mutex<Option<Instant>>>` updated by `reader_loop` on every Text/Ping/Close frame). Expose via a new `TvConnection::last_activity_at()` trait method (default `None`). Add a second short-circuit predicate to `dispatch_reliable_screen_on`: if `last_activity_at` is older than 5 s, skip `screen_on` and dispatch `power_on` directly. Reasoning: detect a half-dead socket *before* it stalls, then escalate cleanly with the WS torn down in `power_on`'s prologue.
+
+**Result: same shape of regression, plus a new pathological case.** Five smoke-test trials:
+
+| Trial | Path                              | Total |
+|-------|-----------------------------------|-------|
+| 1     | Stale-WS short-circuit            | **18 s** |
+| 2     | Stale-WS short-circuit            | **12 s** |
+| 3     | Stale-WS short-circuit            | **14 s** |
+| 4     | Stale-WS short-circuit            | **14 s** |
+| 5     | Threshold miss → `REQUEST_MS`     | **28 s** |
+
+When the predicate fires (4/5), wall-clock is comparable to the pre-fix 13 s — the predicate works, but again at a net cost. Same root cause as Spike A: skipping `screen_on` loses the `with_retry` knock, so `WoL → Registration` takes 9 s instead of <1 s. The total is dominated by recovery time, not the latency saved on the bypassed `screen_on`.
+
+When the predicate *misses* (trial 5, where the WS went quiet exactly 5 s before the wake — at the threshold boundary), the slow path takes **28 s**. This is the worst result of any branch we tried: `REQUEST_MS` fires AND the subsequent recovery is the slower flavor we see on the short-circuit path. Lowering the threshold to 3 s would catch this case but presumably false-positive on healthy short pauses, adding latency to the happy path.
+
+#### Spike C — `SO_KEEPALIVE` (deferred, not implemented)
+
+Aggressive TCP keepalive timing (`TCP_KEEPIDLE=5`, `TCP_KEEPINTVL=2`, `TCP_KEEPCNT=2`) would let the kernel detect half-dead sockets in ~9 s instead of waiting for the LG client's `REQUEST_MS`. The kernel-level detection would surface as `EPIPE` to the WS reader, which mirrors the natural `REQUEST_MS` path (`with_retry` reconnects, "knocks" the TV).
+
+**Predicted result:** Spike C *might* preserve the knock effect since detection still surfaces through the same `with_retry` reconnect path the original `REQUEST_MS` triggers. The Spike A/B failure mode (skipping `screen_on` entirely → losing the knock) doesn't apply here. But the blast radius is wider — every backend WS on the daemon would inherit aggressive keepalive timing, not just reliable-tier dispatch — and the implementation has to extract the raw fd through `MaybeTlsStream`'s TLS wrapping, which is fiddly. Given how much complexity Spikes A and B added for no net win, the value-to-risk ratio doesn't justify proceeding without a clearer signal that the 13 s floor is itself unacceptable.
+
+#### Decision
+
+Accept the ~13 s pre-fix slow path as the floor. Keep the deeper-standby short-circuit (`97fa4bd`) — it correctly handles the "TV auto-powered-off to deep standby" case where `screen_on` would unambiguously fail, and the knock mechanism wouldn't help anyway in that state. Don't ship Spike A or B; their archived cherry-pick + revert pairs are the receipt.
+
+The underlying lesson: **the 10 s `REQUEST_MS` isn't a bug, it's load-bearing.** It's how the LG client + TV firmware negotiate a wake-from-half-dead-WS state — the natural-feeling slow path is shorter end-to-end than any of the surgical workarounds because it bundles WS-recovery and TV-warm-up into a single 10 s wait. Any future fix that *bypasses* `screen_on` in a half-dead-WS scenario should be benchmarked against Spike A's and B's results before shipping; if it doesn't beat 13 s, it's a pessimization no matter how clean it reads.
