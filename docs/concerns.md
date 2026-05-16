@@ -15,7 +15,3 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 ## GUI
 
 - [Slint `unstable-winit-030` feature dependency](concerns/slint-unstable-winit-030.md)
-
-## Daemon
-
-- [`(is_on, is_screen_on)` derivation duplicated across three call sites](concerns/power-state-derivation-duplicated.md)

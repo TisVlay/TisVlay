@@ -237,10 +237,13 @@ struct ManagedTv {
     /// Used by `is_automated()` to evaluate the input-aware gate without
     /// needing access to the D-Bus interface cache.
     last_known_input: Option<String>,
-    /// Last known power state from backend subscription pushes, derived
-    /// from `TvState::(is_on, is_screen_on)` via the same mapping the
-    /// `state_forwarder` uses for the `Tv1.Power.PowerState` property
-    /// (`"active"` / `"screen_off"` / `"standby"` / `"unknown"`).
+    /// Last known power state from backend subscription pushes,
+    /// derived via [`crate::power_state::derive_power_state`] — the
+    /// single source of truth shared with the `state_forwarder`'s
+    /// `Tv1.Power.PowerState` emit and `register_tv_interfaces`'s
+    /// initial-state seed. Possible values are the `ACTIVE` /
+    /// `SCREEN_OFF` / `STANDBY` constants from that module, plus
+    /// `"unknown"` before the first subscription push.
     ///
     /// Used by `dispatch_reliable_screen_on` to verify whether a
     /// just-dispatched `screen_on` actually woke the panel. Reading
@@ -466,16 +469,12 @@ async fn run_subscription_task(
     mut state_rx: mpsc::UnboundedReceiver<TvState>,
 ) {
     while let Some(state) = state_rx.recv().await {
-        // Update cached fields on ManagedTv that the reliable dispatch
-        // helper and automation gate read in-process. Mirrors the
-        // `(is_on, is_screen_on) → "..."` derivation that
-        // `state_forwarder` applies to the D-Bus `Tv1.Power.PowerState`
-        // property — keep the two in sync.
-        let derived_power_state = match (state.is_on, state.is_screen_on) {
-            (false, _) => "standby",
-            (true, false) => "screen_off",
-            (true, true) => "active",
-        };
+        // Use the single-source-of-truth derivation so this stays
+        // in lockstep with `state_forwarder`'s D-Bus property emit
+        // and `register_tv_interfaces`'s initial-state seed. The
+        // reliable-tier short-circuit reads `last_known_power_state`
+        // against the matching constants exported alongside.
+        let derived_power_state = crate::power_state::derive_power_state(&state);
         {
             let tvs_read = tvs.read().await;
             if let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) {
@@ -1730,7 +1729,7 @@ impl TvManager {
             )
         };
 
-        if cached_before == "standby" {
+        if cached_before == crate::power_state::STANDBY {
             info!(
                 tv_id,
                 cached_power_state = %cached_before,
@@ -1750,7 +1749,7 @@ impl TvManager {
                 let tv = tv_arc.lock().await;
                 tv.last_known_power_state.clone()
             };
-            if cached == "active" {
+            if cached == crate::power_state::ACTIVE {
                 return Ok(());
             }
             debug!(

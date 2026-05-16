@@ -27,6 +27,7 @@ pub mod desktop_probe;
 pub(crate) mod json_toml;
 pub mod logind;
 pub mod netlink;
+pub(crate) mod power_state;
 pub mod registry;
 pub mod state_forwarder;
 pub mod tv_manager;
