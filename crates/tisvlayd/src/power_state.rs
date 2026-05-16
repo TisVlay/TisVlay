@@ -59,6 +59,15 @@ pub(crate) fn derive_power_state(state: PowerState) -> &'static str {
         // reliable-dispatch pre-flight (via `needs_wake_preflight`)
         // wakes the TV on the unknown substate rather than
         // assuming it's reachable.
+        //
+        // This wildcard is **temporarily conservative**: when a real
+        // new variant lands (e.g. Samsung's `NetworkStandby`,
+        // Sony's variants), evaluate whether it semantically
+        // belongs in `ACTIVE` (NIC alive, daemon can reach it
+        // without a wake) or stays in `STANDBY` (truly off / panel
+        // dark / wake-preflight needed) and add its own arm.
+        // Power-aware GUI clients lose the distinction while it
+        // collapses through this wildcard.
         _ => STANDBY,
     }
 }

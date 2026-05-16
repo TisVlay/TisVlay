@@ -328,3 +328,120 @@ impl MockHandle {
         state.pairing_outcomes.insert(tv_id.to_string(), outcome);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::new_test_parts;
+    use tisvlay_core::TvConnector;
+
+    /// Build a minimal mock vendor-config table for the given address.
+    fn vendor_config(address: &str) -> toml::Value {
+        let mut table = toml::value::Table::new();
+        table.insert("address".into(), toml::Value::String(address.to_string()));
+        toml::Value::Table(table)
+    }
+
+    /// `set_initial_power_state_override` applies at construct-time
+    /// for the *next* `MockConnection` opened to the address — pinning
+    /// the precedence-over-vendor-config behavior the
+    /// `screen_off`-graceful-fallback test relies on.
+    #[tokio::test]
+    async fn override_initial_power_state_takes_effect_on_connect() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://override_test");
+
+        handle.set_initial_power_state_override("mock://override_test", PowerState::ActiveStandby);
+
+        let mut conn = connector.connect(&cfg).await.expect("connect");
+        let power = conn.get_power_state().await.expect("get_power_state");
+        assert_eq!(power, PowerState::ActiveStandby);
+    }
+
+    /// The override survives reconnects — drops the first connection,
+    /// opens a second, and the new one still picks up the override.
+    /// Models the LG firmware quirk where `power_on` reconnects but
+    /// the TV is still latched in `ActiveStandby`.
+    #[tokio::test]
+    async fn override_survives_reconnect() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://override_reconnect");
+
+        handle.set_initial_power_state_override(
+            "mock://override_reconnect",
+            PowerState::ActiveStandby,
+        );
+
+        let mut first = connector.connect(&cfg).await.expect("first connect");
+        assert_eq!(
+            first.get_power_state().await.expect("get_power_state"),
+            PowerState::ActiveStandby,
+        );
+        drop(first);
+
+        let mut second = connector.connect(&cfg).await.expect("second connect");
+        assert_eq!(
+            second.get_power_state().await.expect("get_power_state"),
+            PowerState::ActiveStandby,
+            "override must survive across `MockConnection` lifetimes",
+        );
+    }
+
+    /// `screen_on_call_count` starts at zero, increments on every
+    /// `MockConnection::screen_on` (including when the noop knob
+    /// suppresses the state mutation), and is cumulative across
+    /// reconnects to the same address.
+    #[tokio::test]
+    async fn screen_on_call_count_is_cumulative_across_noop_and_reconnect() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://counter_test");
+
+        // Cold counter.
+        assert_eq!(handle.screen_on_call_count("mock://counter_test"), 0);
+
+        let mut first = connector.connect(&cfg).await.expect("first connect");
+        first.screen_on().await.expect("screen_on #1");
+        assert_eq!(handle.screen_on_call_count("mock://counter_test"), 1);
+
+        // Engage the noop knob — counter still bumps even when the
+        // command doesn't mutate state. This is the load-bearing
+        // invariant for the verify-retry-loop tests.
+        handle.set_screen_on_noop("mock://counter_test", true);
+        first.screen_on().await.expect("screen_on #2 (noop)");
+        assert_eq!(handle.screen_on_call_count("mock://counter_test"), 2);
+
+        drop(first);
+        let mut second = connector.connect(&cfg).await.expect("second connect");
+        second.screen_on().await.expect("screen_on #3 (reconnect)");
+        assert_eq!(
+            handle.screen_on_call_count("mock://counter_test"),
+            3,
+            "counter must be cumulative across reconnects (shared via MockState)",
+        );
+    }
+
+    /// Parallel coverage for `screen_off_call_count`.
+    #[tokio::test]
+    async fn screen_off_call_count_bumps_on_noop_too() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://off_counter_test");
+        let addr = "mock://off_counter_test";
+
+        assert_eq!(handle.screen_off_call_count(addr), 0);
+
+        handle.set_screen_off_noop(addr, true);
+        let mut conn = connector.connect(&cfg).await.expect("connect");
+        conn.screen_off().await.expect("screen_off");
+        conn.screen_off().await.expect("screen_off #2");
+        assert_eq!(handle.screen_off_call_count(addr), 2);
+    }
+
+    /// Reading the counter for an address that has never had a
+    /// connection returns 0 (not a panic, not `Err`).
+    #[test]
+    fn call_counts_for_unknown_address_return_zero() {
+        let (_connector, _discovery, handle) = new_test_parts();
+        assert_eq!(handle.screen_on_call_count("mock://never_connected"), 0);
+        assert_eq!(handle.screen_off_call_count("mock://never_connected"), 0);
+    }
+}

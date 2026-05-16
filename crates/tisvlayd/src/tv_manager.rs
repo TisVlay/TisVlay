@@ -418,6 +418,23 @@ impl Drop for PairingSessionGuard<'_> {
     }
 }
 
+/// Result of [`TvManager::await_power_state`].
+///
+/// `Matched` — the predicate matched (either immediately on the
+/// cached value or on a later transition observed via the watch
+/// sender). `TimedOut` — the bounded timeout fired (or the watch
+/// sender dropped due to TV removal) without a match; the carried
+/// `PowerState` is the most recently observed cached state for
+/// caller-side logging or fallback logic.
+///
+/// Both variants carry a `PowerState` so callers always have a
+/// value to log; the discriminant is the success/timeout signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AwaitOutcome {
+    Matched(PowerState),
+    TimedOut(PowerState),
+}
+
 /// System lifecycle event type.
 ///
 /// Used by `logind` and the daemon startup path to dispatch per-TV
@@ -1612,15 +1629,15 @@ impl TvManager {
     /// Await a [`PowerState`] transition that satisfies `predicate`,
     /// bounded by `timeout`.
     ///
-    /// `Ok(state)` — the predicate matched on the cached value or
-    /// on a subsequent transition observed via the watch sender.
-    /// `Err(last_seen)` — the timeout fired (or the sender dropped)
-    /// without the predicate matching; the value carried is the
-    /// most recently observed cached state, for callers that want
-    /// to log it. Splitting matched vs not-matched into the
-    /// `Result` discriminant means callers can't accidentally
-    /// treat a timeout as success by forgetting to re-test the
-    /// predicate themselves.
+    /// The two-arm enum spells intent at every call site:
+    /// [`AwaitOutcome::Matched`] is the success case ("predicate
+    /// matched on the cached value or on a subsequent transition");
+    /// [`AwaitOutcome::TimedOut`] is the timeout / sender-drop case,
+    /// carrying the last observed cached state for the caller's log
+    /// or fallback logic. The two-tag form replaces an earlier
+    /// `Result<PowerState, PowerState>` — homogeneous-type `Result`s
+    /// read as "error has state info" which obscures that timeout
+    /// is the expected, common path of the graceful-fallback flow.
     ///
     /// The function checks the current cached value before
     /// awaiting, so a transition that already landed before the
@@ -1636,10 +1653,10 @@ impl TvManager {
         tv_id: &str,
         timeout: Duration,
         predicate: impl Fn(PowerState) -> bool,
-    ) -> Result<PowerState, PowerState> {
+    ) -> AwaitOutcome {
         let mut rx = {
             let Ok(tv_arc) = self.get_tv(tv_id).await else {
-                return Err(PowerState::Unknown);
+                return AwaitOutcome::TimedOut(PowerState::Unknown);
             };
             let tv = tv_arc.lock().await;
             tv.power_state_tx.subscribe()
@@ -1649,18 +1666,19 @@ impl TvManager {
             loop {
                 let current = *rx.borrow();
                 if predicate(current) {
-                    return Ok(current);
+                    return AwaitOutcome::Matched(current);
                 }
                 if rx.changed().await.is_err() {
-                    // Sender dropped (TV removed); return last seen.
-                    return Err(current);
+                    // Sender dropped (TV removed); treat as timeout
+                    // with last seen.
+                    return AwaitOutcome::TimedOut(current);
                 }
             }
         };
 
         match tokio::time::timeout(timeout, wait).await {
-            Ok(result) => result,
-            Err(_) => Err(*rx.borrow()),
+            Ok(outcome) => outcome,
+            Err(_) => AwaitOutcome::TimedOut(*rx.borrow()),
         }
     }
 
@@ -1792,8 +1810,8 @@ impl TvManager {
                 })
                 .await
             {
-                Ok(_) => return Ok(()),
-                Err(last_seen) => {
+                AwaitOutcome::Matched(_) => return Ok(()),
+                AwaitOutcome::TimedOut(last_seen) => {
                     debug!(
                         tv_id,
                         attempt,
@@ -1891,16 +1909,16 @@ impl TvManager {
                 })
                 .await
             {
-                Ok(PowerState::ScreenOff) => {
+                AwaitOutcome::Matched(PowerState::ScreenOff) => {
                     // LG transitioned straight through to the
                     // target on wake-up — nothing to do.
                     return Ok(());
                 }
-                Ok(_) => {
+                AwaitOutcome::Matched(_) => {
                     // Settled into Active / ScreenSaver — fall
                     // through to verify-retry loop.
                 }
-                Err(_) => {
+                AwaitOutcome::TimedOut(_) => {
                     // Settle timed out. LG firmware honored the
                     // recent remote-off and refused to wake into
                     // `Active`; TV sits in `ActiveStandby` (panel
@@ -1933,8 +1951,8 @@ impl TvManager {
                 })
                 .await
             {
-                Ok(_) => return Ok(()),
-                Err(last_seen) => {
+                AwaitOutcome::Matched(_) => return Ok(()),
+                AwaitOutcome::TimedOut(last_seen) => {
                     debug!(
                         tv_id,
                         attempt,

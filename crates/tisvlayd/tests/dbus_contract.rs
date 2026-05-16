@@ -13,7 +13,7 @@
 #![cfg(feature = "mock")]
 
 use std::time::Duration;
-use tisvlay_core::DaemonClient;
+use tisvlay_core::{DaemonClient, RetryConfig};
 use tisvlay_harness::daemon::{TestDaemon, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 
@@ -276,7 +276,8 @@ async fn screen_on_escalates_via_verify_retry_loop() {
     // early-return shortcut.
     let calls = daemon.handle().screen_on_call_count(addr);
     assert_eq!(
-        calls, 2,
+        calls,
+        RetryConfig::default().effective_max_attempts(),
         "verify-retry loop must invoke conn.screen_on() exactly max_attempts times before escalating",
     );
 
@@ -378,7 +379,8 @@ async fn screen_off_verify_retry_gives_up_when_panel_refuses() {
     // assertion below — but for the wrong reason).
     let calls = daemon.handle().screen_off_call_count(addr);
     assert_eq!(
-        calls, 2,
+        calls,
+        RetryConfig::default().effective_max_attempts(),
         "verify-retry loop must invoke conn.screen_off() exactly max_attempts times before giving up",
     );
 

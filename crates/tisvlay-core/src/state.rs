@@ -127,7 +127,17 @@ pub enum PowerState {
     ActiveStandby,
     /// TV is in suspend mode.
     Suspend,
-    /// TV is in screen saver mode.
+    /// TV is in screen saver mode — panel is on and the TV is
+    /// fully usable; this variant is in the wake-permissive
+    /// whitelist alongside [`Self::Active`] for that reason.
+    ///
+    /// Vendor backends that have a substate semantically meaning
+    /// "panel dim / ambient mode / not-fully-usable" should NOT
+    /// map onto `ScreenSaver` — they need their own variant (and
+    /// a place in the wake-preflight set on the daemon side), or
+    /// the daemon's `screen_on` short-circuit will skip the wake
+    /// they actually need. The current LG mapping uses the SSAP
+    /// `"screen saver"` / `"screensaver"` strings only.
     ScreenSaver,
     /// TV is in screen off mode (OLED blank).
     ScreenOff,
@@ -172,23 +182,19 @@ impl TvState {
     /// `ActiveStandby` vs `ScreenOff` — both `is_screen_on=false`,
     /// but semantically different targets for reliable dispatch).
     ///
-    /// `ActiveStandby` is in the screen-off suppression list because
-    /// it's the state LG TVs enter when the user presses Power from
-    /// Screen Off: NIC alive (so `is_on` stays `true` for `is_on()`),
-    /// panel off. Without it the forwarder's
-    /// `(is_on=true, is_screen_on=true)` → `"active"` mapping would
-    /// defeat the reliable dispatch tier's verify check after a
-    /// remote power-off. See "Bug A" in `docs/lg/firmware-quirks.md`.
+    /// `is_screen_on` is derived as a positive whitelist (`Active` /
+    /// `ScreenSaver`) rather than a negation against the screen-off
+    /// list. The whitelist form keeps unknown future `#[non_exhaustive]`
+    /// variants on the safe default — `is_screen_on = false` — so a
+    /// vendor backend adding a substate we haven't audited can't
+    /// silently report the panel as lit when the daemon doesn't
+    /// know. `ActiveStandby` (the LG substate after a remote-press
+    /// power-off — NIC alive, panel dark) was the original
+    /// motivating case; see "Bug A" in `docs/lg/firmware-quirks.md`.
     pub fn update_power(&mut self, state: PowerState) {
         self.power_state = state;
         self.is_on = state.is_on();
-        self.is_screen_on = !matches!(
-            state,
-            PowerState::ScreenOff
-                | PowerState::ActiveStandby
-                | PowerState::Standby
-                | PowerState::Suspend
-        );
+        self.is_screen_on = matches!(state, PowerState::Active | PowerState::ScreenSaver);
     }
 }
 
@@ -299,6 +305,14 @@ mod tests {
     /// Companion to [`active_standby_marks_screen_off`]: spell out the
     /// expected mapping for every `PowerState` variant so future changes
     /// have to touch this table.
+    ///
+    /// `Unknown` resolves to `is_screen_on = false` because
+    /// `update_power` derives the bool from a positive whitelist of
+    /// fully-usable substates (`Active` / `ScreenSaver`). Anything
+    /// outside the whitelist — including `Unknown` and any future
+    /// `#[non_exhaustive]` variant — is treated as panel-off, which
+    /// matches the daemon-side `derive_power_state` collapse of
+    /// `Unknown` to `STANDBY`.
     #[test]
     fn update_power_screen_on_mapping_is_complete() {
         for (state, expected_is_on, expected_screen_on) in [
@@ -308,7 +322,7 @@ mod tests {
             (PowerState::ScreenOff, true, false),
             (PowerState::Standby, false, false),
             (PowerState::Suspend, false, false),
-            (PowerState::Unknown, false, true),
+            (PowerState::Unknown, false, false),
         ] {
             let mut s = TvState::new();
             s.update_power(state);

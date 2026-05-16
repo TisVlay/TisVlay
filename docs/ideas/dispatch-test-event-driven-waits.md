@@ -1,11 +1,11 @@
 # Replace hardcoded sleep-waits in dispatch integration tests with poll-with-deadline
 
-The `screen_on` / `screen_off` integration tests in `crates/tisvlayd/tests/dbus_contract.rs` and `crates/tisvlayd/tests/profile_dispatch.rs` use `tokio::time::sleep(Duration::from_millis(1500))` (8 call sites at the time of writing) to give the daemon's full state pipeline — command → mock → subscription push → state-change forwarder → D-Bus `PropertiesChanged` — time to settle before asserting on `client.list_tvs().await`. The 1500 ms budget covers the worst case (pre-flight wake + power_on probe + new-connection state push + settle + verify) with headroom; in practice most transitions land in under 100 ms.
+The `screen_on` / `screen_off` integration tests in `crates/tisvlayd/tests/dbus_contract.rs` and `crates/tisvlayd/tests/profile_dispatch.rs` use `tokio::time::sleep(Duration::from_millis(1500))` (9 call sites at the time of writing: 7 in `dbus_contract.rs`, 2 in `profile_dispatch.rs`) to give the daemon's full state pipeline — command → mock → subscription push → state-change forwarder → D-Bus `PropertiesChanged` — time to settle before asserting on `client.list_tvs().await`. The 1500 ms budget covers the worst case (pre-flight wake + power_on probe + new-connection state push + settle + verify) with headroom; in practice most transitions land in under 100 ms.
 
 ## Why this is worth fixing
 
 - The fixed-budget waits directly contradict the daemon's own event-driven design (Commit 6.10's `await_power_state` watch-channel pattern). Tests should match the implementation philosophy.
-- Slow tests: each site burns the full 1500 ms even when the actual transition completes in ~50 ms. With 8 sites across two crates, that's ~12 s of unnecessary wall-clock that nextest's parallelism hides locally but compounds on resource-constrained CI.
+- Slow tests: each site burns the full 1500 ms even when the actual transition completes in ~50 ms. With 9 sites across two crates, that's ~13 s of unnecessary wall-clock that nextest's parallelism hides locally but compounds on resource-constrained CI.
 - Theoretical flake surface: a loaded CI runner where state propagation drifts past 1500 ms causes the test to assert on stale state. Hasn't been observed in practice but the framework is brittle by construction.
 - Hides timing bugs: a regression that pushes state-change latency from 50 ms to 1400 ms would still pass these tests.
 
