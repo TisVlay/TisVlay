@@ -82,26 +82,32 @@ The graceful fallback declares success when the panel is demonstrably off, even 
 
 ## Field-test verification trace (post-fix)
 
-For reference, the journal trace from the manual repro (lock → remote power-off → mouse) **after** the Bug A + Bug B fixes landed, with the `processing`/`onOff` discriminators in place. Total wake-from-`ActiveStandby` is ~8 s, dominated by the LG WoL → boot → SSAP registration sequence:
+Measured via [`scripts/triage_dispatch_perf.py`](../../scripts/triage_dispatch_perf.py) on the OLED65G4SUB after the Bug A, Bug B, discriminator-parser, and post-wake-settle fixes:
 
 ```
-+0.000s   screen_on pre-flight: powering on
-            (cached=ActiveStandby — discriminator-projected within ~200ms of remote)
-+0.001s   PowerOn requested
-+0.001s   Direct-connect probe skipped/failed
-          Sent Wake-on-LAN packet
-+1.000s   Registration response (phase 1)
-          Registered with TV, got client key
-          LG TV online after wake
-+7.000s   Subscribed to backend state updates
-+7.001s   TV is online                           ← end-to-end ~7-8 s
+[setup] initial PowerState: 'active'
+[ssap] turnOff ack
+[setup] sleeping 3.0s before SetScreen
+[setup] PowerState before SetScreen: 'standby'
+[call] Tv1.Screen.SetScreen true
+[call] returned Ok in 9.59s
+[result] dispatch_latency_seconds=9.79
 ```
+
+Approximate cost breakdown of the 9.79 s, in dispatch order:
+
+1. **~0 s** — `screen_on` pre-flight reads cached `Standby` and short-circuits to `power_on` (no in-band `screen_on` round-trip).
+2. **~1 s** — WoL packet sent, TV firmware begins booting. **The OLED panel physically lights up within this window** — well before the daemon's WS handshake completes. For "TV-as-monitor" UX the user sees output here, long before the 9.79 s ends.
+3. **~7-8 s** — TCP+TLS handshake, SSAP register, initial subscribe-state response. This is the LG firmware's WoL → SSAP-server-ready latency; not under daemon control.
+4. **~0 s** — initial subscription push lands, cached `PowerState` flips to `"active"`, `state_forwarder` emits `PropertiesChanged`. The measurement ends here.
+
+What `dispatch_latency_seconds` actually measures: "daemon-knows-TV-is-fully-online". Not the same as user-visible "panel-lit"; the panel lights up several seconds earlier. If you need a measurement closer to perceived latency, the right hook is the `Tv1.Power.PowerCycleProgress` D-Bus signal — `Connecting` → `Connected` brackets the SSAP handshake portion; the panel itself lights between `WolSent` and `Connecting`. (Not currently captured by the triage script; a follow-up enhancement.)
 
 Three things worth knowing:
 
-1. **The discriminator fix made the pre-flight reliable.** Pre-fix, the daemon's cached state read stale `Active` for ~3 s after a remote-off, so pre-flight skipped the wake on fast clicks. With the `processing`/`onOff` parsing, cached transitions to `ActiveStandby` within ~200 ms — well inside the human reaction-time window for a follow-up click.
-2. **The WoL recovery path itself is unchanged.** The reliable-dispatch layer's only job is to decide *when* to escalate to `power_on`; once it does, the existing WoL → Registration sequence in `tv_manager::power_on` carries the weight.
-3. **Verify overhead is the floor.** ~600 ms (2 × 300 ms verify-delay budget) on the pre-flight path, plus the LG firmware's own wake time. The verify-delay is bounded by [`RetryConfig::verify_delay`](../../crates/tisvlay-core/src/traits.rs); event-driven awaits via watch channels (`TvManager::await_power_state`) return on the first matching subscription push, so the budget is an upper bound rather than a guaranteed wait.
+1. **No single load-bearing fix.** The pre-`feat/screen-on-reliable` baseline needed *all* of: Bug A (`ActiveStandby` → `is_screen_on = false`), Bug B (LG `500` vs `-102` discrimination), and the `processing`/`onOff` discriminator parsing. Removing any one of these reintroduces a different silent-success failure mode, traced in the earlier sections.
+2. **The WoL recovery path itself is unchanged.** The reliable-dispatch layer's only job is to decide *when* to escalate to `power_on`; once it does, the existing WoL → Registration sequence in `tv_manager::power_on` carries the weight. The ~7-8 s SSAP-handshake portion of the 9.79 s is bounded by LG firmware boot speed.
+3. **Verify overhead is an upper bound, not a floor.** The pre-flight wake gate and the verify-retry loops route through `TvManager::await_power_state`, which uses a `tokio::sync::watch` keyed on cached `PowerState` (fired by every subscription push and live `getPowerState` query). Each step returns on the first matching transition, so the `verify_delay × max_attempts` budget rarely cashes in — typical observed latency on the LG OLED G4 is ~10-50 ms per step, well under the 300 ms budget.
 
 ## The 10 s `REQUEST_MS` is load-bearing — don't bypass `screen_on`
 
@@ -115,9 +121,11 @@ The LG client's `with_retry` wrapper ([backend.rs](../../crates/tisvlay-lg/src/b
 
 Any approach that *bypasses* `screen_on` to avoid the 10 s wait skips this accidental knock. The TV slips deeper into standby, and full WoL recovery now takes 9-12 s instead of <1 s. The arithmetic: ~7-10 s saved on the bypassed wait, ~9-12 s lost on slower recovery. Net pessimization in every case.
 
-### Spike data
+### Spike data (V1-era measurements; conclusion still applies)
 
-Three bypass attempts. Each was implemented during the original spike, smoke-tested on real hardware, then reverted. The spike commits are archived on the `feat/action-qos` branch for the design-exploration record.
+Three bypass attempts. Each was implemented during the original `feat/action-qos` spike (V1 architecture: only `screen_on` was reliable, gate was on cached `"standby"` only, no `processing`/`onOff` parsing yet), smoke-tested on real hardware, then reverted. The spike commits are archived on the `feat/action-qos` branch for the design-exploration record.
+
+The per-trial numbers below are pre-V2; the V2-era architecture still routes the in-band `screen_on` attempt through `with_connection` → backend `with_retry`, so the "knock" mechanism that costs each bypass its win is intact. If you re-measure on V2, expect the same qualitative shape (each bypass pessimizes the bad path) even if the absolute numbers shift. Re-running [`scripts/triage_dispatch_perf.py`](../../scripts/triage_dispatch_perf.py) is the quickest way to validate.
 
 #### Spike A — `screen_on` timeout race
 
@@ -180,19 +188,19 @@ Pre-fix (REQUEST_MS=10000):       This trial (REQUEST_MS=3000):
 
 Net: 7 s saved on `REQUEST_MS`, 9 s lost on recovery.
 
-### The pre-flight wake gate is narrower (and survives)
+### The pre-flight wake gate is the only bypass that survives
 
-The bypass that *does* belong is the pre-flight wake gate in `tv_manager::screen_on` / `screen_off`: when `last_known_power_state` is in the [`needs_wake_preflight`](../../crates/tisvlayd/src/power_state.rs) set (`Standby` / `Suspend` / `ActiveStandby` / `Unknown`), skip the in-band `screen_on` attempt and dispatch `power_on` directly. This is correct because:
+The one short-circuit that *does* belong is the pre-flight wake gate in `tv_manager::screen_on` / `screen_off`. V1 keyed it on cached `"standby"` only; V2 expanded the gate to the full [`needs_wake_preflight`](../../crates/tisvlayd/src/power_state.rs) set — `Standby` / `Suspend` / `ActiveStandby` / `Unknown`. When cached is one of those:
 
-- In the deeper-standby case, `screen_on` would fail anyway (the TV is genuinely unreachable, not just half-dead WS).
-- The "knock" mechanism doesn't help here because the TV's WS is fully torn down, not just stale — `with_retry`'s reconnect would also fail.
-- Going straight to `power_on` skips a guaranteed-failure round-trip.
+- `Standby` / `Suspend`: TV is genuinely unreachable, `screen_on` would fail anyway and the "knock" doesn't help because the WS is fully torn down (not just stale) — `with_retry`'s reconnect would also fail. Going straight to `power_on` skips a guaranteed-failure round-trip.
+- `ActiveStandby`: transitional substate after a remote-press power-off. LG firmware ACKs `screen_on` at the wire but won't actually transition the panel out of `ActiveStandby`; the with_retry knock has nothing to recover from (WS is alive). `power_on` is the only path that takes the TV out of `ActiveStandby`.
+- `Unknown`: no subscription push received yet; safest to treat as off.
 
 Stale-WS-but-cached-`ScreenOff` scenarios continue to use the natural `REQUEST_MS` → `with_retry` → escalate path, because the knock is load-bearing there. `ScreenOff` deliberately stays out of `needs_wake_preflight` for exactly this reason.
 
 ### Bottom line
 
-Future engineers tempted to "shorten the slow path" should benchmark against Spike A's and B's per-trial numbers before shipping. Anything that bypasses `screen_on` under stale-WS conditions will lose the with_retry knock and end up slower than the pre-fix 13 s baseline. If you have a fix that *preserves* the knock (e.g., explicit synchronous reconnect-then-screen_on), it's worth trying — `SO_KEEPALIVE` with aggressive timing (`TCP_KEEPIDLE=5`, `TCP_KEEPINTVL=2`, `TCP_KEEPCNT=2`) is the only candidate we considered that fits this shape, but its blast radius (every WS on the daemon, fiddly to extract the raw fd from `MaybeTlsStream`) didn't justify proceeding without a stronger signal that the 13 s floor is unacceptable.
+Future engineers tempted to "shorten the slow path" should reproduce on V2 hardware with `scripts/triage_dispatch_perf.py` before shipping; the V1 spike numbers above tell you the *shape* of the regression (bypass wins on the wait, loses on recovery), not the V2 absolute numbers. Anything that bypasses `screen_on` under stale-WS conditions will lose the with_retry knock and pessimize the bad-path total. If you have a fix that *preserves* the knock (e.g., explicit synchronous reconnect-then-screen_on), it's worth trying — `SO_KEEPALIVE` with aggressive timing (`TCP_KEEPIDLE=5`, `TCP_KEEPINTVL=2`, `TCP_KEEPCNT=2`) is the only candidate we considered that fits this shape, but its blast radius (every WS on the daemon, fiddly to extract the raw fd from `MaybeTlsStream`) didn't justify proceeding without a stronger signal that the current floor is unacceptable.
 
 The autonomous reproducer used for the spike measurements is at [`scripts/triage_dispatch_perf.py`](../../scripts/triage_dispatch_perf.py). It opens an out-of-band SSAP WebSocket via the daemon's existing `client_key`, sends `ssap://system/turnOff` to put the TV in `screen_off`, then dispatches reliable `screen_on` and times `t0 → PowerState == "active"`. Useful for repeat measurement of cold-start dispatch latency from a known TV state without driving the actual desktop lock/unlock flow.
 
