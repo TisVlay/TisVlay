@@ -250,6 +250,22 @@ struct ManagedTv {
     /// derives its string from this same enum via
     /// [`crate::power_state::derive_power_state`].
     last_known_power_state: PowerState,
+    /// Broadcasts every update to [`Self::last_known_power_state`].
+    ///
+    /// Allows reliable-dispatch paths in `screen_on` / `screen_off`
+    /// to await an authoritative transition (with timeout) instead
+    /// of polling the cached field on a fixed `tokio::time::sleep`
+    /// cadence. The subscription task writes the cached field and
+    /// fires the sender in the same critical section, so waiters
+    /// can't miss a transition that happens between their
+    /// `subscribe()` and their first `changed()` await — they see
+    /// the current value via `borrow()` before awaiting.
+    ///
+    /// `watch` (rather than `broadcast`) because the value is
+    /// always-current and waiters only care about "is the cached
+    /// PowerState a state I want now"; missed intermediate values
+    /// are fine.
+    power_state_tx: tokio::sync::watch::Sender<PowerState>,
     /// NIC carrying traffic to this TV, resolved from the routing table.
     ///
     /// Set at connection time via `resolve_interface_for_ip()`. Used to
@@ -260,6 +276,7 @@ struct ManagedTv {
 
 impl ManagedTv {
     fn new(config: TvConfig, system_profile: ResolvedSystemProfile) -> Self {
+        let (power_state_tx, _) = tokio::sync::watch::channel(PowerState::Unknown);
         Self {
             config,
             connection: None,
@@ -269,6 +286,7 @@ impl ManagedTv {
             system_profile,
             last_known_input: None,
             last_known_power_state: PowerState::Unknown,
+            power_state_tx,
             monitored_interface: None,
         }
     }
@@ -484,6 +502,12 @@ async fn run_subscription_task(
                     tv.last_known_input = Some(input.clone());
                 }
                 tv.last_known_power_state = state.power_state;
+                // Fire the watch so reliable-dispatch paths waiting
+                // on a transition wake up. `send_replace` ignores
+                // the "no receivers" case (no one is currently
+                // waiting — fine; the next subscriber sees this
+                // value via `borrow()`).
+                tv.power_state_tx.send_replace(state.power_state);
             }
         }
         let event = StateChangeEvent::SubscriptionUpdate {
@@ -1585,6 +1609,53 @@ impl TvManager {
     // Screen Control
     // -------------------------------------------------------------------------
 
+    /// Await a [`PowerState`] transition that satisfies `predicate`,
+    /// bounded by `timeout`.
+    ///
+    /// Returns the satisfying state on success, or the most recently
+    /// observed state on timeout (caller decides what to do with a
+    /// non-matching final value). The function checks the current
+    /// cached value before awaiting, so a transition that already
+    /// landed before the call is observed immediately.
+    ///
+    /// Replaces the previous `tokio::time::sleep(verify_delay)` +
+    /// poll pattern with an event-driven wait keyed on the
+    /// [`ManagedTv::power_state_tx`] watch sender — subscription
+    /// pushes and `refresh_power_state` writes both fire the
+    /// channel, so this returns the moment the cached field flips.
+    async fn await_power_state(
+        &self,
+        tv_id: &str,
+        timeout: Duration,
+        predicate: impl Fn(PowerState) -> bool,
+    ) -> PowerState {
+        let mut rx = {
+            let Ok(tv_arc) = self.get_tv(tv_id).await else {
+                return PowerState::Unknown;
+            };
+            let tv = tv_arc.lock().await;
+            tv.power_state_tx.subscribe()
+        };
+
+        let wait = async {
+            loop {
+                let current = *rx.borrow();
+                if predicate(current) {
+                    return current;
+                }
+                if rx.changed().await.is_err() {
+                    // Sender dropped (TV removed); return last seen.
+                    return current;
+                }
+            }
+        };
+
+        match tokio::time::timeout(timeout, wait).await {
+            Ok(state) => state,
+            Err(_) => *rx.borrow(),
+        }
+    }
+
     /// Refresh the cached [`ManagedTv::last_known_power_state`] with
     /// an authoritative query to the TV, then return the fresh value.
     ///
@@ -1616,6 +1687,7 @@ impl TvManager {
         if !was_connected {
             let mut tv = tv_arc.lock().await;
             tv.last_known_power_state = PowerState::Standby;
+            tv.power_state_tx.send_replace(PowerState::Standby);
             return PowerState::Standby;
         }
 
@@ -1636,6 +1708,7 @@ impl TvManager {
         {
             let mut tv = tv_arc.lock().await;
             tv.last_known_power_state = fresh;
+            tv.power_state_tx.send_replace(fresh);
         }
         fresh
     }
@@ -1698,19 +1771,18 @@ impl TvManager {
                 debug!(tv_id, attempt, error = %e, "screen_on failed; escalating to power_on");
                 break;
             }
-            tokio::time::sleep(retry_config.verify_delay).await;
-            let cached = {
-                let tv_arc = self.get_tv(tv_id).await?;
-                let tv = tv_arc.lock().await;
-                tv.last_known_power_state
-            };
-            if matches!(cached, PowerState::Active | PowerState::ScreenSaver) {
+            let observed = self
+                .await_power_state(tv_id, retry_config.verify_delay, |s| {
+                    matches!(s, PowerState::Active | PowerState::ScreenSaver)
+                })
+                .await;
+            if matches!(observed, PowerState::Active | PowerState::ScreenSaver) {
                 return Ok(());
             }
             debug!(
                 tv_id,
                 attempt,
-                cached_power_state = ?cached,
+                cached_power_state = ?observed,
                 "screen_on did not reach active state",
             );
         }
@@ -1722,7 +1794,7 @@ impl TvManager {
     }
 
     /// Turn screen off — inherently reliable: verify cached state
-    /// reaches [`PowerState::ScreenOff`], retry up to
+    /// reaches a panel-off substate, retry up to
     /// `backend.verify_retry_config().max_attempts`. No escalation
     /// past retries — the TV is already reachable; if it refuses
     /// to blank we log and give up rather than power-cycle.
@@ -1730,9 +1802,10 @@ impl TvManager {
     /// **Pre-flight wake.** If cached state is one of the off-ish
     /// substates per [`crate::power_state::needs_wake_preflight`]
     /// (`Standby` / `Suspend` / `ActiveStandby` / `Unknown`), call
-    /// [`Self::power_on`] first to bring the TV to a steady
-    /// `Active` state, then continue into the verify-retry loop to
-    /// send the actual `screen_off` command. Serves two cases:
+    /// [`Self::power_on`] first, then poll cached state until LG
+    /// settles into a non-wake-preflight state (post-wake settle
+    /// phase). Once settled, fall through to the verify-retry loop
+    /// to send the actual `screen_off` command. Serves two cases:
     ///
     /// - `on_startup = "screen_off"` (boot machine with TV powered
     ///   on but panel blanked to avoid overnight burn-in): cached
@@ -1741,8 +1814,15 @@ impl TvManager {
     ///   `ActiveStandby` (panel dark, NIC alive) before reaching
     ///   `Standby`: an immediate `screen_off` while in
     ///   `ActiveStandby` would otherwise no-op (LG firmware ACKs
-    ///   but doesn't change state), leaving the daemon's view stuck
-    ///   on a transient substate.
+    ///   but doesn't change state).
+    ///
+    /// **Graceful fallback.** If the post-wake settle times out —
+    /// LG firmware was honoring a very recent remote-off and
+    /// refused to fully wake despite our `power_on` — the TV is
+    /// still in an off-ish substate with the panel already dark.
+    /// The user's screen_off intent is functionally achieved, so
+    /// return `Ok` with an info log rather than burning more
+    /// retries on a `turnOffScreen` LG will keep rejecting.
     ///
     /// Side effect: `on_session_lock = "screen_off"` with the TV
     /// already off briefly powers it on before blanking. Rare but
@@ -1771,8 +1851,46 @@ impl TvManager {
                 "screen_off pre-flight: powering on first (TV must reach Active before screen-off substate)",
             );
             self.power_on(tv_id).await?;
-            // Fall through to the verify-retry loop below — TV is
-            // now up; send the screen_off command and verify.
+
+            // Post-wake settle: `power_on` returns when the WS
+            // reconnects, but LG firmware can keep reporting
+            // `ActiveStandby` for a few hundred ms while it
+            // transitions to `Active`. Sending `screen_off` in
+            // that window gets a 500 rejection. Await the
+            // transition out of the wake-preflight set with a
+            // bounded timeout.
+            let settle_budget = retry_config.verify_delay * retry_config.max_attempts as u32;
+            let settled = self
+                .await_power_state(tv_id, settle_budget, |s| {
+                    !crate::power_state::needs_wake_preflight(s)
+                })
+                .await;
+
+            match settled {
+                PowerState::ScreenOff => {
+                    // LG transitioned straight through to the
+                    // target on wake-up — nothing to do.
+                    return Ok(());
+                }
+                s if !crate::power_state::needs_wake_preflight(s) => {
+                    // Settled into Active / ScreenSaver — fall
+                    // through to verify-retry loop.
+                }
+                _ => {
+                    // Settle timed out. LG firmware honored the
+                    // recent remote-off and refused to wake into
+                    // `Active`; TV sits in `ActiveStandby` (panel
+                    // off, NIC alive). The user's screen_off
+                    // intent is functionally satisfied (panel is
+                    // dark), so accept this as success.
+                    info!(
+                        tv_id,
+                        "screen_off: TV did not settle into Active after power_on; \
+                         accepting wake-preflight substate as panel-off (LG firmware quirk)",
+                    );
+                    return Ok(());
+                }
+            }
         }
 
         for attempt in 0..retry_config.max_attempts {
@@ -1785,19 +1903,18 @@ impl TvManager {
                 debug!(tv_id, attempt, error = %e, "screen_off failed; giving up");
                 return Err(e);
             }
-            tokio::time::sleep(retry_config.verify_delay).await;
-            let cached = {
-                let tv_arc = self.get_tv(tv_id).await?;
-                let tv = tv_arc.lock().await;
-                tv.last_known_power_state
-            };
-            if cached == PowerState::ScreenOff {
+            let observed = self
+                .await_power_state(tv_id, retry_config.verify_delay, |s| {
+                    s == PowerState::ScreenOff
+                })
+                .await;
+            if observed == PowerState::ScreenOff {
                 return Ok(());
             }
             debug!(
                 tv_id,
                 attempt,
-                cached_power_state = ?cached,
+                cached_power_state = ?observed,
                 "screen_off did not reach screen_off state",
             );
         }
