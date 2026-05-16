@@ -242,7 +242,18 @@ impl TvConnection for LgConnection {
 
     async fn is_screen_on(&mut self) -> Result<bool> {
         let state = self.with_retry(|c| Box::pin(c.get_power_state())).await?;
-        Ok(!matches!(state, PowerState::ScreenOff))
+        // Match the canonical screen-off suppression list in
+        // `TvState::update_power`. `ActiveStandby` (panel dark, NIC
+        // alive) joined this list when typed PowerState shipped;
+        // missing it here would disagree with `TvState::is_screen_on`
+        // for that variant.
+        Ok(!matches!(
+            state,
+            PowerState::ScreenOff
+                | PowerState::ActiveStandby
+                | PowerState::Standby
+                | PowerState::Suspend
+        ))
     }
 
     async fn set_volume(&mut self, level: u8) -> Result<()> {

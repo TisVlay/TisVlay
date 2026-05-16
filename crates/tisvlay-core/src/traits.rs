@@ -147,6 +147,21 @@ impl Default for RetryConfig {
     }
 }
 
+impl RetryConfig {
+    /// `max_attempts` clamped to at least 1.
+    ///
+    /// Guards the dispatch hot path against a backend that declares
+    /// `max_attempts = 0` either by accident or as a "best-effort
+    /// only" stance: with zero attempts the verify-retry loop never
+    /// runs and a literal-zero would let `screen_on` / `screen_off`
+    /// return `Ok` without sending a single command. One attempt is
+    /// the floor — backends that genuinely want fire-and-forget
+    /// should still send the command once.
+    pub fn effective_max_attempts(&self) -> usize {
+        self.max_attempts.max(1)
+    }
+}
+
 /// Connection to a specific TV instance.
 ///
 /// This trait provides connection lifecycle management and all TV control methods.
@@ -610,6 +625,32 @@ mod tests {
         let cfg = RetryConfig::default();
         assert_eq!(cfg.verify_delay, Duration::from_millis(300));
         assert_eq!(cfg.max_attempts, 2);
+    }
+
+    /// `effective_max_attempts()` clamps `max_attempts == 0` up to
+    /// `1`. Guards the dispatch hot path against a backend that
+    /// declares zero attempts either by accident or as a
+    /// "best-effort only" stance — the verify-retry loop must run
+    /// at least once or `screen_on` / `screen_off` would return
+    /// `Ok` without sending a single command.
+    #[test]
+    fn effective_max_attempts_clamps_zero_up_to_one() {
+        assert_eq!(
+            RetryConfig {
+                verify_delay: Duration::from_millis(300),
+                max_attempts: 0,
+            }
+            .effective_max_attempts(),
+            1,
+        );
+        assert_eq!(
+            RetryConfig {
+                verify_delay: Duration::from_millis(300),
+                max_attempts: 5,
+            }
+            .effective_max_attempts(),
+            5,
+        );
     }
 
     #[test]

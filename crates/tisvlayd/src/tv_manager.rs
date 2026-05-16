@@ -1670,10 +1670,17 @@ impl TvManager {
     /// Bounded by a tight timeout (1 verify_delay): if the TV is
     /// unresponsive — true `Standby` with the WS dead, or a
     /// half-asleep firmware that won't answer — we treat that as
-    /// `Standby` so the pre-flight wakes anyway. Never triggers a
-    /// reconnect cascade; if `tv.is_connected() == false` we skip
-    /// the query and return `Standby` directly (a `power_on` would
-    /// be doing the reconnect work for the caller in a moment).
+    /// `Standby` so the pre-flight wakes anyway.
+    ///
+    /// Never triggers WoL or `power_on`'s wake-and-retry loop. If
+    /// `tv.is_connected() == false` at entry we skip the query and
+    /// return `Standby` directly so a follow-up `power_on` does the
+    /// heavy lifting. Note: when the daemon's `is_connected()` is
+    /// true but the underlying backend WS is stale, the backend's
+    /// own retry wrapper (e.g. the LG client's `with_retry`) may
+    /// reconnect the WebSocket as part of issuing the query — that
+    /// reconnect is bounded by the same `timeout` here, so a
+    /// half-dead WS doesn't stall the pre-flight indefinitely.
     async fn refresh_power_state(&self, tv_id: &str, timeout: Duration) -> PowerState {
         let tv_arc = match self.get_tv(tv_id).await {
             Ok(arc) => arc,
@@ -1761,7 +1768,7 @@ impl TvManager {
             return self.power_on(tv_id).await;
         }
 
-        for attempt in 0..retry_config.max_attempts {
+        for attempt in 0..retry_config.effective_max_attempts() {
             if let Err(e) = self
                 .with_connection(tv_id, |conn| {
                     Box::pin(async move { conn.screen_on().await })
@@ -1859,7 +1866,15 @@ impl TvManager {
             // that window gets a 500 rejection. Await the
             // transition out of the wake-preflight set with a
             // bounded timeout.
-            let settle_budget = retry_config.verify_delay * retry_config.max_attempts as u32;
+            // Saturating multiply guards against a pathological
+            // `max_attempts` config (usize wider than u32, or a
+            // very large value) overflowing `Duration` — clamp to
+            // `Duration::MAX` rather than panicking the daemon.
+            let attempts = u32::try_from(retry_config.effective_max_attempts()).unwrap_or(u32::MAX);
+            let settle_budget = retry_config
+                .verify_delay
+                .checked_mul(attempts)
+                .unwrap_or(Duration::MAX);
             let settled = self
                 .await_power_state(tv_id, settle_budget, |s| {
                     !crate::power_state::needs_wake_preflight(s)
@@ -1893,7 +1908,7 @@ impl TvManager {
             }
         }
 
-        for attempt in 0..retry_config.max_attempts {
+        for attempt in 0..retry_config.effective_max_attempts() {
             if let Err(e) = self
                 .with_connection(tv_id, |conn| {
                     Box::pin(async move { conn.screen_off().await })
