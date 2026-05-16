@@ -198,7 +198,7 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 │   ├── Methods:  GetSupportedVendors, GetPairingSchema, AddTv,
 │   │             CancelPair, ReloadConfig, ListSystemProfiles,
 │   │             GetUserProfileDefault, ListUserProfiles, DiscoverTvs
-│   └── Signals:  ConfigReloaded
+│   └── Signals:  ConfigReloaded, PairingProgress, DiscoveryFound
 └── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
     │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
     ├── Properties (rw): Name, Managed, SystemProfile, PrimaryInput,
@@ -209,7 +209,8 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
     │                     AvailableInputs
     ├── Methods:  Reconnect, RePair, Remove, GetConfig, UpdateConfig,
     │             GetEffectiveSystemProfile, Dispatch, SwitchInput
-    └── Signals:  (standard PropertiesChanged only)
+    └── Signals:  PowerCycleProgress (on Tv1.Power), plus standard
+                  PropertiesChanged
 
 org.tisvlay.Session  (session bus)
 └── /org/tisvlay/Session            org.tisvlay.Session1

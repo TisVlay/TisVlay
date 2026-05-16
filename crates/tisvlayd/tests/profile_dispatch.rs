@@ -20,8 +20,8 @@
 #![cfg(feature = "mock")]
 
 use std::time::Duration;
-use tisvlay_core::DaemonClient;
-use tisvlay_harness::daemon::{TestDaemon, test_tv_uuid};
+use tisvlay_core::{DaemonClient, PowerState, SessionAction, SystemConfig, SystemProfileConfig};
+use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 use tisvlayd::tv_manager::SystemEvent;
 
@@ -208,5 +208,83 @@ async fn shutdown_clears_connected_property_on_dbus() {
     assert!(
         !tvs[0].connected,
         "D-Bus Connected should be false after shutdown",
+    );
+}
+
+// ---------- Wake → reliable screen_on routes through dispatch_action ----------
+
+/// Regression test for the system-event reliable-tier code path.
+///
+/// PR #56 (Action QoS) claims `tv_manager::execute_system_event`
+/// funnels through `dispatch_action` with the resolved QoS so
+/// configuring `on_wake = { action = "screen_on" }` gets the same
+/// verify-retry-escalate semantics as a user-session unlock event.
+/// The pre-existing tests in this file only cover sleep-side actions
+/// (`Shutdown`, `Sleep`, `Reboot`, `NoSession`), which all bypass the
+/// QoS branch in `dispatch_action`'s match. Without a wake-side test
+/// a refactor that broke the system-event → `dispatch_action` →
+/// `dispatch_reliable_screen_on` plumbing would slip through.
+///
+/// Setup: override the "default" system profile so `on_wake` resolves
+/// to `screen_on` (instead of the built-in `power_on` default). The
+/// asymmetric default makes that `(ScreenOn, Reliable)` — the only
+/// `(action, qos)` pair `dispatch_action` actually branches on.
+/// Inject `PowerState::Standby` so cached state reads `"standby"`
+/// and the reliable-tier's pre-flight short-circuit fires, routing
+/// straight to `power_on`, which reconnects with `initial_power_state
+/// = "active"`. End-state assertion pins that the wake event drove
+/// the TV back to `"active"` through this specific path.
+#[tokio::test]
+async fn wake_with_reliable_screen_on_short_circuits_via_dispatch_action() {
+    let tv_id = "lr_wake_reliable";
+    let tv_uuid = test_tv_uuid(tv_id).to_string();
+
+    let mut config: SystemConfig = mock_tv_config(tv_id, true, None);
+    config.system.profiles.insert(
+        "default".to_string(),
+        SystemProfileConfig {
+            on_wake: Some(SessionAction::ScreenOn.into()),
+            ..Default::default()
+        },
+    );
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // Push the TV past Screen Off so cached PowerState reads
+    // "standby" — the predicate the reliable-tier short-circuit
+    // matches on.
+    daemon
+        .handle()
+        .inject_power_state(&format!("mock://{tv_id}"), PowerState::Standby);
+    settle().await;
+
+    daemon
+        .manager()
+        .execute_system_event(SystemEvent::Wake, "test")
+        .await;
+
+    // Short-circuit → power_on probe → WoL → reconnect → new
+    // MockConnection with default initial_power_state = "active".
+    // Generous wall-clock budget; the short-circuit path itself is
+    // sub-second but the new-connection state push needs a tick.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let client = client().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "active",
+        "Wake event with on_wake = screen_on should route through \
+         dispatch_action's reliable-tier short-circuit and land the TV \
+         in active state via power_on escalation",
+    );
+    assert!(
+        tv.is_screen_on,
+        "screen should be on after the escalated power_on completes",
     );
 }

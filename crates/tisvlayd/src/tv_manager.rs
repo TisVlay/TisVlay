@@ -1667,10 +1667,27 @@ impl TvManager {
     ///   verify post-action via the cached
     ///   [`ManagedTv::last_known_power_state`]; retry up to
     ///   `backend.reliable_max_attempts()`; escalate to `power_on`
-    ///   (with WoL) on continued failure. Other actions fall through
-    ///   to the best-effort path — `power_on` already has WoL + retry
-    ///   inside, and sleep-side actions are fire-and-forget by
-    ///   design's intent.
+    ///   (with WoL) on continued failure.
+    ///
+    /// **V1 scope of `Reliable`.** Only `ScreenOn` differentiates by
+    /// QoS tier today — the wildcard arms below collapse Reliable +
+    /// {ScreenOff, PowerOn, PowerOff} into the same call path as
+    /// BestEffort. This is intentional for v1:
+    ///
+    /// - `PowerOn` already has WoL + connect-retry + reconnect
+    ///   inside [`Self::power_on`]; a layered verify-loop would
+    ///   double-up the same recovery machinery.
+    /// - `ScreenOff` and `PowerOff` are sleep-side: a dark TV when
+    ///   you expected dark isn't a UX bug worth IPC overhead.
+    /// - `None` is a no-op by definition.
+    ///
+    /// The QoS namespace is still per-action in the data model so
+    /// future dimensions (`deadline`, `durability`) can land without
+    /// schema break — and so a future "verify power_on actually
+    /// reached `active`" tier can be added without rewriting any
+    /// call sites. Until that lands, configuring
+    /// `on_*.qos.reliability = "reliable"` on a non-`screen_on`
+    /// action is silently equivalent to leaving it best-effort.
     pub async fn dispatch_action(
         &self,
         tv_id: &str,
@@ -1683,6 +1700,11 @@ impl TvManager {
                 self.dispatch_reliable_screen_on(tv_id).await
             }
             (SessionAction::ScreenOn, Reliability::BestEffort) => self.screen_on(tv_id).await,
+            // QoS scope: see doc-comment above. `_` catches Reliable
+            // for these actions but funnels into the same call site
+            // as BestEffort — `power_on`'s internal WoL+retry covers
+            // the wake-side recovery story today, and sleep-side
+            // actions don't need a verify tier.
             (SessionAction::ScreenOff, _) => self.screen_off(tv_id).await,
             (SessionAction::PowerOn, _) => self.power_on(tv_id).await,
             (SessionAction::PowerOff, _) => self.power_off(tv_id).await,

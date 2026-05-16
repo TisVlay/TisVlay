@@ -24,7 +24,7 @@ self.is_screen_on = !matches!(
 **Regression coverage.**
 
 - `tisvlay-core/src/state.rs` — `active_standby_marks_screen_off` (focused regression) + `update_power_screen_on_mapping_is_complete` (table-driven mapping pin).
-- `tisvlay-session/tests/session_events.rs` — `reliable_screen_on_escalates_when_tv_slipped_to_active_standby`.
+- `tisvlay-session/tests/session_events.rs` — `reliable_screen_on_escalates_via_verify_retry_loop` (injects `ActiveStandby` + flips `MockHandle::set_screen_on_noop` so the verify-retry loop actually exhausts before escalating; without the noop knob the mock's default `screen_on` would let verify pass on attempt #1).
 
 ## `screen_on` / `screen_off` error discrimination: only mask code `500`
 
