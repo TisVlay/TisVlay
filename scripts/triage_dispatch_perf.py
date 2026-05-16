@@ -14,9 +14,10 @@ What it does
 1. Reads `docs/configs/daemon.toml` (override via `--config`) and pulls
    the first `[[tv]]` entry's IP / client_key.
 2. Out-of-band: opens its own SSAP WebSocket to the TV using the same
-   client_key, sends `ssap://com.webos.service.tvpower/power/turnOff`
-   to emulate a remote-button press / power-save event, and closes
-   its own socket cleanly.
+   client_key, sends `ssap://system/turnOff` (matching the LG client's
+   `crates/tisvlay-lg/src/endpoints.rs::power::TURN_OFF`) to emulate
+   a remote-button press / power-save event, and closes its own
+   socket cleanly.
 3. Waits `--prep-delay` seconds so the daemon's view either drifts
    into the "WS-thinks-it's-connected-but-isn't" state (long delays
    sometimes don't reproduce — see "Caveats" below) or settles.
