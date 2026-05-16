@@ -22,34 +22,12 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tisvlay_core::{
-    DaemonClient, Reliability, ResolvedEventAction, ResolvedUserProfile, SessionAction, UserConfig,
+    DaemonClient, QosConfig, ResolvedEventAction, ResolvedUserProfile, SessionAction, UserConfig,
     UserProfileConfig,
 };
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
-
-/// PowerState string the LG backend pushes when the TV's panel is fully on.
-///
-/// Matches [`tisvlay_core::PowerState::Active`]'s `Display` form. Used by
-/// the reliable dispatch helper to verify a `screen_on` reached the panel
-/// rather than landing in `screen_off` or a deeper power state.
-const POWER_STATE_ACTIVE: &str = "active";
-
-/// Delay between dispatching a wake-side action and reading PowerState back.
-///
-/// LG's `getPowerState` subscription is typically sub-100 ms; 300 ms gives
-/// the subscription a comfortable window to refresh before we verify.
-const RELIABLE_VERIFY_DELAY: Duration = Duration::from_millis(300);
-
-/// Max `screen_on` attempts before the reliable path escalates to `power_on`.
-///
-/// Two attempts cover the racy "TV processed the request but the
-/// PowerState push lagged" case; further retries are pointless once we've
-/// concluded the TV slipped past Screen Off, because `screen_on` returns
-/// `-102` ("not in screen-off substate") and only WoL can recover.
-const RELIABLE_SCREEN_ON_ATTEMPTS: usize = 2;
 
 /// Session state: resolved profiles per TV, kept in sync with config reloads.
 #[derive(Debug)]
@@ -289,66 +267,26 @@ pub fn get_action_for_event(
 
 /// Execute an event action on a specific TV.
 ///
-/// Branches on `event_action.qos.reliability`:
-/// - [`Reliability::BestEffort`] dispatches the action once and returns.
-/// - [`Reliability::Reliable`] on `screen_on` verifies the TV reached the
-///   `active` PowerState; if it slipped past Screen Off, escalates to
-///   `power_on` (which has WoL + retry internally). Other actions don't
-///   currently benefit from the reliable path (sleep-side fire-and-forget;
-///   `power_on` already retries internally), so they fall through to the
-///   single dispatch.
+/// Thin shim that forwards the resolved `EventAction` (action + qos)
+/// to the daemon via [`DaemonClient::dispatch_action`]. The
+/// verify-retry-escalate state machine lives daemon-side in
+/// `tv_manager::dispatch_reliable_screen_on` — see
+/// `docs/plans/qos-dispatch-refactor.md` for the architectural
+/// rationale.
 pub async fn execute_action_for_tv(
     daemon: &DaemonClient,
     tv_id: &str,
     event_action: ResolvedEventAction,
 ) -> anyhow::Result<()> {
-    match (event_action.action, event_action.qos.reliability) {
-        (SessionAction::None, _) => Ok(()),
-        (SessionAction::ScreenOn, Reliability::Reliable) => reliable_screen_on(daemon, tv_id).await,
-        (SessionAction::ScreenOn, Reliability::BestEffort) => daemon.screen_on(tv_id).await,
-        (SessionAction::ScreenOff, _) => daemon.screen_off(tv_id).await,
-        (SessionAction::PowerOff, _) => daemon.power_off(tv_id).await,
-        (SessionAction::PowerOn, _) => daemon.power_on(tv_id).await,
+    if event_action.action == SessionAction::None {
+        return Ok(());
     }
-}
-
-/// Dispatch `screen_on` reliably: verify the TV reached `active`, escalate
-/// to `power_on` (with WoL) if it slipped past Screen Off.
-///
-/// The retry budget covers the case where the SSAP `getPowerState`
-/// subscription momentarily lags behind the panel transition; the
-/// escalation covers the case the user is actually complaining about,
-/// where the TV transitioned itself from Screen Off to a deeper state
-/// while the desktop was locked.
-async fn reliable_screen_on(daemon: &DaemonClient, tv_id: &str) -> anyhow::Result<()> {
-    for attempt in 0..RELIABLE_SCREEN_ON_ATTEMPTS {
-        if let Err(e) = daemon.screen_on(tv_id).await {
-            // The daemon returning an error here usually means the
-            // WebSocket is closed (TV unreachable). No point retrying
-            // screen_on — escalate to power_on which has WoL inside.
-            debug!(tv_id, attempt, error = %e, "screen_on failed; escalating to power_on");
-            break;
-        }
-        tokio::time::sleep(RELIABLE_VERIFY_DELAY).await;
-        match daemon.power_state(tv_id).await {
-            Ok(state) if state == POWER_STATE_ACTIVE => return Ok(()),
-            Ok(state) => {
-                debug!(
-                    tv_id,
-                    attempt, %state,
-                    "screen_on did not reach active state",
-                );
-            }
-            Err(e) => {
-                debug!(tv_id, attempt, error = %e, "failed to read power state");
-            }
-        }
-    }
-    info!(
-        tv_id,
-        "reliable screen_on escalating to power_on (TV likely slipped past Screen Off)",
-    );
-    daemon.power_on(tv_id).await
+    let qos = QosConfig {
+        reliability: Some(event_action.qos.reliability),
+    };
+    daemon
+        .dispatch_action(tv_id, event_action.action, qos)
+        .await
 }
 
 /// Handle session events by executing configured actions.
