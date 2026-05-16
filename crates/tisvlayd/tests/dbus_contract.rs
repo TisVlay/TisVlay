@@ -370,6 +370,81 @@ async fn screen_off_verify_retry_gives_up_when_panel_refuses() {
     assert!(tv.is_screen_on, "noop'd screen_off should leave panel on");
 }
 
+/// Field-test regression: user presses power on the remote and
+/// clicks GUI screen-off within ~1 second. The LG firmware
+/// transitions Active → ActiveStandby immediately on the wire,
+/// but its subscription stream can stay quiet for several seconds
+/// before pushing the new `PowerState`. During that window the
+/// daemon's cached `last_known_power_state` reads stale `Active`;
+/// a pre-flight wake gate keyed on cached alone would skip the
+/// wake, send `screen_off` into the transitional substate, see
+/// the LG 500-idempotent mask, and verify against the still-stale
+/// cached value — TV sits in `ActiveStandby` forever (until LG
+/// firmware drops to deep `Standby` on its own).
+///
+/// Fix: pre-flight routes through `refresh_power_state`, which
+/// issues an authoritative `get_power_state` query against the
+/// live connection. The query returns the *actual* substate
+/// (`ActiveStandby` in this scenario), `needs_wake_preflight`
+/// fires, and `power_on` brings the TV back up before
+/// `screen_off` lands.
+#[tokio::test]
+async fn screen_off_refreshes_stale_cached_state_via_live_query() {
+    use tisvlay_core::PowerState;
+
+    let daemon = TestDaemon::with_one_mock_tv("scr_off_lag")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("scr_off_lag").to_string();
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    // Pre-condition: cached reads "active" after the initial
+    // subscription push from the fresh connection.
+    let tvs = client.list_tvs().await.expect("list_tvs (pre)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(tv.power_state, "active", "sanity: starts active");
+
+    // Silently mutate the TV's underlying state to `ActiveStandby`
+    // without pushing a subscription update — exactly mirroring
+    // the LG firmware's transition-silence window after remote
+    // power-off.
+    daemon
+        .handle()
+        .inject_power_state_silent("mock://scr_off_lag", PowerState::ActiveStandby);
+
+    // Daemon's cached is still "active" at this point (no
+    // subscription push); the live TV is in ActiveStandby.
+    let tvs = client.list_tvs().await.expect("list_tvs (during-lag)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "active",
+        "cached should still read active during the subscription-silence window",
+    );
+
+    // Fire screen_off. Pre-flight refresh queries the live state
+    // (returns ActiveStandby), wakes via power_on, then screen_off
+    // lands on the freshly-Active TV.
+    daemon
+        .manager()
+        .screen_off(&uuid)
+        .await
+        .expect("screen_off");
+
+    // Pre-flight power_on + reconnect + screen_off + verify-delay.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs (post)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "screen_off",
+        "live query should overrule stale cached; pre-flight wake then screen_off",
+    );
+    assert!(!tv.is_screen_on, "panel should be off after screen_off");
+}
+
 /// Field-test regression: TV in `ActiveStandby` (user pressed
 /// power on the remote, panel dark, NIC still alive, WS still
 /// open). LG firmware ACKs `screen_off` over the live socket but

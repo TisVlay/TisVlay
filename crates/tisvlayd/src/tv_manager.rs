@@ -1585,6 +1585,61 @@ impl TvManager {
     // Screen Control
     // -------------------------------------------------------------------------
 
+    /// Refresh the cached [`ManagedTv::last_known_power_state`] with
+    /// an authoritative query to the TV, then return the fresh value.
+    ///
+    /// Closes the subscription-lag window: LG firmware can sit in
+    /// a transitional substate for several seconds after a remote
+    /// power-off before pushing the state change, so the cached
+    /// value alone can mis-report a TV in `ActiveStandby` as still
+    /// `Active`. Pre-flight wake decisions in `screen_on` /
+    /// `screen_off` route through this so they see the TV's actual
+    /// substate at call time.
+    ///
+    /// Bounded by a tight timeout (1 verify_delay): if the TV is
+    /// unresponsive — true `Standby` with the WS dead, or a
+    /// half-asleep firmware that won't answer — we treat that as
+    /// `Standby` so the pre-flight wakes anyway. Never triggers a
+    /// reconnect cascade; if `tv.is_connected() == false` we skip
+    /// the query and return `Standby` directly (a `power_on` would
+    /// be doing the reconnect work for the caller in a moment).
+    async fn refresh_power_state(&self, tv_id: &str, timeout: Duration) -> PowerState {
+        let tv_arc = match self.get_tv(tv_id).await {
+            Ok(arc) => arc,
+            Err(_) => return PowerState::Unknown,
+        };
+
+        let was_connected = {
+            let tv = tv_arc.lock().await;
+            tv.is_connected()
+        };
+        if !was_connected {
+            let mut tv = tv_arc.lock().await;
+            tv.last_known_power_state = PowerState::Standby;
+            return PowerState::Standby;
+        }
+
+        // Query the existing connection in-place — explicitly not via
+        // `with_connection`, which would auto-reconnect (and WoL) if
+        // the WS had just closed. For pre-flight we want a read-only
+        // probe; a `power_on` follow-up does the heavy work.
+        let query = async {
+            let mut tv = tv_arc.lock().await;
+            let conn = tv.connection.as_mut()?;
+            conn.get_power_state().await.ok()
+        };
+        let fresh = match tokio::time::timeout(timeout, query).await {
+            Ok(Some(state)) => state,
+            Ok(None) | Err(_) => PowerState::Standby,
+        };
+
+        {
+            let mut tv = tv_arc.lock().await;
+            tv.last_known_power_state = fresh;
+        }
+        fresh
+    }
+
     /// Turn screen on — inherently reliable: verify cached state
     /// reaches [`PowerState::Active`], retry up to
     /// `backend.verify_retry_config().max_attempts`, escalate to
@@ -1609,24 +1664,25 @@ impl TvManager {
     /// slipped to deeper standby or transitioned through
     /// `ActiveStandby` after a remote-press power-off.
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        // Pull retry config + cached state under one lock so the
-        // pre-flight decision sees a consistent snapshot.
-        let (retry_config, cached_before) = {
+        // Pull retry config under a lock; the cached state will be
+        // refreshed via an authoritative query just below so a
+        // stale subscription doesn't decide the pre-flight wrong.
+        let retry_config = {
             let tv_arc = self.get_tv(tv_id).await?;
             let tv = tv_arc.lock().await;
             let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
                 TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
             })?;
-            (
-                registered.backend.verify_retry_config(),
-                tv.last_known_power_state,
-            )
+            registered.backend.verify_retry_config()
         };
+        let fresh = self
+            .refresh_power_state(tv_id, retry_config.verify_delay)
+            .await;
 
-        if crate::power_state::needs_wake_preflight(cached_before) {
+        if crate::power_state::needs_wake_preflight(fresh) {
             info!(
                 tv_id,
-                cached_power_state = ?cached_before,
+                cached_power_state = ?fresh,
                 "screen_on pre-flight: powering on (TV not in a wakeable substate)",
             );
             return self.power_on(tv_id).await;
@@ -1693,24 +1749,25 @@ impl TvManager {
     /// known; see `docs/lg/firmware-quirks.md` (when ported) for
     /// the design rationale.
     pub async fn screen_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        // Pull retry config + cached state under one lock so the
-        // pre-flight decision sees a consistent snapshot.
-        let (retry_config, cached_before) = {
+        // Pull retry config under a lock; the cached state will be
+        // refreshed via an authoritative query just below so a
+        // stale subscription doesn't decide the pre-flight wrong.
+        let retry_config = {
             let tv_arc = self.get_tv(tv_id).await?;
             let tv = tv_arc.lock().await;
             let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
                 TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
             })?;
-            (
-                registered.backend.verify_retry_config(),
-                tv.last_known_power_state,
-            )
+            registered.backend.verify_retry_config()
         };
+        let fresh = self
+            .refresh_power_state(tv_id, retry_config.verify_delay)
+            .await;
 
-        if crate::power_state::needs_wake_preflight(cached_before) {
+        if crate::power_state::needs_wake_preflight(fresh) {
             info!(
                 tv_id,
-                cached_power_state = ?cached_before,
+                cached_power_state = ?fresh,
                 "screen_off pre-flight: powering on first (TV must reach Active before screen-off substate)",
             );
             self.power_on(tv_id).await?;

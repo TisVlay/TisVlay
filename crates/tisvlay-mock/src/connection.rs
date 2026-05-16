@@ -190,16 +190,12 @@ impl TvConnection for MockConnection {
     }
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
-        let state = self.state.lock();
-        if state.is_on {
-            if state.is_screen_on {
-                Ok(PowerState::Active)
-            } else {
-                Ok(PowerState::ScreenOff)
-            }
-        } else {
-            Ok(PowerState::Standby)
-        }
+        // Return the raw enum directly. Re-deriving from
+        // `(is_on, is_screen_on)` would collapse `ActiveStandby`
+        // and `ScreenOff` to the same value — exactly the
+        // information the daemon's pre-flight wake gate relies
+        // on distinguishing.
+        Ok(self.state.lock().power_state)
     }
 
     // ------------------------------------------------------------------

@@ -207,6 +207,40 @@ impl MockHandle {
         }
     }
 
+    /// Mutate the live `TvState` for `address` without pushing a
+    /// subscription update.
+    ///
+    /// Simulates the LG firmware's "transition silence" window: when
+    /// the user presses Power on the remote, the TV's actual
+    /// substate changes immediately (panel goes dark) but the
+    /// subscription stream can stay quiet for several seconds before
+    /// pushing the new `PowerState`. The daemon's cached
+    /// `last_known_power_state` reads stale during that window.
+    /// Tests use this knob to verify pre-flight wake gates that
+    /// route through an authoritative live query rather than the
+    /// stale cached value.
+    ///
+    /// No-op if no connection is currently open for that address.
+    #[instrument(skip(self))]
+    pub fn inject_power_state_silent(&self, address: &str, target: PowerState) {
+        let state_arc = self.state.lock().live_states.get(address).cloned();
+        let Some(state_arc) = state_arc else {
+            tracing::debug!(
+                address,
+                ?target,
+                "no live mock connection to mutate silently"
+            );
+            return;
+        };
+        let mut state = state_arc.lock();
+        state.update_power(target);
+        tracing::debug!(
+            address,
+            ?target,
+            "mutated mock state without pushing update"
+        );
+    }
+
     /// Make `MockConnection::screen_on` return `Ok` without mutating
     /// state for `address` while `enabled` is true. Use this to
     /// drive the daemon's verify-retry-escalate path without the
