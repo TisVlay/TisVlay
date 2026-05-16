@@ -15,4 +15,4 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [screen-on-always-reliable.md](screen-on-always-reliable.md) — inherently-reliable `screen_on` / `screen_off` dispatch, replacing the spike-and-revert `feat/action-qos` PR.
+(none — last completed plan was `screen-on-always-reliable.md`, migrated into [docs/lg/firmware-quirks.md](../lg/firmware-quirks.md) and the "Reliable screen-state actions" section of [docs/design.md](../design.md) when the work shipped.)
