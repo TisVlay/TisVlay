@@ -53,6 +53,13 @@ pub(crate) fn derive_power_state(state: PowerState) -> &'static str {
         | PowerState::Suspend
         | PowerState::ActiveStandby
         | PowerState::Unknown => STANDBY,
+        // `PowerState` is `#[non_exhaustive]`; future vendor
+        // backends may add substates we don't know about yet.
+        // The safe daemon-side default is `STANDBY` so the
+        // reliable-dispatch pre-flight (via `needs_wake_preflight`)
+        // wakes the TV on the unknown substate rather than
+        // assuming it's reachable.
+        _ => STANDBY,
     }
 }
 
@@ -60,19 +67,24 @@ pub(crate) fn derive_power_state(state: PowerState) -> &'static str {
 /// that the reliable `screen_on` / `screen_off` pre-flight should
 /// treat as "TV not in a usable steady state — wake it first".
 ///
-/// Covers `Standby` / `Suspend` (truly off, NIC may be down),
-/// `ActiveStandby` (transitional, NIC alive but panel dark — LG drops
-/// here after remote-press power-off and can sit for tens of seconds
-/// before reaching `Standby`), and `Unknown` (no push received yet,
-/// safest to assume off).
+/// Returns `true` for everything *except* `Active` / `ScreenSaver`
+/// (fully usable) and `ScreenOff` (target state for `screen_off`,
+/// and the lockscreen-wake fast path for `screen_on`). Written as
+/// a negation against the small wake-permissive whitelist rather
+/// than enumerating the wake-needy set so future
+/// `#[non_exhaustive]` variants from new vendor backends default
+/// to the safe "wake first" path — an unknown substate must not
+/// silently bypass the pre-flight.
 ///
-/// `ScreenOff` deliberately returns `false`: that's the true
-/// "user dispatched screen_off, panel blank, TV otherwise reachable"
-/// substate and is the target steady state for the screen_off path.
+/// Current wake-needy variants: `Standby` / `Suspend` (truly off,
+/// NIC may be down), `ActiveStandby` (transitional after a
+/// remote-press power-off, NIC alive but panel dark, can sit for
+/// tens of seconds before reaching `Standby`), `Unknown` (no
+/// push received yet).
 pub(crate) fn needs_wake_preflight(state: PowerState) -> bool {
-    matches!(
+    !matches!(
         state,
-        PowerState::Standby | PowerState::Suspend | PowerState::ActiveStandby | PowerState::Unknown
+        PowerState::Active | PowerState::ScreenSaver | PowerState::ScreenOff,
     )
 }
 

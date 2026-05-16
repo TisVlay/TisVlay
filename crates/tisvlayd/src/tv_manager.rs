@@ -1612,11 +1612,19 @@ impl TvManager {
     /// Await a [`PowerState`] transition that satisfies `predicate`,
     /// bounded by `timeout`.
     ///
-    /// Returns the satisfying state on success, or the most recently
-    /// observed state on timeout (caller decides what to do with a
-    /// non-matching final value). The function checks the current
-    /// cached value before awaiting, so a transition that already
-    /// landed before the call is observed immediately.
+    /// `Ok(state)` — the predicate matched on the cached value or
+    /// on a subsequent transition observed via the watch sender.
+    /// `Err(last_seen)` — the timeout fired (or the sender dropped)
+    /// without the predicate matching; the value carried is the
+    /// most recently observed cached state, for callers that want
+    /// to log it. Splitting matched vs not-matched into the
+    /// `Result` discriminant means callers can't accidentally
+    /// treat a timeout as success by forgetting to re-test the
+    /// predicate themselves.
+    ///
+    /// The function checks the current cached value before
+    /// awaiting, so a transition that already landed before the
+    /// call is observed immediately.
     ///
     /// Replaces the previous `tokio::time::sleep(verify_delay)` +
     /// poll pattern with an event-driven wait keyed on the
@@ -1628,10 +1636,10 @@ impl TvManager {
         tv_id: &str,
         timeout: Duration,
         predicate: impl Fn(PowerState) -> bool,
-    ) -> PowerState {
+    ) -> Result<PowerState, PowerState> {
         let mut rx = {
             let Ok(tv_arc) = self.get_tv(tv_id).await else {
-                return PowerState::Unknown;
+                return Err(PowerState::Unknown);
             };
             let tv = tv_arc.lock().await;
             tv.power_state_tx.subscribe()
@@ -1641,18 +1649,18 @@ impl TvManager {
             loop {
                 let current = *rx.borrow();
                 if predicate(current) {
-                    return current;
+                    return Ok(current);
                 }
                 if rx.changed().await.is_err() {
                     // Sender dropped (TV removed); return last seen.
-                    return current;
+                    return Err(current);
                 }
             }
         };
 
         match tokio::time::timeout(timeout, wait).await {
-            Ok(state) => state,
-            Err(_) => *rx.borrow(),
+            Ok(result) => result,
+            Err(_) => Err(*rx.borrow()),
         }
     }
 
@@ -1778,20 +1786,22 @@ impl TvManager {
                 debug!(tv_id, attempt, error = %e, "screen_on failed; escalating to power_on");
                 break;
             }
-            let observed = self
+            match self
                 .await_power_state(tv_id, retry_config.verify_delay, |s| {
                     matches!(s, PowerState::Active | PowerState::ScreenSaver)
                 })
-                .await;
-            if matches!(observed, PowerState::Active | PowerState::ScreenSaver) {
-                return Ok(());
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(last_seen) => {
+                    debug!(
+                        tv_id,
+                        attempt,
+                        cached_power_state = ?last_seen,
+                        "screen_on did not reach active state",
+                    );
+                }
             }
-            debug!(
-                tv_id,
-                attempt,
-                cached_power_state = ?observed,
-                "screen_on did not reach active state",
-            );
         }
         info!(
             tv_id,
@@ -1875,23 +1885,22 @@ impl TvManager {
                 .verify_delay
                 .checked_mul(attempts)
                 .unwrap_or(Duration::MAX);
-            let settled = self
+            match self
                 .await_power_state(tv_id, settle_budget, |s| {
                     !crate::power_state::needs_wake_preflight(s)
                 })
-                .await;
-
-            match settled {
-                PowerState::ScreenOff => {
+                .await
+            {
+                Ok(PowerState::ScreenOff) => {
                     // LG transitioned straight through to the
                     // target on wake-up — nothing to do.
                     return Ok(());
                 }
-                s if !crate::power_state::needs_wake_preflight(s) => {
+                Ok(_) => {
                     // Settled into Active / ScreenSaver — fall
                     // through to verify-retry loop.
                 }
-                _ => {
+                Err(_) => {
                     // Settle timed out. LG firmware honored the
                     // recent remote-off and refused to wake into
                     // `Active`; TV sits in `ActiveStandby` (panel
@@ -1918,20 +1927,22 @@ impl TvManager {
                 debug!(tv_id, attempt, error = %e, "screen_off failed; giving up");
                 return Err(e);
             }
-            let observed = self
+            match self
                 .await_power_state(tv_id, retry_config.verify_delay, |s| {
                     s == PowerState::ScreenOff
                 })
-                .await;
-            if observed == PowerState::ScreenOff {
-                return Ok(());
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(last_seen) => {
+                    debug!(
+                        tv_id,
+                        attempt,
+                        cached_power_state = ?last_seen,
+                        "screen_off did not reach screen_off state",
+                    );
+                }
             }
-            debug!(
-                tv_id,
-                attempt,
-                cached_power_state = ?observed,
-                "screen_off did not reach screen_off state",
-            );
         }
         // No escalation — TV is reachable but refuses to blank.
         // Log and return Ok; subsequent screen_off attempts (from

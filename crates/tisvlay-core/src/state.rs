@@ -106,8 +106,17 @@ pub struct InputInfo {
 }
 
 /// TV power state as reported by the TV.
+///
+/// `#[non_exhaustive]` because future vendor backends (Samsung's
+/// `NetworkStandby`, Sony's variants, …) will likely add their own
+/// substates. Downstream exhaustive `match` arms must include a
+/// `_` wildcard and decide a fall-through semantic — for the
+/// daemon's reliable-dispatch path the safe default is "treat as
+/// wake-preflight needed" so an unknown substate doesn't
+/// accidentally short-circuit the wake.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PowerState {
     /// TV is fully on.
     Active,
