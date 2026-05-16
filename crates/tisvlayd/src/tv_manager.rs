@@ -711,21 +711,29 @@ impl TvManager {
 
     /// Get the system action for a specific TV and event.
     ///
-    /// Reads the TV's resolved system profile to determine the action.
-    /// Returns `SessionAction::None` if the TV is not found.
-    async fn get_system_action(&self, tv_id: &str, event: SystemEvent) -> SessionAction {
-        let tv_arc = match self.get_tv(tv_id).await {
-            Ok(arc) => arc,
-            Err(_) => return SessionAction::None,
+    /// Get the resolved event action (action + qos) for a TV's system
+    /// event slot.
+    ///
+    /// Returns a None-action `ResolvedEventAction` if the TV is not
+    /// found. Callers that only want the action enum can chase `.action`;
+    /// `execute_system_event` consumes the full struct so it can carry
+    /// the per-event QoS tier into `dispatch_action`.
+    async fn get_system_action(
+        &self,
+        tv_id: &str,
+        event: SystemEvent,
+    ) -> tisvlay_core::ResolvedEventAction {
+        let Ok(tv_arc) = self.get_tv(tv_id).await else {
+            return tisvlay_core::ResolvedEventAction::from_action(SessionAction::None);
         };
         let tv = tv_arc.lock().await;
         match event {
-            SystemEvent::Startup => tv.system_profile.on_startup.action,
-            SystemEvent::Shutdown => tv.system_profile.on_shutdown.action,
-            SystemEvent::Reboot => tv.system_profile.on_reboot.action,
-            SystemEvent::NoSession => tv.system_profile.on_no_session.action,
-            SystemEvent::Sleep => tv.system_profile.on_sleep.action,
-            SystemEvent::Wake => tv.system_profile.on_wake.action,
+            SystemEvent::Startup => tv.system_profile.on_startup,
+            SystemEvent::Shutdown => tv.system_profile.on_shutdown,
+            SystemEvent::Reboot => tv.system_profile.on_reboot,
+            SystemEvent::NoSession => tv.system_profile.on_no_session,
+            SystemEvent::Sleep => tv.system_profile.on_sleep,
+            SystemEvent::Wake => tv.system_profile.on_wake,
         }
     }
 
@@ -743,29 +751,43 @@ impl TvManager {
     }
 
     /// Execute a system event on all automated TVs using each TV's resolved system profile.
+    ///
+    /// Routes through [`Self::dispatch_action`] with the per-event QoS
+    /// from the resolved system profile, so a system profile that
+    /// configures `on_wake = { action = "screen_on", qos = { reliability
+    /// = "reliable" } }` gets the same verify-retry-escalate semantics
+    /// the user-session reliable tier gets.
     pub async fn execute_system_event(&self, event: SystemEvent, context: &str) {
         let tv_ids = self.list_automated_tv_ids().await;
         for tv_id in &tv_ids {
-            let action = self.get_system_action(tv_id, event).await;
-            if action == SessionAction::None {
+            let event_action = self.get_system_action(tv_id, event).await;
+            if event_action.action == SessionAction::None {
                 continue;
             }
 
-            let result: Result<(), TvManagerError> = match action {
-                SessionAction::ScreenOff => self.screen_off(tv_id).await,
-                SessionAction::ScreenOn => self.screen_on(tv_id).await,
-                SessionAction::PowerOff => self.power_off(tv_id).await,
-                SessionAction::PowerOn => self.power_on(tv_id).await,
-                SessionAction::None => Ok(()),
-            };
+            let result = self
+                .dispatch_action(tv_id, event_action.action, event_action.qos)
+                .await;
 
             match result {
                 Ok(()) => {
-                    debug!(tv_id = %tv_id, action = ?action, context = context, "Action executed");
+                    debug!(
+                        tv_id = %tv_id,
+                        action = ?event_action.action,
+                        reliability = ?event_action.qos.reliability,
+                        context = context,
+                        "Action executed",
+                    );
                 }
                 Err(e) => {
-                    warn!(tv_id = %tv_id, action = ?action, context = context, error = %e,
-                        "Failed to execute action");
+                    warn!(
+                        tv_id = %tv_id,
+                        action = ?event_action.action,
+                        reliability = ?event_action.qos.reliability,
+                        context = context,
+                        error = %e,
+                        "Failed to execute action",
+                    );
                 }
             }
         }
@@ -848,7 +870,10 @@ impl TvManager {
 
             // First pass: handle PowerOn TVs (WoL + connect flow).
             for tv_id in &tv_ids {
-                let action = manager.get_system_action(tv_id, SystemEvent::Startup).await;
+                let action = manager
+                    .get_system_action(tv_id, SystemEvent::Startup)
+                    .await
+                    .action;
                 if action != SessionAction::PowerOn {
                     continue;
                 }
@@ -913,26 +938,33 @@ impl TvManager {
 
             // Second pass: handle non-PowerOn actions (ScreenOn, ScreenOff, PowerOff).
             for tv_id in &tv_ids {
-                let action = manager.get_system_action(tv_id, SystemEvent::Startup).await;
-                match action {
+                let event_action = manager.get_system_action(tv_id, SystemEvent::Startup).await;
+                match event_action.action {
                     SessionAction::None | SessionAction::PowerOn => continue, // already handled or skip
                     _ => {}
                 }
 
-                let result: Result<(), TvManagerError> = match action {
-                    SessionAction::ScreenOff => manager.screen_off(tv_id).await,
-                    SessionAction::ScreenOn => manager.screen_on(tv_id).await,
-                    SessionAction::PowerOff => manager.power_off(tv_id).await,
-                    _ => Ok(()),
-                };
+                let result = manager
+                    .dispatch_action(tv_id, event_action.action, event_action.qos)
+                    .await;
 
                 match result {
                     Ok(()) => {
-                        debug!(tv_id = %tv_id, action = ?action, "Startup action executed");
+                        debug!(
+                            tv_id = %tv_id,
+                            action = ?event_action.action,
+                            reliability = ?event_action.qos.reliability,
+                            "Startup action executed",
+                        );
                     }
                     Err(e) => {
-                        warn!(tv_id = %tv_id, action = ?action, error = %e,
-                            "Startup: failed to execute action");
+                        warn!(
+                            tv_id = %tv_id,
+                            action = ?event_action.action,
+                            reliability = ?event_action.qos.reliability,
+                            error = %e,
+                            "Startup: failed to execute action",
+                        );
                     }
                 }
             }
