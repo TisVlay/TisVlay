@@ -125,6 +125,12 @@ impl WebOsClient {
         self.conn.as_ref().is_some_and(|c| c.is_alive())
     }
 
+    /// Monotonic timestamp of the last received WS frame, or `None`
+    /// if the connection is closed or no frame has arrived yet.
+    pub fn last_rx_at(&self) -> Option<std::time::Instant> {
+        self.conn.as_ref().and_then(|c| c.last_rx_at())
+    }
+
     /// Get a reference to the connection, returning an error if closed.
     fn conn(&self) -> Result<&Connection> {
         self.conn.as_ref().ok_or(Error::ConnectionClosed)

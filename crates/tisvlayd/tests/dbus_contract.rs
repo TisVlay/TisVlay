@@ -158,6 +158,71 @@ async fn dispatch_reliable_screen_on_short_circuits_from_standby() {
     );
 }
 
+/// Reliable `screen_on` short-circuits straight to `power_on` when
+/// the WebSocket has gone quiet for longer than the helper's
+/// staleness threshold (5 s). Cached state stays at `"screen_off"`
+/// (so the deeper-standby short-circuit doesn't fire), but the
+/// liveness check triggers and we skip `screen_on` entirely —
+/// avoiding the LG client's 10 s `REQUEST_MS` exposure on a
+/// half-dead socket. This is the failure mode the post-merge perf
+/// triage actually reproduced.
+///
+/// Backdates `last_activity_at` via `MockHandle::set_last_activity_at`
+/// to 10 s in the past — well over the 5 s threshold — then
+/// dispatches reliable `screen_on` and asserts the TV ends `"active"`
+/// via the escalation path. Cached PowerState stays at the default
+/// (`"active"` from mock's initial state), so the deeper-standby
+/// short-circuit specifically does NOT fire; the liveness predicate
+/// is the only thing that should redirect to `power_on`.
+#[tokio::test]
+async fn dispatch_reliable_screen_on_short_circuits_on_stale_ws() {
+    use tisvlay_core::{QosConfig, Reliability, SessionAction};
+
+    let daemon = TestDaemon::with_one_mock_tv("dispatch_stale_ws")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("dispatch_stale_ws").to_string();
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    // Backdate the mock's `last_activity_at` to 10 s ago — well past
+    // the 5 s helper threshold. Cached PowerState stays at default
+    // ("active" from the mock's initial state), so the
+    // deeper-standby short-circuit deliberately does NOT fire here.
+    let stale_instant = std::time::Instant::now() - std::time::Duration::from_secs(10);
+    daemon
+        .handle()
+        .set_last_activity_at("mock://dispatch_stale_ws", stale_instant);
+
+    let qos = QosConfig {
+        reliability: Some(Reliability::Reliable),
+    };
+    client
+        .dispatch_action(&uuid, SessionAction::ScreenOn, qos)
+        .await
+        .expect("dispatch_action");
+
+    // Stale-WS short-circuit budget: power_on probe + WoL +
+    // new-connection state push. No verify-retry sleeps.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs
+        .iter()
+        .find(|t| t.uuid == uuid)
+        .expect("dispatch_stale_ws TV present");
+    assert_eq!(
+        tv.power_state, "active",
+        "stale-WS short-circuit should have dispatched power_on; new connection comes up active",
+    );
+    assert!(
+        tv.is_screen_on,
+        "screen should be on after the escalated power_on completes",
+    );
+}
+
 // ---------- Effective system profile JSON ----------
 
 #[tokio::test]

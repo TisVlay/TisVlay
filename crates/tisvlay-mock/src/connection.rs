@@ -176,6 +176,23 @@ impl TvConnection for MockConnection {
         self.hardware_id.clone()
     }
 
+    fn last_activity_at(&self) -> Option<std::time::Instant> {
+        // Tests can backdate this via
+        // `MockHandle::set_last_activity_at` to drive the daemon's
+        // WS-staleness short-circuit. Absence reports `Instant::now()`
+        // — i.e. the connection appears freshly active, matching the
+        // "subscription pushes are sub-second under normal load"
+        // signal a real LG WS provides.
+        let shared = self.shared.lock();
+        Some(
+            shared
+                .simulated_last_activity
+                .get(&self.address)
+                .copied()
+                .unwrap_or_else(std::time::Instant::now),
+        )
+    }
+
     // ------------------------------------------------------------------
     // Power
     // ------------------------------------------------------------------
