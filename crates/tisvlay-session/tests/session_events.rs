@@ -9,11 +9,13 @@ use std::time::Duration;
 use tisvlay_harness::session::TestSession;
 use tisvlay_session::session_monitor::SessionEvent;
 
-/// Brief yield so the event handler and state-change forwarder have
-/// time to process the injected event and push the D-Bus property
+/// Yield long enough for the event handler to dispatch the action,
+/// the daemon's inherently-reliable `screen_on` / `screen_off` to
+/// complete its verify-delay cycle (300 ms default), and the
+/// state-change forwarder to push the resulting D-Bus property
 /// update.
 async fn settle() {
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
 // ---------- Session lock / unlock ----------

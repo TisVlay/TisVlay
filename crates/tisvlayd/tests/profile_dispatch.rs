@@ -20,8 +20,8 @@
 #![cfg(feature = "mock")]
 
 use std::time::Duration;
-use tisvlay_core::DaemonClient;
-use tisvlay_harness::daemon::{TestDaemon, test_tv_uuid};
+use tisvlay_core::{DaemonClient, PowerState, SessionAction, SystemConfig, SystemProfileConfig};
+use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 use tisvlayd::tv_manager::SystemEvent;
 
@@ -208,5 +208,129 @@ async fn shutdown_clears_connected_property_on_dbus() {
     assert!(
         !tvs[0].connected,
         "D-Bus Connected should be false after shutdown",
+    );
+}
+
+// ---------- Reliable screen-state actions through system-event dispatch ----------
+
+/// Build a config that maps a non-default `SessionAction` to `on_wake`
+/// and `on_startup` on the "default" system profile. Used by the
+/// reliable-action dispatch tests below to verify that
+/// `execute_system_event` routes through the inherently-reliable
+/// `screen_on` / `screen_off` paths in `tv_manager`.
+fn config_with_profile_actions(
+    tv_id: &str,
+    on_wake: SessionAction,
+    on_startup: SessionAction,
+) -> SystemConfig {
+    let mut config = mock_tv_config(tv_id, true, None);
+    config.system.profiles.insert(
+        "default".to_string(),
+        SystemProfileConfig {
+            on_wake: Some(on_wake),
+            on_startup: Some(on_startup),
+            ..Default::default()
+        },
+    );
+    config
+}
+
+/// `SystemEvent::Wake` with `on_wake = ScreenOn` short-circuits to
+/// `power_on` when the TV's cached state is `"standby"`. Exercises the
+/// system-event → `screen_on` → pre-flight-short-circuit path end to
+/// end so the inherently-reliable plumbing actually runs through the
+/// dispatcher (not just direct `manager.screen_on()` calls).
+#[tokio::test]
+async fn wake_with_screen_on_short_circuits() {
+    let tv_uuid = test_tv_uuid("wake_scr_on").to_string();
+    let config =
+        config_with_profile_actions("wake_scr_on", SessionAction::ScreenOn, SessionAction::None);
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // Push cached PowerState to "standby" so the pre-flight short-
+    // circuit fires inside `screen_on`.
+    daemon
+        .handle()
+        .inject_power_state("mock://wake_scr_on", PowerState::Standby);
+    settle().await;
+
+    daemon
+        .manager()
+        .execute_system_event(SystemEvent::Wake, "test")
+        .await;
+
+    // Short-circuit budget: power_on probe + WoL + reconnect +
+    // initial subscription snapshot.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "active",
+        "wake → screen_on with cached 'standby' should escalate via power_on",
+    );
+    assert!(
+        tv.is_screen_on,
+        "panel should be on after escalated power_on",
+    );
+}
+
+/// `SystemEvent::Startup` with `on_startup = ScreenOff` powers the
+/// TV on first when it's in `"standby"` — without the pre-flight
+/// escalation, the screen_off command would never reach a live
+/// connection. The user's intent ("park the TV in screen-off
+/// substate at boot") requires power before screen, so this is the
+/// observable contract.
+#[tokio::test]
+async fn on_startup_screen_off_powers_on_first() {
+    let tv_uuid = test_tv_uuid("startup_scr_off").to_string();
+    let config = config_with_profile_actions(
+        "startup_scr_off",
+        SessionAction::None,
+        SessionAction::ScreenOff,
+    );
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // Force cached PowerState to "standby" so the pre-flight branch
+    // in `screen_off` has to escalate via power_on.
+    daemon
+        .handle()
+        .inject_power_state("mock://startup_scr_off", PowerState::Standby);
+    settle().await;
+
+    daemon
+        .manager()
+        .execute_system_event(SystemEvent::Startup, "test")
+        .await;
+
+    // Budget: power_on probe + WoL + reconnect + screen_off +
+    // verify-delay.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "screen_off",
+        "startup → screen_off from 'standby' should power on first, then screen_off",
+    );
+    assert!(
+        !tv.is_screen_on,
+        "panel should be off after screen_off lands on the live connection",
     );
 }

@@ -1586,21 +1586,162 @@ impl TvManager {
     // Screen Control
     // -------------------------------------------------------------------------
 
-    /// Turn screen on.
+    /// Turn screen on — inherently reliable: verify cached state
+    /// reaches [`crate::power_state::ACTIVE`], retry up to
+    /// `backend.verify_retry_config().max_attempts`, escalate to
+    /// [`Self::power_on`] (WoL + retry + reconnect) on continued
+    /// failure.
+    ///
+    /// **Pre-flight short-circuit.** If cached
+    /// [`ManagedTv::last_known_power_state`] reads
+    /// [`crate::power_state::STANDBY`] the TV is past Screen Off
+    /// (the daemon's derived shorthand for
+    /// `state.is_on == false` — covers `Standby` / `Suspend` /
+    /// `PowerOff`). `screen_on` over the existing WebSocket would
+    /// either no-op or stall on the LG client's `REQUEST_MS`
+    /// waiting for a reply the half-asleep TV won't send. Skip
+    /// the verify-retry loop and dispatch `power_on` directly.
+    ///
+    /// Costs nothing on the normal lockscreen-wake path (cached
+    /// state is `"screen_off"` there); strictly improves
+    /// worst-case wake time when the TV has slipped to deeper
+    /// standby.
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.screen_on().await })
-        })
-        .await?;
-        Ok(())
+        // Pull retry config + cached state under one lock so the
+        // short-circuit decision sees a consistent snapshot.
+        let (retry_config, cached_before) = {
+            let tv_arc = self.get_tv(tv_id).await?;
+            let tv = tv_arc.lock().await;
+            let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
+                TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
+            })?;
+            (
+                registered.backend.verify_retry_config(),
+                tv.last_known_power_state.clone(),
+            )
+        };
+
+        if cached_before == crate::power_state::STANDBY {
+            info!(
+                tv_id,
+                cached_power_state = %cached_before,
+                "screen_on short-circuiting to power_on (TV past Screen Off)",
+            );
+            return self.power_on(tv_id).await;
+        }
+
+        for attempt in 0..retry_config.max_attempts {
+            if let Err(e) = self
+                .with_connection(tv_id, |conn| {
+                    Box::pin(async move { conn.screen_on().await })
+                })
+                .await
+            {
+                debug!(tv_id, attempt, error = %e, "screen_on failed; escalating to power_on");
+                break;
+            }
+            tokio::time::sleep(retry_config.verify_delay).await;
+            let cached = {
+                let tv_arc = self.get_tv(tv_id).await?;
+                let tv = tv_arc.lock().await;
+                tv.last_known_power_state.clone()
+            };
+            if cached == crate::power_state::ACTIVE {
+                return Ok(());
+            }
+            debug!(
+                tv_id,
+                attempt,
+                cached_power_state = %cached,
+                "screen_on did not reach active state",
+            );
+        }
+        info!(
+            tv_id,
+            "screen_on escalating to power_on (verify-retry exhausted)",
+        );
+        self.power_on(tv_id).await
     }
 
-    /// Turn screen off.
+    /// Turn screen off — inherently reliable: verify cached state
+    /// reaches [`crate::power_state::SCREEN_OFF`], retry up to
+    /// `backend.verify_retry_config().max_attempts`. No escalation
+    /// past retries — the TV is already reachable; if it refuses
+    /// to blank we log and give up rather than power-cycle.
+    ///
+    /// **Pre-flight escalate-via-power_on.** If cached state reads
+    /// [`crate::power_state::STANDBY`] the TV is currently off:
+    /// for it to enter screen-off substate it must first be
+    /// powered on. Call [`Self::power_on`] first (which brings the
+    /// TV up to `"active"`), then continue into the verify-retry
+    /// loop to send the actual `screen_off` command. Serves the
+    /// `on_startup = "screen_off"` usecase (boot machine with TV
+    /// powered on but panel blanked to avoid overnight burn-in).
+    ///
+    /// Side effect: `on_session_lock = "screen_off"` with the TV
+    /// already off briefly powers it on before blanking. Rare but
+    /// known; see `docs/lg/firmware-quirks.md` (when ported) for
+    /// the design rationale.
     pub async fn screen_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        self.with_connection(tv_id, |conn| {
-            Box::pin(async move { conn.screen_off().await })
-        })
-        .await?;
+        // Pull retry config + cached state under one lock so the
+        // pre-flight decision sees a consistent snapshot.
+        let (retry_config, cached_before) = {
+            let tv_arc = self.get_tv(tv_id).await?;
+            let tv = tv_arc.lock().await;
+            let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
+                TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
+            })?;
+            (
+                registered.backend.verify_retry_config(),
+                tv.last_known_power_state.clone(),
+            )
+        };
+
+        if cached_before == crate::power_state::STANDBY {
+            info!(
+                tv_id,
+                cached_power_state = %cached_before,
+                "screen_off pre-flight: powering on first (TV must be on for screen-off substate)",
+            );
+            self.power_on(tv_id).await?;
+            // Fall through to the verify-retry loop below — TV is
+            // now up; send the screen_off command and verify.
+        }
+
+        for attempt in 0..retry_config.max_attempts {
+            if let Err(e) = self
+                .with_connection(tv_id, |conn| {
+                    Box::pin(async move { conn.screen_off().await })
+                })
+                .await
+            {
+                debug!(tv_id, attempt, error = %e, "screen_off failed; giving up");
+                return Err(e);
+            }
+            tokio::time::sleep(retry_config.verify_delay).await;
+            let cached = {
+                let tv_arc = self.get_tv(tv_id).await?;
+                let tv = tv_arc.lock().await;
+                tv.last_known_power_state.clone()
+            };
+            if cached == crate::power_state::SCREEN_OFF {
+                return Ok(());
+            }
+            debug!(
+                tv_id,
+                attempt,
+                cached_power_state = %cached,
+                "screen_off did not reach screen_off state",
+            );
+        }
+        // No escalation — TV is reachable but refuses to blank.
+        // Log and return Ok; subsequent screen_off attempts (from
+        // user retry or repeated event) re-enter the loop with a
+        // fresh snapshot.
+        warn!(
+            tv_id,
+            "screen_off verify-retry exhausted; TV reachable but panel did not blank",
+        );
         Ok(())
     }
 
