@@ -207,6 +207,25 @@ impl MockHandle {
         }
     }
 
+    /// Make `MockConnection::screen_on` return `Ok` without mutating
+    /// state for `address` while `enabled` is true. Use this to
+    /// drive the daemon's reliable-tier verify-retry-escalate path
+    /// without the mock's default `is_screen_on=true` flip letting
+    /// verify pass on attempt #1. Mirrors LG firmware's behavior when
+    /// `screen_on` lands on a TV in `ActiveStandby` / `Standby`
+    /// substate — the call succeeds at the wire level but the panel
+    /// stays dark. Pass `enabled = false` to restore the default
+    /// mutate-and-push behavior.
+    #[instrument(skip(self))]
+    pub fn set_screen_on_noop(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.screen_on_noop.insert(address.to_string());
+        } else {
+            state.screen_on_noop.remove(address);
+        }
+    }
+
     // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------

@@ -65,6 +65,15 @@ async fn dispatch_reliable_screen_on_escalates_via_active_standby() {
         .inject_power_state("mock://dispatch_escalate", PowerState::ActiveStandby);
     settle().await;
 
+    // Model LG firmware's "screen_on returns Ok but doesn't wake the
+    // panel" behavior in ActiveStandby. Without this, mock's default
+    // `is_screen_on = true` flip lets verify pass on attempt #1 and
+    // this test would exercise verify-success rather than the
+    // escalation path it asserts.
+    daemon
+        .handle()
+        .set_screen_on_noop("mock://dispatch_escalate", true);
+
     let qos = QosConfig {
         reliability: Some(Reliability::Reliable),
     };

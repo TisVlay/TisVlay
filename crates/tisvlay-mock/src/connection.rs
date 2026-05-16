@@ -207,6 +207,16 @@ impl TvConnection for MockConnection {
     // ------------------------------------------------------------------
 
     async fn screen_on(&mut self) -> Result<()> {
+        // Tests can opt into "screen_on no-ops, returns Ok" by setting
+        // the address in `screen_on_noop` via the handle. This models
+        // LG firmware refusing to wake the panel from `ActiveStandby`
+        // / `Standby` substates while still returning a non-Err response
+        // — the exact condition the reliable-tier verify-retry-escalate
+        // path is designed to detect.
+        let noop = self.shared.lock().screen_on_noop.contains(&self.address);
+        if noop {
+            return Ok(());
+        }
         self.mutate_and_push(|s| s.is_screen_on = true);
         Ok(())
     }

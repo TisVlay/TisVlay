@@ -117,6 +117,64 @@ async fn duplicate_lock_events_are_idempotent() {
     assert!(!tv.is_screen_on, "screen should still be off");
 }
 
+/// Reliable dispatch must bypass the `last_action` dedup cache.
+///
+/// The dedup map skips re-dispatch when the per-TV `last_action`
+/// matches the current event's resolved action — correct for
+/// best-effort fire-and-forget, but wrong for `reliable`. The whole
+/// point of the reliable tier is to verify the TV actually reached
+/// the target state, so "we already dispatched this action" isn't a
+/// safe reason to skip. Without this carve-out a reliable
+/// `screen_on` following an earlier reliable `screen_on` of the same
+/// action would be silently dropped, defeating verify/escalate.
+#[tokio::test]
+async fn reliable_dispatch_bypasses_last_action_dedup() {
+    let session = TestSession::new("dedup_bypass_tv").await.unwrap();
+
+    // First SessionUnlocked fires reliable `screen_on`. Mock TV
+    // starts in `"active"`; the helper's first verify attempt sees
+    // cached `"active"` and returns Ok. last_action gets set to
+    // ScreenOn. Need to wait past the helper's 300 ms verify-delay
+    // before manipulating cached state — otherwise the in-flight
+    // helper would observe our injection mid-verify and re-trigger
+    // the loop, defeating the test setup.
+    session.inject_event(SessionEvent::SessionUnlocked);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Push the TV back to `screen_off` out-of-band. The cached
+    // PowerState property updates to `"screen_off"` via the
+    // subscription forwarder. last_action remains ScreenOn.
+    session
+        .daemon()
+        .handle()
+        .inject_power_state("mock://dedup_bypass_tv", PowerState::ScreenOff);
+    settle().await;
+
+    let tvs = session.client().list_tvs().await.unwrap();
+    let tv = tvs.iter().find(|t| t.name == "dedup_bypass_tv").unwrap();
+    assert_eq!(
+        tv.power_state, "screen_off",
+        "pre-condition: TV should be screen_off after injection",
+    );
+
+    // Second SessionUnlocked fires another reliable `screen_on`.
+    // With the bug (dedup keyed on action alone, no QoS carve-out)
+    // this is silently skipped because last_action == ScreenOn; TV
+    // stays in screen_off. With the fix, Reliable bypasses dedup,
+    // the dispatch runs, mock's screen_on flips is_screen_on=true,
+    // cached state becomes `"active"`. Same 1500 ms budget as the
+    // existing reliable-tier integration tests.
+    session.inject_event(SessionEvent::SessionUnlocked);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let tvs = session.client().list_tvs().await.unwrap();
+    let tv = tvs.iter().find(|t| t.name == "dedup_bypass_tv").unwrap();
+    assert_eq!(
+        tv.power_state, "active",
+        "reliable dispatch should bypass dedup; second screen_on must run",
+    );
+}
+
 // ---------- Reliable dispatch — escalation path ----------
 
 /// Regression test for the core failure mode the reliable QoS tier addresses.
@@ -134,16 +192,20 @@ async fn duplicate_lock_events_are_idempotent() {
 /// 1. Default state: mock TV active.
 /// 2. SessionLock → screen_off (best-effort).
 /// 3. `inject_power_state(Standby)` simulates the TV slipping itself off.
-/// 4. SessionUnlock → reliable `screen_on`:
-///    - dispatches `screen_on`; mock applies but `is_on` stays false →
-///      cached PowerState stays `"standby"`.
-///    - 300 ms verify reads `"standby"` (not `"active"`).
-///    - 2nd attempt, same result.
-///    - Escalates to `power_on`, which drops the old connection and
-///      establishes a new one with `initial_power_state="active"`.
+/// 4. SessionUnlock → reliable `screen_on`. Cached PowerState now
+///    reads `"standby"` (mock state is `is_on=false`), so the
+///    helper's **pre-flight short-circuit fires** and dispatches
+///    `power_on` directly — bypassing the verify-retry loop entirely.
+///    `power_on` drops the old connection and establishes a new one
+///    with `initial_power_state="active"`.
 /// 5. After settle, the daemon's cached state is `"active"`.
+///
+/// Paired with [`reliable_screen_on_escalates_via_verify_retry_loop`]
+/// which exercises the *other* escalation entry point: cached
+/// `"screen_off"` with `screen_on` no-op'd to drive verify-fail × 2
+/// → escalate.
 #[tokio::test]
-async fn reliable_screen_on_escalates_when_tv_slipped_past_screen_off() {
+async fn reliable_screen_on_short_circuits_when_tv_slipped_to_standby() {
     let session = TestSession::new("escalate_tv").await.unwrap();
 
     // Lock to put the TV in screen_off (best-effort dispatch).
@@ -194,13 +256,19 @@ async fn reliable_screen_on_escalates_when_tv_slipped_past_screen_off() {
 /// is_screen_on=true)` which the forwarder rendered as `"active"`,
 /// silently defeating the reliable tier's verify check.
 ///
-/// This test pins the wire-level scenario: with `ActiveStandby`
-/// injected, the cached PowerState must NOT read `"active"`, so the
-/// reliable path detects the mismatch and escalates to `power_on`.
-/// Mirrors the user-reported journal trace from
-/// `docs/lg/firmware-quirks.md` — "Field-test findings".
+/// `ActiveStandby` derives `(is_on=true, is_screen_on=false)` →
+/// cached `"screen_off"`, NOT `"standby"`, so the deeper-standby
+/// pre-flight short-circuit deliberately does NOT fire. To actually
+/// exercise verify-retry-escalate from this state we also enable
+/// `MockHandle::set_screen_on_noop` — modelling LG firmware's
+/// behavior of returning Ok on the WS but refusing to wake the
+/// panel. Mock's default `screen_on` (which flips `is_screen_on=true`)
+/// would otherwise let the verify pass on attempt #1, leaving this
+/// test exercising verify-success instead of the escalation path the
+/// name claims. Mirrors the user-reported journal trace from
+/// `docs/lg/firmware-quirks.md` — "Field-test verification".
 #[tokio::test]
-async fn reliable_screen_on_escalates_when_tv_slipped_to_active_standby() {
+async fn reliable_screen_on_escalates_via_verify_retry_loop() {
     let session = TestSession::new("active_standby_tv").await.unwrap();
 
     session.inject_event(SessionEvent::SessionLocked);
@@ -222,6 +290,15 @@ async fn reliable_screen_on_escalates_when_tv_slipped_to_active_standby() {
          otherwise the reliable tier's verify check is fooled into thinking \
          screen_on succeeded while the panel is dark (Bug A regression)",
     );
+
+    // Model LG firmware's "screen_on returns Ok but doesn't wake the
+    // panel" behavior in ActiveStandby. Without this, the mock's
+    // default `is_screen_on = true` flip would let the verify pass
+    // on attempt #1 and short-circuit this test to the wrong path.
+    session
+        .daemon()
+        .handle()
+        .set_screen_on_noop("mock://active_standby_tv", true);
 
     session.inject_event(SessionEvent::SessionUnlocked);
     tokio::time::sleep(Duration::from_millis(1500)).await;

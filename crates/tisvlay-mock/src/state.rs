@@ -77,6 +77,16 @@ pub(crate) struct MockState {
     /// `send` and are left in place (the maps are bounded by test
     /// lifetime).
     pub(crate) subscription_txs: HashMap<String, Vec<mpsc::UnboundedSender<TvState>>>,
+
+    /// Addresses where `MockConnection::screen_on` should return `Ok`
+    /// without mutating state. Set via
+    /// [`MockHandle::set_screen_on_noop`](crate::handle::MockHandle::set_screen_on_noop)
+    /// so tests can model LG firmware's "screen_on no-ops when the TV
+    /// has slipped past the screen-off substate" behavior — needed to
+    /// genuinely exercise the daemon's reliable-tier verify-retry-
+    /// escalate path (mock's default flips `is_screen_on=true`, which
+    /// otherwise lets verify succeed on the first attempt).
+    pub(crate) screen_on_noop: std::collections::HashSet<String>,
 }
 
 impl MockState {

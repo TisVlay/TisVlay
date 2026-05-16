@@ -23,8 +23,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
-    DaemonClient, QosConfig, ResolvedEventAction, ResolvedUserProfile, SessionAction, UserConfig,
-    UserProfileConfig,
+    DaemonClient, QosConfig, Reliability, ResolvedEventAction, ResolvedUserProfile, SessionAction,
+    UserConfig, UserProfileConfig,
 };
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -293,10 +293,14 @@ pub async fn execute_action_for_tv(
 /// event action defined in each TV's profile. Different TVs can respond
 /// differently to the same event (e.g., gaming TV ignores session lock).
 ///
-/// Tracks the last [`SessionAction`] sent per TV to skip redundant
-/// commands. Dedup is keyed on the action alone, not the QoS tier — if
-/// the TV is already in the target state, re-dispatching at a higher
-/// reliability tier wouldn't change anything.
+/// **Dedup rules.** Tracks the last [`SessionAction`] sent per TV.
+/// Best-effort dispatches dedup against `last_action` — fire-and-forget
+/// for the same action is wasted IPC. Reliable dispatches bypass dedup
+/// entirely: the whole point of the reliable tier is to verify the TV
+/// actually reached the target state, so "we already dispatched this
+/// action" isn't a safe reason to skip. Without this carve-out, a
+/// reliable `screen_on` following a best-effort `screen_on` would be
+/// silently dropped, losing the verify/escalate semantics.
 pub async fn event_handler(
     mut event_rx: mpsc::UnboundedReceiver<session_monitor::SessionEvent>,
     state: Arc<RwLock<SessionState>>,
@@ -342,16 +346,17 @@ pub async fn event_handler(
                 continue;
             }
 
-            if let Some(&prev) = last_action.get(&tv_id) {
-                if prev == event_action.action {
-                    debug!(
-                        tv_id = %tv_id,
-                        action = ?event_action.action,
-                        "Skipping redundant action",
-                    );
-                    success_count += 1;
-                    continue;
-                }
+            if event_action.qos.reliability == Reliability::BestEffort
+                && let Some(&prev) = last_action.get(&tv_id)
+                && prev == event_action.action
+            {
+                debug!(
+                    tv_id = %tv_id,
+                    action = ?event_action.action,
+                    "Skipping redundant action",
+                );
+                success_count += 1;
+                continue;
             }
 
             debug!(
