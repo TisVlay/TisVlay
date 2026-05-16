@@ -93,6 +93,71 @@ async fn dispatch_reliable_screen_on_escalates_via_active_standby() {
     );
 }
 
+/// Reliable `screen_on` short-circuits straight to `power_on` when
+/// `last_known_power_state` is already `"standby"` (TV's `is_on ==
+/// false`, i.e., past Screen Off — the daemon's derived shorthand
+/// for `Standby` / `Suspend` / `PowerOff`). Skips the verify-retry
+/// loop entirely, avoiding the 10 s `REQUEST_MS` exposure when the
+/// LG TV's WebSocket has half-died with the TV.
+///
+/// Mock injects `PowerState::Standby` to put cached state at
+/// `"standby"`. Dispatch with reliable QoS. Asserts the TV ends up
+/// `"active"` via the escalation path. Pairs with the
+/// `dispatch_reliable_screen_on_escalates_via_active_standby` test
+/// above, which exercises the verify-retry-escalate path for the
+/// `screen_off` cached-state input that the short-circuit explicitly
+/// leaves untouched.
+#[tokio::test]
+async fn dispatch_reliable_screen_on_short_circuits_from_standby() {
+    use tisvlay_core::{PowerState, QosConfig, Reliability, SessionAction};
+
+    let daemon = TestDaemon::with_one_mock_tv("dispatch_shortcircuit")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("dispatch_shortcircuit").to_string();
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    // Inject Standby — TV `is_on == false`, derives daemon-side cached
+    // PowerState `"standby"`. This is the state where `screen_on` over
+    // an existing WebSocket would either no-op or block 10 s waiting
+    // for a reply that never comes; the pre-flight check should
+    // bypass it and dispatch power_on directly.
+    daemon
+        .handle()
+        .inject_power_state("mock://dispatch_shortcircuit", PowerState::Standby);
+    settle().await;
+
+    let qos = QosConfig {
+        reliability: Some(Reliability::Reliable),
+    };
+    client
+        .dispatch_action(&uuid, SessionAction::ScreenOn, qos)
+        .await
+        .expect("dispatch_action");
+
+    // Short-circuit budget: power_on probe + WoL + new-connection
+    // state push. No verify-retry sleeps, so this is tighter than the
+    // verify-retry test's 1.5 s but matched here for parity.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs
+        .iter()
+        .find(|t| t.uuid == uuid)
+        .expect("dispatch_shortcircuit TV present");
+    assert_eq!(
+        tv.power_state, "active",
+        "short-circuit should have dispatched power_on; new connection comes up active",
+    );
+    assert!(
+        tv.is_screen_on,
+        "screen should be on after the escalated power_on completes",
+    );
+}
+
 // ---------- Effective system profile JSON ----------
 
 #[tokio::test]

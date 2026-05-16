@@ -1700,11 +1700,24 @@ impl TvManager {
     /// [`ManagedTv::last_known_power_state`] which the subscription
     /// task keeps fresh), so no IPC round-trip per attempt.
     ///
+    /// **Pre-flight short-circuit.** If the cached `PowerState` is
+    /// already past Screen Off (the daemon's derived `"standby"` —
+    /// i.e. `state.is_on == false`, covering the underlying
+    /// `Standby`, `Suspend`, and `PowerOff` substates), `screen_on`
+    /// over the existing WebSocket would either no-op or stall on the
+    /// LG client's 10 s `REQUEST_MS` waiting for a reply the
+    /// half-asleep TV won't send. Skip the verify-retry loop and go
+    /// straight to `power_on` (which has WoL + retry + reconnect
+    /// inside). Costs nothing on the normal lockscreen-wake path
+    /// (cached state is `"screen_off"` there); strictly improves
+    /// worst-case wake time when the TV has auto-powered-off during
+    /// the lock period.
+    ///
     /// [`TvBackend`]: tisvlay_core::TvBackend
     async fn dispatch_reliable_screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        // Pull tuning from the per-vendor TvBackend. Defaults to 300 ms
-        // / 2 attempts for backends that don't override.
-        let (verify_delay, max_attempts) = {
+        // Pull tuning + cached state under one lock, so the
+        // short-circuit decision sees a consistent snapshot.
+        let (verify_delay, max_attempts, cached_before) = {
             let tv_arc = self.get_tv(tv_id).await?;
             let tv = tv_arc.lock().await;
             let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
@@ -1713,8 +1726,18 @@ impl TvManager {
             (
                 registered.backend.reliable_verify_delay(),
                 registered.backend.reliable_max_attempts(),
+                tv.last_known_power_state.clone(),
             )
         };
+
+        if cached_before == "standby" {
+            info!(
+                tv_id,
+                cached_power_state = %cached_before,
+                "reliable screen_on short-circuiting to power_on (TV past Screen Off)",
+            );
+            return self.power_on(tv_id).await;
+        }
 
         for attempt in 0..max_attempts {
             if let Err(e) = self.screen_on(tv_id).await {

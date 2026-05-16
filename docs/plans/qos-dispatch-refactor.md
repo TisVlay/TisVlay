@@ -113,3 +113,27 @@ Six commits, sequenced so each one is reviewable and the orphan-plumbing rule ho
 - [x] D-Bus surface shrinks: `Tv1.Power.PowerOn`, `Tv1.Power.PowerOff`, `Tv1.Screen.SetScreen` removed; `Tv1.Dispatch` added. `busctl --user tree org.tisvlay.Daemon` reflects the new shape.
 - [x] `tisvlay-session/src/lib.rs` net LOC drops; `crates/tisvlayd/src/tv_manager.rs` (or sibling) net LOC grows by roughly the moved+adapted amount.
 - [x] `tisvlay-core` `TvBackend` trait gains `reliable_verify_delay` / `reliable_max_attempts` with defaults; LG and mock leave them at default; tests exercise the override path.
+
+## Post-merge perf triage
+
+Pre-merge manual smoke testing on the LG OLED G4 surfaced a reported wall-clock regression: lock → remote power-off → mouse-move took ~14 s on the refactored daemon vs ~1 s on the pre-refactor baseline, reproduced across multiple trials by hand. The two paths share the same `tv_manager::screen_on → with_connection → backend.screen_on` code, so an A/B regression in that path would have surprised. Triage steps and outcome captured here so the next person doesn't have to rediscover the conclusion.
+
+### Tools built
+
+1. **Autonomous reproducer** — [scripts/triage_dispatch_perf.py](../../scripts/triage_dispatch_perf.py). Reads the daemon's TOML config, opens an out-of-band SSAP WebSocket using the daemon's existing `client_key`, sends `ssap://system/turnOff` to drop the TV into `screen_off`, then issues `Tv1.Dispatch` (or pre-refactor's `Tv1.Screen.SetScreen` via auto-detection) and times `t0 → PowerState == "active"` via `busctl monitor`. Cleanup forces a `Tv1.Reconnect` so any client-key permission churn from the script's own register is restored to the daemon's full-manifest set. Useful for repeat measurement of cold-start screen_on latency from a known TV state without driving the actual desktop lock/unlock flow.
+
+2. **Inline tracing instrumentation** (held on a local branch, not landed). Elevated `tisvlay-lg::connection::{send, reader_loop}`'s per-frame `trace!` to `info!` with `target: "lgws"` and `(id, msg_type, uri)` fields, and added matching `target: "tvmtx"` traces around `tv_manager::with_connection`'s per-TV mutex acquire/release and `run_subscription_task`'s lock + write of `last_known_power_state`. Together these capture every WS tx/rx with monotonic timestamps and every per-TV mutex acquire latency — enough to see exactly which side stalls when a smoke-test trial does go slow.
+
+### Findings
+
+- **The autonomous probe did sometimes hit a 10 s `REQUEST_MS` path**, but it did so on **both** branches with similar frequency — the SSAP-turnoff inducer triggers stale-WS scenarios that aren't representative of the manual smoke-test flow. The autonomous data alone is therefore inconclusive about refactor cost.
+
+- **Instrumented manual smoke tests on B and A came in essentially equivalent.** B: ~9.8 s end-to-end (GreeterWake → TV online). A: ~9.0 s and ~8.7 s across two trials. Both paths got `MSG_TYPE=Error` back from `turnOnScreen` in ~10 ms (LG client masks via idempotent-500 logic), the reliable verify-retry loop ran in ~600 ms exactly as designed, and the WoL → registration → online tail dominated the wall-clock. No 10 s `REQUEST_MS` hit in any of the instrumented A trials.
+
+- **The originally-reported "consistent" regression did not reproduce under instrumented sampling.** Either the slow-A pattern is intermittent and we need more trials to catch one, or it was a small-N coincidence in the pre-instrumentation manual runs. Either way, the refactor isn't deterministically responsible for the variance.
+
+### Decision
+
+Independent of root cause: ship a **pre-flight short-circuit** in `dispatch_reliable_screen_on`. If `last_known_power_state` is already past Screen Off (i.e., `standby` — the daemon's derived shorthand for the TV being more deeply asleep than just panel-blank), skip the `screen_on` attempt and dispatch `power_on` directly. Costs nothing on the happy path (cached state is `screen_off` for a normal lockscreen wake), but **erases the 10 s `REQUEST_MS` exposure** any time the TV has slipped to deep standby while we weren't looking — which is the user-reported failure mode regardless of which branch we're on.
+
+This makes the variance question moot: even if a future change re-introduces the slow path on either branch, this short-circuit makes it not matter. The inline instrumentation was reverted before merge; re-apply from the change set captured in this PR's discussion if the pattern resurfaces and you want fresh data.
