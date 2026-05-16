@@ -270,9 +270,7 @@ pub fn get_action_for_event(
 /// Thin shim that forwards the resolved `EventAction` (action + qos)
 /// to the daemon via [`DaemonClient::dispatch_action`]. The
 /// verify-retry-escalate state machine lives daemon-side in
-/// `tv_manager::dispatch_reliable_screen_on` — see
-/// `docs/plans/qos-dispatch-refactor.md` for the architectural
-/// rationale.
+/// `tv_manager::dispatch_reliable_screen_on`.
 pub async fn execute_action_for_tv(
     daemon: &DaemonClient,
     tv_id: &str,

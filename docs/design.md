@@ -481,7 +481,7 @@ The default is *type-driven*, not slot-driven: overriding `on_session_lock.actio
 
 **Resolution.** Each event's `EventAction` chain merges through per-TV profile → named profile → "default" → hard-coded defaults; `action` and `qos.reliability` merge independently. The resolved view per TV is available via `Tv1.GetEffectiveSystemProfile()` (system events) and `Session1.GetEffectiveUserProfile(tv_id)` (user events) — both return nested `{ action, qos: { reliability } }` JSON mirroring the TOML shape.
 
-The `qos` namespace is designed for future dimensions (deadline, durability) to slot in as sibling fields without schema break. See [docs/plans/action-qos.md](plans/action-qos.md) for the full design discussion, including the TV-side prevention path that's deferred to a follow-up.
+The `qos` namespace is designed for future dimensions (deadline, durability) to slot in as sibling fields without schema break. See [docs/ideas/tv-side-power-prevention.md](ideas/tv-side-power-prevention.md) for the deferred TV-side prevention path and [docs/lg/firmware-quirks.md](lg/firmware-quirks.md) for the LG-specific behaviors (`ActiveStandby` mapping, `screen_on` error discrimination, `REQUEST_MS`-is-load-bearing) that shaped the reliability tier.
 
 ---
 

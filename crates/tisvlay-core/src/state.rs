@@ -154,7 +154,7 @@ impl TvState {
     /// Without it the forwarder's `(is_on=true, is_screen_on=true)` →
     /// `"active"` mapping would defeat the reliable dispatch tier's
     /// verify check after a remote power-off. See "Bug A" in
-    /// `docs/plans/action-qos.md`.
+    /// `docs/lg/firmware-quirks.md`.
     pub fn update_power(&mut self, state: PowerState) {
         self.is_on = state.is_on();
         self.is_screen_on = !matches!(
@@ -257,7 +257,7 @@ mod tests {
     /// so `is_screen_on` MUST be `false` for `ActiveStandby` — otherwise
     /// the cached property reads `"active"` and the reliable dispatch
     /// tier's verify check thinks `screen_on` succeeded while the panel
-    /// is dark. See `docs/plans/action-qos.md` — "Bug A".
+    /// is dark. See `docs/lg/firmware-quirks.md` — "Bug A".
     #[test]
     fn active_standby_marks_screen_off() {
         let mut state = TvState::new();

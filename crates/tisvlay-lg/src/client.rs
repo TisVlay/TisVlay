@@ -413,7 +413,7 @@ impl WebOsClient {
     /// the TV has slipped past Screen Off into a deeper power state
     /// (Active Standby etc.) and the screen-on command was refused; the
     /// reliable dispatch tier needs the error so it can escalate to
-    /// `power_on` with WoL. See `docs/plans/action-qos.md` — "Bug B".
+    /// `power_on` with WoL. See `docs/lg/firmware-quirks.md` — "Bug B".
     pub async fn screen_on(&mut self) -> Result<()> {
         match self.command(power::TURN_ON_SCREEN, json!({})).await {
             Ok(_) => Ok(()),
@@ -810,7 +810,7 @@ mod tests {
     /// success — the panel is dark and the caller needs to escalate to
     /// `power_on` with WoL. The original implementation masked every
     /// `TvError(_)` as success, hiding this signal from the reliable
-    /// dispatch tier. See `docs/plans/action-qos.md` — "Bug B".
+    /// dispatch tier. See `docs/lg/firmware-quirks.md` — "Bug B".
     #[tokio::test]
     async fn screen_on_propagates_minus_102_not_in_screen_off_substate() {
         let server = FakeSsapServer::start().await;

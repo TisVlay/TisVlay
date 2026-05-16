@@ -128,6 +128,10 @@ These tests use `#[tokio::test(flavor = "multi_thread")]` because `assert_cmd_sn
 
 The `tisvlay-lg` crate has its own fake SSAP server for testing without a real TV. See [docs/lg/testing.md](lg/testing.md) for details.
 
+### On-hardware triage tooling
+
+For end-to-end smoke-test latency measurement on real hardware, `scripts/triage_dispatch_perf.py` opens an out-of-band SSAP WebSocket via the daemon's existing `client_key`, sends `ssap://system/turnOff` to put the TV in `screen_off`, then dispatches reliable `screen_on` and times `t0 → PowerState == "active"`. Useful when investigating wake-recovery latency without driving the actual desktop lock/unlock flow. See [docs/lg/firmware-quirks.md](lg/firmware-quirks.md) "The 10 s `REQUEST_MS` is load-bearing" for the spike findings the script was built to characterize.
+
 ## Coverage
 
 Measured with `cargo-llvm-cov`, ratcheted in CI.

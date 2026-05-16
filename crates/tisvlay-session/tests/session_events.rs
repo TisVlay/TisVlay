@@ -198,7 +198,7 @@ async fn reliable_screen_on_escalates_when_tv_slipped_past_screen_off() {
 /// injected, the cached PowerState must NOT read `"active"`, so the
 /// reliable path detects the mismatch and escalates to `power_on`.
 /// Mirrors the user-reported journal trace from
-/// `docs/plans/action-qos.md` — "Field-test findings".
+/// `docs/lg/firmware-quirks.md` — "Field-test findings".
 #[tokio::test]
 async fn reliable_screen_on_escalates_when_tv_slipped_to_active_standby() {
     let session = TestSession::new("active_standby_tv").await.unwrap();

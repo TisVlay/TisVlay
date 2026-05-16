@@ -1,6 +1,6 @@
 # TV-side power prevention
 
-Deferred from the [Action QoS plan](../plans/action-qos.md) when v1 shipped client-side reliability only. This file captures the design discussion so it isn't re-derived if and when the prevention path un-defers.
+Deferred from the original Action QoS work when v1 shipped client-side reliability only. This file captures the design discussion so it isn't re-derived if and when the prevention path un-defers.
 
 ## Why this is deferred
 
@@ -40,11 +40,24 @@ When option B is picked up:
 - Persistent snapshot stored in TV's `[tv.*]` block under a managed-by-tisvlay sub-table (e.g., `[tv.managed_snapshot]`), so restoration survives daemon restarts.
 - Per-backend doc in `docs/lg/managed-settings.md` lists exactly what changes when management is enabled.
 
+## Prior art
+
+Surveyed during the Action QoS V1 design. Useful as a starting point for the un-deferred path or for future vendor backends with similar wake-recovery problems.
+
+- **LG_Buddy** (Rust, Linux session service). Two-tier wake: try `turn_screen_on` first; on error `-102` (TV rejects unblank because it's not in screen-off substate) escalate to a full WoL+retry loop (6 attempts, 2-30 s backoff, ~48 s worst case). Uses session-scoped marker files to track whether *it* blanked the screen, so it knows whether to attempt restore. Conservative-vs-aggressive policy: conservative requires its own marker; aggressive will restore even if another device powered the TV on. Input-aware fallback on screen-off: if the TV is on a non-HDMI source, considers blank successful without escalating to power-off.
+
+- **lgpowercontrol** (Bash, Linux event-driven). 5-retry / 3 s loop on `turn_screen_off`; single-attempt `turn_screen_on` after 1 s post-WoL wait (LG_Buddy says 1 s is empirically too short — they wait 6 s). State-aware: queries `get_power_state` before any dispatch, short-circuits if already in target state. Two-mode config (`POWER_MODE=screen|power` and `BOOT_SHUTDOWN_MODE=power|screen`) — independent policies for idle versus boot/shutdown. README explicitly notes hibernate/suspend unsupported because the network drops before commands complete.
+
+- **LGTVCompanion** (C++, Windows service). Power-on timeout is user-configurable (5-100 s, default 40 s). Parallel WoL flood + TCP retry every 1-2 s for the entire timeout window. Pre-WoL transient ARP entry so MAC resolution survives the TV's network silence (Linux equivalent via `ip neighbor` would translate). HDMI-input guard: `CheckHdmiInputWhenPoweringOff` skips power-off if the TV's foreground input doesn't match the PC. Per-device WoL strategy (broadcast / unicast / subnet broadcast / auto). Reads `getPowerState` to decide whether to send `unblank` (→ "Screen Off") versus `toggle` (→ "Active Standby"). User Idle Mode (blank screen) is wired separately from System Suspend (power off) — distinct policy per trigger.
+
+- **Python libs** (`bscpylgtv`, `aiowebostv`, `LGWebOSRemote`). All expose `turnOffScreen` with `{"standbyMode": "active"}` (passive variant documented but not recommended). All subscribe to `getPowerState` and surface the explicit "Screen Off" state. `bscpylgtv` exposes the TV's own auto-power-off knobs via Luna `setSystemSettings`: `automaticStandBy` (hours; 0 = Off), `autoOff2HourOnTimer`, `noSignalScreenSaver`, `wolwowlOnOff`. None of the three libraries implements WoL-on-wake fallback themselves — that logic always lives in the application layer.
+
 ## Note on bscpylgtv quirk
 
 CLAUDE.md notes that direct `setSystemSettings` returns 401 for some categories (specifically picture/backlight, hence the Luna `createAlert` workaround for that path). For `category="time"` (where `automaticStandBy` lives) and `category="general"` (where `noSignalScreenSaver` lives), bscpylgtv calls `setSystemSettings` directly without the workaround — implying these categories don't have the 401 issue. Worth verifying empirically against the user's specific firmware (LG OLED C3 2023, G4 2024) when the prevention path is un-deferred.
 
 ## Related
 
-- Action QoS plan (client-side reliability path that ships in v1): [docs/plans/action-qos.md](../plans/action-qos.md)
+- LG firmware quirks (Bug A, Bug B, `REQUEST_MS`-is-load-bearing): [docs/lg/firmware-quirks.md](../lg/firmware-quirks.md)
 - Event-driven power-management redesign (broader power-state work): [docs/ideas/event-driven-power-management.md](event-driven-power-management.md)
+- Action QoS design discussion in `docs/design.md` (Reliability tier and the resolve chain): [docs/design.md](../design.md#action-qos-reliability)
