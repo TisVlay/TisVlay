@@ -237,6 +237,19 @@ struct ManagedTv {
     /// Used by `is_automated()` to evaluate the input-aware gate without
     /// needing access to the D-Bus interface cache.
     last_known_input: Option<String>,
+    /// Last known power state from backend subscription pushes,
+    /// derived via [`crate::power_state::derive_power_state`] — the
+    /// single source of truth shared with the `state_forwarder`'s
+    /// `Tv1.Power.PowerState` emit and `register_tv_interfaces`'s
+    /// initial-state seed. Possible values are the `ACTIVE` /
+    /// `SCREEN_OFF` / `STANDBY` constants from that module, plus
+    /// `"unknown"` before the first subscription push.
+    ///
+    /// Used by `screen_on` / `screen_off`'s pre-flight short-circuit
+    /// and verify check to decide whether the TV has reached the
+    /// target state, without an IPC round-trip back through the
+    /// D-Bus property cache.
+    last_known_power_state: String,
     /// NIC carrying traffic to this TV, resolved from the routing table.
     ///
     /// Set at connection time via `resolve_interface_for_ip()`. Used to
@@ -255,6 +268,7 @@ impl ManagedTv {
             pairing_in_flight: false,
             system_profile,
             last_known_input: None,
+            last_known_power_state: "unknown".to_string(),
             monitored_interface: None,
         }
     }
@@ -455,11 +469,22 @@ async fn run_subscription_task(
     mut state_rx: mpsc::UnboundedReceiver<TvState>,
 ) {
     while let Some(state) = state_rx.recv().await {
-        // Update last_known_input on ManagedTv for the automation gate.
-        if let Some(ref input) = state.current_input {
+        // Update cached fields on ManagedTv that the daemon's
+        // reliable-dispatch helper and automation gate read
+        // in-process. `last_known_power_state` mirrors the same
+        // `(is_on, is_screen_on) → "..."` derivation that
+        // `state_forwarder` applies to the D-Bus `Tv1.Power.PowerState`
+        // property — both go through `crate::power_state` to stay in
+        // lockstep.
+        let derived_power_state = crate::power_state::derive_power_state(&state);
+        {
             let tvs_read = tvs.read().await;
             if let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) {
-                tv_arc.lock().await.last_known_input = Some(input.clone());
+                let mut tv = tv_arc.lock().await;
+                if let Some(ref input) = state.current_input {
+                    tv.last_known_input = Some(input.clone());
+                }
+                tv.last_known_power_state = derived_power_state.to_string();
             }
         }
         let event = StateChangeEvent::SubscriptionUpdate {

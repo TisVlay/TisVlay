@@ -695,14 +695,7 @@ pub async fn register_tv_interfaces(
     // from try_subscribe_state() arrive before D-Bus interfaces are
     // registered and are silently dropped by the forwarder.
     let power_state = initial_state
-        .map(|s| {
-            match (s.is_on, s.is_screen_on) {
-                (false, _) => "standby",
-                (true, false) => "screen_off",
-                (true, true) => "active",
-            }
-            .to_string()
-        })
+        .map(|s| crate::power_state::derive_power_state(s).to_string())
         .unwrap_or_else(|| "unknown".to_string());
     let is_screen_on = initial_state.map(|s| s.is_screen_on).unwrap_or(true);
     let volume = initial_state.and_then(|s| s.volume).unwrap_or(0);
