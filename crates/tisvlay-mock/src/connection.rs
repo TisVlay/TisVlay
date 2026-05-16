@@ -217,7 +217,10 @@ impl TvConnection for MockConnection {
         if noop {
             return Ok(());
         }
-        self.mutate_and_push(|s| s.is_screen_on = true);
+        // Route through `update_power(Active)` so the raw PowerState
+        // field stays consistent with the derived booleans — matches
+        // how a real backend reports the substate transition.
+        self.mutate_and_push(|s| s.update_power(PowerState::Active));
         Ok(())
     }
 
@@ -229,7 +232,7 @@ impl TvConnection for MockConnection {
         if noop {
             return Ok(());
         }
-        self.mutate_and_push(|s| s.is_screen_on = false);
+        self.mutate_and_push(|s| s.update_power(PowerState::ScreenOff));
         Ok(())
     }
 

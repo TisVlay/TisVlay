@@ -369,3 +369,67 @@ async fn screen_off_verify_retry_gives_up_when_panel_refuses() {
     );
     assert!(tv.is_screen_on, "noop'd screen_off should leave panel on");
 }
+
+/// Field-test regression: TV in `ActiveStandby` (user pressed
+/// power on the remote, panel dark, NIC still alive, WS still
+/// open). LG firmware ACKs `screen_off` over the live socket but
+/// won't actually transition to `ScreenOff` from this substate.
+/// V2 before the typed-PowerState refactor used to collapse
+/// `ActiveStandby` to the cached string `"screen_off"`, defeat the
+/// pre-flight standby check (cached != `"standby"`), enter the
+/// verify-retry loop, see the 500-idempotent-mask succeed, and
+/// confirm the (stale) cached `"screen_off"` immediately — making
+/// `screen_off` a silent no-op while the TV stayed dark in
+/// `ActiveStandby`.
+///
+/// Fix: `last_known_power_state` is the raw `PowerState` enum,
+/// `needs_wake_preflight` returns true for `ActiveStandby`, so
+/// pre-flight escalates via `power_on` and lands the TV in true
+/// `ScreenOff` after the wake.
+#[tokio::test]
+async fn screen_off_wakes_from_active_standby() {
+    use tisvlay_core::PowerState;
+
+    let daemon = TestDaemon::with_one_mock_tv("scr_off_as")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("scr_off_as").to_string();
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    // Inject `ActiveStandby` so the daemon's cached PowerState
+    // matches the field-test scenario.
+    daemon
+        .handle()
+        .inject_power_state("mock://scr_off_as", PowerState::ActiveStandby);
+    settle().await;
+
+    // Pre-condition: cached property reads "standby" now (the
+    // daemon collapses `ActiveStandby` to "standby" for D-Bus
+    // consumers, distinct from the underlying enum it gates on).
+    let tvs = client.list_tvs().await.expect("list_tvs (pre)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "standby",
+        "ActiveStandby should collapse to 'standby' on the D-Bus wire",
+    );
+
+    daemon
+        .manager()
+        .screen_off(&uuid)
+        .await
+        .expect("screen_off");
+
+    // Pre-flight power_on + new connection + screen_off + verify-delay.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs (post)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "screen_off",
+        "screen_off from ActiveStandby should wake the TV then land in true ScreenOff",
+    );
+    assert!(!tv.is_screen_on, "panel should be off after screen_off");
+}

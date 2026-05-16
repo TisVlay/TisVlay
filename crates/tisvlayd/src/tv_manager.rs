@@ -25,7 +25,7 @@ use std::time::Duration;
 /// here.
 const DIRECT_CONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 use tisvlay_core::{
-    Capabilities, FieldVisibility, ResolvedSystemProfile, SessionAction, SystemConfig,
+    Capabilities, FieldVisibility, PowerState, ResolvedSystemProfile, SessionAction, SystemConfig,
     SystemSection, TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
@@ -237,19 +237,19 @@ struct ManagedTv {
     /// Used by `is_automated()` to evaluate the input-aware gate without
     /// needing access to the D-Bus interface cache.
     last_known_input: Option<String>,
-    /// Last known power state from backend subscription pushes,
-    /// derived via [`crate::power_state::derive_power_state`] — the
-    /// single source of truth shared with the `state_forwarder`'s
-    /// `Tv1.Power.PowerState` emit and `register_tv_interfaces`'s
-    /// initial-state seed. Possible values are the `ACTIVE` /
-    /// `SCREEN_OFF` / `STANDBY` constants from that module, plus
-    /// `"unknown"` before the first subscription push.
+    /// Last known power state from backend subscription pushes —
+    /// the raw vendor-reported enum, so the reliable-dispatch
+    /// pre-flight can distinguish `ActiveStandby` (NIC alive, panel
+    /// dark, transitional) from `ScreenOff` (true panel-off target).
+    /// `Unknown` until the first subscription push lands.
     ///
-    /// Used by `screen_on` / `screen_off`'s pre-flight short-circuit
-    /// and verify check to decide whether the TV has reached the
-    /// target state, without an IPC round-trip back through the
-    /// D-Bus property cache.
-    last_known_power_state: String,
+    /// Used by `screen_on` / `screen_off`'s pre-flight wake gate and
+    /// verify check to decide whether the TV has reached the target
+    /// state, without an IPC round-trip back through the D-Bus
+    /// property cache. The D-Bus `Tv1.Power.PowerState` property
+    /// derives its string from this same enum via
+    /// [`crate::power_state::derive_power_state`].
+    last_known_power_state: PowerState,
     /// NIC carrying traffic to this TV, resolved from the routing table.
     ///
     /// Set at connection time via `resolve_interface_for_ip()`. Used to
@@ -268,7 +268,7 @@ impl ManagedTv {
             pairing_in_flight: false,
             system_profile,
             last_known_input: None,
-            last_known_power_state: "unknown".to_string(),
+            last_known_power_state: PowerState::Unknown,
             monitored_interface: None,
         }
     }
@@ -471,12 +471,11 @@ async fn run_subscription_task(
     while let Some(state) = state_rx.recv().await {
         // Update cached fields on ManagedTv that the daemon's
         // reliable-dispatch helper and automation gate read
-        // in-process. `last_known_power_state` mirrors the same
-        // `(is_on, is_screen_on) → "..."` derivation that
-        // `state_forwarder` applies to the D-Bus `Tv1.Power.PowerState`
-        // property — both go through `crate::power_state` to stay in
-        // lockstep.
-        let derived_power_state = crate::power_state::derive_power_state(&state);
+        // in-process. `last_known_power_state` carries the raw
+        // vendor PowerState so the pre-flight wake gate can
+        // distinguish ActiveStandby from a true ScreenOff steady
+        // state; the D-Bus property emit collapses to a string via
+        // `crate::power_state::derive_power_state`.
         {
             let tvs_read = tvs.read().await;
             if let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) {
@@ -484,7 +483,7 @@ async fn run_subscription_task(
                 if let Some(ref input) = state.current_input {
                     tv.last_known_input = Some(input.clone());
                 }
-                tv.last_known_power_state = derived_power_state.to_string();
+                tv.last_known_power_state = state.power_state;
             }
         }
         let event = StateChangeEvent::SubscriptionUpdate {
@@ -1587,28 +1586,31 @@ impl TvManager {
     // -------------------------------------------------------------------------
 
     /// Turn screen on — inherently reliable: verify cached state
-    /// reaches [`crate::power_state::ACTIVE`], retry up to
+    /// reaches [`PowerState::Active`], retry up to
     /// `backend.verify_retry_config().max_attempts`, escalate to
     /// [`Self::power_on`] (WoL + retry + reconnect) on continued
     /// failure.
     ///
-    /// **Pre-flight short-circuit.** If cached
-    /// [`ManagedTv::last_known_power_state`] reads
-    /// [`crate::power_state::STANDBY`] the TV is past Screen Off
-    /// (the daemon's derived shorthand for
-    /// `state.is_on == false` — covers `Standby` / `Suspend` /
-    /// `PowerOff`). `screen_on` over the existing WebSocket would
-    /// either no-op or stall on the LG client's `REQUEST_MS`
-    /// waiting for a reply the half-asleep TV won't send. Skip
-    /// the verify-retry loop and dispatch `power_on` directly.
+    /// **Pre-flight wake.** If cached
+    /// [`ManagedTv::last_known_power_state`] is one of the off-ish
+    /// substates per
+    /// [`crate::power_state::needs_wake_preflight`] (`Standby` /
+    /// `Suspend` / `ActiveStandby` / `Unknown`), skip the verify-retry
+    /// loop and go straight to `power_on`. `screen_on` over the
+    /// existing WebSocket would either no-op or stall on the LG
+    /// client's `REQUEST_MS` waiting for a reply the half-asleep TV
+    /// won't send; `ActiveStandby` in particular is a transient
+    /// substate where the LG firmware ACKs commands but doesn't
+    /// transition to `Active`.
     ///
     /// Costs nothing on the normal lockscreen-wake path (cached
-    /// state is `"screen_off"` there); strictly improves
-    /// worst-case wake time when the TV has slipped to deeper
-    /// standby.
+    /// state is `ScreenOff` there, which is *not* in the pre-flight
+    /// set); strictly improves worst-case wake time when the TV has
+    /// slipped to deeper standby or transitioned through
+    /// `ActiveStandby` after a remote-press power-off.
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
         // Pull retry config + cached state under one lock so the
-        // short-circuit decision sees a consistent snapshot.
+        // pre-flight decision sees a consistent snapshot.
         let (retry_config, cached_before) = {
             let tv_arc = self.get_tv(tv_id).await?;
             let tv = tv_arc.lock().await;
@@ -1617,15 +1619,15 @@ impl TvManager {
             })?;
             (
                 registered.backend.verify_retry_config(),
-                tv.last_known_power_state.clone(),
+                tv.last_known_power_state,
             )
         };
 
-        if cached_before == crate::power_state::STANDBY {
+        if crate::power_state::needs_wake_preflight(cached_before) {
             info!(
                 tv_id,
-                cached_power_state = %cached_before,
-                "screen_on short-circuiting to power_on (TV past Screen Off)",
+                cached_power_state = ?cached_before,
+                "screen_on pre-flight: powering on (TV not in a wakeable substate)",
             );
             return self.power_on(tv_id).await;
         }
@@ -1644,15 +1646,15 @@ impl TvManager {
             let cached = {
                 let tv_arc = self.get_tv(tv_id).await?;
                 let tv = tv_arc.lock().await;
-                tv.last_known_power_state.clone()
+                tv.last_known_power_state
             };
-            if cached == crate::power_state::ACTIVE {
+            if matches!(cached, PowerState::Active | PowerState::ScreenSaver) {
                 return Ok(());
             }
             debug!(
                 tv_id,
                 attempt,
-                cached_power_state = %cached,
+                cached_power_state = ?cached,
                 "screen_on did not reach active state",
             );
         }
@@ -1664,19 +1666,27 @@ impl TvManager {
     }
 
     /// Turn screen off — inherently reliable: verify cached state
-    /// reaches [`crate::power_state::SCREEN_OFF`], retry up to
+    /// reaches [`PowerState::ScreenOff`], retry up to
     /// `backend.verify_retry_config().max_attempts`. No escalation
     /// past retries — the TV is already reachable; if it refuses
     /// to blank we log and give up rather than power-cycle.
     ///
-    /// **Pre-flight escalate-via-power_on.** If cached state reads
-    /// [`crate::power_state::STANDBY`] the TV is currently off:
-    /// for it to enter screen-off substate it must first be
-    /// powered on. Call [`Self::power_on`] first (which brings the
-    /// TV up to `"active"`), then continue into the verify-retry
-    /// loop to send the actual `screen_off` command. Serves the
-    /// `on_startup = "screen_off"` usecase (boot machine with TV
-    /// powered on but panel blanked to avoid overnight burn-in).
+    /// **Pre-flight wake.** If cached state is one of the off-ish
+    /// substates per [`crate::power_state::needs_wake_preflight`]
+    /// (`Standby` / `Suspend` / `ActiveStandby` / `Unknown`), call
+    /// [`Self::power_on`] first to bring the TV to a steady
+    /// `Active` state, then continue into the verify-retry loop to
+    /// send the actual `screen_off` command. Serves two cases:
+    ///
+    /// - `on_startup = "screen_off"` (boot machine with TV powered
+    ///   on but panel blanked to avoid overnight burn-in): cached
+    ///   starts at `Unknown`, pre-flight wakes the TV.
+    /// - User pressed power on the remote, TV transitions through
+    ///   `ActiveStandby` (panel dark, NIC alive) before reaching
+    ///   `Standby`: an immediate `screen_off` while in
+    ///   `ActiveStandby` would otherwise no-op (LG firmware ACKs
+    ///   but doesn't change state), leaving the daemon's view stuck
+    ///   on a transient substate.
     ///
     /// Side effect: `on_session_lock = "screen_off"` with the TV
     /// already off briefly powers it on before blanking. Rare but
@@ -1693,15 +1703,15 @@ impl TvManager {
             })?;
             (
                 registered.backend.verify_retry_config(),
-                tv.last_known_power_state.clone(),
+                tv.last_known_power_state,
             )
         };
 
-        if cached_before == crate::power_state::STANDBY {
+        if crate::power_state::needs_wake_preflight(cached_before) {
             info!(
                 tv_id,
-                cached_power_state = %cached_before,
-                "screen_off pre-flight: powering on first (TV must be on for screen-off substate)",
+                cached_power_state = ?cached_before,
+                "screen_off pre-flight: powering on first (TV must reach Active before screen-off substate)",
             );
             self.power_on(tv_id).await?;
             // Fall through to the verify-retry loop below — TV is
@@ -1722,15 +1732,15 @@ impl TvManager {
             let cached = {
                 let tv_arc = self.get_tv(tv_id).await?;
                 let tv = tv_arc.lock().await;
-                tv.last_known_power_state.clone()
+                tv.last_known_power_state
             };
-            if cached == crate::power_state::SCREEN_OFF {
+            if cached == PowerState::ScreenOff {
                 return Ok(());
             }
             debug!(
                 tv_id,
                 attempt,
-                cached_power_state = %cached,
+                cached_power_state = ?cached,
                 "screen_off did not reach screen_off state",
             );
         }

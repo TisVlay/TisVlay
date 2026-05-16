@@ -60,6 +60,14 @@ impl std::fmt::Display for PowerCyclePhase {
 /// Current state of a TV.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TvState {
+    /// Raw, vendor-reported power state. Updated by [`TvState::update_power`]
+    /// alongside the derived [`Self::is_on`] / [`Self::is_screen_on`]
+    /// booleans. Carries the variant distinction (e.g. `ActiveStandby`
+    /// vs `ScreenOff`) that the boolean collapse loses — consumed by
+    /// the daemon to gate reliable-dispatch pre-flight on the rich
+    /// substate.
+    #[serde(default)]
+    pub power_state: PowerState,
     /// Whether the TV is powered on.
     pub is_on: bool,
     /// Whether the screen is on (false = blanked for OLED protection).
@@ -98,14 +106,15 @@ pub struct InputInfo {
 }
 
 /// TV power state as reported by the TV.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PowerState {
     /// TV is fully on.
     Active,
     /// TV is in standby.
     Standby,
-    /// TV is powering on.
+    /// TV is in active standby (NIC alive, panel off — LG's substate
+    /// after a remote-press power-off, before deep standby kicks in).
     ActiveStandby,
     /// TV is in suspend mode.
     Suspend,
@@ -114,6 +123,7 @@ pub enum PowerState {
     /// TV is in screen off mode (OLED blank).
     ScreenOff,
     /// Unknown state.
+    #[default]
     Unknown,
 }
 
@@ -148,14 +158,20 @@ impl TvState {
 
     /// Update state from power state response.
     ///
-    /// `ActiveStandby` is in the screen-off suppression list because it's
-    /// the state LG TVs enter when the user presses Power from Screen
-    /// Off: NIC alive (so `is_on` stays `true` for `is_on()`), panel off.
-    /// Without it the forwarder's `(is_on=true, is_screen_on=true)` →
-    /// `"active"` mapping would defeat the reliable dispatch tier's
-    /// verify check after a remote power-off. See "Bug A" in
-    /// `docs/lg/firmware-quirks.md`.
+    /// Stores the raw [`PowerState`] in [`Self::power_state`] so
+    /// downstream consumers can distinguish substates (e.g.
+    /// `ActiveStandby` vs `ScreenOff` — both `is_screen_on=false`,
+    /// but semantically different targets for reliable dispatch).
+    ///
+    /// `ActiveStandby` is in the screen-off suppression list because
+    /// it's the state LG TVs enter when the user presses Power from
+    /// Screen Off: NIC alive (so `is_on` stays `true` for `is_on()`),
+    /// panel off. Without it the forwarder's
+    /// `(is_on=true, is_screen_on=true)` → `"active"` mapping would
+    /// defeat the reliable dispatch tier's verify check after a
+    /// remote power-off. See "Bug A" in `docs/lg/firmware-quirks.md`.
     pub fn update_power(&mut self, state: PowerState) {
+        self.power_state = state;
         self.is_on = state.is_on();
         self.is_screen_on = !matches!(
             state,
@@ -287,6 +303,11 @@ mod tests {
         ] {
             let mut s = TvState::new();
             s.update_power(state);
+            assert_eq!(
+                s.power_state, state,
+                "power_state mismatch for {state:?}: expected {state:?}, got {:?}",
+                s.power_state,
+            );
             assert_eq!(
                 s.is_on, expected_is_on,
                 "is_on mismatch for {state:?}: expected {expected_is_on}, got {}",
