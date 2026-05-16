@@ -6,6 +6,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 - [Event-driven power-management redesign](ideas/event-driven-power-management.md)
 - [TV-side power prevention (manage LG auto-off Luna settings)](ideas/tv-side-power-prevention.md)
+- [Richer `DispatchOutcome` return type for screen_on / screen_off](ideas/dispatch-outcome-return-type.md)
 - [Virtual DRM connector for detached TVs](ideas/virtual-drm-connector.md)
 - [Probe library extraction (when GUI lands)](ideas/probe-library-extraction.md)
 - [Polkit gating for multi-user shared workstations](ideas/polkit-multi-user.md)
@@ -35,6 +36,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 - [Consolidate `tisvlayd` integration test binaries](ideas/tisvlayd-test-consolidation.md)
 - [Switch CI (or workspace) to nightly Rust for build-time knobs](ideas/ci-nightly-build-knobs.md)
+- [Replace hardcoded sleeps in dispatch integration tests with poll-with-deadline](ideas/dispatch-test-event-driven-waits.md)
 
 ## Diagnostics & telemetry
 
@@ -43,3 +45,4 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Crash-time diagnostic capture](ideas/crash-time-diagnostic-capture.md)
 - [Opt-in remote crash reporting (`dev-telemetry` feature)](ideas/dev-telemetry-remote-crash-reporting.md)
 - [Native crash capture via `minidumper`](ideas/native-crash-capture-minidumper.md)
+- [Triage script: capture `PowerCycleProgress` phases for panel-lit measurement](ideas/triage-power-cycle-progress-phases.md)
