@@ -447,6 +447,32 @@ All automation (both daemon system events and session user events) is gated by t
 | true | off_primary | yes | **false** |
 | true | off_primary | no | **true** |
 
+### Reliable screen-state actions
+
+`tv_manager::screen_on` and `tv_manager::screen_off` are **inherently reliable**. Both dispatch through a verify-retry-escalate loop rather than fire-and-forget. The reliability is not a per-event opt-in or QoS tier; it's the only behavior the methods have.
+
+**Verify-retry-escalate per direction:**
+
+| Direction   | Pre-flight wake gate                  | Verify target          | On retry exhaustion       |
+|-------------|---------------------------------------|------------------------|---------------------------|
+| `screen_on` | `power_on` if cached in wake-preflight set | `Active` / `ScreenSaver` | Escalate to `power_on`    |
+| `screen_off`| `power_on` if cached in wake-preflight set, then settle | `ScreenOff`           | Warn + accept (TV reachable, panel refused — no power-cycle) |
+
+Cached state is `ManagedTv::last_known_power_state` (raw [`PowerState`](../crates/tisvlay-core/src/state.rs) enum, populated by subscription pushes and live `getPowerState` queries). The pre-flight wake set is defined by [`crate::power_state::needs_wake_preflight`](../crates/tisvlayd/src/power_state.rs):
+
+- `Standby` / `Suspend` — TV is deeply off; in-band `screen_on` would stall on the half-asleep WS.
+- `ActiveStandby` — transient substate after a remote-press power-off; LG firmware ACKs `screen_*` but won't actually transition.
+- `Unknown` — no subscription push received yet; safest to assume off.
+- (`ScreenOff` deliberately **excluded** — it's the target state for `screen_off`, and `screen_on` from `ScreenOff` is exactly the lockscreen-wake fast path the `with_retry` "knock" mechanism is tuned for.)
+
+**Per-backend tuning.** Verify-delay and max-attempts come from `TvBackend::verify_retry_config() -> RetryConfig`, defaulted to `{ verify_delay: 300ms, max_attempts: 2 }` (LG-tuned). USB-CEC and RS-232 backends override for their different latency characteristics.
+
+**Event-driven waits, not sleep-poll.** Each `ManagedTv` owns a `tokio::sync::watch::Sender<PowerState>` fired by every cached-state writer (subscription task + live `getPowerState` refresh). The verify-retry loops route through `TvManager::await_power_state(tv_id, timeout, predicate)`, which subscribes to the watch and returns the first matching transition (or the last seen value on timeout). The retry budget becomes an upper bound, not a guaranteed wait — fast TVs return immediately on the subscription push.
+
+**LG firmware quirk fallback.** If `screen_off`'s post-wake settle phase times out (LG firmware honored a very recent remote-off and refused to fully wake), the TV is sitting in `ActiveStandby` with the panel already dark. The user's screen-off intent is functionally satisfied, so accept with an info log rather than burning more retries on `turnOffScreen` rejections. See [`docs/lg/firmware-quirks.md`](lg/firmware-quirks.md) for the full diagnosis.
+
+**D-Bus surface.** Unchanged from pre-reliability work: `Tv1.Power.PowerOn` / `PowerOff`, `Tv1.Screen.SetScreen(b)`. Reliability is implementation-side; clients (tray, GUI, CLI, session service) get reliable dispatch implicitly without negotiating tiers.
+
 ---
 
 ## CLI Interface
