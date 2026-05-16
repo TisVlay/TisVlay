@@ -333,9 +333,7 @@ trait TisvlayTv {
     /// (`"screen_on"`, `"screen_off"`, `"power_on"`, `"power_off"`,
     /// `"none"`). `qos` is a JSON object matching the `QosConfig`
     /// shape (e.g. `{"reliability":"reliable"}`); empty `{}` lets the
-    /// daemon fill in the action-derived asymmetric default. Single
-    /// entry point that replaces the dropped `Tv1.Power.PowerOn` /
-    /// `Tv1.Power.PowerOff` / `Tv1.Screen.SetScreen` methods.
+    /// daemon fill in the action-derived asymmetric default.
     fn dispatch(&self, action: &str, qos: &str) -> zbus::Result<()>;
 }
 

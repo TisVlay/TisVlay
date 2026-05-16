@@ -102,8 +102,8 @@ The handoff ships its design as React/JSX prototypes; treat them as visual refer
 
 Per-TV (`Tv1.*`):
 - Read-only properties: `Uuid`, `Vendor`, `Connected`, `Capabilities`, `HardwareId`, `VendorConfig`, `VendorInfo`, `AutomateWhen`, `Automated`, plus the live state mirrors (`Power.PowerState`, `Power.SupportsWake`, `Volume.Volume`, `Volume.Muted`, `Backlight.Backlight`, `Screen.IsScreenOn`, `Input.CurrentInput`, `Input.AvailableInputs`, `Desktop.Connector`).
-- Writable properties (single-field flips via `Properties.Set`): `Tv1.{Name, Managed, SystemProfile, PrimaryInput}`, plus the live-state writables (`Volume.Volume`, `Volume.Muted`, `Screen.IsScreenOn`, `Backlight.Backlight`).
-- Methods: `Tv1.Reconnect`, `Tv1.Remove`, `Tv1.GetConfig`, `Tv1.UpdateConfig(json_patch)`, `Tv1.Power.PowerOn` / `PowerOff` (with `PowerCycleProgress(phase)` signal), `Tv1.Input.SwitchInput`.
+- Writable properties (single-field flips via `Properties.Set`): `Tv1.{Name, Managed, SystemProfile, PrimaryInput}`, plus the live-state writables (`Volume.Volume`, `Volume.Muted`, `Backlight.Backlight`).
+- Methods: `Tv1.Reconnect`, `Tv1.Remove`, `Tv1.GetConfig`, `Tv1.UpdateConfig(json_patch)`, `Tv1.GetEffectiveSystemProfile`, `Tv1.Dispatch(action, qos)` (lifecycle actions with QoS tier; emits `Tv1.Power.PowerCycleProgress(phase)` during wake flows), `Tv1.Input.SwitchInput`.
 
 `Session1` (user bus):
 - `ListUserProfiles()` — merged admin + user.

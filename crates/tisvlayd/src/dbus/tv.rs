@@ -386,13 +386,12 @@ impl TvService {
 
     /// Dispatch a lifecycle action on this TV with the given QoS tier.
     ///
-    /// Single entry point for the QoS-aware action surface. Replaces
-    /// the per-feature methods `Tv1.Power.PowerOn`, `Tv1.Power.PowerOff`,
-    /// and `Tv1.Screen.SetScreen` — those are gone, and their direct
-    /// callers (tray, GUI, CLI) now route through `Tv1.Dispatch` via
-    /// `DaemonClient` Rust wrappers that pass best-effort QoS by default.
-    /// Session events flow through here too, passing the resolved
-    /// per-event reliability tier from the user profile.
+    /// Single entry point for the lifecycle action surface. Direct
+    /// callers (tray, GUI, CLI) reach this via `DaemonClient` Rust
+    /// wrappers (`screen_on`, `power_on`, …) that default to
+    /// best-effort QoS. Session events also flow through here,
+    /// passing the resolved per-event reliability tier from the
+    /// user's profile.
     ///
     /// `action` is the snake-case wire form of [`SessionAction`]
     /// (`"screen_on"`, `"screen_off"`, `"power_on"`, `"power_off"`,

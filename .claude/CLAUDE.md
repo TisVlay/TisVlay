@@ -261,12 +261,18 @@ busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Re
 # Writable live-state methods (properties stay read-only; Set* methods are the auth path)
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Volume SetVolume y 30
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Volume SetMuted b true
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Screen SetScreen b false
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Backlight SetBacklight y 80
 
+# Lifecycle action dispatch (single entry point, replaces PowerOn / PowerOff / SetScreen).
+# `action` is one of screen_on | screen_off | power_on | power_off | none.
+# `qos` is a JSON object; empty {} uses the action-derived asymmetric default
+# (wake-side -> reliable, sleep-side -> best-effort).
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Dispatch ss "screen_off" '{}'
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Dispatch ss "screen_on" '{"reliability":"reliable"}'
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Dispatch ss "power_off" '{}'
+busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1 Dispatch ss "power_on" '{}'
+
 # Other methods
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Power PowerOff
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Power PowerOn
 busctl --user call org.tisvlay.Daemon /org/tisvlay/Tv/<UUID_> org.tisvlay.Tv1.Input SwitchInput s HDMI_2
 
 # Monitor PropertiesChanged signals
