@@ -202,12 +202,13 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 └── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
     │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
     ├── Properties (rw): Name, Managed, SystemProfile, PrimaryInput,
-    │                     IsScreenOn, Volume, Muted, Backlight
+    │                     Volume, Muted, Backlight
     ├── Properties (ro): Uuid, Vendor, Connected, Capabilities,
     │                     VendorInfo, AutomateWhen, Automated,
-    │                     PowerState, CurrentInput, AvailableInputs
+    │                     PowerState, IsScreenOn, CurrentInput,
+    │                     AvailableInputs
     ├── Methods:  Reconnect, RePair, Remove, GetConfig, UpdateConfig,
-    │             PowerOn, PowerOff, SwitchInput
+    │             GetEffectiveSystemProfile, Dispatch, SwitchInput
     └── Signals:  (standard PropertiesChanged only)
 
 org.tisvlay.Session  (session bus)
@@ -223,7 +224,7 @@ org.tisvlay.Session  (session bus)
 |--------|-------|---------------|
 | **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (properties + commands), Session1 (user profiles) | — |
 | **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `ConfigReloaded`; Session1: `UserProfileChanged`; DBus: `NameOwnerChanged` (service discovery) |
-| **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions via writable properties) | — |
+| **tisvlay-session** | Manager1 (admin defaults), Tv1.Dispatch (lifecycle actions with resolved QoS), Tv1.* (live-state writes) | — |
 
 `org.freedesktop.DBus.ObjectManager` at `/org/tisvlay` provides `GetManagedObjects()` — a single round-trip returning all TV object paths and their interface properties.
 
@@ -256,7 +257,7 @@ Methods:
 - `UpdateConfig(json_patch: s)` — atomic batch edit. Top-level keys (`name`, `managed`, `system_profile`, `primary_input`) plus any `UserInput`-visibility vendor schema field. Server-side schema-validated; vendor-field changes drop and reconnect. `Diagnostic`/`Secret` keys are rejected.
 - `GetEffectiveSystemProfile() → s` — fully resolved system profile as JSON (per-TV → named → "default" → hard-coded inheritance applied, action-derived reliability defaults filled in). Each `on_*` event serializes as a nested `{ action, qos: { reliability } }` table mirroring the TOML shape. Symmetric with `Session1.GetEffectiveUserProfile`.
 
-Single-field edits also flow through the per-property `Properties.Set` path — `Tv1.Name`, `Tv1.Managed`, `Tv1.SystemProfile`, `Tv1.PrimaryInput`, `Tv1.IsScreenOn`, `Tv1.Volume`, `Tv1.Muted`, `Tv1.Backlight` — which routes through the same internal helpers as `UpdateConfig` for top-level fields.
+Single-field edits also flow through the per-property `Properties.Set` path — `Tv1.Name`, `Tv1.Managed`, `Tv1.SystemProfile`, `Tv1.PrimaryInput`, `Tv1.Volume`, `Tv1.Muted`, `Tv1.Backlight` — which routes through the same internal helpers as `UpdateConfig` for top-level fields. `Tv1.IsScreenOn` is read-only; flip the screen via `Tv1.Dispatch("screen_on" | "screen_off", qos)` instead.
 
 ### org.tisvlay.Session1 (Session Service)
 
@@ -277,7 +278,7 @@ Properties (read-write): `Name`, `Managed`, `SystemProfile`, `PrimaryInput`
 
 Properties (read-only, computed): `AutomateWhen` (from resolved system profile), `Automated` (computed gate: `managed && automate_when.should_automate(primary_input, current_input)`)
 
-Methods: `Reconnect()`, `RePair()`, `Remove()`, `GetConfig()`, `UpdateConfig(json_patch: s)`, `GetEffectiveSystemProfile() → s` — see the section above for full signatures.
+Methods: `Reconnect()`, `RePair()`, `Remove()`, `GetConfig()`, `UpdateConfig(json_patch: s)`, `GetEffectiveSystemProfile() → s`, `Dispatch(action: s, qos: s)` — see the section above for full signatures. `Dispatch` is the single entry point for lifecycle actions (`screen_on` / `screen_off` / `power_on` / `power_off` / `none`); `qos` is a JSON `QosConfig` object (e.g. `{"reliability":"reliable"}`, `{}` for action-derived default). Session events route through here with the resolved per-event reliability tier; direct callers use `DaemonClient::{screen_on,screen_off,power_on,power_off}` wrappers that pass best-effort QoS.
 
 No custom signals — uses standard `org.freedesktop.DBus.Properties.PropertiesChanged` for all state notifications. TV state is cached in the D-Bus interface structs and updated by backend subscription pushes via `InterfaceRef::get_mut()`.
 
@@ -285,8 +286,8 @@ No custom signals — uses standard `org.freedesktop.DBus.Properties.PropertiesC
 
 Each feature interface is implemented on per-TV objects. Controllable state is exposed as **read-only** properties driven by backend subscription pushes — `state_forwarder` is the single emit path for `PropertiesChanged`. Writes go through explicit Set methods, matching the conventional D-Bus pattern (UPower, GNOME, BlueZ, NetworkManager). This avoids the auto-emit-vs-subscription race that affects ramping properties (notably backlight on LG OLEDs, which transitions over hundreds of ms via subscription pushes).
 
-- **org.tisvlay.Tv1.Power** — `PowerOn()`, `PowerOff()` methods; `PowerState` (ro) property
-- **org.tisvlay.Tv1.Screen** — `SetScreen(b)` method; `IsScreenOn` (ro) property
+- **org.tisvlay.Tv1.Power** — `PowerState` (ro) property + `PowerCycleProgress(phase: s)` signal (fires during `Dispatch("power_on", …)` flows). Power-cycle actions themselves live on the base `Tv1.Dispatch` method.
+- **org.tisvlay.Tv1.Screen** — `IsScreenOn` (ro) property. Screen-blank actions live on `Tv1.Dispatch("screen_on" | "screen_off", …)`.
 - **org.tisvlay.Tv1.Volume** — `SetVolume(y)`, `SetMuted(b)` methods; `Volume` (ro, 0-100), `Muted` (ro) properties
 - **org.tisvlay.Tv1.Input** — `SwitchInput(input_id: s)` method; `CurrentInput` (ro), `AvailableInputs` (ro, invalidates) properties
 - **org.tisvlay.Tv1.Backlight** — `SetBacklight(y)` method; `Backlight` (ro, 0-100) property
@@ -715,7 +716,7 @@ Forward-looking work that hasn't shipped yet. No fixed sequencing — entries la
 
 ### Event-Driven Power Management
 
-Today's `tisvlay-session` listener path drives `Tv1.Power.SetIsScreenOn` / `PowerOff` from session-bus events (screensaver, Wayland idle, logind, idle timer). A follow-up merge replaces this with per-DE adapters (KWin idle/DPMS, wlroots output management, X11 XScreenSaver, logind fallback) that emit a unified `ScreenBlank` / `ScreenWake` / `Sleep` / `Wake` event surface the daemon dispatches to `Tv1.Power.*`. Hard requirements (sub-100 ms lockscreen-snap-back, blank-vs-off distinction, multi-TV per-EDID-connector, detached-TV idle-timer fallback) and the "what NOT to do" gotchas are captured in [docs/ideas.md](ideas.md).
+Today's `tisvlay-session` listener path drives `Tv1.Dispatch` with `screen_on` / `screen_off` / `power_on` / `power_off` actions from session-bus events (screensaver, Wayland idle, logind, idle timer). A follow-up merge replaces this with per-DE adapters (KWin idle/DPMS, wlroots output management, X11 XScreenSaver, logind fallback) that emit a unified `ScreenBlank` / `ScreenWake` / `Sleep` / `Wake` event surface, with the daemon mapping each to the same `Tv1.Dispatch` action surface and resolved QoS. Hard requirements (sub-100 ms lockscreen-snap-back, blank-vs-off distinction, multi-TV per-EDID-connector, detached-TV idle-timer fallback) and the "what NOT to do" gotchas are captured in [docs/ideas.md](ideas.md).
 
 ---
 
@@ -769,7 +770,7 @@ The `TvConnection` trait provides an optional `subscribe_state()` method with a 
 
 After establishing a connection, the daemon calls `subscribe_state()` on the `TvConnection`. If the backend supports push (LG does), a spawned task forwards received `TvState` snapshots as `StateChangeEvent::SubscriptionUpdate`s through an internal channel. The `state_change_forwarder` task receives these and updates cached property fields on all per-TV D-Bus interface structs via `InterfaceRef::get_mut()`, emitting standard `PropertiesChanged` signals only for properties that actually changed.
 
-Write commands go through explicit Set methods (`SetVolume`, `SetMuted`, `SetBacklight`, `SetScreen`) which dispatch to `TvManager` and return after the backend acknowledges. The cached property field is **not** mutated by the method — `state_forwarder` updates it and emits `PropertiesChanged` only when the TV's subscription confirms the new value. Single emit path, no auto-emit-vs-subscription race; convergence-gating clients (the GUI's `OptimisticSlider`, the tray's `Reconciler`) see exactly one stream of authoritative state changes per property.
+Write commands go through explicit Set methods (`SetVolume`, `SetMuted`, `SetBacklight`) and the lifecycle entry point (`Dispatch`), all of which dispatch to `TvManager` and return after the backend acknowledges. The cached property field is **not** mutated by the method — `state_forwarder` updates it and emits `PropertiesChanged` only when the TV's subscription confirms the new value. Single emit path, no auto-emit-vs-subscription race; convergence-gating clients (the GUI's `OptimisticSlider`, the tray's `Reconciler`) see exactly one stream of authoritative state changes per property.
 
 ### Per-Device Network Monitoring
 

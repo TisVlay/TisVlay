@@ -488,10 +488,10 @@ sequenceDiagram
     EH->>Client: list_tvs()
     Client->>DBus: GetManagedObjects
     DBus-->>Client: TV list (filter automated)
-    EH->>EH: resolve profile → on_session_lock = ScreenOff
-    EH->>Client: screen_off(tv_id)
-    Client->>DBus: Set IsScreenOn = false
-    DBus->>Mgr: screen_off(tv_id)
+    EH->>EH: resolve profile → on_session_lock = {ScreenOff, qos}
+    EH->>Client: dispatch_action(tv_id, ScreenOff, qos)
+    Client->>DBus: Tv1.Dispatch("screen_off", qos_json)
+    DBus->>Mgr: dispatch_action(tv_id, ScreenOff, qos)
     Mgr->>Mock: screen_off()
     Mock->>Mock: update TvState, push to subscriber
     Mock-->>Fwd: TvState snapshot via mpsc

@@ -246,6 +246,8 @@ Three things worth recording:
 2. **Bug B is genuine safety net.** On other firmware revisions / other state transitions, the TV may well return `-102` instead. The new `is_idempotent_screen_error` discriminator routes those to the same escalation path that Bug A's fix unlocked. Either bug fixed in isolation would have left a latent failure under the other.
 3. **End-to-end latency is ~8 s** from mouse-trigger to TV-online. Reliable-tier overhead: 2 × 300 ms verify (~600 ms). The rest is LG's WoL → boot → SSAP registration sequence, dominated by the TV's wake-from-Active-Standby time (~7 s). Within budget for an unblank that previously failed silently.
 
+> **Post-v1 refactor note.** The journal lines above (`D-Bus: SetScreen`, `D-Bus: PowerOn`) reflect the v1 wire format. Before merge, the dispatch surface was consolidated to a single `Tv1.Dispatch(action, qos)` method and the reliable-tier verify-retry-escalate state machine moved from the session crate to `tv_manager.rs` (in-process cached-state reads, per-backend tunables via `TvBackend::reliable_verify_delay` / `reliable_max_attempts`). Same observable behavior; see [qos-dispatch-refactor.md](qos-dispatch-refactor.md) for the architectural rationale.
+
 ## Deferred — TV-side prevention
 
 The full design (failure-mode taxonomy, three commitment levels considered, implementation sketch for un-deferral, Luna `setSystemSettings` 401 caveat) lives at [docs/ideas/tv-side-power-prevention.md](../ideas/tv-side-power-prevention.md). v1 ships client-side reliable only; that file captures what to revisit if and when prevention un-defers.
