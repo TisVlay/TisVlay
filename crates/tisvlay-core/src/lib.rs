@@ -70,7 +70,7 @@ pub mod logging;
 // =============================================================================
 
 // Traits
-pub use traits::{Transport, TvBackend, TvConnection, TvConnector, TvDiscovery};
+pub use traits::{RetryConfig, Transport, TvBackend, TvConnection, TvConnector, TvDiscovery};
 
 // Capabilities
 pub use capabilities::Capabilities;

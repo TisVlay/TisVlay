@@ -60,6 +60,14 @@ impl std::fmt::Display for PowerCyclePhase {
 /// Current state of a TV.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TvState {
+    /// Raw, vendor-reported power state. Updated by [`TvState::update_power`]
+    /// alongside the derived [`Self::is_on`] / [`Self::is_screen_on`]
+    /// booleans. Carries the variant distinction (e.g. `ActiveStandby`
+    /// vs `ScreenOff`) that the boolean collapse loses — consumed by
+    /// the daemon to gate reliable-dispatch pre-flight on the rich
+    /// substate.
+    #[serde(default)]
+    pub power_state: PowerState,
     /// Whether the TV is powered on.
     pub is_on: bool,
     /// Whether the screen is on (false = blanked for OLED protection).
@@ -98,22 +106,43 @@ pub struct InputInfo {
 }
 
 /// TV power state as reported by the TV.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `#[non_exhaustive]` because future vendor backends (Samsung's
+/// `NetworkStandby`, Sony's variants, …) will likely add their own
+/// substates. Downstream exhaustive `match` arms must include a
+/// `_` wildcard and decide a fall-through semantic — for the
+/// daemon's reliable-dispatch path the safe default is "treat as
+/// wake-preflight needed" so an unknown substate doesn't
+/// accidentally short-circuit the wake.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PowerState {
     /// TV is fully on.
     Active,
     /// TV is in standby.
     Standby,
-    /// TV is powering on.
+    /// TV is in active standby (NIC alive, panel off — LG's substate
+    /// after a remote-press power-off, before deep standby kicks in).
     ActiveStandby,
     /// TV is in suspend mode.
     Suspend,
-    /// TV is in screen saver mode.
+    /// TV is in screen saver mode — panel is on and the TV is
+    /// fully usable; this variant is in the wake-permissive
+    /// whitelist alongside [`Self::Active`] for that reason.
+    ///
+    /// Vendor backends that have a substate semantically meaning
+    /// "panel dim / ambient mode / not-fully-usable" should NOT
+    /// map onto `ScreenSaver` — they need their own variant (and
+    /// a place in the wake-preflight set on the daemon side), or
+    /// the daemon's `screen_on` short-circuit will skip the wake
+    /// they actually need. The current LG mapping uses the SSAP
+    /// `"screen saver"` / `"screensaver"` strings only.
     ScreenSaver,
     /// TV is in screen off mode (OLED blank).
     ScreenOff,
     /// Unknown state.
+    #[default]
     Unknown,
 }
 
@@ -147,12 +176,25 @@ impl TvState {
     }
 
     /// Update state from power state response.
+    ///
+    /// Stores the raw [`PowerState`] in [`Self::power_state`] so
+    /// downstream consumers can distinguish substates (e.g.
+    /// `ActiveStandby` vs `ScreenOff` — both `is_screen_on=false`,
+    /// but semantically different targets for reliable dispatch).
+    ///
+    /// `is_screen_on` is derived as a positive whitelist (`Active` /
+    /// `ScreenSaver`) rather than a negation against the screen-off
+    /// list. The whitelist form keeps unknown future `#[non_exhaustive]`
+    /// variants on the safe default — `is_screen_on = false` — so a
+    /// vendor backend adding a substate we haven't audited can't
+    /// silently report the panel as lit when the daemon doesn't
+    /// know. `ActiveStandby` (the LG substate after a remote-press
+    /// power-off — NIC alive, panel dark) was the original
+    /// motivating case; see "Bug A" in `docs/lg/firmware-quirks.md`.
     pub fn update_power(&mut self, state: PowerState) {
+        self.power_state = state;
         self.is_on = state.is_on();
-        self.is_screen_on = !matches!(
-            state,
-            PowerState::ScreenOff | PowerState::Standby | PowerState::Suspend
-        );
+        self.is_screen_on = matches!(state, PowerState::Active | PowerState::ScreenSaver);
     }
 }
 
@@ -231,5 +273,74 @@ impl DiscoveredTv {
     pub fn with_location(mut self, location: impl Into<String>) -> Self {
         self.location = location.into();
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the Action-QoS field-test failure: when an LG
+    /// TV transitions from `ScreenOff` to `ActiveStandby` (user presses
+    /// Power on the remote while the screen is blank), the subscription
+    /// pushes `PowerState::ActiveStandby`. The forwarder derives the
+    /// cached `Tv1.Power.PowerState` property from `(is_on, is_screen_on)`,
+    /// so `is_screen_on` MUST be `false` for `ActiveStandby` — otherwise
+    /// the cached property reads `"active"` and the reliable dispatch
+    /// tier's verify check thinks `screen_on` succeeded while the panel
+    /// is dark. See `docs/lg/firmware-quirks.md` — "Bug A".
+    #[test]
+    fn active_standby_marks_screen_off() {
+        let mut state = TvState::new();
+        state.update_power(PowerState::ActiveStandby);
+        assert!(state.is_on, "ActiveStandby is still 'on' (NIC alive)");
+        assert!(
+            !state.is_screen_on,
+            "ActiveStandby has the panel off — `is_screen_on` must be false \
+             or the daemon's cached PowerState property would report 'active' \
+             and defeat the reliable tier's verify check",
+        );
+    }
+
+    /// Companion to [`active_standby_marks_screen_off`]: spell out the
+    /// expected mapping for every `PowerState` variant so future changes
+    /// have to touch this table.
+    ///
+    /// `Unknown` resolves to `is_screen_on = false` because
+    /// `update_power` derives the bool from a positive whitelist of
+    /// fully-usable substates (`Active` / `ScreenSaver`). Anything
+    /// outside the whitelist — including `Unknown` and any future
+    /// `#[non_exhaustive]` variant — is treated as panel-off, which
+    /// matches the daemon-side `derive_power_state` collapse of
+    /// `Unknown` to `STANDBY`.
+    #[test]
+    fn update_power_screen_on_mapping_is_complete() {
+        for (state, expected_is_on, expected_screen_on) in [
+            (PowerState::Active, true, true),
+            (PowerState::ActiveStandby, true, false),
+            (PowerState::ScreenSaver, true, true),
+            (PowerState::ScreenOff, true, false),
+            (PowerState::Standby, false, false),
+            (PowerState::Suspend, false, false),
+            (PowerState::Unknown, false, false),
+        ] {
+            let mut s = TvState::new();
+            s.update_power(state);
+            assert_eq!(
+                s.power_state, state,
+                "power_state mismatch for {state:?}: expected {state:?}, got {:?}",
+                s.power_state,
+            );
+            assert_eq!(
+                s.is_on, expected_is_on,
+                "is_on mismatch for {state:?}: expected {expected_is_on}, got {}",
+                s.is_on
+            );
+            assert_eq!(
+                s.is_screen_on, expected_screen_on,
+                "is_screen_on mismatch for {state:?}: expected {expected_screen_on}, got {}",
+                s.is_screen_on
+            );
+        }
     }
 }

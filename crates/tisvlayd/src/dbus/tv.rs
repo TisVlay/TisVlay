@@ -694,16 +694,12 @@ pub async fn register_tv_interfaces(
     // safe defaults. This avoids the race where subscription updates
     // from try_subscribe_state() arrive before D-Bus interfaces are
     // registered and are silently dropped by the forwarder.
-    let power_state = initial_state
-        .map(|s| {
-            match (s.is_on, s.is_screen_on) {
-                (false, _) => "standby",
-                (true, false) => "screen_off",
-                (true, true) => "active",
-            }
-            .to_string()
-        })
-        .unwrap_or_else(|| "unknown".to_string());
+    let power_state = crate::power_state::derive_power_state(
+        initial_state
+            .map(|s| s.power_state)
+            .unwrap_or(tisvlay_core::PowerState::Unknown),
+    )
+    .to_string();
     let is_screen_on = initial_state.map(|s| s.is_screen_on).unwrap_or(true);
     let volume = initial_state.and_then(|s| s.volume).unwrap_or(0);
     let muted = initial_state.and_then(|s| s.muted).unwrap_or(false);

@@ -59,6 +59,12 @@ enum ServerCommand {
 /// Shared state between the server task and the test handle.
 struct ServerState {
     registration: RegistrationOutcome,
+    /// Per-URI error responses to return instead of the normal success
+    /// payload. Keyed by SSAP URI (e.g.
+    /// `com.webos.service.tvpower/power/turnOnScreen`). Used by tests
+    /// that exercise the client's error-handling paths — notably the
+    /// screen_on `-102 not in screen-off substate` discrimination.
+    command_errors: std::collections::HashMap<String, String>,
 }
 
 /// Test control surface for the fake SSAP server.
@@ -84,6 +90,20 @@ impl FakeSsapHandle {
     /// Set the registration outcome for the next connection.
     pub(crate) fn set_registration_outcome(&self, outcome: RegistrationOutcome) {
         self.state.lock().registration = outcome;
+    }
+
+    /// Configure the server to respond to commands on `uri` with an
+    /// SSAP `error` response carrying the given error string.
+    ///
+    /// LG's error format is `"<code> <message>"` (e.g.
+    /// `"-102 not in screen-off substate"`, `"500 method not allowed"`).
+    /// The error string is sent verbatim in the `error` field of the
+    /// response. Used to test client-side error discrimination paths.
+    pub(crate) fn set_command_error(&self, uri: impl Into<String>, error: impl Into<String>) {
+        self.state
+            .lock()
+            .command_errors
+            .insert(uri.into(), error.into());
     }
 
     /// Push a subscription update into the active connection.
@@ -121,6 +141,7 @@ impl FakeSsapServer {
 
         let state = Arc::new(Mutex::new(ServerState {
             registration: RegistrationOutcome::default(),
+            command_errors: std::collections::HashMap::new(),
         }));
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -277,8 +298,17 @@ impl FakeSsapServer {
             }
 
             RequestType::Request => {
-                // Generic command — echo success with returnValue: true.
                 let uri = request.uri.as_deref().unwrap_or("");
+                // Check for a test-injected error response for this URI first.
+                if let Some(error) = state.lock().command_errors.get(uri).cloned() {
+                    return vec![json!({
+                        "id": id,
+                        "type": "error",
+                        "error": error,
+                        "payload": {},
+                    })];
+                }
+                // Generic command — echo success with returnValue: true.
                 let payload = Self::command_response_payload(uri, &request.payload);
                 vec![json!({
                     "id": id,

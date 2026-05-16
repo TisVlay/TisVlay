@@ -95,7 +95,11 @@ impl TvConnector for MockConnector {
         }
 
         tracing::debug!(address = %config.address, "connecting to mock TV");
-        Ok(Box::new(MockConnection::new(&config, hardware_id)))
+        Ok(Box::new(MockConnection::new(
+            &config,
+            hardware_id,
+            self.state.clone(),
+        )))
     }
 
     fn supports_wake(&self, _vendor_config: &toml::Value) -> bool {

@@ -39,7 +39,7 @@
 
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tisvlay_core::{DiscoveredTv, HardwareId};
+use tisvlay_core::{DiscoveredTv, HardwareId, PowerState};
 use tracing::instrument;
 
 use crate::pairing::PairingOutcome;
@@ -163,6 +163,162 @@ impl MockHandle {
     }
 
     // ------------------------------------------------------------------
+    // Live state injection
+    // ------------------------------------------------------------------
+
+    /// Push a [`PowerState`] change onto a live mock connection.
+    ///
+    /// Simulates a TV that changes its own power state without the
+    /// daemon having asked — for example, an LG TV that auto-powers-off
+    /// after sitting in Screen Off too long. The mutation is applied to
+    /// the live `TvState` and pushed through every active subscription
+    /// for `address`, so the daemon's `state_forwarder` updates the
+    /// cached `Tv1.Power.PowerState` property the same way it would for
+    /// a real backend-initiated state change.
+    ///
+    /// `address` is the mock vendor address (e.g. `mock://living_room`).
+    /// No-op if no connection is currently open for that address.
+    #[instrument(skip(self))]
+    pub fn inject_power_state(&self, address: &str, target: PowerState) {
+        let (state_arc, txs) = {
+            let shared = self.state.lock();
+            let state_arc = shared.live_states.get(address).cloned();
+            let txs = shared
+                .subscription_txs
+                .get(address)
+                .cloned()
+                .unwrap_or_default();
+            (state_arc, txs)
+        };
+
+        let Some(state_arc) = state_arc else {
+            tracing::debug!(address, ?target, "no live mock connection to inject into");
+            return;
+        };
+
+        let snapshot = {
+            let mut state = state_arc.lock();
+            state.update_power(target);
+            state.clone()
+        };
+        tracing::debug!(address, ?target, "injecting power state into live mock");
+        for tx in txs {
+            let _ = tx.send(snapshot.clone());
+        }
+    }
+
+    /// Mutate the live `TvState` for `address` without pushing a
+    /// subscription update.
+    ///
+    /// Simulates the LG firmware's "transition silence" window: when
+    /// the user presses Power on the remote, the TV's actual
+    /// substate changes immediately (panel goes dark) but the
+    /// subscription stream can stay quiet for several seconds before
+    /// pushing the new `PowerState`. The daemon's cached
+    /// `last_known_power_state` reads stale during that window.
+    /// Tests use this knob to verify pre-flight wake gates that
+    /// route through an authoritative live query rather than the
+    /// stale cached value.
+    ///
+    /// No-op if no connection is currently open for that address.
+    #[instrument(skip(self))]
+    pub fn inject_power_state_silent(&self, address: &str, target: PowerState) {
+        let state_arc = self.state.lock().live_states.get(address).cloned();
+        let Some(state_arc) = state_arc else {
+            tracing::debug!(
+                address,
+                ?target,
+                "no live mock connection to mutate silently"
+            );
+            return;
+        };
+        let mut state = state_arc.lock();
+        state.update_power(target);
+        tracing::debug!(
+            address,
+            ?target,
+            "mutated mock state without pushing update"
+        );
+    }
+
+    /// Make `MockConnection::screen_on` return `Ok` without mutating
+    /// state for `address` while `enabled` is true. Use this to
+    /// drive the daemon's verify-retry-escalate path without the
+    /// mock's default `is_screen_on=true` flip letting verify pass
+    /// on attempt #1. Mirrors LG firmware's behavior when `screen_on`
+    /// lands on a TV in `ActiveStandby` / `Standby` substate — the
+    /// call succeeds at the wire level but the panel stays dark.
+    /// Pass `enabled = false` to restore default mutate-and-push.
+    #[instrument(skip(self))]
+    pub fn set_screen_on_noop(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.screen_on_noop.insert(address.to_string());
+        } else {
+            state.screen_on_noop.remove(address);
+        }
+    }
+
+    /// Parallel knob for `screen_off`. Same semantic: `Ok` return,
+    /// no state mutation. Models firmware that ACKs the off command
+    /// but doesn't blank the panel. Needed for the reliable-
+    /// `screen_off` verify-retry tests.
+    #[instrument(skip(self))]
+    pub fn set_screen_off_noop(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.screen_off_noop.insert(address.to_string());
+        } else {
+            state.screen_off_noop.remove(address);
+        }
+    }
+
+    /// Override the `PowerState` a freshly-constructed
+    /// `MockConnection` initializes with. Takes precedence over
+    /// `MockVendorConfig::initial_power_state` and survives across
+    /// reconnects.
+    ///
+    /// Models LG firmware that refuses to fully wake after a recent
+    /// remote-off: the daemon's `power_on` succeeds at the WS level
+    /// (a new `MockConnection` is created) but the firmware reports
+    /// a wake-preflight substate (`ActiveStandby` / `Standby`) that
+    /// never transitions to `Active`. Needed to drive the daemon's
+    /// `screen_off`-post-wake-settle graceful-fallback branch.
+    #[instrument(skip(self))]
+    pub fn set_initial_power_state_override(&self, address: &str, target: PowerState) {
+        let mut state = self.state.lock();
+        state
+            .initial_power_state_overrides
+            .insert(address.to_string(), target);
+    }
+
+    /// Number of times `MockConnection::screen_on` has been called
+    /// for `address`, cumulative across reconnects.
+    ///
+    /// Lets tests assert the daemon's verify-retry loop actually
+    /// iterated instead of passing tautologically when the cached
+    /// state happens to match the target before any command was
+    /// sent. Returns 0 if the address has never had a connection.
+    pub fn screen_on_call_count(&self, address: &str) -> usize {
+        self.state
+            .lock()
+            .screen_on_calls
+            .get(address)
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Parallel counter for `MockConnection::screen_off`.
+    pub fn screen_off_call_count(&self, address: &str) -> usize {
+        self.state
+            .lock()
+            .screen_off_calls
+            .get(address)
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------
 
@@ -170,5 +326,122 @@ impl MockHandle {
         let mut state = self.state.lock();
         tracing::debug!(?outcome, "seeding pairing outcome");
         state.pairing_outcomes.insert(tv_id.to_string(), outcome);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::new_test_parts;
+    use tisvlay_core::TvConnector;
+
+    /// Build a minimal mock vendor-config table for the given address.
+    fn vendor_config(address: &str) -> toml::Value {
+        let mut table = toml::value::Table::new();
+        table.insert("address".into(), toml::Value::String(address.to_string()));
+        toml::Value::Table(table)
+    }
+
+    /// `set_initial_power_state_override` applies at construct-time
+    /// for the *next* `MockConnection` opened to the address — pinning
+    /// the precedence-over-vendor-config behavior the
+    /// `screen_off`-graceful-fallback test relies on.
+    #[tokio::test]
+    async fn override_initial_power_state_takes_effect_on_connect() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://override_test");
+
+        handle.set_initial_power_state_override("mock://override_test", PowerState::ActiveStandby);
+
+        let mut conn = connector.connect(&cfg).await.expect("connect");
+        let power = conn.get_power_state().await.expect("get_power_state");
+        assert_eq!(power, PowerState::ActiveStandby);
+    }
+
+    /// The override survives reconnects — drops the first connection,
+    /// opens a second, and the new one still picks up the override.
+    /// Models the LG firmware quirk where `power_on` reconnects but
+    /// the TV is still latched in `ActiveStandby`.
+    #[tokio::test]
+    async fn override_survives_reconnect() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://override_reconnect");
+
+        handle.set_initial_power_state_override(
+            "mock://override_reconnect",
+            PowerState::ActiveStandby,
+        );
+
+        let mut first = connector.connect(&cfg).await.expect("first connect");
+        assert_eq!(
+            first.get_power_state().await.expect("get_power_state"),
+            PowerState::ActiveStandby,
+        );
+        drop(first);
+
+        let mut second = connector.connect(&cfg).await.expect("second connect");
+        assert_eq!(
+            second.get_power_state().await.expect("get_power_state"),
+            PowerState::ActiveStandby,
+            "override must survive across `MockConnection` lifetimes",
+        );
+    }
+
+    /// `screen_on_call_count` starts at zero, increments on every
+    /// `MockConnection::screen_on` (including when the noop knob
+    /// suppresses the state mutation), and is cumulative across
+    /// reconnects to the same address.
+    #[tokio::test]
+    async fn screen_on_call_count_is_cumulative_across_noop_and_reconnect() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://counter_test");
+
+        // Cold counter.
+        assert_eq!(handle.screen_on_call_count("mock://counter_test"), 0);
+
+        let mut first = connector.connect(&cfg).await.expect("first connect");
+        first.screen_on().await.expect("screen_on #1");
+        assert_eq!(handle.screen_on_call_count("mock://counter_test"), 1);
+
+        // Engage the noop knob — counter still bumps even when the
+        // command doesn't mutate state. This is the load-bearing
+        // invariant for the verify-retry-loop tests.
+        handle.set_screen_on_noop("mock://counter_test", true);
+        first.screen_on().await.expect("screen_on #2 (noop)");
+        assert_eq!(handle.screen_on_call_count("mock://counter_test"), 2);
+
+        drop(first);
+        let mut second = connector.connect(&cfg).await.expect("second connect");
+        second.screen_on().await.expect("screen_on #3 (reconnect)");
+        assert_eq!(
+            handle.screen_on_call_count("mock://counter_test"),
+            3,
+            "counter must be cumulative across reconnects (shared via MockState)",
+        );
+    }
+
+    /// Parallel coverage for `screen_off_call_count`.
+    #[tokio::test]
+    async fn screen_off_call_count_bumps_on_noop_too() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://off_counter_test");
+        let addr = "mock://off_counter_test";
+
+        assert_eq!(handle.screen_off_call_count(addr), 0);
+
+        handle.set_screen_off_noop(addr, true);
+        let mut conn = connector.connect(&cfg).await.expect("connect");
+        conn.screen_off().await.expect("screen_off");
+        conn.screen_off().await.expect("screen_off #2");
+        assert_eq!(handle.screen_off_call_count(addr), 2);
+    }
+
+    /// Reading the counter for an address that has never had a
+    /// connection returns 0 (not a panic, not `Err`).
+    #[test]
+    fn call_counts_for_unknown_address_return_zero() {
+        let (_connector, _discovery, handle) = new_test_parts();
+        assert_eq!(handle.screen_on_call_count("mock://never_connected"), 0);
+        assert_eq!(handle.screen_off_call_count("mock://never_connected"), 0);
     }
 }

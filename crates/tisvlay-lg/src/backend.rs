@@ -242,7 +242,14 @@ impl TvConnection for LgConnection {
 
     async fn is_screen_on(&mut self) -> Result<bool> {
         let state = self.with_retry(|c| Box::pin(c.get_power_state())).await?;
-        Ok(!matches!(state, PowerState::ScreenOff))
+        // Mirrors the positive whitelist in `TvState::update_power` —
+        // `Active` / `ScreenSaver` only. Future `#[non_exhaustive]`
+        // variants default to `false` (safer) and the two derivations
+        // can't drift.
+        Ok(matches!(
+            state,
+            PowerState::Active | PowerState::ScreenSaver
+        ))
     }
 
     async fn set_volume(&mut self, level: u8) -> Result<()> {
@@ -349,13 +356,51 @@ impl TvConnection for LgConnection {
     }
 }
 
+/// Parse an LG `getPowerState` payload to a [`PowerState`].
+///
+/// LG's payload carries three signals:
+///
+/// - `state`: settled label ("Active", "Active Standby", ...)
+/// - `processing`: in-flight transition name ("Request Power Off",
+///   "Request Active Standby", "Prepare Active Standby", and the
+///   literal "None" when idle).
+/// - `onOff`: authoritative "on" / "off" hint.
+///
+/// During a remote-press power-off, LG keeps `state="Active"` for
+/// ~3 s while the transition completes, but starts setting
+/// `processing` and `onOff="off"` within ~200 ms of the button
+/// press. Trust the discriminators over the `state` lie so callers
+/// see the TV's actual substate at the moment of the press, not
+/// three seconds later. See `scripts/probe_power_state_timing.py`
+/// output for the captured payloads that motivated this.
+///
+/// Returns `None` if the payload contains no usable state info.
+pub(crate) fn parse_power_state_payload(payload: &Value) -> Option<PowerState> {
+    let on_off = payload.get("onOff").and_then(|v| v.as_str());
+    let processing = payload.get("processing").and_then(|v| v.as_str());
+    let in_transition =
+        on_off == Some("off") || matches!(processing, Some(p) if !p.eq_ignore_ascii_case("None"));
+
+    if in_transition {
+        // Landing on `ActiveStandby` is sufficient for the daemon's
+        // wake pre-flight to fire on the off-direction; we don't
+        // enumerate every `processing` string. The on-direction
+        // (waking up) updates `state` fast enough for the
+        // state-field fall-through below to handle.
+        return Some(PowerState::ActiveStandby);
+    }
+    payload
+        .get("state")
+        .and_then(|v| v.as_str())
+        .map(PowerState::parse)
+}
+
 /// Update a cached [`TvState`] from an SSAP subscription response.
 ///
 /// Returns `true` if the state was actually modified.
 fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Value) -> bool {
     if uri.contains("getPowerState") {
-        if let Some(state_str) = payload.get("state").and_then(|v| v.as_str()) {
-            let power = PowerState::parse(state_str);
+        if let Some(power) = parse_power_state_payload(payload) {
             state.update_power(power);
             return true;
         }
@@ -813,6 +858,142 @@ mod tests {
         );
         assert!(changed);
         assert!(!state.is_on);
+    }
+
+    /// Captured from the live TV via
+    /// `scripts/probe_power_state_timing.py`: ~191 ms after a
+    /// remote-press power-off, LG pushes a getPowerState update
+    /// that keeps `state="Active"` (still lying) but adds
+    /// `processing="Request Power Off"` + `onOff="off"`. The parser
+    /// must project to `ActiveStandby` immediately so the daemon's
+    /// reliable-dispatch pre-flight sees a non-Active substate and
+    /// wakes the TV before sending `screen_off`.
+    #[test]
+    fn subscription_power_transition_to_off_projects_active_standby() {
+        for processing in [
+            "Request Power Off",
+            "Request Active Standby",
+            "Prepare Active Standby",
+        ] {
+            let mut state = TvState::new();
+            state.update_power(PowerState::Active);
+            let changed = update_state_from_subscription(
+                &mut state,
+                "ssap://com.webos.service.tvpower/power/getPowerState",
+                &json!({
+                    "state": "Active",
+                    "processing": processing,
+                    "onOff": "off",
+                    "reason": "remoteKey",
+                }),
+            );
+            assert!(changed, "processing={processing}");
+            assert_eq!(
+                state.power_state,
+                PowerState::ActiveStandby,
+                "processing={processing} should project to ActiveStandby \
+                 regardless of the stale state=Active field",
+            );
+            assert!(state.is_on, "ActiveStandby keeps NIC alive (is_on=true)");
+            assert!(!state.is_screen_on, "ActiveStandby is panel-off");
+        }
+    }
+
+    /// `onOff="off"` alone, without `processing`, still triggers the
+    /// transition projection — the field is authoritative.
+    #[test]
+    fn subscription_power_on_off_field_alone_projects_active_standby() {
+        let mut state = TvState::new();
+        state.update_power(PowerState::Active);
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.service.tvpower/power/getPowerState",
+            &json!({"state": "Active", "onOff": "off"}),
+        );
+        assert!(changed);
+        assert_eq!(state.power_state, PowerState::ActiveStandby);
+    }
+
+    /// The literal `processing="None"` (LG's "idle, not transitioning"
+    /// sentinel) must NOT trigger the transition projection — it
+    /// means "no transition in flight", not "transitioning to None".
+    #[test]
+    fn subscription_power_processing_none_falls_through_to_state_field() {
+        let mut state = TvState::new();
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.service.tvpower/power/getPowerState",
+            &json!({"state": "Active", "processing": "None"}),
+        );
+        assert!(changed);
+        assert_eq!(state.power_state, PowerState::Active);
+        assert!(state.is_on);
+        assert!(state.is_screen_on);
+    }
+
+    /// Settled `state="Active Standby"` (no `processing` field, no
+    /// `onOff`) still routes through the existing state-field
+    /// parser to `ActiveStandby`. This is what LG pushes ~3 s after
+    /// the transition starts.
+    #[test]
+    fn subscription_power_settled_active_standby_via_state_field() {
+        let mut state = TvState::new();
+        state.update_power(PowerState::Active);
+        let changed = update_state_from_subscription(
+            &mut state,
+            "ssap://com.webos.service.tvpower/power/getPowerState",
+            &json!({"state": "Active Standby"}),
+        );
+        assert!(changed);
+        assert_eq!(state.power_state, PowerState::ActiveStandby);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_power_state_payload — used by both `update_state_from_subscription`
+    // (above) and `WebOsClient::get_power_state` (synchronous query). Pin
+    // the helper directly so the contract is unambiguous for both callers.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_payload_state_field_only() {
+        assert_eq!(
+            parse_power_state_payload(&json!({"state": "Active"})),
+            Some(PowerState::Active),
+        );
+        assert_eq!(
+            parse_power_state_payload(&json!({"state": "Standby"})),
+            Some(PowerState::Standby),
+        );
+    }
+
+    #[test]
+    fn parse_payload_discriminators_override_state() {
+        // The captured probe payload — `state` lies but `processing` +
+        // `onOff` are authoritative.
+        assert_eq!(
+            parse_power_state_payload(&json!({
+                "state": "Active",
+                "processing": "Request Power Off",
+                "onOff": "off",
+            })),
+            Some(PowerState::ActiveStandby),
+        );
+    }
+
+    #[test]
+    fn parse_payload_none_sentinel_does_not_trigger_transition() {
+        assert_eq!(
+            parse_power_state_payload(&json!({
+                "state": "Active",
+                "processing": "None",
+            })),
+            Some(PowerState::Active),
+        );
+    }
+
+    #[test]
+    fn parse_payload_empty_returns_none() {
+        assert_eq!(parse_power_state_payload(&json!({})), None);
     }
 
     #[test]

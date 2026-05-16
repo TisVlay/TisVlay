@@ -284,13 +284,9 @@ async fn update_tv_cached_state(object_server: &zbus::ObjectServer, path: &str, 
         }
     }
 
-    // TvPowerService: derive power state from booleans
+    // TvPowerService: derive D-Bus property string from raw PowerState
     if let Ok(iface_ref) = object_server.interface::<_, TvPowerService>(path).await {
-        let new_power = match (state.is_on, state.is_screen_on) {
-            (false, _) => "standby",
-            (true, false) => "screen_off",
-            (true, true) => "active",
-        };
+        let new_power = crate::power_state::derive_power_state(state.power_state);
         let mut iface = iface_ref.get_mut().await;
         if iface.power_state != new_power {
             iface.power_state = new_power.to_string();

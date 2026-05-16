@@ -128,6 +128,13 @@ These tests use `#[tokio::test(flavor = "multi_thread")]` because `assert_cmd_sn
 
 The `tisvlay-lg` crate has its own fake SSAP server for testing without a real TV. See [docs/lg/testing.md](lg/testing.md) for details.
 
+### On-hardware triage tooling
+
+Two Python scripts under `scripts/` complement the in-process LG tests by talking to a real TV. Both open their own SSAP WebSocket using the daemon's stored client key — stop the daemon (or stop the tray/GUI/session, leaving the daemon alone is OK too if it isn't holding the only registration) before running, so two clients don't fight over the same key.
+
+- [`scripts/probe_power_state_timing.py`](../scripts/probe_power_state_timing.py) — wide-net probe of the SSAP power/screen subscription endpoints. Discovers what the firmware exposes (`getServiceList`), subscribes to a candidate set, fires SSAP `turnOff`, and prints every subscription push with elapsed time from the trigger. Used to characterize the `processing` / `onOff` discriminator behavior in the `getPowerState` payload — see [docs/lg/firmware-quirks.md](lg/firmware-quirks.md) for the captured payloads that motivated the parser changes.
+- [`scripts/triage_dispatch_perf.py`](../scripts/triage_dispatch_perf.py) — autonomous cold-start latency measurement. Induces a bad state (SSAP `turnOff` or a manual prompt for kernel-level packet drops), subscribes to `PropertiesChanged` for `Tv1.Power.PowerState`, calls `Tv1.Screen.SetScreen(true)`, and times the transition to `"active"`. Useful for benchmarking changes to the dispatch hot path without driving the desktop lock/unlock flow by hand. The 10 s `REQUEST_MS` "with_retry knock" finding in firmware-quirks.md was characterized with this script.
+
 ## Coverage
 
 Measured with `cargo-llvm-cov`, ratcheted in CI.
@@ -158,14 +165,17 @@ The mock's three consumers share a single `Arc<Mutex<MockState>>`. The handle is
 
 ```mermaid
 flowchart TD
-    STATE["Arc&lt;Mutex&lt;MockState&gt;&gt;<br/><br/>discovered: Vec&lt;DiscoveredTv&gt;<br/>pairing_outcomes: HashMap&lt;String, PairingOutcome&gt;"]
+    STATE["Arc&lt;Mutex&lt;MockState&gt;&gt;<br/><br/>discovered: Vec&lt;DiscoveredTv&gt;<br/>pairing_outcomes: HashMap&lt;String, PairingOutcome&gt;<br/>live_states: HashMap&lt;String, Arc&lt;Mutex&lt;TvState&gt;&gt;&gt;<br/>subscription_txs: HashMap&lt;String, Vec&lt;Sender&gt;&gt;"]
 
     HANDLE["MockHandle<br/>(test code)"]
     CONN["MockConnector<br/>(TvConnector trait)"]
     DISC["MockDiscovery<br/>(TvDiscovery trait)"]
+    MC["MockConnection<br/>(TvConnection trait)"]
 
-    HANDLE -- "publish_tv()<br/>clear_discovered()<br/>simulate_user_*()" --> STATE
+    HANDLE -- "publish_tv()<br/>clear_discovered()<br/>simulate_user_*()<br/>inject_power_state()" --> STATE
     CONN -- "start_pairing()<br/>reads + removes outcome" --> STATE
+    CONN -- "connect()<br/>creates connection,<br/>registers state Arc" --> MC
+    MC -- "subscribe_state()<br/>registers subscription tx" --> STATE
     DISC -- "discover()<br/>reads discovered list" --> STATE
 
     REG["BackendRegistry"] --> CONN
@@ -214,6 +224,9 @@ let tvs = registry.discover_tvs("mock", Duration::from_secs(1)).await?;
 **Methods:**
 - `publish_tv(DiscoveredTv)` / `clear_discovered()` — populate/clear the "network"
 - `simulate_user_accept(tv_id)` / `simulate_user_reject(tv_id)` / `simulate_pairing_timeout(tv_id)` — drive pairing
+- `set_hardware_id(tv_id, HardwareId)` / `clear_hardware_id(tv_id)` — seed the identity reported by a future connection (applied on every connect, not consumed)
+- `set_connect_delay(Duration)` / `clear_connect_delay()` — simulate a slow/unreachable TV
+- `inject_power_state(address, PowerState)` — push a power-state change onto a live mock connection. Mutates the in-flight `TvState` and pushes the snapshot through every active subscription for that address, so the daemon's `state_forwarder` updates the cached `Tv1.Power.PowerState` property the same way it would for a real backend-initiated change. Used by `tisvlay-session/tests/session_events.rs::reliable_screen_on_escalates_when_tv_slipped_past_screen_off` to simulate the TV silently slipping past Screen Off to Standby.
 
 **Config shorthand:** tests that don't need fine-grained control can set `[tv.mock] pairing = "accept"|"reject"|"timeout"`. If both shorthand and handle are set, **the handle wins**.
 

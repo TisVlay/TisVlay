@@ -13,6 +13,7 @@ use tisvlay_core::{
 use tokio::sync::mpsc;
 
 use crate::config::MockVendorConfig;
+use crate::state::MockState;
 
 /// Connection to a mock TV.
 ///
@@ -22,6 +23,14 @@ use crate::config::MockVendorConfig;
 #[derive(Debug)]
 pub struct MockConnection {
     state: Arc<Mutex<TvState>>,
+    /// Shared MockState pointer. Each new connection registers its
+    /// `state` Arc and (on subscribe) its subscription `tx` here so
+    /// `MockHandle::inject_*` methods can drive state changes outside
+    /// the normal command path. Keyed by `address` below.
+    shared: Arc<Mutex<MockState>>,
+    /// Vendor address (e.g. `mock://living_room`) — the key into
+    /// `shared.live_states` / `shared.subscription_txs`.
+    address: String,
     connected: bool,
     /// Sender for pushing state updates to subscribers. Cloned into
     /// each state-mutating method so subscribers see cumulative state
@@ -47,8 +56,25 @@ impl MockConnection {
     /// Initializes state from the config's `initial_*` fields and marks
     /// the connection as live. `hardware_id` is optionally seeded by
     /// the connector from state set via `MockHandle::set_hardware_id`.
-    pub fn new(config: &MockVendorConfig, hardware_id: Option<HardwareId>) -> Self {
-        let power = PowerState::parse(&config.initial_power_state);
+    /// Registers the live state pointer in `shared` so
+    /// `MockHandle::inject_*` can mutate it; reconnects overwrite the
+    /// prior entry.
+    pub(crate) fn new(
+        config: &MockVendorConfig,
+        hardware_id: Option<HardwareId>,
+        shared: Arc<Mutex<MockState>>,
+    ) -> Self {
+        // Per-address override (set via
+        // `MockHandle::set_initial_power_state_override`) takes
+        // precedence over the vendor-config default. Survives
+        // across reconnects so tests can model firmware that keeps
+        // refusing a clean wake.
+        let power = shared
+            .lock()
+            .initial_power_state_overrides
+            .get(&config.address)
+            .copied()
+            .unwrap_or_else(|| PowerState::parse(&config.initial_power_state));
         let inputs: Vec<InputInfo> = config
             .inputs
             .iter()
@@ -66,9 +92,17 @@ impl MockConnection {
         state.current_input = Some(config.initial_input.clone());
         state.backlight = Some(config.initial_backlight);
         state.inputs = inputs;
+        let state_arc = Arc::new(Mutex::new(state));
+
+        shared
+            .lock()
+            .live_states
+            .insert(config.address.clone(), state_arc.clone());
 
         Self {
-            state: Arc::new(Mutex::new(state)),
+            state: state_arc,
+            shared,
+            address: config.address.clone(),
             connected: true,
             subscription_tx: None,
             hardware_id,
@@ -84,6 +118,25 @@ impl MockConnection {
     /// backend-initiated change results in a push event.
     fn mutate_and_push(&self, f: impl FnOnce(&mut TvState)) {
         push_state(&self.state, &self.subscription_tx, f);
+    }
+}
+
+impl Drop for MockConnection {
+    /// Remove our shared-state registrations so the subscription
+    /// channel's senders all drop together.
+    ///
+    /// Without this, the cloned sender registered in
+    /// `shared.subscription_txs` during `subscribe_state` would
+    /// outlive the connection and keep the channel alive forever —
+    /// the subscription task's `state_rx.recv()` would never return
+    /// `None`, so the `ConnectionChanged(false)` end-of-stream gate in
+    /// `tv_manager::run_subscription_task` would never fire. Tests
+    /// that assert `Tv1.Connected == false` after `power_off` would
+    /// hang or see the wrong value.
+    fn drop(&mut self) {
+        let mut shared = self.shared.lock();
+        shared.live_states.remove(&self.address);
+        shared.subscription_txs.remove(&self.address);
     }
 }
 
@@ -147,16 +200,12 @@ impl TvConnection for MockConnection {
     }
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
-        let state = self.state.lock();
-        if state.is_on {
-            if state.is_screen_on {
-                Ok(PowerState::Active)
-            } else {
-                Ok(PowerState::ScreenOff)
-            }
-        } else {
-            Ok(PowerState::Standby)
-        }
+        // Return the raw enum directly. Re-deriving from
+        // `(is_on, is_screen_on)` would collapse `ActiveStandby`
+        // and `ScreenOff` to the same value — exactly the
+        // information the daemon's pre-flight wake gate relies
+        // on distinguishing.
+        Ok(self.state.lock().power_state)
     }
 
     // ------------------------------------------------------------------
@@ -164,12 +213,53 @@ impl TvConnection for MockConnection {
     // ------------------------------------------------------------------
 
     async fn screen_on(&mut self) -> Result<()> {
-        self.mutate_and_push(|s| s.is_screen_on = true);
+        // Bump the per-address call counter before any short-circuit
+        // so tests can assert the daemon's verify-retry loop actually
+        // iterated. Counter shared across reconnects via shared state.
+        let (noop, counter) = {
+            let mut state = self.shared.lock();
+            let counter = state
+                .screen_on_calls
+                .entry(self.address.clone())
+                .or_default()
+                .clone();
+            (state.screen_on_noop.contains(&self.address), counter)
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Tests can opt into "screen_on no-ops, returns Ok" by setting
+        // the address in `screen_on_noop` via the handle. Models LG
+        // firmware refusing to wake the panel from `ActiveStandby` /
+        // `Standby` substates while still returning a non-Err
+        // response — the exact condition the daemon's verify-retry-
+        // escalate path is built to detect.
+        if noop {
+            return Ok(());
+        }
+        // Route through `update_power(Active)` so the raw PowerState
+        // field stays consistent with the derived booleans — matches
+        // how a real backend reports the substate transition.
+        self.mutate_and_push(|s| s.update_power(PowerState::Active));
         Ok(())
     }
 
     async fn screen_off(&mut self) -> Result<()> {
-        self.mutate_and_push(|s| s.is_screen_on = false);
+        let (noop, counter) = {
+            let mut state = self.shared.lock();
+            let counter = state
+                .screen_off_calls
+                .entry(self.address.clone())
+                .or_default()
+                .clone();
+            (state.screen_off_noop.contains(&self.address), counter)
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Parallel knob for `screen_off`: tests opt in via
+        // `set_screen_off_noop` to model firmware that returns Ok
+        // but doesn't blank the panel. Mirrors `screen_on_noop`.
+        if noop {
+            return Ok(());
+        }
+        self.mutate_and_push(|s| s.update_power(PowerState::ScreenOff));
         Ok(())
     }
 
@@ -284,6 +374,14 @@ impl TvConnection for MockConnection {
         // immediately — LG does the same after SSAP subscribe.
         let snapshot = self.state.lock().clone();
         let _ = tx.send(snapshot);
+        // Register the sender in shared state so `MockHandle::inject_*`
+        // can push state changes to this connection's subscriber.
+        self.shared
+            .lock()
+            .subscription_txs
+            .entry(self.address.clone())
+            .or_default()
+            .push(tx.clone());
         self.subscription_tx = Some(tx);
         Ok(rx)
     }

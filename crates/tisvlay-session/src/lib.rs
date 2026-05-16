@@ -290,8 +290,13 @@ pub async fn event_handler(
 ) {
     info!("Event handler started");
 
-    // Track last successful action per TV to skip redundant commands
-    let mut last_action: HashMap<String, SessionAction> = HashMap::new();
+    // No `last_action` dedup. Every action self-verifies in
+    // `tv_manager` via its pre-flight check against
+    // `last_known_power_state`, so a duplicate dispatch is at worst
+    // a fast no-op when cached state already matches the target.
+    // Removing the dedup avoids reasoning about edge cases where
+    // (e.g.) a TV powered off out-of-band between two same-event
+    // firings would silently skip the second.
 
     while let Some(event) = event_rx.recv().await {
         info!(event = %event, "Processing session event");
@@ -331,21 +336,10 @@ pub async fn event_handler(
                 continue;
             }
 
-            // Skip redundant commands
-            if let Some(&prev) = last_action.get(&tv_id) {
-                if prev == action {
-                    debug!(tv_id = %tv_id, action = ?action, "Skipping redundant action");
-                    success_count += 1;
-                    continue;
-                }
-            }
-
             debug!(tv_id = %tv_id, action = ?action, "Executing action");
             if let Err(e) = execute_action_for_tv(&daemon, &tv_id, action).await {
                 warn!(tv_id = %tv_id, error = %e, "Action failed");
-                last_action.remove(&tv_id);
             } else {
-                last_action.insert(tv_id, action);
                 success_count += 1;
             }
         }
