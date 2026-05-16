@@ -76,13 +76,16 @@ self.is_screen_on = !matches!(
 - Settled to `ScreenOff`: LG took the direct path through to the target on wake-up. Return Ok.
 - Did not settle (timeout): LG firmware refused the wake. TV sits in `ActiveStandby` with the panel already dark and the red LED on, which is functionally what `screen_off` is asking for. Return Ok with an info log rather than burning more retries on `turnOffScreen` rejections.
 
-The graceful fallback declares success when the panel is demonstrably off, even if LG's substate isn't the literal `ScreenOff` we'd prefer. From the user's POV, `ActiveStandby` (red LED on, panel dark) and `ScreenOff` (red LED off, panel dark) are visually indistinguishable; both leave the TV reachable for the next command.
+The graceful fallback declares success when the panel is demonstrably off, even if LG's substate isn't the literal `ScreenOff` we'd prefer. The two substates differ on the front-panel red LED (on for `ActiveStandby`, off for `ScreenOff`) but the panel is dark in both, and both leave the TV reachable for the next command — functionally indistinguishable from the screen-off-intent perspective.
 
-**Regression coverage.** No mock-level test — the firmware-quirk path is hard to reproduce without per-connection initial-state knobs on the mock connector. Live-hardware smoke covers it; the info log `"screen_off: TV did not settle into Active after power_on; accepting wake-preflight substate as panel-off (LG firmware quirk)"` is the verification signal.
+**Regression coverage.**
+
+- `tisvlayd/tests/dbus_contract.rs` — `screen_off_accepts_active_standby_when_wake_refuses` uses the `MockHandle::set_initial_power_state_override` knob to force every `MockConnection` (including the one `power_on` creates after pre-flight fires) to stay in `ActiveStandby`. Pins that the call returns `Ok` via the graceful-fallback arm without iterating the verify-retry loop (`screen_off_call_count == 0`) and that the TV ends with `power_state == "standby"`.
+- Live-hardware smoke remains the secondary check; the info log `"screen_off: TV did not settle into Active after power_on; accepting wake-preflight substate as panel-off (LG firmware quirk)"` is the on-device verification signal.
 
 ## Field-test verification trace (post-fix)
 
-Measured via [`scripts/triage_dispatch_perf.py`](../../scripts/triage_dispatch_perf.py) on the OLED65G4SUB after the Bug A, Bug B, discriminator-parser, and post-wake-settle fixes:
+A single representative run of [`scripts/triage_dispatch_perf.py`](../../scripts/triage_dispatch_perf.py) on the OLED65G4SUB after the Bug A, Bug B, discriminator-parser, and post-wake-settle fixes (n=1; expect a few-hundred-ms wall-clock variance run-to-run depending on TV firmware state and network conditions):
 
 ```
 [setup] initial PowerState: 'active'
@@ -107,7 +110,7 @@ Three things worth knowing:
 
 1. **No single load-bearing fix.** The pre-`feat/screen-on-reliable` baseline needed *all* of: Bug A (`ActiveStandby` → `is_screen_on = false`), Bug B (LG `500` vs `-102` discrimination), and the `processing`/`onOff` discriminator parsing. Removing any one of these reintroduces a different silent-success failure mode, traced in the earlier sections.
 2. **The WoL recovery path itself is unchanged.** The reliable-dispatch layer's only job is to decide *when* to escalate to `power_on`; once it does, the existing WoL → Registration sequence in `tv_manager::power_on` carries the weight. The ~7-8 s SSAP-handshake portion of the 9.79 s is bounded by LG firmware boot speed.
-3. **Verify overhead is an upper bound, not a floor.** The pre-flight wake gate and the verify-retry loops route through `TvManager::await_power_state`, which uses a `tokio::sync::watch` keyed on cached `PowerState` (fired by every subscription push and live `getPowerState` query). Each step returns on the first matching transition, so the `verify_delay × max_attempts` budget rarely cashes in — typical observed latency on the LG OLED G4 is ~10-50 ms per step, well under the 300 ms budget.
+3. **Verify overhead is an upper bound, not a floor.** The pre-flight wake gate and the verify-retry loops route through `TvManager::await_power_state`, which uses a `tokio::sync::watch` keyed on cached `PowerState` (fired by every subscription push and live `getPowerState` query). Each step returns on the first matching transition, so the `verify_delay × max_attempts` budget rarely cashes in — in the happy path the step completes well under the 300 ms `verify_delay` (most subscription pushes from the LG OLED G4 arrive within tens of milliseconds during steady-state-to-steady-state transitions).
 
 ## The 10 s `REQUEST_MS` is load-bearing — don't bypass `screen_on`
 
