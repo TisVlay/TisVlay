@@ -349,44 +349,51 @@ impl TvConnection for LgConnection {
     }
 }
 
+/// Parse an LG `getPowerState` payload to a [`PowerState`].
+///
+/// LG's payload carries three signals:
+///
+/// - `state`: settled label ("Active", "Active Standby", ...)
+/// - `processing`: in-flight transition name ("Request Power Off",
+///   "Request Active Standby", "Prepare Active Standby", and the
+///   literal "None" when idle).
+/// - `onOff`: authoritative "on" / "off" hint.
+///
+/// During a remote-press power-off, LG keeps `state="Active"` for
+/// ~3 s while the transition completes, but starts setting
+/// `processing` and `onOff="off"` within ~200 ms of the button
+/// press. Trust the discriminators over the `state` lie so callers
+/// see the TV's actual substate at the moment of the press, not
+/// three seconds later. See `scripts/probe_power_state_timing.py`
+/// output for the captured payloads that motivated this.
+///
+/// Returns `None` if the payload contains no usable state info.
+pub(crate) fn parse_power_state_payload(payload: &Value) -> Option<PowerState> {
+    let on_off = payload.get("onOff").and_then(|v| v.as_str());
+    let processing = payload.get("processing").and_then(|v| v.as_str());
+    let in_transition =
+        on_off == Some("off") || matches!(processing, Some(p) if !p.eq_ignore_ascii_case("None"));
+
+    if in_transition {
+        // Landing on `ActiveStandby` is sufficient for the daemon's
+        // wake pre-flight to fire on the off-direction; we don't
+        // enumerate every `processing` string. The on-direction
+        // (waking up) updates `state` fast enough for the
+        // state-field fall-through below to handle.
+        return Some(PowerState::ActiveStandby);
+    }
+    payload
+        .get("state")
+        .and_then(|v| v.as_str())
+        .map(PowerState::parse)
+}
+
 /// Update a cached [`TvState`] from an SSAP subscription response.
 ///
 /// Returns `true` if the state was actually modified.
 fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Value) -> bool {
     if uri.contains("getPowerState") {
-        // LG's getPowerState payload carries three signals during a
-        // power transition:
-        //
-        // - `state`: settled label ("Active", "Active Standby", ...)
-        // - `processing`: in-flight transition name ("Request Power
-        //   Off", "Request Active Standby", "Prepare Active
-        //   Standby", and the literal "None" when idle).
-        // - `onOff`: authoritative "on" / "off" hint.
-        //
-        // During a remote-press power-off, LG keeps `state="Active"`
-        // for ~3 s while the transition completes, but starts pushing
-        // `processing` and `onOff="off"` within ~200 ms of the
-        // button press. Trust the discriminators over the `state`
-        // lie so the cached `PowerState` reflects reality at the
-        // moment of the press, not three seconds later. See
-        // `scripts/probe_power_state_timing.py` output for the
-        // captured payloads that motivated this.
-        let on_off = payload.get("onOff").and_then(|v| v.as_str());
-        let processing = payload.get("processing").and_then(|v| v.as_str());
-        let in_transition = on_off == Some("off")
-            || matches!(processing, Some(p) if !p.eq_ignore_ascii_case("None"));
-
-        if in_transition {
-            // Landing on `ActiveStandby` is sufficient for the
-            // daemon's wake pre-flight to fire on the off-direction;
-            // we don't enumerate every `processing` string. The
-            // on-direction (waking up) updates `state` fast enough
-            // for the existing state-field path below to handle.
-            state.update_power(PowerState::ActiveStandby);
-            return true;
-        }
-        if let Some(state_str) = payload.get("state").and_then(|v| v.as_str()) {
-            let power = PowerState::parse(state_str);
+        if let Some(power) = parse_power_state_payload(payload) {
             state.update_power(power);
             return true;
         }
@@ -932,6 +939,54 @@ mod tests {
         );
         assert!(changed);
         assert_eq!(state.power_state, PowerState::ActiveStandby);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_power_state_payload — used by both `update_state_from_subscription`
+    // (above) and `WebOsClient::get_power_state` (synchronous query). Pin
+    // the helper directly so the contract is unambiguous for both callers.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_payload_state_field_only() {
+        assert_eq!(
+            parse_power_state_payload(&json!({"state": "Active"})),
+            Some(PowerState::Active),
+        );
+        assert_eq!(
+            parse_power_state_payload(&json!({"state": "Standby"})),
+            Some(PowerState::Standby),
+        );
+    }
+
+    #[test]
+    fn parse_payload_discriminators_override_state() {
+        // The captured probe payload — `state` lies but `processing` +
+        // `onOff` are authoritative.
+        assert_eq!(
+            parse_power_state_payload(&json!({
+                "state": "Active",
+                "processing": "Request Power Off",
+                "onOff": "off",
+            })),
+            Some(PowerState::ActiveStandby),
+        );
+    }
+
+    #[test]
+    fn parse_payload_none_sentinel_does_not_trigger_transition() {
+        assert_eq!(
+            parse_power_state_payload(&json!({
+                "state": "Active",
+                "processing": "None",
+            })),
+            Some(PowerState::Active),
+        );
+    }
+
+    #[test]
+    fn parse_payload_empty_returns_none() {
+        assert_eq!(parse_power_state_payload(&json!({})), None);
     }
 
     #[test]

@@ -429,16 +429,17 @@ impl WebOsClient {
     }
 
     /// Get the current power state.
+    ///
+    /// Routes through [`crate::backend::parse_power_state_payload`]
+    /// so the `processing` / `onOff` discriminators that LG ships
+    /// during transitions take precedence over the stale `state`
+    /// field. Without that, a `get_power_state` query issued during
+    /// a remote-press power-off would return `Active` for ~3 s
+    /// while the panel is actually going dark.
     pub async fn get_power_state(&mut self) -> Result<PowerState> {
         let response = self.command(power::GET_POWER_STATE, json!({})).await?;
-
-        let state_str = response
-            .payload
-            .get("state")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-
-        Ok(PowerState::parse(state_str))
+        Ok(crate::backend::parse_power_state_payload(&response.payload)
+            .unwrap_or(PowerState::Unknown))
     }
 
     // -------------------------------------------------------------------------
