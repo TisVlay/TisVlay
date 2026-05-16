@@ -77,15 +77,6 @@ pub(crate) struct MockState {
     /// `send` and are left in place (the maps are bounded by test
     /// lifetime).
     pub(crate) subscription_txs: HashMap<String, Vec<mpsc::UnboundedSender<TvState>>>,
-
-    /// Optional simulated `last_activity_at` value returned by
-    /// `MockConnection::last_activity_at`, keyed by mock TV address.
-    /// Set via
-    /// [`MockHandle::set_last_activity_at`](crate::handle::MockHandle::set_last_activity_at)
-    /// so tests can drive the daemon's WS-staleness short-circuit
-    /// without waiting wall-clock time. Absence leaves the connection
-    /// reporting its real first-seen-frame timestamp.
-    pub(crate) simulated_last_activity: HashMap<String, std::time::Instant>,
 }
 
 impl MockState {

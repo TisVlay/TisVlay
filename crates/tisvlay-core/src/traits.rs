@@ -180,23 +180,6 @@ pub trait TvConnection: Send + Sync {
         None
     }
 
-    /// Monotonic timestamp of the last received frame on the
-    /// underlying transport, or `None` if either nothing has been
-    /// received yet or the backend doesn't track liveness.
-    ///
-    /// Push-capable backends update this on every received frame
-    /// (responses, subscription pushes, and protocol-level keepalives
-    /// alike). The daemon-side reliable-dispatch helper reads it to
-    /// decide whether to issue `screen_on` over a possibly-stale
-    /// socket or short-circuit straight to `power_on` — staleness
-    /// detection without a synthetic probe.
-    ///
-    /// Synchronous by design so the helper can read it under the
-    /// per-TV lock without yielding.
-    fn last_activity_at(&self) -> Option<std::time::Instant> {
-        None
-    }
-
     // =========================================================================
     // Power control (default: not supported)
     // =========================================================================

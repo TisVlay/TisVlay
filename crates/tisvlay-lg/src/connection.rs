@@ -14,7 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use rustls::pki_types::ServerName;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tisvlay_core::{Error, Result};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -31,15 +31,6 @@ type WsSink = SplitSink<WsStream, Message>;
 /// Pending request waiters keyed by request ID.
 type PendingMap = Arc<parking_lot::Mutex<HashMap<String, oneshot::Sender<Response>>>>;
 
-/// Shared monotonic timestamp of the last received frame, written by
-/// the reader task and read by the daemon-side reliable-dispatch
-/// helper. Updated on every Text frame (responses and subscription
-/// pushes alike) so callers can detect a stalled WebSocket without
-/// sending a probe — the LG TV is verbose during normal operation
-/// (sub-second cadence under load), so multi-second silence is a
-/// reliable signal that the socket has gone half-dead.
-type LastRxAt = Arc<parking_lot::Mutex<Option<Instant>>>;
-
 /// WebSocket connection to an LG TV.
 ///
 /// The connection is split into a shared writer and a background reader
@@ -52,8 +43,6 @@ pub(crate) struct Connection {
     writer: Arc<Mutex<WsSink>>,
     /// Pending request waiters: request_id -> oneshot sender.
     pending: PendingMap,
-    /// Monotonic timestamp of the last received frame. See [`LastRxAt`].
-    last_rx_at: LastRxAt,
     /// Receiver for subscription updates (messages with no pending waiter).
     subscription_rx: Option<mpsc::UnboundedReceiver<Response>>,
     /// Handle to the background reader task.
@@ -167,21 +156,18 @@ impl Connection {
         let (sink, reader) = stream.split();
         let writer = Arc::new(Mutex::new(sink));
         let pending: PendingMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
-        let last_rx_at: LastRxAt = Arc::new(parking_lot::Mutex::new(None));
         let (subscription_tx, subscription_rx) = mpsc::unbounded_channel();
 
         let reader_handle = tokio::spawn(Self::reader_loop(
             reader,
             Arc::clone(&writer),
             Arc::clone(&pending),
-            Arc::clone(&last_rx_at),
             subscription_tx,
         ));
 
         Self {
             writer,
             pending,
-            last_rx_at,
             subscription_rx: Some(subscription_rx),
             reader_handle,
             // Overwritten by `connect_wss` / `connect_ws` after the
@@ -189,15 +175,6 @@ impl Connection {
             // path inherits this default since it always uses ws://.
             scheme: WebOsScheme::Ws,
         }
-    }
-
-    /// Monotonic timestamp of the last received frame on this WS, or
-    /// `None` if nothing has been received yet. Used by the
-    /// daemon-side reliable-dispatch helper to detect a half-dead
-    /// socket before issuing a request that would otherwise stall on
-    /// `REQUEST_MS`.
-    pub(crate) fn last_rx_at(&self) -> Option<Instant> {
-        *self.last_rx_at.lock()
     }
 
     async fn connect_url_tls(url: &str, connect_timeout: Duration) -> Result<Self> {
@@ -259,7 +236,6 @@ impl Connection {
         mut stream: SplitStream<WsStream>,
         writer: Arc<Mutex<WsSink>>,
         pending: PendingMap,
-        last_rx_at: LastRxAt,
         subscription_tx: mpsc::UnboundedSender<Response>,
     ) {
         loop {
@@ -274,14 +250,6 @@ impl Connection {
                     break;
                 }
             };
-
-            // Mark liveness on every successfully-read frame (Text,
-            // Ping, Close — anything that proves the TV is alive on
-            // the other side). The daemon-side reliable helper reads
-            // this to bypass `screen_on` when the WS has gone quiet
-            // for too long, sidestepping the LG client's 10 s
-            // `REQUEST_MS` on a half-dead socket.
-            *last_rx_at.lock() = Some(Instant::now());
 
             match msg {
                 Message::Text(text) => {

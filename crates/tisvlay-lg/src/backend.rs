@@ -213,10 +213,6 @@ impl TvConnection for LgConnection {
         self.hardware_id.read().ok().and_then(|g| g.clone())
     }
 
-    fn last_activity_at(&self) -> Option<std::time::Instant> {
-        self.client.as_ref().and_then(|c| c.last_rx_at())
-    }
-
     // =========================================================================
     // Feature methods (overriding TvConnection defaults)
     // =========================================================================

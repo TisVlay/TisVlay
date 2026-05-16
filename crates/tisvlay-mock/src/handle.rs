@@ -207,21 +207,6 @@ impl MockHandle {
         }
     }
 
-    /// Backdate the value `MockConnection::last_activity_at` reports
-    /// for `address`. Use this to drive the daemon-side reliable
-    /// dispatch helper's WS-staleness short-circuit without
-    /// wall-clock waits — e.g. `set_last_activity_at(addr,
-    /// Instant::now() - Duration::from_secs(10))` makes the
-    /// connection look stale to any code reading the trait method.
-    /// Pass an `Instant::now()` value to clear the backdate.
-    #[instrument(skip(self, instant))]
-    pub fn set_last_activity_at(&self, address: &str, instant: std::time::Instant) {
-        let mut state = self.state.lock();
-        state
-            .simulated_last_activity
-            .insert(address.to_string(), instant);
-    }
-
     // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------
