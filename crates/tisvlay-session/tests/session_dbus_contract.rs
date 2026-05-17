@@ -155,3 +155,58 @@ async fn get_effective_user_profile_includes_all_fields() {
         );
     }
 }
+
+/// `GetResolvedProfileDefaults` returns the compile-time
+/// `ResolvedUserProfile::default()` baseline as JSON. The Profiles
+/// pane uses this as the terminal-fallthrough in the inheritance
+/// chain, so the daemon-emitted values must match what the type's
+/// `Default` impl produces. Round-trip through serde to guard
+/// against drift between daemon and `tisvlay-core` defaults.
+#[tokio::test]
+async fn get_resolved_profile_defaults_matches_compile_time_baseline() {
+    let _session = TestSession::new("defaults_tv").await.unwrap();
+    let bus = tisvlay_test::PrivateBus::shared();
+    let conn = bus.connect().await.unwrap();
+    let proxy = session_proxy(&conn).await.unwrap();
+
+    let json: String = proxy.call("GetResolvedProfileDefaults", &()).await.unwrap();
+
+    let actual: tisvlay_core::ResolvedUserProfile =
+        serde_json::from_str(&json).expect("defaults should be valid JSON");
+
+    assert_eq!(
+        actual,
+        tisvlay_core::ResolvedUserProfile::default(),
+        "GetResolvedProfileDefaults must match ResolvedUserProfile::default()",
+    );
+}
+
+/// The defaults JSON must carry every field on `ResolvedUserProfile`
+/// so the GUI's inheritance walk can render an inherited-value
+/// column for every editor row. Mirrors the
+/// `get_effective_user_profile_includes_all_fields` regression.
+#[tokio::test]
+async fn get_resolved_profile_defaults_includes_all_fields() {
+    let _session = TestSession::new("defaults_full_tv").await.unwrap();
+    let bus = tisvlay_test::PrivateBus::shared();
+    let conn = bus.connect().await.unwrap();
+    let proxy = session_proxy(&conn).await.unwrap();
+
+    let json: String = proxy.call("GetResolvedProfileDefaults", &()).await.unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&json).expect("defaults should be valid JSON");
+
+    for key in [
+        "on_session_lock",
+        "on_session_unlock",
+        "on_greeter_wake",
+        "idle_timeout_seconds",
+        "on_idle_timeout",
+        "on_idle_resume",
+    ] {
+        assert!(
+            value.get(key).is_some(),
+            "missing '{key}' in GetResolvedProfileDefaults: {json}"
+        );
+    }
+}

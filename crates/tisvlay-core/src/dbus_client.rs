@@ -190,6 +190,10 @@ trait TisvlayManager {
     /// Get all system profiles as (name, json) pairs.
     fn list_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
+    /// Hardcoded `ResolvedSystemProfile::default()` as JSON — the
+    /// terminal fallthrough for the system-profile inheritance chain.
+    fn get_resolved_profile_defaults(&self) -> zbus::Result<String>;
+
     /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
     /// `awaiting_input`, `complete`, `failed`. See
     /// [`tisvlay_core::PairingState`] for the canonical enum.
@@ -1537,6 +1541,24 @@ impl DaemonClient {
             .context("Failed to list system profiles from daemon")
     }
 
+    /// Hardcoded `ResolvedSystemProfile::default()` from the daemon.
+    ///
+    /// The terminal fallthrough for the system-profile inheritance
+    /// chain (per-TV → named profile → "default" → these defaults).
+    /// Used by the GUI's Profiles pane to render the inherited-value
+    /// column without duplicating the compile-time constants client-side.
+    pub async fn get_resolved_system_profile_defaults(
+        &self,
+    ) -> Result<crate::ResolvedSystemProfile> {
+        debug!("Calling Manager1.GetResolvedProfileDefaults on daemon");
+        let json = self
+            .manager
+            .get_resolved_profile_defaults()
+            .await
+            .context("Failed to get resolved system profile defaults from daemon")?;
+        serde_json::from_str(&json).context("Failed to parse resolved system profile defaults JSON")
+    }
+
     /// Set a TV's friendly name.
     ///
     /// Routes through the per-object `Tv1.Name` writable property
@@ -1622,6 +1644,10 @@ trait TisvlaySession {
 
     /// Get the fully resolved user profile for a TV as JSON.
     fn get_effective_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
+
+    /// Hardcoded `ResolvedUserProfile::default()` as JSON — the
+    /// terminal fallthrough for the user-profile inheritance chain.
+    fn get_resolved_profile_defaults(&self) -> zbus::Result<String>;
 
     /// Reload user configuration from disk.
     fn reload_config(&self) -> zbus::Result<()>;
@@ -1710,6 +1736,22 @@ impl SessionClient {
                     profile_name, tv_id
                 )
             })
+    }
+
+    /// Hardcoded `ResolvedUserProfile::default()` from the session service.
+    ///
+    /// The terminal fallthrough for the user-profile inheritance
+    /// chain (per-TV → named profile → admin baseline → these
+    /// defaults). Used by the GUI's Profiles pane to render the
+    /// inherited-value column without duplicating the compile-time
+    /// constants client-side.
+    pub async fn get_resolved_profile_defaults(&self) -> Result<crate::ResolvedUserProfile> {
+        let json = self
+            .proxy
+            .get_resolved_profile_defaults()
+            .await
+            .context("Failed to get resolved user profile defaults from session service")?;
+        serde_json::from_str(&json).context("Failed to parse resolved user profile defaults JSON")
     }
 
     /// Reload user configuration from disk.

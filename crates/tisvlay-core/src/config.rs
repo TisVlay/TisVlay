@@ -233,7 +233,12 @@ impl SystemProfileConfig {
 /// This is the result of merging a [`SystemProfileConfig`] chain
 /// (per-TV system profile -> default system profile -> hard-coded defaults).
 /// The daemon uses this type at event dispatch time.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializable so the daemon can ship `Self::default()` over D-Bus
+/// as the terminal-fallthrough baseline (`Manager1.GetResolvedProfileDefaults`).
+/// Clients walk the inheritance chain client-side using the Resolved
+/// shape for the floor and `Option<T>` shape for the higher levels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedSystemProfile {
     /// Action on system startup/boot.
     pub on_startup: SessionAction,
@@ -361,7 +366,13 @@ impl UserProfileConfig {
 /// This is the result of merging a [`UserProfileConfig`] chain
 /// (user profile -> system default -> hard-coded defaults).
 /// Consumers (session monitor, idle detector) use this type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializable so the session service can ship `Self::default()`
+/// over D-Bus as the terminal-fallthrough baseline
+/// (`Session1.GetResolvedProfileDefaults`). Clients walk the
+/// inheritance chain client-side using this shape for the floor
+/// and `Option<T>` shape for the higher levels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedUserProfile {
     /// Action on session lock event.
     pub on_session_lock: SessionAction,

@@ -340,6 +340,26 @@ impl ManagerService {
         })
     }
 
+    /// Hardcoded `ResolvedSystemProfile::default()` serialized as JSON.
+    ///
+    /// The terminal fallthrough in the system-profile inheritance
+    /// chain: per-TV profile → named profile → `"default"` named
+    /// profile → these compile-time defaults. Exposed so the GUI's
+    /// Profiles pane can render the inherited-value column for
+    /// every field without duplicating the constants client-side
+    /// (which would version-couple GUI to core).
+    ///
+    /// Returned shape is a [`ResolvedSystemProfile`] — fully resolved
+    /// (no `Option<T>`); the GUI walks the chain itself using
+    /// `ListSystemProfiles` + `GetSystemProfile` + this value.
+    async fn get_resolved_profile_defaults(&self) -> Result<String, DaemonError> {
+        debug!("D-Bus: GetResolvedProfileDefaults");
+        let defaults = tisvlay_core::ResolvedSystemProfile::default();
+        serde_json::to_string(&defaults).map_err(|e| {
+            DaemonError::OperationFailed(format!("Failed to serialize defaults: {}", e))
+        })
+    }
+
     /// Get all system profiles as (name, json) pairs.
     ///
     /// Returns all system profiles defined in the system config.

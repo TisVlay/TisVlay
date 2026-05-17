@@ -177,6 +177,73 @@ async fn get_supported_vendors_includes_mock() {
     );
 }
 
+// ---------- Profile inheritance baseline (Manager1 surface) ----------
+
+/// `Manager1.GetResolvedProfileDefaults` returns the compile-time
+/// `ResolvedSystemProfile::default()` baseline as JSON. The Profiles
+/// pane uses this as the terminal-fallthrough in the inheritance
+/// chain, so the daemon-emitted values must match what the type's
+/// `Default` impl produces.
+#[tokio::test]
+async fn get_resolved_profile_defaults_matches_compile_time_baseline() {
+    let _daemon = TestDaemon::with_one_mock_tv("dbus_sys_defaults")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    let actual = client
+        .get_resolved_system_profile_defaults()
+        .await
+        .expect("get_resolved_system_profile_defaults");
+
+    assert_eq!(
+        actual,
+        tisvlay_core::ResolvedSystemProfile::default(),
+        "Manager1.GetResolvedProfileDefaults must match ResolvedSystemProfile::default()",
+    );
+}
+
+/// The defaults JSON must carry every field on `ResolvedSystemProfile`
+/// so the GUI's inheritance walk can render an inherited-value
+/// column for every editor row.
+#[tokio::test]
+async fn get_resolved_profile_defaults_includes_all_fields() {
+    let _daemon = TestDaemon::with_one_mock_tv("dbus_sys_defaults_full")
+        .await
+        .expect("daemon");
+    let bus = tisvlay_test::PrivateBus::shared();
+    let conn = bus.connect().await.unwrap();
+    let proxy: zbus::Proxy<'_> = zbus::proxy::Builder::new(&conn)
+        .destination("org.tisvlay.Daemon")
+        .unwrap()
+        .path("/org/tisvlay/Manager")
+        .unwrap()
+        .interface("org.tisvlay.Manager1")
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+
+    let json: String = proxy.call("GetResolvedProfileDefaults", &()).await.unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&json).expect("defaults should be valid JSON");
+
+    for key in [
+        "on_startup",
+        "on_shutdown",
+        "on_reboot",
+        "on_no_session",
+        "on_sleep",
+        "on_wake",
+        "automate_when",
+    ] {
+        assert!(
+            value.get(key).is_some(),
+            "missing '{key}' in GetResolvedProfileDefaults: {json}"
+        );
+    }
+}
+
 // ---------- Inherently-reliable screen_on / screen_off ----------
 
 /// `screen_on` short-circuits straight to `power_on` when cached

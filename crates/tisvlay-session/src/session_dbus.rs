@@ -120,6 +120,27 @@ impl SessionService {
         Ok(profiles)
     }
 
+    /// Hardcoded `ResolvedUserProfile::default()` serialized as JSON.
+    ///
+    /// The terminal fallthrough in the user-profile inheritance
+    /// chain: per-TV user profile → named user profile → admin
+    /// baseline → these compile-time defaults. Exposed so the
+    /// GUI's Profiles pane can render the inherited-value column
+    /// for every field without duplicating the constants
+    /// client-side.
+    ///
+    /// Returned shape is a [`tisvlay_core::ResolvedUserProfile`] —
+    /// fully resolved (no `Option<T>`); the GUI walks the chain
+    /// itself using `ListUserProfiles` + `GetUserProfile` + this
+    /// value.
+    async fn get_resolved_profile_defaults(&self) -> Result<String, SessionError> {
+        debug!("D-Bus: GetResolvedProfileDefaults");
+        let defaults = tisvlay_core::ResolvedUserProfile::default();
+        serde_json::to_string(&defaults).map_err(|e| {
+            SessionError::OperationFailed(format!("Failed to serialize defaults: {}", e))
+        })
+    }
+
     /// Get the user profile name assigned to a TV.
     ///
     /// Returns "default" if no explicit assignment exists.
