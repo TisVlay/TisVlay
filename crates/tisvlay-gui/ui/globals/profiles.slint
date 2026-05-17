@@ -147,14 +147,16 @@ export global Profiles {
     /// list's click handlers (so the row highlight updates instantly)
     /// AND by Rust (when the selection is cleared because the
     /// selected profile was deleted out from under us, or when
-    /// auto-selecting after create). `selected-row` is Rust-only —
-    /// pushed whenever the lists or selection change so the detail
-    /// can re-render its header + chips without doing a list-walk
-    /// in Slint expressions (Slint pure functions don't support
-    /// `for` loops).
+    /// auto-selecting after create). `selected-row` is written both
+    /// from Slint (master-list click handler hands off the `r`
+    /// loop-variable so the detail header materializes on the same
+    /// frame as the click — no Rust round-trip needed) and from
+    /// Rust (`push_profiles` re-asserts it whenever the underlying
+    /// lists refresh so `referenced-by` counts and the friendly
+    /// name stay in sync after a daemon-side change).
     in-out property <ProfileKind> selected-kind: ProfileKind.none;
     in-out property <string> selected-uuid;
-    in property <ProfileRow> selected-row;
+    in-out property <ProfileRow> selected-row;
 
     /// Field-editor rows for the currently selected profile. Rust
     /// primes this whenever the selection changes (master-list

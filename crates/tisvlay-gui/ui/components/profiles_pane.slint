@@ -200,8 +200,16 @@ component ProfileList inherits Rectangle {
             selected: Profiles.selected-kind == ProfileKind.system
                    && Profiles.selected-uuid == r.uuid;
             clicked => {
+                // Hand the row off to `selected-row` here so the
+                // detail header (gated on `selected-row.uuid != ""`)
+                // materializes on the same frame as the click. Rust
+                // can't push `selected-row` in response to a click
+                // without a state-refresh tick, which previously
+                // left the detail pane empty until the next
+                // fallback poll (up to 30 s of dead air).
                 Profiles.selected-kind = ProfileKind.system;
                 Profiles.selected-uuid = r.uuid;
+                Profiles.selected-row = r;
                 Profiles.select(ProfileKind.system, r.uuid);
             }
         }
@@ -237,6 +245,7 @@ component ProfileList inherits Rectangle {
             clicked => {
                 Profiles.selected-kind = ProfileKind.user;
                 Profiles.selected-uuid = r.uuid;
+                Profiles.selected-row = r;
                 Profiles.select(ProfileKind.user, r.uuid);
             }
         }
