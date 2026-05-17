@@ -19,6 +19,18 @@ use crate::{
     TvViewModel, VendorInfoRow, VendorOption, on_ui,
 };
 
+/// Write the session-availability flag to both the AppWindow (read by
+/// the sidebar footer's peer-status chip) and the `Profiles` global
+/// (read by the Profiles pane's "Session service unavailable" hint and
+/// the User-section `+` enabled state). The two were previously only
+/// reconciled by `push_profiles`, which runs on the fallback poll —
+/// SessionAppeared updates would flip the footer instantly but leave
+/// the Profiles pane stale for up to 30 s.
+fn set_session_available(app: &AppWindow, available: bool) {
+    app.set_session_available(available);
+    app.global::<Profiles>().set_session_available(available);
+}
+
 /// Boot the state-watch loop. One-shot startup: do the initial state
 /// fetch, push the first snapshot, prime the supported-vendors cache,
 /// then hand off to [`watch_state`] for the long-running signal-driven
@@ -60,7 +72,7 @@ pub(crate) async fn initial_fetch_and_watch(
             push_snapshot(&app, snapshot);
         }
         app.set_daemon_available(initial_daemon_available);
-        app.set_session_available(initial_session_available);
+        set_session_available(&app, initial_session_available);
         app.set_tray_available(initial_tray_available);
     });
 
@@ -232,7 +244,7 @@ async fn watch_state(
                 {
                     *session.write().await = Some(client);
                     on_ui(&app_weak, move |app| {
-                        app.set_session_available(true);
+                        set_session_available(&app, true);
                     });
                     trigger_refresh();
                 }
@@ -240,7 +252,7 @@ async fn watch_state(
             StateEvent::SessionDisappeared => {
                 *session.write().await = None;
                 on_ui(&app_weak, move |app| {
-                    app.set_session_available(false);
+                    set_session_available(&app, false);
                 });
                 trigger_refresh();
             }
