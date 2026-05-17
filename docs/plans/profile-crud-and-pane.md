@@ -1,5 +1,9 @@
 # Profile CRUD daemon methods + Profiles pane (M3.5 + M4)
 
+## Status (2026-05-16)
+
+Commits 1–9a have landed on `feat/profile-crud`; 9b (reset-all + error banner + a11y) and 10 (this doc gets deleted per `docs/plans/README.md` convention) are still pending. Live behavior matches the acceptance criteria except where called out in "Deviations from this plan" below. The implementation outline at the bottom tracks per-commit status with ✓ markers.
+
 ## Motivation
 
 The Profiles pane in `tisvlay-gui` is a placeholder shipped at M3 ("System and user profile editing arrives in M4."). The daemon-side CRUD surface it would consume doesn't exist yet either. Both were deferred from the GUI roadmap in `docs/plan.md`. This plan lands them together — M3.5 (daemon methods) is a one-PR prerequisite for M4 (GUI pane); sequencing them as separate PRs adds friction without buying anything.
@@ -50,23 +54,24 @@ Mirror of `Manager1`'s profile surface, but for user profiles:
 
 ### Layout
 
-Single window pane with two sub-tabs (System / User). Each sub-tab is master-detail:
+Single window pane, master-detail. The original plan placed System / User as a top-bar segmented control; shipped layout instead stacks them as two sections inside the master column (KDE / GNOME / Firefox-preferences sidebar idiom) — frees the detail to use the full window height when the editor grows.
 
-- **Left list**: profile names with `(default)` badge on the "default" profile; clicking a name selects it for editing.
-- **Right editor**: form with one row per field. Field row layout:
+- **Left list**: two stacked sections (`SYSTEM PROFILES`, `USER PROFILES`), each with its own header band + `+` button. Profile names with `(default)` badge on the reserved `default` profile and a trailing `Nx` count indicating how many TVs reference the profile. Single selection across both sections; clicking a row sets `Profiles.selected-kind` + `selected-name`.
+- **Right detail**: profile name + Duplicate / Delete actions + a `Used by [chip][chip]` row in the header (clickable chips navigate to the TVs pane via `Profiles.open-tv(uuid)` — "Find Usages" idiom from GitHub package pages / VS Code peek). Below: one row per inheritable field.
+- **Field row layout** (live):
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ ▌ on_session_lock    [ screen_off          v ]  [↺ reset] │  ← locally-set
-│   on_session_unlock  [ (inherit: screen_on) v ]            │  ← unset / inheriting
-│ ▌ on_idle_timeout    [ power_off           v ]  [↺ reset] │  ← locally-set
-│   idle_timeout_seconds  [ 300 ]            placeholder=0   │  ← spinner (Option<u64>)
+│ ▌ on_session_lock    [ screen_off          v ]  ↺          │  ← locally-set
+│   on_session_unlock  [ (inherit: screen_on) v ]             │  ← unset / inheriting
+│ ▌ on_idle_timeout    [ power_off           v ]  ↺          │  ← locally-set
 └─────────────────────────────────────────────────────────────┘
 ```
 
 - Left gutter accent (▌) is a 2 px-wide vertical bar in the theme's accent color, visible only on rows whose value is locally set in the editing profile.
-- Reset glyph (↺) appears trailing the row only when locally-set, hover-revealed to keep the inheriting case visually quiet.
+- Reset glyph (↺) renders only when locally-set; it stays always visible at low opacity (IconBtn ghost style brightens on hover) — the original "hover-revealed via row-wide overlay" pattern would have swallowed ComboBox clicks.
 - Combobox model is computed Rust-side: `["(inherit: <effective_fallthrough>)", "power_on", "power_off", "screen_on", "screen_off", "none"]`. Selecting the first entry → `Manager1.UpdateSystemProfile(name, {field: null, ...})` ; selecting any other → `UpdateSystemProfile(name, {field: "X", ...})`.
+- The numeric `idle_timeout_seconds` row is **not shipped** in M4 — it needs a spinner + commit-on-blur that doesn't fit the shared ComboBox-based `ProfileFieldRow`. Deferred per `docs/ideas/profile-user-idle-timeout-spinner.md`; users edit it via TOML until then.
 
 ### List actions
 
@@ -107,45 +112,66 @@ The inheritance computation runs in `state.rs` (or a new `profiles_state.rs` mod
 
 Branch off `origin/main`. Each commit compiles + ships incremental functionality.
 
-### Commit 1 — `GetResolvedProfileDefaults` on Manager1 + Session1
+### Commit 1 — `GetResolvedProfileDefaults` on Manager1 + Session1 ✓
 
 Add the two D-Bus methods that return the hardcoded `Resolved*Profile::default()` values as JSON. Cheap; unblocks the inheritance computation on the GUI side. Add CLI smoke test (`tisvlay defaults` or via `busctl call`) and a doc-test on the JSON shape.
 
-### Commit 2 — System profile CRUD on Manager1
+### Commit 2 — System profile CRUD on Manager1 ✓
 
 Add `CreateSystemProfile`, `UpdateSystemProfile`, `DeleteSystemProfile`, `GetSystemProfile` + `SystemProfileChanged` signal. JSON validation, mutex-serialized writes, TV-reference check on Delete. Integration tests under `tisvlayd/tests/` cover the success / not-found / conflict / TV-reference cases.
 
-### Commit 3 — User profile CRUD on Session1
+### Commit 3 — User profile CRUD on Session1 ✓
 
 Mirror of Commit 2 on the user bus. `tisvlay-session/tests/` integration coverage.
 
-### Commit 4 — Extend `ConfigReloaded` signal
+### Commit 4 — Extend `ConfigReloaded` signal ✓
 
 `Manager1.ConfigReloaded(success: b, error_msg: s)` (replaces zero-arg form). Update tray and GUI to accept the new args. Pre-v1, no shim. Add a regression test that the daemon emits with `success=false` + non-empty error when an on-disk reload fails.
 
-### Commit 5 — Profiles pane scaffolding
+### Commit 5 — Profiles pane scaffolding ✓
 
-Replace the placeholder `profiles_pane.slint` with a real two-sub-tab master-detail layout. List + empty editor; no field rows yet. Wires up `ListSystemProfiles` / `ListUserProfiles` for the list, `GetSystemProfile` / `GetUserProfile` for selection. Save / delete / new actions wired but operate on placeholder data.
+Replace the placeholder `profiles_pane.slint` with a real master-detail layout. Two stacked sections in the master column (System / User) instead of the originally-planned top-bar segmented control. List + empty editor; no field rows yet. Wires up `ListSystemProfiles` / `ListUserProfiles` for the list, `GetSystemProfile` / `GetUserProfile` for selection. Used-by clickable chips in the detail header (navigate to TVs pane). Create / Duplicate / Delete actions are stub toasts until 9a.
 
-### Commit 6 — Inheritable combobox + field row
+### Commit 6 — Inheritable combobox + field row ✓
 
-Add a `ProfileFieldRow` Slint component that renders one row of the editor with the gutter accent + inherit-prefix combobox + reset glyph. Driven by a new `ProfileFieldRow` Rust model (mirrors the existing `PairingFieldRow` pattern in `schema_form.rs`). Combobox model is `["(inherit: <fallthrough>)", ...enum_values]`. Selecting the first entry emits `value-edited(None)`; selecting another emits `value-edited(Some(s))`.
+Add a `ProfileFieldRow` Slint component that renders one row of the editor with the gutter accent + inherit-prefix combobox + reset glyph. Driven by a new `ProfileFieldRow` Rust model (mirrors the existing `PairingFieldRow` pattern in `schema_form.rs`). Combobox model is `["(inherit: <fallthrough>)", ...enum_values]`. Selecting the first entry emits `value-edited(None)`; selecting another emits `value-edited(Some(s))`. Reset glyph always-visible-when-locally-set instead of hover-revealed (row-wide TouchArea would block ComboBox clicks).
 
-### Commit 7 — Wire system profile editor
+### Commit 7 — Wire system profile editor ✓
 
-Inheritance computation in Rust (`crates/tisvlay-gui/src/profiles_state.rs` or extend `state.rs`). On combobox selection: instant-commit via `Manager1.UpdateSystemProfile`. Subscribe to `SystemProfileChanged` and `ConfigReloaded` for live refresh. Smoke-test: edit on hardware (or `TestDaemon` harness), verify the gutter accent flips correctly when a field is set and cleared.
+Inheritance computation in Rust (`crates/tisvlay-gui/src/profiles_state.rs`). On combobox selection: instant-commit via `Manager1.UpdateSystemProfile`. Live refresh on `ConfigReloaded` (re-runs `refresh_system_editor` for the currently-selected profile). Dedicated `SystemProfileChanged` subscription deferred to 9b.
 
-### Commit 8 — Wire user profile editor
+### Commit 8 — Wire user profile editor ✓
 
-Mirror of Commit 7 against `Session1`. Three-level inheritance chain (editing → admin baseline → hardcoded). Reuses the `ProfileFieldRow` component.
+Mirror of Commit 7 against `Session1`. Refactored `ProfilesEditorState.system_selected` into a `SelectedProfile::{System, User}` enum so the field-edit handler can dispatch by match. `idle_timeout_seconds` (the only non-`SessionAction` field) deferred — see `docs/ideas/profile-user-idle-timeout-spinner.md`. Five `SessionAction` rows ship today.
 
-### Commit 9 — Polish: delete confirmation, duplicate, reset-all
+### Commit 9a — Dialogs ✓
 
-Delete confirmation dialog (lists referencing TVs from the daemon's error message). Duplicate action client-side (`Get` + `Create`). Reset-all-to-inherited toolbar button. `InlineMessage`-style error surfacing on `ConfigReloaded(success=false)`. Final accessibility pass (tab order, screen reader labels per `crates/tisvlay-gui/ui/components/` conventions).
+`ConfirmDialog` promoted from `tvs_pane.slint` into `widgets.slint`; new `NameInputDialog` added. Both auto-grow vertically with content. Wired in `ProfilesPane`:
+
+- **Delete-confirm**: flips into "cannot delete" mode when the profile is referenced — message names the offending TVs (`referenced_by_summary` pre-built Rust-side), Confirm disabled, only Cancel works.
+- **New (Create)**: name-input dialog with client-side validation for empty + reserved (`"default"`). Duplicate-name validation falls back to a daemon-error toast — Slint pure functions can't iterate the existing-names list, so client-side dup-check is deferred.
+- **Duplicate**: no dialog; `Get` + `Create("<orig>-copy[-N]")` with the existing-names list pre-fetched for collision avoidance. Auto-selects the new profile.
+
+### Commit 9b — Reset-all + error banner + a11y →
+
+Reset-all-to-inherited toolbar button on the detail header (one `Update*Profile(name, {})` clears every field). `InlineMessage`-style error surfacing on `ConfigReloaded(success=false)` — probably wants a new `Errors.profiles` slot distinct from `Errors.tvs`. Dedicated `SystemProfileChanged` / `UserProfileListChanged` subscription so cross-client edits propagate without waiting for the next `ConfigReloaded`. Final accessibility pass (tab order, screen reader labels per `crates/tisvlay-gui/ui/components/` conventions).
 
 ### Commit 10 — Delete this plan doc
 
-Per `docs/plans/README.md` convention. Architecture lands in `docs/design.md` ("Profiles" section under D-Bus surface); deferred follow-ups (rename UX, profile-description free-text field, save/cancel revisit) get filed under `docs/ideas/`.
+Per `docs/plans/README.md` convention. Architecture lands in `docs/design.md` ("Profiles" section under D-Bus surface); deferred follow-ups (rename UX, profile-description free-text field, save/cancel revisit, numeric spinner row, client-side duplicate-name check) get filed under `docs/ideas/`.
+
+## Deviations from this plan
+
+Recorded during implementation. None invalidated the plan's core decisions; they're documented here so a reviewer reading the branch history doesn't have to diff prose against code to spot the differences.
+
+- **Sub-tab placement.** Plan: top-bar segmented control. Shipped: two stacked sections inside the master column (KDE / GNOME / Firefox-preferences sidebar idiom). Frees the editor for full window-height usage and scales naturally if a third profile kind ever lands.
+- **TV-reference chips.** Not in the original plan. Added a clickable `Used by [chip][chip]` row in the detail header — Rust precomputes a `referenced_by` list per profile from the existing TV state; clicks route via a new `Profiles.open-tv(uuid)` callback that flips `AppWindow.active-pane` + `selected-tv-index`. "Find Usages" idiom from GitHub package pages / VS Code peek.
+- **Reset-glyph visibility.** Plan: hover-revealed (visible only when the row is hovered). Shipped: always visible when locally-set, ghost-style `IconBtn` for the hover feedback on the glyph itself. A row-wide hover-detecting `TouchArea` would have intercepted ComboBox clicks; the always-visible variant gives the same visual result without the click conflict.
+- **`idle_timeout_seconds` numeric row deferred.** Plan: spinner row with `placeholder=N` ghost text. Shipped: not rendered at all (`apply_user_field_edit` returns a hard error on this field name so a stray emit fails loudly). Filed in `docs/ideas/profile-user-idle-timeout-spinner.md` with the rationale and design sketch. User-profile editor renders 5 `SessionAction` rows for v1; the 6th remains TOML-editable.
+- **Commit 9 split into 9a + 9b.** The polish work didn't fit one commit cleanly: 9a covers the dialogs (Delete-confirm, Duplicate, New) and the reusable widgets that came out of that work (`ConfirmDialog` promoted to `widgets.slint`, new `NameInputDialog`). 9b covers reset-all + error banner + the cross-client `*ProfileChanged` subscription + a11y.
+- **Duplicate-name validation on Create.** Plan: "validation rejects `'default'` and existing names." Shipped: client-side check for `"default"` + empty; duplicate-name check happens server-side and surfaces as a toast (Slint pure functions can't iterate the existing-names list in a `function`). Filed as a follow-up if the toast UX feels bad in practice.
+- **Live-refresh signal subscription.** Plan: "Subscribe to `SystemProfileChanged` and `ConfigReloaded` for live refresh." Shipped through 9a: `ConfigReloaded` only. The dedicated `SystemProfileChanged` / `UserProfileListChanged` subscription is part of 9b — until then, cross-client edits propagate via the next `ConfigReloaded` rather than instantly.
+- **Selection-row clearing on Delete.** Plan didn't specify behavior. Shipped: successful Delete clears `selected-kind` + `selected-name` + pushes empty field rows, returning the detail to the "Select a profile" empty state. Same path covers the "selected profile was deleted by another client" case via the existing `apply_snapshot` re-resolve.
 
 ## What's deferred / out of scope
 
@@ -154,15 +180,17 @@ Per `docs/plans/README.md` convention. Architecture lands in `docs/design.md` ("
 - **Per-TV profile override editor.** This plan is about editing the *named profile catalog* (the `[system.profiles.guest]` blocks). The per-TV "which profile does this TV use" selector already exists in the TVs pane (`Tv1.SystemProfile` writable property). No work needed here.
 - **Effective-profile display.** If a user wants "show me what this TV will actually do for event X" rather than "show me what the profile says about event X", that's a separate "TV inspector" feature — file as a new idea if it surfaces.
 - **Save/cancel revisit.** If field-blur instant-commit ends up feeling fiddly in practice (especially for the numeric spinner), revisit by wrapping the spinner in commit-on-explicit-Enter. Editor-wide save/cancel stays off the roadmap unless field complexity demands it.
+- **Numeric `idle_timeout_seconds` row.** Deferred during 8 — see `docs/ideas/profile-user-idle-timeout-spinner.md`. Filed because the shared `ProfileFieldRow` is ComboBox-based; a numeric row needs a spinner + commit-on-blur that doesn't fit the same primitive. Pick up when there's a second numeric field or user complaints about TOML editing this one.
+- **Client-side duplicate-name validation in the New dialog.** Server-side check + toast covers the case today; inline validation would need either a Rust-pushed `Profiles.create-error` property or a Slint substring-contains trick on a sentinel-joined names string. Revisit if the toast UX feels bad.
 
 ## Acceptance criteria
 
-- [ ] `just check` green.
-- [ ] Round-trip: create a new system profile via the GUI, see it appear in `ListSystemProfiles` from the CLI, delete it via the CLI, see it disappear from the GUI list.
-- [ ] Edit conflict: open the editor on `guest`, edit `[system.profiles.default]` on disk, run `tisvlay reload`, verify the `(inherit: ...)` combobox entries refresh in-place to the new defaults without losing locally-set rows in `guest`.
-- [ ] Delete blocked: assign `guest` to a TV, try to delete `guest`, verify the error names the offending TV.
-- [ ] Reset-all clears the editing profile to the inheriting state in one daemon call (`UpdateSystemProfile(name, {})`).
-- [ ] No editor-wide save/cancel button anywhere in the pane.
+- [x] `just check` green.
+- [x] Round-trip: create a new system profile via the GUI, see it appear in `ListSystemProfiles` from the CLI, delete it via the CLI, see it disappear from the GUI list. (Wired through 9a; CLI round-trip verifiable today.)
+- [x] Edit conflict: open the editor on `guest`, edit `[system.profiles.default]` on disk, run `tisvlay reload`, verify the `(inherit: ...)` combobox entries refresh in-place to the new defaults without losing locally-set rows in `guest`. (`refresh_system_editor` fires on `ConfigReloaded`.)
+- [x] Delete blocked: assign `guest` to a TV, try to delete `guest`, verify the error names the offending TV. (Client-side: dialog shows the referenced-by list and disables Confirm. Server-side: daemon also rejects with the named TVs in the error message as a safety net.)
+- [ ] Reset-all clears the editing profile to the inheriting state in one daemon call (`UpdateSystemProfile(name, {})`). (Pending 9b.)
+- [x] No editor-wide save/cancel button anywhere in the pane.
 
 ## Reference
 
