@@ -598,6 +598,50 @@ impl UserSection {
             .map(|(id, body)| (*id, body))
     }
 
+    /// Resolve a user profile by UUID, walking the inheritance chain:
+    /// this profile → user-config default ([`DEFAULT_USER_PROFILE_UUID`])
+    /// → admin baseline lookup (by this profile's name on
+    /// `admin_user_profiles`, then `admin_user_default`) → hardcoded
+    /// baseline.
+    ///
+    /// The per-profile `UserProfile1` D-Bus interface uses this to
+    /// report the resolved value for each typed property. The admin
+    /// baseline is name-keyed on the session-service side
+    /// (`SessionState::admin_user_profiles`), so we merge by the
+    /// profile body's `name` field rather than by UUID at that hop.
+    pub fn resolve_profile_by_uuid(
+        &self,
+        uuid: Uuid,
+        admin_user_default: &UserProfileConfig,
+        admin_user_profiles: &std::collections::HashMap<String, UserProfileConfig>,
+    ) -> ResolvedUserProfile {
+        let named = self.profiles.get(&uuid);
+        let user_default = if uuid != DEFAULT_USER_PROFILE_UUID {
+            self.profiles.get(&DEFAULT_USER_PROFILE_UUID)
+        } else {
+            None
+        };
+        // Look up an admin profile by the body's name (the admin
+        // baseline is name-keyed; the user catalog tracks its own UUID
+        // but routes through name for the cross-layer merge).
+        let admin_named = named.and_then(|body| admin_user_profiles.get(&body.name));
+
+        // Merge chain: user profile → user default → admin profile →
+        // admin default. Each layer fills `None` fields from the next.
+        let merged = match (named, user_default, admin_named) {
+            (Some(p), Some(d), Some(a)) => p
+                .merge_with_base(d)
+                .merge_with_base(a)
+                .merge_with_base(admin_user_default),
+            (Some(p), Some(d), None) => p.merge_with_base(d).merge_with_base(admin_user_default),
+            (Some(p), None, Some(a)) => p.merge_with_base(a).merge_with_base(admin_user_default),
+            (Some(p), None, None) => p.merge_with_base(admin_user_default),
+            (None, Some(d), _) => d.merge_with_base(admin_user_default),
+            (None, None, _) => admin_user_default.clone(),
+        };
+        merged.resolve()
+    }
+
     /// Insert the reserved `"default"` profile if missing. See
     /// [`SystemSection::ensure_default`].
     pub fn ensure_default(&mut self) {

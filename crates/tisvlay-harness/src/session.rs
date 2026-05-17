@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use tisvlay_core::DaemonClient;
 use tisvlay_session::__internals::{
-    SessionEvent, SessionState, event_handler, reconcile_user_config_orphans,
+    SessionDbusBundle, SessionEvent, SessionState, event_handler, reconcile_user_config_orphans,
     register_session_dbus_on,
 };
 use tisvlay_test::fake_screensaver::FakeScreenSaver;
@@ -44,7 +44,10 @@ pub struct TestSession {
     state: Arc<RwLock<SessionState>>,
     event_tx: mpsc::UnboundedSender<SessionEvent>,
     screensaver: FakeScreenSaver,
-    _session_dbus_conn: zbus::Connection,
+    /// Owns the session connection + the user-profile forwarder task.
+    /// Dropped on `Drop`; the forwarder is aborted explicitly so it
+    /// doesn't outlive the test.
+    session_dbus: Option<SessionDbusBundle>,
     handler_task: tokio::task::JoinHandle<()>,
     pruner_task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -97,7 +100,7 @@ impl TestSession {
         let state = Arc::new(RwLock::new(session_state));
 
         // Register session D-Bus interface on the private bus.
-        let session_dbus_conn = register_session_dbus_on(
+        let session_dbus = register_session_dbus_on(
             tisvlay_core::BusKind::Address(bus.address()),
             state.clone(),
             daemon_client.clone(),
@@ -148,7 +151,7 @@ impl TestSession {
             state,
             event_tx,
             screensaver,
-            _session_dbus_conn: session_dbus_conn,
+            session_dbus: Some(session_dbus),
             handler_task,
             pruner_task,
         })
@@ -189,6 +192,10 @@ impl Drop for TestSession {
         self.handler_task.abort();
         if let Some(t) = self.pruner_task.take() {
             t.abort();
+        }
+        if let Some(bundle) = self.session_dbus.take() {
+            bundle.forwarder_task.abort();
+            drop(bundle.connection);
         }
     }
 }

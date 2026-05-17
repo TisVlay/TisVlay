@@ -15,10 +15,11 @@ pub mod __internals {
     pub use crate::SessionState;
     pub use crate::event_handler;
     pub use crate::reconcile_user_config_orphans;
-    pub use crate::session_dbus::register_session_dbus_on;
+    pub use crate::session_dbus::{SessionDbusBundle, register_session_dbus_on};
     pub use crate::session_monitor::SessionEvent;
     pub use crate::user_profile::{
-        UserProfileService, register_user_profile, unregister_user_profile,
+        UserProfileEvent, UserProfileEventTx, UserProfileService, register_user_profile,
+        unregister_user_profile, user_profile_state_forwarder,
     };
 }
 

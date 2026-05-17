@@ -4,11 +4,14 @@
 //! Used by the tray app and future GUI to query and change profile assignments.
 
 use crate::SessionState;
+use crate::user_profile::{UserProfileEvent, UserProfileEventTx};
 use anyhow::Context;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tisvlay_core::DaemonClient;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
 
@@ -37,6 +40,11 @@ pub struct SessionService {
     state: Arc<RwLock<SessionState>>,
     daemon: Arc<DaemonClient>,
     config_path: Option<std::path::PathBuf>,
+    /// Sender for user-profile events. Used by `SetTvUserProfile` to
+    /// fan a `ReferencedBy` refresh out to the affected `UserProfile1`
+    /// interfaces (previously-affected + newly-affected profile UUIDs).
+    /// Mirrors the daemon's `state_change_sender` plumbing.
+    events: UserProfileEventTx,
 }
 
 impl SessionService {
@@ -44,11 +52,13 @@ impl SessionService {
         state: Arc<RwLock<SessionState>>,
         daemon: Arc<DaemonClient>,
         config_path: Option<std::path::PathBuf>,
+        events: UserProfileEventTx,
     ) -> Self {
         Self {
             state,
             daemon,
             config_path,
+            events,
         }
     }
 }
@@ -162,6 +172,11 @@ impl SessionService {
             )));
         }
 
+        // Capture the previous + new profile names so we can fan
+        // ReferencedBy refreshes out to the affected UserProfile1
+        // interfaces after persistence.
+        let prev_profile_name = s.user_config.get_tv_user_profile_name(tv_id).to_string();
+
         // Update assignment
         s.user_config.set_tv_user_profile(tv_id, profile_name);
 
@@ -170,6 +185,19 @@ impl SessionService {
             .user_config
             .resolve_user_profile(tv_id, &s.admin_user_default);
         s.profiles.insert(tv_id.to_string(), resolved);
+
+        // Resolve previous + new profile UUIDs for the ReferencedBy
+        // fanout. Profile names that don't exist in the user catalog
+        // (e.g. an admin-only baseline) don't appear in the UUID-keyed
+        // catalog and are skipped — only user-side UserProfile1
+        // interfaces need a refresh.
+        let mut affected_uuids: HashSet<Uuid> = HashSet::new();
+        if let Some((uuid, _)) = s.user_config.user.find_profile_by_name(&prev_profile_name) {
+            affected_uuids.insert(uuid);
+        }
+        if let Some((uuid, _)) = s.user_config.user.find_profile_by_name(profile_name) {
+            affected_uuids.insert(uuid);
+        }
 
         // Save user config to disk
         let save_result = match &self.config_path {
@@ -185,6 +213,14 @@ impl SessionService {
         // Notify subscribers that the profile changed
         if let Err(e) = Self::user_profile_changed(&ctxt, tv_id, profile_name).await {
             warn!(error = %e, tv_id = %tv_id, "Failed to emit UserProfileChanged signal");
+        }
+
+        // Fan ReferencedBy refresh out to the previously-affected and
+        // newly-affected UserProfile1 caches.
+        if !affected_uuids.is_empty() {
+            let _ = self
+                .events
+                .send(UserProfileEvent::TvReassigned { affected_uuids });
         }
 
         Ok(())
@@ -249,6 +285,19 @@ impl SessionService {
     }
 }
 
+/// Bundle returned by [`register_session_dbus`] / [`register_session_dbus_on`].
+///
+/// Carries the D-Bus connection (kept alive for the lifetime of the
+/// session process) and the forwarder task handle (aborted on
+/// shutdown). The connection field is intentionally separate from the
+/// handle so callers can `_ = bundle.connection;` if they only need to
+/// pin the connection alive.
+#[derive(Debug)]
+pub struct SessionDbusBundle {
+    pub connection: zbus::Connection,
+    pub forwarder_task: tokio::task::JoinHandle<()>,
+}
+
 /// Register the session D-Bus service on the session bus.
 ///
 /// For production use. Tests should use [`register_session_dbus_on`]
@@ -257,20 +306,23 @@ pub async fn register_session_dbus(
     state: Arc<RwLock<SessionState>>,
     daemon: Arc<DaemonClient>,
     config_path: Option<std::path::PathBuf>,
-) -> anyhow::Result<zbus::Connection> {
+) -> anyhow::Result<SessionDbusBundle> {
     register_session_dbus_on(tisvlay_core::BusKind::Session, state, daemon, config_path).await
 }
 
 /// Register the session D-Bus service on the given bus.
 ///
 /// Accepts a [`BusKind`] so tests can point at a private
-/// `dbus-daemon` via [`BusKind::Address`].
+/// `dbus-daemon` via [`BusKind::Address`]. Spawns the user-profile
+/// state forwarder task on the same `zbus::Connection` so cached
+/// `UserProfile1` properties refresh in response to body mutations
+/// and TV reassignments.
 pub async fn register_session_dbus_on(
     bus: tisvlay_core::BusKind<'_>,
     state: Arc<RwLock<SessionState>>,
     daemon: Arc<DaemonClient>,
     config_path: Option<std::path::PathBuf>,
-) -> anyhow::Result<zbus::Connection> {
+) -> anyhow::Result<SessionDbusBundle> {
     let connection = bus
         .builder()
         .context("Failed to create session D-Bus builder")?
@@ -285,6 +337,8 @@ pub async fn register_session_dbus_on(
         .await
         .context("Failed to build session D-Bus connection")?;
 
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+
     // Register one `UserProfile1` object per UUID in the user config.
     // Admin baseline isn't separately registered — it's the
     // inheritance ancestor and lives on the daemon side.
@@ -293,18 +347,41 @@ pub async fn register_session_dbus_on(
         s.user_config.user.profiles.keys().copied().collect()
     };
     for uuid in profile_uuids {
-        crate::user_profile::register_user_profile(&connection, uuid)
-            .await
-            .with_context(|| format!("Failed to register UserProfile interface for {}", uuid))?;
+        crate::user_profile::register_user_profile(
+            &connection,
+            state.clone(),
+            config_path.clone(),
+            event_tx.clone(),
+            uuid,
+        )
+        .await
+        .with_context(|| format!("Failed to register UserProfile interface for {}", uuid))?;
     }
 
-    let service = SessionService::new(state, daemon, config_path);
+    let service = SessionService::new(state.clone(), daemon, config_path, event_tx);
     connection
         .object_server()
         .at(SESSION_PATH, service)
         .await
         .context("Failed to register Session interface")?;
 
+    // Spawn the forwarder so cached UserProfile1 properties refresh
+    // in response to mutation events. Aborted by the caller on
+    // shutdown via `SessionDbusBundle::forwarder_task`.
+    let forwarder_conn = connection.clone();
+    let forwarder_state = state.clone();
+    let forwarder_task = tokio::spawn(async move {
+        crate::user_profile::user_profile_state_forwarder(
+            forwarder_conn,
+            forwarder_state,
+            event_rx,
+        )
+        .await;
+    });
+
     info!("Session D-Bus interface registered at {}", SESSION_PATH);
-    Ok(connection)
+    Ok(SessionDbusBundle {
+        connection,
+        forwarder_task,
+    })
 }

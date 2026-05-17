@@ -161,17 +161,19 @@ async fn main() -> Result<()> {
     }
 
     // Register Session D-Bus interface for tray/GUI to query profiles.
-    // The connection must be held alive for the lifetime of the process.
-    let _session_dbus_connection = match tisvlay_session::session_dbus::register_session_dbus(
+    // The bundle's `connection` must be held alive for the lifetime of
+    // the process; `forwarder_task` runs the user-profile state
+    // forwarder (refreshes cached UserProfile1 properties after edits).
+    let session_dbus_bundle = match tisvlay_session::session_dbus::register_session_dbus(
         state.clone(),
         daemon.clone(),
         config_path.clone(),
     )
     .await
     {
-        Ok(connection) => {
+        Ok(bundle) => {
             info!("Session D-Bus interface available");
-            Some(connection)
+            Some(bundle)
         }
         Err(e) => {
             warn!(error = %e, "Failed to register session D-Bus interface (profile switching unavailable)");
@@ -254,6 +256,11 @@ async fn main() -> Result<()> {
     handler_task.abort();
     if let Some(t) = pruner_task {
         t.abort();
+    }
+    if let Some(bundle) = session_dbus_bundle {
+        bundle.forwarder_task.abort();
+        // `bundle.connection` drops here, releasing the well-known bus name.
+        drop(bundle.connection);
     }
 
     Ok(())
