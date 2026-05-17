@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-05-14 19:51-0500\n"
+"POT-Creation-Date: 2026-05-17 16:40-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -30,130 +30,195 @@ msgstr ""
 msgid "Paired successfully."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:358
+#: crates/tisvlay-gui/src/profiles.rs:522
+#: crates/tisvlay-gui/src/profiles.rs:522
+msgid "inherit"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:379
 msgid "Copied to clipboard."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:360
+#: crates/tisvlay-gui/src/lib.rs:381
 #, rust-format
 msgid "Copied {0}."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:424
+#: crates/tisvlay-gui/src/lib.rs:445
 msgid "diagnostic info"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:584
+#: crates/tisvlay-gui/src/lib.rs:619
 msgid "Couldn't change volume"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:602
+#: crates/tisvlay-gui/src/lib.rs:637
 msgid "Couldn't change backlight"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:623
+#: crates/tisvlay-gui/src/lib.rs:658
 msgid "Couldn't change mute"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:651
+#: crates/tisvlay-gui/src/lib.rs:686
 msgid "Couldn't turn screen on"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:653
+#: crates/tisvlay-gui/src/lib.rs:688
 msgid "Couldn't turn screen off"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:672
+#: crates/tisvlay-gui/src/lib.rs:707
 msgid "Couldn't switch input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:691
+#: crates/tisvlay-gui/src/lib.rs:726
 msgid "Power on failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:706
+#: crates/tisvlay-gui/src/lib.rs:741
 msgid "Power off failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:721
+#: crates/tisvlay-gui/src/lib.rs:756
 msgid "Couldn't update managed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:737
+#: crates/tisvlay-gui/src/lib.rs:772
 msgid "Couldn't change system profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:756
+#: crates/tisvlay-gui/src/lib.rs:791
 msgid "Couldn't change user profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:763
+#: crates/tisvlay-gui/src/lib.rs:798 crates/tisvlay-gui/src/lib.rs:1677
+#: crates/tisvlay-gui/src/lib.rs:798 crates/tisvlay-gui/src/lib.rs:1677
 msgid "Session service unavailable"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:765
+#: crates/tisvlay-gui/src/lib.rs:800
 msgid "User-profile assignments require the per-user tisvlay-session service."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:784
+#: crates/tisvlay-gui/src/lib.rs:819
 msgid "Couldn't change primary input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:799
+#: crates/tisvlay-gui/src/lib.rs:834
 msgid "Couldn't remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:815
+#: crates/tisvlay-gui/src/lib.rs:853
 msgid "Reload config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:823
+#: crates/tisvlay-gui/src/lib.rs:863
 msgid "Reload session config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:182
+#: crates/tisvlay-gui/src/lib.rs:1547
+#, rust-format
+msgid "Couldn't open profile: {0}"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:1570
+#, rust-format
+msgid "Couldn't update field: {0}"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:1589
+#, rust-format
+msgid "Couldn't reset field: {0}"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:1607
+#, rust-format
+msgid "Couldn't reset profile: {0}"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:1631
+#, rust-format
+msgid "Couldn't rename profile: {0}"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:1658 crates/tisvlay-gui/src/lib.rs:1671
+#, rust-format
+msgid "Couldn't create profile: {0}"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:1729
+#, rust-format
+msgid "Couldn't delete profile: {0}"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:1758
+msgid "Profile duplication lands in a follow-up commit."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/main.slint:183
 msgctxt "AppWindow"
 msgid "TVs"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:189
+#: crates/tisvlay-gui/ui/main.slint:190
 msgctxt "AppWindow"
 msgid "Profiles"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:196 crates/tisvlay-gui/ui/main.slint:297
+#: crates/tisvlay-gui/ui/main.slint:197 crates/tisvlay-gui/ui/main.slint:298
 msgctxt "AppWindow"
 msgid "Session"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:203
+#: crates/tisvlay-gui/ui/main.slint:204
 msgctxt "AppWindow"
 msgid "Settings"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:210
+#: crates/tisvlay-gui/ui/main.slint:211
 msgctxt "AppWindow"
 msgid "About"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:233
+#: crates/tisvlay-gui/ui/main.slint:234
 msgctxt "AppWindow"
 msgid "Reload daemon config"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:261
+#: crates/tisvlay-gui/ui/main.slint:262
 msgctxt "AppWindow"
 msgid "Reload"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:291
+#: crates/tisvlay-gui/ui/main.slint:292
 msgctxt "AppWindow"
 msgid "Daemon"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:303
+#: crates/tisvlay-gui/ui/main.slint:304
 msgctxt "AppWindow"
 msgid "Tray"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/widgets.slint:996
+msgctxt "ConfirmDialog"
+msgid "OK"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/widgets.slint:1050
+msgctxt "ConfirmDialog"
+msgid "Cancel"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/widgets.slint:1077
+msgctxt "NameInputDialog"
+msgid "Create"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/widgets.slint:1148
+msgctxt "NameInputDialog"
+msgid "Cancel"
 msgstr ""
 
 #: crates/tisvlay-gui/ui/components/settings_pane.slint:27
@@ -447,39 +512,29 @@ msgctxt "TvDetailEmpty"
 msgid "Pick a TV from the list, or pair a new one with the + button."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:994
-msgctxt "ConfirmDialog"
-msgid "OK"
-msgstr ""
-
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1042
-msgctxt "ConfirmDialog"
-msgid "Cancel"
-msgstr ""
-
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1163
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1095
 msgctxt "TvsPane"
 msgid "Remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1164
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1096
 msgctxt "TvsPane"
 msgid ""
 "Remove '{}' from the daemon's configuration? Pairing must be redone if you "
 "re-add it."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1165
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1097
 msgctxt "TvsPane"
 msgid "Remove"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1179
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1111
 msgctxt "TvsPane"
 msgid "Re-pair TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1180
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1112
 msgctxt "TvsPane"
 msgid ""
 "Re-pair '{}'? This will briefly disconnect the TV and prompt you to confirm "
@@ -487,7 +542,7 @@ msgid ""
 "preserved."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1181
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1113
 msgctxt "TvsPane"
 msgid "Re-pair"
 msgstr ""
@@ -799,12 +854,138 @@ msgctxt "AboutPane"
 msgid "View third-party notices"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/profiles_pane.slint:17
-msgctxt "ProfilesPane"
-msgid "Profiles"
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:75
+msgctxt "ProfileListRow"
+msgid "(default)"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/profiles_pane.slint:26
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:159
+msgctxt "ProfileSectionHeader"
+msgid "Create new {} profile"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:207
+msgctxt "ProfileList"
+msgid "SYSTEM PROFILES"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:232
+msgctxt "ProfileList"
+msgid "USER PROFILES"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:243
+msgctxt "ProfileList"
+msgid "Session service unavailable"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:401
+msgctxt "ProfileDetailHeader"
+msgid "Profile name"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:424
+msgctxt "ProfileDetailHeader"
+msgid "Rename profile"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:431
+msgctxt "ProfileDetailHeader"
+msgid "Duplicate"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:438
+msgctxt "ProfileDetailHeader"
+msgid "Delete"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:447
+msgctxt "ProfileDetailHeader"
+msgid "Save rename"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:455
+msgctxt "ProfileDetailHeader"
+msgid "Cancel rename"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:470
+msgctxt "ProfileDetailHeader"
+msgid "Used by"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:579
+msgctxt "ProfileFieldRow"
+msgid "Reset to inherit"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:626
+msgctxt "ProfileDetail"
+msgid "FIELDS"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:647
+msgctxt "ProfileDetail"
+msgid "Reset all"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:669
+msgctxt "ProfileDetailEmpty"
+msgid "Select a profile"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:678
+msgctxt "ProfileDetailEmpty"
+msgid "Pick a profile from the list, or create one with the + button."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:722
 msgctxt "ProfilesPane"
-msgid "System and user profile editing arrives in M4."
+msgid "'default' is reserved."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:824
+msgctxt "ProfilesPane"
+msgid "Delete profile"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:826
+msgctxt "ProfilesPane"
+msgid ""
+"Cannot delete '{}': still used by {}. Remove or reassign these TVs first."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:829
+msgctxt "ProfilesPane"
+msgid "Delete '{}'? This action cannot be undone."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:830
+msgctxt "ProfilesPane"
+msgid "Delete"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:845
+msgctxt "ProfilesPane"
+msgid "New system profile"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:846
+msgctxt "ProfilesPane"
+msgid "New user profile"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:847
+msgctxt "ProfilesPane"
+msgid "Enter a name for the new profile."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:848
+msgctxt "ProfilesPane"
+msgid "guest"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/profiles_pane.slint:849
+msgctxt "ProfilesPane"
+msgid "Create"
 msgstr ""

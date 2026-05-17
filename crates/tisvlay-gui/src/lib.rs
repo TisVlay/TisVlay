@@ -137,6 +137,24 @@ fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: Str
     });
 }
 
+/// Profiles-pane sticky banner — same shape as `push_tvs_error` but
+/// routes into `Errors.profiles`. Used for state-level failures that
+/// the user needs to address until resolved (reload-config). Action
+/// failures (create/delete/rename/field-edit/reset) stay on the
+/// transient toast path since the user can immediately retry.
+fn push_profiles_error(app_weak: &slint::Weak<AppWindow>, title: String, message: String) {
+    on_ui(app_weak, move |app| {
+        let errors = app.global::<Errors>();
+        errors.set_profiles(ErrorState {
+            kind: SharedString::default(),
+            tone: SharedString::from("error"),
+            title: SharedString::from(title),
+            message: SharedString::from(message),
+            action_label: SharedString::default(),
+        });
+    });
+}
+
 /// Per-(tv_id, property) reconciler maps for ramping TV-state values.
 /// User input dispatches through `volume.dispatch` / `backlight.dispatch`
 /// before the daemon write; the refresh path observes every fetched
@@ -826,10 +844,15 @@ fn register_callbacks(
         let s = s.clone();
         let app_weak = app_weak.clone();
         tokio::spawn(async move {
+            // Reload affects both TVs and profiles — dual-route the
+            // banner so the user sees it on whichever pane they're
+            // on. Per-pane dismiss clears each slot independently.
             if let Err(e) = d.reload_config().await {
                 let msg = format!("{e}");
                 warn!(error = %msg, "daemon reload_config failed");
-                push_tvs_error(&app_weak, gettext("Reload config failed"), msg);
+                let title = gettext("Reload config failed");
+                push_tvs_error(&app_weak, title.clone(), msg.clone());
+                push_profiles_error(&app_weak, title, msg);
             }
             let session_ref = s.read().await;
             if let Some(client) = session_ref.as_ref()
@@ -837,7 +860,9 @@ fn register_callbacks(
             {
                 let msg = format!("{e}");
                 warn!(error = %msg, "session reload_config failed");
-                push_tvs_error(&app_weak, gettext("Reload session config failed"), msg);
+                let title = gettext("Reload session config failed");
+                push_tvs_error(&app_weak, title.clone(), msg.clone());
+                push_profiles_error(&app_weak, title, msg);
             }
         });
     });
