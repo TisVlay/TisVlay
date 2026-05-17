@@ -647,6 +647,7 @@ fn register_callbacks(
     // close X is the only dismiss path users see today.
     errors_global.on_tvs_action(|| {});
     errors_global.on_pairing_action(|| {});
+    errors_global.on_profiles_action(|| {});
 
     // Slider drags coalesce per TV via `Coalescer`: each `changed(v)`
     // tick fires into the per-TV worker, which drains-keep-latest
@@ -1310,6 +1311,72 @@ fn register_callbacks(
                 }
                 None => {
                     debug!("Profiles.field-edited: no selection — dropping edit");
+                }
+            }
+        });
+    });
+
+    // Reset all fields on the currently-selected profile to None. One
+    // `Update*Profile(name, &default-empty-body)` round-trip; the
+    // live-refresh path re-pushes the cleared field rows.
+    let d = daemon.clone();
+    let s = session.clone();
+    let es = editor_state.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_reset_all_to_inherited(move || {
+        let d = d.clone();
+        let s = s.clone();
+        let es = es.clone();
+        let app_weak = app_weak.clone();
+        tokio::spawn(async move {
+            let selected = { es.read().await.selected.clone() };
+            let Some(selected) = selected else {
+                return;
+            };
+            match selected {
+                SelectedProfile::System { name, .. } => {
+                    if let Err(e) = d
+                        .update_system_profile(&name, &SystemProfileConfig::default())
+                        .await
+                    {
+                        let msg = format!("{e}");
+                        warn!(name = %name, error = %msg, "Reset-all system update failed");
+                        push_tvs_error(&app_weak, gettext("Couldn't reset profile"), msg);
+                        return;
+                    }
+                    if let Err(e) = refresh_system_editor(&d, &es, Some(&name)).await {
+                        warn!(name = %name, error = %format!("{e}"), "Post-reset system refresh failed");
+                        return;
+                    }
+                    push_field_rows(&es, &app_weak).await;
+                }
+                SelectedProfile::User { name, .. } => {
+                    let session_ref = s.read().await;
+                    let Some(c) = session_ref.as_ref() else {
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Session service unavailable"),
+                            gettext(
+                                "User-profile editing requires the per-user tisvlay-session service.",
+                            ),
+                        );
+                        return;
+                    };
+                    if let Err(e) = c
+                        .update_user_profile(&name, &UserProfileConfig::default())
+                        .await
+                    {
+                        let msg = format!("{e}");
+                        warn!(name = %name, error = %msg, "Reset-all user update failed");
+                        push_tvs_error(&app_weak, gettext("Couldn't reset profile"), msg);
+                        return;
+                    }
+                    if let Err(e) = refresh_user_editor(c, &es, Some(&name)).await {
+                        warn!(name = %name, error = %format!("{e}"), "Post-reset user refresh failed");
+                        return;
+                    }
+                    drop(session_ref);
+                    push_field_rows(&es, &app_weak).await;
                 }
             }
         });

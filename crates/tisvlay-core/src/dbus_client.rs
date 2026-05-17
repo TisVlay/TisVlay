@@ -460,6 +460,14 @@ pub enum TvStateChange {
     PropertiesChanged { tv_id: String },
     /// TV list structure changed (add/remove) -- requires full refresh.
     TvListChanged,
+    /// A system profile was created, updated, or deleted via
+    /// `Manager1.{Create,Update,Delete}SystemProfile`. Fired
+    /// per-profile so cross-client edits propagate without waiting
+    /// for the next `ConfigReloaded`. Consumers refresh both the
+    /// master profile list (the profile may have been added or
+    /// removed) and the currently-selected profile body (its fields
+    /// may have changed).
+    SystemProfileChanged { name: String, kind: String },
     /// Daemon configuration reload completed.
     ///
     /// Fires on both success and failure paths. On `success = true`,
@@ -2255,6 +2263,19 @@ impl StateWatcher {
                             trace!(member = %member, "Manager1 TV list signal");
                             Some(TvStateChange::TvListChanged)
                         }
+                        ("org.tisvlay.Manager1", "SystemProfileChanged") => {
+                            let body: (String, String) =
+                                msg.body().deserialize().unwrap_or_default();
+                            trace!(
+                                name = %body.0,
+                                kind = %body.1,
+                                "Manager1 SystemProfileChanged signal",
+                            );
+                            Some(TvStateChange::SystemProfileChanged {
+                                name: body.0,
+                                kind: body.1,
+                            })
+                        }
                         ("org.tisvlay.Manager1", "ConfigReloaded") => {
                             let body: (bool, String) =
                                 msg.body().deserialize().unwrap_or((true, String::new()));
@@ -2323,13 +2344,22 @@ impl StateWatcher {
                                 let msg = msg_result.ok()?;
                                 let header = msg.header();
                                 let member = header.member()?.to_string();
-                                if member == "UserProfileChanged" {
+                                // `UserProfileChanged` (per-TV reassignment) and
+                                // `UserProfileListChanged` (catalog CRUD) both
+                                // need a GUI refresh — collapse them into a
+                                // single `()` event so the existing
+                                // SessionProfileChanged handler covers both.
+                                if member == "UserProfileChanged"
+                                    || member == "UserProfileListChanged"
+                                {
                                     Some(())
                                 } else {
                                     None
                                 }
                             });
-                            debug!("Subscribed to session UserProfileChanged signals");
+                            debug!(
+                                "Subscribed to session UserProfileChanged + UserProfileListChanged signals"
+                            );
                             Some(Box::pin(filtered))
                         }
                         Err(e) => {

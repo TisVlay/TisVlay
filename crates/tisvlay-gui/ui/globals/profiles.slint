@@ -93,6 +93,11 @@ export global Profiles {
     /// and calls the matching `Create*Profile`. No dialog because
     /// the auto-generated name is deterministic.
     callback duplicate-selected();
+    /// Editor-toolbar "Reset all to inherited". Rust pushes one
+    /// `Update*Profile(name, default-body)` so every field clears
+    /// back to `None` in a single round-trip; the live-refresh path
+    /// re-pushes the cleared field rows.
+    callback reset-all-to-inherited();
     /// "Used by" chip clicked — navigate to the TVs pane and select
     /// the named TV. Rust flips `AppWindow.active-pane` + sets
     /// `selected-tv-index`.
@@ -126,4 +131,10 @@ export global Profiles {
     /// completes. Rust pushes the resolved field list on selection
     /// change + on `*ProfileChanged` / `ConfigReloaded` signals.
     in property <[ProfileField]> current-fields;
+    /// True when at least one field on the selected profile is
+    /// locally set (i.e., the editor body has any `Some(_)` field).
+    /// Drives the Reset-all button's enabled state — Slint can't
+    /// fold over `current-fields` in a `function`, so Rust pushes
+    /// this alongside the rows. False when no profile is selected.
+    in property <bool> has-any-locally-set: false;
 }

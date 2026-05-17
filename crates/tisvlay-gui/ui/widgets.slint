@@ -984,6 +984,10 @@ export component ConfirmDialog inherits Rectangle {
     callback confirmed();
     callback cancelled();
 
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.title;
+    accessible-description: root.message;
+
     visible: open;
     background: Theme.scrim;
     width: 100%;
@@ -1071,6 +1075,10 @@ export component NameInputDialog inherits Rectangle {
     callback name-changed(string);
     callback confirmed();
     callback cancelled();
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.title;
+    accessible-description: root.prompt;
 
     visible: open;
     background: Theme.scrim;

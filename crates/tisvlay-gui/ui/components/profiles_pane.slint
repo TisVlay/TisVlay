@@ -21,7 +21,8 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileField } from "../globals/profiles.slint";
-import { ConfirmDialog, DangerBtn, Chip, Group, IconBtn, NameInputDialog } from "../widgets.slint";
+import { ConfirmDialog, DangerBtn, Chip, Group, IconBtn, InlineError, NameInputDialog } from "../widgets.slint";
+import { Errors } from "../globals/errors.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -31,6 +32,14 @@ component ProfileListRow inherits Rectangle {
     in property <ProfileRow> entry;
     in property <bool> selected;
     callback clicked();
+
+    accessible-role: list-item;
+    accessible-label: root.entry.name;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-action-default => {
+        root.clicked();
+    }
 
     height: 40px;
     background: selected ? Theme.row-selected
@@ -149,6 +158,15 @@ component ProfileSectionHeader inherits Rectangle {
                 ? Theme.text-faint
                 : (add-touch.has-hover ? Theme.accent-pressed : Theme.accent);
             animate background { duration: 150ms; }
+
+            accessible-role: button;
+            accessible-label: @tr("New profile");
+            accessible-enabled: root.add-enabled;
+            accessible-action-default => {
+                if (root.add-enabled) {
+                    root.add-clicked();
+                }
+            }
 
             Text {
                 text: "+";
@@ -495,18 +513,19 @@ component ProfileDetail inherits Rectangle {
                             Profiles.field-edited(name, value);
                         }
                     }
+                }
 
-                    // Empty-state hint — visible only when no fields
-                    // have been pushed yet (initial fetch in flight,
-                    // or selection cleared).
-                    if Profiles.current-fields.length == 0: VerticalLayout {
-                        spacing: Design.gap-stack;
-                        Text {
-                            text: @tr("Field data lands in the next commit. The component, gutter accent, and reset glyph are live and exercised when Rust pushes a non-empty model.");
-                            color: Theme.text-dim;
-                            font-size: Design.font-meta;
-                            wrap: word-wrap;
-                        }
+                // Reset-all toolbar — clears every field on the
+                // editing profile in one `Update*Profile(name, {})`
+                // round-trip. Disabled when nothing is locally set
+                // (Rust pushes `has-any-locally-set` alongside the
+                // field rows).
+                HorizontalLayout {
+                    alignment: end;
+                    Button {
+                        text: @tr("Reset all to inherited");
+                        enabled: Profiles.has-any-locally-set;
+                        clicked => { Profiles.reset-all-to-inherited(); }
                     }
                 }
             }
@@ -607,33 +626,65 @@ export component ProfilesPane {
         root.pending-delete-referenced-summary = "";
     }
 
-    HorizontalLayout {
+    VerticalLayout {
         width: 100%;
         height: 100%;
         spacing: 0;
 
-        ProfileList {
-            request-create(kind) => { root.open-create-dialog(kind); }
+        // Pane-level inline error surface — same Kirigami inline-
+        // message convention the TVs pane uses, just bound to
+        // `Errors.profiles`. Rust pushes `ConfigReloaded(success=
+        // false)` reload failures here so the user sees them
+        // without watching journald; sticky until dismissed.
+        if Errors.profiles.title != "" || Errors.profiles.message != "": Rectangle {
+            background: Theme.surface-alt;
+            HorizontalLayout {
+                width: 100%;
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 12px;
+                padding-bottom: 0;
+                InlineError {
+                    tone: Errors.profiles.tone == "" ? "error" : Errors.profiles.tone;
+                    title: Errors.profiles.title;
+                    message: Errors.profiles.message;
+                    action-label: Errors.profiles.action-label;
+                    action-clicked => { Errors.profiles-action(); }
+                    dismissed => {
+                        Errors.profiles = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                    }
+                }
+            }
         }
 
-        // Detail column — fills remaining width.
-        Rectangle {
-            horizontal-stretch: 1;
-            background: Theme.surface-alt;
+        HorizontalLayout {
+            width: 100%;
+            spacing: 0;
+            vertical-stretch: 1;
 
-            if !root.has-selection: ProfileDetailEmpty {
-                width: 100%;
-                height: 100%;
+            ProfileList {
+                request-create(kind) => { root.open-create-dialog(kind); }
             }
 
-            if root.has-selection: ProfileDetail {
-                width: 100%;
-                height: 100%;
-                name: Profiles.selected-row.name;
-                referenced-by: Profiles.selected-row.referenced-by;
-                can-delete: !Profiles.selected-row.is-default;
-                request-delete => { root.open-delete-dialog(); }
-                request-duplicate => { Profiles.duplicate-selected(); }
+            // Detail column — fills remaining width.
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.surface-alt;
+
+                if !root.has-selection: ProfileDetailEmpty {
+                    width: 100%;
+                    height: 100%;
+                }
+
+                if root.has-selection: ProfileDetail {
+                    width: 100%;
+                    height: 100%;
+                    name: Profiles.selected-row.name;
+                    referenced-by: Profiles.selected-row.referenced-by;
+                    can-delete: !Profiles.selected-row.is-default;
+                    request-delete => { root.open-delete-dialog(); }
+                    request-duplicate => { Profiles.duplicate-selected(); }
+                }
             }
         }
     }

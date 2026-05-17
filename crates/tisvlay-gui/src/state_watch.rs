@@ -208,9 +208,21 @@ async fn watch_state(
                 fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
                 trigger_refresh();
             }
-            StateEvent::DaemonStateChanged(_)
-            | StateEvent::SessionProfileChanged
-            | StateEvent::FallbackPoll => {
+            StateEvent::DaemonStateChanged(ref change) => {
+                // Surface a failed reload as a sticky banner in the
+                // Profiles pane — the user doesn't otherwise see why
+                // their config edits aren't landing. Success path
+                // just refreshes silently like every other signal.
+                if let tisvlay_core::TvStateChange::ConfigReloaded {
+                    success: false,
+                    error_msg,
+                } = change
+                {
+                    push_profiles_reload_error(&app_weak, error_msg.clone());
+                }
+                trigger_refresh();
+            }
+            StateEvent::SessionProfileChanged | StateEvent::FallbackPoll => {
                 trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
@@ -514,7 +526,9 @@ fn empty_profile_row() -> ProfileRow {
 /// editor state out of the lock before calling `on_ui`.
 pub(crate) fn push_field_rows(app: &AppWindow, editor: &ProfilesEditorState) {
     let profiles_global = app.global::<Profiles>();
-    let rows: Vec<ProfileField> = compute_field_rows(editor)
+    let raw_rows = compute_field_rows(editor);
+    let has_any_locally_set = raw_rows.iter().any(|r| !r.current_value.is_empty());
+    let rows: Vec<ProfileField> = raw_rows
         .into_iter()
         .map(|r| ProfileField {
             field_name: r.field_name,
@@ -525,6 +539,34 @@ pub(crate) fn push_field_rows(app: &AppWindow, editor: &ProfilesEditorState) {
         .collect();
     sync_vec_model(&profiles_global.get_current_fields(), rows, |m| {
         profiles_global.set_current_fields(m)
+    });
+    // Drives the Reset-all button's enabled state. Slint can't fold
+    // over `current-fields` in a `function`, so Rust computes this
+    // here and pushes it alongside the rows.
+    profiles_global.set_has_any_locally_set(has_any_locally_set);
+}
+
+/// Push a sticky `Errors.profiles` banner naming a daemon-side
+/// reload failure. Surfaced via `Manager1.ConfigReloaded(success=
+/// false, error_msg)`. Sticky until the user dismisses; an empty
+/// `error_msg` falls back to a generic phrasing.
+fn push_profiles_reload_error(app_weak: &slint::Weak<AppWindow>, error_msg: String) {
+    on_ui(app_weak, move |app| {
+        let errors = app.global::<crate::Errors>();
+        let message = if error_msg.is_empty() {
+            String::from(
+                "The daemon failed to reload its config. Check the daemon log for details.",
+            )
+        } else {
+            error_msg
+        };
+        errors.set_profiles(crate::ErrorState {
+            kind: SharedString::default(),
+            tone: SharedString::from("error"),
+            title: SharedString::from("Daemon config reload failed"),
+            message: SharedString::from(message),
+            action_label: SharedString::default(),
+        });
     });
 }
 
