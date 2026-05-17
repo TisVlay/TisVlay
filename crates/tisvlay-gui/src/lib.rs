@@ -21,6 +21,7 @@ mod edit_pane;
 mod file_manager;
 mod icon_theme;
 mod power_cycle;
+mod profiles_state;
 mod schema_form;
 mod state;
 mod state_watch;
@@ -47,6 +48,7 @@ use edit_pane::{
 };
 use icon_theme::load_themed_icon;
 use power_cycle::run_power_on_with_progress;
+use profiles_state::{SharedEditorState, apply_system_field_edit, refresh_system_editor};
 use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
@@ -121,6 +123,17 @@ pub(crate) fn vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> Sha
 /// convention. Background failures (state-watcher reconnects, etc.)
 /// are *not* routed here — they live in journald instead, since
 /// surfacing every transient flap would drown the user.
+/// Async wrapper around the sync `state_watch::push_system_field_rows`.
+/// Snapshots the editor state out of its `RwLock` (so we don't try to
+/// take a tokio mutex from inside the Slint event loop) and queues the
+/// model sync on the UI thread.
+async fn push_system_field_rows(state: &SharedEditorState, app_weak: &slint::Weak<AppWindow>) {
+    let editor = state.read().await.clone();
+    on_ui(app_weak, move |app| {
+        crate::state_watch::push_system_field_rows(&app, &editor);
+    });
+}
+
 fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: String) {
     on_ui(app_weak, move |app| {
         let errors = app.global::<Errors>();
@@ -500,6 +513,16 @@ pub fn run() -> Result<()> {
     // wizard. See `wizard::WizardGen`.
     let wizard_gen: WizardGen = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
+    // Profiles-pane editor cache. Holds the baseline + "default"
+    // body + selected profile body so every `(inherit: <X>)`
+    // placeholder rebuild reads from one source of truth — shared
+    // between the `Profiles.select` / `field-edited` handlers and
+    // the `state_watch` push that re-renders the field rows on
+    // every `ConfigReloaded`.
+    let editor_state: SharedEditorState = Arc::new(tokio::sync::RwLock::new(
+        profiles_state::ProfilesEditorState::default(),
+    ));
+
     // Wire callbacks before the event loop starts so they're ready when
     // the user interacts with controls.
     register_callbacks(
@@ -509,6 +532,7 @@ pub fn run() -> Result<()> {
         reconcilers.clone(),
         wizard_entries.clone(),
         wizard_gen.clone(),
+        editor_state.clone(),
     );
 
     // Background watcher: refresh on every signal-driven state change.
@@ -518,6 +542,7 @@ pub fn run() -> Result<()> {
         session,
         tray,
         reconcilers,
+        editor_state,
         app_weak,
         supported_vendors_cache.clone(),
     ));
@@ -544,6 +569,7 @@ fn register_callbacks(
     reconcilers: Reconcilers,
     wizard_entries: WizardEntries,
     wizard_gen: WizardGen,
+    editor_state: SharedEditorState,
 ) {
     // Slint global handles. Bound once for the registration phase;
     // closures captured by `move` re-acquire from the upgraded
@@ -840,30 +866,40 @@ fn register_callbacks(
 
     let d = daemon.clone();
     let s = session.clone();
+    let es = editor_state.clone();
     let app_weak = app.as_weak();
     profiles_global.on_select(move |kind, name| {
         let d = d.clone();
         let s = s.clone();
+        let es = es.clone();
         let app_weak = app_weak.clone();
         let name = name.to_string();
         tokio::spawn(async move {
-            let result = match kind {
-                ProfileKind::System => d.get_system_profile(&name).await.map(|_| ()),
+            match kind {
+                ProfileKind::System => {
+                    if let Err(e) = refresh_system_editor(&d, &es, Some(&name)).await {
+                        warn!(name = %name, error = %format!("{e}"), "Profile select fetch failed");
+                        push_tvs_error(&app_weak, gettext("Couldn't load profile"), format!("{e}"));
+                        return;
+                    }
+                    push_system_field_rows(&es, &app_weak).await;
+                }
                 ProfileKind::User => {
+                    // User-profile editor wires up in the next commit;
+                    // until then, just touch the daemon so an invalid
+                    // name surfaces in the log.
                     let session_ref = s.read().await;
-                    match session_ref.as_ref() {
-                        Some(c) => c.get_user_profile(&name).await.map(|_| ()),
-                        None => {
-                            warn!(name = %name, "Cannot get user profile: session unavailable");
-                            return;
-                        }
+                    if let Some(c) = session_ref.as_ref()
+                        && let Err(e) = c.get_user_profile(&name).await
+                    {
+                        warn!(
+                            name = %name,
+                            error = %format!("{e}"),
+                            "User profile select fetch failed",
+                        );
                     }
                 }
-                ProfileKind::None => return,
-            };
-            if let Err(e) = result {
-                warn!(name = %name, error = %format!("{e}"), "Profile select fetch failed");
-                push_tvs_error(&app_weak, gettext("Couldn't load profile"), format!("{e}"));
+                ProfileKind::None => {}
             }
         });
     });
@@ -906,17 +942,66 @@ fn register_callbacks(
         );
     });
 
+    let d = daemon.clone();
+    let es = editor_state.clone();
+    let app_weak = app.as_weak();
     profiles_global.on_field_edited(move |field, value| {
-        // Real handler (route to `Manager1.UpdateSystemProfile` /
-        // `Session1.UpdateUserProfile` with the patched JSON) lands
-        // in the next commit. Logging the wire shape here makes the
-        // component's emit semantics auditable on the way in.
-        debug!(
-            field = %field.as_str(),
-            value = %value.as_str(),
-            mode = if value.is_empty() { "inherit" } else { "set" },
-            "Profiles.field-edited",
-        );
+        let d = d.clone();
+        let es = es.clone();
+        let app_weak = app_weak.clone();
+        let field = field.to_string();
+        let value = value.to_string();
+        tokio::spawn(async move {
+            // Snapshot the current selection + body under the lock,
+            // patch a clone, push the patch over D-Bus, then refresh
+            // the cache + push field rows. The cache itself is only
+            // updated after a successful daemon write so a failed
+            // patch doesn't leave the editor showing a value the
+            // daemon never accepted.
+            let (name, mut body) = {
+                let s = es.read().await;
+                match s.system_selected.as_ref() {
+                    Some((n, b)) => (n.clone(), b.clone()),
+                    None => {
+                        debug!("Profiles.field-edited: no selection — dropping edit");
+                        return;
+                    }
+                }
+            };
+            if let Err(e) = apply_system_field_edit(&mut body, &field, &value) {
+                warn!(
+                    field = %field,
+                    value = %value,
+                    error = %format!("{e}"),
+                    "Profiles.field-edited: invalid edit",
+                );
+                push_tvs_error(&app_weak, gettext("Couldn't change field"), format!("{e}"));
+                return;
+            }
+            if let Err(e) = d.update_system_profile(&name, &body).await {
+                warn!(
+                    name = %name,
+                    field = %field,
+                    error = %format!("{e}"),
+                    "UpdateSystemProfile failed",
+                );
+                push_tvs_error(&app_weak, gettext("Couldn't save profile"), format!("{e}"));
+                return;
+            }
+            // Refetch via the same helper that drives `on_select` so
+            // the editor reflects whatever the daemon actually wrote
+            // (covers any server-side normalization). Single-flight
+            // is fine — the cache write is atomic.
+            if let Err(e) = refresh_system_editor(&d, &es, Some(&name)).await {
+                warn!(
+                    name = %name,
+                    error = %format!("{e}"),
+                    "Post-edit editor refresh failed",
+                );
+                return;
+            }
+            push_system_field_rows(&es, &app_weak).await;
+        });
     });
 
     let app_weak = app.as_weak();

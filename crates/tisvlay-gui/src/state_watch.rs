@@ -12,10 +12,13 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
+use crate::profiles_state::{
+    ProfilesEditorState, SharedEditorState, compute_system_field_rows, refresh_system_editor,
+};
 use crate::state::{StateSnapshot, fetch_state};
 use crate::{
-    AppWindow, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles, Reconcilers,
-    TvViewModel, VendorInfoRow, VendorOption, on_ui,
+    AppWindow, PairingWizard, ProfileField, ProfileKind, ProfileRow, ProfileTvRef, Profiles,
+    Reconcilers, TvViewModel, VendorInfoRow, VendorOption, on_ui,
 };
 
 /// Boot the state-watch loop. One-shot startup: do the initial state
@@ -27,6 +30,7 @@ pub(crate) async fn initial_fetch_and_watch(
     session: Arc<RwLock<Option<SessionClient>>>,
     tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
+    editor_state: SharedEditorState,
     app_weak: slint::Weak<AppWindow>,
     supported_vendors_cache: SupportedVendorsCache,
 ) {
@@ -66,6 +70,7 @@ pub(crate) async fn initial_fetch_and_watch(
         session,
         tray,
         reconcilers,
+        editor_state,
         app_weak,
         supported_vendors_cache,
     )
@@ -121,6 +126,7 @@ async fn watch_state(
     session: Arc<RwLock<Option<SessionClient>>>,
     tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
+    editor_state: SharedEditorState,
     app_weak: slint::Weak<AppWindow>,
     supported_vendors_cache: SupportedVendorsCache,
 ) {
@@ -163,14 +169,26 @@ async fn watch_state(
         let session = session.clone();
         let tray = tray.clone();
         let reconcilers = reconcilers.clone();
+        let editor_state = editor_state.clone();
         let app_weak = app_weak.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
             let tray = tray.clone();
             let reconcilers = reconcilers.clone();
+            let editor_state = editor_state.clone();
             let app_weak = app_weak.clone();
-            async move { refresh(&daemon, &session, &tray, &reconcilers, &app_weak).await }
+            async move {
+                refresh(
+                    &daemon,
+                    &session,
+                    &tray,
+                    &reconcilers,
+                    &editor_state,
+                    &app_weak,
+                )
+                .await
+            }
         });
     };
 
@@ -247,14 +265,33 @@ async fn refresh(
     session: &RwLock<Option<SessionClient>>,
     tray: &RwLock<Option<TrayClient>>,
     reconcilers: &Reconcilers,
+    editor_state: &SharedEditorState,
     app_weak: &slint::Weak<AppWindow>,
 ) {
     let session_ref = session.read().await;
     match fetch_state(daemon, session_ref.as_ref()).await {
         Ok(mut snapshot) => {
             reconcilers.reconcile(&mut snapshot);
+            // If the Profiles pane has a selection, refetch the
+            // editor's three layers so the `(inherit: X)` placeholder
+            // and current-value stay in sync with whatever just
+            // landed on disk (covers external config edits, daemon
+            // reload, our own UpdateSystemProfile). Empty selection
+            // skips the round-trip.
+            let selected_name = {
+                let s = editor_state.read().await;
+                s.system_selected.as_ref().map(|(n, _)| n.clone())
+            };
+            if selected_name.is_some()
+                && let Err(e) =
+                    refresh_system_editor(daemon, editor_state, selected_name.as_deref()).await
+            {
+                warn!(error = %format!("{e}"), "Profiles editor refresh failed on signal");
+            }
+            let editor_snapshot = editor_state.read().await.clone();
             on_ui(app_weak, move |app| {
                 push_snapshot(&app, snapshot);
+                push_system_field_rows(&app, &editor_snapshot);
                 app.set_daemon_available(true);
             });
         }
@@ -452,6 +489,27 @@ fn empty_profile_row() -> ProfileRow {
         is_default: false,
         referenced_by: ModelRc::new(VecModel::from(Vec::<ProfileTvRef>::new())),
     }
+}
+
+/// Build the Slint `ProfileField` model for the currently-selected
+/// system profile from a pre-cloned `ProfilesEditorState` and push it
+/// to `Profiles.current-fields`. Sync helper — caller is responsible
+/// for taking a clone of the editor state out of the lock before
+/// calling `on_ui`.
+pub(crate) fn push_system_field_rows(app: &AppWindow, editor: &ProfilesEditorState) {
+    let profiles_global = app.global::<Profiles>();
+    let rows: Vec<ProfileField> = compute_system_field_rows(editor)
+        .into_iter()
+        .map(|r| ProfileField {
+            field_name: r.field_name,
+            label: r.label,
+            options: ModelRc::new(VecModel::from(r.options)),
+            current_value: r.current_value,
+        })
+        .collect();
+    sync_vec_model(&profiles_global.get_current_fields(), rows, |m| {
+        profiles_global.set_current_fields(m)
+    });
 }
 
 /// Replace a `ModelRc` content **in place** when it's backed by a
