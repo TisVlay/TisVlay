@@ -15,6 +15,7 @@ import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
+import { Profiles, ProfileKind } from "../globals/profiles.slint";
 import { ConfirmDialog, DangerBtn, Chip, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
@@ -50,8 +51,18 @@ export struct TvViewModel {
     backlight: int,
     current-input: string,
     available-input-ids: [string],
+    /// Friendly name resolved Rust-side from
+    /// `system-profile-uuid` for the ComboBox `current-value`.
+    /// Empty when no assignment exists (Slint binding falls back
+    /// to "default" in that case).
     system-profile: string,
+    /// Immutable UUID for the navigation pencil. Pre-resolved
+    /// Rust-side so an empty assignment surfaces as the
+    /// `DEFAULT_SYSTEM_PROFILE_UUID` sentinel rather than `""`,
+    /// keeping the Slint click handler free of fallback logic.
+    system-profile-uuid: string,
     user-profile: string,
+    user-profile-uuid: string,
     primary-input: string,
     managed: bool,
     automated: bool,
@@ -638,25 +649,71 @@ component TvDetail inherits Rectangle {
                 Group {
                     title: @tr("PROFILES");
 
+                    // Each row pairs the profile picker with a trailing
+                    // pencil shortcut that hands off to the Profiles
+                    // pane with the assigned profile pre-selected —
+                    // symmetric with the Profiles pane's "Used by"
+                    // chips that route the other way. Trailing-icon
+                    // placement matches the INFO group's CopyBtn and
+                    // the Profiles-pane field-row reset glyph. We
+                    // nest a HorizontalLayout inside the FormRow body
+                    // so the picker + pencil get the per-row spacing
+                    // FormRow's bare `@children` slot otherwise omits.
                     FormRow {
                         label: @tr("System");
                         // helper: "Drives daemon lifecycle (boot/shutdown/sleep).";
-                        ComboBox {
-                            model: root.system-profiles;
-                            current-value: root.tv.system-profile == "" ? "default" : root.tv.system-profile;
-                            enabled: root.system-profiles.length > 0;
-                            selected(v) => { Daemon.set-system-profile(root.tv.uuid, v); }
+                        HorizontalLayout {
+                            spacing: Design.gap-form;
+                            ComboBox {
+                                model: root.system-profiles;
+                                current-value: root.tv.system-profile == "" ? "default" : root.tv.system-profile;
+                                enabled: root.system-profiles.length > 0;
+                                selected(v) => { Daemon.set-system-profile(root.tv.uuid, v); }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                width: 24px;
+                                IconBtn {
+                                    source: Icons.edit;
+                                    accessible-label: @tr("Edit system profile");
+                                    enabled: root.system-profiles.length > 0;
+                                    clicked => {
+                                        Profiles.open-profile-by-uuid(
+                                            ProfileKind.system,
+                                            root.tv.system-profile-uuid,
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
 
                     FormRow {
                         label: @tr("User");
                         // helper: "Drives session events (lock/unlock/idle).";
-                        ComboBox {
-                            model: root.user-profiles;
-                            current-value: root.tv.user-profile == "" ? "default" : root.tv.user-profile;
-                            enabled: root.user-profiles.length > 0;
-                            selected(v) => { Daemon.set-user-profile(root.tv.uuid, v); }
+                        HorizontalLayout {
+                            spacing: Design.gap-form;
+                            ComboBox {
+                                model: root.user-profiles;
+                                current-value: root.tv.user-profile == "" ? "default" : root.tv.user-profile;
+                                enabled: root.user-profiles.length > 0;
+                                selected(v) => { Daemon.set-user-profile(root.tv.uuid, v); }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                width: 24px;
+                                IconBtn {
+                                    source: Icons.edit;
+                                    accessible-label: @tr("Edit user profile");
+                                    enabled: root.user-profiles.length > 0;
+                                    clicked => {
+                                        Profiles.open-profile-by-uuid(
+                                            ProfileKind.user,
+                                            root.tv.user-profile-uuid,
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                 }

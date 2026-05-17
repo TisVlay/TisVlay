@@ -114,6 +114,18 @@ export global Profiles {
     /// select the named TV. Rust flips `AppWindow.active-pane` +
     /// sets `selected-tv-index`.
     callback open-tv(string);
+    /// TVs pane PROFILES-row pencil clicked — navigate to the
+    /// Profiles pane and open the profile by UUID (the reverse of
+    /// `open-tv`: TVs → Profiles instead of Profiles → TVs). Routed
+    /// by UUID rather than friendly name so a rename race or
+    /// transient duplicate name can't misroute the navigation —
+    /// UUIDs are immutable. Rust looks up the matching `ProfileRow`
+    /// in this global's `system` / `user` model, populates the
+    /// selection triple (`selected-kind` / `selected-uuid` /
+    /// `selected-row`), flips `AppWindow.active-pane` to the
+    /// Profiles pane, then spawns the same editor-priming task the
+    /// master-list `select` callback runs.
+    callback open-profile-by-uuid(ProfileKind, string);
     /// A ComboBox selection committed in a `ProfileFieldRow`. Args
     /// are `(field_name, value)` — the wire-id of the field plus
     /// the raw enum value, or `""` when the user selected the

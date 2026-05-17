@@ -1840,4 +1840,80 @@ fn register_callbacks(
             warn!(tv_uuid = %tv_uuid, "open_tv: TV not in current list");
         }
     });
+
+    // TVs-pane PROFILES-row pencil → Profiles pane navigation. The
+    // reverse of `open_tv` above. Routed by UUID rather than friendly
+    // name so a rename race or a transient duplicate name can't
+    // misroute the navigation — UUIDs are immutable. Walks the
+    // Profiles global's `system` / `user` model for the matching row
+    // (UUID + referenced-by + …), populates the selection triple so
+    // the detail header materializes on the same frame as the pane
+    // switch, then spawns the same editor-priming task the master-
+    // list `select` callback runs.
+    let d_conn = daemon.connection().clone();
+    let s = session.clone();
+    let editor = editor_handle.clone();
+    let editor_g = editor_gen.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_open_profile_by_uuid(move |kind, profile_uuid| {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let Ok(uuid) = uuid::Uuid::parse_str(profile_uuid.as_str()) else {
+            warn!(
+                uuid = %profile_uuid,
+                "open_profile_by_uuid: caller passed an invalid UUID"
+            );
+            return;
+        };
+        let profiles = app.global::<Profiles>();
+        let model = match kind {
+            ProfileKind::System => profiles.get_system(),
+            ProfileKind::User => profiles.get_user(),
+            ProfileKind::None => return,
+        };
+        let mut matched: Option<ProfileRow> = None;
+        for i in 0..model.row_count() {
+            if let Some(row) = model.row_data(i)
+                && row.uuid.as_str() == profile_uuid.as_str()
+            {
+                matched = Some(row);
+                break;
+            }
+        }
+        let Some(row) = matched else {
+            // Stale-state race (the catalog was just edited by
+            // another client). The user is dropped back on the TVs
+            // pane with the in-place toast surface still active.
+            warn!(
+                kind = ?kind,
+                uuid = %profile_uuid,
+                "open_profile_by_uuid: no matching profile in master list"
+            );
+            return;
+        };
+        profiles.set_selected_kind(kind);
+        profiles.set_selected_uuid(row.uuid.clone());
+        profiles.set_selected_row(row);
+        app.set_active_pane(Pane::Profiles);
+
+        // Editor priming runs off the UI thread — mirrors `on_select`.
+        let d_conn = d_conn.clone();
+        let s = s.clone();
+        let editor = editor.clone();
+        let editor_g = editor_g.clone();
+        let app_weak = app_weak.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                profiles::select(&editor, &editor_g, kind, uuid, &d_conn, &s, &app_weak).await
+            {
+                warn!(%uuid, error = %e, "open_profile_by_uuid: editor prime failed");
+                show_toast(
+                    app_weak.clone(),
+                    &gettext("Couldn't open profile: {0}").replace("{0}", &format!("{e:#}")),
+                );
+                profiles::clear(&editor, &editor_g, &app_weak).await;
+            }
+        });
+    });
 }

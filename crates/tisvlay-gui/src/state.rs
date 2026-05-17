@@ -39,8 +39,15 @@ pub struct TvViewRaw {
     pub backlight: i32,
     pub current_input: SharedString,
     pub available_input_ids: Vec<SharedString>,
+    /// Friendly name resolved from `system_profile_uuid` (ComboBox
+    /// display).
     pub system_profile: SharedString,
+    /// Immutable UUID for navigation; pre-resolved Rust-side to the
+    /// system-default UUID when no assignment exists, so the Slint
+    /// side never has to fall back from `""` for the pencil click.
+    pub system_profile_uuid: SharedString,
     pub user_profile: SharedString,
+    pub user_profile_uuid: SharedString,
     pub primary_input: SharedString,
     pub managed: bool,
     pub automated: bool,
@@ -222,6 +229,29 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             .map(SharedString::from)
             .unwrap_or_else(|| SharedString::from(user_profile_uuid.as_str()));
 
+        // Pre-resolved UUIDs for the navigation pencil. Empty source
+        // (no assignment) collapses to the reserved-default UUID so
+        // the Slint click handler can route unconditionally without a
+        // `== "" ? default` fallback.
+        let system_profile_uuid_str: SharedString = if tv.system_profile.is_empty() {
+            SharedString::from(
+                tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
+                    .hyphenated()
+                    .to_string(),
+            )
+        } else {
+            SharedString::from(tv.system_profile.as_str())
+        };
+        let user_profile_uuid_str: SharedString = if user_profile_uuid.is_empty() {
+            SharedString::from(
+                tisvlay_core::DEFAULT_USER_PROFILE_UUID
+                    .hyphenated()
+                    .to_string(),
+            )
+        } else {
+            SharedString::from(user_profile_uuid.as_str())
+        };
+
         let available_input_ids: Vec<SharedString> = tv
             .inputs
             .iter()
@@ -256,7 +286,9 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             current_input: SharedString::from(tv.current_input),
             available_input_ids,
             system_profile: system_profile_name,
+            system_profile_uuid: system_profile_uuid_str,
             user_profile: user_profile_name,
+            user_profile_uuid: user_profile_uuid_str,
             primary_input: SharedString::from(tv.primary_input),
             managed: tv.managed,
             automated: tv.automated,
@@ -597,17 +629,35 @@ mod tests {
             .map(|t| {
                 (
                     t.uuid.to_string(),
-                    (t.system_profile.to_string(), t.user_profile.to_string()),
+                    (
+                        t.system_profile.to_string(),
+                        t.system_profile_uuid.to_string(),
+                        t.user_profile.to_string(),
+                        t.user_profile_uuid.to_string(),
+                    ),
                 )
             })
             .collect();
         assert_eq!(
             by_uuid["uuid-a"],
-            ("evening".to_string(), "movies".to_string())
+            (
+                "evening".to_string(),
+                "a1b2c3d4-0000-0000-0000-000000000001".to_string(),
+                "movies".to_string(),
+                "a1b2c3d4-0000-0000-0000-00000000f000".to_string(),
+            )
         );
+        // No user-profile assignment → display falls back to "" but
+        // `user_profile_uuid` collapses to the user-default UUID so
+        // the pencil routes somewhere meaningful.
         assert_eq!(
             by_uuid["uuid-b"],
-            ("default".to_string(), String::new()) // No user-profile assignment.
+            (
+                "default".to_string(),
+                "00000000-0000-0000-0000-000000000001".to_string(),
+                String::new(),
+                "00000000-0000-0000-0000-000000000002".to_string(),
+            )
         );
     }
 
