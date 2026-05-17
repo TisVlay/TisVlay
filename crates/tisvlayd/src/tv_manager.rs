@@ -96,6 +96,38 @@ pub enum TvManagerError {
     /// Configuration I/O error (load/save).
     #[error("Config error: {0}")]
     ConfigError(String),
+
+    /// A named profile lookup failed.
+    ///
+    /// Returned by `get_system_profile`, `update_system_profile`,
+    /// and `delete_system_profile` when the named profile isn't
+    /// in the system config.
+    #[error("System profile not found: {0}")]
+    ProfileNotFound(String),
+
+    /// `create_system_profile` called with a name that already exists.
+    #[error("System profile already exists: {0}")]
+    ProfileExists(String),
+
+    /// A profile name is reserved for daemon-owned semantics
+    /// (currently just `"default"`).
+    ///
+    /// Returned by `create_system_profile` if the user tries to
+    /// create a profile literally named `"default"` (the daemon
+    /// owns its lifecycle), or by `delete_system_profile` for the
+    /// same reason. `"default"` can still be edited via
+    /// `update_system_profile`.
+    #[error("Profile name '{0}' is reserved")]
+    ProfileReserved(String),
+
+    /// `delete_system_profile` called against a profile that one
+    /// or more TVs reference via their `profile.system` field.
+    ///
+    /// Carries the referencing TV identifiers so the GUI's delete-
+    /// confirm dialog can surface them to the user before they
+    /// reassign and retry.
+    #[error("System profile '{name}' is in use by TVs: {tvs:?}")]
+    ProfileInUse { name: String, tvs: Vec<String> },
 }
 
 /// Event emitted when TV state changes or daemon-wide events occur.
@@ -1006,6 +1038,169 @@ impl TvManager {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+
+    /// Get a single system profile by name (unresolved — `Option<T>`
+    /// fields preserved).
+    ///
+    /// Used by the GUI's Profiles pane editor, which needs to
+    /// distinguish "this profile explicitly set this field" (Some)
+    /// from "this field inherits from the chain" (None). Resolved
+    /// values are not what the editor wants — see
+    /// [`ResolvedSystemProfile`](tisvlay_core::ResolvedSystemProfile)
+    /// for that.
+    pub async fn get_system_profile(
+        &self,
+        name: &str,
+    ) -> Result<tisvlay_core::SystemProfileConfig, TvManagerError> {
+        let system = self.system_section.read().await;
+        system
+            .profiles
+            .get(name)
+            .cloned()
+            .ok_or_else(|| TvManagerError::ProfileNotFound(name.to_string()))
+    }
+
+    /// Create a new system profile under the given name.
+    ///
+    /// Fails if `name == "default"` (the daemon owns that name's
+    /// lifecycle — edit via [`update_system_profile`](Self::update_system_profile)
+    /// instead) or if a profile with the same name already exists.
+    /// On success, writes the updated config to disk via the
+    /// `disk_write_lock` and returns; the caller is responsible
+    /// for emitting any D-Bus `SystemProfileChanged` signal.
+    pub async fn create_system_profile(
+        &self,
+        name: String,
+        profile: tisvlay_core::SystemProfileConfig,
+    ) -> Result<(), TvManagerError> {
+        if name == "default" {
+            return Err(TvManagerError::ProfileReserved(name));
+        }
+        {
+            let mut system = self.system_section.write().await;
+            if system.profiles.contains_key(&name) {
+                return Err(TvManagerError::ProfileExists(name));
+            }
+            system.profiles.insert(name.clone(), profile.clone());
+        }
+        self.save_system_section(name, Some(profile)).await
+    }
+
+    /// Replace the body of an existing system profile.
+    ///
+    /// Fails if no profile with that name exists. After persisting
+    /// to disk, walks every managed TV that references the profile
+    /// via its `profile.system` field and re-resolves the cached
+    /// `system_profile` on each so dispatch logic immediately
+    /// reflects the new body — the same coherency step that
+    /// `reload_config`'s diff path applies.
+    pub async fn update_system_profile(
+        &self,
+        name: String,
+        profile: tisvlay_core::SystemProfileConfig,
+    ) -> Result<(), TvManagerError> {
+        {
+            let mut system = self.system_section.write().await;
+            if !system.profiles.contains_key(&name) {
+                return Err(TvManagerError::ProfileNotFound(name));
+            }
+            system.profiles.insert(name.clone(), profile.clone());
+        }
+        self.save_system_section(name.clone(), Some(profile))
+            .await?;
+        self.refresh_tvs_using_profile(&name).await;
+        Ok(())
+    }
+
+    /// Delete a system profile.
+    ///
+    /// Fails if `name == "default"` (the daemon-owned baseline) or
+    /// if any `[[tv]]` config entry references the profile via
+    /// `profile.system`. The error carries the referencing TV IDs
+    /// so the GUI's delete-confirm dialog can name them.
+    pub async fn delete_system_profile(&self, name: String) -> Result<(), TvManagerError> {
+        if name == "default" {
+            return Err(TvManagerError::ProfileReserved(name));
+        }
+        // Check for references under the TVs read lock before
+        // touching the system section, so a TV-add racing with
+        // this can't slip an unchecked reference in.
+        let referencing_tvs: Vec<String> = {
+            let tvs = self.tvs.read().await;
+            let mut hits = Vec::new();
+            for (id, (_, tv_arc)) in tvs.iter() {
+                let tv = tv_arc.lock().await;
+                if tv.config.profile.system == name {
+                    hits.push(id.clone());
+                }
+            }
+            hits
+        };
+        if !referencing_tvs.is_empty() {
+            return Err(TvManagerError::ProfileInUse {
+                name,
+                tvs: referencing_tvs,
+            });
+        }
+        {
+            let mut system = self.system_section.write().await;
+            if system.profiles.remove(&name).is_none() {
+                return Err(TvManagerError::ProfileNotFound(name));
+            }
+        }
+        self.save_system_section(name, None).await
+    }
+
+    /// Persist the current `system_section.profiles` map to disk
+    /// under the `disk_write_lock`.
+    ///
+    /// Takes the changed profile name + body (or `None` to mean
+    /// "this profile was deleted") so the on-disk merge knows
+    /// what to insert or remove. Crate-internal helper for the
+    /// three CRUD methods above.
+    async fn save_system_section(
+        &self,
+        name: String,
+        profile: Option<tisvlay_core::SystemProfileConfig>,
+    ) -> Result<(), TvManagerError> {
+        let config_path = self.config_path.clone();
+        let _disk_lock = self.disk_write_lock.lock().await;
+        tokio::task::spawn_blocking(move || {
+            let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
+                TvManagerError::ConfigError(format!("Failed to load config: {}", e))
+            })?;
+            match profile {
+                Some(p) => {
+                    config.system.profiles.insert(name, p);
+                }
+                None => {
+                    config.system.profiles.remove(&name);
+                }
+            }
+            config
+                .save_to(&config_path)
+                .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
+        })
+        .await
+        .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))?
+    }
+
+    /// Re-resolve the cached `system_profile` on every managed TV
+    /// that references `profile_name` via `config.profile.system`.
+    ///
+    /// Called after `update_system_profile` so dispatch logic sees
+    /// the new body immediately; the same fan-out that
+    /// `reload_config`'s diff path does on profile changes.
+    async fn refresh_tvs_using_profile(&self, profile_name: &str) {
+        let system = self.system_section.read().await;
+        let tvs = self.tvs.read().await;
+        for (_, (_, tv_arc)) in tvs.iter() {
+            let mut tv = tv_arc.lock().await;
+            if tv.config.profile.system == profile_name {
+                tv.system_profile = system.resolve_profile(profile_name);
+            }
+        }
     }
 
     /// Get the system profile name assigned to a TV.

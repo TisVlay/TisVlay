@@ -378,6 +378,89 @@ impl ManagerService {
             .collect()
     }
 
+    /// Get a single system profile body as JSON.
+    ///
+    /// Returns the raw unmerged `SystemProfileConfig` — fields the
+    /// profile didn't explicitly set show as JSON `null` so the
+    /// GUI's Profiles pane editor can distinguish "this profile
+    /// set this field" from "this field inherits."
+    async fn get_system_profile(&self, name: &str) -> Result<String, DaemonError> {
+        debug!(name, "D-Bus: GetSystemProfile");
+        let profile = self.manager.get_system_profile(name).await?;
+        serde_json::to_string(&profile).map_err(|e| {
+            DaemonError::OperationFailed(format!("Failed to serialize profile: {}", e))
+        })
+    }
+
+    /// Create a new system profile under `name`.
+    ///
+    /// `json` is a `SystemProfileConfig` with optional `null` fields;
+    /// fields that JSON doesn't carry are treated as unset (inherits).
+    /// Fails with `ProfileReserved` if `name == "default"` (edit via
+    /// `UpdateSystemProfile` instead) or `ProfileExists` if a profile
+    /// with that name already exists.
+    async fn create_system_profile(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        name: &str,
+        json: &str,
+    ) -> Result<(), DaemonError> {
+        debug!(name, "D-Bus: CreateSystemProfile");
+        let profile: tisvlay_core::SystemProfileConfig = serde_json::from_str(json)
+            .map_err(|e| DaemonError::OperationFailed(format!("Invalid profile JSON: {}", e)))?;
+        self.manager
+            .create_system_profile(name.to_string(), profile)
+            .await?;
+        ManagerService::system_profile_changed(&emitter, name, "created")
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Replace the body of an existing system profile.
+    ///
+    /// Fails with `ProfileNotFound` if no profile with `name` exists.
+    /// After persisting, the daemon re-resolves the cached
+    /// `system_profile` on every TV that references this profile so
+    /// dispatch logic sees the new body immediately.
+    async fn update_system_profile(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        name: &str,
+        json: &str,
+    ) -> Result<(), DaemonError> {
+        debug!(name, "D-Bus: UpdateSystemProfile");
+        let profile: tisvlay_core::SystemProfileConfig = serde_json::from_str(json)
+            .map_err(|e| DaemonError::OperationFailed(format!("Invalid profile JSON: {}", e)))?;
+        self.manager
+            .update_system_profile(name.to_string(), profile)
+            .await?;
+        ManagerService::system_profile_changed(&emitter, name, "updated")
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Delete a system profile.
+    ///
+    /// Fails with `ProfileReserved` if `name == "default"` or
+    /// `ProfileInUse` if any TV references the profile via its
+    /// `profile.system` field. The `ProfileInUse` message carries
+    /// the referencing TV IDs (`<name>: <tv_id>, <tv_id>`) so the
+    /// GUI's delete-confirm dialog can name them.
+    async fn delete_system_profile(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        name: &str,
+    ) -> Result<(), DaemonError> {
+        debug!(name, "D-Bus: DeleteSystemProfile");
+        self.manager.delete_system_profile(name.to_string()).await?;
+        ManagerService::system_profile_changed(&emitter, name, "deleted")
+            .await
+            .ok();
+        Ok(())
+    }
+
     /// Get all user profiles as (name, json) pairs.
     ///
     /// Returns all profiles defined in the system config.
@@ -417,6 +500,23 @@ impl ManagerService {
     /// Subscribers should refresh profile lists and TV properties.
     #[zbus(signal)]
     pub async fn config_reloaded(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    /// Signal emitted after a system profile is created, updated,
+    /// or deleted via `CreateSystemProfile` / `UpdateSystemProfile`
+    /// / `DeleteSystemProfile`.
+    ///
+    /// `kind` is the lowercase verb (`"created"` / `"updated"` /
+    /// `"deleted"`); subscribers (GUI Profiles pane, tray) refetch
+    /// the named profile on `created` / `updated` and remove it
+    /// from their local list on `deleted`. Distinct from the
+    /// broader `ConfigReloaded` signal — this fires per profile
+    /// for fine-grained refresh without forcing a full list pull.
+    #[zbus(signal)]
+    pub async fn system_profile_changed(
+        emitter: &SignalEmitter<'_>,
+        name: &str,
+        kind: &str,
+    ) -> zbus::Result<()>;
 
     /// Pairing-flow phase transition.
     ///

@@ -78,6 +78,27 @@ pub enum DaemonError {
     ConfigDuplicateTvId(String),
     /// TV references a profile name that doesn't exist.
     ConfigInvalidProfileReference(String),
+
+    // -- Profile CRUD (typed) --
+    /// A profile-lookup operation referenced a name that doesn't
+    /// exist in the system / user config catalog.
+    ///
+    /// Returned by `GetSystemProfile`, `UpdateSystemProfile`, and
+    /// `DeleteSystemProfile` (and their `Session1` mirrors).
+    ProfileNotFound(String),
+    /// `CreateSystemProfile` / `CreateUserProfile` called with a
+    /// name that already exists in the catalog.
+    ProfileExists(String),
+    /// A profile name is reserved for daemon-owned semantics
+    /// (currently just `"default"`). Returned by `Create*Profile`
+    /// when the user tries to create a profile named `"default"`,
+    /// or by `Delete*Profile` for the same reason.
+    ProfileReserved(String),
+    /// `Delete*Profile` called against a profile that one or more
+    /// TVs reference. Message format: `"<name>: <tv_id_1>, <tv_id_2>, ..."`
+    /// so the GUI's delete-confirm dialog can split on `": "` and
+    /// list the referencing TVs to the user.
+    ProfileInUse(String),
 }
 
 impl From<tisvlay_core::errors::ConfigError> for DaemonError {
@@ -149,6 +170,15 @@ impl From<TvManagerError> for DaemonError {
                 DaemonError::NotPairing(format!("TV {} is not currently pairing", tv_id))
             }
             TvManagerError::ConfigError(msg) => DaemonError::OperationFailed(msg),
+            TvManagerError::ProfileNotFound(name) => DaemonError::ProfileNotFound(name),
+            TvManagerError::ProfileExists(name) => DaemonError::ProfileExists(name),
+            TvManagerError::ProfileReserved(name) => DaemonError::ProfileReserved(name),
+            TvManagerError::ProfileInUse { name, tvs } => {
+                // Wire format keeps the name + TV list parseable for
+                // the GUI's delete-confirm dialog: split on `": "` to
+                // get the name + comma-joined TV ids.
+                DaemonError::ProfileInUse(format!("{}: {}", name, tvs.join(", ")))
+            }
         }
     }
 }

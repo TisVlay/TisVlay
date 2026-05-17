@@ -194,6 +194,25 @@ trait TisvlayManager {
     /// terminal fallthrough for the system-profile inheritance chain.
     fn get_resolved_profile_defaults(&self) -> zbus::Result<String>;
 
+    /// Get a single system profile body (unresolved — `null` fields
+    /// preserved). See `Manager1.GetSystemProfile`.
+    fn get_system_profile(&self, name: &str) -> zbus::Result<String>;
+
+    /// Create a new system profile.
+    fn create_system_profile(&self, name: &str, json: &str) -> zbus::Result<()>;
+
+    /// Update an existing system profile's body.
+    fn update_system_profile(&self, name: &str, json: &str) -> zbus::Result<()>;
+
+    /// Delete a system profile.
+    fn delete_system_profile(&self, name: &str) -> zbus::Result<()>;
+
+    /// Fires after a `CreateSystemProfile` / `UpdateSystemProfile` /
+    /// `DeleteSystemProfile` succeeds. `kind` ∈ `"created"`,
+    /// `"updated"`, `"deleted"`.
+    #[zbus(signal)]
+    fn system_profile_changed(&self, name: String, kind: String) -> zbus::Result<()>;
+
     /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
     /// `awaiting_input`, `complete`, `failed`. See
     /// [`tisvlay_core::PairingState`] for the canonical enum.
@@ -1557,6 +1576,63 @@ impl DaemonClient {
             .await
             .context("Failed to get resolved system profile defaults from daemon")?;
         serde_json::from_str(&json).context("Failed to parse resolved system profile defaults JSON")
+    }
+
+    /// Get a single system profile body (unresolved — `None` fields
+    /// preserved).
+    ///
+    /// Used by the GUI's Profiles pane editor, which needs to
+    /// distinguish "this profile explicitly set this field" from
+    /// "this field inherits from the chain."
+    pub async fn get_system_profile(&self, name: &str) -> Result<crate::SystemProfileConfig> {
+        debug!(name, "Calling Manager1.GetSystemProfile on daemon");
+        let json = self
+            .manager
+            .get_system_profile(name)
+            .await
+            .with_context(|| format!("Failed to get system profile '{}' from daemon", name))?;
+        serde_json::from_str(&json).context("Failed to parse system profile JSON")
+    }
+
+    /// Create a new system profile under `name`.
+    ///
+    /// Serializes the `SystemProfileConfig` to JSON for the wire and
+    /// routes through `Manager1.CreateSystemProfile`. Fails if `name`
+    /// is `"default"` or already exists.
+    pub async fn create_system_profile(
+        &self,
+        name: &str,
+        profile: &crate::SystemProfileConfig,
+    ) -> Result<()> {
+        debug!(name, "Calling Manager1.CreateSystemProfile on daemon");
+        let json = serde_json::to_string(profile).context("Failed to serialize profile")?;
+        self.manager
+            .create_system_profile(name, &json)
+            .await
+            .with_context(|| format!("Failed to create system profile '{}'", name))
+    }
+
+    /// Replace the body of an existing system profile.
+    pub async fn update_system_profile(
+        &self,
+        name: &str,
+        profile: &crate::SystemProfileConfig,
+    ) -> Result<()> {
+        debug!(name, "Calling Manager1.UpdateSystemProfile on daemon");
+        let json = serde_json::to_string(profile).context("Failed to serialize profile")?;
+        self.manager
+            .update_system_profile(name, &json)
+            .await
+            .with_context(|| format!("Failed to update system profile '{}'", name))
+    }
+
+    /// Delete a system profile.
+    pub async fn delete_system_profile(&self, name: &str) -> Result<()> {
+        debug!(name, "Calling Manager1.DeleteSystemProfile on daemon");
+        self.manager
+            .delete_system_profile(name)
+            .await
+            .with_context(|| format!("Failed to delete system profile '{}'", name))
     }
 
     /// Set a TV's friendly name.
