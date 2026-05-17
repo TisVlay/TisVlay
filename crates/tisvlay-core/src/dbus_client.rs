@@ -1725,6 +1725,26 @@ trait TisvlaySession {
     /// terminal fallthrough for the user-profile inheritance chain.
     fn get_resolved_profile_defaults(&self) -> zbus::Result<String>;
 
+    /// Get a single user-profile body. User-config entry takes
+    /// precedence; falls back to admin baseline.
+    fn get_user_profile(&self, name: &str) -> zbus::Result<String>;
+
+    /// Create a new user-profile entry.
+    fn create_user_profile(&self, name: &str, json: &str) -> zbus::Result<()>;
+
+    /// Update an existing user-profile entry.
+    fn update_user_profile(&self, name: &str, json: &str) -> zbus::Result<()>;
+
+    /// Delete a user-profile entry.
+    fn delete_user_profile(&self, name: &str) -> zbus::Result<()>;
+
+    /// Fires after a `CreateUserProfile` / `UpdateUserProfile` /
+    /// `DeleteUserProfile` succeeds. Distinct from
+    /// `UserProfileChanged(tv_id, name)` — that fires when a TV's
+    /// assignment changes; this fires when the catalog changes.
+    #[zbus(signal)]
+    fn user_profile_list_changed(&self, name: String, kind: String) -> zbus::Result<()>;
+
     /// Reload user configuration from disk.
     fn reload_config(&self) -> zbus::Result<()>;
 }
@@ -1828,6 +1848,56 @@ impl SessionClient {
             .await
             .context("Failed to get resolved user profile defaults from session service")?;
         serde_json::from_str(&json).context("Failed to parse resolved user profile defaults JSON")
+    }
+
+    /// Get a single user-profile body (unresolved — `None` fields
+    /// preserved).
+    ///
+    /// Returns the user-config entry if present, otherwise falls
+    /// back to the admin baseline. Used by the GUI's Profiles pane
+    /// editor to distinguish "this profile explicitly set this
+    /// field" from "this field inherits from the chain."
+    pub async fn get_user_profile(&self, name: &str) -> Result<crate::UserProfileConfig> {
+        let json = self
+            .proxy
+            .get_user_profile(name)
+            .await
+            .with_context(|| format!("Failed to get user profile '{}'", name))?;
+        serde_json::from_str(&json).context("Failed to parse user profile JSON")
+    }
+
+    /// Create a new user-profile entry under `name`.
+    pub async fn create_user_profile(
+        &self,
+        name: &str,
+        profile: &crate::UserProfileConfig,
+    ) -> Result<()> {
+        let json = serde_json::to_string(profile).context("Failed to serialize profile")?;
+        self.proxy
+            .create_user_profile(name, &json)
+            .await
+            .with_context(|| format!("Failed to create user profile '{}'", name))
+    }
+
+    /// Replace the body of an existing user-profile entry.
+    pub async fn update_user_profile(
+        &self,
+        name: &str,
+        profile: &crate::UserProfileConfig,
+    ) -> Result<()> {
+        let json = serde_json::to_string(profile).context("Failed to serialize profile")?;
+        self.proxy
+            .update_user_profile(name, &json)
+            .await
+            .with_context(|| format!("Failed to update user profile '{}'", name))
+    }
+
+    /// Delete a user-profile entry.
+    pub async fn delete_user_profile(&self, name: &str) -> Result<()> {
+        self.proxy
+            .delete_user_profile(name)
+            .await
+            .with_context(|| format!("Failed to delete user profile '{}'", name))
     }
 
     /// Reload user configuration from disk.

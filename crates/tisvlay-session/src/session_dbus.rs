@@ -29,6 +29,20 @@ pub enum SessionError {
     OperationFailed(String),
     /// Profile not found.
     ProfileNotFound(String),
+    /// `CreateUserProfile` called with a name that already exists
+    /// in the user config (admin-side presence doesn't count —
+    /// users may create overrides of admin profiles).
+    ProfileExists(String),
+    /// `name == "default"` is reserved against Delete (the merged
+    /// default is always visible; users can shadow individual
+    /// fields via Update but can't delete the concept).
+    ProfileReserved(String),
+    /// `DeleteUserProfile` called against a profile that one or
+    /// more `[[tv]]` entries in the user config reference. Message
+    /// format: `"<name>: <tv_id>, <tv_id>, ..."` so the GUI's
+    /// delete-confirm dialog can split on `": "` and surface
+    /// the offending TV ids.
+    ProfileInUse(String),
 }
 
 /// D-Bus service for session profile management.
@@ -50,6 +64,24 @@ impl SessionService {
             daemon,
             config_path,
         }
+    }
+
+    /// Persist the current `state.user_config` to the resolved
+    /// user-config path (or XDG default if not overridden).
+    ///
+    /// Crate-internal helper for `create_user_profile` /
+    /// `update_user_profile` / `delete_user_profile`. Returns a
+    /// typed `SessionError::OperationFailed` on disk-write failure
+    /// so the D-Bus caller gets a clear error instead of a silent
+    /// in-memory-only success.
+    fn save_user_config(&self, s: &SessionState) -> Result<(), SessionError> {
+        let save_result = match &self.config_path {
+            Some(path) => s.user_config.save_to(path),
+            None => s.user_config.save(),
+        };
+        save_result.map_err(|e| {
+            SessionError::OperationFailed(format!("Failed to save user config: {}", e))
+        })
     }
 }
 
@@ -203,6 +235,171 @@ impl SessionService {
         Ok(())
     }
 
+    /// Get a single user-profile body as JSON.
+    ///
+    /// Resolution order:
+    ///
+    /// 1. User config (unmerged — `null` fields preserved).
+    /// 2. Admin baseline named profiles (admin's `[user.profiles.<name>]`
+    ///    entries other than the merged-default one).
+    /// 3. For the special name `"default"` only: the admin
+    ///    user-default body (`admin_user_default`), which lives in
+    ///    a separate field on `SessionState` because it has
+    ///    semantic precedence over everything else.
+    ///
+    /// The GUI's Profiles pane editor reads this to render the
+    /// inherited-value column for unset fields. Returns
+    /// `ProfileNotFound` if the name is in none of those sources.
+    async fn get_user_profile(&self, name: &str) -> Result<String, SessionError> {
+        debug!(name, "D-Bus: GetUserProfile");
+        let s = self.state.read().await;
+        let profile = s
+            .user_config
+            .user
+            .profiles
+            .get(name)
+            .or_else(|| s.admin_user_profiles.get(name))
+            .cloned()
+            .or_else(|| {
+                if name == "default" {
+                    Some(s.admin_user_default.clone())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| SessionError::ProfileNotFound(name.to_string()))?;
+        serde_json::to_string(&profile).map_err(|e| {
+            SessionError::OperationFailed(format!("Failed to serialize profile: {}", e))
+        })
+    }
+
+    /// Create a new user-profile entry under `name`.
+    ///
+    /// Fails with `ProfileExists` if the user config already has
+    /// an entry with that name (admin presence doesn't count — the
+    /// user is allowed to create overrides of admin profiles).
+    /// On success, writes the user config to disk and emits
+    /// `UserProfileListChanged(name, "created")`.
+    async fn create_user_profile(
+        &self,
+        #[zbus(signal_context)] ctxt: SignalEmitter<'_>,
+        name: &str,
+        json: &str,
+    ) -> Result<(), SessionError> {
+        info!(name, "D-Bus: CreateUserProfile");
+        let profile: tisvlay_core::UserProfileConfig = serde_json::from_str(json)
+            .map_err(|e| SessionError::OperationFailed(format!("Invalid profile JSON: {}", e)))?;
+        {
+            let mut s = self.state.write().await;
+            if s.user_config.user.profiles.contains_key(name) {
+                return Err(SessionError::ProfileExists(name.to_string()));
+            }
+            s.user_config
+                .user
+                .profiles
+                .insert(name.to_string(), profile);
+            self.save_user_config(&s)?;
+        }
+        Self::user_profile_list_changed(&ctxt, name, "created")
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Replace the body of an existing user-profile entry.
+    ///
+    /// Fails with `ProfileNotFound` if the user config doesn't
+    /// have an entry with that name (use `CreateUserProfile` to
+    /// add an override). On success, writes the user config to
+    /// disk, re-resolves the cached `ResolvedUserProfile` for
+    /// every TV that references this profile, and emits
+    /// `UserProfileListChanged(name, "updated")`.
+    async fn update_user_profile(
+        &self,
+        #[zbus(signal_context)] ctxt: SignalEmitter<'_>,
+        name: &str,
+        json: &str,
+    ) -> Result<(), SessionError> {
+        info!(name, "D-Bus: UpdateUserProfile");
+        let profile: tisvlay_core::UserProfileConfig = serde_json::from_str(json)
+            .map_err(|e| SessionError::OperationFailed(format!("Invalid profile JSON: {}", e)))?;
+        {
+            let mut s = self.state.write().await;
+            if !s.user_config.user.profiles.contains_key(name) {
+                return Err(SessionError::ProfileNotFound(name.to_string()));
+            }
+            s.user_config
+                .user
+                .profiles
+                .insert(name.to_string(), profile);
+            self.save_user_config(&s)?;
+            // Re-resolve every TV that references this profile so
+            // dispatch logic sees the new body immediately.
+            let tv_ids: Vec<String> = s
+                .user_config
+                .tv
+                .iter()
+                .filter(|tv| tv.profile.user == name)
+                .map(|tv| tv.uuid.clone())
+                .collect();
+            for tv_id in tv_ids {
+                let resolved = s
+                    .user_config
+                    .resolve_user_profile(&tv_id, &s.admin_user_default);
+                s.profiles.insert(tv_id, resolved);
+            }
+        }
+        Self::user_profile_list_changed(&ctxt, name, "updated")
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Delete a user-profile entry.
+    ///
+    /// Fails with `ProfileReserved` if `name == "default"` (the
+    /// merged default is always visible; shadow individual fields
+    /// via Update instead), `ProfileNotFound` if the user config
+    /// doesn't have an entry with that name, or `ProfileInUse` if
+    /// any `[[tv]]` entry in the user config references it (the
+    /// error message names the referencing TV ids).
+    async fn delete_user_profile(
+        &self,
+        #[zbus(signal_context)] ctxt: SignalEmitter<'_>,
+        name: &str,
+    ) -> Result<(), SessionError> {
+        info!(name, "D-Bus: DeleteUserProfile");
+        if name == "default" {
+            return Err(SessionError::ProfileReserved(name.to_string()));
+        }
+        {
+            let mut s = self.state.write().await;
+            if !s.user_config.user.profiles.contains_key(name) {
+                return Err(SessionError::ProfileNotFound(name.to_string()));
+            }
+            let referencing: Vec<String> = s
+                .user_config
+                .tv
+                .iter()
+                .filter(|tv| tv.profile.user == name)
+                .map(|tv| tv.uuid.clone())
+                .collect();
+            if !referencing.is_empty() {
+                return Err(SessionError::ProfileInUse(format!(
+                    "{}: {}",
+                    name,
+                    referencing.join(", ")
+                )));
+            }
+            s.user_config.user.profiles.remove(name);
+            self.save_user_config(&s)?;
+        }
+        Self::user_profile_list_changed(&ctxt, name, "deleted")
+            .await
+            .ok();
+        Ok(())
+    }
+
     /// Get the fully resolved user profile for a TV as JSON.
     ///
     /// Returns the user profile with all inheritance applied (user -> admin -> defaults).
@@ -240,6 +437,23 @@ impl SessionService {
         emitter: &SignalEmitter<'_>,
         tv_id: &str,
         profile_name: &str,
+    ) -> zbus::Result<()>;
+
+    /// Signal emitted after a user profile is created, updated, or
+    /// deleted via `CreateUserProfile` / `UpdateUserProfile` /
+    /// `DeleteUserProfile`.
+    ///
+    /// `kind` is the lowercase verb (`"created"` / `"updated"` /
+    /// `"deleted"`); subscribers (GUI Profiles pane) refetch the
+    /// named profile on `created` / `updated` and remove it from
+    /// their local list on `deleted`. Distinct from
+    /// `UserProfileChanged(tv_id, name)` — that fires when a TV's
+    /// *assignment* changes, this fires when the *catalog* changes.
+    #[zbus(signal)]
+    pub async fn user_profile_list_changed(
+        emitter: &SignalEmitter<'_>,
+        name: &str,
+        kind: &str,
     ) -> zbus::Result<()>;
 
     /// Reload user configuration from disk.
