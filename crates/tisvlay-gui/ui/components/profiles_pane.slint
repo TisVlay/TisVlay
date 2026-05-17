@@ -1,31 +1,452 @@
-import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+// Profiles pane — master-detail with two stacked sections (System /
+// User) in the left column and a single detail/editor on the right.
+//
+// Silhouette mirrors the TVs pane (left list + right detail), with
+// two key divergences:
+//
+// - Sub-tabs live in the left column as stacked sections, not a top
+//   segmented control. Gives the editor full vertical height; matches
+//   KDE/GNOME settings sidebar idioms.
+// - Detail has no live-state chrome (no power chip, no pencil/edit
+//   mode); every field is instant-commit. The header carries
+//   "Used by [chip][chip]" linking back to each referencing TV — the
+//   "Find Usages" idiom (GitHub package "Used by", VS Code peek).
+//
+// Field rows land in the next commit; today the detail body is a
+// placeholder so the master-detail wiring + selection model can be
+// validated end-to-end first.
+
+import { Button, ListView, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { Profiles, ProfileKind, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
+import { DangerBtn, Chip, Group } from "../widgets.slint";
 
-export component ProfilesPane inherits Rectangle {
+// =============================================================================
+// Master list — left column, stacked System / User sections.
+// =============================================================================
+
+component ProfileListRow inherits Rectangle {
+    in property <ProfileRow> entry;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 40px;
+    background: selected ? Theme.row-selected
+              : (touch.has-hover ? Theme.row-hover : transparent);
+    animate background { duration: 150ms; }
+
+    // 3px left accent stripe when selected — mirrors TvListRow.
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: root.selected ? Theme.accent : transparent;
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: Design.gap-tight;
+        alignment: stretch;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Text {
+                text: root.entry.name;
+                color: root.selected ? Theme.row-selected-text : Theme.text;
+                font-size: Design.font-body;
+                font-weight: root.selected ? 600 : 500;
+                overflow: elide;
+            }
+        }
+
+        if root.entry.is-default: VerticalLayout {
+            alignment: center;
+            Text {
+                text: "(default)";
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            // Trailing reference count — "Nx" tells the user how many
+            // TVs use this profile without opening the detail. Greys
+            // out at zero so unreferenced profiles are visually quiet
+            // ("safe to delete" cue).
+            Text {
+                text: root.entry.referenced-by.length + "x";
+                color: root.entry.referenced-by.length == 0
+                    ? Theme.text-faint
+                    : Theme.text-dim;
+                font-size: Design.font-mini;
+                font-family: "ui-monospace, monospace";
+            }
+        }
+    }
+
+    // Bottom 1px separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component ProfileSectionHeader inherits Rectangle {
+    in property <string> title;
+    /// `+` enabled flag. False when the corresponding daemon isn't
+    /// reachable (no session bus → user-profile create disabled).
+    in property <bool> add-enabled: true;
+    callback add-clicked();
+
+    height: 40px;
+    background: Theme.surface;
+
+    // Bottom separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: Design.gap-stack;
+        spacing: Design.gap-stack;
+        alignment: stretch;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
+        }
+
+        // "+" New-profile button — same shape as TvList's pair button.
+        Rectangle {
+            width: 24px;
+            height: 24px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 12px;
+            background: !root.add-enabled
+                ? Theme.text-faint
+                : (add-touch.has-hover ? Theme.accent-pressed : Theme.accent);
+            animate background { duration: 150ms; }
+
+            Text {
+                text: "+";
+                color: white;
+                font-size: 16px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+            add-touch := TouchArea {
+                enabled: root.add-enabled;
+                clicked => { root.add-clicked(); }
+            }
+        }
+    }
+}
+
+component ProfileList inherits Rectangle {
+    width: Design.width-master;
     background: Theme.surface-alt;
 
-    VerticalBox {
+    // Right separator.
+    Rectangle {
+        x: parent.width - 1px;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        // System profiles section.
+        ProfileSectionHeader {
+            title: @tr("SYSTEM PROFILES");
+            add-enabled: true;
+            add-clicked => { Profiles.create-system(); }
+        }
+        for r[i] in Profiles.system: ProfileListRow {
+            entry: r;
+            selected: Profiles.selected-kind == ProfileKind.system
+                   && Profiles.selected-name == r.name;
+            // Update the highlight state inline so the row visually
+            // toggles before Rust completes the detail-fetch + push;
+            // Rust then refreshes `selected-row` with the lookup.
+            clicked => {
+                Profiles.selected-kind = ProfileKind.system;
+                Profiles.selected-name = r.name;
+                Profiles.select(ProfileKind.system, r.name);
+            }
+        }
+
+        // User profiles section.
+        ProfileSectionHeader {
+            title: @tr("USER PROFILES");
+            add-enabled: Profiles.session-available;
+            add-clicked => { Profiles.create-user(); }
+        }
+        if !Profiles.session-available: Rectangle {
+            height: 56px;
+            VerticalLayout {
+                width: 100%;
+                alignment: center;
+                padding: Design.gap-stack;
+                Text {
+                    text: @tr("Session service unavailable");
+                    color: Theme.text-faint;
+                    font-size: Design.font-mini;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        // When the session bus isn't available, Rust pushes an empty
+        // `Profiles.user` model — the repeater renders nothing and the
+        // unavailable-notice above carries the message instead.
+        for r[i] in Profiles.user: ProfileListRow {
+            entry: r;
+            selected: Profiles.selected-kind == ProfileKind.user
+                   && Profiles.selected-name == r.name;
+            clicked => {
+                Profiles.selected-kind = ProfileKind.user;
+                Profiles.selected-name = r.name;
+                Profiles.select(ProfileKind.user, r.name);
+            }
+        }
+
+        // Spacer pushes the lists to the top.
+        Rectangle { vertical-stretch: 1; }
+    }
+}
+
+// =============================================================================
+// Detail — right column, fills remaining width.
+// =============================================================================
+
+component ProfileDetailHeader inherits Rectangle {
+    in property <string> name;
+    in property <[ProfileTvRef]> referenced-by;
+    /// Disable Delete on the reserved `default` profile — the daemon
+    /// rejects deletion of `default` outright. Greying the button
+    /// keeps the affordance discoverable without dispatching a call
+    /// the daemon will reject.
+    in property <bool> can-delete: true;
+
+    height: header-layout.preferred-height;
+    background: Theme.surface;
+
+    // Bottom separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    header-layout := VerticalLayout {
+        width: 100%;
+        padding-left: Design.pad-pane;
+        padding-right: Design.pad-pane;
+        padding-top: 18px;
+        padding-bottom: Design.gap-row;
+        spacing: Design.gap-form;
+
+        // Title row: profile name (large) + per-profile action buttons.
+        HorizontalLayout {
+            spacing: Design.gap-row;
+            alignment: stretch;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Text {
+                    text: root.name;
+                    color: Theme.text;
+                    font-size: Design.font-title-3;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Button {
+                    text: @tr("Duplicate");
+                    clicked => { Profiles.duplicate-selected(); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                DangerBtn {
+                    text: @tr("Delete");
+                    enabled: root.can-delete;
+                    clicked => { Profiles.delete-selected(); }
+                }
+            }
+        }
+
+        // "Used by" chip row — hidden when no TVs reference this profile.
+        if root.referenced-by.length > 0: HorizontalLayout {
+            spacing: Design.gap-tight;
+            alignment: start;
+
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: @tr("Used by");
+                    color: Theme.text-dim;
+                    font-size: Design.font-meta;
+                }
+            }
+            for tv in root.referenced-by: VerticalLayout {
+                alignment: center;
+                Chip {
+                    label: tv.name;
+                    tone: "info";
+                    interactive: true;
+                    clicked => { Profiles.open-tv(tv.uuid); }
+                }
+            }
+        }
+    }
+}
+
+component ProfileDetail inherits Rectangle {
+    in property <string> name;
+    in property <[ProfileTvRef]> referenced-by;
+    in property <bool> can-delete: true;
+
+    background: Theme.surface-alt;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        ProfileDetailHeader {
+            name: root.name;
+            referenced-by: root.referenced-by;
+            can-delete: root.can-delete;
+        }
+
+        // Scrollable body — placeholder until field rows land in the
+        // next commit. Pin viewport-width so the editor body cannot
+        // scroll horizontally (same rationale as TvDetail).
+        ScrollView {
+            viewport-width: self.visible-width;
+            VerticalLayout {
+                width: 100%;
+                padding-left: Design.pad-pane;
+                padding-right: Design.pad-pane;
+                padding-top: 20px;
+                padding-bottom: Design.pad-pane;
+                spacing: Design.gap-pane;
+
+                Group {
+                    title: @tr("FIELDS");
+
+                    VerticalLayout {
+                        spacing: Design.gap-stack;
+                        Text {
+                            text: @tr("Field editor lands in the next commit. The master-detail wiring, selection model, and reference chips are live.");
+                            color: Theme.text-dim;
+                            font-size: Design.font-meta;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component ProfileDetailEmpty inherits Rectangle {
+    background: Theme.surface-alt;
+
+    VerticalLayout {
         width: 100%;
         height: 100%;
         alignment: center;
-        spacing: Design.gap-tight;
+        spacing: Design.gap-stack;
 
-        HorizontalBox {
+        HorizontalLayout {
             alignment: center;
             Text {
-                text: @tr("Profiles");
-                font-size: Design.font-title-2;
-                font-weight: 600;
+                text: @tr("Select a profile");
                 color: Theme.text;
+                font-size: 15px;
+                font-weight: 600;
             }
         }
-        HorizontalBox {
+        HorizontalLayout {
             alignment: center;
             Text {
-                text: @tr("System and user profile editing arrives in M4.");
+                text: @tr("Pick a profile from the list, or create one with the + button.");
                 color: Theme.text-dim;
-                font-size: Design.font-body;
+                font-size: Design.font-meta;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// ProfilesPane — top-level composition.
+// =============================================================================
+
+export component ProfilesPane {
+    // Detail is gated on the selected row having content — Rust
+    // pushes a blank `selected-row` when the selection clears (e.g.,
+    // the selected profile was deleted by another client).
+    property <bool> has-selection:
+           Profiles.selected-kind != ProfileKind.none
+        && Profiles.selected-row.name != "";
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        ProfileList { }
+
+        // Detail column — fills remaining width.
+        Rectangle {
+            horizontal-stretch: 1;
+            background: Theme.surface-alt;
+
+            if !root.has-selection: ProfileDetailEmpty {
+                width: 100%;
+                height: 100%;
+            }
+
+            if root.has-selection: ProfileDetail {
+                width: 100%;
+                height: 100%;
+                name: Profiles.selected-row.name;
+                referenced-by: Profiles.selected-row.referenced-by;
+                can-delete: !Profiles.selected-row.is-default;
             }
         }
     }

@@ -63,11 +63,43 @@ pub struct TvViewRaw {
     pub vendor_info: Vec<(String, String)>,
 }
 
+/// One TV that references a profile. Carries the UUID for
+/// click-through navigation (`Profiles.open-tv(uuid)`) and the
+/// friendly name for chip rendering. Plain types so the snapshot
+/// crosses the tokio→Slint thread boundary as `Send`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TvRefRaw {
+    pub uuid: SharedString,
+    pub name: SharedString,
+}
+
+/// One profile-catalog entry. Drives the Profiles pane master list
+/// and the detail header's "Used by …" chip row. Reference list is
+/// precomputed Rust-side by walking the TV list — Slint doesn't
+/// support `for` in pure functions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileRowRaw {
+    pub name: SharedString,
+    /// True for the reserved `default` profile. The daemon rejects
+    /// `CreateSystemProfile("default", ...)` and
+    /// `DeleteSystemProfile("default")` outright; this flag drives
+    /// the `(default)` badge in the list and disables the Delete
+    /// button in the detail header.
+    pub is_default: bool,
+    pub referenced_by: Vec<TvRefRaw>,
+}
+
 /// Snapshot of fetched state for one refresh pass.
 pub struct StateSnapshot {
     pub tvs: Vec<TvViewRaw>,
     pub system_profiles: Vec<SharedString>,
     pub user_profiles: Vec<SharedString>,
+    /// Profiles-pane master-list rows for the System section, with
+    /// referenced-by sets precomputed from the TV list. Same names
+    /// as `system_profiles` but with extra metadata the Profiles
+    /// pane needs that the TVs-pane ComboBox doesn't.
+    pub system_profile_rows: Vec<ProfileRowRaw>,
+    pub user_profile_rows: Vec<ProfileRowRaw>,
 }
 
 /// Pure-data inputs the renderer needs from one IO pass. Decoupled
@@ -190,20 +222,60 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let system_profiles = system_profiles
-        .into_iter()
-        .map(|(name, _)| SharedString::from(name))
-        .collect();
-    let user_profiles = user_profiles
-        .into_iter()
-        .map(|(name, _)| SharedString::from(name))
-        .collect();
+    let system_profile_names: Vec<String> =
+        system_profiles.into_iter().map(|(name, _)| name).collect();
+    let user_profile_names: Vec<String> = user_profiles.into_iter().map(|(name, _)| name).collect();
+
+    let system_profile_rows = compute_profile_rows(&system_profile_names, &models, |tv| {
+        tv.system_profile.as_str()
+    });
+    let user_profile_rows =
+        compute_profile_rows(&user_profile_names, &models, |tv| tv.user_profile.as_str());
 
     StateSnapshot {
         tvs: models,
-        system_profiles,
-        user_profiles,
+        system_profiles: system_profile_names
+            .iter()
+            .map(|n| SharedString::from(n.as_str()))
+            .collect(),
+        user_profiles: user_profile_names
+            .iter()
+            .map(|n| SharedString::from(n.as_str()))
+            .collect(),
+        system_profile_rows,
+        user_profile_rows,
     }
+}
+
+/// Build the master-list rows for one profile catalog. Walks the
+/// TV list once per profile to gather referencing TVs. O(N·M) where
+/// N=profiles and M=TVs; both are small enough that a HashMap-based
+/// pre-bucket isn't worth the cost. `selector` returns the
+/// system-profile or user-profile name from a TV; rows whose name
+/// matches end up in the referenced-by list of that profile.
+fn compute_profile_rows(
+    profile_names: &[String],
+    tvs: &[TvViewRaw],
+    selector: impl Fn(&TvViewRaw) -> &str,
+) -> Vec<ProfileRowRaw> {
+    profile_names
+        .iter()
+        .map(|name| {
+            let referenced_by = tvs
+                .iter()
+                .filter(|tv| selector(tv) == name.as_str())
+                .map(|tv| TvRefRaw {
+                    uuid: tv.uuid.clone(),
+                    name: tv.name.clone(),
+                })
+                .collect();
+            ProfileRowRaw {
+                name: SharedString::from(name.as_str()),
+                is_default: name == "default",
+                referenced_by,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -256,6 +328,60 @@ mod tests {
         assert!(snap.tvs.is_empty());
         assert!(snap.system_profiles.is_empty());
         assert!(snap.user_profiles.is_empty());
+        assert!(snap.system_profile_rows.is_empty());
+        assert!(snap.user_profile_rows.is_empty());
+    }
+
+    #[test]
+    fn profile_rows_carry_referenced_by_tv_list() {
+        // Two TVs reference "guest"; one references "default" (system)
+        // and "movies" (user). "movie-night" is unreferenced.
+        let mut tv_a = sample_tv("uuid-a", "Living Room");
+        tv_a.system_profile = "guest".into();
+        let mut tv_b = sample_tv("uuid-b", "Bedroom");
+        tv_b.system_profile = "guest".into();
+        let mut tv_c = sample_tv("uuid-c", "Office");
+        tv_c.system_profile = "default".into();
+
+        let inputs = SnapshotInputs {
+            tvs: vec![tv_a, tv_b, tv_c],
+            system_profiles: vec![
+                ("default".into(), String::new()),
+                ("guest".into(), String::new()),
+                ("movie-night".into(), String::new()),
+            ],
+            user_profiles: vec![("movies".into(), String::new())],
+            user_profile_by_uuid: HashMap::from([("uuid-c".into(), "movies".into())]),
+        };
+        let snap = convert_snapshot(inputs);
+
+        let by_name: HashMap<_, _> = snap
+            .system_profile_rows
+            .iter()
+            .map(|r| (r.name.to_string(), r))
+            .collect();
+        assert_eq!(by_name["default"].referenced_by.len(), 1);
+        assert_eq!(by_name["default"].referenced_by[0].name.as_str(), "Office");
+        assert!(by_name["default"].is_default);
+        let guest_refs: Vec<_> = by_name["guest"]
+            .referenced_by
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(guest_refs, vec!["Bedroom", "Living Room"]);
+        assert!(!by_name["guest"].is_default);
+        assert!(by_name["movie-night"].referenced_by.is_empty());
+
+        let user_by_name: HashMap<_, _> = snap
+            .user_profile_rows
+            .iter()
+            .map(|r| (r.name.to_string(), r))
+            .collect();
+        assert_eq!(user_by_name["movies"].referenced_by.len(), 1);
+        assert_eq!(
+            user_by_name["movies"].referenced_by[0].uuid.as_str(),
+            "uuid-c"
+        );
     }
 
     #[test]

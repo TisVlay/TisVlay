@@ -1,0 +1,89 @@
+// Profile-pane state + callbacks.
+//
+// The pane is master-detail with two stacked sections (System / User)
+// in the left column. Selection is global across sections — one
+// `(kind, name)` pair at a time, regardless of which list it came
+// from. Rust pushes the section row lists + holds the current
+// selection in the global so the detail can re-render without
+// prop-drilling through the pane.
+//
+// Each row carries the count + identity of the TVs referencing it so
+// the master list can show the trailing "Nx" hint and the detail
+// header can render "Used by [chip][chip]" with click-through to the
+// TVs pane.
+
+/// Which catalog a profile belongs to. `none` is the unselected
+/// sentinel — the detail shows the "Select a profile" empty state
+/// while this is `none`.
+export enum ProfileKind {
+    none,
+    system,
+    user,
+}
+
+/// One TV that references a profile. Carries the UUID for navigation
+/// (`Profiles.open-tv(uuid)`) and the friendly name for chip rendering.
+export struct ProfileTvRef {
+    uuid: string,
+    name: string,
+}
+
+/// One profile entry in either section. Read-only from Slint;
+/// populated by Rust via `Profiles.set_system(...)` / `set_user(...)`.
+export struct ProfileRow {
+    name: string,
+    /// True for the reserved `default` profile — drives the
+    /// `(default)` badge in the list and disables the Delete button
+    /// in the detail header.
+    is-default: bool,
+    /// TVs referencing this profile, precomputed Rust-side from the
+    /// TV list. Drives the master-list "Nx" trailing count and the
+    /// detail header's "Used by [chip]…" row. Click-through routes
+    /// via `Profiles.open-tv(uuid)`.
+    referenced-by: [ProfileTvRef],
+}
+
+export global Profiles {
+    /// Master-list row clicked. `kind` disambiguates which section
+    /// the row came from so the Rust handler knows whether to fetch
+    /// via `Manager1.GetSystemProfile` or `Session1.GetUserProfile`.
+    callback select(ProfileKind, string);
+    /// "+" button on the System section header. Rust prompts for a
+    /// name and calls `Manager1.CreateSystemProfile`.
+    callback create-system();
+    /// "+" button on the User section header. Rust prompts for a
+    /// name and calls `Session1.CreateUserProfile`.
+    callback create-user();
+    /// Delete the currently-selected profile. Rust routes to the
+    /// correct daemon based on `selected-kind`; the in-pane
+    /// confirm-delete dialog (with referencing-TV list) lands in
+    /// the polish commit.
+    callback delete-selected();
+    /// Duplicate the currently-selected profile. Lands in the
+    /// polish commit; declared here so the detail header's button
+    /// has a stable wire-up surface.
+    callback duplicate-selected();
+    /// "Used by" chip clicked — navigate to the TVs pane and select
+    /// the named TV. Rust flips `AppWindow.active-pane` + sets
+    /// `selected-tv-index`.
+    callback open-tv(string);
+
+    in property <[ProfileRow]> system;
+    in property <[ProfileRow]> user;
+    /// False when `tisvlay-session` isn't connected — the User
+    /// section renders a "User profiles unavailable" hint instead of
+    /// the list, and `create-user` is disabled.
+    in property <bool> session-available: false;
+
+    /// `selected-kind` + `selected-name` are written by the master
+    /// list's click handlers (so the row highlight updates instantly)
+    /// AND by Rust (when the selection is cleared because the selected
+    /// profile was deleted out from under us). `selected-row` is
+    /// Rust-only — pushed whenever the lists or selection change so
+    /// the detail can re-render its header + chips without doing a
+    /// list-walk in Slint expressions (Slint pure functions don't
+    /// support `for` loops).
+    in-out property <ProfileKind> selected-kind: ProfileKind.none;
+    in-out property <string> selected-name;
+    in property <ProfileRow> selected-row;
+}

@@ -826,6 +826,112 @@ fn register_callbacks(
     });
 
     // -------------------------------------------------------------------------
+    // Profiles pane
+    //
+    // Commit 5 wires the master-detail shell + selection model.
+    // `select` fetches the profile body so subsequent commits can hand
+    // it to the field-row editor; for now we just log success/error.
+    // `create-*`, `delete-selected`, `duplicate-selected` are stubs
+    // that surface a toast — the name-input + confirm-delete dialogs
+    // land alongside the editor in later commits.
+    // -------------------------------------------------------------------------
+
+    let profiles_global = app.global::<Profiles>();
+
+    let d = daemon.clone();
+    let s = session.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_select(move |kind, name| {
+        let d = d.clone();
+        let s = s.clone();
+        let app_weak = app_weak.clone();
+        let name = name.to_string();
+        tokio::spawn(async move {
+            let result = match kind {
+                ProfileKind::System => d.get_system_profile(&name).await.map(|_| ()),
+                ProfileKind::User => {
+                    let session_ref = s.read().await;
+                    match session_ref.as_ref() {
+                        Some(c) => c.get_user_profile(&name).await.map(|_| ()),
+                        None => {
+                            warn!(name = %name, "Cannot get user profile: session unavailable");
+                            return;
+                        }
+                    }
+                }
+                ProfileKind::None => return,
+            };
+            if let Err(e) = result {
+                warn!(name = %name, error = %format!("{e}"), "Profile select fetch failed");
+                push_tvs_error(&app_weak, gettext("Couldn't load profile"), format!("{e}"));
+            }
+        });
+    });
+
+    let app_weak = app.as_weak();
+    profiles_global.on_create_system(move || {
+        // Name-input dialog lands in the polish commit. For now the
+        // toast confirms the button is wired end-to-end.
+        show_toast(
+            app_weak.clone(),
+            &gettext("Create profile UI lands in a follow-up commit"),
+        );
+    });
+
+    let app_weak = app.as_weak();
+    profiles_global.on_create_user(move || {
+        show_toast(
+            app_weak.clone(),
+            &gettext("Create profile UI lands in a follow-up commit"),
+        );
+    });
+
+    let app_weak = app.as_weak();
+    profiles_global.on_delete_selected(move || {
+        // Confirm-delete dialog (with referencing-TV list) lands in
+        // the polish commit. Stubbed for now — the daemon's Delete
+        // rejects in-use profiles anyway, but skipping the
+        // confirmation step would still be hostile UX.
+        show_toast(
+            app_weak.clone(),
+            &gettext("Delete-confirm dialog lands in a follow-up commit"),
+        );
+    });
+
+    let app_weak = app.as_weak();
+    profiles_global.on_duplicate_selected(move || {
+        show_toast(
+            app_weak.clone(),
+            &gettext("Duplicate lands in a follow-up commit"),
+        );
+    });
+
+    let app_weak = app.as_weak();
+    profiles_global.on_open_tv(move |uuid| {
+        let uuid = uuid.to_string();
+        on_ui(&app_weak, move |app| {
+            // Walk the current TV model to find the index — Slint
+            // can't search a model from a binding, so we resolve it
+            // here. Missing UUIDs (TV vanished between the chip
+            // render and the click) are silently ignored.
+            let tvs = app.get_tvs();
+            let mut found_idx: Option<usize> = None;
+            for i in 0..tvs.row_count() {
+                if let Some(tv) = tvs.row_data(i)
+                    && tv.uuid.as_str() == uuid
+                {
+                    found_idx = Some(i);
+                    break;
+                }
+            }
+            if let Some(i) = found_idx {
+                app.set_selected_tv_index(i as i32);
+                app.set_active_pane(Pane::Tvs);
+            }
+        });
+    });
+
+    // -------------------------------------------------------------------------
     // Pairing wizard
     // -------------------------------------------------------------------------
 

@@ -14,7 +14,8 @@ use tracing::{debug, warn};
 use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
 use crate::state::{StateSnapshot, fetch_state};
 use crate::{
-    AppWindow, PairingWizard, Reconcilers, TvViewModel, VendorInfoRow, VendorOption, on_ui,
+    AppWindow, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles, Reconcilers,
+    TvViewModel, VendorInfoRow, VendorOption, on_ui,
 };
 
 /// Boot the state-watch loop. One-shot startup: do the initial state
@@ -376,6 +377,81 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
     sync_vec_model(&app.get_user_profiles(), snapshot.user_profiles, |m| {
         app.set_user_profiles(m)
     });
+
+    // Profiles-pane master-list rows. Built fresh each push so the
+    // referenced-by chips reflect the latest TV assignments. After
+    // pushing the lists, re-resolve `selected-row` against them —
+    // a profile deleted out from under the user (concurrent CLI /
+    // file edit) clears the selection back to the empty state.
+    let profiles_global = app.global::<Profiles>();
+    // Mirror the AppWindow's session-available flag so the User
+    // section can switch between its list and the unavailable hint
+    // without prop-drilling. `set_session_available` on the
+    // AppWindow already runs on the Slint thread alongside this
+    // push, so the read sees the up-to-date value.
+    profiles_global.set_session_available(app.get_session_available());
+    let system_rows = build_profile_rows(snapshot.system_profile_rows);
+    let user_rows = build_profile_rows(snapshot.user_profile_rows);
+    let kind = profiles_global.get_selected_kind();
+    let name = profiles_global.get_selected_name();
+    let resolved_selected: Option<ProfileRow> = match kind {
+        ProfileKind::System => system_rows
+            .iter()
+            .find(|r| r.name.as_str() == name.as_str())
+            .cloned(),
+        ProfileKind::User => user_rows
+            .iter()
+            .find(|r| r.name.as_str() == name.as_str())
+            .cloned(),
+        ProfileKind::None => None,
+    };
+
+    sync_vec_model(&profiles_global.get_system(), system_rows, |m| {
+        profiles_global.set_system(m)
+    });
+    sync_vec_model(&profiles_global.get_user(), user_rows, |m| {
+        profiles_global.set_user(m)
+    });
+
+    match resolved_selected {
+        Some(row) => profiles_global.set_selected_row(row),
+        None => {
+            profiles_global.set_selected_kind(ProfileKind::None);
+            profiles_global.set_selected_name(SharedString::new());
+            profiles_global.set_selected_row(empty_profile_row());
+        }
+    }
+}
+
+/// Convert raw profile-row data into the Slint `ProfileRow` model
+/// shape. Inner `referenced_by` list becomes a `ModelRc<ProfileTvRef>`.
+fn build_profile_rows(raw: Vec<crate::state::ProfileRowRaw>) -> Vec<ProfileRow> {
+    raw.into_iter()
+        .map(|r| ProfileRow {
+            name: r.name,
+            is_default: r.is_default,
+            referenced_by: ModelRc::new(VecModel::from(
+                r.referenced_by
+                    .into_iter()
+                    .map(|tv| ProfileTvRef {
+                        uuid: tv.uuid,
+                        name: tv.name,
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+        })
+        .collect()
+}
+
+/// Sentinel `ProfileRow` for the no-selection state. Slint reads
+/// `selected-row.name == ""` to render the "Select a profile" empty
+/// state in the detail column.
+fn empty_profile_row() -> ProfileRow {
+    ProfileRow {
+        name: SharedString::new(),
+        is_default: false,
+        referenced_by: ModelRc::new(VecModel::from(Vec::<ProfileTvRef>::new())),
+    }
 }
 
 /// Replace a `ModelRc` content **in place** when it's backed by a
