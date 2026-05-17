@@ -13,11 +13,13 @@ use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
-    MANAGER_PATH, ManagerService, TvBacklightService, TvDesktopService, TvInputService,
-    TvPowerService, TvScreenService, TvService, TvVolumeService, tv_path,
+    MANAGER_PATH, ManagerService, SystemProfileService, TvBacklightService, TvDesktopService,
+    TvInputService, TvPowerService, TvScreenService, TvService, TvVolumeService, tv_path,
 };
 use crate::desktop_probe;
 use crate::tv_manager::{StateChangeEvent, TvManager};
+use tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID;
+use tisvlay_core::dbus_paths::system_profile_path;
 
 /// Re-run the DRM-EDID probe and update each managed TV's
 /// [`tisvlay_core::DesktopMapping`] cache on the manager.
@@ -190,6 +192,22 @@ pub async fn state_change_forwarder(
                     warn!(error = %e, tv_id = %tv_id, "Failed to emit PairingProgress");
                 }
             }
+            StateChangeEvent::SystemProfileBodyChanged { uuid } => {
+                debug!(profile = %uuid, "Forwarding system profile body change to D-Bus");
+                if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
+                    // Editing the default profile fans out to every
+                    // other profile's resolved chain. Refresh the
+                    // whole catalog so PropertiesChanged fires
+                    // consistently on each affected interface.
+                    let all = manager.list_system_profile_uuids().await;
+                    for affected in all {
+                        refresh_system_profile_cached_fields(object_server, affected, &manager)
+                            .await;
+                    }
+                } else {
+                    refresh_system_profile_cached_fields(object_server, uuid, &manager).await;
+                }
+            }
             StateChangeEvent::ConfigReloaded => {
                 debug!("Emitting ConfigReloaded signal on Manager1");
 
@@ -208,6 +226,13 @@ pub async fn state_change_forwarder(
                 for tv_id in manager.list_tv_ids().await {
                     let path = tv_path(&tv_id);
                     refresh_tv_config_state(object_server, &path, &tv_id, &manager).await;
+                }
+
+                // Same story for SystemProfile1 caches — direct
+                // config-file edits can shift any profile body, so
+                // walk every registered interface and refresh.
+                for uuid in manager.list_system_profile_uuids().await {
+                    refresh_system_profile_cached_fields(object_server, uuid, &manager).await;
                 }
 
                 // The TV list may have changed under us; re-run the
@@ -467,5 +492,92 @@ async fn refresh_tv_config_state(
         // `Automated` is computed from automate_when + current_input
         // + managed; conservatively re-emit so clients re-read it.
         iface.automated_changed(emitter).await.ok();
+    }
+}
+
+/// Refresh cached typed fields on one `SystemProfile1` interface.
+///
+/// Re-resolves the profile against the current inheritance chain,
+/// re-reads `LocallySetFields` + `ReferencedBy`, and writes any
+/// changed values back via `iface_ref.get_mut()`. zbus's macro emits
+/// `PropertiesChanged` for each `<field>_changed()` call we make.
+///
+/// Called from the `SystemProfileBodyChanged` handler above — non-
+/// default edits land on the one affected interface, default edits
+/// fan out across the whole catalog. The "did the value actually
+/// change?" guards keep the signal count down so clients don't see
+/// spurious refreshes for properties whose resolved value didn't
+/// shift.
+async fn refresh_system_profile_cached_fields(
+    object_server: &zbus::ObjectServer,
+    uuid: uuid::Uuid,
+    manager: &Arc<TvManager>,
+) {
+    let path = system_profile_path(&uuid);
+    let Ok(iface_ref) = object_server
+        .interface::<_, SystemProfileService>(&*path)
+        .await
+    else {
+        return;
+    };
+
+    let resolved = manager.resolve_system_profile_by_uuid(uuid).await;
+    let new_name = manager.get_system_profile_body(uuid).await.map(|b| b.name);
+    let new_locally_set = manager.system_profile_locally_set_fields(uuid).await;
+    let new_referenced_by = manager.system_profile_referenced_by(uuid).await;
+
+    let mut iface = iface_ref.get_mut().await;
+    let emitter = iface_ref.signal_emitter();
+
+    if let Some(name) = new_name
+        && iface.name != name
+    {
+        iface.name = name;
+        iface.name_changed(emitter).await.ok();
+    }
+
+    let new_on_startup = resolved.on_startup.to_string();
+    if iface.on_startup != new_on_startup {
+        iface.on_startup = new_on_startup;
+        iface.on_startup_changed(emitter).await.ok();
+    }
+    let new_on_shutdown = resolved.on_shutdown.to_string();
+    if iface.on_shutdown != new_on_shutdown {
+        iface.on_shutdown = new_on_shutdown;
+        iface.on_shutdown_changed(emitter).await.ok();
+    }
+    let new_on_reboot = resolved.on_reboot.to_string();
+    if iface.on_reboot != new_on_reboot {
+        iface.on_reboot = new_on_reboot;
+        iface.on_reboot_changed(emitter).await.ok();
+    }
+    let new_on_no_session = resolved.on_no_session.to_string();
+    if iface.on_no_session != new_on_no_session {
+        iface.on_no_session = new_on_no_session;
+        iface.on_no_session_changed(emitter).await.ok();
+    }
+    let new_on_sleep = resolved.on_sleep.to_string();
+    if iface.on_sleep != new_on_sleep {
+        iface.on_sleep = new_on_sleep;
+        iface.on_sleep_changed(emitter).await.ok();
+    }
+    let new_on_wake = resolved.on_wake.to_string();
+    if iface.on_wake != new_on_wake {
+        iface.on_wake = new_on_wake;
+        iface.on_wake_changed(emitter).await.ok();
+    }
+    let new_automate_when = resolved.automate_when.to_string();
+    if iface.automate_when != new_automate_when {
+        iface.automate_when = new_automate_when;
+        iface.automate_when_changed(emitter).await.ok();
+    }
+
+    if iface.locally_set_fields != new_locally_set {
+        iface.locally_set_fields = new_locally_set;
+        iface.locally_set_fields_changed(emitter).await.ok();
+    }
+    if iface.referenced_by != new_referenced_by {
+        iface.referenced_by = new_referenced_by;
+        iface.referenced_by_changed(emitter).await.ok();
     }
 }

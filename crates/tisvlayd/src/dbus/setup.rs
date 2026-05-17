@@ -57,7 +57,7 @@ pub async fn build_dbus_connection(
     }
 
     for uuid in tv_manager.list_system_profile_uuids().await {
-        register_system_profile(&connection, uuid)
+        register_system_profile(&connection, uuid, tv_manager.clone())
             .await
             .with_context(|| format!("Failed to serve SystemProfile interface for {}", uuid))?;
     }
@@ -138,7 +138,7 @@ pub async fn apply_reload_diff(
         unregister_system_profile(connection, *uuid).await;
     }
     for uuid in &diff.added_system_profiles {
-        if let Err(e) = register_system_profile(connection, *uuid).await {
+        if let Err(e) = register_system_profile(connection, *uuid, tv_manager.clone()).await {
             warn!(profile = %uuid, error = %e, "ReloadConfig: failed to register SystemProfile interface");
         }
     }

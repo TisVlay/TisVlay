@@ -181,6 +181,18 @@ pub enum StateChangeEvent {
         phase: String,
         message: String,
     },
+    /// A `SystemProfileConfig` body was mutated in-place — a typed
+    /// `Properties.Set` / `ResetField` / `ResetAll` on
+    /// `SystemProfile1`, or a `Tv1.SystemProfile` reassignment that
+    /// shifts the `ReferencedBy` companion list.
+    ///
+    /// The forwarder refreshes the cached fields on every affected
+    /// `SystemProfileService` interface via `iface_ref.get_mut()` so
+    /// zbus's macro fires `PropertiesChanged` for any property whose
+    /// resolved value changed. When `uuid == DEFAULT_SYSTEM_PROFILE_UUID`
+    /// every other profile inherits from the default chain, so the
+    /// forwarder fans out the refresh across the whole catalog.
+    SystemProfileBodyChanged { uuid: uuid::Uuid },
 }
 
 /// Basic TV information for D-Bus properties.
@@ -457,6 +469,97 @@ pub enum SystemEvent {
     NoSession,
     Sleep,
     Wake,
+}
+
+/// Parse a [`SessionAction`] from its serde `rename_all = "snake_case"`
+/// wire form. Surfaces failure as `TvManagerError::ConfigError`
+/// (mapped to `zbus::fdo::Error::InvalidArgs` at the D-Bus boundary).
+fn parse_session_action(value: &str) -> Result<SessionAction, TvManagerError> {
+    match value {
+        "none" => Ok(SessionAction::None),
+        "screen_off" => Ok(SessionAction::ScreenOff),
+        "screen_on" => Ok(SessionAction::ScreenOn),
+        "power_off" => Ok(SessionAction::PowerOff),
+        "power_on" => Ok(SessionAction::PowerOn),
+        _ => Err(TvManagerError::ConfigError(format!(
+            "Invalid SessionAction value: {}",
+            value
+        ))),
+    }
+}
+
+/// Parse an [`AutomateWhen`] from its serde `rename_all = "snake_case"` form.
+fn parse_automate_when(value: &str) -> Result<tisvlay_core::AutomateWhen, TvManagerError> {
+    use tisvlay_core::AutomateWhen;
+    match value {
+        "always" => Ok(AutomateWhen::Always),
+        "on_primary" => Ok(AutomateWhen::OnPrimary),
+        "off_primary" => Ok(AutomateWhen::OffPrimary),
+        _ => Err(TvManagerError::ConfigError(format!(
+            "Invalid AutomateWhen value: {}",
+            value
+        ))),
+    }
+}
+
+/// Whether `field` is a writable property on a `SystemProfile1`
+/// interface. Used by the set / reset helpers to reject typos before
+/// touching state.
+fn is_known_system_profile_field(field: &str) -> bool {
+    matches!(
+        field,
+        "on_startup"
+            | "on_shutdown"
+            | "on_reboot"
+            | "on_no_session"
+            | "on_sleep"
+            | "on_wake"
+            | "automate_when"
+    )
+}
+
+/// Apply one parsed-and-validated typed field to a
+/// `SystemProfileConfig` body. `field` must have already passed
+/// [`is_known_system_profile_field`] (or be `"name"`); value parsing
+/// for the typed fields happens here so the caller can stay
+/// field-agnostic.
+fn apply_system_profile_field(
+    body: &mut tisvlay_core::SystemProfileConfig,
+    field: &str,
+    value: &str,
+) -> Result<(), TvManagerError> {
+    match field {
+        "name" => body.name = value.to_string(),
+        "on_startup" => body.on_startup = Some(parse_session_action(value)?),
+        "on_shutdown" => body.on_shutdown = Some(parse_session_action(value)?),
+        "on_reboot" => body.on_reboot = Some(parse_session_action(value)?),
+        "on_no_session" => body.on_no_session = Some(parse_session_action(value)?),
+        "on_sleep" => body.on_sleep = Some(parse_session_action(value)?),
+        "on_wake" => body.on_wake = Some(parse_session_action(value)?),
+        "automate_when" => body.automate_when = Some(parse_automate_when(value)?),
+        _ => {
+            return Err(TvManagerError::ConfigError(format!(
+                "Unknown system profile field: {}",
+                field
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Clear one field on a `SystemProfileConfig` body back to `None`.
+/// `field` must have already passed [`is_known_system_profile_field`].
+fn clear_system_profile_field(body: &mut tisvlay_core::SystemProfileConfig, field: &str) {
+    match field {
+        "on_startup" => body.on_startup = None,
+        "on_shutdown" => body.on_shutdown = None,
+        "on_reboot" => body.on_reboot = None,
+        "on_no_session" => body.on_no_session = None,
+        "on_sleep" => body.on_sleep = None,
+        "on_wake" => body.on_wake = None,
+        "automate_when" => body.automate_when = None,
+        _ => {}
+    }
 }
 
 /// Apply a key-value TV option to a `TvConfig`.
@@ -1040,6 +1143,322 @@ impl TvManager {
     pub async fn list_user_profile_uuids(&self) -> Vec<uuid::Uuid> {
         let user = self.user_section.read().await;
         user.profiles.keys().copied().collect()
+    }
+
+    /// Read a system profile body by UUID.
+    pub async fn get_system_profile_body(
+        &self,
+        uuid: uuid::Uuid,
+    ) -> Option<tisvlay_core::SystemProfileConfig> {
+        let system = self.system_section.read().await;
+        system.profiles.get(&uuid).cloned()
+    }
+
+    /// Resolve a system profile by UUID, walking the inheritance chain
+    /// (this profile → [`DEFAULT_SYSTEM_PROFILE_UUID`] → hardcoded
+    /// baseline). Used by the per-profile `SystemProfile1` D-Bus
+    /// interface to report the resolved value for each typed property.
+    pub async fn resolve_system_profile_by_uuid(
+        &self,
+        uuid: uuid::Uuid,
+    ) -> tisvlay_core::ResolvedSystemProfile {
+        let system = self.system_section.read().await;
+        system.resolve_profile_by_uuid(uuid)
+    }
+
+    /// Names of the fields this profile explicitly sets (each
+    /// `Option<_>` field that is `Some`). Drives the GUI's gutter
+    /// accent + `(inherit: X)` placeholder visibility via the
+    /// `SystemProfile1.LocallySetFields: as` property.
+    pub async fn system_profile_locally_set_fields(&self, uuid: uuid::Uuid) -> Vec<String> {
+        let system = self.system_section.read().await;
+        let Some(body) = system.profiles.get(&uuid) else {
+            return Vec::new();
+        };
+        let mut fields = Vec::new();
+        if body.on_startup.is_some() {
+            fields.push("on_startup".to_string());
+        }
+        if body.on_shutdown.is_some() {
+            fields.push("on_shutdown".to_string());
+        }
+        if body.on_reboot.is_some() {
+            fields.push("on_reboot".to_string());
+        }
+        if body.on_no_session.is_some() {
+            fields.push("on_no_session".to_string());
+        }
+        if body.on_sleep.is_some() {
+            fields.push("on_sleep".to_string());
+        }
+        if body.on_wake.is_some() {
+            fields.push("on_wake".to_string());
+        }
+        if body.automate_when.is_some() {
+            fields.push("automate_when".to_string());
+        }
+        fields
+    }
+
+    /// UUIDs of TVs whose `profile.system` name resolves to this
+    /// profile. v2 keeps `[[tv]] profile.system` name-based, so we
+    /// match by the profile body's `name` field.
+    pub async fn system_profile_referenced_by(&self, uuid: uuid::Uuid) -> Vec<String> {
+        let Some(profile_name) = ({
+            let system = self.system_section.read().await;
+            system.profiles.get(&uuid).map(|p| p.name.clone())
+        }) else {
+            return Vec::new();
+        };
+        let tvs = self.tvs.read().await;
+        let mut result = Vec::new();
+        for (tv_id, (_, tv_arc)) in tvs.iter() {
+            let tv = tv_arc.lock().await;
+            if tv.config.profile.system == profile_name {
+                result.push(tv_id.clone());
+            }
+        }
+        result
+    }
+
+    /// Mutate one field on a system profile body.
+    ///
+    /// Parses `value` against the field's typed enum (`SessionAction`
+    /// / `AutomateWhen`), stores it as `Some(_)` on the body, persists
+    /// to disk under `disk_write_lock`, re-resolves every TV
+    /// referencing this profile, and emits
+    /// `StateChangeEvent::SystemProfileBodyChanged { uuid }` so the
+    /// state-forwarder refreshes cached fields on the affected
+    /// `SystemProfile1` interface(s).
+    ///
+    /// Field `"name"` validates non-empty + uniqueness; the reserved
+    /// [`DEFAULT_PROFILE_NAME`] is rejected as a target for any
+    /// non-default profile, and the default-UUID profile is locked
+    /// to the reserved name. See [`SystemSection::ensure_default`]
+    /// for the floor invariant.
+    pub async fn set_system_profile_field(
+        &self,
+        uuid: uuid::Uuid,
+        field: &str,
+        value: &str,
+    ) -> Result<(), TvManagerError> {
+        // Validate before touching state. Name has bespoke rules;
+        // typed enum fields parse against their serde representation.
+        if field == "name" {
+            if value.is_empty() {
+                return Err(TvManagerError::ConfigError(
+                    "Profile name must not be empty".into(),
+                ));
+            }
+            if uuid == tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
+                && value != tisvlay_core::DEFAULT_PROFILE_NAME
+            {
+                return Err(TvManagerError::ConfigError(format!(
+                    "Default system profile cannot be renamed (must stay '{}')",
+                    tisvlay_core::DEFAULT_PROFILE_NAME
+                )));
+            }
+            if uuid != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
+                && value == tisvlay_core::DEFAULT_PROFILE_NAME
+            {
+                return Err(TvManagerError::ConfigError(format!(
+                    "'{}' is reserved for the default system profile",
+                    tisvlay_core::DEFAULT_PROFILE_NAME
+                )));
+            }
+            let system = self.system_section.read().await;
+            if let Some((existing_uuid, _)) = system.find_profile_by_name(value)
+                && existing_uuid != uuid
+            {
+                return Err(TvManagerError::ConfigError(format!(
+                    "A system profile named '{}' already exists",
+                    value
+                )));
+            }
+        } else if !is_known_system_profile_field(field) {
+            return Err(TvManagerError::ConfigError(format!(
+                "Unknown system profile field: {}",
+                field
+            )));
+        } else if field == "automate_when" {
+            parse_automate_when(value)?;
+        } else {
+            // All other writable fields are SessionAction-typed.
+            parse_session_action(value)?;
+        }
+
+        // Mutate in-memory state.
+        let renamed_to: Option<(String, String)> = {
+            let mut system = self.system_section.write().await;
+            let body = system.profiles.get_mut(&uuid).ok_or_else(|| {
+                TvManagerError::ConfigError(format!("Unknown system profile uuid: {}", uuid))
+            })?;
+            let prev_name = body.name.clone();
+            apply_system_profile_field(body, field, value)?;
+            if field == "name" && prev_name != body.name {
+                Some((prev_name, body.name.clone()))
+            } else {
+                None
+            }
+        };
+
+        // If the profile's name changed, every TV whose
+        // `profile.system` referenced the old name needs the
+        // reference rewritten so future resolution still lands here.
+        if let Some((ref prev, ref next)) = renamed_to {
+            let tvs = self.tvs.read().await;
+            for (_, (_, tv_arc)) in tvs.iter() {
+                let mut tv = tv_arc.lock().await;
+                if tv.config.profile.system == *prev {
+                    tv.config.profile.system = next.clone();
+                }
+            }
+        }
+
+        // Re-resolve cached system_profile on every TV that
+        // references this profile by name. The resolved values may
+        // shift on any field edit (this profile changed) or on a
+        // default-profile edit (every other profile's chain shifted).
+        self.refresh_all_resolved_system_profiles().await;
+
+        // Persist + fan out the state change.
+        let renamed_to_disk = renamed_to.clone();
+        self.persist_system_profile_change(renamed_to_disk).await?;
+
+        self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
+
+        // Rename also shifts ReferencedBy on this profile (TVs whose
+        // `profile.system` field was rewritten to the new name) — the
+        // SystemProfileBodyChanged emit above already covers the
+        // affected UUID. If `field == name` we also emit per-TV
+        // OptionChanged for `profile.system` so Tv1.SystemProfile
+        // cached values stay in sync.
+        if let Some((ref prev, ref next)) = renamed_to {
+            let tvs = self.tvs.read().await;
+            for (tv_id, (_, tv_arc)) in tvs.iter() {
+                let tv = tv_arc.lock().await;
+                if tv.config.profile.system == *next {
+                    self.state_change_tx
+                        .send(StateChangeEvent::OptionChanged {
+                            tv_id: tv_id.clone(),
+                            key: "profile.system".to_string(),
+                            value: next.clone(),
+                        })
+                        .ok();
+                }
+                drop(tv);
+                let _ = prev;
+            }
+        }
+
+        info!(uuid = %uuid, field = %field, value = %value, "System profile field updated");
+        Ok(())
+    }
+
+    /// Clear one field on a system profile back to `None` (inheriting).
+    pub async fn reset_system_profile_field(
+        &self,
+        uuid: uuid::Uuid,
+        field: &str,
+    ) -> Result<(), TvManagerError> {
+        if field == "name" {
+            return Err(TvManagerError::ConfigError(
+                "'name' cannot be reset — names are always explicit".into(),
+            ));
+        }
+        if !is_known_system_profile_field(field) {
+            return Err(TvManagerError::ConfigError(format!(
+                "Unknown system profile field: {}",
+                field
+            )));
+        }
+
+        {
+            let mut system = self.system_section.write().await;
+            let body = system.profiles.get_mut(&uuid).ok_or_else(|| {
+                TvManagerError::ConfigError(format!("Unknown system profile uuid: {}", uuid))
+            })?;
+            clear_system_profile_field(body, field);
+        }
+
+        self.refresh_all_resolved_system_profiles().await;
+        self.persist_system_profile_change(None).await?;
+        self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
+
+        info!(uuid = %uuid, field = %field, "System profile field reset");
+        Ok(())
+    }
+
+    /// Clear every field on a system profile back to `None`.
+    /// `name` is preserved (the body still needs a name); the
+    /// default-UUID profile's name is also preserved (locked to
+    /// [`DEFAULT_PROFILE_NAME`] by `ensure_default`).
+    pub async fn reset_system_profile(&self, uuid: uuid::Uuid) -> Result<(), TvManagerError> {
+        {
+            let mut system = self.system_section.write().await;
+            let body = system.profiles.get_mut(&uuid).ok_or_else(|| {
+                TvManagerError::ConfigError(format!("Unknown system profile uuid: {}", uuid))
+            })?;
+            body.on_startup = None;
+            body.on_shutdown = None;
+            body.on_reboot = None;
+            body.on_no_session = None;
+            body.on_sleep = None;
+            body.on_wake = None;
+            body.automate_when = None;
+        }
+
+        self.refresh_all_resolved_system_profiles().await;
+        self.persist_system_profile_change(None).await?;
+        self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
+
+        info!(uuid = %uuid, "System profile reset");
+        Ok(())
+    }
+
+    /// Re-resolve every TV's `system_profile` against the current
+    /// system section. Called after any in-memory profile mutation
+    /// so daemon-side dispatch (`get_system_action`, `is_automated`)
+    /// observes the new resolved values without waiting for a
+    /// `reload_config` round-trip.
+    async fn refresh_all_resolved_system_profiles(&self) {
+        let system = self.system_section.read().await;
+        let tvs = self.tvs.read().await;
+        for (_, (_, tv_arc)) in tvs.iter() {
+            let mut tv = tv_arc.lock().await;
+            tv.system_profile = system.resolve_profile(&tv.config.profile.system);
+        }
+    }
+
+    /// Load the on-disk config, splice in the current `system` /
+    /// `user` sections + (optionally) rewrite TV `profile.system`
+    /// references when a profile was renamed, then save. Holds the
+    /// `disk_write_lock` for the load-modify-save critical section.
+    async fn persist_system_profile_change(
+        &self,
+        renamed: Option<(String, String)>,
+    ) -> Result<(), TvManagerError> {
+        let config_path = self.config_path.clone();
+        let system = self.system_section.read().await.clone();
+        let _disk_lock = self.disk_write_lock.lock().await;
+        tokio::task::spawn_blocking(move || {
+            let mut config = SystemConfig::load_from(&config_path).map_err(|e| {
+                TvManagerError::ConfigError(format!("Failed to load config: {}", e))
+            })?;
+            config.system = system;
+            if let Some((prev, next)) = renamed {
+                for tv in &mut config.tv {
+                    if tv.profile.system == prev {
+                        tv.profile.system = next.clone();
+                    }
+                }
+            }
+            config
+                .save_to(&config_path)
+                .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
+        })
+        .await
+        .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))?
     }
 
     /// Get the system profile name assigned to a TV.
@@ -2301,6 +2720,17 @@ impl TvManager {
             )));
         }
 
+        // ReferencedBy on the system profile this TV points to (the
+        // default, since AddTv leaves `profile.system` unset → default)
+        // grew by one; fan out so the SystemProfile1 cached property
+        // refreshes.
+        let referenced_name = tv_config.profile.system.clone();
+        let system = self.system_section.read().await;
+        if let Some((uuid, _)) = system.find_profile_by_name(&referenced_name) {
+            drop(system);
+            self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
+        }
+
         Ok(())
     }
 
@@ -2746,6 +3176,18 @@ impl TvManager {
     pub async fn remove_tv(&self, tv_id: &str) -> Result<(), TvManagerError> {
         info!(tv_id = %tv_id, "Removing TV");
 
+        // Capture the TV's referenced system-profile name before
+        // tearing it down so the post-remove ReferencedBy refresh
+        // (fired below as `SystemProfileBodyChanged`) lands on the
+        // right profile UUID.
+        let referenced_profile_name: Option<String> = match self.get_tv(tv_id).await {
+            Ok(arc) => {
+                let tv = arc.lock().await;
+                Some(tv.config.profile.system.clone())
+            }
+            Err(_) => None,
+        };
+
         // Remove from managed TVs (outer write lock -- modifying the HashMap)
         let removed_arc = {
             let mut tvs = self.tvs.write().await;
@@ -2767,6 +3209,17 @@ impl TvManager {
 
         // Remove from config file
         self.delete_tv_config(tv_id).await?;
+
+        // ReferencedBy on the previously-pointing profile shrinks by
+        // one; fan that out so the cached property on SystemProfile1
+        // refreshes.
+        if let Some(name) = referenced_profile_name {
+            let system = self.system_section.read().await;
+            if let Some((uuid, _)) = system.find_profile_by_name(&name) {
+                drop(system);
+                self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
+            }
+        }
 
         info!(tv_id = %tv_id, "TV removed successfully");
         Ok(())
@@ -2846,6 +3299,15 @@ impl TvManager {
         }
 
         let tv_arc = self.get_tv(tv_id).await?;
+        // Capture the previously-pointing profile name before mutation
+        // so a `profile.system` flip can refresh ReferencedBy on both
+        // the previously- and newly-affected profile UUIDs.
+        let prev_profile_name: Option<String> = if key == "profile.system" {
+            let tv = tv_arc.lock().await;
+            Some(tv.config.profile.system.clone())
+        } else {
+            None
+        };
         {
             let mut managed = tv_arc.lock().await;
             apply_tv_option(&mut managed.config, key, value)?;
@@ -2894,6 +3356,30 @@ impl TvManager {
             key: key.to_string(),
             value: value.to_string(),
         });
+
+        // Reassigning `profile.system` shifts ReferencedBy on the
+        // previously-affected and newly-affected profile UUIDs; emit
+        // a body-changed for each so the cached property on every
+        // SystemProfile1 interface refreshes.
+        if key == "profile.system" {
+            let system = self.system_section.read().await;
+            let mut to_emit = Vec::new();
+            if let Some(prev) = prev_profile_name.as_deref()
+                && let Some((uuid, _)) = system.find_profile_by_name(prev)
+            {
+                to_emit.push(uuid);
+            }
+            if let Some((uuid, _)) = system.find_profile_by_name(value) {
+                if !to_emit.contains(&uuid) {
+                    to_emit.push(uuid);
+                }
+            }
+            drop(system);
+            for uuid in to_emit {
+                self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
+            }
+        }
+
         info!(tv_id = %tv_id, key = %key, value = %value, "TV option updated");
         Ok(())
     }
@@ -3064,6 +3550,7 @@ impl TvManager {
         // Apply to in-memory config under the per-TV lock.
         let mut managed_changed_to: Option<bool> = None;
         let mut system_profile_changed = false;
+        let mut prev_profile_name: Option<String> = None;
         {
             let mut tv = tv_arc.lock().await;
             // Re-pair runs its handshake outside the per-TV lock for
@@ -3087,6 +3574,9 @@ impl TvManager {
                 } else {
                     key.as_str()
                 };
+                if key == "system_profile" && prev_profile_name.is_none() {
+                    prev_profile_name = Some(tv.config.profile.system.clone());
+                }
                 apply_tv_option(&mut tv.config, internal_key, value)?;
                 if key == "system_profile" {
                     system_profile_changed = true;
@@ -3184,6 +3674,33 @@ impl TvManager {
                 key: internal_key.to_string(),
                 value: value.clone(),
             });
+        }
+
+        // `profile.system` reassignment shifts ReferencedBy on both
+        // the previously- and newly-affected profile UUIDs. Mirrors
+        // the fan-out `set_tv_option` performs for single-field flips.
+        if system_profile_changed {
+            let new_name = top_level
+                .iter()
+                .find(|(k, _)| k == "system_profile")
+                .map(|(_, v)| v.clone());
+            let system = self.system_section.read().await;
+            let mut to_emit = Vec::new();
+            if let Some(prev) = prev_profile_name.as_deref()
+                && let Some((uuid, _)) = system.find_profile_by_name(prev)
+            {
+                to_emit.push(uuid);
+            }
+            if let Some(new_name) = new_name
+                && let Some((uuid, _)) = system.find_profile_by_name(&new_name)
+                && !to_emit.contains(&uuid)
+            {
+                to_emit.push(uuid);
+            }
+            drop(system);
+            for uuid in to_emit {
+                self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
+            }
         }
 
         // Vendor-field changes invalidate the live connection (IP

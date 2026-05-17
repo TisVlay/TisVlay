@@ -100,6 +100,22 @@ pub enum SessionAction {
     PowerOn,
 }
 
+impl std::fmt::Display for SessionAction {
+    /// Render as the serde `rename_all = "snake_case"` wire form so
+    /// `SystemProfile1` / `UserProfile1` D-Bus properties report the
+    /// same strings the on-disk TOML uses.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::None => "none",
+            Self::ScreenOff => "screen_off",
+            Self::ScreenOn => "screen_on",
+            Self::PowerOff => "power_off",
+            Self::PowerOn => "power_on",
+        };
+        f.write_str(s)
+    }
+}
+
 // =============================================================================
 // AutomateWhen — input-aware automation gating
 // =============================================================================
@@ -469,6 +485,29 @@ impl SystemSection {
             .find_profile_by_name(profile_name)
             .map(|(_, body)| body);
         let default = if profile_name != DEFAULT_PROFILE_NAME {
+            self.profiles.get(&DEFAULT_SYSTEM_PROFILE_UUID)
+        } else {
+            None
+        };
+
+        match (named, default) {
+            (Some(p), Some(d)) => p.merge_with_base(d).resolve(),
+            (Some(p), None) => p.resolve(),
+            (None, Some(d)) => d.resolve(),
+            (None, None) => ResolvedSystemProfile::default(),
+        }
+    }
+
+    /// Resolve a system profile by UUID.
+    ///
+    /// Same chain as [`resolve_profile`](Self::resolve_profile) but
+    /// keyed by UUID at the top of the chain. The per-profile
+    /// `SystemProfile1` D-Bus interface needs UUID-keyed resolution
+    /// because each interface owns one profile by identity, not by
+    /// name (the name is itself a mutable field on the body).
+    pub fn resolve_profile_by_uuid(&self, uuid: Uuid) -> ResolvedSystemProfile {
+        let named = self.profiles.get(&uuid);
+        let default = if uuid != DEFAULT_SYSTEM_PROFILE_UUID {
             self.profiles.get(&DEFAULT_SYSTEM_PROFILE_UUID)
         } else {
             None
