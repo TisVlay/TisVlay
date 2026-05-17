@@ -74,10 +74,14 @@ pub struct StateSnapshot {
 /// from D-Bus so [`convert_snapshot`] can be exercised by unit tests.
 pub struct SnapshotInputs {
     pub tvs: Vec<TvInfo>,
-    /// `(name, description)` pairs from `Manager1.ListSystemProfiles`.
+    /// `(uuid, name)` pairs from walking
+    /// `ObjectManager.GetManagedObjects` on the system bus for
+    /// `SystemProfile1` entries.
     pub system_profiles: Vec<(String, String)>,
-    /// `(name, description)` pairs from `Session1.ListUserProfiles`.
-    /// Empty when the session bus isn't available.
+    /// `(uuid, name)` pairs from walking
+    /// `ObjectManager.GetManagedObjects` on the user bus for
+    /// `UserProfile1` entries. Empty when the session bus isn't
+    /// available.
     pub user_profiles: Vec<(String, String)>,
     /// Per-TV user-profile assignment, keyed by TV UUID. Missing
     /// entries (no session, fetch failed, or no assignment) surface
@@ -99,10 +103,17 @@ pub async fn fetch_state(
     let tvs = daemon.list_tvs().await?;
     debug!(count = tvs.len(), "Fetched TVs from daemon");
 
-    let system_profiles = daemon.list_system_profiles().await.unwrap_or_default();
+    // Walk ObjectManager on both buses for the per-profile interfaces.
+    // The TVs pane still keys off the friendly name for combobox
+    // labels; full UUID-aware re-wiring lands with the Profiles pane
+    // in Commit 6.
+    let system_profiles = daemon
+        .list_system_profiles_with_ids()
+        .await
+        .unwrap_or_default();
 
     let user_profiles = match session {
-        Some(s) => s.list_user_profiles().await.unwrap_or_default(),
+        Some(s) => s.list_user_profiles_with_ids().await.unwrap_or_default(),
         None => Vec::new(),
     };
 
@@ -190,13 +201,16 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
 
+    // ObjectManager-derived rows arrive as `(uuid, name)` pairs;
+    // pick the name for the combobox label until the Profiles pane
+    // rebinds the editor to per-profile object paths in Commit 6.
     let system_profiles = system_profiles
         .into_iter()
-        .map(|(name, _)| SharedString::from(name))
+        .map(|(_uuid, name)| SharedString::from(name))
         .collect();
     let user_profiles = user_profiles
         .into_iter()
-        .map(|(name, _)| SharedString::from(name))
+        .map(|(_uuid, name)| SharedString::from(name))
         .collect();
 
     StateSnapshot {
@@ -394,13 +408,25 @@ mod tests {
     }
 
     #[test]
-    fn profile_lists_drop_descriptions_and_keep_names() {
+    fn profile_lists_keep_names_from_uuid_name_pairs() {
+        // The post-v2 wire shape is `(uuid_string, name)`; the Slint
+        // model surface still wants just the friendly name for the
+        // current combobox label.
         let inputs = SnapshotInputs {
             system_profiles: vec![
-                ("default".into(), "Default profile".into()),
-                ("evening".into(), "Dim + warm".into()),
+                (
+                    "00000000-0000-0000-0000-000000000001".into(),
+                    "default".into(),
+                ),
+                (
+                    "a1b2c3d4-0000-0000-0000-000000000001".into(),
+                    "evening".into(),
+                ),
             ],
-            user_profiles: vec![("movies".into(), "User: dark".into())],
+            user_profiles: vec![(
+                "00000000-0000-0000-0000-000000000002".into(),
+                "movies".into(),
+            )],
             ..empty_inputs()
         };
         let snap = convert_snapshot(inputs);

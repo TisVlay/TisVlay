@@ -2,13 +2,14 @@
 //!
 //! Implements `org.tisvlay.Manager1` for TV discovery and management.
 
+use crate::dbus::system_profile::{register_system_profile, unregister_system_profile};
 use crate::dbus::{DaemonError, apply_reload_diff};
 use crate::json_toml::json_to_toml;
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tisvlay_core::dbus_paths::tv_path;
+use tisvlay_core::dbus_paths::{system_profile_path, tv_path};
 
 use tracing::{debug, info};
 use zbus::interface;
@@ -331,7 +332,10 @@ impl ManagerService {
     ///
     /// Returns the `[profiles.default]` from the system config.
     /// Used by session services to inherit defaults when users
-    /// have no config file.
+    /// have no config file. The daemon's user-side profile bodies
+    /// aren't published as `UserProfile1` D-Bus objects (the session
+    /// owns that surface on the user bus), so this method remains the
+    /// admin-baseline transport for the session.
     async fn get_user_profile_default(&self) -> Result<String, DaemonError> {
         debug!("D-Bus: GetUserProfileDefault");
         let profile = self.manager.get_user_profile_default().await;
@@ -340,28 +344,14 @@ impl ManagerService {
         })
     }
 
-    /// Get all system profiles as (name, json) pairs.
+    /// Get all admin user profiles as (name, json) pairs.
     ///
-    /// Returns all system profiles defined in the system config.
-    /// Used by tray, GUI, and CLI to display available system profiles.
-    async fn list_system_profiles(&self) -> Result<Vec<(String, String)>, DaemonError> {
-        debug!("D-Bus: ListSystemProfiles");
-        let profiles = self.manager.list_system_profiles().await;
-        profiles
-            .into_iter()
-            .map(|(name, profile)| {
-                let json = serde_json::to_string(&profile).map_err(|e| {
-                    DaemonError::OperationFailed(format!("Failed to serialize profile: {}", e))
-                })?;
-                Ok((name, json))
-            })
-            .collect()
-    }
-
-    /// Get all user profiles as (name, json) pairs.
-    ///
-    /// Returns all profiles defined in the system config.
-    /// Used by session services to merge with user-defined profiles.
+    /// Returns all user-side profiles defined in the daemon's system
+    /// config. Same admin-baseline role as `GetUserProfileDefault` —
+    /// the session merges these with its own user profiles to drive
+    /// the inheritance walk. Distinct from the v2 ObjectManager surface
+    /// (the daemon has no `UserProfile1` D-Bus objects to enumerate;
+    /// `UserProfile1` lives on the user bus owned by the session).
     async fn list_user_profiles(&self) -> Result<Vec<(String, String)>, DaemonError> {
         debug!("D-Bus: ListUserProfiles");
         let profiles = self.manager.list_user_profiles().await;
@@ -374,6 +364,71 @@ impl ManagerService {
                 Ok((name, json))
             })
             .collect()
+    }
+
+    // -------------------------------------------------------------------------
+    // System-profile lifecycle
+    // -------------------------------------------------------------------------
+
+    /// Create a new system profile with the given friendly name and
+    /// every field inheriting. Returns the new object path; the
+    /// caller can build a `PropertiesProxy` against the path or read
+    /// the newly-added entry from `ObjectManager.GetManagedObjects`.
+    ///
+    /// Rejects empty names, names equal to
+    /// [`DEFAULT_PROFILE_NAME`](tisvlay_core::DEFAULT_PROFILE_NAME),
+    /// and duplicates — all as the standard
+    /// `org.freedesktop.DBus.Error.InvalidArgs` so GUI clients route
+    /// on the well-known error name without parsing the message.
+    async fn create_system_profile(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        name: &str,
+    ) -> zbus::fdo::Result<ObjectPath<'static>> {
+        info!(name = %name, "D-Bus: CreateSystemProfile");
+        let uuid = self
+            .manager
+            .create_system_profile(name.to_string())
+            .await
+            .map_err(create_system_profile_err)?;
+
+        // Register the per-profile interface so `InterfacesAdded`
+        // fires for clients watching the catalog.
+        if let Err(e) = register_system_profile(connection, uuid, self.manager.clone()).await {
+            tracing::warn!(uuid = %uuid, error = %e, "Failed to register SystemProfile interface");
+        }
+
+        let path = system_profile_path(&uuid);
+        ObjectPath::try_from(path)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("Failed to build profile path: {}", e)))
+    }
+
+    /// Delete an existing system profile by UUID.
+    ///
+    /// Malformed UUIDs return the standard
+    /// `org.freedesktop.DBus.Error.InvalidArgs`. Deleting the default
+    /// profile or one currently referenced by a TV returns
+    /// `org.freedesktop.DBus.Error.AccessDenied`; the message body
+    /// names the offending TV UUIDs so the GUI's delete-confirm
+    /// dialog can surface them.
+    async fn delete_system_profile(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        uuid: &str,
+    ) -> zbus::fdo::Result<()> {
+        info!(uuid = %uuid, "D-Bus: DeleteSystemProfile");
+        let parsed: uuid::Uuid = uuid.parse().map_err(|_| {
+            zbus::fdo::Error::InvalidArgs(format!("Invalid system profile UUID: {uuid}"))
+        })?;
+
+        self.manager
+            .delete_system_profile(parsed)
+            .await
+            .map_err(delete_system_profile_err)?;
+
+        // Drop the per-profile interface so `InterfacesRemoved` fires.
+        unregister_system_profile(connection, parsed).await;
+        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -444,4 +499,32 @@ impl ManagerService {
         vendor: &str,
         vendor_data: HashMap<String, String>,
     ) -> zbus::Result<()>;
+}
+
+/// Map `TvManager::create_system_profile` errors to standard fdo
+/// names. Validation failures (empty / reserved / duplicate name)
+/// land on `InvalidArgs`; anything else goes to `Failed`.
+fn create_system_profile_err(e: crate::tv_manager::TvManagerError) -> zbus::fdo::Error {
+    use crate::tv_manager::TvManagerError;
+    match e {
+        TvManagerError::ConfigError(msg) => zbus::fdo::Error::InvalidArgs(msg),
+        other => zbus::fdo::Error::Failed(other.to_string()),
+    }
+}
+
+/// Map `TvManager::delete_system_profile` errors to standard fdo
+/// names. Reserved + in-use rejections become `AccessDenied`; an
+/// unknown UUID becomes `InvalidArgs`; anything else `Failed`.
+fn delete_system_profile_err(e: crate::tv_manager::TvManagerError) -> zbus::fdo::Error {
+    use crate::tv_manager::TvManagerError;
+    match e {
+        TvManagerError::ProfileReserved(msg) => zbus::fdo::Error::AccessDenied(msg),
+        TvManagerError::ProfileInUse { name, tvs } => zbus::fdo::Error::AccessDenied(format!(
+            "profile '{}' is referenced by TVs: {}",
+            name,
+            tvs.join(", ")
+        )),
+        TvManagerError::ConfigError(msg) => zbus::fdo::Error::InvalidArgs(msg),
+        other => zbus::fdo::Error::Failed(other.to_string()),
+    }
 }

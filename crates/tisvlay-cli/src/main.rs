@@ -383,13 +383,17 @@ async fn main() -> Result<()> {
                 }
                 match action {
                     UserProfileAction::List => {
-                        let profiles = session.list_user_profiles().await?;
+                        // Walk ObjectManager on the session bus for
+                        // every UserProfile1; print the friendly name
+                        // (with the UUID alongside so callers can
+                        // pipe it back into Set).
+                        let profiles = session.list_user_profiles_with_ids().await?;
                         if profiles.is_empty() {
                             println!("No user profiles defined.");
                         } else {
                             println!("Available user profiles:");
-                            for (name, _) in &profiles {
-                                println!("  {}", name);
+                            for (uuid, name) in &profiles {
+                                println!("  {}  ({})", name, uuid);
                             }
                         }
                     }
@@ -407,13 +411,17 @@ async fn main() -> Result<()> {
             }
             ProfileAction::System { action } => match action {
                 SystemProfileAction::List => {
-                    let profiles = client.list_system_profiles().await?;
+                    // Walk ObjectManager on the system bus for every
+                    // SystemProfile1; print the friendly name with
+                    // its UUID alongside so callers can pipe the UUID
+                    // into Set.
+                    let profiles = client.list_system_profiles_with_ids().await?;
                     if profiles.is_empty() {
                         println!("No system profiles defined.");
                     } else {
                         println!("Available system profiles:");
-                        for (name, _) in &profiles {
-                            println!("  {}", name);
+                        for (uuid, name) in &profiles {
+                            println!("  {}  ({})", name, uuid);
                         }
                     }
                 }

@@ -153,6 +153,12 @@ impl From<TvManagerError> for DaemonError {
                 DaemonError::NotPairing(format!("TV {} is not currently pairing", tv_id))
             }
             TvManagerError::ConfigError(msg) => DaemonError::OperationFailed(msg),
+            TvManagerError::ProfileReserved(msg) => DaemonError::OperationFailed(msg),
+            TvManagerError::ProfileInUse { name, tvs } => DaemonError::OperationFailed(format!(
+                "profile '{}' is referenced by TVs: {}",
+                name,
+                tvs.join(", ")
+            )),
         }
     }
 }

@@ -309,11 +309,20 @@ impl UserProfileService {
 
 /// Map a [`UserProfileMutationError`] to a `zbus::fdo` error. Parse /
 /// range failures surface as `InvalidArgs` so clients can route on
-/// the error name without parsing the body string.
-fn profile_err(e: UserProfileMutationError) -> zbus::fdo::Error {
+/// the error name without parsing the body string. Reserved + in-use
+/// failures route as `AccessDenied` so delete-rejection error names
+/// are distinguishable from validation rejections without parsing
+/// the message.
+pub(crate) fn profile_err(e: UserProfileMutationError) -> zbus::fdo::Error {
     match e {
         UserProfileMutationError::Invalid(msg) => zbus::fdo::Error::InvalidArgs(msg),
         UserProfileMutationError::Failed(msg) => zbus::fdo::Error::Failed(msg),
+        UserProfileMutationError::Reserved(msg) => zbus::fdo::Error::AccessDenied(msg),
+        UserProfileMutationError::InUse { name, tvs } => zbus::fdo::Error::AccessDenied(format!(
+            "profile '{}' is referenced by TVs: {}",
+            name,
+            tvs.join(", ")
+        )),
     }
 }
 
@@ -328,12 +337,27 @@ pub enum UserProfileMutationError {
     /// Operation failed for state-machine reasons (unknown UUID,
     /// persistence I/O error). Maps to `Failed`.
     Failed(String),
+    /// Operation targets a reserved profile (e.g. trying to delete
+    /// the `"default"` profile). Maps to
+    /// `org.freedesktop.DBus.Error.AccessDenied`.
+    Reserved(String),
+    /// Profile delete blocked because TVs still reference it. `name`
+    /// is the friendly name (log/UI context); `tvs` is the list of
+    /// offending TV UUIDs. Maps to
+    /// `org.freedesktop.DBus.Error.AccessDenied`.
+    InUse { name: String, tvs: Vec<String> },
 }
 
 impl std::fmt::Display for UserProfileMutationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(m) | Self::Failed(m) => f.write_str(m),
+            Self::Invalid(m) | Self::Failed(m) | Self::Reserved(m) => f.write_str(m),
+            Self::InUse { name, tvs } => write!(
+                f,
+                "profile '{}' is referenced by TVs: {}",
+                name,
+                tvs.join(", ")
+            ),
         }
     }
 }
@@ -541,6 +565,104 @@ pub async fn reset_user_profile_field(
     refresh_all_resolved_user_profiles(state).await;
     persist_user_config(state, config_path).await?;
     debug!(uuid = %uuid, field = %field, "User profile field reset");
+    Ok(())
+}
+
+/// Create a new user profile with the given friendly name and every
+/// field inheriting. Generates a fresh [`Uuid::new_v4`], validates the
+/// name (non-empty, not reserved, not a duplicate), inserts the body,
+/// persists, and returns the new UUID.
+///
+/// The D-Bus handler registers the per-profile `UserProfile1`
+/// interface against this UUID immediately after this call returns so
+/// `ObjectManager.InterfacesAdded` fires on the user bus.
+pub async fn create_user_profile(
+    state: &Arc<RwLock<SessionState>>,
+    config_path: Option<&PathBuf>,
+    name: String,
+) -> Result<Uuid, UserProfileMutationError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(UserProfileMutationError::Invalid(
+            "profile name cannot be empty".into(),
+        ));
+    }
+    if trimmed == DEFAULT_PROFILE_NAME {
+        return Err(UserProfileMutationError::Invalid(format!(
+            "'{}' is reserved for the default user profile",
+            DEFAULT_PROFILE_NAME
+        )));
+    }
+    {
+        let s = state.read().await;
+        if s.user_config.user.find_profile_by_name(trimmed).is_some() {
+            return Err(UserProfileMutationError::Invalid(format!(
+                "A user profile named '{}' already exists",
+                trimmed
+            )));
+        }
+    }
+
+    let uuid = Uuid::new_v4();
+    {
+        let mut s = state.write().await;
+        s.user_config.user.profiles.insert(
+            uuid,
+            UserProfileConfig {
+                name: trimmed.to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
+    refresh_all_resolved_user_profiles(state).await;
+    persist_user_config(state, config_path).await?;
+    info!(uuid = %uuid, name = %trimmed, "User profile created");
+    Ok(uuid)
+}
+
+/// Delete an existing user profile.
+///
+/// Rejects:
+/// - [`DEFAULT_USER_PROFILE_UUID`] ([`UserProfileMutationError::Reserved`]).
+/// - Any UUID currently referenced by a TV's `profile.user`
+///   ([`UserProfileMutationError::InUse`]); the error message names
+///   the offending TV UUIDs.
+/// - Unknown UUIDs ([`UserProfileMutationError::Failed`]).
+pub async fn delete_user_profile(
+    state: &Arc<RwLock<SessionState>>,
+    config_path: Option<&PathBuf>,
+    uuid: Uuid,
+) -> Result<(), UserProfileMutationError> {
+    if uuid == DEFAULT_USER_PROFILE_UUID {
+        return Err(UserProfileMutationError::Reserved(
+            "the default user profile cannot be deleted".into(),
+        ));
+    }
+
+    let (name, tvs) = {
+        let s = state.read().await;
+        let Some(body) = s.user_config.user.profiles.get(&uuid) else {
+            return Err(UserProfileMutationError::Failed(format!(
+                "Unknown user profile uuid: {}",
+                uuid
+            )));
+        };
+        (body.name.clone(), user_profile_referenced_by(&s, uuid))
+    };
+
+    if !tvs.is_empty() {
+        return Err(UserProfileMutationError::InUse { name, tvs });
+    }
+
+    {
+        let mut s = state.write().await;
+        s.user_config.user.profiles.remove(&uuid);
+    }
+
+    refresh_all_resolved_user_profiles(state).await;
+    persist_user_config(state, config_path).await?;
+    info!(uuid = %uuid, "User profile deleted");
     Ok(())
 }
 

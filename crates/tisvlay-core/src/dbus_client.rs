@@ -184,11 +184,21 @@ trait TisvlayManager {
     /// Get the admin baseline for user profiles as JSON.
     fn get_user_profile_default(&self) -> zbus::Result<String>;
 
-    /// Get all user profiles as (name, json) pairs.
+    /// Get all admin user profiles as (name, json) pairs. Admin-side
+    /// transport for the session's inheritance walk — distinct from
+    /// the v2 ObjectManager `UserProfile1` surface (which lives on
+    /// the user bus, not the system bus).
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Get all system profiles as (name, json) pairs.
-    fn list_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+    /// Create a new system profile with the given friendly name.
+    /// Returns the new object path. Rejects empty names, names equal
+    /// to the reserved `"default"`, and duplicates as `InvalidArgs`.
+    fn create_system_profile(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
+
+    /// Delete an existing system profile by UUID. Rejects the default
+    /// UUID and any UUID currently referenced by a TV via
+    /// `AccessDenied`.
+    fn delete_system_profile(&self, uuid: &str) -> zbus::Result<()>;
 
     /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
     /// `awaiting_input`, `complete`, `failed`. See
@@ -1525,16 +1535,38 @@ impl DaemonClient {
             .context("Failed to list user profiles from daemon")
     }
 
-    /// Get all system profiles.
+    /// Create a new system profile by friendly name. Returns the new
+    /// object path.
     ///
-    /// Returns all system profiles defined in the daemon's system config as
-    /// `(name, json)` pairs.
-    pub async fn list_system_profiles(&self) -> Result<Vec<(String, String)>> {
-        debug!("Calling ListSystemProfiles on daemon");
+    /// Rejects empty names, the reserved `"default"`, and duplicate
+    /// names as `org.freedesktop.DBus.Error.InvalidArgs`. The new
+    /// profile appears on the system bus via
+    /// `ObjectManager.InterfacesAdded` immediately after this call
+    /// returns.
+    pub async fn create_system_profile(
+        &self,
+        name: &str,
+    ) -> Result<zbus::zvariant::OwnedObjectPath> {
+        debug!(name = %name, "Calling CreateSystemProfile on daemon");
         self.manager
-            .list_system_profiles()
+            .create_system_profile(name)
             .await
-            .context("Failed to list system profiles from daemon")
+            .with_context(|| format!("Failed to create system profile '{}'", name))
+    }
+
+    /// Delete an existing system profile by UUID.
+    ///
+    /// Rejects the default UUID and any UUID referenced by a TV via
+    /// `org.freedesktop.DBus.Error.AccessDenied`. The profile
+    /// disappears from the system bus via
+    /// `ObjectManager.InterfacesRemoved` immediately after this call
+    /// returns.
+    pub async fn delete_system_profile(&self, uuid: uuid::Uuid) -> Result<()> {
+        debug!(uuid = %uuid, "Calling DeleteSystemProfile on daemon");
+        self.manager
+            .delete_system_profile(uuid.to_string().as_str())
+            .await
+            .with_context(|| format!("Failed to delete system profile {}", uuid))
     }
 
     /// List system profiles as `(uuid_string, name)` pairs by walking
@@ -1651,8 +1683,15 @@ trait TisvlaySession {
     #[zbus(property(emits_changed_signal = "false"))]
     fn config_path(&self) -> zbus::Result<String>;
 
-    /// List all available user profiles.
-    fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+    /// Create a new user profile with the given friendly name.
+    /// Returns the new object path. Rejects empty names, the reserved
+    /// `"default"`, and duplicates as `InvalidArgs`.
+    fn create_user_profile(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
+
+    /// Delete an existing user profile by UUID. Rejects the default
+    /// UUID and any UUID currently referenced by a TV via
+    /// `AccessDenied`.
+    fn delete_user_profile(&self, uuid: &str) -> zbus::Result<()>;
 
     /// Get the user profile UUID assigned to a TV (string-formatted).
     fn get_tv_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
@@ -1709,8 +1748,13 @@ impl SessionClient {
     }
 
     /// Check if the session service is available.
+    ///
+    /// Probes `Session1.Version` (cheapest non-failing call — a const
+    /// property the session always exposes); any error reads as
+    /// offline. Mirrors `TrayClient::is_available`'s approach so all
+    /// presence-probe paths look the same.
     pub async fn is_available(&self) -> bool {
-        self.proxy.list_user_profiles().await.is_ok()
+        self.proxy.version().await.is_ok()
     }
 
     /// Compile-time version of the running session-service binary.
@@ -1734,14 +1778,29 @@ impl SessionClient {
             .context("Failed to read session-service config path")
     }
 
-    /// List all available user profiles.
+    /// Create a new user profile by friendly name. Returns the new
+    /// object path.
     ///
-    /// Returns: Vec of (profile_name, profile_json) tuples.
-    pub async fn list_user_profiles(&self) -> Result<Vec<(String, String)>> {
+    /// Rejects empty names, the reserved `"default"`, and duplicate
+    /// names as `org.freedesktop.DBus.Error.InvalidArgs`. The new
+    /// profile appears on the session bus via
+    /// `ObjectManager.InterfacesAdded`.
+    pub async fn create_user_profile(&self, name: &str) -> Result<zbus::zvariant::OwnedObjectPath> {
         self.proxy
-            .list_user_profiles()
+            .create_user_profile(name)
             .await
-            .context("Failed to list user profiles from session service")
+            .with_context(|| format!("Failed to create user profile '{}'", name))
+    }
+
+    /// Delete an existing user profile by UUID.
+    ///
+    /// Rejects the default UUID and any UUID referenced by a TV via
+    /// `org.freedesktop.DBus.Error.AccessDenied`.
+    pub async fn delete_user_profile(&self, uuid: uuid::Uuid) -> Result<()> {
+        self.proxy
+            .delete_user_profile(uuid.to_string().as_str())
+            .await
+            .with_context(|| format!("Failed to delete user profile {}", uuid))
     }
 
     /// List user profiles as `(uuid_string, name)` pairs by walking

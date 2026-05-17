@@ -4,16 +4,21 @@
 //! Used by the tray app and future GUI to query and change profile assignments.
 
 use crate::SessionState;
-use crate::user_profile::{UserProfileEvent, UserProfileEventTx};
+use crate::user_profile::{
+    UserProfileEvent, UserProfileEventTx, create_user_profile, delete_user_profile, profile_err,
+    register_user_profile, unregister_user_profile,
+};
 use anyhow::Context;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tisvlay_core::DaemonClient;
+use tisvlay_core::dbus_paths::user_profile_path;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
+use zbus::zvariant::ObjectPath;
 
 /// D-Bus name for the session service.
 pub const SESSION_DBUS_NAME: &str = "org.tisvlay.Session";
@@ -96,47 +101,68 @@ impl SessionService {
             .to_string()
     }
 
-    /// List all available user profiles.
+    // -------------------------------------------------------------------------
+    // User-profile lifecycle
+    // -------------------------------------------------------------------------
+
+    /// Create a new user profile with the given friendly name and
+    /// every field inheriting. Returns the new object path.
     ///
-    /// Returns: Array of (profile_name, profile_json) tuples.
-    /// Includes user-defined profiles merged with admin profiles.
-    /// User profiles take precedence over admin profiles with the same name.
-    async fn list_user_profiles(&self) -> Result<Vec<(String, String)>, SessionError> {
-        debug!("D-Bus: ListUserProfiles");
-        let s = self.state.read().await;
+    /// Rejects empty names, names equal to
+    /// [`DEFAULT_PROFILE_NAME`](tisvlay_core::DEFAULT_PROFILE_NAME),
+    /// and duplicates — all as `InvalidArgs` so GUI clients route on
+    /// the standard error name.
+    async fn create_user_profile(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        name: &str,
+    ) -> zbus::fdo::Result<ObjectPath<'static>> {
+        info!(name = %name, "D-Bus: CreateUserProfile");
+        let uuid = create_user_profile(&self.state, self.config_path.as_ref(), name.to_string())
+            .await
+            .map_err(profile_err)?;
 
-        // Start with admin profiles as the base
-        let mut merged: std::collections::HashMap<String, &tisvlay_core::UserProfileConfig> =
-            std::collections::HashMap::new();
-        for (name, profile) in &s.admin_user_profiles {
-            merged.insert(name.clone(), profile);
+        // Register the per-profile interface so `InterfacesAdded`
+        // fires for clients watching the user-bus catalog.
+        if let Err(e) = register_user_profile(
+            connection,
+            self.state.clone(),
+            self.config_path.clone(),
+            self.events.clone(),
+            uuid,
+        )
+        .await
+        {
+            warn!(uuid = %uuid, error = %e, "Failed to register UserProfile interface");
         }
 
-        // User profiles override admin profiles with the same name.
-        // user_config.user.profiles is UUID-keyed in v2; merge key is
-        // the body's `name` (the friendly name external callers
-        // reference).
-        for profile in s.user_config.user.profiles.values() {
-            merged.insert(profile.name.clone(), profile);
-        }
+        let path = user_profile_path(&uuid);
+        ObjectPath::try_from(path)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("Failed to build profile path: {}", e)))
+    }
 
-        // Ensure "default" is always present
-        if !merged.contains_key("default") {
-            merged.insert("default".to_string(), &s.admin_user_default);
-        }
+    /// Delete an existing user profile by UUID.
+    ///
+    /// Malformed UUIDs return `InvalidArgs`. Deleting the default
+    /// profile returns `AccessDenied`. Deleting a profile currently
+    /// referenced by one or more TVs returns `AccessDenied` with a
+    /// message naming the offending TV UUIDs.
+    async fn delete_user_profile(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        uuid: &str,
+    ) -> zbus::fdo::Result<()> {
+        info!(uuid = %uuid, "D-Bus: DeleteUserProfile");
+        let parsed: Uuid = uuid.parse().map_err(|_| {
+            zbus::fdo::Error::InvalidArgs(format!("Invalid user profile UUID: {uuid}"))
+        })?;
 
-        let mut profiles = Vec::new();
-        for (name, profile) in merged {
-            let json = serde_json::to_string(profile).map_err(|e| {
-                SessionError::OperationFailed(format!("Failed to serialize profile: {}", e))
-            })?;
-            profiles.push((name, json));
-        }
+        delete_user_profile(&self.state, self.config_path.as_ref(), parsed)
+            .await
+            .map_err(profile_err)?;
 
-        // Sort for stable ordering
-        profiles.sort_by(|a, b| a.0.cmp(&b.0));
-
-        Ok(profiles)
+        unregister_user_profile(connection, parsed).await;
+        Ok(())
     }
 
     /// Get the user profile UUID assigned to a TV (string-formatted).

@@ -17,20 +17,53 @@ async fn session_proxy(conn: &zbus::Connection) -> zbus::Result<zbus::Proxy<'sta
         .await
 }
 
+/// `Session1.ListUserProfiles` was dropped in v2 — the user-bus
+/// `UserProfile1` ObjectManager surface is the replacement. Clients
+/// walk `ObjectManager.GetManagedObjects` on `/org/tisvlay` and
+/// filter by interface, then read `Name` per profile.
+///
+/// The default UUID is only auto-registered when the user config has
+/// the default profile body (`UserSection::ensure_default`). When the
+/// user has no config file, the catalog is empty until the user
+/// creates their first profile via `Session1.CreateUserProfile`; the
+/// admin baseline still inherits in via the daemon-side resolution
+/// walk and `Session1.GetEffectiveUserProfile` returns sensible
+/// defaults.
 #[tokio::test]
-async fn list_user_profiles_includes_default() {
-    let _session = TestSession::new("prof_tv").await.unwrap();
+async fn user_profile_object_manager_surfaces_created_profiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("user-config.toml");
+    let _session = TestSession::with_user_config_path("om_prof_tv", cfg)
+        .await
+        .unwrap();
     let bus = tisvlay_test::PrivateBus::shared();
     let conn = bus.connect().await.unwrap();
+
+    // Create a profile so we have something to find via the
+    // ObjectManager surface. A freshly-loaded empty user config
+    // doesn't auto-register the default UUID (the body has to land
+    // first via ensure_default or an explicit create).
     let proxy = session_proxy(&conn).await.unwrap();
+    let new_path: zbus::zvariant::OwnedObjectPath = proxy
+        .call("CreateUserProfile", &("evening",))
+        .await
+        .unwrap();
 
-    let profiles: Vec<(String, String)> = proxy.call("ListUserProfiles", &()).await.unwrap();
+    let om = zbus::fdo::ObjectManagerProxy::builder(&conn)
+        .destination("org.tisvlay.Session")
+        .unwrap()
+        .path("/org/tisvlay")
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let managed = om.get_managed_objects().await.unwrap();
 
-    // The default profile should always be present.
     assert!(
-        profiles.iter().any(|(name, _)| name == "default"),
-        "expected 'default' in profiles: {:?}",
-        profiles.iter().map(|(n, _)| n).collect::<Vec<_>>()
+        managed.keys().any(|p| p.as_str() == new_path.as_str()),
+        "expected created user profile at {}; got paths: {:?}",
+        new_path.as_str(),
+        managed.keys().map(|p| p.as_str()).collect::<Vec<_>>()
     );
 }
 

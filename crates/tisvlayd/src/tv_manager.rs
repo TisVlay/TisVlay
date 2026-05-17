@@ -96,6 +96,21 @@ pub enum TvManagerError {
     /// Configuration I/O error (load/save).
     #[error("Config error: {0}")]
     ConfigError(String),
+
+    /// Operation targets a reserved profile (e.g. trying to delete the
+    /// `"default"` profile). The carried message is the user-facing
+    /// reason. Maps to `org.freedesktop.DBus.Error.AccessDenied` on
+    /// the wire.
+    #[error("{0}")]
+    ProfileReserved(String),
+
+    /// Profile delete blocked because TVs still reference it. The
+    /// carried `name` is the friendly name (for log/UI context); `tvs`
+    /// is the list of offending TV UUIDs so the GUI's delete-confirm
+    /// dialog can surface them. Maps to
+    /// `org.freedesktop.DBus.Error.AccessDenied` on the wire.
+    #[error("profile '{name}' is referenced by TVs: {}", tvs.join(", "))]
+    ProfileInUse { name: String, tvs: Vec<String> },
 }
 
 /// Event emitted when TV state changes or daemon-wide events occur.
@@ -1376,6 +1391,111 @@ impl TvManager {
         self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
 
         info!(uuid = %uuid, "System profile reset");
+        Ok(())
+    }
+
+    /// Create a new system profile with the given friendly name and
+    /// every field inheriting. Generates a fresh [`Uuid::new_v4`],
+    /// validates the name (non-empty, not reserved, not a duplicate),
+    /// inserts the body, persists, and returns the new UUID.
+    ///
+    /// The D-Bus handler registers the per-profile `SystemProfile1`
+    /// interface against this UUID immediately after this call returns
+    /// so `ObjectManager.InterfacesAdded` fires for clients tracking
+    /// the catalog.
+    pub async fn create_system_profile(&self, name: String) -> Result<uuid::Uuid, TvManagerError> {
+        // Trim trailing/leading whitespace before validation — a name
+        // that's only whitespace counts as empty for our purposes.
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(TvManagerError::ConfigError(
+                "profile name cannot be empty".into(),
+            ));
+        }
+        if trimmed == tisvlay_core::DEFAULT_PROFILE_NAME {
+            return Err(TvManagerError::ConfigError(format!(
+                "'{}' is reserved for the default system profile",
+                tisvlay_core::DEFAULT_PROFILE_NAME
+            )));
+        }
+        {
+            let system = self.system_section.read().await;
+            if system.find_profile_by_name(trimmed).is_some() {
+                return Err(TvManagerError::ConfigError(format!(
+                    "A system profile named '{}' already exists",
+                    trimmed
+                )));
+            }
+        }
+
+        let uuid = uuid::Uuid::new_v4();
+        {
+            let mut system = self.system_section.write().await;
+            system.profiles.insert(
+                uuid,
+                tisvlay_core::SystemProfileConfig {
+                    name: trimmed.to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        self.persist_system_profile_change().await?;
+        info!(uuid = %uuid, name = %trimmed, "System profile created");
+        Ok(uuid)
+    }
+
+    /// Delete an existing system profile.
+    ///
+    /// Rejects:
+    /// - [`DEFAULT_SYSTEM_PROFILE_UUID`](tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
+    ///   ([`TvManagerError::ProfileReserved`]).
+    /// - Any UUID currently referenced by a TV's `profile.system`
+    ///   ([`TvManagerError::ProfileInUse`]); the error message names
+    ///   the offending TV UUIDs so the GUI's delete-confirm dialog
+    ///   can carry the rejection reason.
+    /// - Unknown UUIDs ([`TvManagerError::ConfigError`]).
+    ///
+    /// The D-Bus handler unregisters the per-profile `SystemProfile1`
+    /// interface after this call returns so
+    /// `ObjectManager.InterfacesRemoved` fires for clients.
+    pub async fn delete_system_profile(&self, uuid: uuid::Uuid) -> Result<(), TvManagerError> {
+        if uuid == tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID {
+            return Err(TvManagerError::ProfileReserved(
+                "the default system profile cannot be deleted".into(),
+            ));
+        }
+
+        let (name, tvs) = {
+            let system = self.system_section.read().await;
+            let Some(body) = system.profiles.get(&uuid) else {
+                return Err(TvManagerError::ConfigError(format!(
+                    "Unknown system profile uuid: {}",
+                    uuid
+                )));
+            };
+            (
+                body.name.clone(),
+                self.system_profile_referenced_by(uuid).await,
+            )
+        };
+
+        if !tvs.is_empty() {
+            return Err(TvManagerError::ProfileInUse { name, tvs });
+        }
+
+        {
+            let mut system = self.system_section.write().await;
+            system.profiles.remove(&uuid);
+        }
+
+        // Drop the cached resolution chain on every TV (none reference
+        // the deleted UUID at this point, but re-resolve so the cached
+        // `tv.system_profile` reflects today's `system_section`).
+        self.refresh_all_resolved_system_profiles().await;
+        self.persist_system_profile_change().await?;
+
+        info!(uuid = %uuid, "System profile deleted");
         Ok(())
     }
 
