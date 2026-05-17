@@ -433,6 +433,82 @@ trait TisvlayTvBacklight {
 }
 
 // =============================================================================
+// Profile Summary (master-list row)
+// =============================================================================
+
+/// One profile-catalog row, harvested from
+/// `ObjectManager.GetManagedObjects` in a single round-trip.
+///
+/// Returned by [`DaemonClient::list_system_profiles_full`] and
+/// [`SessionClient::list_user_profiles_full`]. Carries `(uuid, name,
+/// referenced_by)` so the Profiles pane master list can render the
+/// trailing `Nx` count + the detail header's "Used by [chip][chip]"
+/// row without an extra `PropertiesProxy::get("ReferencedBy")`
+/// round-trip per profile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileSummary {
+    /// Hyphenated UUID string, matching the wire shape on
+    /// `Tv1.SystemProfile` / `Session1.GetTvUserProfile`.
+    pub uuid: String,
+    /// Friendly name (`SystemProfile1.Name` / `UserProfile1.Name`).
+    pub name: String,
+    /// UUIDs of TVs whose resolved profile references this profile
+    /// (`SystemProfile1.ReferencedBy` / `UserProfile1.ReferencedBy`).
+    /// Resolution happens daemon-side; this is the authoritative
+    /// reference list, not a client-side join.
+    pub referenced_by: Vec<String>,
+}
+
+/// Shared extraction helper for `list_*_profiles_full`. Walks the
+/// `GetManagedObjects` map, keeps only paths under `base_path` that
+/// publish `interface`, and reads `Id`/`Name`/`ReferencedBy`. Missing
+/// properties surface as defaults (empty UUID is filtered out;
+/// missing `ReferencedBy` becomes an empty `Vec`).
+fn extract_profile_summaries(
+    managed_objects: HashMap<
+        OwnedObjectPath,
+        HashMap<zbus::names::OwnedInterfaceName, HashMap<String, OwnedValue>>,
+    >,
+    base_path: &str,
+    interface: &str,
+) -> Vec<ProfileSummary> {
+    let mut out = Vec::new();
+    for (path, ifaces) in managed_objects {
+        if !path.as_str().starts_with(base_path) {
+            continue;
+        }
+        let Some(props) = ifaces
+            .iter()
+            .find(|(k, _)| k.as_str() == interface)
+            .map(|(_, v)| v)
+        else {
+            continue;
+        };
+        let uuid = props
+            .get("Id")
+            .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
+            .unwrap_or_default();
+        if uuid.is_empty() {
+            continue;
+        }
+        let name = props
+            .get("Name")
+            .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
+            .unwrap_or_default();
+        let referenced_by = props
+            .get("ReferencedBy")
+            .and_then(|v: &OwnedValue| Vec::<String>::try_from(v.clone()).ok())
+            .unwrap_or_default();
+        out.push(ProfileSummary {
+            uuid,
+            name,
+            referenced_by,
+        });
+    }
+    out
+}
+
+// =============================================================================
 // TV State Change (for signal subscription)
 // =============================================================================
 
@@ -1577,36 +1653,30 @@ impl DaemonClient {
     /// Tray uses this to display a name in the menu while sending the
     /// UUID to `Tv1.SystemProfile`.
     pub async fn list_system_profiles_with_ids(&self) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .list_system_profiles_full()
+            .await?
+            .into_iter()
+            .map(|p| (p.uuid, p.name))
+            .collect())
+    }
+
+    /// List system profiles as full [`ProfileSummary`] rows by walking
+    /// `ObjectManager.GetManagedObjects` once. Carries `(uuid, name,
+    /// referenced_by)` so callers that need the referencing-TV UUIDs
+    /// (Profiles pane master list) avoid a follow-up property read per
+    /// profile.
+    pub async fn list_system_profiles_full(&self) -> Result<Vec<ProfileSummary>> {
         let managed_objects = self
             .object_manager
             .get_managed_objects()
             .await
             .context("Failed to get managed objects from daemon")?;
-        let mut out = Vec::new();
-        for (path, ifaces) in managed_objects {
-            if !path.as_str().starts_with(crate::SYSTEM_PROFILE_BASE_PATH) {
-                continue;
-            }
-            let Some(props) = ifaces
-                .iter()
-                .find(|(k, _)| k.as_str() == "org.tisvlay.SystemProfile1")
-                .map(|(_, v)| v)
-            else {
-                continue;
-            };
-            let id = props
-                .get("Id")
-                .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
-                .unwrap_or_default();
-            let name = props
-                .get("Name")
-                .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
-                .unwrap_or_default();
-            if !id.is_empty() {
-                out.push((id, name));
-            }
-        }
-        Ok(out)
+        Ok(extract_profile_summaries(
+            managed_objects,
+            crate::SYSTEM_PROFILE_BASE_PATH,
+            "org.tisvlay.SystemProfile1",
+        ))
     }
 
     /// Set a TV's friendly name.
@@ -1811,36 +1881,27 @@ impl SessionClient {
     /// uses this to render profile names while passing UUIDs through
     /// `Session1.SetTvUserProfile`.
     pub async fn list_user_profiles_with_ids(&self) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .list_user_profiles_full()
+            .await?
+            .into_iter()
+            .map(|p| (p.uuid, p.name))
+            .collect())
+    }
+
+    /// List user profiles as full [`ProfileSummary`] rows. Mirrors
+    /// [`DaemonClient::list_system_profiles_full`] on the session bus.
+    pub async fn list_user_profiles_full(&self) -> Result<Vec<ProfileSummary>> {
         let managed_objects = self
             .object_manager
             .get_managed_objects()
             .await
             .context("Failed to get managed objects from session service")?;
-        let mut out = Vec::new();
-        for (path, ifaces) in managed_objects {
-            if !path.as_str().starts_with(crate::USER_PROFILE_BASE_PATH) {
-                continue;
-            }
-            let Some(props) = ifaces
-                .iter()
-                .find(|(k, _)| k.as_str() == "org.tisvlay.UserProfile1")
-                .map(|(_, v)| v)
-            else {
-                continue;
-            };
-            let id = props
-                .get("Id")
-                .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
-                .unwrap_or_default();
-            let name = props
-                .get("Name")
-                .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
-                .unwrap_or_default();
-            if !id.is_empty() {
-                out.push((id, name));
-            }
-        }
-        Ok(out)
+        Ok(extract_profile_summaries(
+            managed_objects,
+            crate::USER_PROFILE_BASE_PATH,
+            "org.tisvlay.UserProfile1",
+        ))
     }
 
     /// Get the user profile UUID assigned to a TV (string-formatted).
@@ -2167,6 +2228,20 @@ impl StateWatcher {
         )
         .await?;
 
+        // Per-system-profile property edits (Name, OnStartup, …,
+        // ReferencedBy). The Profiles pane re-walks ObjectManager on
+        // every refresh, so a coarse `TvListChanged`-style signal is
+        // enough — the granular per-property route lands when the
+        // editor binds to typed property caches in commit 7.
+        add_signal_match(
+            conn,
+            &format!(
+                "type='signal',sender='{}',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='{}'",
+                DAEMON_SERVICE, crate::SYSTEM_PROFILE_BASE_PATH,
+            ),
+        )
+        .await?;
+
         add_signal_match(
             conn,
             &format!(
@@ -2187,11 +2262,13 @@ impl StateWatcher {
         .await?;
 
         let tv_prefix = format!("{}/", TV_BASE_PATH);
+        let system_profile_prefix = format!("{}/", crate::SYSTEM_PROFILE_BASE_PATH);
         let raw_stream = zbus::MessageStream::from(conn.clone());
 
         let signal_stream: std::pin::Pin<Box<dyn Stream<Item = TvStateChange> + Send>> =
             Box::pin(raw_stream.filter_map(move |msg_result| {
                 let tv_prefix = tv_prefix.clone();
+                let system_profile_prefix = system_profile_prefix.clone();
                 async move {
                     let msg = msg_result.ok()?;
                     let header = msg.header();
@@ -2201,9 +2278,20 @@ impl StateWatcher {
 
                     match (iface.as_str(), member.as_str()) {
                         ("org.freedesktop.DBus.Properties", "PropertiesChanged") => {
-                            let tv_id = path.strip_prefix(&tv_prefix)?.to_string();
-                            trace!(tv_id = %tv_id, "PropertiesChanged signal on TV");
-                            Some(TvStateChange::PropertiesChanged { tv_id })
+                            if let Some(tv_id) = path.strip_prefix(&tv_prefix) {
+                                trace!(tv_id = %tv_id, "PropertiesChanged signal on TV");
+                                Some(TvStateChange::PropertiesChanged {
+                                    tv_id: tv_id.to_string(),
+                                })
+                            } else if path.starts_with(&system_profile_prefix) {
+                                trace!(path = %path, "PropertiesChanged signal on SystemProfile");
+                                // Coarse refresh — the Profiles pane
+                                // re-walks ObjectManager so we don't
+                                // need to route per-profile yet.
+                                Some(TvStateChange::TvListChanged)
+                            } else {
+                                None
+                            }
                         }
                         ("org.freedesktop.DBus.ObjectManager", "InterfacesAdded")
                         | ("org.freedesktop.DBus.ObjectManager", "InterfacesRemoved") => {
@@ -2259,34 +2347,78 @@ impl StateWatcher {
                 None => None,
             };
 
-        // --- Session UserProfileChanged signals ---
+        // --- Session signals (UserProfileChanged + UserProfile1 lifecycle) ---
+        //
+        // Three rules feed one merged stream:
+        //   - `Session1.UserProfileChanged` — per-TV user-profile
+        //     assignment moves (kept from v1).
+        //   - `ObjectManager.InterfacesAdded` / `InterfacesRemoved` on
+        //     `/org/tisvlay` — user-profile create / delete fan-out.
+        //   - `Properties.PropertiesChanged` on
+        //     `/org/tisvlay/UserProfile/<UUID_>/...` — name + body
+        //     edits (Profiles pane master-list "Nx" badge follows
+        //     `ReferencedBy`).
+        //
+        // All three collapse to `SessionProfileChanged` — the GUI's
+        // refresh path is the same coarse re-walk for all of them.
         let session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>> =
             match session_conn {
                 Some(sconn) => {
-                    let rule = format!(
-                        "type='signal',sender='{}',interface='{}',member='UserProfileChanged',path='{}'",
-                        SESSION_SERVICE, SESSION_INTERFACE, SESSION_PATH,
-                    );
-                    match subscribe_signals(sconn, &rule).await {
-                        Ok(raw) => {
-                            let filtered = raw.filter_map(|msg_result| async move {
-                                let msg = msg_result.ok()?;
-                                let header = msg.header();
-                                let member = header.member()?.to_string();
-                                if member == "UserProfileChanged" {
-                                    Some(())
-                                } else {
-                                    None
-                                }
-                            });
-                            debug!("Subscribed to session UserProfileChanged signals");
-                            Some(Box::pin(filtered))
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to subscribe to session signals");
-                            None
-                        }
+                    if let Err(e) = add_signal_match(
+                        sconn,
+                        &format!(
+                            "type='signal',sender='{}',interface='{}',member='UserProfileChanged',path='{}'",
+                            SESSION_SERVICE, SESSION_INTERFACE, SESSION_PATH,
+                        ),
+                    ).await {
+                        warn!(error = %e, "Failed to subscribe to session UserProfileChanged");
                     }
+                    if let Err(e) = add_signal_match(
+                        sconn,
+                        &format!(
+                            "type='signal',sender='{}',interface='org.freedesktop.DBus.ObjectManager',path='{}'",
+                            SESSION_SERVICE, crate::dbus_paths::OBJECT_MANAGER_PATH,
+                        ),
+                    ).await {
+                        warn!(error = %e, "Failed to subscribe to session ObjectManager");
+                    }
+                    if let Err(e) = add_signal_match(
+                        sconn,
+                        &format!(
+                            "type='signal',sender='{}',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='{}'",
+                            SESSION_SERVICE, crate::USER_PROFILE_BASE_PATH,
+                        ),
+                    ).await {
+                        warn!(error = %e, "Failed to subscribe to session UserProfile PropertiesChanged");
+                    }
+
+                    let user_profile_prefix = format!("{}/", crate::USER_PROFILE_BASE_PATH);
+                    let raw = zbus::MessageStream::from(sconn.clone());
+                    let filtered = raw.filter_map(move |msg_result| {
+                        let user_profile_prefix = user_profile_prefix.clone();
+                        async move {
+                            let msg = msg_result.ok()?;
+                            let header = msg.header();
+                            let iface = header.interface()?.to_string();
+                            let member = header.member()?.to_string();
+                            let path = header.path()?.to_string();
+                            match (iface.as_str(), member.as_str()) {
+                                (SESSION_INTERFACE, "UserProfileChanged") => Some(()),
+                                (
+                                    "org.freedesktop.DBus.ObjectManager",
+                                    "InterfacesAdded" | "InterfacesRemoved",
+                                ) => Some(()),
+                                ("org.freedesktop.DBus.Properties", "PropertiesChanged")
+                                    if path.starts_with(&user_profile_prefix) =>
+                                {
+                                    Some(())
+                                }
+                                _ => None,
+                            }
+                        }
+                    });
+                    debug!("Subscribed to session profile lifecycle signals");
+                    Some(Box::pin(filtered))
                 }
                 None => None,
             };

@@ -15,7 +15,7 @@ import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
-import { DangerBtn, Chip, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
+import { ConfirmDialog, DangerBtn, Chip, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 import { SchemaForm } from "schema_form.slint";
@@ -978,74 +978,6 @@ component TvDetailEmpty inherits Rectangle {
                 color: Theme.text-dim;
                 font-size: Design.font-meta;
                 horizontal-alignment: center;
-            }
-        }
-    }
-}
-
-// =============================================================================
-// Confirm-remove modal (shared with the TVs pane).
-// =============================================================================
-
-component ConfirmDialog inherits Rectangle {
-    in property <bool> open: false;
-    in property <string> title;
-    in property <string> message;
-    in property <string> confirm-label: @tr("OK");
-    callback confirmed();
-    callback cancelled();
-
-    visible: open;
-    background: Theme.scrim;
-    width: 100%;
-    height: 100%;
-
-    TouchArea {
-        clicked => { root.cancelled(); }
-    }
-
-    Rectangle {
-        background: Theme.surface;
-        border-radius: Design.radius-card;
-        border-color: Theme.border;
-        border-width: Design.border-thin;
-        width: 380px;
-        height: 170px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-
-        TouchArea {}
-
-        VerticalLayout {
-            width: 100%;
-            height: 100%;
-            padding: 18px;
-            spacing: Design.gap-block;
-
-            Text {
-                text: root.title;
-                color: Theme.text;
-                font-size: Design.font-title-3;
-                font-weight: 700;
-            }
-            Text {
-                text: root.message;
-                color: Theme.text-dim;
-                font-size: Design.font-body;
-                wrap: word-wrap;
-            }
-            Rectangle { vertical-stretch: 1; }
-            HorizontalLayout {
-                spacing: Design.gap-stack;
-                alignment: end;
-                Button {
-                    text: @tr("Cancel");
-                    clicked => { root.cancelled(); }
-                }
-                DangerBtn {
-                    text: root.confirm-label;
-                    clicked => { root.confirmed(); }
-                }
             }
         }
     }

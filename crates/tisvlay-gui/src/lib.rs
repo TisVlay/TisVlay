@@ -33,7 +33,9 @@ mod wizard;
 /// public API and may change without notice.
 #[doc(hidden)]
 pub mod __internals {
-    pub use crate::state::{SnapshotInputs, StateSnapshot, TvViewRaw, convert_snapshot};
+    pub use crate::state::{
+        ProfileRowRaw, SnapshotInputs, StateSnapshot, TvRefRaw, TvViewRaw, convert_snapshot,
+    };
 }
 
 use about::{
@@ -1459,5 +1461,162 @@ fn register_callbacks(
         tokio::spawn(async move {
             fetch_and_publish_schema(d, app_weak, vendor, entry).await;
         });
+    });
+
+    // -------------------------------------------------------------------------
+    // Profiles pane
+    // -------------------------------------------------------------------------
+    //
+    // Commit 6 wires the master list + dialogs end-to-end; the
+    // per-field editor (current-value, reset glyph, inheritance) lands
+    // in commit 7 alongside per-property `PropertiesChanged`
+    // subscriptions. For now `select` is a no-op — the master-list
+    // click handlers in Slint already update `selected-kind` /
+    // `selected-uuid` instantly, and `selected-row` is republished
+    // from the next state-watch refresh.
+    let profiles_global = app.global::<Profiles>();
+    profiles_global.on_select(|_kind, _uuid| {});
+
+    // Create-profile. Reserved-name + empty-name validation already
+    // ran client-side in the NameInputDialog; duplicate-name surfaces
+    // here as a daemon-side toast (Slint pure functions can't iterate
+    // the existing-names list for client-side dup-detection — same
+    // UX trade-off v1 landed at).
+    let d = daemon.clone();
+    let s = session.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_confirm_create(move |kind, name| {
+        let d = d.clone();
+        let s = s.clone();
+        let app_weak = app_weak.clone();
+        let name = name.to_string();
+        tokio::spawn(async move {
+            match kind {
+                ProfileKind::System => {
+                    if let Err(e) = d.create_system_profile(&name).await {
+                        let msg = format!("{e:#}");
+                        warn!(name = %name, error = %msg, "create_system_profile failed");
+                        show_toast(
+                            app_weak.clone(),
+                            &gettext("Couldn't create profile: {0}").replace("{0}", &msg),
+                        );
+                    }
+                }
+                ProfileKind::User => {
+                    let session_ref = s.read().await;
+                    match session_ref.as_ref() {
+                        Some(client) => {
+                            if let Err(e) = client.create_user_profile(&name).await {
+                                let msg = format!("{e:#}");
+                                warn!(name = %name, error = %msg, "create_user_profile failed");
+                                show_toast(
+                                    app_weak.clone(),
+                                    &gettext("Couldn't create profile: {0}").replace("{0}", &msg),
+                                );
+                            }
+                        }
+                        None => {
+                            warn!(name = %name, "create_user_profile: session unavailable");
+                            show_toast(app_weak.clone(), &gettext("Session service unavailable"));
+                        }
+                    }
+                }
+                // `none` is the unselected sentinel; the dialog only
+                // opens when the user clicks `+` on a real section.
+                ProfileKind::None => {}
+            }
+        });
+    });
+
+    // Delete-profile. The dialog already gates on `referenced-by` so
+    // the daemon-side `AccessDenied` for in-use profiles shouldn't
+    // fire under normal use; if it does (race with another client)
+    // we surface as a toast.
+    let d = daemon.clone();
+    let s = session.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_confirm_delete(move |kind, uuid_str| {
+        let d = d.clone();
+        let s = s.clone();
+        let app_weak = app_weak.clone();
+        let uuid_str = uuid_str.to_string();
+        let Ok(uuid) = uuid::Uuid::parse_str(&uuid_str) else {
+            warn!(uuid = %uuid_str, "confirm_delete: not a valid UUID, ignoring");
+            return;
+        };
+        tokio::spawn(async move {
+            let result = match kind {
+                ProfileKind::System => d.delete_system_profile(uuid).await,
+                ProfileKind::User => {
+                    let session_ref = s.read().await;
+                    match session_ref.as_ref() {
+                        Some(client) => client.delete_user_profile(uuid).await,
+                        None => {
+                            warn!(%uuid, "delete_user_profile: session unavailable");
+                            show_toast(app_weak.clone(), &gettext("Session service unavailable"));
+                            return;
+                        }
+                    }
+                }
+                ProfileKind::None => return,
+            };
+            if let Err(e) = result {
+                let msg = format!("{e:#}");
+                warn!(%uuid, error = %msg, "delete_*_profile failed");
+                show_toast(
+                    app_weak.clone(),
+                    &gettext("Couldn't delete profile: {0}").replace("{0}", &msg),
+                );
+            } else {
+                // Clear the selection; `InterfacesRemoved` + the next
+                // refresh will re-resolve `selected-row` to the empty
+                // sentinel anyway, but doing it here avoids a brief
+                // flash of the now-stale detail header.
+                on_ui(&app_weak, |app| {
+                    let profiles = app.global::<Profiles>();
+                    profiles.set_selected_kind(ProfileKind::None);
+                    profiles.set_selected_uuid(SharedString::default());
+                });
+            }
+        });
+    });
+
+    // Duplicate-selected — stub for commit 6. The proper duplication
+    // path needs the per-field body, which the editor in commit 7
+    // brings into Rust-side reach. Surfacing as a toast keeps the
+    // affordance discoverable without silently doing nothing.
+    let app_weak = app.as_weak();
+    profiles_global.on_duplicate_selected(move || {
+        show_toast(
+            app_weak.clone(),
+            &gettext("Profile duplication lands in a follow-up commit."),
+        );
+    });
+
+    // Used-by chip → TVs pane navigation. Walks the in-memory TV
+    // list for the matching UUID; sets the TV-master-list selection
+    // before flipping the active pane so the user lands on the
+    // already-selected TV.
+    let app_weak = app.as_weak();
+    profiles_global.on_open_tv(move |tv_uuid| {
+        let Some(app) = app_weak.upgrade() else {
+            return;
+        };
+        let tvs = app.get_tvs();
+        let mut idx: i32 = -1;
+        for i in 0..tvs.row_count() {
+            if let Some(row) = tvs.row_data(i)
+                && row.uuid.as_str() == tv_uuid.as_str()
+            {
+                idx = i as i32;
+                break;
+            }
+        }
+        if idx >= 0 {
+            app.set_selected_tv_index(idx);
+            app.set_active_pane(Pane::Tvs);
+        } else {
+            warn!(tv_uuid = %tv_uuid, "open_tv: TV not in current list");
+        }
     });
 }

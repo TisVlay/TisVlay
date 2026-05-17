@@ -109,6 +109,11 @@ rustix = { version = "1", features = ["system"] }
 # field via `gnu_get_libc_version()` FFI; gated on
 # `cfg(target_env = "gnu")` at the call site.
 libc = "0.2"
+# Profile identity is a UUID end-to-end (Profiles pane → daemon).
+# `confirm-delete` / `select` callbacks carry the hyphenated UUID as
+# a SharedString; we parse it back into `uuid::Uuid` to call the
+# typed `DaemonClient::delete_system_profile` helper.
+uuid = { workspace = true }
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection
 # during dev. Pinned to the exact slint version because the backend

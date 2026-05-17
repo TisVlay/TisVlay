@@ -1,32 +1,564 @@
-import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+// Profiles pane — master-detail with two stacked sections (System /
+// User) in the left column and a single detail header on the right.
+//
+// Silhouette mirrors the TVs pane (left list + right detail), with
+// two key divergences:
+//
+// - Sub-tabs live in the left column as stacked sections, not a top
+//   segmented control. Gives the editor full vertical height; matches
+//   KDE/GNOME settings sidebar idioms.
+// - Detail has no live-state chrome (no power chip, no pencil/edit
+//   mode); the field editor in commit 7 will commit every change
+//   instantly. The header carries "Used by [chip][chip]" linking
+//   back to each referencing TV — the "Find Usages" idiom (GitHub
+//   package "Used by", VS Code peek).
+//
+// The detail body in commit 6 is a placeholder; `ProfileFieldRow` +
+// the inheritance-driven editor lands in commit 7.
+
+import { Button, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { Profiles, ProfileKind, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
+import { ConfirmDialog, DangerBtn, Chip, Group, NameInputDialog } from "../widgets.slint";
 
-export component ProfilesPane inherits Rectangle {
+// =============================================================================
+// Master list — left column, stacked System / User sections.
+// =============================================================================
+
+component ProfileListRow inherits Rectangle {
+    in property <ProfileRow> entry;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 40px;
+    background: selected ? Theme.row-selected
+              : (touch.has-hover ? Theme.row-hover : transparent);
+    animate background { duration: 150ms; }
+
+    // 3px left accent stripe when selected — mirrors TvListRow.
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: root.selected ? Theme.accent : transparent;
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: Design.gap-tight;
+        alignment: stretch;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Text {
+                text: root.entry.name;
+                color: root.selected ? Theme.row-selected-text : Theme.text;
+                font-size: Design.font-body;
+                font-weight: root.selected ? 600 : 500;
+                overflow: elide;
+            }
+        }
+
+        if root.entry.is-default: VerticalLayout {
+            alignment: center;
+            Text {
+                text: @tr("(default)");
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            // Trailing reference count — "Nx" tells the user how many
+            // TVs use this profile without opening the detail. Greys
+            // out at zero so unreferenced profiles read visually quiet
+            // ("safe to delete" cue).
+            Text {
+                text: root.entry.referenced-by.length + "x";
+                color: root.entry.referenced-by.length == 0
+                    ? Theme.text-faint
+                    : Theme.text-dim;
+                font-size: Design.font-mini;
+                font-family: "ui-monospace, monospace";
+            }
+        }
+    }
+
+    // Bottom 1px separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component ProfileSectionHeader inherits Rectangle {
+    in property <string> title;
+    /// `+` enabled flag. False when the corresponding daemon isn't
+    /// reachable (no session bus → user-profile create disabled).
+    in property <bool> add-enabled: true;
+    callback add-clicked();
+
+    height: 40px;
+    background: Theme.surface;
+
+    // Bottom separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: Design.gap-stack;
+        spacing: Design.gap-stack;
+        alignment: stretch;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
+        }
+
+        // "+" New-profile button — same shape as TvList's pair button.
+        Rectangle {
+            width: 24px;
+            height: 24px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 12px;
+            background: !root.add-enabled
+                ? Theme.text-faint
+                : (add-touch.has-hover ? Theme.accent-pressed : Theme.accent);
+            animate background { duration: 150ms; }
+
+            Text {
+                text: "+";
+                color: white;
+                font-size: 16px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+            add-touch := TouchArea {
+                enabled: root.add-enabled;
+                clicked => { root.add-clicked(); }
+            }
+        }
+    }
+}
+
+component ProfileList inherits Rectangle {
+    /// Bubble the "+" clicks up to the pane so it can open the
+    /// name-input dialog. The section header itself can't host the
+    /// dialog (it needs to render over the whole pane).
+    callback request-create(ProfileKind);
+
+    width: Design.width-master;
     background: Theme.surface-alt;
 
-    VerticalBox {
+    // Right separator.
+    Rectangle {
+        x: parent.width - 1px;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        // System profiles section.
+        ProfileSectionHeader {
+            title: @tr("SYSTEM PROFILES");
+            add-enabled: true;
+            add-clicked => { root.request-create(ProfileKind.system); }
+        }
+        for r[i] in Profiles.system: ProfileListRow {
+            entry: r;
+            selected: Profiles.selected-kind == ProfileKind.system
+                   && Profiles.selected-uuid == r.uuid;
+            clicked => {
+                Profiles.selected-kind = ProfileKind.system;
+                Profiles.selected-uuid = r.uuid;
+                Profiles.select(ProfileKind.system, r.uuid);
+            }
+        }
+
+        // User profiles section.
+        ProfileSectionHeader {
+            title: @tr("USER PROFILES");
+            add-enabled: Profiles.session-available;
+            add-clicked => { root.request-create(ProfileKind.user); }
+        }
+        if !Profiles.session-available: Rectangle {
+            height: 56px;
+            VerticalLayout {
+                width: 100%;
+                alignment: center;
+                padding: Design.gap-stack;
+                Text {
+                    text: @tr("Session service unavailable");
+                    color: Theme.text-faint;
+                    font-size: Design.font-mini;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        // When the session bus isn't available, Rust pushes an empty
+        // `Profiles.user` model — the repeater renders nothing and
+        // the unavailable-notice above carries the message.
+        for r[i] in Profiles.user: ProfileListRow {
+            entry: r;
+            selected: Profiles.selected-kind == ProfileKind.user
+                   && Profiles.selected-uuid == r.uuid;
+            clicked => {
+                Profiles.selected-kind = ProfileKind.user;
+                Profiles.selected-uuid = r.uuid;
+                Profiles.select(ProfileKind.user, r.uuid);
+            }
+        }
+
+        // Spacer pushes the lists to the top.
+        Rectangle { vertical-stretch: 1; }
+    }
+}
+
+// =============================================================================
+// Detail — right column, fills remaining width.
+// =============================================================================
+
+component ProfileDetailHeader inherits Rectangle {
+    in property <string> name;
+    in property <[ProfileTvRef]> referenced-by;
+    /// Disable Delete on the reserved default profile — the daemon
+    /// rejects deletion of the default UUID outright. Greying the
+    /// button keeps the affordance discoverable without dispatching
+    /// a call the daemon will reject.
+    in property <bool> can-delete: true;
+    /// Bubble actions up to the pane; ProfilesPane owns the
+    /// confirm-delete dialog and the duplicate stub.
+    callback request-delete();
+    callback request-duplicate();
+
+    height: header-layout.preferred-height;
+    background: Theme.surface;
+
+    // Bottom separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    header-layout := VerticalLayout {
+        width: 100%;
+        padding-left: Design.pad-pane;
+        padding-right: Design.pad-pane;
+        padding-top: 18px;
+        padding-bottom: Design.gap-row;
+        spacing: Design.gap-form;
+
+        // Title row: profile name (large) + per-profile action buttons.
+        HorizontalLayout {
+            spacing: Design.gap-row;
+            alignment: stretch;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Text {
+                    text: root.name;
+                    color: Theme.text;
+                    font-size: Design.font-title-3;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Button {
+                    text: @tr("Duplicate");
+                    clicked => { root.request-duplicate(); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                DangerBtn {
+                    text: @tr("Delete");
+                    enabled: root.can-delete;
+                    clicked => { root.request-delete(); }
+                }
+            }
+        }
+
+        // "Used by" chip row — hidden when no TVs reference this
+        // profile.
+        if root.referenced-by.length > 0: HorizontalLayout {
+            spacing: Design.gap-tight;
+            alignment: start;
+
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: @tr("Used by");
+                    color: Theme.text-dim;
+                    font-size: Design.font-meta;
+                }
+            }
+            for tv in root.referenced-by: VerticalLayout {
+                alignment: center;
+                Chip {
+                    label: tv.name;
+                    tone: "info";
+                    interactive: true;
+                    clicked => { Profiles.open-tv(tv.uuid); }
+                }
+            }
+        }
+    }
+}
+
+component ProfileDetail inherits Rectangle {
+    in property <string> name;
+    in property <[ProfileTvRef]> referenced-by;
+    in property <bool> can-delete: true;
+    callback request-delete();
+    callback request-duplicate();
+
+    background: Theme.surface-alt;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        ProfileDetailHeader {
+            name: root.name;
+            referenced-by: root.referenced-by;
+            can-delete: root.can-delete;
+            request-delete => { root.request-delete(); }
+            request-duplicate => { root.request-duplicate(); }
+        }
+
+        // Placeholder body — `ProfileFieldRow` + the per-field
+        // editor lands in commit 7. The master/detail wiring,
+        // selection model, and dialog state machine are exercised
+        // end-to-end first.
+        ScrollView {
+            viewport-width: self.visible-width;
+            VerticalLayout {
+                width: 100%;
+                padding-left: Design.pad-pane;
+                padding-right: Design.pad-pane;
+                padding-top: 20px;
+                padding-bottom: Design.pad-pane;
+                spacing: Design.gap-pane;
+
+                Group {
+                    title: @tr("FIELDS");
+                    Text {
+                        text: @tr("Field editor lands in the next commit.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-meta;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}
+
+component ProfileDetailEmpty inherits Rectangle {
+    background: Theme.surface-alt;
+
+    VerticalLayout {
         width: 100%;
         height: 100%;
         alignment: center;
-        spacing: Design.gap-tight;
+        spacing: Design.gap-stack;
 
-        HorizontalBox {
+        HorizontalLayout {
             alignment: center;
             Text {
-                text: @tr("Profiles");
-                font-size: Design.font-title-2;
-                font-weight: 600;
+                text: @tr("Select a profile");
                 color: Theme.text;
+                font-size: 15px;
+                font-weight: 600;
             }
         }
-        HorizontalBox {
+        HorizontalLayout {
             alignment: center;
             Text {
-                text: @tr("System and user profile editing arrives in M4.");
+                text: @tr("Pick a profile from the list, or create one with the + button.");
                 color: Theme.text-dim;
-                font-size: Design.font-body;
+                font-size: Design.font-meta;
+                horizontal-alignment: center;
             }
         }
+    }
+}
+
+// =============================================================================
+// ProfilesPane — top-level composition.
+// =============================================================================
+
+export component ProfilesPane {
+    // Detail is gated on the selected row having a non-empty UUID —
+    // Rust pushes a blank `selected-row` when the selection clears
+    // (e.g. the selected profile was deleted by another client).
+    property <bool> has-selection:
+           Profiles.selected-kind != ProfileKind.none
+        && Profiles.selected-row.uuid != "";
+
+    // --- Pending Delete-confirm dialog state ---
+    property <ProfileKind> pending-delete-kind: ProfileKind.none;
+    property <string> pending-delete-uuid;
+    property <string> pending-delete-name;
+    property <string> pending-delete-referenced-summary;
+
+    // --- Pending New-profile dialog state ---
+    property <ProfileKind> pending-new-kind: ProfileKind.none;
+    property <string> pending-new-name;
+    /// Filled by Slint-side validation as the user types. Empty
+    /// means valid; the dialog disables Confirm while non-empty.
+    /// Duplicate-name checks happen server-side — Slint can't
+    /// iterate the existing `Profiles.system` / `Profiles.user`
+    /// lists from a `function` (no `for` in pure expressions), so
+    /// duplicates surface as a toast from the `confirm-create`
+    /// Rust handler.
+    property <string> pending-new-error;
+
+    function validate-new-name(name: string) -> string {
+        if (name == "") {
+            return "";
+        }
+        if (name == "default") {
+            return @tr("'default' is reserved.");
+        }
+        return "";
+    }
+
+    function open-create-dialog(kind: ProfileKind) {
+        root.pending-new-kind = kind;
+        root.pending-new-name = "";
+        root.pending-new-error = "";
+    }
+
+    function close-create-dialog() {
+        root.pending-new-kind = ProfileKind.none;
+        root.pending-new-name = "";
+        root.pending-new-error = "";
+    }
+
+    function open-delete-dialog() {
+        root.pending-delete-kind = Profiles.selected-kind;
+        root.pending-delete-uuid = Profiles.selected-row.uuid;
+        root.pending-delete-name = Profiles.selected-row.name;
+        root.pending-delete-referenced-summary = Profiles.selected-row.referenced-by-summary;
+    }
+
+    function close-delete-dialog() {
+        root.pending-delete-kind = ProfileKind.none;
+        root.pending-delete-uuid = "";
+        root.pending-delete-name = "";
+        root.pending-delete-referenced-summary = "";
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        ProfileList {
+            request-create(kind) => { root.open-create-dialog(kind); }
+        }
+
+        // Detail column — fills remaining width.
+        Rectangle {
+            horizontal-stretch: 1;
+            background: Theme.surface-alt;
+
+            if !root.has-selection: ProfileDetailEmpty {
+                width: 100%;
+                height: 100%;
+            }
+
+            if root.has-selection: ProfileDetail {
+                width: 100%;
+                height: 100%;
+                name: Profiles.selected-row.name;
+                referenced-by: Profiles.selected-row.referenced-by;
+                can-delete: !Profiles.selected-row.is-default;
+                request-delete => { root.open-delete-dialog(); }
+                request-duplicate => { Profiles.duplicate-selected(); }
+            }
+        }
+    }
+
+    // Delete-confirm dialog. When the profile is referenced by one
+    // or more TVs the dialog flips into "cannot delete" mode:
+    // message names the offending TVs, Confirm is disabled, only
+    // Cancel works. The reference list is already on the row from
+    // the master-list walk — no extra round-trip.
+    ConfirmDialog {
+        open: root.pending-delete-kind != ProfileKind.none;
+        title: @tr("Delete profile");
+        message: root.pending-delete-referenced-summary != ""
+            ? @tr("Cannot delete '{}': still used by {}. Remove or reassign these TVs first.",
+                  root.pending-delete-name,
+                  root.pending-delete-referenced-summary)
+            : @tr("Delete '{}'? This action cannot be undone.", root.pending-delete-name);
+        confirm-label: @tr("Delete");
+        confirm-enabled: root.pending-delete-referenced-summary == "";
+        confirmed => {
+            Profiles.confirm-delete(root.pending-delete-kind, root.pending-delete-uuid);
+            root.close-delete-dialog();
+        }
+        cancelled => { root.close-delete-dialog(); }
+    }
+
+    // New-profile name-input dialog. `kind` is set when opening; the
+    // post-confirm `confirm-create` routes to either Manager1 or
+    // Session1 based on it.
+    NameInputDialog {
+        open: root.pending-new-kind != ProfileKind.none;
+        title: root.pending-new-kind == ProfileKind.system
+            ? @tr("New system profile")
+            : @tr("New user profile");
+        prompt: @tr("Enter a name for the new profile.");
+        placeholder: @tr("guest");
+        confirm-label: @tr("Create");
+        name <=> root.pending-new-name;
+        error-message: root.pending-new-error;
+        name-changed(v) => {
+            root.pending-new-error = root.validate-new-name(v);
+        }
+        confirmed => {
+            Profiles.confirm-create(root.pending-new-kind, root.pending-new-name);
+            root.close-create-dialog();
+        }
+        cancelled => { root.close-create-dialog(); }
     }
 }

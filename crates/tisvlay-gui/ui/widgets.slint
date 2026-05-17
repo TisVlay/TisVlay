@@ -4,7 +4,7 @@
 // themed colors, not raw hex values. Add a primitive here when it's
 // needed by ≥ 2 panes; pane-specific helpers stay in their pane.
 
-import { LineEdit, Slider } from "std-widgets.slint";
+import { Button, LineEdit, Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 import { Clipboard } from "globals/clipboard.slint";
@@ -959,5 +959,185 @@ export component IconBtn inherits Rectangle {
     touch := TouchArea {
         enabled: root.interactive;
         clicked => { root.clicked(); }
+    }
+}
+
+// =============================================================================
+// ConfirmDialog — generic OK/Cancel modal scrim.
+// =============================================================================
+//
+// 380-wide card centered on the pane with a translucent scrim
+// behind. The content height grows with the message so long
+// "this profile is used by …" lists don't clip. Clicking the scrim
+// or Cancel dismisses; Confirm fires `confirmed()` and the caller
+// closes by clearing whatever state was driving `open`.
+
+export component ConfirmDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> title;
+    in property <string> message;
+    in property <string> confirm-label: @tr("OK");
+    /// When false, the Confirm button is disabled — useful when the
+    /// dialog represents a non-actionable state (e.g. delete blocked
+    /// because the profile is in use; the user can only Cancel).
+    in property <bool> confirm-enabled: true;
+    callback confirmed();
+    callback cancelled();
+
+    visible: open;
+    background: Theme.scrim;
+    width: 100%;
+    height: 100%;
+
+    TouchArea {
+        clicked => { root.cancelled(); }
+    }
+
+    Rectangle {
+        background: Theme.surface;
+        border-radius: Design.radius-card;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        width: 380px;
+        // Grow with content; `max()` enforces the 170px floor so
+        // short messages keep the same visual weight as before.
+        height: max(170px, card-layout.preferred-height);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+
+        // Inner TouchArea swallows clicks so they don't fall through
+        // to the scrim-cancel TouchArea below.
+        TouchArea {}
+
+        card-layout := VerticalLayout {
+            width: 100%;
+            padding: 18px;
+            spacing: Design.gap-block;
+
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Design.font-title-3;
+                font-weight: 700;
+            }
+            Text {
+                text: root.message;
+                color: Theme.text-dim;
+                font-size: Design.font-body;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Design.gap-stack;
+                alignment: end;
+                Button {
+                    text: @tr("Cancel");
+                    clicked => { root.cancelled(); }
+                }
+                DangerBtn {
+                    text: root.confirm-label;
+                    enabled: root.confirm-enabled;
+                    clicked => { root.confirmed(); }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// NameInputDialog — generic "type a name" modal scrim.
+// =============================================================================
+//
+// Mirrors `ConfirmDialog`'s shape with an extra `LineEdit` row + an
+// `error-message` slot that turns the helper text red when populated
+// (e.g. "Reserved name"). The Confirm button is enabled iff
+// `name != ""` AND `error-message == ""`.
+
+export component NameInputDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> title;
+    in property <string> prompt;
+    in property <string> placeholder: "";
+    in property <string> confirm-label: @tr("Create");
+    /// Caller-supplied validation reason. Empty means valid;
+    /// non-empty puts the dialog into invalid state.
+    in property <string> error-message: "";
+    /// Current name typed by the user. The dialog owns the
+    /// `LineEdit` widget; the caller observes via `name-changed`.
+    in-out property <string> name;
+    /// Fires on every keystroke so the caller can validate
+    /// (reserved-name check, existing-name check, etc.).
+    callback name-changed(string);
+    callback confirmed();
+    callback cancelled();
+
+    visible: open;
+    background: Theme.scrim;
+    width: 100%;
+    height: 100%;
+
+    TouchArea {
+        clicked => { root.cancelled(); }
+    }
+
+    Rectangle {
+        background: Theme.surface;
+        border-radius: Design.radius-card;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        width: 380px;
+        height: max(220px, card-layout.preferred-height);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+
+        TouchArea {}
+
+        card-layout := VerticalLayout {
+            width: 100%;
+            padding: 18px;
+            spacing: Design.gap-block;
+
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Design.font-title-3;
+                font-weight: 700;
+            }
+            if root.prompt != "": Text {
+                text: root.prompt;
+                color: Theme.text-dim;
+                font-size: Design.font-body;
+                wrap: word-wrap;
+            }
+            LineEdit {
+                placeholder-text: root.placeholder;
+                text <=> root.name;
+                edited(v) => { root.name-changed(v); }
+                accepted(v) => {
+                    if (v != "" && root.error-message == "") {
+                        root.confirmed();
+                    }
+                }
+            }
+            if root.error-message != "": Text {
+                text: root.error-message;
+                color: Theme.danger-text;
+                font-size: Design.font-helper;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Design.gap-stack;
+                alignment: end;
+                Button {
+                    text: @tr("Cancel");
+                    clicked => { root.cancelled(); }
+                }
+                Button {
+                    text: root.confirm-label;
+                    primary: true;
+                    enabled: root.name != "" && root.error-message == "";
+                    clicked => { root.confirmed(); }
+                }
+            }
+        }
     }
 }

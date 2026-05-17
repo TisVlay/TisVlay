@@ -1,0 +1,109 @@
+// Profile-pane state + callbacks.
+//
+// The pane is master-detail with two stacked sections (System / User)
+// in the left column. Selection is global across sections — one
+// `(kind, uuid)` pair at a time, regardless of which list it came
+// from. Rust pushes the section row lists + holds the current
+// selection in the global so the detail can re-render without
+// prop-drilling through the pane.
+//
+// Identity is the immutable UUID minted at create time on the
+// daemon side; names live as a writable property and can change
+// without breaking references. Click handlers and `confirm-*`
+// callbacks all carry the UUID; the friendly name is for display
+// only.
+
+/// Which catalog a profile belongs to. `none` is the unselected
+/// sentinel — the detail shows the "Select a profile" empty state
+/// while this is `none`.
+export enum ProfileKind {
+    none,
+    system,
+    user,
+}
+
+/// One TV that references a profile. Carries the UUID for
+/// click-through navigation (`Profiles.open-tv(uuid)`) and the
+/// friendly name for chip rendering.
+export struct ProfileTvRef {
+    uuid: string,
+    name: string,
+}
+
+/// One profile entry in either section. Read-only from Slint;
+/// populated by Rust via `Profiles.set-system(...)` /
+/// `set-user(...)`.
+export struct ProfileRow {
+    /// Hyphenated UUID string — the daemon-side identity. Used as
+    /// the selection key and on the wire for create/delete calls.
+    uuid: string,
+    /// Friendly name from `SystemProfile1.Name` /
+    /// `UserProfile1.Name`. Rename is a separate property write
+    /// (commit 8); this row carries the latest snapshot value.
+    name: string,
+    /// True for the reserved default profile
+    /// (`DEFAULT_SYSTEM_PROFILE_UUID` /
+    /// `DEFAULT_USER_PROFILE_UUID`). Drives the `(default)` badge
+    /// and disables the Delete button in the detail header.
+    is-default: bool,
+    /// TVs referencing this profile, resolved Rust-side from each
+    /// profile object's `ReferencedBy: as` property joined with the
+    /// in-memory TV list. Drives the master-list "Nx" trailing
+    /// count and the detail header's "Used by [chip]…" row.
+    /// Click-through routes via `Profiles.open-tv(uuid)`.
+    referenced-by: [ProfileTvRef],
+    /// Pre-built comma-joined TV-name list. Empty when nothing
+    /// references this profile. The delete-confirm dialog uses
+    /// this to render an inline "still used by X, Y, Z" message
+    /// — Slint has no array-join expression, so Rust pre-computes
+    /// the summary.
+    referenced-by-summary: string,
+}
+
+export global Profiles {
+    /// Master-list row clicked. `kind` disambiguates which section
+    /// the row came from so the Rust handler can route per-bus.
+    /// Argument 2 is the UUID.
+    callback select(ProfileKind, string);
+    /// "+" button on a section header → user typed a name in the
+    /// `NameInputDialog` → Confirm. Rust dispatches to
+    /// `Manager1.CreateSystemProfile(name)` /
+    /// `Session1.CreateUserProfile(name)`. Duplicate-name rejection
+    /// surfaces as a toast (Slint pure functions can't iterate
+    /// existing names for client-side validation).
+    callback confirm-create(ProfileKind, string);
+    /// Detail-header Delete after the user clicks through the
+    /// confirm-delete dialog. Argument 2 is the UUID. Rust routes
+    /// to `Manager1.DeleteSystemProfile` /
+    /// `Session1.DeleteUserProfile`.
+    callback confirm-delete(ProfileKind, string);
+    /// Detail-header Duplicate. Stubbed in commit 6 — fires a
+    /// toast saying the feature lands in commit 9. The proper
+    /// implementation needs the per-field body which Commit 7
+    /// brings in.
+    callback duplicate-selected();
+    /// "Used by" chip clicked — navigate to the TVs pane and
+    /// select the named TV. Rust flips `AppWindow.active-pane` +
+    /// sets `selected-tv-index`.
+    callback open-tv(string);
+
+    in property <[ProfileRow]> system;
+    in property <[ProfileRow]> user;
+    /// False when `tisvlay-session` isn't connected — the User
+    /// section renders a "Session service unavailable" hint instead
+    /// of the list, and the User-section `+` is disabled.
+    in property <bool> session-available: false;
+
+    /// `selected-kind` + `selected-uuid` are written by the master
+    /// list's click handlers (so the row highlight updates instantly)
+    /// AND by Rust (when the selection is cleared because the
+    /// selected profile was deleted out from under us, or when
+    /// auto-selecting after create). `selected-row` is Rust-only —
+    /// pushed whenever the lists or selection change so the detail
+    /// can re-render its header + chips without doing a list-walk
+    /// in Slint expressions (Slint pure functions don't support
+    /// `for` loops).
+    in-out property <ProfileKind> selected-kind: ProfileKind.none;
+    in-out property <string> selected-uuid;
+    in property <ProfileRow> selected-row;
+}

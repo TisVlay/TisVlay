@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use slint::SharedString;
-use tisvlay_core::{DaemonClient, SessionClient, TvInfo};
+use tisvlay_core::{DaemonClient, ProfileSummary, SessionClient, TvInfo};
 use tracing::debug;
 
 /// Per-TV view-model row in a thread-safe shape (no `Rc` inside).
@@ -63,26 +63,66 @@ pub struct TvViewRaw {
     pub vendor_info: Vec<(String, String)>,
 }
 
+/// One TV that references a profile. Carries the UUID for
+/// click-through navigation (`Profiles.open-tv(uuid)`) and the
+/// friendly name for chip rendering. Plain types so the snapshot
+/// crosses the tokio→Slint thread boundary as `Send`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TvRefRaw {
+    pub uuid: SharedString,
+    pub name: SharedString,
+}
+
+/// One profile-catalog entry for the Profiles pane master list. Drives
+/// the section row's name + `(default)` badge + `Nx` trailing count,
+/// and the detail header's "Used by" chips. Reference list is
+/// resolved Rust-side by joining each profile's `ReferencedBy: as`
+/// (UUIDs of referring TVs, daemon-authoritative) with the in-memory
+/// TV list to recover friendly names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileRowRaw {
+    /// Hyphenated UUID string from `SystemProfile1.Id` /
+    /// `UserProfile1.Id`. Stable identity across renames; round-trips
+    /// back to Rust on `Profiles.select` / `confirm-delete`.
+    pub uuid: SharedString,
+    pub name: SharedString,
+    /// True for the reserved default profile
+    /// (`DEFAULT_SYSTEM_PROFILE_UUID` / `DEFAULT_USER_PROFILE_UUID`).
+    /// Drives the `(default)` badge in the master list and disables
+    /// the Delete button in the detail header.
+    pub is_default: bool,
+    pub referenced_by: Vec<TvRefRaw>,
+    /// Comma-joined friendly names of `referenced_by`. Pre-built so
+    /// the delete-confirm dialog can render an inline "used by X, Y,
+    /// Z" message without a string-join expression (Slint doesn't
+    /// have one).
+    pub referenced_by_summary: SharedString,
+}
+
 /// Snapshot of fetched state for one refresh pass.
 pub struct StateSnapshot {
     pub tvs: Vec<TvViewRaw>,
     pub system_profiles: Vec<SharedString>,
     pub user_profiles: Vec<SharedString>,
+    /// Profiles-pane master-list rows for the System section.
+    pub system_profile_rows: Vec<ProfileRowRaw>,
+    /// Profiles-pane master-list rows for the User section. Empty
+    /// when the session bus isn't reachable.
+    pub user_profile_rows: Vec<ProfileRowRaw>,
 }
 
 /// Pure-data inputs the renderer needs from one IO pass. Decoupled
 /// from D-Bus so [`convert_snapshot`] can be exercised by unit tests.
 pub struct SnapshotInputs {
     pub tvs: Vec<TvInfo>,
-    /// `(uuid, name)` pairs from walking
-    /// `ObjectManager.GetManagedObjects` on the system bus for
-    /// `SystemProfile1` entries.
-    pub system_profiles: Vec<(String, String)>,
-    /// `(uuid, name)` pairs from walking
-    /// `ObjectManager.GetManagedObjects` on the user bus for
-    /// `UserProfile1` entries. Empty when the session bus isn't
-    /// available.
-    pub user_profiles: Vec<(String, String)>,
+    /// Full `ProfileSummary` rows from
+    /// `DaemonClient::list_system_profiles_full`, carrying UUID +
+    /// name + `ReferencedBy` UUIDs.
+    pub system_profiles: Vec<ProfileSummary>,
+    /// Full `ProfileSummary` rows from
+    /// `SessionClient::list_user_profiles_full`. Empty when the
+    /// session bus isn't reachable.
+    pub user_profiles: Vec<ProfileSummary>,
     /// Per-TV user-profile assignment, keyed by TV UUID. Missing
     /// entries (no session, fetch failed, or no assignment) surface
     /// as `""` in the resulting `TvViewRaw.user_profile`.
@@ -104,16 +144,15 @@ pub async fn fetch_state(
     debug!(count = tvs.len(), "Fetched TVs from daemon");
 
     // Walk ObjectManager on both buses for the per-profile interfaces.
-    // The TVs pane still keys off the friendly name for combobox
-    // labels; full UUID-aware re-wiring lands with the Profiles pane
-    // in Commit 6.
-    let system_profiles = daemon
-        .list_system_profiles_with_ids()
-        .await
-        .unwrap_or_default();
+    // The Profiles pane needs the full `ProfileSummary` (UUID + name
+    // + `ReferencedBy`) to render the master list + detail-header
+    // chips; the TVs pane still drops to the friendly-name list for
+    // its profile ComboBoxes (the v2 full re-bind for those is out
+    // of scope for commit 6).
+    let system_profiles = daemon.list_system_profiles_full().await.unwrap_or_default();
 
     let user_profiles = match session {
-        Some(s) => s.list_user_profiles_with_ids().await.unwrap_or_default(),
+        Some(s) => s.list_user_profiles_full().await.unwrap_or_default(),
         None => Vec::new(),
     };
 
@@ -201,23 +240,99 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
 
-    // ObjectManager-derived rows arrive as `(uuid, name)` pairs;
-    // pick the name for the combobox label until the Profiles pane
-    // rebinds the editor to per-profile object paths in Commit 6.
-    let system_profiles = system_profiles
-        .into_iter()
-        .map(|(_uuid, name)| SharedString::from(name))
+    // System / User combobox labels for the TVs-pane PROFILES rows.
+    // Still keyed off the friendly name; the per-field UUID rebind
+    // happens once the Profiles pane editor lands (commit 7+).
+    let system_profile_names = system_profiles
+        .iter()
+        .map(|p| SharedString::from(p.name.as_str()))
         .collect();
-    let user_profiles = user_profiles
-        .into_iter()
-        .map(|(_uuid, name)| SharedString::from(name))
+    let user_profile_names = user_profiles
+        .iter()
+        .map(|p| SharedString::from(p.name.as_str()))
         .collect();
+
+    let system_profile_rows = build_profile_rows(
+        &system_profiles,
+        &models,
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+    );
+    let user_profile_rows = build_profile_rows(
+        &user_profiles,
+        &models,
+        tisvlay_core::DEFAULT_USER_PROFILE_UUID,
+    );
 
     StateSnapshot {
         tvs: models,
-        system_profiles,
-        user_profiles,
+        system_profiles: system_profile_names,
+        user_profiles: user_profile_names,
+        system_profile_rows,
+        user_profile_rows,
     }
+}
+
+/// Build the Profiles pane master-list rows for one catalog. Each
+/// row's `referenced_by` set comes from the profile's daemon-side
+/// `ReferencedBy: as` (authoritative — accounts for inheritance
+/// plus default-profile fan-out), joined with the in-memory TV
+/// list to recover friendly names for chip rendering. Rows whose
+/// referencing TVs aren't in the snapshot (recently-removed TV
+/// racing with the refresh) still show with the UUID as the chip
+/// label so the link doesn't silently disappear.
+///
+/// Rows arrive sorted by name with `default` pinned first, matching
+/// the convention the v1 layout established and reading "stable
+/// anchor on top, alphabetical custom profiles below" in the
+/// master list.
+fn build_profile_rows(
+    summaries: &[ProfileSummary],
+    tvs: &[TvViewRaw],
+    default_uuid: uuid::Uuid,
+) -> Vec<ProfileRowRaw> {
+    let default_uuid = default_uuid.to_string();
+    let mut rows: Vec<ProfileRowRaw> = summaries
+        .iter()
+        .map(|p| {
+            let referenced_by: Vec<TvRefRaw> = p
+                .referenced_by
+                .iter()
+                .map(|tv_uuid| {
+                    let name = tvs
+                        .iter()
+                        .find(|t| t.uuid.as_str() == tv_uuid.as_str())
+                        .map(|t| t.name.clone())
+                        .unwrap_or_else(|| SharedString::from(tv_uuid.as_str()));
+                    TvRefRaw {
+                        uuid: SharedString::from(tv_uuid.as_str()),
+                        name,
+                    }
+                })
+                .collect();
+            let summary = referenced_by
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            ProfileRowRaw {
+                uuid: SharedString::from(p.uuid.as_str()),
+                name: SharedString::from(p.name.as_str()),
+                is_default: p.uuid == default_uuid,
+                referenced_by,
+                referenced_by_summary: SharedString::from(summary),
+            }
+        })
+        .collect();
+
+    rows.sort_by(|a, b| {
+        // Default pinned first, the rest alphabetic by name.
+        match (a.is_default, b.is_default) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        }
+    });
+    rows
 }
 
 #[cfg(test)]
@@ -407,25 +522,28 @@ mod tests {
         assert_eq!(by_uuid["uuid-b"], "");
     }
 
+    fn summary(uuid: &str, name: &str, referenced_by: &[&str]) -> ProfileSummary {
+        ProfileSummary {
+            uuid: uuid.to_string(),
+            name: name.to_string(),
+            referenced_by: referenced_by.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
     #[test]
-    fn profile_lists_keep_names_from_uuid_name_pairs() {
-        // The post-v2 wire shape is `(uuid_string, name)`; the Slint
-        // model surface still wants just the friendly name for the
-        // current combobox label.
+    fn profile_lists_keep_names_from_summaries() {
+        // The post-v2 wire shape is `ProfileSummary`; the TVs pane's
+        // combobox model still wants just the friendly name. The
+        // Profiles pane reads `system_profile_rows` / `user_profile_rows`.
         let inputs = SnapshotInputs {
             system_profiles: vec![
-                (
-                    "00000000-0000-0000-0000-000000000001".into(),
-                    "default".into(),
-                ),
-                (
-                    "a1b2c3d4-0000-0000-0000-000000000001".into(),
-                    "evening".into(),
-                ),
+                summary("00000000-0000-0000-0000-000000000001", "default", &[]),
+                summary("a1b2c3d4-0000-0000-0000-000000000001", "evening", &[]),
             ],
-            user_profiles: vec![(
-                "00000000-0000-0000-0000-000000000002".into(),
-                "movies".into(),
+            user_profiles: vec![summary(
+                "00000000-0000-0000-0000-000000000002",
+                "movies",
+                &[],
             )],
             ..empty_inputs()
         };
@@ -435,5 +553,81 @@ mod tests {
             vec![SharedString::from("default"), SharedString::from("evening")]
         );
         assert_eq!(snap.user_profiles, vec![SharedString::from("movies")]);
+    }
+
+    #[test]
+    fn profile_rows_default_pinned_first_then_alphabetic() {
+        let inputs = SnapshotInputs {
+            system_profiles: vec![
+                summary("a1b2c3d4-0000-0000-0000-000000000003", "zen", &[]),
+                summary("00000000-0000-0000-0000-000000000001", "default", &[]),
+                summary("a1b2c3d4-0000-0000-0000-000000000002", "guest", &[]),
+            ],
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        let names: Vec<_> = snap
+            .system_profile_rows
+            .iter()
+            .map(|r| r.name.to_string())
+            .collect();
+        assert_eq!(names, vec!["default", "guest", "zen"]);
+        assert!(snap.system_profile_rows[0].is_default);
+        assert!(!snap.system_profile_rows[1].is_default);
+    }
+
+    #[test]
+    fn profile_rows_resolve_referenced_tv_names() {
+        let inputs = SnapshotInputs {
+            tvs: vec![
+                sample_tv("tv-uuid-1", "Living Room"),
+                sample_tv("tv-uuid-2", "Bedroom"),
+            ],
+            system_profiles: vec![summary(
+                "a1b2c3d4-0000-0000-0000-000000000001",
+                "evening",
+                &["tv-uuid-1", "tv-uuid-2"],
+            )],
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        let row = snap
+            .system_profile_rows
+            .iter()
+            .find(|r| r.name.as_str() == "evening")
+            .unwrap();
+        assert_eq!(row.referenced_by.len(), 2);
+        let names: Vec<_> = row
+            .referenced_by
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        // Names are TV-list order (alphabetic from `models.sort_by`),
+        // so Bedroom before Living Room.
+        assert_eq!(
+            row.referenced_by_summary.as_str(),
+            names.join(", ").as_str(),
+        );
+    }
+
+    #[test]
+    fn profile_rows_fallback_to_uuid_when_tv_missing() {
+        // TV referenced in ReferencedBy that doesn't appear in the
+        // snapshot (recently-removed TV racing with the refresh)
+        // still renders — the chip just shows the raw UUID instead
+        // of vanishing.
+        let inputs = SnapshotInputs {
+            system_profiles: vec![summary(
+                "a1b2c3d4-0000-0000-0000-000000000001",
+                "lonely",
+                &["orphan-uuid"],
+            )],
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        let row = &snap.system_profile_rows[0];
+        assert_eq!(row.referenced_by.len(), 1);
+        assert_eq!(row.referenced_by[0].uuid.as_str(), "orphan-uuid");
+        assert_eq!(row.referenced_by[0].name.as_str(), "orphan-uuid");
     }
 }
