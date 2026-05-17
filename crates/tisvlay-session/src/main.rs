@@ -111,16 +111,52 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to start session monitor")?;
 
+    // Register Session D-Bus interface for tray/GUI to query profiles.
+    // The bundle's `connection` must be held alive for the lifetime of
+    // the process; `forwarder_task` runs the user-profile state
+    // forwarder (refreshes cached UserProfile1 properties after edits).
+    //
+    // Registered before the daemon-availability retry task is spawned so
+    // the retry can call `register_user_profile_objects` with the
+    // bundle's connection + event_tx after the late state-reload. When
+    // the daemon isn't ready at this point the state's `user_config` is
+    // empty, so this initial call registers zero per-profile objects;
+    // the retry path below brings them online once disk state is
+    // readable.
+    let session_dbus_bundle = match tisvlay_session::session_dbus::register_session_dbus(
+        state.clone(),
+        daemon.clone(),
+        config_path.clone(),
+    )
+    .await
+    {
+        Ok(bundle) => {
+            info!("Session D-Bus interface available");
+            Some(bundle)
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to register session D-Bus interface (profile switching unavailable)");
+            None
+        }
+    };
+
     // If the daemon wasn't available at startup, spawn a background task to
     // retry loading state. This handles the common case where the session
     // service starts before the daemon (e.g., in dev mode or parallel systemd startup).
-    // After loading, it replays the current screen state so missed events are recovered.
+    // After loading, it replays the current screen state so missed events are recovered
+    // and re-registers per-profile `UserProfile1` D-Bus objects against the freshly-
+    // loaded `user_config` (the initial `register_session_dbus` ran against the empty
+    // fallback state, so the disk profiles never made it onto the bus on first try).
     if !daemon_available {
         let retry_state = state.clone();
         let retry_daemon = daemon.clone();
         let retry_config = config_path.clone();
         let retry_event_tx = event_tx.clone();
         let retry_is_locked = is_locked.clone();
+        let retry_connection = session_dbus_bundle.as_ref().map(|b| b.connection.clone());
+        let retry_profile_events = session_dbus_bundle
+            .as_ref()
+            .map(|b| b.user_profile_events.clone());
         tokio::spawn(async move {
             let retry_interval = std::time::Duration::from_secs(5);
             loop {
@@ -132,12 +168,36 @@ async fn main() -> Result<()> {
                 info!("Daemon is now available, loading session state...");
                 match SessionState::load(&retry_daemon, retry_config.as_ref()).await {
                     Ok(new_state) => {
-                        let mut s = retry_state.write().await;
-                        *s = new_state;
-                        info!(
-                            tvs = s.tv_ids.len(),
-                            "Session state loaded after daemon became available"
-                        );
+                        {
+                            let mut s = retry_state.write().await;
+                            *s = new_state;
+                            info!(
+                                tvs = s.tv_ids.len(),
+                                "Session state loaded after daemon became available"
+                            );
+                        }
+
+                        // Materialize per-profile `UserProfile1` D-Bus objects for
+                        // the freshly-loaded profiles. Idempotent so we don't have
+                        // to track which UUIDs were already registered.
+                        if let (Some(conn), Some(profile_tx)) =
+                            (retry_connection.as_ref(), retry_profile_events.as_ref())
+                        {
+                            if let Err(e) =
+                                tisvlay_session::session_dbus::register_user_profile_objects(
+                                    conn,
+                                    retry_state.clone(),
+                                    retry_config.clone(),
+                                    profile_tx.clone(),
+                                )
+                                .await
+                            {
+                                warn!(
+                                    error = %e,
+                                    "Failed to register UserProfile1 D-Bus objects after late daemon connect"
+                                );
+                            }
+                        }
 
                         // Replay the current screen state. Events that fired while we had
                         // no TVs were silently dropped. Now that we have TVs, send the
@@ -159,27 +219,6 @@ async fn main() -> Result<()> {
             }
         });
     }
-
-    // Register Session D-Bus interface for tray/GUI to query profiles.
-    // The bundle's `connection` must be held alive for the lifetime of
-    // the process; `forwarder_task` runs the user-profile state
-    // forwarder (refreshes cached UserProfile1 properties after edits).
-    let session_dbus_bundle = match tisvlay_session::session_dbus::register_session_dbus(
-        state.clone(),
-        daemon.clone(),
-        config_path.clone(),
-    )
-    .await
-    {
-        Ok(bundle) => {
-            info!("Session D-Bus interface available");
-            Some(bundle)
-        }
-        Err(e) => {
-            warn!(error = %e, "Failed to register session D-Bus interface (profile switching unavailable)");
-            None
-        }
-    };
 
     // Start Wayland idle monitor for greeter wake detection
     match tisvlay_session::wayland_idle::start_wayland_idle_monitor(event_tx.clone(), is_locked) {

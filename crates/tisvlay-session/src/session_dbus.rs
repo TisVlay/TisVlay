@@ -325,6 +325,12 @@ impl SessionService {
 pub struct SessionDbusBundle {
     pub connection: zbus::Connection,
     pub forwarder_task: tokio::task::JoinHandle<()>,
+    /// Sender side of the user-profile event channel — clone this to
+    /// drive `register_user_profile_objects` outside of the initial
+    /// registration call (e.g. after a late daemon-connect reloads the
+    /// session state and the per-profile D-Bus objects need to be
+    /// brought in line with disk).
+    pub user_profile_events: UserProfileEventTx,
 }
 
 /// Register the session D-Bus service on the session bus.
@@ -371,23 +377,15 @@ pub async fn register_session_dbus_on(
     // Register one `UserProfile1` object per UUID in the user config.
     // Admin baseline isn't separately registered — it's the
     // inheritance ancestor and lives on the daemon side.
-    let profile_uuids: Vec<uuid::Uuid> = {
-        let s = state.read().await;
-        s.user_config.user.profiles.keys().copied().collect()
-    };
-    for uuid in profile_uuids {
-        crate::user_profile::register_user_profile(
-            &connection,
-            state.clone(),
-            config_path.clone(),
-            event_tx.clone(),
-            uuid,
-        )
-        .await
-        .with_context(|| format!("Failed to register UserProfile interface for {}", uuid))?;
-    }
+    register_user_profile_objects(
+        &connection,
+        state.clone(),
+        config_path.clone(),
+        event_tx.clone(),
+    )
+    .await?;
 
-    let service = SessionService::new(state.clone(), daemon, config_path, event_tx);
+    let service = SessionService::new(state.clone(), daemon, config_path, event_tx.clone());
     connection
         .object_server()
         .at(SESSION_PATH, service)
@@ -412,5 +410,49 @@ pub async fn register_session_dbus_on(
     Ok(SessionDbusBundle {
         connection,
         forwarder_task,
+        user_profile_events: event_tx,
     })
+}
+
+/// Register a `UserProfile1` D-Bus object for every UUID currently in
+/// `state.user_config.user.profiles`. Idempotent — each
+/// `register_user_profile` does a defensive `remove::<UserProfileService, _>`
+/// before `at()` so a repeat call refreshes the cached field values
+/// rather than silently no-opping (zbus 5.x's `at()` returns
+/// `Ok(false)` on a pre-registered path).
+///
+/// Called from two sites:
+/// 1. Initial `register_session_dbus_on` — registers whatever is in
+///    the state at startup. When the daemon isn't reachable yet the
+///    state's `user_config` is the default-empty one, so this is a
+///    no-op.
+/// 2. The daemon-availability retry task in `main.rs` — after a
+///    successful late `SessionState::load`, the freshly-loaded
+///    profiles need their D-Bus objects materialized. Without this
+///    second call the per-profile `/org/tisvlay/UserProfile/<UUID_>`
+///    objects never appear on the bus and the GUI's master list shows
+///    nothing for the User section even though the config file lists
+///    profiles.
+pub async fn register_user_profile_objects(
+    connection: &zbus::Connection,
+    state: Arc<RwLock<SessionState>>,
+    config_path: Option<std::path::PathBuf>,
+    events: UserProfileEventTx,
+) -> anyhow::Result<()> {
+    let profile_uuids: Vec<uuid::Uuid> = {
+        let s = state.read().await;
+        s.user_config.user.profiles.keys().copied().collect()
+    };
+    for uuid in profile_uuids {
+        register_user_profile(
+            connection,
+            state.clone(),
+            config_path.clone(),
+            events.clone(),
+            uuid,
+        )
+        .await
+        .with_context(|| format!("Failed to register UserProfile interface for {}", uuid))?;
+    }
+    Ok(())
 }
