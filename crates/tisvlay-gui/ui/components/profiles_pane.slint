@@ -21,7 +21,7 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "../globals/profiles.slint";
-import { ConfirmDialog, DangerBtn, Chip, Group, IconBtn, NameInputDialog } from "../widgets.slint";
+import { ConfirmDialog, DangerBtn, Chip, Group, IconBtn, LineEditField, NameInputDialog } from "../widgets.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -262,6 +262,61 @@ component ProfileDetailHeader inherits Rectangle {
     /// confirm-delete dialog and the duplicate stub.
     callback request-delete();
     callback request-duplicate();
+    /// Bubble a friendly-name rename request up. ProfilesPane forwards
+    /// to `Profiles.rename-selected(...)`. The daemon validates the
+    /// new name (non-empty, reserved-name rules, uniqueness); failures
+    /// surface as a toast from Rust.
+    callback request-rename(string);
+
+    // --- Inline-edit state ---
+    //
+    // Address-book / VS Code "F2 rename" pattern: the name renders as
+    // a plain Text by default with a pencil glyph trailing it; clicking
+    // the pencil flips this header into edit mode, swapping the Text
+    // for a LineEditField and the pencil + Duplicate / Delete buttons
+    // for ✓ / ✗. Commits ride `Properties.Set("Name", new_name)`; the
+    // echoed `PropertiesChanged` redraws `root.name` automatically.
+    //
+    // The pencil is only rendered while a profile is selected (the
+    // header itself doesn't render in the empty state — its only call
+    // site is gated on `has-selection` in `ProfilesPane`).
+    property <bool> editing-name: false;
+    /// Field-text buffer for the inline edit. Initialized from
+    /// `root.name` on every transition into edit mode; never written
+    /// back through to `root.name` — that channel belongs to the
+    /// daemon's `PropertiesChanged` echo.
+    property <string> pending-name;
+
+    /// Enter edit mode: snapshot the current name into the buffer +
+    /// flip the inline-edit toggle. The `LineEditField` is `if`-gated
+    /// on `editing-name`, so the widget materializes here and grabs
+    /// keyboard focus from its `init` block; nothing else needs to
+    /// reach into it.
+    function begin-rename() {
+        root.pending-name = root.name;
+        root.editing-name = true;
+    }
+
+    /// Commit the typed name: fire the rename callback + leave edit
+    /// mode. We flip the toggle unconditionally — the daemon's
+    /// validation outcome surfaces asynchronously through a toast, so
+    /// the editor doesn't sit in edit mode waiting for a verdict that
+    /// the user can't see from this widget.
+    function commit-rename() {
+        if (!root.editing-name) {
+            return;
+        }
+        root.editing-name = false;
+        root.request-rename(root.pending-name);
+    }
+
+    /// Discard the typed name + leave edit mode without firing the
+    /// callback. The displayed `root.name` is unchanged because we
+    /// only ever touched `pending-name`.
+    function cancel-rename() {
+        root.editing-name = false;
+        root.pending-name = "";
+    }
 
     height: header-layout.preferred-height;
     background: Theme.surface;
@@ -282,34 +337,101 @@ component ProfileDetailHeader inherits Rectangle {
         spacing: Design.gap-form;
 
         // Title row: profile name (large) + per-profile action buttons.
+        // Two layouts share the slot:
+        //   - View mode: Text + pencil + Duplicate + Delete.
+        //   - Edit mode: LineEditField + ✓ + ✗.
+        // Switching is exclusive via `if root.editing-name: ...` /
+        // `if !root.editing-name: ...` so the rendered children are
+        // disjoint — focus / spacing / accessibility tree all stay
+        // clean across the toggle.
         HorizontalLayout {
             spacing: Design.gap-row;
             alignment: stretch;
 
+            // Name slot — Text in view mode, LineEditField in edit
+            // mode. Wraps a VerticalLayout to vertically-center the
+            // child within the title row's preferred height.
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                Text {
+                if !root.editing-name: Text {
                     text: root.name;
                     color: Theme.text;
                     font-size: Design.font-title-3;
                     font-weight: 700;
                     overflow: elide;
                 }
+                // Wrap the field in a FocusScope so Escape (which the
+                // inner LineEdit lets bubble out — only printable text
+                // and Enter are consumed) reaches `cancel-rename()`.
+                // Enter still rides `LineEditField.accepted(...)` and
+                // routes to `commit-rename()` directly.
+                if root.editing-name: FocusScope {
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) {
+                            root.cancel-rename();
+                            return accept;
+                        }
+                        return reject;
+                    }
+
+                    LineEditField {
+                        placeholder-text: @tr("Profile name");
+                        text <=> root.pending-name;
+                        accepted(v) => { root.commit-rename(); }
+                        // `init => self.focus-input()` removed —
+                        // Slint trips its property-recursion guard
+                        // when the LineEditField materializes
+                        // inside this `if`-branch and immediately
+                        // asks the inner LineEdit to grab focus.
+                        // User clicks into the field manually for
+                        // now; revisit when we have a non-recursive
+                        // way to drive focus on materialization.
+                    }
+                }
             }
-            VerticalLayout {
+
+            // Action slot — Duplicate + Delete in view mode, ✓ + ✗ in
+            // edit mode. Hidden Duplicate / Delete during edit so the
+            // user can't accidentally trigger them while renaming,
+            // mirroring the TVs pane's CONFIG-group edit-mode handling.
+            if !root.editing-name: VerticalLayout {
+                alignment: center;
+                IconBtn {
+                    source: Icons.edit;
+                    accessible-label: @tr("Rename profile");
+                    clicked => { root.begin-rename(); }
+                }
+            }
+            if !root.editing-name: VerticalLayout {
                 alignment: center;
                 Button {
                     text: @tr("Duplicate");
                     clicked => { root.request-duplicate(); }
                 }
             }
-            VerticalLayout {
+            if !root.editing-name: VerticalLayout {
                 alignment: center;
                 DangerBtn {
                     text: @tr("Delete");
                     enabled: root.can-delete;
                     clicked => { root.request-delete(); }
+                }
+            }
+            if root.editing-name: VerticalLayout {
+                alignment: center;
+                IconBtn {
+                    source: Icons.save;
+                    accessible-label: @tr("Save rename");
+                    clicked => { root.commit-rename(); }
+                }
+            }
+            if root.editing-name: VerticalLayout {
+                alignment: center;
+                IconBtn {
+                    source: Icons.cancel;
+                    accessible-label: @tr("Cancel rename");
+                    clicked => { root.cancel-rename(); }
                 }
             }
         }
@@ -459,6 +581,7 @@ component ProfileDetail inherits Rectangle {
             can-delete: root.can-delete;
             request-delete => { root.request-delete(); }
             request-duplicate => { root.request-duplicate(); }
+            request-rename(new-name) => { Profiles.rename-selected(new-name); }
         }
 
         // Field editor — one `ProfileFieldRow` per inheritable

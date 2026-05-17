@@ -295,8 +295,25 @@ export component LineEditField inherits Rectangle {
     /// Optional CSS-style font-family list (e.g.
     /// `"ui-monospace, monospace"`) — useful for IP / MAC entry.
     in property <string> font-family <=> inner.font-family;
+    // `has-focus` mirror removed: even the one-way `:` alias was
+    // tripping Slint's property-recursion detector during normal
+    // state pushes — the placeholder Text below already reads
+    // `inner.has-focus` directly without trouble, but exposing it
+    // as an `out` property re-entered evaluation when sync_vec_model
+    // mutated the model on a refresh tick. Commit-on-blur for the
+    // profile-rename UX falls back to Enter / ✓ / ✗ until we have
+    // a non-recursive path (revisit if the explicit-commit UX
+    // feels coarse).
     callback edited(string);
     callback accepted(string);
+
+    /// Move keyboard focus into the inner `LineEdit`. Call sites that
+    /// reveal the field via an `if` branch (inline pencil edits) use
+    /// this from the corresponding button's `clicked` handler so the
+    /// user can start typing immediately without a second click.
+    public function focus-input() {
+        inner.focus();
+    }
 
     horizontal-stretch: 1;
     min-height: inner.min-height;

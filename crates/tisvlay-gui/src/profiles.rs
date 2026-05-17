@@ -790,6 +790,22 @@ pub(crate) async fn dispatch_reset_field(
     state.proxy.reset_field(field_wire_name).await
 }
 
+/// Detail-header pencil committed a new name → `Properties.Set("Name",
+/// new_name)` on the bound proxy. Reuses the same typed setter the
+/// field-edit dispatch goes through; routes through
+/// `Properties.PropertiesChanged` exactly like every other property
+/// write, so the master list + detail header redraw automatically.
+/// Empty names are forwarded verbatim to the daemon — server-side
+/// validation owns the rejection, the GUI just surfaces the error
+/// via toast on the call site.
+pub(crate) async fn dispatch_rename(editor: &EditorHandle, new_name: &str) -> Result<()> {
+    let guard = editor.read().await;
+    let Some(state) = guard.as_ref() else {
+        anyhow::bail!("no profile selected");
+    };
+    state.proxy.set_field("Name", new_name).await
+}
+
 /// Reset-all toolbar button clicked → `ResetAll()`.
 pub(crate) async fn dispatch_reset_all(editor: &EditorHandle) -> Result<()> {
     let guard = editor.read().await;

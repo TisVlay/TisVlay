@@ -128,6 +128,13 @@ export global Profiles {
     /// Bottom-of-pane "Reset all" toolbar button clicked. Rust
     /// dispatches `ResetAll()` on the selected profile.
     callback reset-all();
+    /// Detail-header pencil → user committed a new friendly name via
+    /// the inline edit affordance. Routes to `Properties.Set("Name",
+    /// new_name)` on the selected profile's per-profile proxy. The
+    /// daemon-side validation rules (empty / reserved / duplicate /
+    /// rename-default) surface as a toast; the master list +
+    /// detail header redraw from the echoed `PropertiesChanged` signal.
+    callback rename-selected(string);
 
     in property <[ProfileRow]> system;
     in property <[ProfileRow]> user;

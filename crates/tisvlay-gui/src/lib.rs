@@ -1585,6 +1585,30 @@ fn register_callbacks(
         });
     });
 
+    // Detail-header pencil → friendly-name rename. Rides the same
+    // typed setter the field-edit dispatch uses (`Properties.Set` on
+    // `Name`); empty / reserved / duplicate / rename-default
+    // rejections come back as `zbus::fdo::Error::InvalidArgs` and
+    // surface as a toast. The master list + detail header redraw
+    // from the echoed `PropertiesChanged` once the daemon accepts.
+    let editor = editor_handle.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_rename_selected(move |new_name| {
+        let editor = editor.clone();
+        let app_weak = app_weak.clone();
+        let new_name = new_name.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = profiles::dispatch_rename(&editor, &new_name).await {
+                let msg = format!("{e:#}");
+                warn!(new_name = %new_name, error = %msg, "profile rename failed");
+                show_toast(
+                    app_weak.clone(),
+                    &gettext("Couldn't rename profile: {0}").replace("{0}", &msg),
+                );
+            }
+        });
+    });
+
     // Create-profile. Reserved-name + empty-name validation already
     // ran client-side in the NameInputDialog; duplicate-name surfaces
     // here as a daemon-side toast (Slint pure functions can't iterate

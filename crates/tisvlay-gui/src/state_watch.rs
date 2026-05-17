@@ -465,11 +465,6 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
 /// profile."
 fn push_profiles(app: &AppWindow, system_rows: Vec<ProfileRowRaw>, user_rows: Vec<ProfileRowRaw>) {
     let profiles_global = app.global::<Profiles>();
-    // Mirror the AppWindow's session-available flag so the User
-    // section can switch between its list and the unavailable hint
-    // without prop-drilling. `set_session_available` on the AppWindow
-    // already runs on the Slint thread alongside this push, so the
-    // read sees the up-to-date value.
     profiles_global.set_session_available(app.get_session_available());
 
     let system_rows = build_profile_rows(system_rows);
