@@ -6,10 +6,14 @@
 
 mod manager;
 mod setup;
+mod system_profile;
 mod tv;
 
 pub use manager::ManagerService;
 pub use setup::{apply_reload_diff, build_dbus_connection};
+pub use system_profile::{
+    SystemProfileService, register_system_profile, unregister_system_profile,
+};
 pub use tisvlay_core::BusKind;
 pub use tv::{
     TvBacklightService, TvDesktopService, TvInputService, TvPowerService, TvScreenService,

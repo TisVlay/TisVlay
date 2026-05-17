@@ -1,4 +1,5 @@
-[system.profiles.default]
+[system.profiles."00000000-0000-0000-0000-000000000001"]
+name = "default"
 on_startup = "power_on"
 on_shutdown = "power_off"
 on_reboot = "none"
@@ -7,7 +8,8 @@ on_sleep = "power_off"
 on_wake = "power_on"
 automate_when = "always"
 
-[user.profiles.default]
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 on_session_lock = "screen_off"
 on_session_unlock = "screen_on"
 on_greeter_wake = "screen_on"

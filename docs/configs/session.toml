@@ -1,4 +1,5 @@
-[user.profiles.foo]
+[user.profiles."a1b2c3d4-0000-0000-0000-00000000f000"]
+name = "foo"
 on_session_lock = "screen_off"
 on_session_unlock = "screen_on"
 on_greeter_wake = "screen_on"

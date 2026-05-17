@@ -6,6 +6,7 @@
 pub mod idle;
 pub mod session_dbus;
 pub mod session_monitor;
+pub mod user_profile;
 pub mod wayland_idle;
 
 /// Re-exports for the integration-test harness crate. Not public API.
@@ -16,6 +17,9 @@ pub mod __internals {
     pub use crate::reconcile_user_config_orphans;
     pub use crate::session_dbus::register_session_dbus_on;
     pub use crate::session_monitor::SessionEvent;
+    pub use crate::user_profile::{
+        UserProfileService, register_user_profile, unregister_user_profile,
+    };
 }
 
 use anyhow::{Context, Result};

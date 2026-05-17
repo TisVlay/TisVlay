@@ -12,8 +12,8 @@ use tisvlay_core::BusKind;
 use tracing::warn;
 
 use crate::dbus::{
-    DBUS_NAME, MANAGER_PATH, ManagerService, OBJECT_MANAGER_PATH, register_tv_interfaces, tv_path,
-    unregister_tv_interfaces,
+    DBUS_NAME, MANAGER_PATH, ManagerService, OBJECT_MANAGER_PATH, register_system_profile,
+    register_tv_interfaces, tv_path, unregister_system_profile, unregister_tv_interfaces,
 };
 use crate::tv_manager::{ReloadDiff, TvManager};
 
@@ -54,6 +54,12 @@ pub async fn build_dbus_connection(
         )
         .await
         .with_context(|| format!("Failed to serve TV interface at {}", path))?;
+    }
+
+    for uuid in tv_manager.list_system_profile_uuids().await {
+        register_system_profile(&connection, uuid)
+            .await
+            .with_context(|| format!("Failed to serve SystemProfile interface for {}", uuid))?;
     }
 
     Ok(connection)
@@ -126,6 +132,14 @@ pub async fn apply_reload_diff(
         .await
         {
             warn!(tv_id = %tv_id, error = %e, "ReloadConfig: failed to register TV interfaces");
+        }
+    }
+    for uuid in &diff.removed_system_profiles {
+        unregister_system_profile(connection, *uuid).await;
+    }
+    for uuid in &diff.added_system_profiles {
+        if let Err(e) = register_system_profile(connection, *uuid).await {
+            warn!(profile = %uuid, error = %e, "ReloadConfig: failed to register SystemProfile interface");
         }
     }
 }

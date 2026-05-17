@@ -16,6 +16,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use uuid::Uuid;
+
 use tisvlay_core::{UserConfig, UserProfileConfig, UserTvConfig, UserTvProfileAssignment};
 use tisvlay_harness::daemon::test_tv_uuid;
 use tisvlay_harness::session::TestSession;
@@ -40,10 +42,13 @@ async fn removing_tv_prunes_orphan_user_config_entry() {
     let tv_uuid = test_tv_uuid("orphan_prune").to_string();
 
     let mut user_config = UserConfig::default();
-    user_config
-        .user
-        .profiles
-        .insert("gaming".to_string(), UserProfileConfig::full_default());
+    user_config.user.profiles.insert(
+        Uuid::new_v4(),
+        UserProfileConfig {
+            name: "gaming".to_string(),
+            ..UserProfileConfig::full_default()
+        },
+    );
     user_config.tv.push(UserTvConfig {
         uuid: tv_uuid.clone(),
         profile: UserTvProfileAssignment {

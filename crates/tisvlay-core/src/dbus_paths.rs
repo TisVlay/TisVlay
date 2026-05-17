@@ -3,6 +3,8 @@
 //! These are always available (not feature-gated) so that both the daemon
 //! and the D-Bus client can share the same path logic without duplication.
 
+use uuid::Uuid;
+
 /// D-Bus service name for tisvlayd.
 pub const DAEMON_SERVICE: &str = "org.tisvlay.Daemon";
 
@@ -14,6 +16,16 @@ pub const MANAGER_PATH: &str = "/org/tisvlay/Manager";
 
 /// Base path for TV objects.
 pub const TV_BASE_PATH: &str = "/org/tisvlay/Tv";
+
+/// Base path for per-profile system-profile object paths.
+///
+/// Each profile is registered at `<SYSTEM_PROFILE_BASE_PATH>/<UUID_>`,
+/// where `<UUID_>` is the profile's UUID with hyphens substituted by
+/// underscores (same encoding scheme as [`TV_BASE_PATH`] uses for TVs).
+pub const SYSTEM_PROFILE_BASE_PATH: &str = "/org/tisvlay/SystemProfile";
+
+/// Base path for per-profile user-profile object paths.
+pub const USER_PROFILE_BASE_PATH: &str = "/org/tisvlay/UserProfile";
 
 /// D-Bus service name for the session service.
 pub const SESSION_SERVICE: &str = "org.tisvlay.Session";
@@ -46,6 +58,26 @@ pub fn tv_path(tv_id: &str) -> String {
         })
         .collect();
     format!("{}/{}", TV_BASE_PATH, sanitized)
+}
+
+/// Build a D-Bus object path for a system-profile UUID. Mirrors
+/// [`tv_path`]'s encoding: canonical hyphenated UUID with hyphens
+/// replaced by underscores.
+pub fn system_profile_path(uuid: &Uuid) -> String {
+    profile_path_from(SYSTEM_PROFILE_BASE_PATH, uuid)
+}
+
+/// Build a D-Bus object path for a user-profile UUID.
+pub fn user_profile_path(uuid: &Uuid) -> String {
+    profile_path_from(USER_PROFILE_BASE_PATH, uuid)
+}
+
+fn profile_path_from(base: &str, uuid: &Uuid) -> String {
+    format!(
+        "{}/{}",
+        base,
+        uuid.as_hyphenated().to_string().replace('-', "_")
+    )
 }
 
 #[cfg(test)]

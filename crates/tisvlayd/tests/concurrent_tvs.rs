@@ -10,6 +10,7 @@ use std::time::Duration;
 use tisvlay_core::{SessionAction, SystemConfig, SystemProfileConfig};
 use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlayd::tv_manager::SystemEvent;
+use uuid::Uuid;
 
 async fn settle() {
     for _ in 0..20 {
@@ -75,8 +76,9 @@ async fn mixed_profiles_dispatch_independently() {
     // Override the default profile's on_shutdown to PowerOff (already default)
     // and create a "noop" profile that maps shutdown → None.
     config.system.profiles.insert(
-        "noop".to_string(),
+        Uuid::new_v4(),
         SystemProfileConfig {
+            name: "noop".to_string(),
             on_shutdown: Some(SessionAction::None),
             ..Default::default()
         },

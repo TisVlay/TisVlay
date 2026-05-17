@@ -201,6 +201,16 @@ pub struct TvInfo {
 pub struct ReloadDiff {
     pub added: Vec<String>,
     pub removed: Vec<String>,
+    /// System-profile UUIDs newly present after the reload (need
+    /// `SystemProfile1` interface registration).
+    pub added_system_profiles: Vec<uuid::Uuid>,
+    /// System-profile UUIDs that disappeared (need unregister).
+    pub removed_system_profiles: Vec<uuid::Uuid>,
+    /// Admin-baseline user-profile UUIDs newly present (the session
+    /// service registers `UserProfile1` on the user bus).
+    pub added_user_profiles: Vec<uuid::Uuid>,
+    /// Admin-baseline user-profile UUIDs that disappeared.
+    pub removed_user_profiles: Vec<uuid::Uuid>,
 }
 
 /// Managed TV connection state.
@@ -982,19 +992,28 @@ impl TvManager {
 
     /// Get the admin baseline for user profiles.
     ///
-    /// Returns the `[user.profiles.default]` from the system config,
-    /// or an empty UserProfileConfig if not defined.
+    /// Returns the [`DEFAULT_USER_PROFILE_UUID`]-keyed profile from
+    /// the system config, or an empty `UserProfileConfig` if not
+    /// defined. (`SystemConfig::load_from` calls `ensure_default()`
+    /// so production daemons always have one; the fallback covers
+    /// freshly-constructed in-memory configs in tests.)
     pub async fn get_user_profile_default(&self) -> UserProfileConfig {
         let user = self.user_section.read().await;
-        user.profiles.get("default").cloned().unwrap_or_default()
+        user.profiles
+            .get(&tisvlay_core::DEFAULT_USER_PROFILE_UUID)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Get all user profiles as (name, UserProfileConfig) pairs.
+    /// The name comes from the body — profiles are UUID-keyed
+    /// internally but every external surface (D-Bus, CLI, GUI
+    /// ComboBox) still references by name in v2.
     pub async fn list_user_profiles(&self) -> Vec<(String, UserProfileConfig)> {
         let user = self.user_section.read().await;
         user.profiles
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .values()
+            .map(|v| (v.name.clone(), v.clone()))
             .collect()
     }
 
@@ -1003,9 +1022,24 @@ impl TvManager {
         let system = self.system_section.read().await;
         system
             .profiles
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .values()
+            .map(|v| (v.name.clone(), v.clone()))
             .collect()
+    }
+
+    /// List system-profile UUIDs. Used by the D-Bus setup path to
+    /// register a per-profile `SystemProfile1` object at each UUID's
+    /// path.
+    pub async fn list_system_profile_uuids(&self) -> Vec<uuid::Uuid> {
+        let system = self.system_section.read().await;
+        system.profiles.keys().copied().collect()
+    }
+
+    /// List user-profile UUIDs (admin baseline). Mirrors
+    /// [`list_system_profile_uuids`].
+    pub async fn list_user_profile_uuids(&self) -> Vec<uuid::Uuid> {
+        let user = self.user_section.read().await;
+        user.profiles.keys().copied().collect()
     }
 
     /// Get the system profile name assigned to a TV.
@@ -2798,10 +2832,12 @@ impl TvManager {
         value: &str,
     ) -> Result<(), TvManagerError> {
         // Validate and apply to in-memory TV config first.
-        // Validate system profile name exists before applying.
+        // Validate system profile name exists before applying. The
+        // catalog is UUID-keyed internally; v2 keeps `[[tv]]`
+        // references name-based, so look up by name.
         if key == "profile.system" {
             let system = self.system_section.read().await;
-            if !system.profiles.contains_key(value) {
+            if system.find_profile_by_name(value).is_none() {
                 return Err(TvManagerError::ConfigError(format!(
                     "Unknown system profile: {}",
                     value
@@ -2989,7 +3025,7 @@ impl TvManager {
                 };
                 if key == "system_profile" {
                     let system = self.system_section.read().await;
-                    if !system.profiles.contains_key(&str_value) {
+                    if system.find_profile_by_name(&str_value).is_none() {
                         return Err(TvManagerError::ConfigError(format!(
                             "Unknown system profile: {}",
                             str_value
@@ -3280,6 +3316,37 @@ impl TvManager {
         }
 
         info!(tv_count = tv_count, "Configuration reloaded");
+
+        // Compute profile-UUID diffs so the D-Bus layer can mirror
+        // catalog mutations into per-profile object-path lifecycle.
+        // Same shape as the per-TV `added` / `removed` lists above.
+        {
+            let prev_system: std::collections::HashSet<uuid::Uuid> = self
+                .system_section
+                .read()
+                .await
+                .profiles
+                .keys()
+                .copied()
+                .collect();
+            let next_system: std::collections::HashSet<uuid::Uuid> =
+                new_config.system.profiles.keys().copied().collect();
+            diff.added_system_profiles = next_system.difference(&prev_system).copied().collect();
+            diff.removed_system_profiles = prev_system.difference(&next_system).copied().collect();
+
+            let prev_user: std::collections::HashSet<uuid::Uuid> = self
+                .user_section
+                .read()
+                .await
+                .profiles
+                .keys()
+                .copied()
+                .collect();
+            let next_user: std::collections::HashSet<uuid::Uuid> =
+                new_config.user.profiles.keys().copied().collect();
+            diff.added_user_profiles = next_user.difference(&prev_user).copied().collect();
+            diff.removed_user_profiles = prev_user.difference(&next_user).copied().collect();
+        }
 
         // Update system section (system profiles)
         {

@@ -96,9 +96,12 @@ impl SessionService {
             merged.insert(name.clone(), profile);
         }
 
-        // User profiles override admin profiles with the same name
-        for (name, profile) in &s.user_config.user.profiles {
-            merged.insert(name.clone(), profile);
+        // User profiles override admin profiles with the same name.
+        // user_config.user.profiles is UUID-keyed in v2; merge key is
+        // the body's `name` (the friendly name external callers
+        // reference).
+        for profile in s.user_config.user.profiles.values() {
+            merged.insert(profile.name.clone(), profile);
         }
 
         // Ensure "default" is always present
@@ -143,9 +146,14 @@ impl SessionService {
 
         let mut s = self.state.write().await;
 
-        // Verify the profile exists (in user config, admin config, or as "default")
+        // Verify the profile exists (in user config, admin config,
+        // or as "default"). user_config.user is UUID-keyed → look
+        // up by name.
         if profile_name != "default"
-            && !s.user_config.user.profiles.contains_key(profile_name)
+            && s.user_config
+                .user
+                .find_profile_by_name(profile_name)
+                .is_none()
             && !s.admin_user_profiles.contains_key(profile_name)
         {
             return Err(SessionError::ProfileNotFound(format!(
@@ -268,9 +276,27 @@ pub async fn register_session_dbus_on(
         .context("Failed to create session D-Bus builder")?
         .name(SESSION_DBUS_NAME)
         .context("Failed to request session D-Bus name")?
+        .serve_at(
+            tisvlay_core::dbus_paths::OBJECT_MANAGER_PATH,
+            zbus::fdo::ObjectManager,
+        )
+        .context("Failed to serve ObjectManager interface")?
         .build()
         .await
         .context("Failed to build session D-Bus connection")?;
+
+    // Register one `UserProfile1` object per UUID in the user config.
+    // Admin baseline isn't separately registered — it's the
+    // inheritance ancestor and lives on the daemon side.
+    let profile_uuids: Vec<uuid::Uuid> = {
+        let s = state.read().await;
+        s.user_config.user.profiles.keys().copied().collect()
+    };
+    for uuid in profile_uuids {
+        crate::user_profile::register_user_profile(&connection, uuid)
+            .await
+            .with_context(|| format!("Failed to register UserProfile interface for {}", uuid))?;
+    }
 
     let service = SessionService::new(state, daemon, config_path);
     connection

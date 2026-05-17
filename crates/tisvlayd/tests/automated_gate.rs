@@ -8,7 +8,10 @@
 #![cfg(feature = "mock")]
 
 use std::time::Duration;
-use tisvlay_core::{AutomateWhen, SessionAction, SystemConfig, SystemProfileConfig};
+use tisvlay_core::{
+    AutomateWhen, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, SessionAction, SystemConfig,
+    SystemProfileConfig,
+};
 use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlayd::tv_manager::SystemEvent;
 
@@ -54,8 +57,9 @@ async fn unmanaged_tv_is_not_automated() {
 fn on_primary_config(tv_id: &str, primary_input: &str) -> SystemConfig {
     let mut config = mock_tv_config(tv_id, true, Some(primary_input));
     config.system.profiles.insert(
-        "default".to_string(),
+        DEFAULT_SYSTEM_PROFILE_UUID,
         SystemProfileConfig {
+            name: DEFAULT_PROFILE_NAME.to_string(),
             on_shutdown: Some(SessionAction::PowerOff),
             automate_when: Some(AutomateWhen::OnPrimary),
             ..Default::default()
@@ -131,8 +135,9 @@ async fn on_primary_skips_when_input_differs() {
 fn off_primary_config(tv_id: &str, primary_input: &str) -> SystemConfig {
     let mut config = mock_tv_config(tv_id, true, Some(primary_input));
     config.system.profiles.insert(
-        "default".to_string(),
+        DEFAULT_SYSTEM_PROFILE_UUID,
         SystemProfileConfig {
+            name: DEFAULT_PROFILE_NAME.to_string(),
             on_shutdown: Some(SessionAction::PowerOff),
             automate_when: Some(AutomateWhen::OffPrimary),
             ..Default::default()

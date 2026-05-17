@@ -29,7 +29,7 @@ Drop (architecture mismatch with the typed-property approach):
 
 ## What's decided
 
-1. **Per-profile D-Bus object paths.** `/org/tisvlay/SystemProfile/<UUID_>` on the system bus, `/org/tisvlay/UserProfile/<UUID_>` on the user bus. Mirrors `/org/tisvlay/Tv/<UUID_>`. ObjectManager publishes lifecycle via standard `InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay` and `/org/tisvlay/Session`.
+1. **Per-profile D-Bus object paths.** `/org/tisvlay/SystemProfile/<UUID_>` on the system bus, `/org/tisvlay/UserProfile/<UUID_>` on the user bus. Mirrors `/org/tisvlay/Tv/<UUID_>`. ObjectManager publishes lifecycle via standard `InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay` on **both** buses — the user-bus ObjectManager is rooted there (rather than at `/org/tisvlay/Session` where `Session1` itself lives) so the `UserProfile/<UUID_>` paths are descendants of the ObjectManager and show up in `GetManagedObjects`. `Session1` stays at `/org/tisvlay/Session` and is a sibling, not the ObjectManager root.
 
 2. **Profile identity is an immutable UUID.** The TOML on-disk format stores UUIDs as section keys (`[system.profiles."a1b2-..."]`) and as the value of `tv.profile.system` / `tv.profile.user`. Names live as a writable `name` field inside each profile section. Hand-editing TOML is no longer ergonomic but GUI editing is the intended surface; rename via the GUI works without touching any reference site. No backwards-compatibility constraint — we have no shipped users, so the old name-keyed TOML format is dropped outright.
 
@@ -152,7 +152,7 @@ Migration from the existing main-branch TOML (which still uses name-keyed sectio
 
 Visual structure stays the same as v1 (stacked sections, TV chips, ProfileFieldRow with gutter accent + reset glyph, dialogs, error banner). The data flow changes substantially:
 
-- **Master list** is built from `ObjectManager.GetManagedObjects` on `/org/tisvlay` (system) and `/org/tisvlay/Session` (user). Each row reads `Id`, `Name`, `LocallySetFields` count (for the trailing `Nx` hint? no — `ReferencedBy.length` for the Nx hint), `ReferencedBy` from the per-profile object. `InterfacesAdded` / `InterfacesRemoved` drives live add/remove.
+- **Master list** is built from `ObjectManager.GetManagedObjects` on `/org/tisvlay` on both buses (see decision #1 above — the user-bus ObjectManager is also rooted at `/org/tisvlay`, not at `/org/tisvlay/Session`). Each row reads `Id`, `Name`, `LocallySetFields` count (for the trailing `Nx` hint? no — `ReferencedBy.length` for the Nx hint), `ReferencedBy` from the per-profile object. `InterfacesAdded` / `InterfacesRemoved` drives live add/remove.
 - **Selection** binds the editor to one profile's object. zbus's Proxy auto-caches property values and updates them from `PropertiesChanged`; the Rust-side model owns the proxy and pushes Slint-side updates per signal.
 - **Field edit** = a single `Properties.Set` call. The echoed `PropertiesChanged` updates the Rust-side cached value; Slint re-renders the one row. No JSON parse on read or write; no rebuild-all-rows on signal.
 - **Reset glyph** = `ResetField(field_name)` method call. Reset-all = `ResetAll()`.

@@ -20,7 +20,10 @@
 #![cfg(feature = "mock")]
 
 use std::time::Duration;
-use tisvlay_core::{DaemonClient, PowerState, SessionAction, SystemConfig, SystemProfileConfig};
+use tisvlay_core::{
+    DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, DaemonClient, PowerState, SessionAction,
+    SystemConfig, SystemProfileConfig,
+};
 use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 use tisvlay_test::PrivateBus;
 use tisvlayd::tv_manager::SystemEvent;
@@ -225,8 +228,9 @@ fn config_with_profile_actions(
 ) -> SystemConfig {
     let mut config = mock_tv_config(tv_id, true, None);
     config.system.profiles.insert(
-        "default".to_string(),
+        DEFAULT_SYSTEM_PROFILE_UUID,
         SystemProfileConfig {
+            name: DEFAULT_PROFILE_NAME.to_string(),
             on_wake: Some(on_wake),
             on_startup: Some(on_startup),
             ..Default::default()

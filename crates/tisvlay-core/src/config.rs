@@ -57,7 +57,27 @@ use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
+use uuid::{Uuid, uuid};
+
+/// Stable UUID for the reserved "default" system profile.
+///
+/// Hardcoded so `[[tv]]` entries can reference it by name (`"default"`)
+/// regardless of whether the user has ever touched the GUI, and so the
+/// D-Bus object path under `/org/tisvlay/SystemProfile/<UUID_>` for
+/// the default profile stays consistent across daemon restarts.
+/// Mirrors the way `00000000-0000-0000-0000-000000000000` is reserved
+/// for the NIL UUID — this one is the first non-NIL sentinel.
+pub const DEFAULT_SYSTEM_PROFILE_UUID: Uuid = uuid!("00000000-0000-0000-0000-000000000001");
+
+/// Stable UUID for the reserved "default" user profile.
+///
+/// Same role as [`DEFAULT_SYSTEM_PROFILE_UUID`] on the user bus.
+pub const DEFAULT_USER_PROFILE_UUID: Uuid = uuid!("00000000-0000-0000-0000-000000000002");
+
+/// Name reserved for the default profile. Daemon refuses to create
+/// or delete a profile with this name; only the default-UUID profile
+/// may carry it. Kept in lockstep with the GUI's `(default)` badge.
+pub const DEFAULT_PROFILE_NAME: &str = "default";
 
 // =============================================================================
 // Actions
@@ -144,6 +164,13 @@ impl std::fmt::Display for AutomateWhen {
 /// to produce a [`ResolvedSystemProfile`] with concrete values.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SystemProfileConfig {
+    /// Friendly name shown in the GUI / CLI. Required by `[[tv]]`
+    /// references (`profile.system = "<name>"`); enforced unique
+    /// across the system catalog. Profile identity itself is the
+    /// containing-map's UUID key — renaming is a name-only edit and
+    /// doesn't touch references.
+    pub name: String,
+
     /// Action on system startup/boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_startup: Option<SessionAction>,
@@ -180,6 +207,7 @@ impl SystemProfileConfig {
     pub fn full_default() -> Self {
         let d = ResolvedSystemProfile::default();
         Self {
+            name: DEFAULT_PROFILE_NAME.to_string(),
             on_startup: Some(d.on_startup),
             on_shutdown: Some(d.on_shutdown),
             on_reboot: Some(d.on_reboot),
@@ -192,10 +220,14 @@ impl SystemProfileConfig {
 
     /// Merge this profile with a base profile.
     ///
-    /// Fields that are `None` in `self` are filled from `base`.
-    /// Fields that are `Some` in `self` take precedence.
+    /// Fields that are `None` in `self` are filled from `base`. Fields
+    /// that are `Some` in `self` take precedence. Names don't merge —
+    /// the returned body carries `self`'s name verbatim (callers
+    /// reading the merged value already know which profile they
+    /// asked about).
     pub fn merge_with_base(&self, base: &SystemProfileConfig) -> SystemProfileConfig {
         SystemProfileConfig {
+            name: self.name.clone(),
             on_startup: self.on_startup.or(base.on_startup),
             on_shutdown: self.on_shutdown.or(base.on_shutdown),
             on_reboot: self.on_reboot.or(base.on_reboot),
@@ -278,6 +310,10 @@ impl Default for ResolvedSystemProfile {
 /// to produce a [`ResolvedUserProfile`] with concrete values.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserProfileConfig {
+    /// Friendly name (same role as [`SystemProfileConfig::name`]).
+    /// Identity is the containing-map's UUID key.
+    pub name: String,
+
     /// Action on session lock event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_session_lock: Option<SessionAction>,
@@ -311,6 +347,7 @@ impl UserProfileConfig {
     pub fn full_default() -> Self {
         let d = ResolvedUserProfile::default();
         Self {
+            name: DEFAULT_PROFILE_NAME.to_string(),
             on_session_lock: Some(d.on_session_lock),
             on_session_unlock: Some(d.on_session_unlock),
             on_greeter_wake: Some(d.on_greeter_wake),
@@ -322,10 +359,12 @@ impl UserProfileConfig {
 
     /// Merge this profile with a base profile.
     ///
-    /// Fields that are `None` in `self` are filled from `base`.
-    /// Fields that are `Some` in `self` take precedence.
+    /// Fields that are `None` in `self` are filled from `base`. Fields
+    /// that are `Some` in `self` take precedence. Names don't merge —
+    /// see `SystemProfileConfig::merge_with_base` for the rationale.
     pub fn merge_with_base(&self, base: &UserProfileConfig) -> UserProfileConfig {
         UserProfileConfig {
+            name: self.name.clone(),
             on_session_lock: self.on_session_lock.or(base.on_session_lock),
             on_session_unlock: self.on_session_unlock.or(base.on_session_unlock),
             on_greeter_wake: self.on_greeter_wake.or(base.on_greeter_wake),
@@ -400,22 +439,37 @@ impl Default for ResolvedUserProfile {
 /// Located under `[system]` in the TOML config.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SystemSection {
-    /// Named system profiles for daemon lifecycle events.
+    /// System profiles keyed by UUID. Each profile's `name` lives
+    /// inside its body; identity is the UUID. The reserved
+    /// [`DEFAULT_SYSTEM_PROFILE_UUID`] hosts the `"default"` profile
+    /// — daemon ensures it exists at load time via
+    /// [`SystemSection::ensure_default`].
     ///
-    /// `[system.profiles.default]` is the baseline. Per-TV system profile
-    /// assignments can reference other named profiles (e.g., "guest").
+    /// `[[tv]]` entries reference profiles by name (`profile.system
+    /// = "default"`); the daemon resolves name → UUID via
+    /// [`find_profile_by_name`](Self::find_profile_by_name) at
+    /// dispatch time. v2 keeps the on-disk reference name-based
+    /// (rename via the GUI is the supported path, and reference
+    /// stability is provided by the UUID indirection on the D-Bus
+    /// side).
     #[serde(default)]
-    pub profiles: BTreeMap<String, SystemProfileConfig>,
+    pub profiles: BTreeMap<Uuid, SystemProfileConfig>,
 }
 
 impl SystemSection {
     /// Resolve a system profile by name.
     ///
-    /// Resolution chain: named profile → "default" profile → hard-coded defaults.
+    /// Resolution chain: named profile body → `"default"` profile body
+    /// → hard-coded defaults. Names that don't match any profile
+    /// fall through to the default-or-baseline path silently — a
+    /// stale `profile.system = "guest"` on a TV mustn't break
+    /// dispatch after the named profile is deleted.
     pub fn resolve_profile(&self, profile_name: &str) -> ResolvedSystemProfile {
-        let named = self.profiles.get(profile_name);
-        let default = if profile_name != "default" {
-            self.profiles.get("default")
+        let named = self
+            .find_profile_by_name(profile_name)
+            .map(|(_, body)| body);
+        let default = if profile_name != DEFAULT_PROFILE_NAME {
+            self.profiles.get(&DEFAULT_SYSTEM_PROFILE_UUID)
         } else {
             None
         };
@@ -427,6 +481,44 @@ impl SystemSection {
             (None, None) => ResolvedSystemProfile::default(),
         }
     }
+
+    /// Look up a profile by its friendly name. `None` if no profile
+    /// in the catalog carries this name. Names are enforced unique
+    /// at create time, so an `Option` is always definitive (no
+    /// "first match" ambiguity).
+    pub fn find_profile_by_name(&self, name: &str) -> Option<(Uuid, &SystemProfileConfig)> {
+        self.profiles
+            .iter()
+            .find(|(_, body)| body.name == name)
+            .map(|(id, body)| (*id, body))
+    }
+
+    /// Mutable variant of [`find_profile_by_name`].
+    pub fn find_profile_by_name_mut(
+        &mut self,
+        name: &str,
+    ) -> Option<(Uuid, &mut SystemProfileConfig)> {
+        self.profiles
+            .iter_mut()
+            .find(|(_, body)| body.name == name)
+            .map(|(id, body)| (*id, body))
+    }
+
+    /// Insert the reserved `"default"` profile under
+    /// [`DEFAULT_SYSTEM_PROFILE_UUID`] if it doesn't already exist.
+    /// Daemon-side invariant: the default UUID always has a body.
+    pub fn ensure_default(&mut self) {
+        self.profiles
+            .entry(DEFAULT_SYSTEM_PROFILE_UUID)
+            .or_insert_with(SystemProfileConfig::full_default);
+        // Force the reserved name regardless of what was on disk —
+        // protects against a user editing `name = "blah"` under the
+        // default UUID and breaking `[[tv]] profile.system = "default"`
+        // resolution.
+        if let Some(body) = self.profiles.get_mut(&DEFAULT_SYSTEM_PROFILE_UUID) {
+            body.name = DEFAULT_PROFILE_NAME.to_string();
+        }
+    }
 }
 
 /// User-level configuration section.
@@ -434,14 +526,49 @@ impl SystemSection {
 /// Contains user profiles that define session event behavior.
 /// Located under `[user]` in the TOML config.
 ///
-/// In the system config, `[user.profiles.default]` is the admin baseline
-/// inherited by users who have not created their own config file.
-/// In the user config, user-defined profiles override/extend the admin baseline.
+/// In the system config, the [`DEFAULT_USER_PROFILE_UUID`] profile is
+/// the admin baseline inherited by users who have not created their
+/// own config file. In the user config, user-defined profiles
+/// override / extend the admin baseline.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserSection {
-    /// Named user profiles for session events.
+    /// User profiles keyed by UUID. Same shape + invariants as
+    /// [`SystemSection::profiles`]; default profile lives at
+    /// [`DEFAULT_USER_PROFILE_UUID`].
     #[serde(default)]
-    pub profiles: BTreeMap<String, UserProfileConfig>,
+    pub profiles: BTreeMap<Uuid, UserProfileConfig>,
+}
+
+impl UserSection {
+    /// Look up a profile by its friendly name.
+    pub fn find_profile_by_name(&self, name: &str) -> Option<(Uuid, &UserProfileConfig)> {
+        self.profiles
+            .iter()
+            .find(|(_, body)| body.name == name)
+            .map(|(id, body)| (*id, body))
+    }
+
+    /// Mutable variant of [`find_profile_by_name`].
+    pub fn find_profile_by_name_mut(
+        &mut self,
+        name: &str,
+    ) -> Option<(Uuid, &mut UserProfileConfig)> {
+        self.profiles
+            .iter_mut()
+            .find(|(_, body)| body.name == name)
+            .map(|(id, body)| (*id, body))
+    }
+
+    /// Insert the reserved `"default"` profile if missing. See
+    /// [`SystemSection::ensure_default`].
+    pub fn ensure_default(&mut self) {
+        self.profiles
+            .entry(DEFAULT_USER_PROFILE_UUID)
+            .or_insert_with(UserProfileConfig::full_default);
+        if let Some(body) = self.profiles.get_mut(&DEFAULT_USER_PROFILE_UUID) {
+            body.name = DEFAULT_PROFILE_NAME.to_string();
+        }
+    }
 }
 
 // =============================================================================
@@ -658,16 +785,21 @@ impl SystemConfig {
 
     /// Load configuration from a specific path.
     ///
-    /// Validates TV IDs and checks for D-Bus path collisions after
-    /// deserialization.
+    /// Validates TV IDs and ensures the reserved default profile
+    /// exists in each section. Missing file → bare default config.
     pub fn load_from(path: &Path) -> Result<Self> {
         if !path.exists() {
-            return Ok(Self::default());
+            let mut config = Self::default();
+            config.system.ensure_default();
+            config.user.ensure_default();
+            return Ok(config);
         }
 
         let content = std::fs::read_to_string(path)?;
-        let config: SystemConfig = toml::from_str(&content)?;
+        let mut config: SystemConfig = toml::from_str(&content)?;
         config.validate_tv_ids()?;
+        config.system.ensure_default();
+        config.user.ensure_default();
         Ok(config)
     }
 
@@ -876,12 +1008,17 @@ impl UserConfig {
             .map(|t| t.profile.user.as_str())
             .unwrap_or("default");
 
-        // 2. Get the user's profile definition (may be partial)
-        let user_profile = self.user.profiles.get(profile_name);
+        // 2. Get the user's profile definition (may be partial). Look
+        // up by name through the UUID-keyed catalog — v2 keeps the
+        // `[[tv]] profile.user` reference name-based.
+        let user_profile = self
+            .user
+            .find_profile_by_name(profile_name)
+            .map(|(_, body)| body);
 
         // 3. Get the user's default profile (for field inheritance within user config)
-        let user_default = if profile_name != "default" {
-            self.user.profiles.get("default")
+        let user_default = if profile_name != DEFAULT_PROFILE_NAME {
+            self.user.profiles.get(&DEFAULT_USER_PROFILE_UUID)
         } else {
             None
         };
@@ -1017,11 +1154,13 @@ mod tests {
     fn test_parse_config_with_profiles_and_tvs() {
         // Config with user profiles and TVs — should parse cleanly
         let toml_str = r#"
-[user.profiles.default]
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 on_session_lock = "screen_off"
 on_session_unlock = "screen_on"
 
-[user.profiles.gaming]
+[user.profiles."a1b2c3d4-0000-0000-0000-000000000001"]
+name = "gaming"
 on_session_lock = "none"
 idle_timeout_seconds = 0
 
@@ -1053,7 +1192,7 @@ default_input = "HDMI_1"
 
         // Check user profiles
         assert_eq!(config.user.profiles.len(), 2);
-        let gaming = config.user.profiles.get("gaming").unwrap();
+        let (_, gaming) = config.user.find_profile_by_name("gaming").unwrap();
         assert_eq!(gaming.on_session_lock, Some(SessionAction::None));
         assert_eq!(gaming.idle_timeout_seconds, Some(0));
     }
@@ -1062,13 +1201,15 @@ default_input = "HDMI_1"
     fn test_parse_new_system_config() {
         // New-style system config with system and user profile sections
         let toml_str = r#"
-[system.profiles.default]
+[system.profiles."00000000-0000-0000-0000-000000000001"]
+name = "default"
 on_startup = "power_on"
 on_shutdown = "power_off"
 on_reboot = "none"
 on_no_session = "screen_on"
 
-[user.profiles.default]
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 on_session_lock = "screen_off"
 idle_timeout_seconds = 300
 
@@ -1087,14 +1228,22 @@ mac = "AA:BB:CC:DD:EE:FF"
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
 
         // Check system profile
-        let sys_default = config.system.profiles.get("default").unwrap();
+        let sys_default = config
+            .system
+            .profiles
+            .get(&DEFAULT_SYSTEM_PROFILE_UUID)
+            .unwrap();
         assert_eq!(sys_default.on_startup, Some(SessionAction::PowerOn));
         assert_eq!(sys_default.on_shutdown, Some(SessionAction::PowerOff));
         assert_eq!(sys_default.on_reboot, Some(SessionAction::None));
         assert_eq!(sys_default.on_no_session, Some(SessionAction::ScreenOn));
 
         // Check user profile
-        let user_default = config.user.profiles.get("default").unwrap();
+        let user_default = config
+            .user
+            .profiles
+            .get(&DEFAULT_USER_PROFILE_UUID)
+            .unwrap();
         assert_eq!(user_default.on_session_lock, Some(SessionAction::ScreenOff));
         assert_eq!(user_default.idle_timeout_seconds, Some(300));
         // Unspecified field
@@ -1109,18 +1258,22 @@ mac = "AA:BB:CC:DD:EE:FF"
         // - SystemConfig sees profile.system, ignores profile.user
         // - UserConfig sees profile.user, ignores name/vendor/etc.
         let toml_str = r#"
-[system.profiles.default]
+[system.profiles."00000000-0000-0000-0000-000000000001"]
+name = "default"
 on_startup = "power_on"
 on_shutdown = "power_off"
 
-[system.profiles.guest]
+[system.profiles."a1b2c3d4-0000-0000-0000-000000000010"]
+name = "guest"
 on_startup = "none"
 on_shutdown = "screen_off"
 
-[user.profiles.default]
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 on_session_lock = "screen_off"
 
-[user.profiles.gaming]
+[user.profiles."a1b2c3d4-0000-0000-0000-000000000020"]
+name = "gaming"
 on_session_lock = "none"
 idle_timeout_seconds = 0
 
@@ -1283,15 +1436,17 @@ ip = "192.168.1.101"
 
         let mut config = SystemConfig::default();
         config.user.profiles.insert(
-            "custom".to_string(),
+            Uuid::new_v4(),
             UserProfileConfig {
+                name: "custom".to_string(),
                 on_session_lock: Some(SessionAction::PowerOff),
                 ..UserProfileConfig::default()
             },
         );
         config.system.profiles.insert(
-            "guest".to_string(),
+            Uuid::new_v4(),
             SystemProfileConfig {
+                name: "guest".to_string(),
                 on_shutdown: Some(SessionAction::ScreenOff),
                 ..SystemProfileConfig::default()
             },
@@ -1309,9 +1464,9 @@ ip = "192.168.1.101"
 
         let saved_config: SystemConfig = toml::from_str(&content).unwrap();
 
-        assert!(saved_config.user.profiles.contains_key("custom"));
-        assert!(!saved_config.user.profiles.contains_key("default"));
-        assert!(saved_config.system.profiles.contains_key("guest"));
+        assert!(saved_config.user.find_profile_by_name("custom").is_some());
+        assert!(saved_config.user.find_profile_by_name("default").is_none());
+        assert!(saved_config.system.find_profile_by_name("guest").is_some());
 
         let _ = std::fs::remove_file(temp_file);
     }
@@ -1358,16 +1513,18 @@ ip = "192.168.1.101"
     fn test_resolve_system_profile_per_tv() {
         let mut config = SystemConfig::default();
         config.system.profiles.insert(
-            "default".to_string(),
+            DEFAULT_SYSTEM_PROFILE_UUID,
             SystemProfileConfig {
+                name: DEFAULT_PROFILE_NAME.to_string(),
                 on_startup: Some(SessionAction::PowerOn),
                 on_shutdown: Some(SessionAction::PowerOff),
                 ..SystemProfileConfig::default()
             },
         );
         config.system.profiles.insert(
-            "guest".to_string(),
+            Uuid::new_v4(),
             SystemProfileConfig {
+                name: "guest".to_string(),
                 on_startup: Some(SessionAction::None),
                 on_shutdown: Some(SessionAction::ScreenOff),
                 ..SystemProfileConfig::default()
@@ -1394,8 +1551,9 @@ ip = "192.168.1.101"
     fn test_resolve_system_profile_nonexistent_falls_to_default() {
         let mut config = SystemConfig::default();
         config.system.profiles.insert(
-            "default".to_string(),
+            DEFAULT_SYSTEM_PROFILE_UUID,
             SystemProfileConfig {
+                name: DEFAULT_PROFILE_NAME.to_string(),
                 on_startup: Some(SessionAction::PowerOn),
                 ..SystemProfileConfig::default()
             },
@@ -1410,7 +1568,8 @@ ip = "192.168.1.101"
     #[test]
     fn test_tv_profile_assignment_serialization() {
         let toml_str = r#"
-[system.profiles.default]
+[system.profiles."00000000-0000-0000-0000-000000000001"]
+name = "default"
 on_startup = "power_on"
 
 [[tv]]
@@ -1504,6 +1663,7 @@ ip = "192.168.1.1"
     fn test_merge_with_base_full_override() {
         let base = UserProfileConfig::full_default();
         let full_override = UserProfileConfig {
+            name: String::new(),
             on_session_lock: Some(SessionAction::None),
             on_session_unlock: Some(SessionAction::None),
             on_greeter_wake: Some(SessionAction::None),
@@ -1539,10 +1699,12 @@ ip = "192.168.1.1"
     #[test]
     fn test_parse_user_config() {
         let toml_str = r#"
-[user.profiles.default]
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 idle_timeout_seconds = 600
 
-[user.profiles.gaming]
+[user.profiles."a1b2c3d4-0000-0000-0000-000000000020"]
+name = "gaming"
 on_session_lock = "none"
 idle_timeout_seconds = 0
 
@@ -1568,8 +1730,9 @@ profile.user = "gaming"
 
         let mut user = UserConfig::default();
         user.user.profiles.insert(
-            "gaming".to_string(),
+            Uuid::new_v4(),
             UserProfileConfig {
+                name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
                 // idle_timeout_seconds not specified — should inherit from system
                 ..UserProfileConfig::default()
@@ -1608,8 +1771,9 @@ profile.user = "gaming"
 
         let mut user = UserConfig::default();
         user.user.profiles.insert(
-            "default".to_string(),
+            DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
+                name: DEFAULT_PROFILE_NAME.to_string(),
                 idle_timeout_seconds: Some(600), // user overrides system
                 ..UserProfileConfig::default()
             },
@@ -1632,16 +1796,18 @@ profile.user = "gaming"
         let mut user = UserConfig::default();
         // User's default profile overrides system idle timeout
         user.user.profiles.insert(
-            "default".to_string(),
+            DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
+                name: DEFAULT_PROFILE_NAME.to_string(),
                 idle_timeout_seconds: Some(600),
                 ..UserProfileConfig::default()
             },
         );
         // User's gaming profile overrides screen lock only
         user.user.profiles.insert(
-            "gaming".to_string(),
+            Uuid::new_v4(),
             UserProfileConfig {
+                name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
                 ..UserProfileConfig::default()
             },
@@ -1666,8 +1832,9 @@ profile.user = "gaming"
     fn test_user_config_roundtrip() {
         let mut user = UserConfig::default();
         user.user.profiles.insert(
-            "gaming".to_string(),
+            Uuid::new_v4(),
             UserProfileConfig {
+                name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
                 idle_timeout_seconds: Some(0),
                 ..UserProfileConfig::default()
@@ -1679,7 +1846,7 @@ profile.user = "gaming"
         let deserialized: UserConfig = toml::from_str(&serialized).unwrap();
 
         assert_eq!(deserialized.user.profiles.len(), 1);
-        let gaming = deserialized.user.profiles.get("gaming").unwrap();
+        let (_, gaming) = deserialized.user.find_profile_by_name("gaming").unwrap();
         assert_eq!(gaming.on_session_lock, Some(SessionAction::None));
         assert_eq!(gaming.idle_timeout_seconds, Some(0));
         // None fields should not be serialized
@@ -1694,11 +1861,13 @@ profile.user = "gaming"
     #[test]
     fn test_parse_profile_config_all_fields() {
         let toml_str = r#"
-[system.profiles.custom]
+[system.profiles."a1b2c3d4-0000-0000-0000-0000000000c1"]
+name = "custom"
 on_sleep = "none"
 on_wake = "screen_on"
 
-[user.profiles.custom]
+[user.profiles."a1b2c3d4-0000-0000-0000-0000000000c2"]
+name = "custom"
 on_session_lock = "power_off"
 on_session_unlock = "power_on"
 on_greeter_wake = "none"
@@ -1721,9 +1890,8 @@ mac = "AA:BB:CC:DD:EE:FF"
         // Check system profile fields
         let sys_profile = config
             .system
-            .profiles
-            .get("custom")
-            .cloned()
+            .find_profile_by_name("custom")
+            .map(|(_, body)| body.clone())
             .unwrap_or_else(SystemProfileConfig::full_default);
         assert_eq!(sys_profile.on_sleep, Some(SessionAction::None));
         assert_eq!(sys_profile.on_wake, Some(SessionAction::ScreenOn));
@@ -1731,9 +1899,8 @@ mac = "AA:BB:CC:DD:EE:FF"
         // Check user profile fields
         let profile = config
             .user
-            .profiles
-            .get("custom")
-            .cloned()
+            .find_profile_by_name("custom")
+            .map(|(_, body)| body.clone())
             .unwrap_or_else(UserProfileConfig::full_default);
         assert_eq!(profile.on_session_lock, Some(SessionAction::PowerOff));
         assert_eq!(profile.on_session_unlock, Some(SessionAction::PowerOn));
@@ -1755,14 +1922,17 @@ mac = "AA:BB:CC:DD:EE:FF"
     fn test_system_profiles_parsed_from_system_config() {
         // System config has multiple user profiles — session service should see all of them
         let toml_str = r#"
-[system.profiles.default]
+[system.profiles."00000000-0000-0000-0000-000000000001"]
+name = "default"
 on_startup = "power_on"
 
-[user.profiles.default]
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 on_session_lock = "screen_off"
 idle_timeout_seconds = 300
 
-[user.profiles.foo]
+[user.profiles."a1b2c3d4-0000-0000-0000-00000000f000"]
+name = "foo"
 on_session_lock = "none"
 idle_timeout_seconds = 0
 
@@ -1778,10 +1948,10 @@ ip = "192.168.1.1"
 
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.user.profiles.len(), 2);
-        assert!(config.user.profiles.contains_key("default"));
-        assert!(config.user.profiles.contains_key("foo"));
+        assert!(config.user.find_profile_by_name("default").is_some());
+        assert!(config.user.find_profile_by_name("foo").is_some());
 
-        let foo = config.user.profiles.get("foo").unwrap();
+        let (_, foo) = config.user.find_profile_by_name("foo").unwrap();
         assert_eq!(foo.on_session_lock, Some(SessionAction::None));
         assert_eq!(foo.idle_timeout_seconds, Some(0));
     }
@@ -1815,8 +1985,8 @@ ip = "192.168.1.1"
         for (name, profile) in &system_profiles {
             merged.insert(name.clone(), profile);
         }
-        for (name, profile) in &user_config.user.profiles {
-            merged.insert(name.clone(), profile);
+        for profile in user_config.user.profiles.values() {
+            merged.insert(profile.name.clone(), profile);
         }
 
         assert_eq!(merged.len(), 2);
@@ -1849,15 +2019,17 @@ ip = "192.168.1.1"
 
         let mut user_config = UserConfig::default();
         user_config.user.profiles.insert(
-            "default".to_string(),
+            DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
+                name: DEFAULT_PROFILE_NAME.to_string(),
                 idle_timeout_seconds: Some(600), // user overrides
                 ..UserProfileConfig::default()
             },
         );
         user_config.user.profiles.insert(
-            "gaming".to_string(),
+            Uuid::new_v4(),
             UserProfileConfig {
+                name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
                 ..UserProfileConfig::default()
             },
@@ -1868,8 +2040,8 @@ ip = "192.168.1.1"
         for (name, profile) in &system_profiles {
             merged.insert(name.clone(), profile);
         }
-        for (name, profile) in &user_config.user.profiles {
-            merged.insert(name.clone(), profile);
+        for profile in user_config.user.profiles.values() {
+            merged.insert(profile.name.clone(), profile);
         }
 
         // Should have 3 profiles: default (user), foo (system), gaming (user)
@@ -1891,10 +2063,12 @@ ip = "192.168.1.1"
     fn test_user_config_ignores_unknown_toml_fields() {
         // UserConfig should parse even if the TOML has extra fields
         let user_only_toml = r#"
-[user.profiles.default]
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 idle_timeout_seconds = 600
 
-[user.profiles.gaming]
+[user.profiles."a1b2c3d4-0000-0000-0000-000000000020"]
+name = "gaming"
 on_session_lock = "none"
 
 [[tv]]
@@ -1904,8 +2078,8 @@ profile.user = "gaming"
 
         let config: UserConfig = toml::from_str(user_only_toml).unwrap();
         assert_eq!(config.user.profiles.len(), 2);
-        assert!(config.user.profiles.contains_key("default"));
-        assert!(config.user.profiles.contains_key("gaming"));
+        assert!(config.user.find_profile_by_name("default").is_some());
+        assert!(config.user.find_profile_by_name("gaming").is_some());
         let living = config
             .tv
             .iter()
@@ -1920,13 +2094,16 @@ profile.user = "gaming"
         // because UserConfig.tv is also a Vec. UserTvConfig ignores unknown fields
         // like name, vendor, lg, etc.
         let system_toml = r#"
-[system.profiles.default]
+[system.profiles."00000000-0000-0000-0000-000000000001"]
+name = "default"
 on_startup = "power_on"
 
-[user.profiles.default]
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 on_session_lock = "screen_off"
 
-[user.profiles.foo]
+[user.profiles."a1b2c3d4-0000-0000-0000-00000000f000"]
+name = "foo"
 on_session_lock = "none"
 
 [[tv]]
@@ -1984,8 +2161,9 @@ ip = "192.168.1.1"
 
         let mut user = UserConfig::default();
         user.user.profiles.insert(
-            "default".to_string(),
+            DEFAULT_USER_PROFILE_UUID,
             UserProfileConfig {
+                name: DEFAULT_PROFILE_NAME.to_string(),
                 idle_timeout_seconds: Some(600),
                 ..UserProfileConfig::default()
             },
@@ -2008,8 +2186,9 @@ ip = "192.168.1.1"
 
         let mut user = UserConfig::default();
         user.user.profiles.insert(
-            "gaming".to_string(),
+            Uuid::new_v4(),
             UserProfileConfig {
+                name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
                 ..UserProfileConfig::default()
             },

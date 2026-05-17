@@ -90,9 +90,10 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 
 // Configuration
 pub use config::{
-    AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
-    SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
+    AutomateWhen, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID,
+    ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig, SystemProfileConfig,
+    SystemSection, TvConfig, TvProfileAssignment, UserConfig, UserProfileConfig, UserSection,
+    UserTvConfig, UserTvProfileAssignment, absolutize,
 };
 
 // State
@@ -116,8 +117,9 @@ pub use refresh_trigger::RefreshTrigger;
 
 // D-Bus path constants (always available, no feature gate)
 pub use dbus_paths::{
-    DAEMON_SERVICE, MANAGER_PATH, SESSION_INTERFACE, SESSION_PATH, SESSION_SERVICE, TV_BASE_PATH,
-    tv_path,
+    DAEMON_SERVICE, MANAGER_PATH, SESSION_INTERFACE, SESSION_PATH, SESSION_SERVICE,
+    SYSTEM_PROFILE_BASE_PATH, TV_BASE_PATH, USER_PROFILE_BASE_PATH, system_profile_path, tv_path,
+    user_profile_path,
 };
 
 #[cfg(feature = "dbus")]
