@@ -48,7 +48,10 @@ use edit_pane::{
 };
 use icon_theme::load_themed_icon;
 use power_cycle::run_power_on_with_progress;
-use profiles_state::{SharedEditorState, apply_system_field_edit, refresh_system_editor};
+use profiles_state::{
+    SelectedProfile, SharedEditorState, apply_system_field_edit, apply_user_field_edit,
+    refresh_system_editor, refresh_user_editor,
+};
 use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
@@ -123,14 +126,14 @@ pub(crate) fn vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> Sha
 /// convention. Background failures (state-watcher reconnects, etc.)
 /// are *not* routed here — they live in journald instead, since
 /// surfacing every transient flap would drown the user.
-/// Async wrapper around the sync `state_watch::push_system_field_rows`.
+/// Async wrapper around the sync `state_watch::push_field_rows`.
 /// Snapshots the editor state out of its `RwLock` (so we don't try to
 /// take a tokio mutex from inside the Slint event loop) and queues the
 /// model sync on the UI thread.
-async fn push_system_field_rows(state: &SharedEditorState, app_weak: &slint::Weak<AppWindow>) {
+async fn push_field_rows(state: &SharedEditorState, app_weak: &slint::Weak<AppWindow>) {
     let editor = state.read().await.clone();
     on_ui(app_weak, move |app| {
-        crate::state_watch::push_system_field_rows(&app, &editor);
+        crate::state_watch::push_field_rows(&app, &editor);
     });
 }
 
@@ -882,22 +885,35 @@ fn register_callbacks(
                         push_tvs_error(&app_weak, gettext("Couldn't load profile"), format!("{e}"));
                         return;
                     }
-                    push_system_field_rows(&es, &app_weak).await;
+                    push_field_rows(&es, &app_weak).await;
                 }
                 ProfileKind::User => {
-                    // User-profile editor wires up in the next commit;
-                    // until then, just touch the daemon so an invalid
-                    // name surfaces in the log.
                     let session_ref = s.read().await;
-                    if let Some(c) = session_ref.as_ref()
-                        && let Err(e) = c.get_user_profile(&name).await
-                    {
+                    let Some(c) = session_ref.as_ref() else {
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Session service unavailable"),
+                            gettext(
+                                "User-profile editing requires the per-user tisvlay-session service.",
+                            ),
+                        );
+                        return;
+                    };
+                    if let Err(e) = refresh_user_editor(c, &es, Some(&name)).await {
                         warn!(
                             name = %name,
                             error = %format!("{e}"),
                             "User profile select fetch failed",
                         );
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Couldn't load profile"),
+                            format!("{e}"),
+                        );
+                        return;
                     }
+                    drop(session_ref);
+                    push_field_rows(&es, &app_weak).await;
                 }
                 ProfileKind::None => {}
             }
@@ -943,64 +959,121 @@ fn register_callbacks(
     });
 
     let d = daemon.clone();
+    let s = session.clone();
     let es = editor_state.clone();
     let app_weak = app.as_weak();
     profiles_global.on_field_edited(move |field, value| {
         let d = d.clone();
+        let s = s.clone();
         let es = es.clone();
         let app_weak = app_weak.clone();
         let field = field.to_string();
         let value = value.to_string();
         tokio::spawn(async move {
-            // Snapshot the current selection + body under the lock,
-            // patch a clone, push the patch over D-Bus, then refresh
-            // the cache + push field rows. The cache itself is only
-            // updated after a successful daemon write so a failed
-            // patch doesn't leave the editor showing a value the
-            // daemon never accepted.
-            let (name, mut body) = {
+            // Snapshot the current selection under the lock, then
+            // dispatch to the system or user CRUD path. Cache is
+            // only updated after a successful daemon write so a
+            // failed patch doesn't leave the editor showing a value
+            // the daemon never accepted.
+            let selected = {
                 let s = es.read().await;
-                match s.system_selected.as_ref() {
-                    Some((n, b)) => (n.clone(), b.clone()),
-                    None => {
-                        debug!("Profiles.field-edited: no selection — dropping edit");
+                s.selected.clone()
+            };
+            match selected {
+                Some(SelectedProfile::System { name, mut body }) => {
+                    if let Err(e) = apply_system_field_edit(&mut body, &field, &value) {
+                        warn!(
+                            field = %field,
+                            value = %value,
+                            error = %format!("{e}"),
+                            "Profiles.field-edited: invalid system edit",
+                        );
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Couldn't change field"),
+                            format!("{e}"),
+                        );
                         return;
                     }
+                    if let Err(e) = d.update_system_profile(&name, &body).await {
+                        warn!(
+                            name = %name,
+                            field = %field,
+                            error = %format!("{e}"),
+                            "UpdateSystemProfile failed",
+                        );
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Couldn't save profile"),
+                            format!("{e}"),
+                        );
+                        return;
+                    }
+                    if let Err(e) = refresh_system_editor(&d, &es, Some(&name)).await {
+                        warn!(
+                            name = %name,
+                            error = %format!("{e}"),
+                            "Post-edit system editor refresh failed",
+                        );
+                        return;
+                    }
+                    push_field_rows(&es, &app_weak).await;
                 }
-            };
-            if let Err(e) = apply_system_field_edit(&mut body, &field, &value) {
-                warn!(
-                    field = %field,
-                    value = %value,
-                    error = %format!("{e}"),
-                    "Profiles.field-edited: invalid edit",
-                );
-                push_tvs_error(&app_weak, gettext("Couldn't change field"), format!("{e}"));
-                return;
+                Some(SelectedProfile::User { name, mut body }) => {
+                    if let Err(e) = apply_user_field_edit(&mut body, &field, &value) {
+                        warn!(
+                            field = %field,
+                            value = %value,
+                            error = %format!("{e}"),
+                            "Profiles.field-edited: invalid user edit",
+                        );
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Couldn't change field"),
+                            format!("{e}"),
+                        );
+                        return;
+                    }
+                    let session_ref = s.read().await;
+                    let Some(c) = session_ref.as_ref() else {
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Session service unavailable"),
+                            gettext(
+                                "User-profile editing requires the per-user tisvlay-session service.",
+                            ),
+                        );
+                        return;
+                    };
+                    if let Err(e) = c.update_user_profile(&name, &body).await {
+                        warn!(
+                            name = %name,
+                            field = %field,
+                            error = %format!("{e}"),
+                            "UpdateUserProfile failed",
+                        );
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Couldn't save profile"),
+                            format!("{e}"),
+                        );
+                        return;
+                    }
+                    if let Err(e) = refresh_user_editor(c, &es, Some(&name)).await {
+                        warn!(
+                            name = %name,
+                            error = %format!("{e}"),
+                            "Post-edit user editor refresh failed",
+                        );
+                        return;
+                    }
+                    drop(session_ref);
+                    push_field_rows(&es, &app_weak).await;
+                }
+                None => {
+                    debug!("Profiles.field-edited: no selection — dropping edit");
+                }
             }
-            if let Err(e) = d.update_system_profile(&name, &body).await {
-                warn!(
-                    name = %name,
-                    field = %field,
-                    error = %format!("{e}"),
-                    "UpdateSystemProfile failed",
-                );
-                push_tvs_error(&app_weak, gettext("Couldn't save profile"), format!("{e}"));
-                return;
-            }
-            // Refetch via the same helper that drives `on_select` so
-            // the editor reflects whatever the daemon actually wrote
-            // (covers any server-side normalization). Single-flight
-            // is fine — the cache write is atomic.
-            if let Err(e) = refresh_system_editor(&d, &es, Some(&name)).await {
-                warn!(
-                    name = %name,
-                    error = %format!("{e}"),
-                    "Post-edit editor refresh failed",
-                );
-                return;
-            }
-            push_system_field_rows(&es, &app_weak).await;
         });
     });
 

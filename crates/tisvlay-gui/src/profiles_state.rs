@@ -24,7 +24,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use slint::SharedString;
 use tisvlay_core::{
-    AutomateWhen, DaemonClient, ResolvedSystemProfile, SessionAction, SystemProfileConfig,
+    AutomateWhen, DaemonClient, ResolvedSystemProfile, ResolvedUserProfile, SessionAction,
+    SessionClient, SystemProfileConfig, UserProfileConfig,
 };
 use tokio::sync::RwLock;
 use tracing::warn;
@@ -43,17 +44,42 @@ pub struct ProfileFieldRowRaw {
 /// Editor-side cache. One instance per GUI, shared between the
 /// `Profiles.select` and `Profiles.field-edited` handlers (read +
 /// write under tokio::RwLock) and the `apply_snapshot` push (read
-/// only). Empty by default — `refresh_system_editor` fills it.
+/// only). Empty by default — `refresh_system_editor` /
+/// `refresh_user_editor` fill it on selection.
 #[derive(Debug, Default, Clone)]
 pub struct ProfilesEditorState {
     pub system_baseline: ResolvedSystemProfile,
     /// Body of the "default" system profile (the second inheritance
     /// layer between the hardcoded baseline and any named profile).
     pub system_default_body: SystemProfileConfig,
-    /// Currently-selected system profile (name + body). `None` when
-    /// no system profile is selected or the daemon fetch is in
-    /// flight.
-    pub system_selected: Option<(String, SystemProfileConfig)>,
+    pub user_baseline: ResolvedUserProfile,
+    /// Body of the "default" user profile — second inheritance layer
+    /// for non-default user profiles. The session service hides the
+    /// admin-baseline-vs-user-config distinction inside what
+    /// `GetUserProfile("default")` returns, so the editor only sees
+    /// two effective layers (this + the hardcoded baseline).
+    pub user_default_body: UserProfileConfig,
+    /// What the user is currently editing. The enum encodes the
+    /// "at most one profile selected" invariant at the type level —
+    /// system_/user_-specific bodies live in their respective
+    /// variants so the field-edit handler can dispatch by match.
+    pub selected: Option<SelectedProfile>,
+}
+
+/// The currently-edited profile. `body` is the unresolved
+/// `Option<T>`-fielded shape from the daemon — `None` fields surface
+/// as inheriting in the editor, `Some(v)` fields surface as
+/// locally-set.
+#[derive(Debug, Clone)]
+pub enum SelectedProfile {
+    System {
+        name: String,
+        body: SystemProfileConfig,
+    },
+    User {
+        name: String,
+        body: UserProfileConfig,
+    },
 }
 
 pub type SharedEditorState = Arc<RwLock<ProfilesEditorState>>;
@@ -90,7 +116,10 @@ pub async fn refresh_system_editor(
                 .get_system_profile(name)
                 .await
                 .with_context(|| format!("Failed to fetch system profile '{name}'"))?;
-            Some((name.to_string(), body))
+            Some(SelectedProfile::System {
+                name: name.to_string(),
+                body,
+            })
         }
         None => None,
     };
@@ -98,7 +127,49 @@ pub async fn refresh_system_editor(
     let mut s = state.write().await;
     s.system_baseline = baseline;
     s.system_default_body = default_body;
-    s.system_selected = selected;
+    s.selected = selected;
+    Ok(())
+}
+
+/// Mirror of [`refresh_system_editor`] for user profiles. Hits the
+/// `Session1` proxy for the baseline + "default" body + named body.
+/// On a failed "default" fetch, falls back to an empty body — the
+/// inherit chain then bottoms out at the hardcoded baseline, which
+/// is the same behavior as the daemon itself.
+pub async fn refresh_user_editor(
+    session: &SessionClient,
+    state: &SharedEditorState,
+    selected_name: Option<&str>,
+) -> Result<()> {
+    let baseline = session
+        .get_resolved_profile_defaults()
+        .await
+        .context("Failed to fetch resolved user-profile defaults")?;
+    let default_body = session
+        .get_user_profile("default")
+        .await
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "Failed to fetch 'default' user profile body — using empty");
+            UserProfileConfig::default()
+        });
+    let selected = match selected_name {
+        Some(name) => {
+            let body = session
+                .get_user_profile(name)
+                .await
+                .with_context(|| format!("Failed to fetch user profile '{name}'"))?;
+            Some(SelectedProfile::User {
+                name: name.to_string(),
+                body,
+            })
+        }
+        None => None,
+    };
+
+    let mut s = state.write().await;
+    s.user_baseline = baseline;
+    s.user_default_body = default_body;
+    s.selected = selected;
     Ok(())
 }
 
@@ -106,12 +177,24 @@ pub async fn refresh_system_editor(
 // Field row computation
 // =============================================================================
 
-/// Build the `ProfileField` rows for the currently-selected system
-/// profile. Returns an empty Vec when no system profile is selected.
-pub fn compute_system_field_rows(state: &ProfilesEditorState) -> Vec<ProfileFieldRowRaw> {
-    let Some((name, body)) = state.system_selected.as_ref() else {
-        return Vec::new();
-    };
+/// Build the `ProfileField` rows for whatever's currently selected.
+/// Empty when no selection. Single entry point so the Slint push
+/// helper doesn't need to know which kind it's rendering.
+pub fn compute_field_rows(state: &ProfilesEditorState) -> Vec<ProfileFieldRowRaw> {
+    match state.selected.as_ref() {
+        Some(SelectedProfile::System { name, body }) => {
+            compute_system_field_rows(name, body, state)
+        }
+        Some(SelectedProfile::User { name, body }) => compute_user_field_rows(name, body, state),
+        None => Vec::new(),
+    }
+}
+
+fn compute_system_field_rows(
+    name: &str,
+    body: &SystemProfileConfig,
+    state: &ProfilesEditorState,
+) -> Vec<ProfileFieldRowRaw> {
     let editing_default = name == "default";
     let baseline = &state.system_baseline;
     let default = &state.system_default_body;
@@ -170,6 +253,73 @@ pub fn compute_system_field_rows(state: &ProfilesEditorState) -> Vec<ProfileFiel
     ]
 }
 
+/// User-side field rows. Five `SessionAction` fields; the
+/// `idle_timeout_seconds` numeric field is deferred — it needs a
+/// spinner-style widget instead of a ComboBox of presets. See
+/// `docs/ideas/profile-user-idle-timeout-spinner.md`.
+fn compute_user_field_rows(
+    name: &str,
+    body: &UserProfileConfig,
+    state: &ProfilesEditorState,
+) -> Vec<ProfileFieldRowRaw> {
+    let editing_default = name == "default";
+    let baseline = &state.user_baseline;
+    let default = &state.user_default_body;
+
+    vec![
+        session_action_row(
+            "on_session_lock",
+            "On session lock",
+            body.on_session_lock,
+            fallthrough_action(
+                editing_default,
+                default.on_session_lock,
+                baseline.on_session_lock,
+            ),
+        ),
+        session_action_row(
+            "on_session_unlock",
+            "On session unlock",
+            body.on_session_unlock,
+            fallthrough_action(
+                editing_default,
+                default.on_session_unlock,
+                baseline.on_session_unlock,
+            ),
+        ),
+        session_action_row(
+            "on_greeter_wake",
+            "On greeter wake",
+            body.on_greeter_wake,
+            fallthrough_action(
+                editing_default,
+                default.on_greeter_wake,
+                baseline.on_greeter_wake,
+            ),
+        ),
+        session_action_row(
+            "on_idle_timeout",
+            "On idle timeout",
+            body.on_idle_timeout,
+            fallthrough_action(
+                editing_default,
+                default.on_idle_timeout,
+                baseline.on_idle_timeout,
+            ),
+        ),
+        session_action_row(
+            "on_idle_resume",
+            "On idle resume",
+            body.on_idle_resume,
+            fallthrough_action(
+                editing_default,
+                default.on_idle_resume,
+                baseline.on_idle_resume,
+            ),
+        ),
+    ]
+}
+
 /// Apply one field edit to a system-profile body. `value` is the
 /// wire shape from the Slint side: empty string clears the field
 /// back to `None`; otherwise it's the enum's serde representation
@@ -188,6 +338,29 @@ pub fn apply_system_field_edit(
         "on_wake" => body.on_wake = parse_action(value)?,
         "automate_when" => body.automate_when = parse_when(value)?,
         _ => bail!("unknown system-profile field: {field_name}"),
+    }
+    Ok(())
+}
+
+/// Mirror of [`apply_system_field_edit`] for user profiles. Five
+/// `SessionAction` fields supported today; `idle_timeout_seconds`
+/// returns an explicit error so a future stray emit doesn't
+/// silently no-op (see the spinner-design idea doc).
+pub fn apply_user_field_edit(
+    body: &mut UserProfileConfig,
+    field_name: &str,
+    value: &str,
+) -> Result<()> {
+    match field_name {
+        "on_session_lock" => body.on_session_lock = parse_action(value)?,
+        "on_session_unlock" => body.on_session_unlock = parse_action(value)?,
+        "on_greeter_wake" => body.on_greeter_wake = parse_action(value)?,
+        "on_idle_timeout" => body.on_idle_timeout = parse_action(value)?,
+        "on_idle_resume" => body.on_idle_resume = parse_action(value)?,
+        "idle_timeout_seconds" => {
+            bail!("idle_timeout_seconds editor is not implemented yet — edit the TOML directly")
+        }
+        _ => bail!("unknown user-profile field: {field_name}"),
     }
     Ok(())
 }
@@ -349,26 +522,38 @@ fn parse_when(value: &str) -> Result<Option<AutomateWhen>> {
 mod tests {
     use super::*;
 
-    fn state_with_selected(name: &str, body: SystemProfileConfig) -> ProfilesEditorState {
+    fn system_state(name: &str, body: SystemProfileConfig) -> ProfilesEditorState {
         ProfilesEditorState {
-            system_baseline: ResolvedSystemProfile::default(),
-            system_default_body: SystemProfileConfig::default(),
-            system_selected: Some((name.to_string(), body)),
+            selected: Some(SelectedProfile::System {
+                name: name.to_string(),
+                body,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn user_state(name: &str, body: UserProfileConfig) -> ProfilesEditorState {
+        ProfilesEditorState {
+            selected: Some(SelectedProfile::User {
+                name: name.to_string(),
+                body,
+            }),
+            ..Default::default()
         }
     }
 
     #[test]
     fn no_selection_produces_empty_field_list() {
         let state = ProfilesEditorState::default();
-        assert!(compute_system_field_rows(&state).is_empty());
+        assert!(compute_field_rows(&state).is_empty());
     }
 
     #[test]
-    fn default_profile_fallthrough_uses_hardcoded_baseline() {
+    fn default_system_fallthrough_uses_hardcoded_baseline() {
         // Editing "default" with no fields set — fallthrough on every
         // row should be the baseline's value, not None / blank.
-        let state = state_with_selected("default", SystemProfileConfig::default());
-        let rows = compute_system_field_rows(&state);
+        let state = system_state("default", SystemProfileConfig::default());
+        let rows = compute_field_rows(&state);
 
         let on_startup = rows.iter().find(|r| r.field_name == "on_startup").unwrap();
         assert_eq!(
@@ -384,13 +569,13 @@ mod tests {
     }
 
     #[test]
-    fn non_default_profile_fallthrough_routes_through_default_body() {
+    fn non_default_system_fallthrough_routes_through_default_body() {
         // "guest" is being edited; "default" overrides on_shutdown to
         // ScreenOff. guest's on_shutdown row should show
         // `(inherit: screen_off)`, not the baseline's `power_off`.
-        let mut state = state_with_selected("guest", SystemProfileConfig::default());
+        let mut state = system_state("guest", SystemProfileConfig::default());
         state.system_default_body.on_shutdown = Some(SessionAction::ScreenOff);
-        let rows = compute_system_field_rows(&state);
+        let rows = compute_field_rows(&state);
 
         let on_shutdown = rows.iter().find(|r| r.field_name == "on_shutdown").unwrap();
         assert_eq!(on_shutdown.options[0].as_str(), "(inherit: screen_off)");
@@ -402,13 +587,13 @@ mod tests {
     }
 
     #[test]
-    fn locally_set_value_surfaces_in_current_value() {
+    fn locally_set_system_value_surfaces_in_current_value() {
         let body = SystemProfileConfig {
             on_sleep: Some(SessionAction::ScreenOff),
             ..Default::default()
         };
-        let state = state_with_selected("guest", body);
-        let rows = compute_system_field_rows(&state);
+        let state = system_state("guest", body);
+        let rows = compute_field_rows(&state);
 
         let on_sleep = rows.iter().find(|r| r.field_name == "on_sleep").unwrap();
         assert_eq!(on_sleep.current_value.as_str(), "screen_off");
@@ -416,8 +601,8 @@ mod tests {
 
     #[test]
     fn automate_when_row_uses_when_options_not_action_options() {
-        let state = state_with_selected("default", SystemProfileConfig::default());
-        let rows = compute_system_field_rows(&state);
+        let state = system_state("default", SystemProfileConfig::default());
+        let rows = compute_field_rows(&state);
 
         let row = rows
             .iter()
@@ -430,14 +615,14 @@ mod tests {
     }
 
     #[test]
-    fn apply_edit_sets_session_action_field_to_some() {
+    fn apply_system_edit_sets_session_action_field_to_some() {
         let mut body = SystemProfileConfig::default();
         apply_system_field_edit(&mut body, "on_startup", "power_off").unwrap();
         assert_eq!(body.on_startup, Some(SessionAction::PowerOff));
     }
 
     #[test]
-    fn apply_edit_with_empty_value_clears_field_to_none() {
+    fn apply_system_edit_with_empty_value_clears_field_to_none() {
         let mut body = SystemProfileConfig {
             on_startup: Some(SessionAction::PowerOn),
             ..Default::default()
@@ -447,14 +632,14 @@ mod tests {
     }
 
     #[test]
-    fn apply_edit_routes_automate_when_to_its_own_field() {
+    fn apply_system_edit_routes_automate_when_to_its_own_field() {
         let mut body = SystemProfileConfig::default();
         apply_system_field_edit(&mut body, "automate_when", "on_primary").unwrap();
         assert_eq!(body.automate_when, Some(AutomateWhen::OnPrimary));
     }
 
     #[test]
-    fn apply_edit_rejects_unknown_field() {
+    fn apply_system_edit_rejects_unknown_field() {
         let mut body = SystemProfileConfig::default();
         let err =
             apply_system_field_edit(&mut body, "totally_made_up_field", "power_off").unwrap_err();
@@ -462,18 +647,102 @@ mod tests {
     }
 
     #[test]
-    fn apply_edit_rejects_unknown_enum_variant() {
+    fn apply_system_edit_rejects_unknown_enum_variant() {
         let mut body = SystemProfileConfig::default();
         let err = apply_system_field_edit(&mut body, "on_startup", "explode").unwrap_err();
         assert!(format!("{err:#}").contains("invalid SessionAction"));
     }
 
     #[test]
-    fn field_count_matches_system_profile_field_count() {
+    fn system_field_count_matches_system_profile_field_count() {
         // 6 SessionAction-typed + 1 AutomateWhen-typed = 7 rows.
         // Bumps in `SystemProfileConfig` should trip this test before
         // the Profiles pane silently drops a new field.
-        let state = state_with_selected("default", SystemProfileConfig::default());
-        assert_eq!(compute_system_field_rows(&state).len(), 7);
+        let state = system_state("default", SystemProfileConfig::default());
+        assert_eq!(compute_field_rows(&state).len(), 7);
+    }
+
+    // ---- User-profile mirror tests ----
+
+    #[test]
+    fn default_user_fallthrough_uses_hardcoded_baseline() {
+        // Baseline on_session_lock = ScreenOff; editing "default"
+        // with no override → fallthrough shows screen_off.
+        let state = user_state("default", UserProfileConfig::default());
+        let rows = compute_field_rows(&state);
+
+        let row = rows
+            .iter()
+            .find(|r| r.field_name == "on_session_lock")
+            .unwrap();
+        assert_eq!(row.options[0].as_str(), "(inherit: screen_off)");
+    }
+
+    #[test]
+    fn non_default_user_fallthrough_routes_through_default_body() {
+        // Editing "movies"; default user profile overrides
+        // on_session_lock to PowerOff. movies's row should show
+        // (inherit: power_off), not the baseline's screen_off.
+        let mut state = user_state("movies", UserProfileConfig::default());
+        state.user_default_body.on_session_lock = Some(SessionAction::PowerOff);
+        let rows = compute_field_rows(&state);
+
+        let row = rows
+            .iter()
+            .find(|r| r.field_name == "on_session_lock")
+            .unwrap();
+        assert_eq!(row.options[0].as_str(), "(inherit: power_off)");
+    }
+
+    #[test]
+    fn locally_set_user_value_surfaces_in_current_value() {
+        let body = UserProfileConfig {
+            on_idle_timeout: Some(SessionAction::PowerOff),
+            ..Default::default()
+        };
+        let state = user_state("movies", body);
+        let rows = compute_field_rows(&state);
+
+        let row = rows
+            .iter()
+            .find(|r| r.field_name == "on_idle_timeout")
+            .unwrap();
+        assert_eq!(row.current_value.as_str(), "power_off");
+    }
+
+    #[test]
+    fn apply_user_edit_sets_session_action_field_to_some() {
+        let mut body = UserProfileConfig::default();
+        apply_user_field_edit(&mut body, "on_idle_resume", "screen_on").unwrap();
+        assert_eq!(body.on_idle_resume, Some(SessionAction::ScreenOn));
+    }
+
+    #[test]
+    fn apply_user_edit_idle_timeout_seconds_returns_explicit_error() {
+        // Deferred behavior — the editor doesn't render the row, so
+        // a stray emit indicates either a future row appeared or a
+        // wire-shape bug. Either way we want a hard error, not a
+        // silent no-op.
+        let mut body = UserProfileConfig::default();
+        let err = apply_user_field_edit(&mut body, "idle_timeout_seconds", "300").unwrap_err();
+        assert!(format!("{err:#}").contains("idle_timeout_seconds"));
+    }
+
+    #[test]
+    fn apply_user_edit_rejects_unknown_field() {
+        let mut body = UserProfileConfig::default();
+        let err =
+            apply_user_field_edit(&mut body, "totally_made_up_field", "power_off").unwrap_err();
+        assert!(format!("{err:#}").contains("unknown user-profile field"));
+    }
+
+    #[test]
+    fn user_field_count_excludes_idle_timeout_seconds() {
+        // 5 SessionAction-typed rows; idle_timeout_seconds is
+        // deferred to a future commit. Bumps in `UserProfileConfig`
+        // need to either grow this count (after adding a row) or
+        // update this assertion + the deferral doc.
+        let state = user_state("default", UserProfileConfig::default());
+        assert_eq!(compute_field_rows(&state).len(), 5);
     }
 }

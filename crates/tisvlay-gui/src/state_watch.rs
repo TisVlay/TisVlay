@@ -13,7 +13,8 @@ use tracing::{debug, warn};
 
 use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
 use crate::profiles_state::{
-    ProfilesEditorState, SharedEditorState, compute_system_field_rows, refresh_system_editor,
+    ProfilesEditorState, SelectedProfile, SharedEditorState, compute_field_rows,
+    refresh_system_editor, refresh_user_editor,
 };
 use crate::state::{StateSnapshot, fetch_state};
 use crate::{
@@ -273,25 +274,39 @@ async fn refresh(
         Ok(mut snapshot) => {
             reconcilers.reconcile(&mut snapshot);
             // If the Profiles pane has a selection, refetch the
-            // editor's three layers so the `(inherit: X)` placeholder
-            // and current-value stay in sync with whatever just
-            // landed on disk (covers external config edits, daemon
-            // reload, our own UpdateSystemProfile). Empty selection
-            // skips the round-trip.
-            let selected_name = {
+            // editor's layers so the `(inherit: X)` placeholder and
+            // current-value stay in sync with whatever just landed
+            // on disk (covers external config edits, daemon reload,
+            // our own Update*Profile). Empty selection skips the
+            // round-trip. Dispatch on the selected kind so we hit
+            // the right bus (Manager1 vs Session1).
+            let selection_kind_name: Option<(bool, String)> = {
                 let s = editor_state.read().await;
-                s.system_selected.as_ref().map(|(n, _)| n.clone())
+                s.selected.as_ref().map(|sel| match sel {
+                    SelectedProfile::System { name, .. } => (true, name.clone()),
+                    SelectedProfile::User { name, .. } => (false, name.clone()),
+                })
             };
-            if selected_name.is_some()
-                && let Err(e) =
-                    refresh_system_editor(daemon, editor_state, selected_name.as_deref()).await
-            {
-                warn!(error = %format!("{e}"), "Profiles editor refresh failed on signal");
+            match selection_kind_name {
+                Some((true, name)) => {
+                    if let Err(e) = refresh_system_editor(daemon, editor_state, Some(&name)).await {
+                        warn!(error = %format!("{e}"), "System editor refresh failed on signal");
+                    }
+                }
+                Some((false, name)) => {
+                    let session_ref = session.read().await;
+                    if let Some(c) = session_ref.as_ref()
+                        && let Err(e) = refresh_user_editor(c, editor_state, Some(&name)).await
+                    {
+                        warn!(error = %format!("{e}"), "User editor refresh failed on signal");
+                    }
+                }
+                None => {}
             }
             let editor_snapshot = editor_state.read().await.clone();
             on_ui(app_weak, move |app| {
                 push_snapshot(&app, snapshot);
-                push_system_field_rows(&app, &editor_snapshot);
+                push_field_rows(&app, &editor_snapshot);
                 app.set_daemon_available(true);
             });
         }
@@ -491,14 +506,13 @@ fn empty_profile_row() -> ProfileRow {
     }
 }
 
-/// Build the Slint `ProfileField` model for the currently-selected
-/// system profile from a pre-cloned `ProfilesEditorState` and push it
-/// to `Profiles.current-fields`. Sync helper — caller is responsible
-/// for taking a clone of the editor state out of the lock before
-/// calling `on_ui`.
-pub(crate) fn push_system_field_rows(app: &AppWindow, editor: &ProfilesEditorState) {
+/// Build the Slint `ProfileField` model for whatever's currently
+/// selected (system or user) and push it to `Profiles.current-fields`.
+/// Sync helper — caller is responsible for taking a clone of the
+/// editor state out of the lock before calling `on_ui`.
+pub(crate) fn push_field_rows(app: &AppWindow, editor: &ProfilesEditorState) {
     let profiles_global = app.global::<Profiles>();
-    let rows: Vec<ProfileField> = compute_system_field_rows(editor)
+    let rows: Vec<ProfileField> = compute_field_rows(editor)
         .into_iter()
         .map(|r| ProfileField {
             field_name: r.field_name,
