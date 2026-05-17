@@ -32,6 +32,12 @@ pub enum SessionError {
     OperationFailed(String),
     /// Profile not found.
     ProfileNotFound(String),
+    /// Invalid argument supplied by the caller (e.g. malformed UUID,
+    /// unknown profile UUID). Surfaces as
+    /// `org.freedesktop.DBus.Error.InvalidArgs` on the wire so clients
+    /// can route on the standard error name.
+    #[zbus(name = "org.freedesktop.DBus.Error.InvalidArgs")]
+    InvalidArgs(String),
 }
 
 /// D-Bus service for session profile management.
@@ -133,52 +139,56 @@ impl SessionService {
         Ok(profiles)
     }
 
-    /// Get the user profile name assigned to a TV.
+    /// Get the user profile UUID assigned to a TV (string-formatted).
     ///
-    /// Returns "default" if no explicit assignment exists.
+    /// Returns [`DEFAULT_USER_PROFILE_UUID`] if no explicit assignment
+    /// exists.
+    ///
+    /// [`DEFAULT_USER_PROFILE_UUID`]: tisvlay_core::DEFAULT_USER_PROFILE_UUID
     async fn get_tv_user_profile(&self, tv_id: &str) -> String {
         debug!(tv_id = %tv_id, "D-Bus: GetTvUserProfile");
         let s = self.state.read().await;
-        s.user_config.get_tv_user_profile_name(tv_id).to_string()
+        s.user_config.get_tv_user_profile(tv_id).to_string()
     }
 
-    /// Assign a user profile to a TV.
+    /// Assign a user profile to a TV by UUID (string-formatted).
     ///
     /// Saves to user config and re-resolves profiles immediately.
-    /// Emits a `UserProfileChanged` signal on success.
+    /// Emits a `UserProfileChanged` signal on success. Unknown UUIDs
+    /// are rejected with `InvalidArgs`.
     async fn set_tv_user_profile(
         &self,
         #[zbus(signal_context)] ctxt: SignalEmitter<'_>,
         tv_id: &str,
-        profile_name: &str,
+        profile_uuid: &str,
     ) -> Result<(), SessionError> {
-        info!(tv_id = %tv_id, profile = %profile_name, "D-Bus: SetTvUserProfile");
+        info!(tv_id = %tv_id, profile = %profile_uuid, "D-Bus: SetTvUserProfile");
+
+        let parsed_uuid: Uuid = profile_uuid.parse().map_err(|_| {
+            SessionError::InvalidArgs(format!("Invalid user profile UUID: {profile_uuid}"))
+        })?;
 
         let mut s = self.state.write().await;
 
-        // Verify the profile exists (in user config, admin config,
-        // or as "default"). user_config.user is UUID-keyed → look
-        // up by name.
-        if profile_name != "default"
-            && s.user_config
-                .user
-                .find_profile_by_name(profile_name)
-                .is_none()
-            && !s.admin_user_profiles.contains_key(profile_name)
-        {
-            return Err(SessionError::ProfileNotFound(format!(
-                "Profile '{}' not found in user or admin config",
-                profile_name
+        // Accept the user-default UUID even when no `[user.profiles.<uuid>]`
+        // body exists for it in the user config — resolution falls
+        // through to the admin baseline in that case (same behavior
+        // the `resolve_user_profile` chain already implements).
+        // Otherwise the UUID must name an entry in the user catalog.
+        let is_default = parsed_uuid == tisvlay_core::DEFAULT_USER_PROFILE_UUID;
+        if !is_default && !s.user_config.user.profiles.contains_key(&parsed_uuid) {
+            return Err(SessionError::InvalidArgs(format!(
+                "Unknown user profile UUID: {profile_uuid}"
             )));
         }
 
-        // Capture the previous + new profile names so we can fan
+        // Capture the previous + new profile UUIDs so we can fan
         // ReferencedBy refreshes out to the affected UserProfile1
         // interfaces after persistence.
-        let prev_profile_name = s.user_config.get_tv_user_profile_name(tv_id).to_string();
+        let prev_profile_uuid = s.user_config.get_tv_user_profile(tv_id);
 
         // Update assignment
-        s.user_config.set_tv_user_profile(tv_id, profile_name);
+        s.user_config.set_tv_user_profile(tv_id, parsed_uuid);
 
         // Re-resolve the user profile for this TV
         let resolved = s
@@ -186,18 +196,11 @@ impl SessionService {
             .resolve_user_profile(tv_id, &s.admin_user_default);
         s.profiles.insert(tv_id.to_string(), resolved);
 
-        // Resolve previous + new profile UUIDs for the ReferencedBy
-        // fanout. Profile names that don't exist in the user catalog
-        // (e.g. an admin-only baseline) don't appear in the UUID-keyed
-        // catalog and are skipped — only user-side UserProfile1
-        // interfaces need a refresh.
+        // Fan ReferencedBy refreshes to previously- and newly-affected
+        // UserProfile1 interfaces (direct UUID set).
         let mut affected_uuids: HashSet<Uuid> = HashSet::new();
-        if let Some((uuid, _)) = s.user_config.user.find_profile_by_name(&prev_profile_name) {
-            affected_uuids.insert(uuid);
-        }
-        if let Some((uuid, _)) = s.user_config.user.find_profile_by_name(profile_name) {
-            affected_uuids.insert(uuid);
-        }
+        affected_uuids.insert(prev_profile_uuid);
+        affected_uuids.insert(parsed_uuid);
 
         // Save user config to disk
         let save_result = match &self.config_path {
@@ -211,7 +214,7 @@ impl SessionService {
         drop(s);
 
         // Notify subscribers that the profile changed
-        if let Err(e) = Self::user_profile_changed(&ctxt, tv_id, profile_name).await {
+        if let Err(e) = Self::user_profile_changed(&ctxt, tv_id, profile_uuid).await {
             warn!(error = %e, tv_id = %tv_id, "Failed to emit UserProfileChanged signal");
         }
 

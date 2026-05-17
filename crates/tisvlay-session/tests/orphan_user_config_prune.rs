@@ -42,8 +42,9 @@ async fn removing_tv_prunes_orphan_user_config_entry() {
     let tv_uuid = test_tv_uuid("orphan_prune").to_string();
 
     let mut user_config = UserConfig::default();
+    let gaming_uuid = Uuid::new_v4();
     user_config.user.profiles.insert(
-        Uuid::new_v4(),
+        gaming_uuid,
         UserProfileConfig {
             name: "gaming".to_string(),
             ..UserProfileConfig::full_default()
@@ -51,9 +52,7 @@ async fn removing_tv_prunes_orphan_user_config_entry() {
     );
     user_config.tv.push(UserTvConfig {
         uuid: tv_uuid.clone(),
-        profile: UserTvProfileAssignment {
-            user: "gaming".to_string(),
-        },
+        profile: UserTvProfileAssignment { user: gaming_uuid },
     });
     user_config.save_to(&config_path).unwrap();
 

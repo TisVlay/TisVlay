@@ -75,8 +75,9 @@ async fn mixed_profiles_dispatch_independently() {
 
     // Override the default profile's on_shutdown to PowerOff (already default)
     // and create a "noop" profile that maps shutdown → None.
+    let noop_uuid = Uuid::new_v4();
     config.system.profiles.insert(
-        Uuid::new_v4(),
+        noop_uuid,
         SystemProfileConfig {
             name: "noop".to_string(),
             on_shutdown: Some(SessionAction::None),
@@ -85,7 +86,7 @@ async fn mixed_profiles_dispatch_independently() {
     );
 
     // Assign the second TV to the "noop" profile.
-    config.tv[1].profile.system = "noop".to_string();
+    config.tv[1].profile.system = noop_uuid;
 
     let daemon = TestDaemon::with_config(config).await.expect("daemon");
 

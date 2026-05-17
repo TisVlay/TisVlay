@@ -247,13 +247,13 @@ trait TisvlayTv {
     #[zbus(property)]
     fn set_managed(&self, managed: bool) -> zbus::Result<()>;
 
-    /// System profile name assigned to this TV.
+    /// System profile UUID assigned to this TV (string-formatted).
     #[zbus(property)]
     fn system_profile(&self) -> zbus::Result<String>;
 
-    /// Set the system profile for this TV.
+    /// Set the system profile UUID for this TV.
     #[zbus(property)]
-    fn set_system_profile(&self, profile: &str) -> zbus::Result<()>;
+    fn set_system_profile(&self, profile_uuid: &str) -> zbus::Result<()>;
 
     /// The HDMI input the controlling PC is plugged into. Drives
     /// `Tv1.Automated` recomputation.
@@ -563,7 +563,7 @@ pub struct TvInfo {
     /// Computed from `managed`, `automate_when`, `primary_input`, and
     /// the TV's current input.
     pub automated: bool,
-    /// System profile name assigned to this TV.
+    /// System profile UUID assigned to this TV (string-formatted).
     pub system_profile: String,
     /// Primary-input ID for this TV (the HDMI port the controlling PC
     /// is plugged into). Empty when unset; "_unknown_" when set to
@@ -900,7 +900,7 @@ impl DaemonClient {
             let system_profile = {
                 let sp = get_str("SystemProfile");
                 if sp.is_empty() {
-                    "default".to_string()
+                    crate::DEFAULT_SYSTEM_PROFILE_UUID.to_string()
                 } else {
                     sp
                 }
@@ -1537,6 +1537,46 @@ impl DaemonClient {
             .context("Failed to list system profiles from daemon")
     }
 
+    /// List system profiles as `(uuid_string, name)` pairs by walking
+    /// `ObjectManager.GetManagedObjects` for `SystemProfile1` objects.
+    ///
+    /// Uses the per-profile object surface (`Id` + `Name`) directly so
+    /// callers that need the UUID don't need a name→UUID lookup hop.
+    /// Tray uses this to display a name in the menu while sending the
+    /// UUID to `Tv1.SystemProfile`.
+    pub async fn list_system_profiles_with_ids(&self) -> Result<Vec<(String, String)>> {
+        let managed_objects = self
+            .object_manager
+            .get_managed_objects()
+            .await
+            .context("Failed to get managed objects from daemon")?;
+        let mut out = Vec::new();
+        for (path, ifaces) in managed_objects {
+            if !path.as_str().starts_with(crate::SYSTEM_PROFILE_BASE_PATH) {
+                continue;
+            }
+            let Some(props) = ifaces
+                .iter()
+                .find(|(k, _)| k.as_str() == "org.tisvlay.SystemProfile1")
+                .map(|(_, v)| v)
+            else {
+                continue;
+            };
+            let id = props
+                .get("Id")
+                .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
+                .unwrap_or_default();
+            let name = props
+                .get("Name")
+                .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
+                .unwrap_or_default();
+            if !id.is_empty() {
+                out.push((id, name));
+            }
+        }
+        Ok(out)
+    }
+
     /// Set a TV's friendly name.
     ///
     /// Routes through the per-object `Tv1.Name` writable property
@@ -1563,15 +1603,15 @@ impl DaemonClient {
         .await
     }
 
-    /// Set the system profile for a TV (e.g. `"default"`, `"guest"`).
+    /// Set the system profile for a TV by UUID (string-formatted).
     ///
     /// Routes through the per-object `Tv1.SystemProfile` writable
-    /// property.
-    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
-        let profile_name = profile_name.to_string();
+    /// property. The daemon rejects unknown UUIDs with `InvalidArgs`.
+    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_uuid: &str) -> Result<()> {
+        let profile_uuid = profile_uuid.to_string();
         self.with_proxies(tv_id, "set system profile", move |p| {
-            let profile_name = profile_name.clone();
-            Box::pin(async move { p.base.set_system_profile(&profile_name).await })
+            let profile_uuid = profile_uuid.clone();
+            Box::pin(async move { p.base.set_system_profile(&profile_uuid).await })
         })
         .await
     }
@@ -1614,11 +1654,11 @@ trait TisvlaySession {
     /// List all available user profiles.
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Get the user profile name assigned to a TV.
+    /// Get the user profile UUID assigned to a TV (string-formatted).
     fn get_tv_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
 
-    /// Assign a user profile to a TV.
-    fn set_tv_user_profile(&self, tv_id: &str, profile_name: &str) -> zbus::Result<()>;
+    /// Assign a user profile to a TV by UUID (string-formatted).
+    fn set_tv_user_profile(&self, tv_id: &str, profile_uuid: &str) -> zbus::Result<()>;
 
     /// Get the fully resolved user profile for a TV as JSON.
     fn get_effective_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
@@ -1634,6 +1674,7 @@ trait TisvlaySession {
 #[derive(Clone, Debug)]
 pub struct SessionClient {
     proxy: TisvlaySessionProxy<'static>,
+    object_manager: ObjectManagerProxy<'static>,
 }
 
 impl SessionClient {
@@ -1652,7 +1693,19 @@ impl SessionClient {
             .await
             .context("Failed to create session proxy")?;
 
-        Ok(Self { proxy })
+        let object_manager = ObjectManagerProxy::builder(&connection)
+            .destination(crate::SESSION_SERVICE)
+            .context("Failed to set ObjectManager destination")?
+            .path(crate::dbus_paths::OBJECT_MANAGER_PATH)
+            .context("Failed to set ObjectManager path")?
+            .build()
+            .await
+            .context("Failed to create session ObjectManager proxy")?;
+
+        Ok(Self {
+            proxy,
+            object_manager,
+        })
     }
 
     /// Check if the session service is available.
@@ -1691,7 +1744,47 @@ impl SessionClient {
             .context("Failed to list user profiles from session service")
     }
 
-    /// Get the user profile name assigned to a TV.
+    /// List user profiles as `(uuid_string, name)` pairs by walking
+    /// `ObjectManager.GetManagedObjects` for `UserProfile1` objects on
+    /// the session bus.
+    ///
+    /// Mirrors [`DaemonClient::list_system_profiles_with_ids`] — tray
+    /// uses this to render profile names while passing UUIDs through
+    /// `Session1.SetTvUserProfile`.
+    pub async fn list_user_profiles_with_ids(&self) -> Result<Vec<(String, String)>> {
+        let managed_objects = self
+            .object_manager
+            .get_managed_objects()
+            .await
+            .context("Failed to get managed objects from session service")?;
+        let mut out = Vec::new();
+        for (path, ifaces) in managed_objects {
+            if !path.as_str().starts_with(crate::USER_PROFILE_BASE_PATH) {
+                continue;
+            }
+            let Some(props) = ifaces
+                .iter()
+                .find(|(k, _)| k.as_str() == "org.tisvlay.UserProfile1")
+                .map(|(_, v)| v)
+            else {
+                continue;
+            };
+            let id = props
+                .get("Id")
+                .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
+                .unwrap_or_default();
+            let name = props
+                .get("Name")
+                .and_then(|v: &OwnedValue| String::try_from(v.clone()).ok())
+                .unwrap_or_default();
+            if !id.is_empty() {
+                out.push((id, name));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Get the user profile UUID assigned to a TV (string-formatted).
     pub async fn get_tv_user_profile(&self, tv_id: &str) -> Result<String> {
         self.proxy
             .get_tv_user_profile(tv_id)
@@ -1699,15 +1792,16 @@ impl SessionClient {
             .context("Failed to get TV user profile from session service")
     }
 
-    /// Assign a user profile to a TV.
-    pub async fn set_tv_user_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
+    /// Assign a user profile to a TV by UUID (string-formatted).
+    /// Session rejects unknown UUIDs with `InvalidArgs`.
+    pub async fn set_tv_user_profile(&self, tv_id: &str, profile_uuid: &str) -> Result<()> {
         self.proxy
-            .set_tv_user_profile(tv_id, profile_name)
+            .set_tv_user_profile(tv_id, profile_uuid)
             .await
             .with_context(|| {
                 format!(
                     "Failed to set user profile '{}' for TV '{}'",
-                    profile_name, tv_id
+                    profile_uuid, tv_id
                 )
             })
     }

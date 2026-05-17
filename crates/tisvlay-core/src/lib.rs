@@ -117,9 +117,9 @@ pub use refresh_trigger::RefreshTrigger;
 
 // D-Bus path constants (always available, no feature gate)
 pub use dbus_paths::{
-    DAEMON_SERVICE, MANAGER_PATH, SESSION_INTERFACE, SESSION_PATH, SESSION_SERVICE,
-    SYSTEM_PROFILE_BASE_PATH, TV_BASE_PATH, USER_PROFILE_BASE_PATH, system_profile_path, tv_path,
-    user_profile_path,
+    DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, SESSION_INTERFACE, SESSION_PATH,
+    SESSION_SERVICE, SYSTEM_PROFILE_BASE_PATH, TV_BASE_PATH, USER_PROFILE_BASE_PATH,
+    system_profile_path, tv_path, user_profile_path,
 };
 
 #[cfg(feature = "dbus")]

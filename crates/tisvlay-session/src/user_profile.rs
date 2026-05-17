@@ -472,31 +472,14 @@ pub async fn set_user_profile_field(
         parse_session_action(value)?;
     }
 
-    // Mutate in-memory state.
-    let renamed_to: Option<(String, String)> = {
+    // Mutate in-memory state. References are UUID-keyed end-to-end,
+    // so a rename is just a body-field edit; no reference cascade.
+    {
         let mut s = state.write().await;
         let body = s.user_config.user.profiles.get_mut(&uuid).ok_or_else(|| {
             UserProfileMutationError::Failed(format!("Unknown user profile uuid: {}", uuid))
         })?;
-        let prev_name = body.name.clone();
         apply_user_profile_action_field(body, field, value)?;
-        if field == "name" && prev_name != body.name {
-            Some((prev_name, body.name.clone()))
-        } else {
-            None
-        }
-    };
-
-    // If the profile's name changed, every TV whose `profile.user`
-    // referenced the old name needs the reference rewritten so future
-    // resolution still lands here.
-    if let Some((ref prev, ref next)) = renamed_to {
-        let mut s = state.write().await;
-        for tv in s.user_config.tv.iter_mut() {
-            if tv.profile.user == *prev {
-                tv.profile.user = next.clone();
-            }
-        }
     }
 
     refresh_all_resolved_user_profiles(state).await;
@@ -612,24 +595,17 @@ pub fn user_profile_locally_set_fields(body: &UserProfileConfig) -> Vec<String> 
     fields
 }
 
-/// UUIDs of TVs whose `profile.user` name resolves to this profile.
-/// v2 keeps `[[tv]] profile.user` name-based on disk; the match runs
-/// against the profile body's `name` field.
+/// UUIDs of TVs whose `profile.user` references this profile. Direct
+/// UUID equality check — references are UUID-keyed end-to-end.
 pub fn user_profile_referenced_by(state: &SessionState, uuid: Uuid) -> Vec<String> {
-    let Some(profile_name) = state
-        .user_config
-        .user
-        .profiles
-        .get(&uuid)
-        .map(|p| p.name.as_str())
-    else {
+    if !state.user_config.user.profiles.contains_key(&uuid) {
         return Vec::new();
-    };
+    }
     state
         .user_config
         .tv
         .iter()
-        .filter(|t| t.profile.user == profile_name)
+        .filter(|t| t.profile.user == uuid)
         .map(|t| t.uuid.clone())
         .collect()
 }

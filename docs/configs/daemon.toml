@@ -25,7 +25,7 @@ primary_input = "HDMI_1"
 managed = true
 
 [tv.profile]
-system = "default"
+system = "00000000-0000-0000-0000-000000000001"
 
 [tv.lg]
 client_key = "bec7b2f5afe657547d367e84cbf59095"

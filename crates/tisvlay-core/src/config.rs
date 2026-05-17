@@ -10,7 +10,8 @@
 //! for daemon lifecycle events, and user profile defaults inherited by users.
 //!
 //! ```toml
-//! [system.profiles.default]
+//! [system.profiles."00000000-0000-0000-0000-000000000001"]
+//! name = "default"
 //! on_startup = "power_on"
 //! on_shutdown = "power_off"
 //! on_reboot = "none"
@@ -18,7 +19,8 @@
 //! on_sleep = "power_off"
 //! on_wake = "power_on"
 //!
-//! [user.profiles.default]
+//! [user.profiles."00000000-0000-0000-0000-000000000002"]
+//! name = "default"
 //! on_session_lock = "screen_off"
 //! on_session_unlock = "screen_on"
 //!
@@ -27,7 +29,8 @@
 //! name = "Living Room TV"
 //! vendor = "lg"
 //! primary_input = "HDMI_1"
-//! //!
+//! profile.system = "00000000-0000-0000-0000-000000000001"
+//!
 //! [tv.lg]
 //! ip = "192.168.1.100"
 //! mac = "AA:BB:CC:DD:EE:FF"
@@ -41,16 +44,18 @@
 //! inherits the system default profile.
 //!
 //! ```toml
-//! [user.profiles.default]
+//! [user.profiles."00000000-0000-0000-0000-000000000002"]
+//! name = "default"
 //! idle_timeout_seconds = 600
 //!
-//! [user.profiles.gaming]
+//! [user.profiles."a1b2c3d4-..."]
+//! name = "gaming"
 //! on_session_lock = "none"
 //! idle_timeout_seconds = 0
 //!
 //! [[tv]]
 //! uuid = "11111111-1111-1111-1111-111111111111"
-//! profile.user = "gaming"
+//! profile.user = "a1b2c3d4-..."
 //! ```
 
 use crate::error::{Error, Result};
@@ -180,11 +185,10 @@ impl std::fmt::Display for AutomateWhen {
 /// to produce a [`ResolvedSystemProfile`] with concrete values.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SystemProfileConfig {
-    /// Friendly name shown in the GUI / CLI. Required by `[[tv]]`
-    /// references (`profile.system = "<name>"`); enforced unique
-    /// across the system catalog. Profile identity itself is the
+    /// Friendly name shown in the GUI / CLI. Enforced unique across
+    /// the system catalog. Profile identity itself is the
     /// containing-map's UUID key — renaming is a name-only edit and
-    /// doesn't touch references.
+    /// doesn't touch references (TVs reference profiles by UUID).
     pub name: String,
 
     /// Action on system startup/boot.
@@ -461,50 +465,21 @@ pub struct SystemSection {
     /// — daemon ensures it exists at load time via
     /// [`SystemSection::ensure_default`].
     ///
-    /// `[[tv]]` entries reference profiles by name (`profile.system
-    /// = "default"`); the daemon resolves name → UUID via
-    /// [`find_profile_by_name`](Self::find_profile_by_name) at
-    /// dispatch time. v2 keeps the on-disk reference name-based
-    /// (rename via the GUI is the supported path, and reference
-    /// stability is provided by the UUID indirection on the D-Bus
-    /// side).
+    /// `[[tv]]` entries reference profiles by UUID (`profile.system
+    /// = "<uuid>"`). Identity is fully UUID-keyed end-to-end so
+    /// renames don't touch any reference site.
     #[serde(default)]
     pub profiles: BTreeMap<Uuid, SystemProfileConfig>,
 }
 
 impl SystemSection {
-    /// Resolve a system profile by name.
-    ///
-    /// Resolution chain: named profile body → `"default"` profile body
-    /// → hard-coded defaults. Names that don't match any profile
-    /// fall through to the default-or-baseline path silently — a
-    /// stale `profile.system = "guest"` on a TV mustn't break
-    /// dispatch after the named profile is deleted.
-    pub fn resolve_profile(&self, profile_name: &str) -> ResolvedSystemProfile {
-        let named = self
-            .find_profile_by_name(profile_name)
-            .map(|(_, body)| body);
-        let default = if profile_name != DEFAULT_PROFILE_NAME {
-            self.profiles.get(&DEFAULT_SYSTEM_PROFILE_UUID)
-        } else {
-            None
-        };
-
-        match (named, default) {
-            (Some(p), Some(d)) => p.merge_with_base(d).resolve(),
-            (Some(p), None) => p.resolve(),
-            (None, Some(d)) => d.resolve(),
-            (None, None) => ResolvedSystemProfile::default(),
-        }
-    }
-
     /// Resolve a system profile by UUID.
     ///
-    /// Same chain as [`resolve_profile`](Self::resolve_profile) but
-    /// keyed by UUID at the top of the chain. The per-profile
-    /// `SystemProfile1` D-Bus interface needs UUID-keyed resolution
-    /// because each interface owns one profile by identity, not by
-    /// name (the name is itself a mutable field on the body).
+    /// Resolution chain: this profile body → [`DEFAULT_SYSTEM_PROFILE_UUID`]
+    /// profile body → hard-coded defaults. UUIDs that don't match
+    /// any profile fall through to the default-or-baseline path
+    /// silently — a stale `profile.system = "<uuid>"` on a TV
+    /// mustn't break dispatch after the profile is deleted.
     pub fn resolve_profile_by_uuid(&self, uuid: Uuid) -> ResolvedSystemProfile {
         let named = self.profiles.get(&uuid);
         let default = if uuid != DEFAULT_SYSTEM_PROFILE_UUID {
@@ -551,9 +526,8 @@ impl SystemSection {
             .entry(DEFAULT_SYSTEM_PROFILE_UUID)
             .or_insert_with(SystemProfileConfig::full_default);
         // Force the reserved name regardless of what was on disk —
-        // protects against a user editing `name = "blah"` under the
-        // default UUID and breaking `[[tv]] profile.system = "default"`
-        // resolution.
+        // the friendly name is just a label, but pinning it keeps
+        // the tray's UUID→name lookup deterministic for the default.
         if let Some(body) = self.profiles.get_mut(&DEFAULT_SYSTEM_PROFILE_UUID) {
             body.name = DEFAULT_PROFILE_NAME.to_string();
         }
@@ -661,18 +635,20 @@ impl UserSection {
 /// Per-TV profile assignment.
 ///
 /// Stored on `TvConfig` (in the system config's `[[tv]]` entries).
-/// `system` determines which system profile governs daemon lifecycle behavior.
+/// `system` is the UUID of the system profile governing daemon
+/// lifecycle behavior; defaults to [`DEFAULT_SYSTEM_PROFILE_UUID`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TvProfileAssignment {
-    /// Name of the system profile to use. Defaults to "default".
-    #[serde(default = "default_profile_name")]
-    pub system: String,
+    /// UUID of the system profile to use. Defaults to
+    /// [`DEFAULT_SYSTEM_PROFILE_UUID`].
+    #[serde(default = "default_system_profile_uuid")]
+    pub system: Uuid,
 }
 
 impl Default for TvProfileAssignment {
     fn default() -> Self {
         Self {
-            system: default_profile_name(),
+            system: DEFAULT_SYSTEM_PROFILE_UUID,
         }
     }
 }
@@ -680,24 +656,30 @@ impl Default for TvProfileAssignment {
 /// Per-TV user profile assignment.
 ///
 /// Stored on `UserTvConfig` (in the user config's `[tv.<id>]` entries).
-/// Determines which user profile governs this TV's session behavior.
+/// `user` is the UUID of the user profile governing this TV's session
+/// behavior; defaults to [`DEFAULT_USER_PROFILE_UUID`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserTvProfileAssignment {
-    /// Name of the user profile to use. Defaults to "default".
-    #[serde(default = "default_profile_name")]
-    pub user: String,
+    /// UUID of the user profile to use. Defaults to
+    /// [`DEFAULT_USER_PROFILE_UUID`].
+    #[serde(default = "default_user_profile_uuid")]
+    pub user: Uuid,
 }
 
 impl Default for UserTvProfileAssignment {
     fn default() -> Self {
         Self {
-            user: default_profile_name(),
+            user: DEFAULT_USER_PROFILE_UUID,
         }
     }
 }
 
-fn default_profile_name() -> String {
-    "default".to_string()
+fn default_system_profile_uuid() -> Uuid {
+    DEFAULT_SYSTEM_PROFILE_UUID
+}
+
+fn default_user_profile_uuid() -> Uuid {
+    DEFAULT_USER_PROFILE_UUID
 }
 
 // =============================================================================
@@ -965,11 +947,11 @@ impl SystemConfig {
     /// Resolve the effective system profile for a TV.
     ///
     /// Resolution chain:
-    /// 1. TV's assigned system profile (by name)
-    /// 2. "default" system profile
+    /// 1. TV's assigned system profile (by UUID)
+    /// 2. [`DEFAULT_SYSTEM_PROFILE_UUID`] profile body
     /// 3. Hard-coded defaults
     pub fn resolve_system_profile(&self, tv: &TvConfig) -> ResolvedSystemProfile {
-        self.system.resolve_profile(&tv.profile.system)
+        self.system.resolve_profile_by_uuid(tv.profile.system)
     }
 }
 
@@ -1072,35 +1054,32 @@ impl UserConfig {
     /// Resolve the effective profile for a TV.
     ///
     /// Resolution chain:
-    /// 1. User's per-TV profile assignment -> user's named profile
-    /// 2. User's "default" profile
-    /// 3. System default profile (passed in)
-    /// 4. Hard-coded defaults
+    /// 1. User's per-TV profile assignment -> user's profile body (by UUID)
+    /// 2. User's [`DEFAULT_USER_PROFILE_UUID`] profile body
+    /// 3. Admin baseline by the assigned profile's body name
+    /// 4. System default profile (passed in)
+    /// 5. Hard-coded defaults
     ///
     /// At each level, individual fields merge (user overrides system).
+    /// The admin baseline merge is name-keyed (see `UserSection::resolve_profile_by_uuid`).
     pub fn resolve_user_profile(
         &self,
         tv_id: &str,
         system_default: &UserProfileConfig,
     ) -> ResolvedUserProfile {
-        // 1. Find which profile name applies to this TV
-        let profile_name = self
+        // 1. Find which profile UUID applies to this TV.
+        let profile_uuid = self
             .tv
             .iter()
             .find(|t| t.uuid == tv_id)
-            .map(|t| t.profile.user.as_str())
-            .unwrap_or("default");
+            .map(|t| t.profile.user)
+            .unwrap_or(DEFAULT_USER_PROFILE_UUID);
 
-        // 2. Get the user's profile definition (may be partial). Look
-        // up by name through the UUID-keyed catalog — v2 keeps the
-        // `[[tv]] profile.user` reference name-based.
-        let user_profile = self
-            .user
-            .find_profile_by_name(profile_name)
-            .map(|(_, body)| body);
+        // 2. Get the user's profile body by UUID (may be partial).
+        let user_profile = self.user.profiles.get(&profile_uuid);
 
         // 3. Get the user's default profile (for field inheritance within user config)
-        let user_default = if profile_name != DEFAULT_PROFILE_NAME {
+        let user_default = if profile_uuid != DEFAULT_USER_PROFILE_UUID {
             self.user.profiles.get(&DEFAULT_USER_PROFILE_UUID)
         } else {
             None
@@ -1119,7 +1098,7 @@ impl UserConfig {
                 profile.merge_with_base(system_default)
             }
             (None, Some(default)) => {
-                // Profile name not found in user config — fall through to user's default
+                // Profile UUID not found in user config — fall through to user's default
                 // before reaching the system default, so user-level overrides are honoured.
                 default.merge_with_base(system_default)
             }
@@ -1133,29 +1112,28 @@ impl UserConfig {
         merged.resolve()
     }
 
-    /// Get the profile name assigned to a TV.
+    /// Get the profile UUID assigned to a TV.
     ///
-    /// Returns `"default"` if no explicit assignment exists.
-    pub fn get_tv_user_profile_name(&self, tv_id: &str) -> &str {
+    /// Returns [`DEFAULT_USER_PROFILE_UUID`] if no explicit assignment exists.
+    pub fn get_tv_user_profile(&self, tv_id: &str) -> Uuid {
         self.tv
             .iter()
             .find(|t| t.uuid == tv_id)
-            .map(|t| t.profile.user.as_str())
-            .unwrap_or("default")
+            .map(|t| t.profile.user)
+            .unwrap_or(DEFAULT_USER_PROFILE_UUID)
     }
 
-    /// Assign a profile to a TV.
+    /// Assign a profile to a TV by UUID.
     ///
     /// If an entry for this TV already exists, updates it. Otherwise appends a new entry.
-    pub fn set_tv_user_profile(&mut self, tv_id: impl Into<String>, profile: impl Into<String>) {
+    pub fn set_tv_user_profile(&mut self, tv_id: impl Into<String>, profile_uuid: Uuid) {
         let tv_id = tv_id.into();
-        let profile = profile.into();
         if let Some(entry) = self.tv.iter_mut().find(|t| t.uuid == tv_id) {
-            entry.profile.user = profile;
+            entry.profile.user = profile_uuid;
         } else {
             self.tv.push(UserTvConfig {
                 uuid: tv_id,
-                profile: UserTvProfileAssignment { user: profile },
+                profile: UserTvProfileAssignment { user: profile_uuid },
             });
         }
     }
@@ -1340,13 +1318,16 @@ mac = "AA:BB:CC:DD:EE:FF"
         // Both SystemConfig and UserConfig can parse the same TOML:
         // - SystemConfig sees profile.system, ignores profile.user
         // - UserConfig sees profile.user, ignores name/vendor/etc.
-        let toml_str = r#"
+        let guest_uuid = "a1b2c3d4-0000-0000-0000-000000000010";
+        let gaming_uuid = "a1b2c3d4-0000-0000-0000-000000000020";
+        let toml_str = format!(
+            r#"
 [system.profiles."00000000-0000-0000-0000-000000000001"]
 name = "default"
 on_startup = "power_on"
 on_shutdown = "power_off"
 
-[system.profiles."a1b2c3d4-0000-0000-0000-000000000010"]
+[system.profiles."{guest_uuid}"]
 name = "guest"
 on_startup = "none"
 on_shutdown = "screen_off"
@@ -1355,7 +1336,7 @@ on_shutdown = "screen_off"
 name = "default"
 on_session_lock = "screen_off"
 
-[user.profiles."a1b2c3d4-0000-0000-0000-000000000020"]
+[user.profiles."{gaming_uuid}"]
 name = "gaming"
 on_session_lock = "none"
 idle_timeout_seconds = 0
@@ -1365,8 +1346,8 @@ uuid = "11111111-1111-1111-1111-111111111111"
 name = "Living Room"
 vendor = "lg"
 managed = true
-profile.system = "default"
-profile.user = "gaming"
+profile.system = "00000000-0000-0000-0000-000000000001"
+profile.user = "{gaming_uuid}"
 
 [tv.lg]
 ip = "192.168.1.100"
@@ -1376,21 +1357,25 @@ uuid = "22222222-2222-2222-2222-222222222222"
 name = "Guest Room"
 vendor = "lg"
 managed = true
-profile.system = "guest"
+profile.system = "{guest_uuid}"
 
 [tv.lg]
 ip = "192.168.1.101"
-"#;
+"#
+        );
 
         // Parse as SystemConfig
-        let config: SystemConfig = toml::from_str(toml_str).unwrap();
+        let config: SystemConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(config.tv.len(), 2);
 
+        let guest_uuid_v: Uuid = guest_uuid.parse().unwrap();
+        let gaming_uuid_v: Uuid = gaming_uuid.parse().unwrap();
+
         let living = config.tv.iter().find(|t| t.name == "Living Room").unwrap();
-        assert_eq!(living.profile.system, "default");
+        assert_eq!(living.profile.system, DEFAULT_SYSTEM_PROFILE_UUID);
 
         let guest = config.tv.iter().find(|t| t.name == "Guest Room").unwrap();
-        assert_eq!(guest.profile.system, "guest");
+        assert_eq!(guest.profile.system, guest_uuid_v);
 
         // System profile resolution works
         let resolved = config.resolve_system_profile(living);
@@ -1403,7 +1388,7 @@ ip = "192.168.1.101"
         // Parse the SAME TOML as UserConfig — UserTvConfig ignores unknown
         // fields (name, vendor, managed, lg, profile.system)
         // and picks up profile.user.
-        let user_config: UserConfig = toml::from_str(toml_str).unwrap();
+        let user_config: UserConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(user_config.tv.len(), 2);
 
         let living_user = user_config
@@ -1411,14 +1396,15 @@ ip = "192.168.1.101"
             .iter()
             .find(|t| t.uuid == "11111111-1111-1111-1111-111111111111")
             .unwrap();
-        assert_eq!(living_user.profile.user, "gaming");
+        assert_eq!(living_user.profile.user, gaming_uuid_v);
 
         let guest_user = user_config
             .tv
             .iter()
             .find(|t| t.uuid == "22222222-2222-2222-2222-222222222222")
             .unwrap();
-        assert_eq!(guest_user.profile.user, "default"); // not specified, defaults
+        // profile.user not specified, defaults to DEFAULT_USER_PROFILE_UUID.
+        assert_eq!(guest_user.profile.user, DEFAULT_USER_PROFILE_UUID);
     }
 
     #[test]
@@ -1595,6 +1581,7 @@ ip = "192.168.1.101"
     #[test]
     fn test_resolve_system_profile_per_tv() {
         let mut config = SystemConfig::default();
+        let guest_uuid = Uuid::new_v4();
         config.system.profiles.insert(
             DEFAULT_SYSTEM_PROFILE_UUID,
             SystemProfileConfig {
@@ -1605,7 +1592,7 @@ ip = "192.168.1.101"
             },
         );
         config.system.profiles.insert(
-            Uuid::new_v4(),
+            guest_uuid,
             SystemProfileConfig {
                 name: "guest".to_string(),
                 on_startup: Some(SessionAction::None),
@@ -1622,7 +1609,7 @@ ip = "192.168.1.101"
 
         // TV with guest profile
         let mut tv_guest = TvConfig::new("Guest Room", "lg", true);
-        tv_guest.profile.system = "guest".to_string();
+        tv_guest.profile.system = guest_uuid;
         let resolved = config.resolve_system_profile(&tv_guest);
         assert_eq!(resolved.on_startup, SessionAction::None);
         assert_eq!(resolved.on_shutdown, SessionAction::ScreenOff);
@@ -1643,14 +1630,17 @@ ip = "192.168.1.101"
         );
 
         let mut tv = TvConfig::new("Test", "lg", true);
-        tv.profile.system = "nonexistent".to_string();
+        // Stale UUID with no body — should fall through to default body.
+        tv.profile.system = Uuid::new_v4();
         let resolved = config.resolve_system_profile(&tv);
         assert_eq!(resolved.on_startup, SessionAction::PowerOn); // from default
     }
 
     #[test]
     fn test_tv_profile_assignment_serialization() {
-        let toml_str = r#"
+        let guest_uuid = "a1b2c3d4-0000-0000-0000-000000000010";
+        let toml_str = format!(
+            r#"
 [system.profiles."00000000-0000-0000-0000-000000000001"]
 name = "default"
 on_startup = "power_on"
@@ -1660,14 +1650,18 @@ uuid = "11111111-1111-1111-1111-111111111111"
 name = "Living Room"
 vendor = "lg"
 managed = true
-profile.system = "guest"
+profile.system = "{guest_uuid}"
 
 [tv.lg]
 ip = "192.168.1.100"
-"#;
+"#
+        );
 
-        let config: SystemConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.tv[0].profile.system, "guest");
+        let config: SystemConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(
+            config.tv[0].profile.system,
+            guest_uuid.parse::<Uuid>().unwrap()
+        );
     }
 
     #[test]
@@ -1684,7 +1678,8 @@ ip = "192.168.1.1"
 "#;
 
         let config: SystemConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.tv[0].profile.system, "default");
+        // Defaults to DEFAULT_SYSTEM_PROFILE_UUID when omitted.
+        assert_eq!(config.tv[0].profile.system, DEFAULT_SYSTEM_PROFILE_UUID);
     }
 
     // =========================================================================
@@ -1781,26 +1776,32 @@ ip = "192.168.1.1"
 
     #[test]
     fn test_parse_user_config() {
-        let toml_str = r#"
+        let gaming_uuid = "a1b2c3d4-0000-0000-0000-000000000020";
+        let toml_str = format!(
+            r#"
 [user.profiles."00000000-0000-0000-0000-000000000002"]
 name = "default"
 idle_timeout_seconds = 600
 
-[user.profiles."a1b2c3d4-0000-0000-0000-000000000020"]
+[user.profiles."{gaming_uuid}"]
 name = "gaming"
 on_session_lock = "none"
 idle_timeout_seconds = 0
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
-profile.user = "gaming"
-"#;
+profile.user = "{gaming_uuid}"
+"#
+        );
 
-        let config: UserConfig = toml::from_str(toml_str).unwrap();
+        let config: UserConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(config.user.profiles.len(), 2);
         assert_eq!(config.tv.len(), 1);
         assert_eq!(config.tv[0].uuid, "11111111-1111-1111-1111-111111111111");
-        assert_eq!(config.tv[0].profile.user, "gaming");
+        assert_eq!(
+            config.tv[0].profile.user,
+            gaming_uuid.parse::<Uuid>().unwrap()
+        );
     }
 
     #[test]
@@ -1812,8 +1813,9 @@ profile.user = "gaming"
         };
 
         let mut user = UserConfig::default();
+        let gaming_uuid = Uuid::new_v4();
         user.user.profiles.insert(
-            Uuid::new_v4(),
+            gaming_uuid,
             UserProfileConfig {
                 name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
@@ -1821,7 +1823,7 @@ profile.user = "gaming"
                 ..UserProfileConfig::default()
             },
         );
-        user.set_tv_user_profile("living_room", "gaming");
+        user.set_tv_user_profile("living_room", gaming_uuid);
 
         let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None); // user gaming
@@ -1877,6 +1879,7 @@ profile.user = "gaming"
         };
 
         let mut user = UserConfig::default();
+        let gaming_uuid = Uuid::new_v4();
         // User's default profile overrides system idle timeout
         user.user.profiles.insert(
             DEFAULT_USER_PROFILE_UUID,
@@ -1888,14 +1891,14 @@ profile.user = "gaming"
         );
         // User's gaming profile overrides screen lock only
         user.user.profiles.insert(
-            Uuid::new_v4(),
+            gaming_uuid,
             UserProfileConfig {
                 name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
                 ..UserProfileConfig::default()
             },
         );
-        user.set_tv_user_profile("living_room", "gaming");
+        user.set_tv_user_profile("living_room", gaming_uuid);
 
         let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None); // gaming
@@ -1903,19 +1906,25 @@ profile.user = "gaming"
     }
 
     #[test]
-    fn test_user_config_get_tv_user_profile_name() {
+    fn test_user_config_get_tv_user_profile() {
         let mut user = UserConfig::default();
-        user.set_tv_user_profile("living_room", "gaming");
+        let gaming_uuid = Uuid::new_v4();
+        user.set_tv_user_profile("living_room", gaming_uuid);
 
-        assert_eq!(user.get_tv_user_profile_name("living_room"), "gaming");
-        assert_eq!(user.get_tv_user_profile_name("office"), "default");
+        assert_eq!(user.get_tv_user_profile("living_room"), gaming_uuid);
+        // Unassigned TV defaults to the reserved default UUID.
+        assert_eq!(
+            user.get_tv_user_profile("office"),
+            DEFAULT_USER_PROFILE_UUID
+        );
     }
 
     #[test]
     fn test_user_config_roundtrip() {
         let mut user = UserConfig::default();
+        let gaming_uuid = Uuid::new_v4();
         user.user.profiles.insert(
-            Uuid::new_v4(),
+            gaming_uuid,
             UserProfileConfig {
                 name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
@@ -1923,7 +1932,7 @@ profile.user = "gaming"
                 ..UserProfileConfig::default()
             },
         );
-        user.set_tv_user_profile("living_room", "gaming");
+        user.set_tv_user_profile("living_room", gaming_uuid);
 
         let serialized = toml::to_string_pretty(&user).unwrap();
         let deserialized: UserConfig = toml::from_str(&serialized).unwrap();
@@ -1938,7 +1947,7 @@ profile.user = "gaming"
             .iter()
             .find(|t| t.uuid == "living_room")
             .unwrap();
-        assert_eq!(living.profile.user, "gaming");
+        assert_eq!(living.profile.user, gaming_uuid);
     }
 
     #[test]
@@ -2145,21 +2154,24 @@ ip = "192.168.1.1"
     #[test]
     fn test_user_config_ignores_unknown_toml_fields() {
         // UserConfig should parse even if the TOML has extra fields
-        let user_only_toml = r#"
+        let gaming_uuid = "a1b2c3d4-0000-0000-0000-000000000020";
+        let user_only_toml = format!(
+            r#"
 [user.profiles."00000000-0000-0000-0000-000000000002"]
 name = "default"
 idle_timeout_seconds = 600
 
-[user.profiles."a1b2c3d4-0000-0000-0000-000000000020"]
+[user.profiles."{gaming_uuid}"]
 name = "gaming"
 on_session_lock = "none"
 
 [[tv]]
 uuid = "11111111-1111-1111-1111-111111111111"
-profile.user = "gaming"
-"#;
+profile.user = "{gaming_uuid}"
+"#
+        );
 
-        let config: UserConfig = toml::from_str(user_only_toml).unwrap();
+        let config: UserConfig = toml::from_str(&user_only_toml).unwrap();
         assert_eq!(config.user.profiles.len(), 2);
         assert!(config.user.find_profile_by_name("default").is_some());
         assert!(config.user.find_profile_by_name("gaming").is_some());
@@ -2168,7 +2180,7 @@ profile.user = "gaming"
             .iter()
             .find(|t| t.uuid == "11111111-1111-1111-1111-111111111111")
             .unwrap();
-        assert_eq!(living.profile.user, "gaming");
+        assert_eq!(living.profile.user, gaming_uuid.parse::<Uuid>().unwrap());
     }
 
     #[test]
@@ -2202,8 +2214,8 @@ ip = "192.168.1.1"
         let config: UserConfig = toml::from_str(system_toml).unwrap();
         assert_eq!(config.tv.len(), 1);
         assert_eq!(config.tv[0].uuid, "22222222-2222-2222-2222-222222222222");
-        // profile.user defaults to "default" since it's not specified
-        assert_eq!(config.tv[0].profile.user, "default");
+        // profile.user defaults to DEFAULT_USER_PROFILE_UUID since it's not specified
+        assert_eq!(config.tv[0].profile.user, DEFAULT_USER_PROFILE_UUID);
     }
 
     /// Test that on_idle_resume is configurable and defaults to ScreenOn.
@@ -2231,9 +2243,9 @@ ip = "192.168.1.1"
         assert_eq!(merged.on_idle_resume, SessionAction::PowerOn);
     }
 
-    /// Regression test: when a TV's assigned profile name does not exist
-    /// in the user config, resolution must fall through to the user's `[user.profiles.default]`
-    /// before reaching the system default.
+    /// Regression test: when a TV's assigned profile UUID does not exist
+    /// in the user config, resolution must fall through to the user's
+    /// default profile body before reaching the system default.
     #[test]
     fn test_user_config_resolve_user_profile_missing_profile_falls_through_user_default() {
         let system_default = UserProfileConfig {
@@ -2251,7 +2263,8 @@ ip = "192.168.1.1"
                 ..UserProfileConfig::default()
             },
         );
-        user.set_tv_user_profile("living_room", "nonexistent");
+        // Stale UUID with no body — resolution falls through to user default.
+        user.set_tv_user_profile("living_room", Uuid::new_v4());
 
         let resolved = user.resolve_user_profile("living_room", &system_default);
         assert_eq!(resolved.idle_timeout_seconds, 600);
@@ -2268,15 +2281,16 @@ ip = "192.168.1.1"
         };
 
         let mut user = UserConfig::default();
+        let gaming_uuid = Uuid::new_v4();
         user.user.profiles.insert(
-            Uuid::new_v4(),
+            gaming_uuid,
             UserProfileConfig {
                 name: "gaming".to_string(),
                 on_session_lock: Some(SessionAction::None),
                 ..UserProfileConfig::default()
             },
         );
-        user.set_tv_user_profile("office", "gaming");
+        user.set_tv_user_profile("office", gaming_uuid);
 
         let resolved = user.resolve_user_profile("office", &system_default);
         assert_eq!(resolved.on_session_lock, SessionAction::None);

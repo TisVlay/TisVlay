@@ -60,12 +60,10 @@ async fn referenced_by_tracks_tv_user_profile_reassignment() {
             ..Default::default()
         },
     );
-    // Pre-seed: this TV starts on the "gaming" profile.
+    // Pre-seed: this TV starts on the "gaming" profile (by UUID).
     user_config.tv.push(UserTvConfig {
         uuid: tv_id.clone(),
-        profile: UserTvProfileAssignment {
-            user: "gaming".to_string(),
-        },
+        profile: UserTvProfileAssignment { user: gaming_uuid },
     });
     user_config.save_to(&config_path).unwrap();
 
@@ -104,7 +102,10 @@ async fn referenced_by_tracks_tv_user_profile_reassignment() {
         .expect("Session1 proxy");
 
     let _: () = session_proxy
-        .call("SetTvUserProfile", &(tv_id.as_str(), "default"))
+        .call(
+            "SetTvUserProfile",
+            &(tv_id.as_str(), DEFAULT_USER_PROFILE_UUID.to_string()),
+        )
         .await
         .expect("SetTvUserProfile");
 

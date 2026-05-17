@@ -616,44 +616,50 @@ fn build_profile_submenu(
 
     // User profile sub-submenu
     if !tv.available_user_profiles.is_empty() {
-        let current = tv.user_profile.as_deref().unwrap_or("default");
+        let current_uuid = tv.user_profile_uuid.as_deref().unwrap_or("");
         let selected = tv
             .available_user_profiles
             .iter()
-            .position(|name| name == current)
+            .position(|(uuid, _)| uuid == current_uuid)
             .unwrap_or(0);
+        let current_name = tv
+            .available_user_profiles
+            .iter()
+            .find(|(uuid, _)| uuid == current_uuid)
+            .map(|(_, name)| name.as_str())
+            .unwrap_or("");
 
         let options: Vec<RadioItem> = tv
             .available_user_profiles
             .iter()
-            .map(|name| RadioItem {
+            .map(|(_, name)| RadioItem {
                 label: name.clone(),
                 ..Default::default()
             })
             .collect();
 
         let tx = cmd_tx.clone();
-        let profiles: Vec<String> = tv.available_user_profiles.clone();
+        let profiles: Vec<(String, String)> = tv.available_user_profiles.clone();
         let tv_id = tv.id.clone();
 
         submenu.push(
             SubMenu {
-                label: format!("User: {}", current),
+                label: format!("User: {}", current_name),
                 icon_name: "im-user".into(),
-                submenu: vec![RadioGroup {
-                    selected,
-                    options,
-                    select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
-                        if let Some(profile_name) = profiles.get(idx) {
-                            debug!(tv_id = %tv_id, profile = %profile_name, "Switching user profile");
-                            let _ = tx.send(TrayCommand::SetUserProfile(
-                                tv_id.clone(),
-                                profile_name.clone(),
-                            ));
-                        }
-                    }),
-                }
-                .into()],
+                submenu: vec![
+                    RadioGroup {
+                        selected,
+                        options,
+                        select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
+                            if let Some((uuid, name)) = profiles.get(idx) {
+                                debug!(tv_id = %tv_id, profile = %name, "Switching user profile");
+                                let _ = tx
+                                    .send(TrayCommand::SetUserProfile(tv_id.clone(), uuid.clone()));
+                            }
+                        }),
+                    }
+                    .into(),
+                ],
                 ..Default::default()
             }
             .into(),
@@ -662,44 +668,52 @@ fn build_profile_submenu(
 
     // System profile sub-submenu
     if !tv.available_system_profiles.is_empty() {
-        let current = tv.system_profile.as_str();
+        let current_uuid = tv.system_profile_uuid.as_str();
         let selected = tv
             .available_system_profiles
             .iter()
-            .position(|name| name == current)
+            .position(|(uuid, _)| uuid == current_uuid)
             .unwrap_or(0);
+        let current_name = tv
+            .available_system_profiles
+            .iter()
+            .find(|(uuid, _)| uuid == current_uuid)
+            .map(|(_, name)| name.as_str())
+            .unwrap_or("");
 
         let options: Vec<RadioItem> = tv
             .available_system_profiles
             .iter()
-            .map(|name| RadioItem {
+            .map(|(_, name)| RadioItem {
                 label: name.clone(),
                 ..Default::default()
             })
             .collect();
 
         let tx = cmd_tx.clone();
-        let profiles: Vec<String> = tv.available_system_profiles.clone();
+        let profiles: Vec<(String, String)> = tv.available_system_profiles.clone();
         let tv_id = tv.id.clone();
 
         submenu.push(
             SubMenu {
-                label: format!("System: {}", current),
+                label: format!("System: {}", current_name),
                 icon_name: "system-users".into(),
-                submenu: vec![RadioGroup {
-                    selected,
-                    options,
-                    select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
-                        if let Some(profile_name) = profiles.get(idx) {
-                            debug!(tv_id = %tv_id, profile = %profile_name, "Switching system profile");
-                            let _ = tx.send(TrayCommand::SetSystemProfile(
-                                tv_id.clone(),
-                                profile_name.clone(),
-                            ));
-                        }
-                    }),
-                }
-                .into()],
+                submenu: vec![
+                    RadioGroup {
+                        selected,
+                        options,
+                        select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
+                            if let Some((uuid, name)) = profiles.get(idx) {
+                                debug!(tv_id = %tv_id, profile = %name, "Switching system profile");
+                                let _ = tx.send(TrayCommand::SetSystemProfile(
+                                    tv_id.clone(),
+                                    uuid.clone(),
+                                ));
+                            }
+                        }),
+                    }
+                    .into(),
+                ],
                 ..Default::default()
             }
             .into(),

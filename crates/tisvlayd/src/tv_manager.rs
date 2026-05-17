@@ -584,7 +584,9 @@ fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvMa
             tv.name = value.to_string();
         }
         "profile.system" => {
-            tv.profile.system = value.to_string();
+            tv.profile.system = value.parse::<uuid::Uuid>().map_err(|_| {
+                TvManagerError::ConfigError(format!("Invalid system profile UUID: {value}"))
+            })?;
         }
         _ => {
             return Err(TvManagerError::ConfigError(format!(
@@ -1110,8 +1112,8 @@ impl TvManager {
 
     /// Get all user profiles as (name, UserProfileConfig) pairs.
     /// The name comes from the body — profiles are UUID-keyed
-    /// internally but every external surface (D-Bus, CLI, GUI
-    /// ComboBox) still references by name in v2.
+    /// internally; clients that need the UUID enumerate the
+    /// per-profile object surface via `ObjectManager.GetManagedObjects`.
     pub async fn list_user_profiles(&self) -> Vec<(String, UserProfileConfig)> {
         let user = self.user_section.read().await;
         user.profiles
@@ -1200,21 +1202,25 @@ impl TvManager {
         fields
     }
 
-    /// UUIDs of TVs whose `profile.system` name resolves to this
-    /// profile. v2 keeps `[[tv]] profile.system` name-based, so we
-    /// match by the profile body's `name` field.
+    /// UUIDs of TVs whose `profile.system` references this profile.
+    /// Direct UUID equality check — references are UUID-keyed end-to-end.
     pub async fn system_profile_referenced_by(&self, uuid: uuid::Uuid) -> Vec<String> {
-        let Some(profile_name) = ({
+        // Guard against an unknown UUID: callers expect an empty list
+        // for an absent profile rather than every TV that happens to
+        // dangle to it (which would never happen since `apply_tv_option`
+        // rejects unknown UUIDs at write time, but keeps the contract
+        // symmetric with the user-side helper).
+        {
             let system = self.system_section.read().await;
-            system.profiles.get(&uuid).map(|p| p.name.clone())
-        }) else {
-            return Vec::new();
-        };
+            if !system.profiles.contains_key(&uuid) {
+                return Vec::new();
+            }
+        }
         let tvs = self.tvs.read().await;
         let mut result = Vec::new();
         for (tv_id, (_, tv_arc)) in tvs.iter() {
             let tv = tv_arc.lock().await;
-            if tv.config.profile.system == profile_name {
+            if tv.config.profile.system == uuid {
                 result.push(tv_id.clone());
             }
         }
@@ -1287,69 +1293,26 @@ impl TvManager {
             parse_session_action(value)?;
         }
 
-        // Mutate in-memory state.
-        let renamed_to: Option<(String, String)> = {
+        // Mutate in-memory state. With UUID-keyed references, a rename
+        // is a no-op on the reference side — no cascade needed.
+        {
             let mut system = self.system_section.write().await;
             let body = system.profiles.get_mut(&uuid).ok_or_else(|| {
                 TvManagerError::ConfigError(format!("Unknown system profile uuid: {}", uuid))
             })?;
-            let prev_name = body.name.clone();
             apply_system_profile_field(body, field, value)?;
-            if field == "name" && prev_name != body.name {
-                Some((prev_name, body.name.clone()))
-            } else {
-                None
-            }
-        };
-
-        // If the profile's name changed, every TV whose
-        // `profile.system` referenced the old name needs the
-        // reference rewritten so future resolution still lands here.
-        if let Some((ref prev, ref next)) = renamed_to {
-            let tvs = self.tvs.read().await;
-            for (_, (_, tv_arc)) in tvs.iter() {
-                let mut tv = tv_arc.lock().await;
-                if tv.config.profile.system == *prev {
-                    tv.config.profile.system = next.clone();
-                }
-            }
         }
 
         // Re-resolve cached system_profile on every TV that
-        // references this profile by name. The resolved values may
-        // shift on any field edit (this profile changed) or on a
-        // default-profile edit (every other profile's chain shifted).
+        // references this profile. The resolved values may shift on
+        // any field edit (this profile changed) or on a default-profile
+        // edit (every other profile's chain shifted).
         self.refresh_all_resolved_system_profiles().await;
 
         // Persist + fan out the state change.
-        let renamed_to_disk = renamed_to.clone();
-        self.persist_system_profile_change(renamed_to_disk).await?;
+        self.persist_system_profile_change().await?;
 
         self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
-
-        // Rename also shifts ReferencedBy on this profile (TVs whose
-        // `profile.system` field was rewritten to the new name) — the
-        // SystemProfileBodyChanged emit above already covers the
-        // affected UUID. If `field == name` we also emit per-TV
-        // OptionChanged for `profile.system` so Tv1.SystemProfile
-        // cached values stay in sync.
-        if let Some((ref prev, ref next)) = renamed_to {
-            let tvs = self.tvs.read().await;
-            for (tv_id, (_, tv_arc)) in tvs.iter() {
-                let tv = tv_arc.lock().await;
-                if tv.config.profile.system == *next {
-                    self.state_change_tx
-                        .send(StateChangeEvent::OptionChanged {
-                            tv_id: tv_id.clone(),
-                            key: "profile.system".to_string(),
-                            value: next.clone(),
-                        })
-                        .ok();
-                }
-                drop(tv);
-                let _ = prev;
-            }
-        }
 
         info!(uuid = %uuid, field = %field, value = %value, "System profile field updated");
         Ok(())
@@ -1382,7 +1345,7 @@ impl TvManager {
         }
 
         self.refresh_all_resolved_system_profiles().await;
-        self.persist_system_profile_change(None).await?;
+        self.persist_system_profile_change().await?;
         self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
 
         info!(uuid = %uuid, field = %field, "System profile field reset");
@@ -1409,7 +1372,7 @@ impl TvManager {
         }
 
         self.refresh_all_resolved_system_profiles().await;
-        self.persist_system_profile_change(None).await?;
+        self.persist_system_profile_change().await?;
         self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
 
         info!(uuid = %uuid, "System profile reset");
@@ -1426,18 +1389,15 @@ impl TvManager {
         let tvs = self.tvs.read().await;
         for (_, (_, tv_arc)) in tvs.iter() {
             let mut tv = tv_arc.lock().await;
-            tv.system_profile = system.resolve_profile(&tv.config.profile.system);
+            tv.system_profile = system.resolve_profile_by_uuid(tv.config.profile.system);
         }
     }
 
-    /// Load the on-disk config, splice in the current `system` /
-    /// `user` sections + (optionally) rewrite TV `profile.system`
-    /// references when a profile was renamed, then save. Holds the
-    /// `disk_write_lock` for the load-modify-save critical section.
-    async fn persist_system_profile_change(
-        &self,
-        renamed: Option<(String, String)>,
-    ) -> Result<(), TvManagerError> {
+    /// Load the on-disk config, splice in the current `system` section,
+    /// then save. Holds the `disk_write_lock` for the load-modify-save
+    /// critical section. References on `[[tv]]` are UUID-keyed so a
+    /// rename needs no reference-rewriting hop.
+    async fn persist_system_profile_change(&self) -> Result<(), TvManagerError> {
         let config_path = self.config_path.clone();
         let system = self.system_section.read().await.clone();
         let _disk_lock = self.disk_write_lock.lock().await;
@@ -1446,13 +1406,6 @@ impl TvManager {
                 TvManagerError::ConfigError(format!("Failed to load config: {}", e))
             })?;
             config.system = system;
-            if let Some((prev, next)) = renamed {
-                for tv in &mut config.tv {
-                    if tv.profile.system == prev {
-                        tv.profile.system = next.clone();
-                    }
-                }
-            }
             config
                 .save_to(&config_path)
                 .map_err(|e| TvManagerError::ConfigError(format!("Failed to save config: {}", e)))
@@ -1461,11 +1414,11 @@ impl TvManager {
         .map_err(|e| TvManagerError::ConfigError(format!("Task join error: {}", e)))?
     }
 
-    /// Get the system profile name assigned to a TV.
+    /// Get the system profile UUID assigned to a TV, string-formatted.
     pub async fn get_tv_system_profile(&self, tv_id: &str) -> Option<String> {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
         let tv = tv_arc.lock().await;
-        Some(tv.config.profile.system.clone())
+        Some(tv.config.profile.system.to_string())
     }
 
     /// Get the resolved `automate_when` policy for a TV.
@@ -2647,7 +2600,7 @@ impl TvManager {
         // TV-map reader/writer.
         let system_profile = {
             let system = self.system_section.read().await;
-            system.resolve_profile(&tv_config.profile.system)
+            system.resolve_profile_by_uuid(tv_config.profile.system)
         };
         let mut managed_tv = ManagedTv::new(tv_config.clone(), system_profile);
         managed_tv.connection = Some(conn);
@@ -2724,12 +2677,10 @@ impl TvManager {
         // default, since AddTv leaves `profile.system` unset → default)
         // grew by one; fan out so the SystemProfile1 cached property
         // refreshes.
-        let referenced_name = tv_config.profile.system.clone();
-        let system = self.system_section.read().await;
-        if let Some((uuid, _)) = system.find_profile_by_name(&referenced_name) {
-            drop(system);
-            self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
-        }
+        let referenced_uuid = tv_config.profile.system;
+        self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged {
+            uuid: referenced_uuid,
+        });
 
         Ok(())
     }
@@ -3176,14 +3127,14 @@ impl TvManager {
     pub async fn remove_tv(&self, tv_id: &str) -> Result<(), TvManagerError> {
         info!(tv_id = %tv_id, "Removing TV");
 
-        // Capture the TV's referenced system-profile name before
+        // Capture the TV's referenced system-profile UUID before
         // tearing it down so the post-remove ReferencedBy refresh
         // (fired below as `SystemProfileBodyChanged`) lands on the
         // right profile UUID.
-        let referenced_profile_name: Option<String> = match self.get_tv(tv_id).await {
+        let referenced_profile_uuid: Option<uuid::Uuid> = match self.get_tv(tv_id).await {
             Ok(arc) => {
                 let tv = arc.lock().await;
-                Some(tv.config.profile.system.clone())
+                Some(tv.config.profile.system)
             }
             Err(_) => None,
         };
@@ -3213,12 +3164,8 @@ impl TvManager {
         // ReferencedBy on the previously-pointing profile shrinks by
         // one; fan that out so the cached property on SystemProfile1
         // refreshes.
-        if let Some(name) = referenced_profile_name {
-            let system = self.system_section.read().await;
-            if let Some((uuid, _)) = system.find_profile_by_name(&name) {
-                drop(system);
-                self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
-            }
+        if let Some(uuid) = referenced_profile_uuid {
+            self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
         }
 
         info!(tv_id = %tv_id, "TV removed successfully");
@@ -3285,26 +3232,26 @@ impl TvManager {
         value: &str,
     ) -> Result<(), TvManagerError> {
         // Validate and apply to in-memory TV config first.
-        // Validate system profile name exists before applying. The
-        // catalog is UUID-keyed internally; v2 keeps `[[tv]]`
-        // references name-based, so look up by name.
+        // Validate system profile UUID exists in the catalog before applying.
         if key == "profile.system" {
+            let parsed: uuid::Uuid = value.parse().map_err(|_| {
+                TvManagerError::ConfigError(format!("Invalid system profile UUID: {value}"))
+            })?;
             let system = self.system_section.read().await;
-            if system.find_profile_by_name(value).is_none() {
+            if !system.profiles.contains_key(&parsed) {
                 return Err(TvManagerError::ConfigError(format!(
-                    "Unknown system profile: {}",
-                    value
+                    "Unknown system profile: {value}"
                 )));
             }
         }
 
         let tv_arc = self.get_tv(tv_id).await?;
-        // Capture the previously-pointing profile name before mutation
+        // Capture the previously-pointing profile UUID before mutation
         // so a `profile.system` flip can refresh ReferencedBy on both
         // the previously- and newly-affected profile UUIDs.
-        let prev_profile_name: Option<String> = if key == "profile.system" {
+        let prev_profile_uuid: Option<uuid::Uuid> = if key == "profile.system" {
             let tv = tv_arc.lock().await;
-            Some(tv.config.profile.system.clone())
+            Some(tv.config.profile.system)
         } else {
             None
         };
@@ -3315,7 +3262,8 @@ impl TvManager {
             // Re-resolve the system profile when the assignment changes.
             if key == "profile.system" {
                 let system = self.system_section.read().await;
-                managed.system_profile = system.resolve_profile(&managed.config.profile.system);
+                managed.system_profile =
+                    system.resolve_profile_by_uuid(managed.config.profile.system);
             }
         } // per-TV lock released before I/O
 
@@ -3362,19 +3310,19 @@ impl TvManager {
         // a body-changed for each so the cached property on every
         // SystemProfile1 interface refreshes.
         if key == "profile.system" {
-            let system = self.system_section.read().await;
+            // `value` already parsed during validation above; reparse
+            // here is cheap relative to the disk-write hop and keeps
+            // the variable types local to this block.
+            let new_uuid: Option<uuid::Uuid> = value.parse().ok();
             let mut to_emit = Vec::new();
-            if let Some(prev) = prev_profile_name.as_deref()
-                && let Some((uuid, _)) = system.find_profile_by_name(prev)
+            if let Some(prev) = prev_profile_uuid {
+                to_emit.push(prev);
+            }
+            if let Some(new) = new_uuid
+                && !to_emit.contains(&new)
             {
-                to_emit.push(uuid);
+                to_emit.push(new);
             }
-            if let Some((uuid, _)) = system.find_profile_by_name(value) {
-                if !to_emit.contains(&uuid) {
-                    to_emit.push(uuid);
-                }
-            }
-            drop(system);
             for uuid in to_emit {
                 self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
             }
@@ -3411,7 +3359,7 @@ impl TvManager {
         );
         obj.insert(
             "system_profile".to_string(),
-            serde_json::Value::String(config.profile.system.clone()),
+            serde_json::Value::String(config.profile.system.to_string()),
         );
         if let Some(ref pi) = config.primary_input {
             obj.insert(
@@ -3510,11 +3458,15 @@ impl TvManager {
                     }
                 };
                 if key == "system_profile" {
+                    let parsed: uuid::Uuid = str_value.parse().map_err(|_| {
+                        TvManagerError::ConfigError(format!(
+                            "Invalid system profile UUID: {str_value}"
+                        ))
+                    })?;
                     let system = self.system_section.read().await;
-                    if system.find_profile_by_name(&str_value).is_none() {
+                    if !system.profiles.contains_key(&parsed) {
                         return Err(TvManagerError::ConfigError(format!(
-                            "Unknown system profile: {}",
-                            str_value
+                            "Unknown system profile: {str_value}"
                         )));
                     }
                 }
@@ -3550,7 +3502,7 @@ impl TvManager {
         // Apply to in-memory config under the per-TV lock.
         let mut managed_changed_to: Option<bool> = None;
         let mut system_profile_changed = false;
-        let mut prev_profile_name: Option<String> = None;
+        let mut prev_profile_uuid: Option<uuid::Uuid> = None;
         {
             let mut tv = tv_arc.lock().await;
             // Re-pair runs its handshake outside the per-TV lock for
@@ -3574,8 +3526,8 @@ impl TvManager {
                 } else {
                     key.as_str()
                 };
-                if key == "system_profile" && prev_profile_name.is_none() {
-                    prev_profile_name = Some(tv.config.profile.system.clone());
+                if key == "system_profile" && prev_profile_uuid.is_none() {
+                    prev_profile_uuid = Some(tv.config.profile.system);
                 }
                 apply_tv_option(&mut tv.config, internal_key, value)?;
                 if key == "system_profile" {
@@ -3601,7 +3553,7 @@ impl TvManager {
             }
             if system_profile_changed {
                 let system = self.system_section.read().await;
-                tv.system_profile = system.resolve_profile(&tv.config.profile.system);
+                tv.system_profile = system.resolve_profile_by_uuid(tv.config.profile.system);
             }
         }
 
@@ -3680,24 +3632,19 @@ impl TvManager {
         // the previously- and newly-affected profile UUIDs. Mirrors
         // the fan-out `set_tv_option` performs for single-field flips.
         if system_profile_changed {
-            let new_name = top_level
+            let new_uuid: Option<uuid::Uuid> = top_level
                 .iter()
                 .find(|(k, _)| k == "system_profile")
-                .map(|(_, v)| v.clone());
-            let system = self.system_section.read().await;
+                .and_then(|(_, v)| v.parse().ok());
             let mut to_emit = Vec::new();
-            if let Some(prev) = prev_profile_name.as_deref()
-                && let Some((uuid, _)) = system.find_profile_by_name(prev)
-            {
-                to_emit.push(uuid);
+            if let Some(prev) = prev_profile_uuid {
+                to_emit.push(prev);
             }
-            if let Some(new_name) = new_name
-                && let Some((uuid, _)) = system.find_profile_by_name(&new_name)
-                && !to_emit.contains(&uuid)
+            if let Some(new) = new_uuid
+                && !to_emit.contains(&new)
             {
-                to_emit.push(uuid);
+                to_emit.push(new);
             }
-            drop(system);
             for uuid in to_emit {
                 self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
             }
@@ -3790,8 +3737,9 @@ impl TvManager {
                 } else {
                     // New TV: add to map immediately (no connection to close).
                     info!(tv_id = %tv_id, "Adding new TV from config");
-                    let system_profile =
-                        new_config.system.resolve_profile(&tv_config.profile.system);
+                    let system_profile = new_config
+                        .system
+                        .resolve_profile_by_uuid(tv_config.profile.system);
                     tvs.insert(
                         tv_id.clone(),
                         (
@@ -3885,7 +3833,7 @@ impl TvManager {
             let tvs = self.tvs.read().await;
             for (_, tv_arc) in tvs.values() {
                 let mut tv = tv_arc.lock().await;
-                tv.system_profile = system.resolve_profile(&tv.config.profile.system);
+                tv.system_profile = system.resolve_profile_by_uuid(tv.config.profile.system);
             }
         }
 

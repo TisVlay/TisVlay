@@ -58,9 +58,9 @@ async fn referenced_by_tracks_tv_profile_assignment_changes() {
             ..Default::default()
         },
     );
-    // Build a TV that explicitly points at "guest".
+    // Build a TV that explicitly points at the guest profile by UUID.
     let mut tv = tisvlay_core::TvConfig::with_uuid(test_tv_uuid("ref_tv"), "ref_tv", "mock", true);
-    tv.profile.system = "guest".to_string();
+    tv.profile.system = guest_uuid;
     let mut vendor_table = std::collections::HashMap::new();
     vendor_table.insert(
         "address".to_string(),
@@ -101,7 +101,7 @@ async fn referenced_by_tracks_tv_profile_assignment_changes() {
         .set(
             "org.tisvlay.Tv1".try_into().unwrap(),
             "SystemProfile",
-            zbus::zvariant::Value::from("default"),
+            zbus::zvariant::Value::from(DEFAULT_SYSTEM_PROFILE_UUID.to_string()),
         )
         .await
         .expect("Set Tv1.SystemProfile");

@@ -455,7 +455,7 @@ async fn refresh_tv_config_state(
     let system_profile = manager
         .get_tv_system_profile(tv_id)
         .await
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(|| tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID.to_string());
     let primary_input = manager
         .get_tv_primary_input(tv_id)
         .await

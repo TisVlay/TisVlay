@@ -20,14 +20,16 @@ pub(crate) struct CachedTvState {
     pub backlight: Option<u8>,
     /// Available inputs as `(id, label)` pairs.
     pub inputs: Vec<(String, String)>,
-    /// Current user profile name assigned to this TV.
-    pub user_profile: Option<String>,
-    /// Available user profile names.
-    pub available_user_profiles: Vec<String>,
-    /// Current system profile name assigned to this TV.
-    pub system_profile: String,
-    /// Available system profile names.
-    pub available_system_profiles: Vec<String>,
+    /// Current user profile UUID assigned to this TV (string-formatted).
+    pub user_profile_uuid: Option<String>,
+    /// Available user profiles as `(uuid_string, name)` pairs. The tray
+    /// renders `name` in the radio menu and passes `uuid` through
+    /// `Session1.SetTvUserProfile` on click.
+    pub available_user_profiles: Vec<(String, String)>,
+    /// Current system profile UUID assigned to this TV (string-formatted).
+    pub system_profile_uuid: String,
+    /// Available system profiles as `(uuid_string, name)` pairs.
+    pub available_system_profiles: Vec<(String, String)>,
     /// Whether this TV participates in automated management.
     pub managed: bool,
     /// Whether automation should fire for this TV right now.
@@ -50,10 +52,12 @@ pub(crate) async fn fetch_all_state(
         debug!(tv_id = %tv.uuid, connected = tv.connected, "TV from daemon");
     }
 
-    // Fetch available user profiles from session service (once, shared across TVs).
-    let available_user_profiles: Vec<String> = match session {
-        Some(session_client) => match session_client.list_user_profiles().await {
-            Ok(profiles) => profiles.into_iter().map(|(name, _)| name).collect(),
+    // Fetch available user profiles as (uuid_string, name) pairs from
+    // the session service's per-profile D-Bus objects. The menu shows
+    // `name` but selection passes `uuid` to `SetTvUserProfile`.
+    let available_user_profiles: Vec<(String, String)> = match session {
+        Some(session_client) => match session_client.list_user_profiles_with_ids().await {
+            Ok(profiles) => profiles,
             Err(e) => {
                 debug!(error = %e, "Failed to list user profiles from session service");
                 Vec::new()
@@ -62,20 +66,21 @@ pub(crate) async fn fetch_all_state(
         None => Vec::new(),
     };
 
-    // Fetch available system profiles from daemon (once, shared across TVs).
-    let available_system_profiles: Vec<String> = match daemon.list_system_profiles().await {
-        Ok(profiles) => profiles.into_iter().map(|(name, _)| name).collect(),
-        Err(e) => {
-            debug!(error = %e, "Failed to list system profiles from daemon");
-            Vec::new()
-        }
-    };
+    // Fetch available system profiles from daemon as (uuid_string, name) pairs.
+    let available_system_profiles: Vec<(String, String)> =
+        match daemon.list_system_profiles_with_ids().await {
+            Ok(profiles) => profiles,
+            Err(e) => {
+                debug!(error = %e, "Failed to list system profiles from daemon");
+                Vec::new()
+            }
+        };
 
     let mut states = Vec::with_capacity(tvs.len());
 
     for tv in tvs {
-        // Fetch per-TV user profile assignment from session service
-        let user_profile = match session {
+        // Fetch per-TV user profile UUID from session service (string-formatted).
+        let user_profile_uuid = match session {
             Some(session_client) => session_client.get_tv_user_profile(&tv.uuid).await.ok(),
             None => None,
         };
@@ -101,9 +106,9 @@ pub(crate) async fn fetch_all_state(
                 None
             },
             inputs: tv.inputs,
-            user_profile,
+            user_profile_uuid,
             available_user_profiles: available_user_profiles.clone(),
-            system_profile: tv.system_profile,
+            system_profile_uuid: tv.system_profile,
             available_system_profiles: available_system_profiles.clone(),
             managed: tv.managed,
             automated: tv.automated,
@@ -128,7 +133,10 @@ pub(crate) async fn fetch_all_state(
 mod tests {
     use super::*;
 
-    fn make_tv_state(system_profiles: Vec<&str>, user_profiles: Vec<&str>) -> CachedTvState {
+    fn make_tv_state(
+        system_profiles: Vec<(&str, &str)>,
+        user_profiles: Vec<(&str, &str)>,
+    ) -> CachedTvState {
         CachedTvState {
             id: "test".into(),
             name: "Test".into(),
@@ -140,10 +148,16 @@ mod tests {
             current_input: Some("HDMI_1".into()),
             backlight: Some(80),
             inputs: vec![("HDMI_1".into(), "HDMI 1".into())],
-            user_profile: Some("default".into()),
-            available_user_profiles: user_profiles.into_iter().map(String::from).collect(),
-            system_profile: "default".into(),
-            available_system_profiles: system_profiles.into_iter().map(String::from).collect(),
+            user_profile_uuid: Some(tisvlay_core::DEFAULT_USER_PROFILE_UUID.to_string()),
+            available_user_profiles: user_profiles
+                .into_iter()
+                .map(|(u, n)| (u.to_string(), n.to_string()))
+                .collect(),
+            system_profile_uuid: tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID.to_string(),
+            available_system_profiles: system_profiles
+                .into_iter()
+                .map(|(u, n)| (u.to_string(), n.to_string()))
+                .collect(),
             managed: true,
             automated: true,
         }
@@ -151,14 +165,20 @@ mod tests {
 
     #[test]
     fn test_cached_tv_state_equality_same_data() {
-        let a = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
-        let b = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
+        let a = make_tv_state(
+            vec![("u1", "default"), ("u2", "guest")],
+            vec![("u3", "default"), ("u4", "gaming")],
+        );
+        let b = make_tv_state(
+            vec![("u1", "default"), ("u2", "guest")],
+            vec![("u3", "default"), ("u4", "gaming")],
+        );
         assert_eq!(a, b);
     }
 
     #[test]
     fn test_cached_tv_state_inequality_different_data() {
-        let a = make_tv_state(vec!["default"], vec!["default"]);
+        let a = make_tv_state(vec![("u1", "default")], vec![("u3", "default")]);
         let mut b = a.clone();
         b.volume = Some(51);
         assert_ne!(a, b);
@@ -166,15 +186,21 @@ mod tests {
 
     #[test]
     fn test_cached_tv_state_profile_order_matters_for_equality() {
-        // Profile lists are Vec<String>, so order matters for PartialEq.
-        // BTreeMap iteration in the daemon ensures consistent ordering,
-        // so the tray always receives profiles in the same sorted order.
-        let a = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
-        let b = make_tv_state(vec!["default", "guest"], vec!["default", "gaming"]);
+        let a = make_tv_state(
+            vec![("u1", "default"), ("u2", "guest")],
+            vec![("u3", "default"), ("u4", "gaming")],
+        );
+        let b = make_tv_state(
+            vec![("u1", "default"), ("u2", "guest")],
+            vec![("u3", "default"), ("u4", "gaming")],
+        );
         assert_eq!(a, b);
 
-        // Different ordering would be unequal — BTreeMap prevents this.
-        let c = make_tv_state(vec!["guest", "default"], vec!["gaming", "default"]);
+        // Different ordering would be unequal.
+        let c = make_tv_state(
+            vec![("u2", "guest"), ("u1", "default")],
+            vec![("u4", "gaming"), ("u3", "default")],
+        );
         assert_ne!(a, c);
     }
 }

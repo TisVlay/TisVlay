@@ -145,8 +145,8 @@ enum UserProfileAction {
 
     /// Assign a user profile to a TV
     Set {
-        /// Profile name to assign
-        profile: String,
+        /// Profile UUID to assign (string-formatted)
+        profile_uuid: String,
     },
 }
 
@@ -160,8 +160,8 @@ enum SystemProfileAction {
 
     /// Assign a system profile to a TV
     Set {
-        /// Profile name to assign
-        profile: String,
+        /// Profile UUID to assign (string-formatted)
+        profile_uuid: String,
     },
 }
 
@@ -398,10 +398,10 @@ async fn main() -> Result<()> {
                         let profile = session.get_tv_user_profile(&tv_id).await?;
                         println!("TV '{}' user profile: {}", tv_id, profile);
                     }
-                    UserProfileAction::Set { profile } => {
+                    UserProfileAction::Set { profile_uuid } => {
                         let tv_id = tv_id?;
-                        session.set_tv_user_profile(&tv_id, &profile).await?;
-                        println!("TV '{}' user profile set to '{}'", tv_id, profile);
+                        session.set_tv_user_profile(&tv_id, &profile_uuid).await?;
+                        println!("TV '{}' user profile set to '{}'", tv_id, profile_uuid);
                     }
                 }
             }
@@ -420,17 +420,18 @@ async fn main() -> Result<()> {
                 SystemProfileAction::Get => {
                     let tv_id = tv_id?;
                     let tvs = client.list_tvs().await?;
+                    let default_uuid = tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID.to_string();
                     let system_profile = tvs
                         .iter()
                         .find(|t| t.uuid == tv_id)
                         .map(|t| t.system_profile.as_str())
-                        .unwrap_or("default");
+                        .unwrap_or(default_uuid.as_str());
                     println!("TV '{}' system profile: {}", tv_id, system_profile);
                 }
-                SystemProfileAction::Set { profile } => {
+                SystemProfileAction::Set { profile_uuid } => {
                     let tv_id = tv_id?;
-                    client.set_tv_system_profile(&tv_id, &profile).await?;
-                    println!("TV '{}' system profile set to '{}'", tv_id, profile);
+                    client.set_tv_system_profile(&tv_id, &profile_uuid).await?;
+                    println!("TV '{}' system profile set to '{}'", tv_id, profile_uuid);
                 }
             },
         },
