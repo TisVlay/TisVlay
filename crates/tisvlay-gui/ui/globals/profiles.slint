@@ -43,6 +43,32 @@ export struct ProfileRow {
     referenced-by: [ProfileTvRef],
 }
 
+/// One row in the field editor for the currently-selected profile.
+///
+/// The combobox model on the row is `[inherit-placeholder, ...concrete
+/// options]` — Rust precomputes the placeholder string
+/// (`(inherit: power_on)` etc.) so the Slint side doesn't need to
+/// concat arrays in a binding. Selecting the placeholder, or clicking
+/// the row's reset glyph, both surface as
+/// `field-edited(field-name, "")` to keep one wire shape for "clear
+/// this field". `current-value` is the empty string when the field
+/// inherits, else the literal locally-set value (e.g. `"power_off"`).
+export struct ProfileField {
+    /// Wire identifier — matches the `SystemProfileConfig` /
+    /// `UserProfileConfig` field name. Round-trips back to Rust on
+    /// `field-edited` so the handler knows which field to patch.
+    field-name: string,
+    /// Display label for the row's left column. Pre-translated.
+    label: string,
+    /// Full combobox model: first entry is the inherit placeholder,
+    /// the rest are concrete enum variants in the order they should
+    /// render. Pre-translated where applicable.
+    options: [string],
+    /// Currently locally-set value, or `""` when the field inherits.
+    /// Drives the 2 px gutter accent + reset-glyph visibility.
+    current-value: string,
+}
+
 export global Profiles {
     /// Master-list row clicked. `kind` disambiguates which section
     /// the row came from so the Rust handler knows whether to fetch
@@ -67,6 +93,11 @@ export global Profiles {
     /// the named TV. Rust flips `AppWindow.active-pane` + sets
     /// `selected-tv-index`.
     callback open-tv(string);
+    /// A field in the currently-selected profile was edited or
+    /// reset. `value` is the locally-set value, or `""` to clear the
+    /// field back to inheriting. Rust routes to the matching daemon
+    /// `Update*Profile` call (which lands wired in the next commit).
+    callback field-edited(string, string);
 
     in property <[ProfileRow]> system;
     in property <[ProfileRow]> user;
@@ -86,4 +117,9 @@ export global Profiles {
     in-out property <ProfileKind> selected-kind: ProfileKind.none;
     in-out property <string> selected-name;
     in property <ProfileRow> selected-row;
+    /// Field rows for the currently-selected profile. Empty when no
+    /// profile is selected or before the daemon `Get*Profile` fetch
+    /// completes. Rust pushes the resolved field list on selection
+    /// change + on `*ProfileChanged` / `ConfigReloaded` signals.
+    in property <[ProfileField]> current-fields;
 }

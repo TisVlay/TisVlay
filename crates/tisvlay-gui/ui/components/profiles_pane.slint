@@ -16,11 +16,12 @@
 // placeholder so the master-detail wiring + selection model can be
 // validated end-to-end first.
 
-import { Button, ListView, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Button, ComboBox, ListView, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { Profiles, ProfileKind, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { DangerBtn, Chip, Group } from "../widgets.slint";
+import { Icons } from "../globals/icons.slint";
+import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileField } from "../globals/profiles.slint";
+import { DangerBtn, Chip, Group, IconBtn } from "../widgets.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -333,6 +334,110 @@ component ProfileDetailHeader inherits Rectangle {
     }
 }
 
+// =============================================================================
+// ProfileFieldRow — one inheritable field with gutter accent + reset glyph.
+// =============================================================================
+//
+// Layout:
+//   [ ▌ ]  [ 140px label ]  [ ComboBox flex ]  [ ↺? ]
+//          locally-set?     model[0]=inherit   only when locally-set
+//                                              + hover-revealed
+//
+// The 2 px gutter on the left fills when `entry.current-value != ""`
+// (i.e. the field is locally set, overriding the inherit fallthrough).
+// The reset glyph appears trailing the combobox on the same condition,
+// becoming visible only while the row is hovered — keeps the
+// inheriting rows visually quiet.
+//
+// ComboBox `model` is the full list including the inherit placeholder
+// at index 0. Selecting that index OR clicking reset both surface as
+// `value-edited(field-name, "")`; selecting any concrete entry
+// surfaces as `value-edited(field-name, value)`.
+
+component ProfileFieldRow inherits Rectangle {
+    in property <ProfileField> entry;
+    callback value-edited(string, string);
+
+    /// True when the field has a locally-set value (i.e. is NOT
+    /// inheriting). Drives gutter + reset-glyph visibility.
+    property <bool> is-set: root.entry.current-value != "";
+
+    height: row-layout.preferred-height;
+
+    // 2 px left gutter accent — shows for locally-set fields.
+    Rectangle {
+        x: 0;
+        width: Design.border-thin * 2;
+        background: root.is-set ? Theme.accent : transparent;
+    }
+
+    row-layout := HorizontalLayout {
+        width: 100%;
+        padding-left: Design.gap-form;
+        padding-top: Design.gap-form;
+        padding-bottom: Design.gap-form;
+        spacing: Design.gap-row;
+
+        // Label column — same width token as the TVs-pane FormRow
+        // so System / User editors visually align with the TV-detail
+        // PROFILES section.
+        VerticalLayout {
+            width: Design.width-label-col;
+            alignment: center;
+            Text {
+                text: root.entry.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+                overflow: elide;
+            }
+        }
+
+        // ComboBox column. `current-value` is the literal locally-set
+        // value when set; otherwise we drop back to `options[0]`, the
+        // pre-built `(inherit: <X>)` placeholder string.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            ComboBox {
+                model: root.entry.options;
+                current-value: root.is-set
+                    ? root.entry.current-value
+                    : (root.entry.options.length > 0 ? root.entry.options[0] : "");
+                enabled: root.entry.options.length > 0;
+                selected(v) => {
+                    // Normalize the inherit-placeholder back to "" so
+                    // every "clear this field" path (combobox first
+                    // entry, reset glyph) takes the same wire.
+                    root.value-edited(
+                        root.entry.field-name,
+                        v == root.entry.options[0] ? "" : v,
+                    );
+                }
+            }
+        }
+
+        // Reset glyph — only present when the field is locally set.
+        // Reuses the existing reload icon (circular arrow) since
+        // visually it's the same "revert to baseline" action as the
+        // sidebar's reload-config button. IconBtn's ghost style
+        // already dims at rest + brightens on hover, so the glyph
+        // stays visually quiet until the user mouses over it — no
+        // separate row-wide hover overlay needed (and a row-wide
+        // TouchArea would swallow ComboBox clicks anyway).
+        VerticalLayout {
+            alignment: center;
+            width: 28px;
+            if root.is-set: IconBtn {
+                source: Icons.reload;
+                accessible-label: @tr("Reset to inherited");
+                clicked => {
+                    root.value-edited(root.entry.field-name, "");
+                }
+            }
+        }
+    }
+}
+
 component ProfileDetail inherits Rectangle {
     in property <string> name;
     in property <[ProfileTvRef]> referenced-by;
@@ -351,9 +456,11 @@ component ProfileDetail inherits Rectangle {
             can-delete: root.can-delete;
         }
 
-        // Scrollable body — placeholder until field rows land in the
-        // next commit. Pin viewport-width so the editor body cannot
-        // scroll horizontally (same rationale as TvDetail).
+        // Scrollable body — field rows from `Profiles.current-fields`
+        // (pushed by Rust on selection + signal). When the list is
+        // empty (initial fetch in flight, or a profile with no
+        // inheritable fields), Slint just renders the empty Group
+        // shell — no separate loading state.
         ScrollView {
             viewport-width: self.visible-width;
             VerticalLayout {
@@ -366,11 +473,22 @@ component ProfileDetail inherits Rectangle {
 
                 Group {
                     title: @tr("FIELDS");
+                    body-spacing: 0;
 
-                    VerticalLayout {
+                    for f in Profiles.current-fields: ProfileFieldRow {
+                        entry: f;
+                        value-edited(name, value) => {
+                            Profiles.field-edited(name, value);
+                        }
+                    }
+
+                    // Empty-state hint — visible only when no fields
+                    // have been pushed yet (initial fetch in flight,
+                    // or selection cleared).
+                    if Profiles.current-fields.length == 0: VerticalLayout {
                         spacing: Design.gap-stack;
                         Text {
-                            text: @tr("Field editor lands in the next commit. The master-detail wiring, selection model, and reference chips are live.");
+                            text: @tr("Field data lands in the next commit. The component, gutter accent, and reset glyph are live and exercised when Rust pushes a non-empty model.");
                             color: Theme.text-dim;
                             font-size: Design.font-meta;
                             wrap: word-wrap;

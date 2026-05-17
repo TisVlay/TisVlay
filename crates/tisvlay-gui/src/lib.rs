@@ -906,6 +906,19 @@ fn register_callbacks(
         );
     });
 
+    profiles_global.on_field_edited(move |field, value| {
+        // Real handler (route to `Manager1.UpdateSystemProfile` /
+        // `Session1.UpdateUserProfile` with the patched JSON) lands
+        // in the next commit. Logging the wire shape here makes the
+        // component's emit semantics auditable on the way in.
+        debug!(
+            field = %field.as_str(),
+            value = %value.as_str(),
+            mode = if value.is_empty() { "inherit" } else { "set" },
+            "Profiles.field-edited",
+        );
+    });
+
     let app_weak = app.as_weak();
     profiles_global.on_open_tv(move |uuid| {
         let uuid = uuid.to_string();
