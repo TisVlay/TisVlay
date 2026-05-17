@@ -190,30 +190,37 @@ pub async fn state_change_forwarder(
                     warn!(error = %e, tv_id = %tv_id, "Failed to emit PairingProgress");
                 }
             }
-            StateChangeEvent::ConfigReloaded => {
-                debug!("Emitting ConfigReloaded signal on Manager1");
+            StateChangeEvent::ConfigReloaded {
+                success,
+                ref error_msg,
+            } => {
+                debug!(success, error_msg = %error_msg, "Emitting ConfigReloaded signal on Manager1");
 
                 if let Ok(emitter) = SignalEmitter::new(&connection, MANAGER_PATH) {
-                    if let Err(e) = ManagerService::config_reloaded(&emitter).await {
+                    if let Err(e) =
+                        ManagerService::config_reloaded(&emitter, success, error_msg).await
+                    {
                         warn!(error = %e, "Failed to emit ConfigReloaded signal");
                     }
                 }
 
-                // Per-TV config-derived properties (managed, system
-                // profile, primary input, automate_when) may have
-                // changed via direct config-file edits. The reload
-                // path doesn't emit per-key OptionChanged events for
-                // these, so resync the cached D-Bus fields here.
-                let object_server = connection.object_server();
-                for tv_id in manager.list_tv_ids().await {
-                    let path = tv_path(&tv_id);
-                    refresh_tv_config_state(object_server, &path, &tv_id, &manager).await;
-                }
+                if success {
+                    // Per-TV config-derived properties (managed, system
+                    // profile, primary input, automate_when) may have
+                    // changed via direct config-file edits. The reload
+                    // path doesn't emit per-key OptionChanged events for
+                    // these, so resync the cached D-Bus fields here.
+                    let object_server = connection.object_server();
+                    for tv_id in manager.list_tv_ids().await {
+                        let path = tv_path(&tv_id);
+                        refresh_tv_config_state(object_server, &path, &tv_id, &manager).await;
+                    }
 
-                // The TV list may have changed under us; re-run the
-                // global EDID match so any newly-added TVs pick up
-                // their connector and any removed TVs drop theirs.
-                refresh_desktop_mapping(&manager).await;
+                    // The TV list may have changed under us; re-run the
+                    // global EDID match so any newly-added TVs pick up
+                    // their connector and any removed TVs drop theirs.
+                    refresh_desktop_mapping(&manager).await;
+                }
             }
             StateChangeEvent::TvVendorConfigChanged { ref tv_id } => {
                 let path = tv_path(tv_id);

@@ -158,8 +158,12 @@ pub enum StateChangeEvent {
     },
     /// Configuration was reloaded from disk.
     ///
-    /// Profile lists, TV names, and managed flags may all differ.
-    ConfigReloaded,
+    /// Fires on both success and failure paths. On `success = true`,
+    /// profile lists, TV names, and managed flags may all differ —
+    /// subscribers should refresh. On `success = false`, `error_msg`
+    /// carries the failure reason (typically a config-parse error);
+    /// no in-memory state changed.
+    ConfigReloaded { success: bool, error_msg: String },
     /// A TV's vendor-specific config was edited (`Tv1.UpdateConfig`
     /// touched at least one schema field).
     ///
@@ -3385,6 +3389,22 @@ impl TvManager {
     /// callers (the dbus layer, the SIGHUP handler) can register or
     /// unregister the corresponding `Tv1.*` object paths.
     pub async fn reload_config(&self) -> Result<ReloadDiff, TvManagerError> {
+        let result = self.reload_config_inner().await;
+        let event = match &result {
+            Ok(_) => StateChangeEvent::ConfigReloaded {
+                success: true,
+                error_msg: String::new(),
+            },
+            Err(e) => StateChangeEvent::ConfigReloaded {
+                success: false,
+                error_msg: format!("{e}"),
+            },
+        };
+        self.emit_state_change(event);
+        result
+    }
+
+    async fn reload_config_inner(&self) -> Result<ReloadDiff, TvManagerError> {
         info!("Reloading configuration");
 
         let config_path = self.config_path.clone();
@@ -3499,10 +3519,6 @@ impl TvManager {
                 tv.system_profile = system.resolve_profile(&tv.config.profile.system);
             }
         }
-
-        // Notify signal subscribers that configuration changed
-        // (profile lists, TV names, managed flags may all differ).
-        self.emit_state_change(StateChangeEvent::ConfigReloaded);
 
         Ok(diff)
     }

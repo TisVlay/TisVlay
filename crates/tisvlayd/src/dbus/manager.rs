@@ -497,9 +497,18 @@ impl ManagerService {
 
     /// Signal emitted when configuration is reloaded.
     ///
-    /// Subscribers should refresh profile lists and TV properties.
+    /// Fires on both success and failure: `success = true` means the
+    /// in-memory state was refreshed and subscribers should re-read
+    /// profile lists and TV properties; `success = false` means the
+    /// reload failed (typically a config-parse error), `error_msg`
+    /// carries the reason for clients to surface a toast, and no
+    /// in-memory state changed.
     #[zbus(signal)]
-    pub async fn config_reloaded(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+    pub async fn config_reloaded(
+        emitter: &SignalEmitter<'_>,
+        success: bool,
+        error_msg: &str,
+    ) -> zbus::Result<()>;
 
     /// Signal emitted after a system profile is created, updated,
     /// or deleted via `CreateSystemProfile` / `UpdateSystemProfile`

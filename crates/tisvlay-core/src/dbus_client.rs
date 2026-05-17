@@ -460,8 +460,14 @@ pub enum TvStateChange {
     PropertiesChanged { tv_id: String },
     /// TV list structure changed (add/remove) -- requires full refresh.
     TvListChanged,
-    /// Daemon configuration was reloaded -- profile lists and TV properties may differ.
-    ConfigReloaded,
+    /// Daemon configuration reload completed.
+    ///
+    /// Fires on both success and failure paths. On `success = true`,
+    /// profile lists and TV properties may differ — subscribers
+    /// should refresh. On `success = false`, `error_msg` carries the
+    /// failure reason (typically a config-parse error); no in-memory
+    /// state changed and the GUI should surface the message.
+    ConfigReloaded { success: bool, error_msg: String },
 }
 
 // =============================================================================
@@ -2250,8 +2256,17 @@ impl StateWatcher {
                             Some(TvStateChange::TvListChanged)
                         }
                         ("org.tisvlay.Manager1", "ConfigReloaded") => {
-                            trace!("Manager1 ConfigReloaded signal");
-                            Some(TvStateChange::ConfigReloaded)
+                            let body: (bool, String) =
+                                msg.body().deserialize().unwrap_or((true, String::new()));
+                            trace!(
+                                success = body.0,
+                                error_msg = %body.1,
+                                "Manager1 ConfigReloaded signal",
+                            );
+                            Some(TvStateChange::ConfigReloaded {
+                                success: body.0,
+                                error_msg: body.1,
+                            })
                         }
                         _ => None,
                     }
