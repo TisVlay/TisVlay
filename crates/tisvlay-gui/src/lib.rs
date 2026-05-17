@@ -21,6 +21,7 @@ mod edit_pane;
 mod file_manager;
 mod icon_theme;
 mod power_cycle;
+mod profiles;
 mod schema_form;
 mod state;
 mod state_watch;
@@ -502,6 +503,13 @@ pub fn run() -> Result<()> {
     // wizard. See `wizard::WizardGen`.
     let wizard_gen: WizardGen = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
+    // Profiles-pane editor: per-selection D-Bus proxy + a
+    // `PropertiesChanged` listener task that updates rows in place.
+    // The handle is `None` while no profile is selected; switching
+    // selections drops the previous task and binds a new proxy.
+    let editor_handle: profiles::EditorHandle = profiles::new_handle();
+    let editor_gen: profiles::EditorGen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     // Wire callbacks before the event loop starts so they're ready when
     // the user interacts with controls.
     register_callbacks(
@@ -511,6 +519,8 @@ pub fn run() -> Result<()> {
         reconcilers.clone(),
         wizard_entries.clone(),
         wizard_gen.clone(),
+        editor_handle.clone(),
+        editor_gen.clone(),
     );
 
     // Background watcher: refresh on every signal-driven state change.
@@ -522,6 +532,8 @@ pub fn run() -> Result<()> {
         reconcilers,
         app_weak,
         supported_vendors_cache.clone(),
+        editor_handle.clone(),
+        editor_gen.clone(),
     ));
 
     // Background watcher for the user's DE-chosen accent color via
@@ -539,6 +551,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn register_callbacks(
     app: &AppWindow,
     daemon: Arc<DaemonClient>,
@@ -546,6 +559,8 @@ fn register_callbacks(
     reconcilers: Reconcilers,
     wizard_entries: WizardEntries,
     wizard_gen: WizardGen,
+    editor_handle: profiles::EditorHandle,
+    editor_gen: profiles::EditorGen,
 ) {
     // Slint global handles. Bound once for the registration phase;
     // closures captured by `move` re-acquire from the upgraded
@@ -1467,15 +1482,108 @@ fn register_callbacks(
     // Profiles pane
     // -------------------------------------------------------------------------
     //
-    // Commit 6 wires the master list + dialogs end-to-end; the
-    // per-field editor (current-value, reset glyph, inheritance) lands
-    // in commit 7 alongside per-property `PropertiesChanged`
-    // subscriptions. For now `select` is a no-op — the master-list
-    // click handlers in Slint already update `selected-kind` /
-    // `selected-uuid` instantly, and `selected-row` is republished
-    // from the next state-watch refresh.
+    // The detail editor binds a per-selection D-Bus proxy and
+    // listens for that profile's `PropertiesChanged` signals. A
+    // selection click rebuilds the editor (proxy + listener task);
+    // a clear collapses the model. Master-list clicks already
+    // update `selected-kind` / `selected-uuid` from Slint for
+    // instant highlight feedback — the `select` callback here
+    // drives the Rust-side proxy bind in parallel.
     let profiles_global = app.global::<Profiles>();
-    profiles_global.on_select(|_kind, _uuid| {});
+
+    let d_conn = daemon.connection().clone();
+    let s = session.clone();
+    let editor = editor_handle.clone();
+    let editor_g = editor_gen.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_select(move |kind, uuid_str| {
+        let d_conn = d_conn.clone();
+        let s = s.clone();
+        let editor = editor.clone();
+        let editor_g = editor_g.clone();
+        let app_weak = app_weak.clone();
+        let uuid_str = uuid_str.to_string();
+        tokio::spawn(async move {
+            if kind == ProfileKind::None || uuid_str.is_empty() {
+                profiles::clear(&editor, &editor_g, &app_weak).await;
+                return;
+            }
+            let Ok(uuid) = uuid::Uuid::parse_str(&uuid_str) else {
+                warn!(uuid = %uuid_str, "profiles.select: not a valid UUID, ignoring");
+                profiles::clear(&editor, &editor_g, &app_weak).await;
+                return;
+            };
+            if let Err(e) =
+                profiles::select(&editor, &editor_g, kind, uuid, &d_conn, &s, &app_weak).await
+            {
+                warn!(%uuid, error = %e, "profiles.select failed");
+                show_toast(
+                    app_weak.clone(),
+                    &gettext("Couldn't open profile: {0}").replace("{0}", &format!("{e:#}")),
+                );
+                profiles::clear(&editor, &editor_g, &app_weak).await;
+            }
+        });
+    });
+
+    // Field ComboBox edit. Empty `value` means the inherit
+    // placeholder was selected → daemon-side `ResetField`. Concrete
+    // values map to `Properties.Set` (one round-trip per click).
+    let editor = editor_handle.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_value_edited(move |field, value| {
+        let editor = editor.clone();
+        let app_weak = app_weak.clone();
+        let field = field.to_string();
+        let value = value.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = profiles::dispatch_value_edit(&editor, &field, &value).await {
+                let msg = format!("{e:#}");
+                warn!(field = %field, value = %value, error = %msg, "profile value edit failed");
+                show_toast(
+                    app_weak.clone(),
+                    &gettext("Couldn't update field: {0}").replace("{0}", &msg),
+                );
+            }
+        });
+    });
+
+    // Reset glyph clicked on a single row.
+    let editor = editor_handle.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_reset_field(move |field| {
+        let editor = editor.clone();
+        let app_weak = app_weak.clone();
+        let field = field.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = profiles::dispatch_reset_field(&editor, &field).await {
+                let msg = format!("{e:#}");
+                warn!(field = %field, error = %msg, "profile field reset failed");
+                show_toast(
+                    app_weak.clone(),
+                    &gettext("Couldn't reset field: {0}").replace("{0}", &msg),
+                );
+            }
+        });
+    });
+
+    // Reset-all toolbar button.
+    let editor = editor_handle.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_reset_all(move || {
+        let editor = editor.clone();
+        let app_weak = app_weak.clone();
+        tokio::spawn(async move {
+            if let Err(e) = profiles::dispatch_reset_all(&editor).await {
+                let msg = format!("{e:#}");
+                warn!(error = %msg, "profile reset-all failed");
+                show_toast(
+                    app_weak.clone(),
+                    &gettext("Couldn't reset profile: {0}").replace("{0}", &msg),
+                );
+            }
+        });
+    });
 
     // Create-profile. Reserved-name + empty-name validation already
     // ran client-side in the NameInputDialog; duplicate-name surfaces
@@ -1534,10 +1642,14 @@ fn register_callbacks(
     // we surface as a toast.
     let d = daemon.clone();
     let s = session.clone();
+    let editor = editor_handle.clone();
+    let editor_g = editor_gen.clone();
     let app_weak = app.as_weak();
     profiles_global.on_confirm_delete(move |kind, uuid_str| {
         let d = d.clone();
         let s = s.clone();
+        let editor = editor.clone();
+        let editor_g = editor_g.clone();
         let app_weak = app_weak.clone();
         let uuid_str = uuid_str.to_string();
         let Ok(uuid) = uuid::Uuid::parse_str(&uuid_str) else {
@@ -1577,6 +1689,11 @@ fn register_callbacks(
                     profiles.set_selected_kind(ProfileKind::None);
                     profiles.set_selected_uuid(SharedString::default());
                 });
+                // Drop the editor proxy + listener in lockstep with
+                // the selection clear so a late `PropertiesChanged`
+                // for the just-deleted profile can't push into a
+                // stale row model.
+                profiles::clear(&editor, &editor_g, &app_weak).await;
             }
         });
     });

@@ -16,11 +16,12 @@
 // The detail body in commit 6 is a placeholder; `ProfileFieldRow` +
 // the inheritance-driven editor lands in commit 7.
 
-import { Button, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Button, ComboBox, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { Profiles, ProfileKind, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { ConfirmDialog, DangerBtn, Chip, Group, NameInputDialog } from "../widgets.slint";
+import { Icons } from "../globals/icons.slint";
+import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "../globals/profiles.slint";
+import { ConfirmDialog, DangerBtn, Chip, Group, IconBtn, NameInputDialog } from "../widgets.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -340,6 +341,104 @@ component ProfileDetailHeader inherits Rectangle {
     }
 }
 
+// =============================================================================
+// ProfileFieldRow — one inheritable-field row in the detail editor.
+// =============================================================================
+//
+// Visual:
+//   ┌─ 2 px left gutter (Theme.accent when is-locally-set, transparent otherwise)
+//   │  label                 ComboBox(model=options, current=...)   ↺ (when locally set)
+//   └─
+//
+// The reset glyph is always visible when `is-locally-set` (not
+// hover-revealed): a row-wide TouchArea would block ComboBox clicks,
+// and IconBtn's ghost style already fades at rest + brightens on
+// hover to read "quiet until interacted" without overlay tricks.
+//
+// `value-edited(field_name, "")` is emitted when the user picks the
+// inherit placeholder (`options[0]`); Rust interprets `""` as a
+// `ResetField` codepath. Concrete values pass through verbatim to
+// `Properties.Set`.
+component ProfileFieldRow inherits Rectangle {
+    in property <ProfileFieldEntry> entry;
+    callback value-edited(string, string);
+    callback reset-clicked(string);
+
+    height: row-layout.preferred-height + 2 * Design.gap-stack;
+
+    // Left gutter accent — 2 px stripe in Theme.accent for locally-set
+    // fields; transparent otherwise. Mirrors v1's design (the user
+    // already approved this shape).
+    Rectangle {
+        x: 0;
+        width: 2px;
+        background: root.entry.is-locally-set ? Theme.accent : transparent;
+    }
+
+    row-layout := HorizontalLayout {
+        width: 100%;
+        padding-left: Design.gap-row;
+        padding-right: Design.gap-stack;
+        padding-top: Design.gap-stack;
+        padding-bottom: Design.gap-stack;
+        spacing: Design.gap-row;
+        alignment: stretch;
+
+        // Label column — same width as TVs pane's `FormRow`.
+        VerticalLayout {
+            width: Design.width-label-col;
+            alignment: center;
+            Text {
+                text: root.entry.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+                vertical-alignment: center;
+            }
+        }
+
+        // Value control — std-widgets ComboBox, model is the
+        // pre-built `options` array, `current-value` is the
+        // resolved value or the inherit placeholder. ComboBox
+        // `selected(v)` emits the new string; Rust splits the
+        // `(inherit: X)` form from concrete values by comparing
+        // against `options[0]` server-side.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            ComboBox {
+                model: root.entry.options;
+                current-value: root.entry.current-value;
+                selected(v) => {
+                    // ComboBox emits the visible string verbatim;
+                    // index 0 is the `(inherit: X)` placeholder so
+                    // matching against `options[0]` is the simplest
+                    // way to flag the "clear" case to Rust without
+                    // round-tripping the index.
+                    if (root.entry.options.length > 0 && v == root.entry.options[0]) {
+                        root.value-edited(root.entry.field-name, "");
+                    } else {
+                        root.value-edited(root.entry.field-name, v);
+                    }
+                }
+            }
+        }
+
+        // Reset glyph — only rendered when the field is locally set
+        // so the row reads "quiet" while inheriting. `IconBtn`'s
+        // ghost style fades at rest + brightens on hover, giving
+        // the same affordance v1 used.
+        VerticalLayout {
+            alignment: center;
+            width: 24px;
+            if root.entry.is-locally-set: IconBtn {
+                source: Icons.reload;
+                accessible-label: @tr("Reset to inherit");
+                clicked => { root.reset-clicked(root.entry.field-name); }
+            }
+        }
+    }
+}
+
 component ProfileDetail inherits Rectangle {
     in property <string> name;
     in property <[ProfileTvRef]> referenced-by;
@@ -362,10 +461,12 @@ component ProfileDetail inherits Rectangle {
             request-duplicate => { root.request-duplicate(); }
         }
 
-        // Placeholder body — `ProfileFieldRow` + the per-field
-        // editor lands in commit 7. The master/detail wiring,
-        // selection model, and dialog state machine are exercised
-        // end-to-end first.
+        // Field editor — one `ProfileFieldRow` per inheritable
+        // field of the selected profile's kind. The model is
+        // primed Rust-side on selection change + auto-updated from
+        // each per-property `PropertiesChanged` signal so a daemon
+        // write echoes back as a granular row update without
+        // rebuilding the list.
         ScrollView {
             viewport-width: self.visible-width;
             VerticalLayout {
@@ -378,11 +479,29 @@ component ProfileDetail inherits Rectangle {
 
                 Group {
                     title: @tr("FIELDS");
-                    Text {
-                        text: @tr("Field editor lands in the next commit.");
-                        color: Theme.text-dim;
-                        font-size: Design.font-meta;
-                        wrap: word-wrap;
+                    body-spacing: 0;
+
+                    for entry[i] in Profiles.editor-fields: ProfileFieldRow {
+                        entry: entry;
+                        value-edited(field, value) => {
+                            Profiles.value-edited(field, value);
+                        }
+                        reset-clicked(field) => {
+                            Profiles.reset-field(field);
+                        }
+                    }
+                }
+
+                // "Reset all" toolbar — right-aligned at the bottom
+                // of the field stack. Disabled when no field is
+                // locally set so the affordance reads inert rather
+                // than dispatching a no-op `ResetAll()` round-trip.
+                HorizontalLayout {
+                    alignment: end;
+                    Button {
+                        text: @tr("Reset all");
+                        enabled: Profiles.editor-can-reset-all;
+                        clicked => { Profiles.reset-all(); }
                     }
                 }
             }

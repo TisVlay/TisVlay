@@ -433,6 +433,175 @@ trait TisvlayTvBacklight {
 }
 
 // =============================================================================
+// SystemProfile1 / UserProfile1 — Per-profile editor proxies
+// =============================================================================
+//
+// Mirror the daemon-side `SystemProfileService` / session-side
+// `UserProfileService` interface bodies — typed properties for each
+// inheritable field that report the *resolved* value (post inheritance
+// walk), plus `LocallySetFields: as` for the "is this field overridden
+// vs inherited?" split and `ResetField` / `ResetAll` methods for
+// clearing overrides back to inheriting.
+//
+// The Profiles-pane editor binds one proxy instance per selected
+// profile; `Properties.PropertiesChanged` keeps the editor's row
+// values live without polling. Setter signatures here are thin
+// wrappers over `Properties.Set("<Field>", ...)` — server-side parsing
+// of the SessionAction / AutomateWhen string raises `InvalidArgs` if
+// the value isn't valid for the field.
+
+/// D-Bus proxy for one `SystemProfile1` object on the system bus.
+///
+/// One instance per profile path under
+/// [`SYSTEM_PROFILE_BASE_PATH`](crate::SYSTEM_PROFILE_BASE_PATH). All
+/// typed-field properties report the resolved value; the GUI uses
+/// `LocallySetFields` to distinguish "user picked this" from "inherited
+/// from default → hardcoded baseline".
+#[proxy(
+    interface = "org.tisvlay.SystemProfile1",
+    default_service = "org.tisvlay.Daemon"
+)]
+pub trait TisvlaySystemProfile {
+    /// Stable UUID (hyphenated string). Const for the object's lifetime.
+    #[zbus(property)]
+    fn id(&self) -> zbus::Result<String>;
+
+    /// Friendly profile name.
+    #[zbus(property)]
+    fn name(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_name(&self, value: &str) -> zbus::Result<()>;
+
+    /// Resolved `on_startup` action (post inheritance walk).
+    #[zbus(property)]
+    fn on_startup(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_startup(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_shutdown(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_shutdown(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_reboot(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_reboot(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_no_session(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_no_session(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_sleep(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_sleep(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_wake(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_wake(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn automate_when(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_automate_when(&self, value: &str) -> zbus::Result<()>;
+
+    /// Field names explicitly set on this profile (e.g.
+    /// `["on_startup", "on_wake"]`). Drives the GUI's gutter accent +
+    /// `(inherit: X)` placeholder visibility.
+    #[zbus(property)]
+    fn locally_set_fields(&self) -> zbus::Result<Vec<String>>;
+
+    /// UUIDs of TVs referencing this profile.
+    #[zbus(property)]
+    fn referenced_by(&self) -> zbus::Result<Vec<String>>;
+
+    /// Clear one field back to inheriting. Triggers `PropertiesChanged`
+    /// on both the field's property and `LocallySetFields`.
+    fn reset_field(&self, field: &str) -> zbus::Result<()>;
+
+    /// Clear every field back to inheriting.
+    fn reset_all(&self) -> zbus::Result<()>;
+}
+
+/// D-Bus proxy for one `UserProfile1` object on the session bus.
+///
+/// Mirror of [`TisvlaySystemProfile`] for user-side profiles served by
+/// `tisvlay-session`. `IdleTimeoutSeconds` is wire `u`; `0` is a
+/// legitimate "idle timer disabled" value disambiguated from "unset"
+/// via `LocallySetFields`.
+#[proxy(
+    interface = "org.tisvlay.UserProfile1",
+    default_service = "org.tisvlay.Session"
+)]
+pub trait TisvlayUserProfile {
+    #[zbus(property)]
+    fn id(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn name(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_name(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_session_lock(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_session_lock(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_session_unlock(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_session_unlock(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_greeter_wake(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_greeter_wake(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_idle_timeout(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_idle_timeout(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn on_idle_resume(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn set_on_idle_resume(&self, value: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn idle_timeout_seconds(&self) -> zbus::Result<u32>;
+
+    #[zbus(property)]
+    fn set_idle_timeout_seconds(&self, value: u32) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn locally_set_fields(&self) -> zbus::Result<Vec<String>>;
+
+    #[zbus(property)]
+    fn referenced_by(&self) -> zbus::Result<Vec<String>>;
+
+    fn reset_field(&self, field: &str) -> zbus::Result<()>;
+
+    fn reset_all(&self) -> zbus::Result<()>;
+}
+
+// =============================================================================
 // Profile Summary (master-list row)
 // =============================================================================
 
@@ -1825,6 +1994,13 @@ impl SessionClient {
     /// presence-probe paths look the same.
     pub async fn is_available(&self) -> bool {
         self.proxy.version().await.is_ok()
+    }
+
+    /// Underlying session-bus connection. Lets callers build
+    /// additional proxies (e.g. per-profile `UserProfile1`) against
+    /// the same bus connection without re-establishing it.
+    pub fn connection(&self) -> &zbus::Connection {
+        self.proxy.inner().connection()
     }
 
     /// Compile-time version of the running session-service binary.

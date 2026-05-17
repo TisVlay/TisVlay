@@ -125,6 +125,7 @@ pub use dbus_paths::{
 #[cfg(feature = "dbus")]
 pub use dbus_client::{
     BusKind, DaemonClient, GuiClient, PairTerminal, ProfileSummary, ServiceEvent, SessionClient,
-    StateEvent, StateWatcher, StateWatcherConfig, TrayClient, TvInfo, TvStateChange,
-    add_signal_match, subscribe_signals, watch_service,
+    StateEvent, StateWatcher, StateWatcherConfig, TisvlaySystemProfileProxy,
+    TisvlayUserProfileProxy, TrayClient, TvInfo, TvStateChange, add_signal_match,
+    subscribe_signals, watch_service,
 };

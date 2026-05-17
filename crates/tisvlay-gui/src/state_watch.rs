@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
+use crate::profiles::{self as profiles_mod, EditorHandle};
 use crate::state::{ProfileRowRaw, StateSnapshot, fetch_state};
 use crate::{
     AppWindow, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles, Reconcilers,
@@ -22,6 +23,7 @@ use crate::{
 /// fetch, push the first snapshot, prime the supported-vendors cache,
 /// then hand off to [`watch_state`] for the long-running signal-driven
 /// refresh path.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn initial_fetch_and_watch(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
@@ -29,6 +31,8 @@ pub(crate) async fn initial_fetch_and_watch(
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
     supported_vendors_cache: SupportedVendorsCache,
+    editor: EditorHandle,
+    editor_gen: profiles_mod::EditorGen,
 ) {
     let initial_session_available = session.read().await.is_some();
     let initial_tray_available = tray.read().await.is_some();
@@ -68,6 +72,8 @@ pub(crate) async fn initial_fetch_and_watch(
         reconcilers,
         app_weak,
         supported_vendors_cache,
+        editor,
+        editor_gen,
     )
     .await;
 }
@@ -116,6 +122,7 @@ async fn fetch_and_publish_vendors(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn watch_state(
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
@@ -123,6 +130,8 @@ async fn watch_state(
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
     supported_vendors_cache: SupportedVendorsCache,
+    editor: EditorHandle,
+    editor_gen: profiles_mod::EditorGen,
 ) {
     // No debounce: every D-Bus state signal triggers a refresh fire.
     // The default 100ms (originally a flood guard before
@@ -164,13 +173,28 @@ async fn watch_state(
         let tray = tray.clone();
         let reconcilers = reconcilers.clone();
         let app_weak = app_weak.clone();
+        let editor = editor.clone();
+        let editor_gen = editor_gen.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
             let tray = tray.clone();
             let reconcilers = reconcilers.clone();
             let app_weak = app_weak.clone();
-            async move { refresh(&daemon, &session, &tray, &reconcilers, &app_weak).await }
+            let editor = editor.clone();
+            let editor_gen = editor_gen.clone();
+            async move {
+                refresh(
+                    &daemon,
+                    &session,
+                    &tray,
+                    &reconcilers,
+                    &app_weak,
+                    &editor,
+                    &editor_gen,
+                )
+                .await
+            }
         });
     };
 
@@ -242,17 +266,25 @@ async fn watch_state(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn refresh(
     daemon: &DaemonClient,
     session: &RwLock<Option<SessionClient>>,
     tray: &RwLock<Option<TrayClient>>,
     reconcilers: &Reconcilers,
     app_weak: &slint::Weak<AppWindow>,
+    editor: &EditorHandle,
+    editor_gen: &profiles_mod::EditorGen,
 ) {
     let session_ref = session.read().await;
+    let prior_selection = profiles_mod::current_selection(editor).await;
+    let mut selection_vanished = false;
     match fetch_state(daemon, session_ref.as_ref()).await {
         Ok(mut snapshot) => {
             reconcilers.reconcile(&mut snapshot);
+            selection_vanished = prior_selection
+                .map(|sel| !snapshot_contains_selection(&snapshot, Some(sel)))
+                .unwrap_or(false);
             on_ui(app_weak, move |app| {
                 push_snapshot(&app, snapshot);
                 app.set_daemon_available(true);
@@ -266,7 +298,47 @@ async fn refresh(
         }
     }
     drop(session_ref);
+    if selection_vanished {
+        // The editor's bound profile disappeared from the latest
+        // ObjectManager walk — deleted by another client, or
+        // dropped by ReloadConfig. `push_profiles` already
+        // collapsed the master-list selection; this drops the
+        // editor proxy + listener task in lockstep.
+        if let Some((kind, uuid)) = prior_selection {
+            debug!(%uuid, ?kind, "selected profile vanished; clearing editor");
+        }
+        profiles_mod::clear(editor, editor_gen, app_weak).await;
+    } else {
+        // Re-prime the editor against the bound proxy's current
+        // values — covers the cross-client edit case where
+        // `ConfigReloaded` fired or the daemon-side SIGHUP-reloaded
+        // its config under us. The proxy's `PropertiesChanged`
+        // listener handles the granular path; this is the
+        // belt-and-braces cover for property updates that arrived
+        // while the editor wasn't bound.
+        profiles_mod::reprime_if_selected(editor, app_weak).await;
+    }
     refresh_about_components(daemon, session, tray, app_weak).await;
+}
+
+/// Does the freshly-fetched snapshot still carry the editor's bound
+/// `(kind, uuid)` selection? Used to detect a `deleted-out-from-
+/// under` scenario so the editor clears in lockstep with the
+/// master list.
+fn snapshot_contains_selection(
+    snapshot: &StateSnapshot,
+    selection: Option<(ProfileKind, uuid::Uuid)>,
+) -> bool {
+    let Some((kind, uuid)) = selection else {
+        return true;
+    };
+    let uuid_str = uuid.to_string();
+    let list = match kind {
+        ProfileKind::System => &snapshot.system_profile_rows,
+        ProfileKind::User => &snapshot.user_profile_rows,
+        ProfileKind::None => return true,
+    };
+    list.iter().any(|r| r.uuid.as_str() == uuid_str)
 }
 
 /// Probe each peer's `Version` + `ConfigPath` D-Bus properties and

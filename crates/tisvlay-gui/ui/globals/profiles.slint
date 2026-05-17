@@ -30,6 +30,34 @@ export struct ProfileTvRef {
     name: string,
 }
 
+/// One inheritable field rendered as a row in the detail editor.
+/// Built Rust-side per-field from the selected profile's typed
+/// `SystemProfile1` / `UserProfile1` properties; the
+/// `value-edited` / `reset-clicked` callbacks on `Profiles` route
+/// the edit back to `Properties.Set` / `ResetField`.
+export struct ProfileFieldEntry {
+    /// Wire id of the field (e.g. `"on_startup"`). Sent verbatim
+    /// to `Properties.Set` / `ResetField` via the callbacks.
+    field-name: string,
+    /// User-facing label rendered in the row's label column
+    /// (e.g. `"On startup"`). Rust formats with `gettext` so the
+    /// translator catalog stays the source of truth.
+    label: string,
+    /// Pre-built ComboBox model. Index 0 is the
+    /// `"(inherit: <X>)"` placeholder; subsequent entries are the
+    /// concrete values (`"power_on"`, `"power_off"`, …).
+    options: [string],
+    /// Resolved value to render in the ComboBox. When
+    /// `is-locally-set` is false this matches `options[0]` (the
+    /// inherit placeholder); otherwise it matches the concrete
+    /// option string.
+    current-value: string,
+    /// Whether the field is in `LocallySetFields` for this
+    /// profile. Drives the 2 px left gutter accent + reset-glyph
+    /// visibility.
+    is-locally-set: bool,
+}
+
 /// One profile entry in either section. Read-only from Slint;
 /// populated by Rust via `Profiles.set-system(...)` /
 /// `set-user(...)`.
@@ -86,6 +114,20 @@ export global Profiles {
     /// select the named TV. Rust flips `AppWindow.active-pane` +
     /// sets `selected-tv-index`.
     callback open-tv(string);
+    /// A ComboBox selection committed in a `ProfileFieldRow`. Args
+    /// are `(field_name, value)` — the wire-id of the field plus
+    /// the raw enum value, or `""` when the user selected the
+    /// inherit placeholder. Rust dispatches to `Properties.Set`
+    /// for non-empty values and `ResetField(field_name)` for the
+    /// empty case so the daemon sees a single round-trip per edit.
+    callback value-edited(string, string);
+    /// Reset glyph on a `ProfileFieldRow` clicked. Arg is the
+    /// field-name; Rust dispatches `ResetField(field_name)` on the
+    /// selected profile's per-profile proxy.
+    callback reset-field(string);
+    /// Bottom-of-pane "Reset all" toolbar button clicked. Rust
+    /// dispatches `ResetAll()` on the selected profile.
+    callback reset-all();
 
     in property <[ProfileRow]> system;
     in property <[ProfileRow]> user;
@@ -106,4 +148,20 @@ export global Profiles {
     in-out property <ProfileKind> selected-kind: ProfileKind.none;
     in-out property <string> selected-uuid;
     in property <ProfileRow> selected-row;
+
+    /// Field-editor rows for the currently selected profile. Rust
+    /// primes this whenever the selection changes (master-list
+    /// click, ObjectManager add-then-auto-select, refresh after
+    /// ConfigReloaded). Per-property `PropertiesChanged` signals
+    /// update individual rows in place via `set_row_data` — the
+    /// list is never rebuilt mid-edit, so child ComboBox state
+    /// (open dropdown, focus) survives across daemon-side writes.
+    /// Empty when no profile is selected.
+    in property <[ProfileFieldEntry]> editor-fields;
+    /// True when the selected profile has at least one
+    /// locally-set field — drives the "Reset all" button's
+    /// enabled state. Greys out when there's nothing to reset
+    /// so the affordance reads as inert rather than performing
+    /// a no-op round-trip.
+    in property <bool> editor-can-reset-all: false;
 }
