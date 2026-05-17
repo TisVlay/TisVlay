@@ -77,7 +77,10 @@ use clap::Parser;
 // xgettext both find the same source-of-truth in the .pot file.
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{Coalescer, DaemonClient, ReconcilerMap, SessionClient, TrayClient};
+use tisvlay_core::{
+    Coalescer, DaemonClient, ReconcilerMap, SessionClient, SystemProfileConfig, TrayClient,
+    UserProfileConfig,
+};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -134,6 +137,61 @@ async fn push_field_rows(state: &SharedEditorState, app_weak: &slint::Weak<AppWi
     let editor = state.read().await.clone();
     on_ui(app_weak, move |app| {
         crate::state_watch::push_field_rows(&app, &editor);
+    });
+}
+
+/// Pick a non-colliding duplicate name. First tries `<orig>-copy`;
+/// on collision walks `<orig>-copy-2`, `-3`, … until one is free.
+/// Names are checked against `existing` (the live list fetched from
+/// the daemon — cheaper than re-fetching after each candidate).
+fn unique_duplicate_name(orig: &str, existing: &std::collections::HashSet<String>) -> String {
+    let base = format!("{orig}-copy");
+    if !existing.contains(&base) {
+        return base;
+    }
+    let mut n = 2u32;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Refresh the editor cache for `(kind, name)` after a Create /
+/// Duplicate, then push the Slint state so the master list highlights
+/// the new profile AND the detail view opens on it. Used by both the
+/// Create-confirm handler and the Duplicate handler.
+async fn select_profile_after_mutation(
+    daemon: &DaemonClient,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    editor_state: &SharedEditorState,
+    app_weak: &slint::Weak<AppWindow>,
+    kind: ProfileKind,
+    name: &str,
+) {
+    let result = match kind {
+        ProfileKind::System => refresh_system_editor(daemon, editor_state, Some(name)).await,
+        ProfileKind::User => {
+            let session_ref = session.read().await;
+            match session_ref.as_ref() {
+                Some(c) => refresh_user_editor(c, editor_state, Some(name)).await,
+                None => Ok(()), // session vanished mid-flight; nothing to refresh
+            }
+        }
+        ProfileKind::None => Ok(()),
+    };
+    if let Err(e) = result {
+        warn!(name = name, error = %format!("{e}"), "Post-mutation editor refresh failed");
+        return;
+    }
+    push_field_rows(editor_state, app_weak).await;
+    let name_owned = name.to_string();
+    on_ui(app_weak, move |app| {
+        let g = app.global::<Profiles>();
+        g.set_selected_kind(kind);
+        g.set_selected_name(SharedString::from(name_owned.as_str()));
     });
 }
 
@@ -920,42 +978,222 @@ fn register_callbacks(
         });
     });
 
+    let d = daemon.clone();
+    let s = session.clone();
+    let es = editor_state.clone();
     let app_weak = app.as_weak();
-    profiles_global.on_create_system(move || {
-        // Name-input dialog lands in the polish commit. For now the
-        // toast confirms the button is wired end-to-end.
-        show_toast(
-            app_weak.clone(),
-            &gettext("Create profile UI lands in a follow-up commit"),
-        );
+    profiles_global.on_confirm_create(move |kind, name| {
+        let d = d.clone();
+        let s = s.clone();
+        let es = es.clone();
+        let app_weak = app_weak.clone();
+        let name = name.to_string();
+        tokio::spawn(async move {
+            let result = match kind {
+                ProfileKind::System => d
+                    .create_system_profile(&name, &SystemProfileConfig::default())
+                    .await,
+                ProfileKind::User => {
+                    let session_ref = s.read().await;
+                    let Some(c) = session_ref.as_ref() else {
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Session service unavailable"),
+                            gettext(
+                                "User-profile creation requires the per-user tisvlay-session service.",
+                            ),
+                        );
+                        return;
+                    };
+                    c.create_user_profile(&name, &UserProfileConfig::default())
+                        .await
+                }
+                ProfileKind::None => return,
+            };
+            if let Err(e) = result {
+                let msg = format!("{e}");
+                warn!(name = %name, error = %msg, "create_*_profile failed");
+                push_tvs_error(&app_weak, gettext("Couldn't create profile"), msg);
+                return;
+            }
+            // Select the new profile so the editor opens on it.
+            select_profile_after_mutation(&d, &s, &es, &app_weak, kind, &name).await;
+        });
     });
 
+    let d = daemon.clone();
+    let s = session.clone();
+    let es = editor_state.clone();
     let app_weak = app.as_weak();
-    profiles_global.on_create_user(move || {
-        show_toast(
-            app_weak.clone(),
-            &gettext("Create profile UI lands in a follow-up commit"),
-        );
+    profiles_global.on_confirm_delete(move |kind, name| {
+        let d = d.clone();
+        let s = s.clone();
+        let es = es.clone();
+        let app_weak = app_weak.clone();
+        let name = name.to_string();
+        tokio::spawn(async move {
+            let result = match kind {
+                ProfileKind::System => d.delete_system_profile(&name).await,
+                ProfileKind::User => {
+                    let session_ref = s.read().await;
+                    let Some(c) = session_ref.as_ref() else {
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Session service unavailable"),
+                            gettext(
+                                "User-profile deletion requires the per-user tisvlay-session service.",
+                            ),
+                        );
+                        return;
+                    };
+                    c.delete_user_profile(&name).await
+                }
+                ProfileKind::None => return,
+            };
+            if let Err(e) = result {
+                let msg = format!("{e}");
+                warn!(name = %name, error = %msg, "delete_*_profile failed");
+                push_tvs_error(&app_weak, gettext("Couldn't delete profile"), msg);
+                return;
+            }
+            // Clear selection — the deleted profile is gone. Push an
+            // empty editor state so the detail collapses back to the
+            // "Select a profile" empty view.
+            {
+                let mut s = es.write().await;
+                s.selected = None;
+            }
+            push_field_rows(&es, &app_weak).await;
+            on_ui(&app_weak, |app| {
+                let g = app.global::<Profiles>();
+                g.set_selected_kind(ProfileKind::None);
+                g.set_selected_name(SharedString::new());
+            });
+        });
     });
 
-    let app_weak = app.as_weak();
-    profiles_global.on_delete_selected(move || {
-        // Confirm-delete dialog (with referencing-TV list) lands in
-        // the polish commit. Stubbed for now — the daemon's Delete
-        // rejects in-use profiles anyway, but skipping the
-        // confirmation step would still be hostile UX.
-        show_toast(
-            app_weak.clone(),
-            &gettext("Delete-confirm dialog lands in a follow-up commit"),
-        );
-    });
-
+    let d = daemon.clone();
+    let s = session.clone();
+    let es = editor_state.clone();
     let app_weak = app.as_weak();
     profiles_global.on_duplicate_selected(move || {
-        show_toast(
-            app_weak.clone(),
-            &gettext("Duplicate lands in a follow-up commit"),
-        );
+        let d = d.clone();
+        let s = s.clone();
+        let es = es.clone();
+        let app_weak = app_weak.clone();
+        tokio::spawn(async move {
+            // Snapshot the currently-selected profile body. Need to
+            // read both name + body to drive the Create body.
+            let selected = { es.read().await.selected.clone() };
+            let Some(selected) = selected else {
+                return;
+            };
+            match selected {
+                SelectedProfile::System {
+                    name: orig,
+                    body,
+                } => {
+                    // Fetch the existing names so we can pick a
+                    // non-colliding `<orig>-copy[-N]`. Round-trip is
+                    // cheap; pre-checking client-side avoids a
+                    // "duplicate name" toast in the common case.
+                    let names = match d.list_system_profiles().await {
+                        Ok(rows) => rows
+                            .into_iter()
+                            .map(|(n, _)| n)
+                            .collect::<std::collections::HashSet<_>>(),
+                        Err(e) => {
+                            warn!(error = %format!("{e}"), "list_system_profiles failed in duplicate flow");
+                            push_tvs_error(
+                                &app_weak,
+                                gettext("Couldn't duplicate profile"),
+                                format!("{e}"),
+                            );
+                            return;
+                        }
+                    };
+                    let new_name = unique_duplicate_name(&orig, &names);
+                    if let Err(e) = d.create_system_profile(&new_name, &body).await {
+                        let msg = format!("{e}");
+                        warn!(
+                            orig = %orig,
+                            new = %new_name,
+                            error = %msg,
+                            "Duplicate system profile failed",
+                        );
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Couldn't duplicate profile"),
+                            msg,
+                        );
+                        return;
+                    }
+                    select_profile_after_mutation(
+                        &d,
+                        &s,
+                        &es,
+                        &app_weak,
+                        ProfileKind::System,
+                        &new_name,
+                    )
+                    .await;
+                }
+                SelectedProfile::User { name: orig, body } => {
+                    let session_ref = s.read().await;
+                    let Some(c) = session_ref.as_ref() else {
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Session service unavailable"),
+                            gettext(
+                                "User-profile duplication requires the per-user tisvlay-session service.",
+                            ),
+                        );
+                        return;
+                    };
+                    let names = match c.list_user_profiles().await {
+                        Ok(rows) => rows
+                            .into_iter()
+                            .map(|(n, _)| n)
+                            .collect::<std::collections::HashSet<_>>(),
+                        Err(e) => {
+                            warn!(error = %format!("{e}"), "list_user_profiles failed in duplicate flow");
+                            push_tvs_error(
+                                &app_weak,
+                                gettext("Couldn't duplicate profile"),
+                                format!("{e}"),
+                            );
+                            return;
+                        }
+                    };
+                    let new_name = unique_duplicate_name(&orig, &names);
+                    if let Err(e) = c.create_user_profile(&new_name, &body).await {
+                        let msg = format!("{e}");
+                        warn!(
+                            orig = %orig,
+                            new = %new_name,
+                            error = %msg,
+                            "Duplicate user profile failed",
+                        );
+                        push_tvs_error(
+                            &app_weak,
+                            gettext("Couldn't duplicate profile"),
+                            msg,
+                        );
+                        return;
+                    }
+                    drop(session_ref);
+                    select_profile_after_mutation(
+                        &d,
+                        &s,
+                        &es,
+                        &app_weak,
+                        ProfileKind::User,
+                        &new_name,
+                    )
+                    .await;
+                }
+            }
+        });
     });
 
     let d = daemon.clone();

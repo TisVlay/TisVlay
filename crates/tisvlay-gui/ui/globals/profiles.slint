@@ -41,6 +41,11 @@ export struct ProfileRow {
     /// detail header's "Used by [chip]…" row. Click-through routes
     /// via `Profiles.open-tv(uuid)`.
     referenced-by: [ProfileTvRef],
+    /// Pre-built comma-joined TV-name list. Empty when nothing
+    /// references this profile. The delete-confirm dialog uses this
+    /// to render an inline "used by X, Y, Z" message — Slint has no
+    /// array-join expression, so Rust pre-computes the summary.
+    referenced-by-summary: string,
 }
 
 /// One row in the field editor for the currently-selected profile.
@@ -74,20 +79,19 @@ export global Profiles {
     /// the row came from so the Rust handler knows whether to fetch
     /// via `Manager1.GetSystemProfile` or `Session1.GetUserProfile`.
     callback select(ProfileKind, string);
-    /// "+" button on the System section header. Rust prompts for a
-    /// name and calls `Manager1.CreateSystemProfile`.
-    callback create-system();
-    /// "+" button on the User section header. Rust prompts for a
-    /// name and calls `Session1.CreateUserProfile`.
-    callback create-user();
-    /// Delete the currently-selected profile. Rust routes to the
-    /// correct daemon based on `selected-kind`; the in-pane
-    /// confirm-delete dialog (with referencing-TV list) lands in
-    /// the polish commit.
-    callback delete-selected();
-    /// Duplicate the currently-selected profile. Lands in the
-    /// polish commit; declared here so the detail header's button
-    /// has a stable wire-up surface.
+    /// "+" button on a section header (Slint opens the
+    /// `NameInputDialog` directly; this is the post-confirm call
+    /// that fires `Manager1.CreateSystemProfile` /
+    /// `Session1.CreateUserProfile`).
+    callback confirm-create(ProfileKind, string);
+    /// Detail-header Delete after the user clicks through the
+    /// confirm-delete dialog. Rust routes to the correct daemon
+    /// based on the kind.
+    callback confirm-delete(ProfileKind, string);
+    /// Detail-header Duplicate. Rust reads the selected profile
+    /// body from the editor cache, generates `<orig>-copy[-N]`,
+    /// and calls the matching `Create*Profile`. No dialog because
+    /// the auto-generated name is deterministic.
     callback duplicate-selected();
     /// "Used by" chip clicked — navigate to the TVs pane and select
     /// the named TV. Rust flips `AppWindow.active-pane` + sets

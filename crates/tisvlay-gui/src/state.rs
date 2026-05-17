@@ -87,6 +87,11 @@ pub struct ProfileRowRaw {
     /// button in the detail header.
     pub is_default: bool,
     pub referenced_by: Vec<TvRefRaw>,
+    /// Comma-joined friendly names of `referenced_by`. Pre-built so
+    /// the delete-confirm dialog can render an inline "used by X, Y,
+    /// Z" message without a string-join expression (Slint doesn't
+    /// have one). Empty string means nothing references this profile.
+    pub referenced_by_summary: SharedString,
 }
 
 /// Snapshot of fetched state for one refresh pass.
@@ -261,7 +266,7 @@ fn compute_profile_rows(
     profile_names
         .iter()
         .map(|name| {
-            let referenced_by = tvs
+            let referenced_by: Vec<TvRefRaw> = tvs
                 .iter()
                 .filter(|tv| selector(tv) == name.as_str())
                 .map(|tv| TvRefRaw {
@@ -269,10 +274,16 @@ fn compute_profile_rows(
                     name: tv.name.clone(),
                 })
                 .collect();
+            let referenced_by_summary = referenced_by
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             ProfileRowRaw {
                 name: SharedString::from(name.as_str()),
                 is_default: name == "default",
                 referenced_by,
+                referenced_by_summary: SharedString::from(referenced_by_summary),
             }
         })
         .collect()

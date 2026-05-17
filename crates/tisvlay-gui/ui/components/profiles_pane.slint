@@ -21,7 +21,7 @@ import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileField } from "../globals/profiles.slint";
-import { DangerBtn, Chip, Group, IconBtn } from "../widgets.slint";
+import { ConfirmDialog, DangerBtn, Chip, Group, IconBtn, NameInputDialog } from "../widgets.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -169,6 +169,11 @@ component ProfileSectionHeader inherits Rectangle {
 }
 
 component ProfileList inherits Rectangle {
+    /// Bubble the "+" clicks up to the pane so it can open the
+    /// name-input dialog. The section header itself can't host the
+    /// dialog (it needs to render over the whole pane).
+    callback request-create(ProfileKind);
+
     width: Design.width-master;
     background: Theme.surface-alt;
 
@@ -188,7 +193,7 @@ component ProfileList inherits Rectangle {
         ProfileSectionHeader {
             title: @tr("SYSTEM PROFILES");
             add-enabled: true;
-            add-clicked => { Profiles.create-system(); }
+            add-clicked => { root.request-create(ProfileKind.system); }
         }
         for r[i] in Profiles.system: ProfileListRow {
             entry: r;
@@ -208,7 +213,7 @@ component ProfileList inherits Rectangle {
         ProfileSectionHeader {
             title: @tr("USER PROFILES");
             add-enabled: Profiles.session-available;
-            add-clicked => { Profiles.create-user(); }
+            add-clicked => { root.request-create(ProfileKind.user); }
         }
         if !Profiles.session-available: Rectangle {
             height: 56px;
@@ -256,6 +261,11 @@ component ProfileDetailHeader inherits Rectangle {
     /// keeps the affordance discoverable without dispatching a call
     /// the daemon will reject.
     in property <bool> can-delete: true;
+    /// Bubble actions up to the pane; ProfilesPane owns the
+    /// confirm-delete dialog and any disambiguation around the
+    /// duplicate flow.
+    callback request-delete();
+    callback request-duplicate();
 
     height: header-layout.preferred-height;
     background: Theme.surface;
@@ -295,7 +305,7 @@ component ProfileDetailHeader inherits Rectangle {
                 alignment: center;
                 Button {
                     text: @tr("Duplicate");
-                    clicked => { Profiles.duplicate-selected(); }
+                    clicked => { root.request-duplicate(); }
                 }
             }
             VerticalLayout {
@@ -303,7 +313,7 @@ component ProfileDetailHeader inherits Rectangle {
                 DangerBtn {
                     text: @tr("Delete");
                     enabled: root.can-delete;
-                    clicked => { Profiles.delete-selected(); }
+                    clicked => { root.request-delete(); }
                 }
             }
         }
@@ -442,6 +452,8 @@ component ProfileDetail inherits Rectangle {
     in property <string> name;
     in property <[ProfileTvRef]> referenced-by;
     in property <bool> can-delete: true;
+    callback request-delete();
+    callback request-duplicate();
 
     background: Theme.surface-alt;
 
@@ -454,6 +466,8 @@ component ProfileDetail inherits Rectangle {
             name: root.name;
             referenced-by: root.referenced-by;
             can-delete: root.can-delete;
+            request-delete => { root.request-delete(); }
+            request-duplicate => { root.request-duplicate(); }
         }
 
         // Scrollable body — field rows from `Profiles.current-fields`
@@ -542,12 +556,65 @@ export component ProfilesPane {
            Profiles.selected-kind != ProfileKind.none
         && Profiles.selected-row.name != "";
 
+    // --- Pending Delete-confirm dialog state ---
+    property <ProfileKind> pending-delete-kind: ProfileKind.none;
+    property <string> pending-delete-name;
+    property <string> pending-delete-referenced-summary;
+
+    // --- Pending New-profile dialog state ---
+    property <ProfileKind> pending-new-kind: ProfileKind.none;
+    property <string> pending-new-name;
+    /// Filled by Slint-side validation as the user types. Empty
+    /// means valid; the dialog disables Confirm while non-empty
+    /// AND while the name field is empty. Duplicate-name checks
+    /// happen server-side — Slint can't iterate the existing
+    /// `Profiles.system` / `Profiles.user` lists from a `function`
+    /// (no `for` in pure expressions), so duplicates surface as a
+    /// toast from the `confirm-create` Rust handler.
+    property <string> pending-new-error;
+
+    function validate-new-name(name: string) -> string {
+        if (name == "") {
+            return "";
+        }
+        if (name == "default") {
+            return @tr("'default' is reserved.");
+        }
+        return "";
+    }
+
+    function open-create-dialog(kind: ProfileKind) {
+        root.pending-new-kind = kind;
+        root.pending-new-name = "";
+        root.pending-new-error = "";
+    }
+
+    function close-create-dialog() {
+        root.pending-new-kind = ProfileKind.none;
+        root.pending-new-name = "";
+        root.pending-new-error = "";
+    }
+
+    function open-delete-dialog() {
+        root.pending-delete-kind = Profiles.selected-kind;
+        root.pending-delete-name = Profiles.selected-row.name;
+        root.pending-delete-referenced-summary = Profiles.selected-row.referenced-by-summary;
+    }
+
+    function close-delete-dialog() {
+        root.pending-delete-kind = ProfileKind.none;
+        root.pending-delete-name = "";
+        root.pending-delete-referenced-summary = "";
+    }
+
     HorizontalLayout {
         width: 100%;
         height: 100%;
         spacing: 0;
 
-        ProfileList { }
+        ProfileList {
+            request-create(kind) => { root.open-create-dialog(kind); }
+        }
 
         // Detail column — fills remaining width.
         Rectangle {
@@ -565,7 +632,52 @@ export component ProfilesPane {
                 name: Profiles.selected-row.name;
                 referenced-by: Profiles.selected-row.referenced-by;
                 can-delete: !Profiles.selected-row.is-default;
+                request-delete => { root.open-delete-dialog(); }
+                request-duplicate => { Profiles.duplicate-selected(); }
             }
         }
+    }
+
+    // Delete-confirm dialog. When the profile is referenced by one or
+    // more TVs, the dialog flips into a "cannot delete" mode: message
+    // names the offending TVs, Confirm is disabled, only Cancel works.
+    ConfirmDialog {
+        open: root.pending-delete-kind != ProfileKind.none;
+        title: @tr("Delete profile");
+        message: root.pending-delete-referenced-summary != ""
+            ? @tr("Cannot delete '{}': still used by {}. Remove or reassign these TVs first.",
+                  root.pending-delete-name,
+                  root.pending-delete-referenced-summary)
+            : @tr("Delete '{}'? This action cannot be undone.", root.pending-delete-name);
+        confirm-label: @tr("Delete");
+        confirm-enabled: root.pending-delete-referenced-summary == "";
+        confirmed => {
+            Profiles.confirm-delete(root.pending-delete-kind, root.pending-delete-name);
+            root.close-delete-dialog();
+        }
+        cancelled => { root.close-delete-dialog(); }
+    }
+
+    // New-profile name-input dialog. `kind` is set when opening; the
+    // post-confirm `confirm-create` routes to either Manager1 or
+    // Session1 based on it.
+    NameInputDialog {
+        open: root.pending-new-kind != ProfileKind.none;
+        title: root.pending-new-kind == ProfileKind.system
+            ? @tr("New system profile")
+            : @tr("New user profile");
+        prompt: @tr("Enter a name for the new profile.");
+        placeholder: @tr("guest");
+        confirm-label: @tr("Create");
+        name <=> root.pending-new-name;
+        error-message: root.pending-new-error;
+        name-changed(v) => {
+            root.pending-new-error = root.validate-new-name(v);
+        }
+        confirmed => {
+            Profiles.confirm-create(root.pending-new-kind, root.pending-new-name);
+            root.close-create-dialog();
+        }
+        cancelled => { root.close-create-dialog(); }
     }
 }
