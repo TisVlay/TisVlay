@@ -236,11 +236,16 @@ Methods:
 - `ReloadConfig()` — reload config from disk
 - `CancelPair(tv_id: s)` — cancel an in-flight pairing handshake. Works for both `AddTv` and `Tv1.RePair` via the daemon-side `pairing_sessions` registry. Returns `NotPairing` (typed) if the tv_id isn't currently pairing — matches the BlueZ `Adapter.RemoveDevice`-on-unknown-device convention.
 - `ListSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
+- `GetSystemProfile(name: s) → s` — raw `SystemProfileConfig` JSON for one profile with `Option<T>` fields preserved as JSON nulls. Used by the GUI's Profiles-pane editor to distinguish "locally set" from "inheriting" per field.
+- `CreateSystemProfile(name: s, json: s)` — server-side validated; rejects `"default"` (the daemon owns the reserved name), duplicate names, malformed JSON, and unknown keys.
+- `UpdateSystemProfile(name: s, json: s)` — replace a profile's body; same validation as Create. Editing the `"default"` profile is allowed (only `Create("default")` / `Delete("default")` are rejected).
+- `DeleteSystemProfile(name: s)` — rejects `"default"` and any name referenced by a `[[tv]]` entry's `profile.system`. The error message names the offending TV(s).
+- `GetResolvedProfileDefaults() → s` — hardcoded `ResolvedSystemProfile::default()` serialized to JSON. Bottom of the system-profile inheritance chain; fetched once at editor open.
 - `GetUserProfileDefault() → s` — admin baseline user profile as JSON; used by session services to inherit defaults
 - `ListUserProfiles() → a(ss)` — all user profiles (admin-defined) as `(name, json)` pairs
 - `DiscoverTvs(timeout_ms: u) → a(sssss)` — SSDP discovery, returns `(id, name, address, hardware_id, vendor)` tuples. Only available when compiled with the `discovery` feature.
 
-Signals: `ConfigReloaded`, `PairingProgress`, `DiscoveryFound`. (Per-TV add/remove fires standard `ObjectManager.InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay`.)
+Signals: `ConfigReloaded(success: b, error_msg: s)`, `SystemProfileChanged(name: s, kind: s)`, `PairingProgress`, `DiscoveryFound`. (Per-TV add/remove fires standard `ObjectManager.InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay`.) `ConfigReloaded` fires on both success and failure paths so clients can surface reload errors that didn't originate from their own RPC. `SystemProfileChanged.kind ∈ {"created", "updated", "deleted"}` — fires per profile so cross-client edits propagate without forcing a full reload.
 
 `PairingProgress(tv_id: s, phase: s, message: s)` is bus-wide — any client may be running a concurrent pairing. Clients filter on the `tv_id` they got from `Manager1.AddTv` (or passed to `Tv1.RePair`) and drain to a terminal phase (`complete` or `failed`). Non-terminal phases are `awaiting_tv` and `awaiting_input`. `tisvlay-core` exposes `DaemonClient::drain_pair_to_terminal(stream, target_tv_id, on_progress) -> Result<PairTerminal>` as the canonical client-side drain — used by the GUI wizard, the `tisvlay pair` / `tisvlay re-pair` CLI subcommands, and the integration test suite.
 
@@ -263,10 +268,17 @@ Registered on the **session bus** by `tisvlay-session` under `org.tisvlay.Sessio
 
 Methods:
 - `ListUserProfiles() → a(ss)` — merged user profile list as `(name, json)` pairs; user-defined profiles take precedence over same-named admin profiles
+- `GetUserProfile(name: s) → s` — raw `UserProfileConfig` JSON for one profile with `Option<T>` fields preserved as nulls. Falls back to the admin baseline body if the profile isn't user-defined.
+- `CreateUserProfile(name: s, json: s)` — server-side validated; rejects `"default"` (merged admin baseline owns that name), duplicates, malformed JSON.
+- `UpdateUserProfile(name: s, json: s)` — replace a user-defined profile's body.
+- `DeleteUserProfile(name: s)` — rejects any name referenced by a TV's `profile.user` in the user config.
+- `GetResolvedProfileDefaults() → s` — hardcoded `ResolvedUserProfile::default()` serialized to JSON. Bottom of the user-profile inheritance chain.
 - `GetTvUserProfile(tv_id: s) → s` — user profile name assigned to a TV (or `"default"` if unassigned)
 - `SetTvUserProfile(tv_id: s, profile: s)` — assign a user profile; validates existence, saves to user config, live-reloads
 - `GetEffectiveUserProfile(tv_id: s) → s` — fully resolved user profile as JSON (user + admin baseline inheritance applied)
 - `ReloadConfig()` — re-query daemon for TV list and admin baseline, reload user config from disk
+
+Signals: `UserProfileChanged(tv_id, profile_name)` (per-TV assignment), `UserProfileListChanged(name, kind)` (catalog CRUD — distinct from the assignment signal; `kind ∈ {"created", "updated", "deleted"}`).
 
 ### org.tisvlay.Tv1 (Base Interface)
 
@@ -289,6 +301,36 @@ Each feature interface is implemented on per-TV objects. Controllable state is e
 - **org.tisvlay.Tv1.Volume** — `SetVolume(y)`, `SetMuted(b)` methods; `Volume` (ro, 0-100), `Muted` (ro) properties
 - **org.tisvlay.Tv1.Input** — `SwitchInput(input_id: s)` method; `CurrentInput` (ro), `AvailableInputs` (ro, invalidates) properties
 - **org.tisvlay.Tv1.Backlight** — `SetBacklight(y)` method; `Backlight` (ro, 0-100) property
+
+### Profile catalog (system + user)
+
+Profiles live in two parallel catalogs — *system profiles* (daemon-side, drive lifecycle events) and *user profiles* (session-side, drive session events). Each catalog has a reserved `"default"` profile that acts as the second inheritance layer below any named profile and above the hardcoded baseline. Both catalogs expose the same shape of CRUD surface on their respective bus:
+
+| Operation | System (Manager1) | User (Session1) |
+|---|---|---|
+| List | `ListSystemProfiles` | `ListUserProfiles` |
+| Read one (raw, nulls preserved) | `GetSystemProfile` | `GetUserProfile` |
+| Create | `CreateSystemProfile` | `CreateUserProfile` |
+| Update | `UpdateSystemProfile` | `UpdateUserProfile` |
+| Delete | `DeleteSystemProfile` | `DeleteUserProfile` |
+| Hardcoded baseline (JSON) | `GetResolvedProfileDefaults` | `GetResolvedProfileDefaults` |
+| Per-profile change signal | `SystemProfileChanged(name, kind)` | `UserProfileListChanged(name, kind)` |
+
+**Inheritance chain.** Two-level for system profiles, three-level for user profiles (the third hop is the admin baseline merged inside what `GetUserProfile("default")` returns):
+
+```
+edited profile (Option<T>)
+        ↓ falls through if None
+"default" profile body (Option<T>)
+        ↓ falls through if None
+hardcoded ResolvedSystemProfile::default()  (or ResolvedUserProfile::default())
+```
+
+The editor in the GUI fetches all three layers on selection and renders one row per inheritable field. A `(inherit: <X>)` placeholder in each row's ComboBox shows the fallthrough value — computed Rust-side by walking the chain — so the user sees what they'd get if they cleared the field, without committing the clear.
+
+**Editor model.** Instant-commit per field. ComboBox selection → `Update*Profile` round-trip; selecting the inherit placeholder OR clicking the reset glyph clears the field to `None`. No editor-wide save/cancel — profile fields are almost all enum-typed, so partial state can't be invalid. A `Reset all to inherited` toolbar button clears every field on the editing profile in one round-trip. The trade-off and the conditions under which it'd be worth revisiting are in `docs/ideas/profile-editor-save-cancel-revisit.md`.
+
+**Live refresh.** The GUI listens to `SystemProfileChanged` / `UserProfileListChanged` to refresh the editor + master list on cross-client edits, and to `ConfigReloaded(success, error_msg)` to (a) refresh the editor on full reloads and (b) surface daemon-side reload failures as a sticky inline banner.
 
 ---
 
