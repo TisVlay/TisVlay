@@ -184,12 +184,43 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
         user_profile_by_uuid,
     } = inputs;
 
+    // UUID → friendly name resolvers for the TVs-pane PROFILES
+    // ComboBoxes. `Tv1.SystemProfile` and `Session1.GetTvUserProfile`
+    // carry UUIDs on the wire; std-widgets ComboBox renders
+    // `current-value` verbatim against its `[string]` model, so
+    // without this translation the field shows the raw UUID. The
+    // reverse direction (name → UUID for the `selected(v)` callback)
+    // is handled in `lib.rs` via an on-click `list_*_profiles_full`
+    // round-trip.
+    let system_uuid_to_name: HashMap<&str, &str> = system_profiles
+        .iter()
+        .map(|p| (p.uuid.as_str(), p.name.as_str()))
+        .collect();
+    let user_uuid_to_name: HashMap<&str, &str> = user_profiles
+        .iter()
+        .map(|p| (p.uuid.as_str(), p.name.as_str()))
+        .collect();
+
     let mut models = Vec::with_capacity(tvs.len());
     for tv in tvs {
-        let user_profile = user_profile_by_uuid
+        let user_profile_uuid = user_profile_by_uuid
             .get(&tv.uuid)
             .cloned()
             .unwrap_or_default();
+
+        // Fall back to the raw UUID when the catalog lookup misses —
+        // makes a stale-state desync visible to the user rather than
+        // silently rendering blank.
+        let system_profile_name = system_uuid_to_name
+            .get(tv.system_profile.as_str())
+            .copied()
+            .map(SharedString::from)
+            .unwrap_or_else(|| SharedString::from(tv.system_profile.as_str()));
+        let user_profile_name = user_uuid_to_name
+            .get(user_profile_uuid.as_str())
+            .copied()
+            .map(SharedString::from)
+            .unwrap_or_else(|| SharedString::from(user_profile_uuid.as_str()));
 
         let available_input_ids: Vec<SharedString> = tv
             .inputs
@@ -224,8 +255,8 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             backlight: tv.backlight as i32,
             current_input: SharedString::from(tv.current_input),
             available_input_ids,
-            system_profile: SharedString::from(tv.system_profile),
-            user_profile: SharedString::from(user_profile),
+            system_profile: system_profile_name,
+            user_profile: user_profile_name,
             primary_input: SharedString::from(tv.primary_input),
             managed: tv.managed,
             automated: tv.automated,
@@ -528,6 +559,74 @@ mod tests {
             name: name.to_string(),
             referenced_by: referenced_by.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn tv_profile_uuid_resolves_to_name_for_combobox() {
+        // `Tv1.SystemProfile` and `Session1.GetTvUserProfile` carry
+        // UUIDs; the TVs pane's combobox renders `current-value`
+        // verbatim against the name-keyed model. Without UUID → name
+        // resolution in `convert_snapshot` the field shows the raw
+        // UUID. Exercise the happy path explicitly so a regression
+        // doesn't hide behind the fallback path other tests rely on.
+        let mut tv_a = sample_tv("uuid-a", "TV-A");
+        tv_a.system_profile = "a1b2c3d4-0000-0000-0000-000000000001".into();
+        let mut tv_b = sample_tv("uuid-b", "TV-B");
+        tv_b.system_profile = "00000000-0000-0000-0000-000000000001".into();
+
+        let inputs = SnapshotInputs {
+            tvs: vec![tv_a, tv_b],
+            system_profiles: vec![
+                summary("00000000-0000-0000-0000-000000000001", "default", &[]),
+                summary("a1b2c3d4-0000-0000-0000-000000000001", "evening", &[]),
+            ],
+            user_profiles: vec![summary(
+                "a1b2c3d4-0000-0000-0000-00000000f000",
+                "movies",
+                &[],
+            )],
+            user_profile_by_uuid: HashMap::from([(
+                "uuid-a".into(),
+                "a1b2c3d4-0000-0000-0000-00000000f000".into(),
+            )]),
+        };
+        let snap = convert_snapshot(inputs);
+        let by_uuid: HashMap<_, _> = snap
+            .tvs
+            .iter()
+            .map(|t| {
+                (
+                    t.uuid.to_string(),
+                    (t.system_profile.to_string(), t.user_profile.to_string()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            by_uuid["uuid-a"],
+            ("evening".to_string(), "movies".to_string())
+        );
+        assert_eq!(
+            by_uuid["uuid-b"],
+            ("default".to_string(), String::new()) // No user-profile assignment.
+        );
+    }
+
+    #[test]
+    fn tv_profile_unknown_uuid_falls_back_to_raw() {
+        // When the catalog lookup misses (stale state across a config
+        // reload, e.g. the assigned profile was just deleted by a
+        // concurrent client), the resolver surfaces the raw UUID so
+        // the desync is visible rather than rendering blank.
+        let mut tv = sample_tv("uuid-a", "TV-A");
+        tv.system_profile = "deadbeef-0000-0000-0000-000000000000".into();
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        assert_eq!(
+            snap.tvs[0].system_profile.as_str(),
+            "deadbeef-0000-0000-0000-000000000000"
+        );
     }
 
     #[test]

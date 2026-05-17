@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-05-17 16:40-0500\n"
+"POT-Creation-Date: 2026-05-17 17:23-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -84,75 +84,82 @@ msgstr ""
 msgid "Couldn't update managed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:772
+#: crates/tisvlay-gui/src/lib.rs:785 crates/tisvlay-gui/src/lib.rs:795
+#: crates/tisvlay-gui/src/lib.rs:785 crates/tisvlay-gui/src/lib.rs:795
 msgid "Couldn't change system profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:791
-msgid "Couldn't change user profile"
+#: crates/tisvlay-gui/src/lib.rs:796 crates/tisvlay-gui/src/lib.rs:851
+#, rust-format
+msgid "Unknown profile: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:798 crates/tisvlay-gui/src/lib.rs:1677
-#: crates/tisvlay-gui/src/lib.rs:798 crates/tisvlay-gui/src/lib.rs:1677
+#: crates/tisvlay-gui/src/lib.rs:821 crates/tisvlay-gui/src/lib.rs:1732
+#: crates/tisvlay-gui/src/lib.rs:821 crates/tisvlay-gui/src/lib.rs:1732
 msgid "Session service unavailable"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:800
+#: crates/tisvlay-gui/src/lib.rs:823
 msgid "User-profile assignments require the per-user tisvlay-session service."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:819
+#: crates/tisvlay-gui/src/lib.rs:840 crates/tisvlay-gui/src/lib.rs:850
+#: crates/tisvlay-gui/src/lib.rs:840 crates/tisvlay-gui/src/lib.rs:850
+msgid "Couldn't change user profile"
+msgstr ""
+
+#: crates/tisvlay-gui/src/lib.rs:874
 msgid "Couldn't change primary input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:834
+#: crates/tisvlay-gui/src/lib.rs:889
 msgid "Couldn't remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:853
+#: crates/tisvlay-gui/src/lib.rs:908
 msgid "Reload config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:863
+#: crates/tisvlay-gui/src/lib.rs:918
 msgid "Reload session config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1547
+#: crates/tisvlay-gui/src/lib.rs:1602
 #, rust-format
 msgid "Couldn't open profile: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1570
+#: crates/tisvlay-gui/src/lib.rs:1625
 #, rust-format
 msgid "Couldn't update field: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1589
+#: crates/tisvlay-gui/src/lib.rs:1644
 #, rust-format
 msgid "Couldn't reset field: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1607
+#: crates/tisvlay-gui/src/lib.rs:1662
 #, rust-format
 msgid "Couldn't reset profile: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1631
+#: crates/tisvlay-gui/src/lib.rs:1686
 #, rust-format
 msgid "Couldn't rename profile: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1658 crates/tisvlay-gui/src/lib.rs:1671
+#: crates/tisvlay-gui/src/lib.rs:1713 crates/tisvlay-gui/src/lib.rs:1726
 #, rust-format
 msgid "Couldn't create profile: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1729
+#: crates/tisvlay-gui/src/lib.rs:1784
 #, rust-format
 msgid "Couldn't delete profile: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1758
+#: crates/tisvlay-gui/src/lib.rs:1813
 msgid "Profile duplication lands in a follow-up commit."
 msgstr ""
 
