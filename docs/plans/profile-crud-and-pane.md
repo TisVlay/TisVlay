@@ -2,7 +2,7 @@
 
 ## Status (2026-05-16)
 
-Commits 1–9a have landed on `feat/profile-crud`; 9b (reset-all + error banner + a11y) and 10 (this doc gets deleted per `docs/plans/README.md` convention) are still pending. Live behavior matches the acceptance criteria except where called out in "Deviations from this plan" below. The implementation outline at the bottom tracks per-commit status with ✓ markers.
+Commits 1–9b plus 10a (architecture lift into `docs/design.md` + deferral idea docs) have landed on `feat/profile-crud`. The plan-doc deletion (10b) is intentionally held so this file stays available during PR review — drops once the PR is approved. Every acceptance criterion is now checked; deviations are catalogued below. The implementation outline at the bottom tracks per-commit status with ✓ markers.
 
 ## Motivation
 
@@ -152,13 +152,17 @@ Mirror of Commit 7 against `Session1`. Refactored `ProfilesEditorState.system_se
 - **New (Create)**: name-input dialog with client-side validation for empty + reserved (`"default"`). Duplicate-name validation falls back to a daemon-error toast — Slint pure functions can't iterate the existing-names list, so client-side dup-check is deferred.
 - **Duplicate**: no dialog; `Get` + `Create("<orig>-copy[-N]")` with the existing-names list pre-fetched for collision avoidance. Auto-selects the new profile.
 
-### Commit 9b — Reset-all + error banner + a11y →
+### Commit 9b — Reset-all + error banner + a11y ✓
 
-Reset-all-to-inherited toolbar button on the detail header (one `Update*Profile(name, {})` clears every field). `InlineMessage`-style error surfacing on `ConfigReloaded(success=false)` — probably wants a new `Errors.profiles` slot distinct from `Errors.tvs`. Dedicated `SystemProfileChanged` / `UserProfileListChanged` subscription so cross-client edits propagate without waiting for the next `ConfigReloaded`. Final accessibility pass (tab order, screen reader labels per `crates/tisvlay-gui/ui/components/` conventions).
+Reset-all-to-inherited button below the FIELDS group (one `Update*Profile(name, default-body)` clears every field; enabled state driven by a `has-any-locally-set` flag pushed alongside the field rows). `InlineMessage` bound to a new `Errors.profiles` slot — Rust pushes `ConfigReloaded(success=false, error_msg)` failures here so external reload errors surface visibly. Cross-client live refresh: `TvStateChange::SystemProfileChanged { name, kind }` variant + filter_map recognition in `tisvlay-core`; session-side filter additionally picks up `UserProfileListChanged` (collapsed onto the existing `SessionProfileChanged` unit event). A11y: `ConfirmDialog` / `NameInputDialog` get `accessible-role` + label + description; section-header `+` and `ProfileListRow` gain button / list-item roles with `accessible-action-default`.
 
-### Commit 10 — Delete this plan doc
+### Commit 10a — design.md write-up + deferral idea docs ✓
 
-Per `docs/plans/README.md` convention. Architecture lands in `docs/design.md` ("Profiles" section under D-Bus surface); deferred follow-ups (rename UX, profile-description free-text field, save/cancel revisit, numeric spinner row, client-side duplicate-name check) get filed under `docs/ideas/`.
+Architecture moved into `docs/design.md`: Manager1 + Session1 bullets grow the M3.5 CRUD methods + `GetResolvedProfileDefaults`; new "Profile catalog (system + user)" subsection captures the cross-bus design, the inheritance-chain ASCII, the editor's instant-commit model, and the live-refresh signal contract. Three new `docs/ideas/` files filed for deferrals: `profile-description-free-text-field.md`, `profile-editor-save-cancel-revisit.md`, `profile-create-dialog-dup-name-validation.md`. (Earlier deferrals — `profile-rename.md`, `profile-user-idle-timeout-spinner.md` — already existed.)
+
+### Commit 10b — Delete this plan doc →
+
+Per `docs/plans/README.md` convention. Held for PR review so reviewers can read the plan in tree; drop once approved.
 
 ## Deviations from this plan
 
@@ -170,7 +174,9 @@ Recorded during implementation. None invalidated the plan's core decisions; they
 - **`idle_timeout_seconds` numeric row deferred.** Plan: spinner row with `placeholder=N` ghost text. Shipped: not rendered at all (`apply_user_field_edit` returns a hard error on this field name so a stray emit fails loudly). Filed in `docs/ideas/profile-user-idle-timeout-spinner.md` with the rationale and design sketch. User-profile editor renders 5 `SessionAction` rows for v1; the 6th remains TOML-editable.
 - **Commit 9 split into 9a + 9b.** The polish work didn't fit one commit cleanly: 9a covers the dialogs (Delete-confirm, Duplicate, New) and the reusable widgets that came out of that work (`ConfirmDialog` promoted to `widgets.slint`, new `NameInputDialog`). 9b covers reset-all + error banner + the cross-client `*ProfileChanged` subscription + a11y.
 - **Duplicate-name validation on Create.** Plan: "validation rejects `'default'` and existing names." Shipped: client-side check for `"default"` + empty; duplicate-name check happens server-side and surfaces as a toast (Slint pure functions can't iterate the existing-names list in a `function`). Filed as a follow-up if the toast UX feels bad in practice.
-- **Live-refresh signal subscription.** Plan: "Subscribe to `SystemProfileChanged` and `ConfigReloaded` for live refresh." Shipped through 9a: `ConfigReloaded` only. The dedicated `SystemProfileChanged` / `UserProfileListChanged` subscription is part of 9b — until then, cross-client edits propagate via the next `ConfigReloaded` rather than instantly.
+- **Live-refresh signal subscription.** Plan: "Subscribe to `SystemProfileChanged` and `ConfigReloaded` for live refresh." Shipped in 9b by extending the existing `StateWatcher` in `tisvlay-core` rather than spawning a parallel subscriber: new `TvStateChange::SystemProfileChanged { name, kind }` variant, daemon-side filter_map recognizes it, and the session-side filter additionally picks up `UserProfileListChanged` collapsed onto the existing `SessionProfileChanged` unit event. Both route through the GUI's existing `trigger_refresh()` so cross-client edits propagate without waiting for the next `ConfigReloaded`.
+- **Reset-all button placement.** Plan: "toolbar button on the editor." Shipped: a button at the end of the scrollable body, below the FIELDS group, right-aligned. Reads as a row-of-buttons toolbar at the editor footer; future bulk-edit actions (export, copy-as-base, …) land alongside it without rearranging the header.
+- **`Errors.profiles` slot.** Plan flagged this as "probably wants a new slot distinct from `Errors.tvs`." Shipped: new slot + `profiles-action` no-op callback. Sticky banner at the top of the pane, dismissable; the action button stays hidden until a recovery flow needs it (no `kind` value routes there today).
 - **Selection-row clearing on Delete.** Plan didn't specify behavior. Shipped: successful Delete clears `selected-kind` + `selected-name` + pushes empty field rows, returning the detail to the "Select a profile" empty state. Same path covers the "selected profile was deleted by another client" case via the existing `apply_snapshot` re-resolve.
 
 ## What's deferred / out of scope
@@ -189,7 +195,7 @@ Recorded during implementation. None invalidated the plan's core decisions; they
 - [x] Round-trip: create a new system profile via the GUI, see it appear in `ListSystemProfiles` from the CLI, delete it via the CLI, see it disappear from the GUI list. (Wired through 9a; CLI round-trip verifiable today.)
 - [x] Edit conflict: open the editor on `guest`, edit `[system.profiles.default]` on disk, run `tisvlay reload`, verify the `(inherit: ...)` combobox entries refresh in-place to the new defaults without losing locally-set rows in `guest`. (`refresh_system_editor` fires on `ConfigReloaded`.)
 - [x] Delete blocked: assign `guest` to a TV, try to delete `guest`, verify the error names the offending TV. (Client-side: dialog shows the referenced-by list and disables Confirm. Server-side: daemon also rejects with the named TVs in the error message as a safety net.)
-- [ ] Reset-all clears the editing profile to the inheriting state in one daemon call (`UpdateSystemProfile(name, {})`). (Pending 9b.)
+- [x] Reset-all clears the editing profile to the inheriting state in one daemon call (`UpdateSystemProfile(name, default)`). (Wired in 9b; button below the FIELDS group, disabled when no field is locally set.)
 - [x] No editor-wide save/cancel button anywhere in the pane.
 
 ## Reference
