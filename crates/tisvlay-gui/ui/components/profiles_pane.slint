@@ -16,13 +16,13 @@
 // The detail body in commit 6 is a placeholder; `ProfileFieldRow` +
 // the inheritance-driven editor lands in commit 7.
 
-import { Button, ComboBox, ScrollView } from "std-widgets.slint";
+import { ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "../globals/profiles.slint";
-import { ConfirmDialog, DangerBtn, Chip, Group, IconBtn, InlineError, LineEditField, NameInputDialog } from "../widgets.slint";
+import { ConfirmDialog, Chip, Group, IconBtn, InlineError, LineEditField, NameInputDialog } from "../widgets.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -453,15 +453,17 @@ component ProfileDetailHeader inherits Rectangle {
             }
             if !root.editing-name: VerticalLayout {
                 alignment: center;
-                Button {
-                    text: @tr("Duplicate");
+                IconBtn {
+                    source: Icons.copy;
+                    accessible-label: @tr("Duplicate profile");
                     clicked => { root.request-duplicate(); }
                 }
             }
             if !root.editing-name: VerticalLayout {
                 alignment: center;
-                DangerBtn {
-                    text: @tr("Delete");
+                IconBtn {
+                    source: Icons.delete;
+                    accessible-label: @tr("Delete profile");
                     enabled: root.can-delete;
                     clicked => { root.request-delete(); }
                 }
