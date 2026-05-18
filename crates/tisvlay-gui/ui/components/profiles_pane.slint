@@ -22,7 +22,7 @@ import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, Group, IconBtn, InlineError, LineEditField, NameInputDialog } from "../widgets.slint";
+import { ConfirmDialog, Chip, Group, IconBtn, InlineError, LineEditField, NameInputDialog, ProfileTile } from "../widgets.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -30,6 +30,7 @@ import { ConfirmDialog, Chip, Group, IconBtn, InlineError, LineEditField, NameIn
 
 component ProfileListRow inherits Rectangle {
     in property <ProfileRow> entry;
+    in property <ProfileKind> kind;
     in property <bool> selected;
     callback clicked();
 
@@ -54,43 +55,75 @@ component ProfileListRow inherits Rectangle {
         height: 100%;
         padding-left: 12px;
         padding-right: 12px;
-        spacing: Design.gap-tight;
-        alignment: stretch;
+        spacing: 10px;
+        alignment: start;
+
+        VerticalLayout {
+            width: Design.size-tile-sm;
+            alignment: center;
+            ProfileTile {
+                kind: root.kind;
+                tile-size: Design.size-tile-sm;
+            }
+        }
 
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
-            Text {
-                text: root.entry.name;
-                color: root.selected ? Theme.row-selected-text : Theme.text;
-                font-size: Design.font-body;
-                font-weight: root.selected ? 600 : 500;
-                overflow: elide;
-            }
-        }
+            spacing: 2px;
 
-        if root.entry.is-default: VerticalLayout {
-            alignment: center;
-            Text {
-                text: @tr("(default)");
-                color: Theme.text-dim;
-                font-size: Design.font-mini;
+            // Name row + "(default)" badge alongside.
+            HorizontalLayout {
+                spacing: Design.gap-tight;
+                alignment: start;
+                Text {
+                    text: root.entry.name;
+                    color: root.selected ? Theme.row-selected-text : Theme.text;
+                    font-size: Design.font-body;
+                    font-weight: root.selected ? 600 : 500;
+                    overflow: elide;
+                }
+                if root.entry.is-default: Text {
+                    text: @tr("(default)");
+                    color: Theme.text-dim;
+                    font-size: Design.font-mini;
+                    vertical-alignment: center;
+                }
             }
-        }
 
-        VerticalLayout {
-            alignment: center;
-            // Trailing reference count — "Nx" tells the user how many
-            // TVs use this profile without opening the detail. Greys
-            // out at zero so unreferenced profiles read visually quiet
-            // ("safe to delete" cue).
-            Text {
-                text: root.entry.referenced-by.length + "x";
-                color: root.entry.referenced-by.length == 0
-                    ? Theme.text-faint
-                    : Theme.text-dim;
-                font-size: Design.font-mini;
-                font-family: "ui-monospace, monospace";
+            // Status row: dot + label. 3-state classification:
+            //   Unassigned (no referencing TV)
+            //   Assigned (referenced, none automated)
+            //   Active (referenced + ≥1 automated)
+            HorizontalLayout {
+                spacing: Design.gap-tight;
+                alignment: start;
+
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: Design.size-status-dot;
+                    height: Design.size-status-dot;
+                    border-radius: 3px;
+                    background: root.entry.active
+                        ? Theme.success
+                        : (root.entry.referenced-by.length > 0
+                            ? Theme.info
+                            : Theme.text-faint);
+                }
+
+                Text {
+                    text: root.entry.active
+                        ? @tr("Active")
+                        : (root.entry.referenced-by.length > 0
+                            ? @tr("Assigned")
+                            : @tr("Unassigned"));
+                    color: root.entry.active
+                        ? Theme.success-text
+                        : (root.entry.referenced-by.length > 0
+                            ? Theme.info-text
+                            : Theme.text-faint);
+                    font-size: Design.font-mini;
+                }
             }
         }
     }
@@ -224,6 +257,7 @@ component ProfileList inherits Rectangle {
                     alignment: start;
                     for r[i] in Profiles.system: ProfileListRow {
                         entry: r;
+                        kind: ProfileKind.system;
                         selected: Profiles.selected-kind == ProfileKind.system
                                && Profiles.selected-uuid == r.uuid;
                         clicked => {
@@ -279,6 +313,7 @@ component ProfileList inherits Rectangle {
                     alignment: start;
                     for r[i] in Profiles.user: ProfileListRow {
                         entry: r;
+                        kind: ProfileKind.user;
                         selected: Profiles.selected-kind == ProfileKind.user
                                && Profiles.selected-uuid == r.uuid;
                         clicked => {
