@@ -19,9 +19,13 @@ use crate::{
     TvViewModel, VendorInfoRow, VendorOption, on_ui,
 };
 
-/// Mirror the session-availability flag onto both the AppWindow prop
-/// and the `Profiles` global — every caller that updates one must
-/// update the other.
+/// Write the session-availability flag to both the AppWindow (read by
+/// the sidebar footer's peer-status chip) and the `Profiles` global
+/// (read by the Profiles pane's "Session service unavailable" hint and
+/// the User-section `+` enabled state). The two were previously only
+/// reconciled by `push_profiles`, which runs on the fallback poll —
+/// SessionAppeared updates would flip the footer instantly but leave
+/// the Profiles pane stale for up to 30 s.
 fn set_session_available(app: &AppWindow, available: bool) {
     app.set_session_available(available);
     app.global::<Profiles>().set_session_available(available);

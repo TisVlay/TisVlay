@@ -115,8 +115,14 @@ async fn main() -> Result<()> {
     // The bundle's `connection` must be held alive for the lifetime of
     // the process; `forwarder_task` runs the user-profile state
     // forwarder (refreshes cached UserProfile1 properties after edits).
-    // Must register before the retry-task spawn — the retry hands the
-    // bundle's connection + event_tx to `register_user_profile_objects`.
+    //
+    // Registered before the daemon-availability retry task is spawned so
+    // the retry can call `register_user_profile_objects` with the
+    // bundle's connection + event_tx after the late state-reload. When
+    // the daemon isn't ready at this point the state's `user_config` is
+    // empty, so this initial call registers zero per-profile objects;
+    // the retry path below brings them online once disk state is
+    // readable.
     let session_dbus_bundle = match tisvlay_session::session_dbus::register_session_dbus(
         state.clone(),
         daemon.clone(),
@@ -134,10 +140,13 @@ async fn main() -> Result<()> {
         }
     };
 
-    // If the daemon wasn't available at startup, retry loading state in
-    // the background. On success, replay screen state and register the
-    // per-profile `UserProfile1` D-Bus objects against the freshly-loaded
-    // `user_config` (the initial registration ran against empty state).
+    // If the daemon wasn't available at startup, spawn a background task to
+    // retry loading state. This handles the common case where the session
+    // service starts before the daemon (e.g., in dev mode or parallel systemd startup).
+    // After loading, it replays the current screen state so missed events are recovered
+    // and re-registers per-profile `UserProfile1` D-Bus objects against the freshly-
+    // loaded `user_config` (the initial `register_session_dbus` ran against the empty
+    // fallback state, so the disk profiles never made it onto the bus on first try).
     if !daemon_available {
         let retry_state = state.clone();
         let retry_daemon = daemon.clone();
@@ -168,8 +177,9 @@ async fn main() -> Result<()> {
                             );
                         }
 
-                        // Idempotent — no need to track which UUIDs are
-                        // already registered from a prior call.
+                        // Materialize per-profile `UserProfile1` D-Bus objects for
+                        // the freshly-loaded profiles. Idempotent so we don't have
+                        // to track which UUIDs were already registered.
                         if let (Some(conn), Some(profile_tx)) =
                             (retry_connection.as_ref(), retry_profile_events.as_ref())
                         {

@@ -39,10 +39,12 @@ pub struct TvViewRaw {
     pub backlight: i32,
     pub current_input: SharedString,
     pub available_input_ids: Vec<SharedString>,
-    /// Friendly name for ComboBox display.
+    /// Friendly name resolved from `system_profile_uuid` (ComboBox
+    /// display).
     pub system_profile: SharedString,
-    /// Wire UUID; empty assignment collapses to the system-default
-    /// UUID so the navigation pencil can route unconditionally.
+    /// Immutable UUID for navigation; pre-resolved Rust-side to the
+    /// system-default UUID when no assignment exists, so the Slint
+    /// side never has to fall back from `""` for the pencil click.
     pub system_profile_uuid: SharedString,
     pub user_profile: SharedString,
     pub user_profile_uuid: SharedString,
@@ -189,8 +191,14 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
         user_profile_by_uuid,
     } = inputs;
 
-    // UUID → name for combobox display. The reverse direction (name
-    // → UUID on `selected(v)`) lives in `lib.rs`.
+    // UUID → friendly name resolvers for the TVs-pane PROFILES
+    // ComboBoxes. `Tv1.SystemProfile` and `Session1.GetTvUserProfile`
+    // carry UUIDs on the wire; std-widgets ComboBox renders
+    // `current-value` verbatim against its `[string]` model, so
+    // without this translation the field shows the raw UUID. The
+    // reverse direction (name → UUID for the `selected(v)` callback)
+    // is handled in `lib.rs` via an on-click `list_*_profiles_full`
+    // round-trip.
     let system_uuid_to_name: HashMap<&str, &str> = system_profiles
         .iter()
         .map(|p| (p.uuid.as_str(), p.name.as_str()))
@@ -207,8 +215,9 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             .cloned()
             .unwrap_or_default();
 
-        // Catalog miss → show the raw UUID so a desync is visible
-        // rather than rendering blank.
+        // Fall back to the raw UUID when the catalog lookup misses —
+        // makes a stale-state desync visible to the user rather than
+        // silently rendering blank.
         let system_profile_name = system_uuid_to_name
             .get(tv.system_profile.as_str())
             .copied()
@@ -220,8 +229,10 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             .map(SharedString::from)
             .unwrap_or_else(|| SharedString::from(user_profile_uuid.as_str()));
 
-        // Empty assignment → default UUID so the navigation pencil
-        // always routes somewhere meaningful.
+        // Pre-resolved UUIDs for the navigation pencil. Empty source
+        // (no assignment) collapses to the reserved-default UUID so
+        // the Slint click handler can route unconditionally without a
+        // `== "" ? default` fallback.
         let system_profile_uuid_str: SharedString = if tv.system_profile.is_empty() {
             SharedString::from(
                 tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
@@ -584,6 +595,12 @@ mod tests {
 
     #[test]
     fn tv_profile_uuid_resolves_to_name_for_combobox() {
+        // `Tv1.SystemProfile` and `Session1.GetTvUserProfile` carry
+        // UUIDs; the TVs pane's combobox renders `current-value`
+        // verbatim against the name-keyed model. Without UUID → name
+        // resolution in `convert_snapshot` the field shows the raw
+        // UUID. Exercise the happy path explicitly so a regression
+        // doesn't hide behind the fallback path other tests rely on.
         let mut tv_a = sample_tv("uuid-a", "TV-A");
         tv_a.system_profile = "a1b2c3d4-0000-0000-0000-000000000001".into();
         let mut tv_b = sample_tv("uuid-b", "TV-B");
@@ -630,7 +647,9 @@ mod tests {
                 "a1b2c3d4-0000-0000-0000-00000000f000".to_string(),
             )
         );
-        // Unassigned user profile: display "", UUID collapses to default.
+        // No user-profile assignment → display falls back to "" but
+        // `user_profile_uuid` collapses to the user-default UUID so
+        // the pencil routes somewhere meaningful.
         assert_eq!(
             by_uuid["uuid-b"],
             (
@@ -644,6 +663,10 @@ mod tests {
 
     #[test]
     fn tv_profile_unknown_uuid_falls_back_to_raw() {
+        // When the catalog lookup misses (stale state across a config
+        // reload, e.g. the assigned profile was just deleted by a
+        // concurrent client), the resolver surfaces the raw UUID so
+        // the desync is visible rather than rendering blank.
         let mut tv = sample_tv("uuid-a", "TV-A");
         tv.system_profile = "deadbeef-0000-0000-0000-000000000000".into();
         let snap = convert_snapshot(SnapshotInputs {

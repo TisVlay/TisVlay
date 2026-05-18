@@ -325,8 +325,11 @@ impl SessionService {
 pub struct SessionDbusBundle {
     pub connection: zbus::Connection,
     pub forwarder_task: tokio::task::JoinHandle<()>,
-    /// Sender side of the user-profile event channel; clone to drive
-    /// `register_user_profile_objects` from outside the initial setup.
+    /// Sender side of the user-profile event channel — clone this to
+    /// drive `register_user_profile_objects` outside of the initial
+    /// registration call (e.g. after a late daemon-connect reloads the
+    /// session state and the per-profile D-Bus objects need to be
+    /// brought in line with disk).
     pub user_profile_events: UserProfileEventTx,
 }
 
@@ -412,10 +415,24 @@ pub async fn register_session_dbus_on(
 }
 
 /// Register a `UserProfile1` D-Bus object for every UUID currently in
-/// `state.user_config.user.profiles`. Idempotent: `register_user_profile`
-/// does a defensive `remove` before `at()` so repeat calls refresh the
-/// cached field values (zbus 5.x's `at()` returns `Ok(false)` on a
-/// pre-registered path).
+/// `state.user_config.user.profiles`. Idempotent — each
+/// `register_user_profile` does a defensive `remove::<UserProfileService, _>`
+/// before `at()` so a repeat call refreshes the cached field values
+/// rather than silently no-opping (zbus 5.x's `at()` returns
+/// `Ok(false)` on a pre-registered path).
+///
+/// Called from two sites:
+/// 1. Initial `register_session_dbus_on` — registers whatever is in
+///    the state at startup. When the daemon isn't reachable yet the
+///    state's `user_config` is the default-empty one, so this is a
+///    no-op.
+/// 2. The daemon-availability retry task in `main.rs` — after a
+///    successful late `SessionState::load`, the freshly-loaded
+///    profiles need their D-Bus objects materialized. Without this
+///    second call the per-profile `/org/tisvlay/UserProfile/<UUID_>`
+///    objects never appear on the bus and the GUI's master list shows
+///    nothing for the User section even though the config file lists
+///    profiles.
 pub async fn register_user_profile_objects(
     connection: &zbus::Connection,
     state: Arc<RwLock<SessionState>>,
