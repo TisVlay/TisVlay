@@ -86,6 +86,11 @@ export struct ProfileRow {
     /// — Slint has no array-join expression, so Rust pre-computes
     /// the summary.
     referenced-by-summary: string,
+    /// True iff at least one referencing TV is currently automated.
+    /// Combined with `referenced-by.length` to derive the 3-state
+    /// row classification: Unassigned (empty), Assigned (non-empty,
+    /// `!active`), Active (non-empty, `active`).
+    active: bool,
 }
 
 export global Profiles {

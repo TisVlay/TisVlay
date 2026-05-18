@@ -533,6 +533,7 @@ fn build_profile_rows(raw: Vec<ProfileRowRaw>) -> Vec<ProfileRow> {
                     .collect::<Vec<_>>(),
             )),
             referenced_by_summary: r.referenced_by_summary,
+            active: r.active,
         })
         .collect()
 }
@@ -547,6 +548,7 @@ fn empty_profile_row() -> ProfileRow {
         is_default: false,
         referenced_by: ModelRc::new(VecModel::from(Vec::<ProfileTvRef>::new())),
         referenced_by_summary: SharedString::new(),
+        active: false,
     }
 }
 

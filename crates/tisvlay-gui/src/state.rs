@@ -104,6 +104,13 @@ pub struct ProfileRowRaw {
     /// Z" message without a string-join expression (Slint doesn't
     /// have one).
     pub referenced_by_summary: SharedString,
+    /// True iff at least one referencing TV has `automated: true`.
+    /// Three-state classification at the row level: Unassigned
+    /// (`referenced_by.is_empty()`), Assigned (non-empty, `!active`),
+    /// Active (non-empty, `active`). Drives the status chip/dot in
+    /// the master list and the second status badge in the detail
+    /// header.
+    pub active: bool,
 }
 
 /// Snapshot of fetched state for one refresh pass.
@@ -377,12 +384,17 @@ fn build_profile_rows(
                 .map(|t| t.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
+            let active = p.referenced_by.iter().any(|tv_uuid| {
+                tvs.iter()
+                    .any(|t| t.uuid.as_str() == tv_uuid.as_str() && t.automated)
+            });
             ProfileRowRaw {
                 uuid: SharedString::from(p.uuid.as_str()),
                 name: SharedString::from(p.name.as_str()),
                 is_default: p.uuid == default_uuid,
                 referenced_by,
                 referenced_by_summary: SharedString::from(summary),
+                active,
             }
         })
         .collect();
@@ -778,5 +790,46 @@ mod tests {
         assert_eq!(row.referenced_by.len(), 1);
         assert_eq!(row.referenced_by[0].uuid.as_str(), "orphan-uuid");
         assert_eq!(row.referenced_by[0].name.as_str(), "orphan-uuid");
+        // No referencing TV in the snapshot ⇒ can't be Active.
+        assert!(!row.active);
+    }
+
+    #[test]
+    fn profile_active_state_covers_three_cases() {
+        // 3-state derivation: Unassigned (no refs), Assigned (refs
+        // but none automated), Active (≥1 automated).
+        let mut tv_managed = sample_tv("tv-m", "Bedroom");
+        tv_managed.managed = true;
+        tv_managed.automated = false;
+        let mut tv_auto = sample_tv("tv-a", "Living Room");
+        tv_auto.managed = true;
+        tv_auto.automated = true;
+
+        let inputs = SnapshotInputs {
+            tvs: vec![tv_managed, tv_auto],
+            system_profiles: vec![
+                summary("00000000-0000-0000-0000-000000000001", "default", &[]),
+                summary("a1b2c3d4-0000-0000-0000-000000000002", "lonely", &[]),
+                summary("a1b2c3d4-0000-0000-0000-000000000003", "manual", &["tv-m"]),
+                summary("a1b2c3d4-0000-0000-0000-000000000004", "auto", &["tv-a"]),
+                summary(
+                    "a1b2c3d4-0000-0000-0000-000000000005",
+                    "mixed",
+                    &["tv-m", "tv-a"],
+                ),
+            ],
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        let by_name: HashMap<_, _> = snap
+            .system_profile_rows
+            .iter()
+            .map(|r| (r.name.to_string(), r.active))
+            .collect();
+        assert!(!by_name["default"], "Unassigned default");
+        assert!(!by_name["lonely"], "Unassigned");
+        assert!(!by_name["manual"], "Assigned, no automated TV");
+        assert!(by_name["auto"], "Active — automated TV references it");
+        assert!(by_name["mixed"], "Active — at least one automated");
     }
 }
