@@ -202,69 +202,95 @@ component ProfileList inherits Rectangle {
         height: 100%;
         spacing: 0;
 
-        // System profiles section.
-        ProfileSectionHeader {
-            title: @tr("SYSTEM PROFILES");
-            add-enabled: true;
-            add-clicked => { root.request-create(ProfileKind.system); }
-        }
-        for r[i] in Profiles.system: ProfileListRow {
-            entry: r;
-            selected: Profiles.selected-kind == ProfileKind.system
-                   && Profiles.selected-uuid == r.uuid;
-            clicked => {
-                // Hand the row off to `selected-row` here so the
-                // detail header (gated on `selected-row.uuid != ""`)
-                // materializes on the same frame as the click. Rust
-                // can't push `selected-row` in response to a click
-                // without a state-refresh tick, which previously
-                // left the detail pane empty until the next
-                // fallback poll (up to 30 s of dead air).
-                Profiles.selected-kind = ProfileKind.system;
-                Profiles.selected-uuid = r.uuid;
-                Profiles.selected-row = r;
-                Profiles.select(ProfileKind.system, r.uuid);
+        // System profiles section — top half. Section header is
+        // pinned at the top of the half; rows scroll below it once
+        // they exceed the available height. The two sections both
+        // claim `vertical-stretch: 1` so they split the available
+        // height 50/50 regardless of how many rows each holds —
+        // either list always has at least half the master column
+        // to work with, with its own scroll surface for overflow.
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0;
+            ProfileSectionHeader {
+                title: @tr("SYSTEM PROFILES");
+                add-enabled: true;
+                add-clicked => { root.request-create(ProfileKind.system); }
             }
-        }
-
-        // User profiles section.
-        ProfileSectionHeader {
-            title: @tr("USER PROFILES");
-            add-enabled: Profiles.session-available;
-            add-clicked => { root.request-create(ProfileKind.user); }
-        }
-        if !Profiles.session-available: Rectangle {
-            height: 56px;
-            VerticalLayout {
-                width: 100%;
-                alignment: center;
-                padding: Design.gap-stack;
-                Text {
-                    text: @tr("Session service unavailable");
-                    color: Theme.text-faint;
-                    font-size: Design.font-mini;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
+            ScrollView {
+                viewport-width: self.visible-width;
+                VerticalLayout {
+                    spacing: 0;
+                    alignment: start;
+                    for r[i] in Profiles.system: ProfileListRow {
+                        entry: r;
+                        selected: Profiles.selected-kind == ProfileKind.system
+                               && Profiles.selected-uuid == r.uuid;
+                        clicked => {
+                            // Hand the row off to `selected-row` here so the
+                            // detail header (gated on `selected-row.uuid != ""`)
+                            // materializes on the same frame as the click. Rust
+                            // can't push `selected-row` in response to a click
+                            // without a state-refresh tick, which previously
+                            // left the detail pane empty until the next
+                            // fallback poll (up to 30 s of dead air).
+                            Profiles.selected-kind = ProfileKind.system;
+                            Profiles.selected-uuid = r.uuid;
+                            Profiles.selected-row = r;
+                            Profiles.select(ProfileKind.system, r.uuid);
+                        }
+                    }
                 }
             }
         }
-        // When the session bus isn't available, Rust pushes an empty
-        // `Profiles.user` model — the repeater renders nothing and
-        // the unavailable-notice above carries the message.
-        for r[i] in Profiles.user: ProfileListRow {
-            entry: r;
-            selected: Profiles.selected-kind == ProfileKind.user
-                   && Profiles.selected-uuid == r.uuid;
-            clicked => {
-                Profiles.selected-kind = ProfileKind.user;
-                Profiles.selected-uuid = r.uuid;
-                Profiles.selected-row = r;
-                Profiles.select(ProfileKind.user, r.uuid);
+
+        // User profiles section — bottom half. Same shape as the
+        // system half. When the session bus isn't available, Rust
+        // pushes an empty `Profiles.user` model so the repeater
+        // renders nothing and the unavailable-notice carries the
+        // message instead.
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0;
+            ProfileSectionHeader {
+                title: @tr("USER PROFILES");
+                add-enabled: Profiles.session-available;
+                add-clicked => { root.request-create(ProfileKind.user); }
+            }
+            if !Profiles.session-available: Rectangle {
+                height: 56px;
+                VerticalLayout {
+                    width: 100%;
+                    alignment: center;
+                    padding: Design.gap-stack;
+                    Text {
+                        text: @tr("Session service unavailable");
+                        color: Theme.text-faint;
+                        font-size: Design.font-mini;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            ScrollView {
+                viewport-width: self.visible-width;
+                VerticalLayout {
+                    spacing: 0;
+                    alignment: start;
+                    for r[i] in Profiles.user: ProfileListRow {
+                        entry: r;
+                        selected: Profiles.selected-kind == ProfileKind.user
+                               && Profiles.selected-uuid == r.uuid;
+                        clicked => {
+                            Profiles.selected-kind = ProfileKind.user;
+                            Profiles.selected-uuid = r.uuid;
+                            Profiles.selected-row = r;
+                            Profiles.select(ProfileKind.user, r.uuid);
+                        }
+                    }
+                }
             }
         }
-
-        // Spacer pushes the lists to the top.
-        Rectangle { vertical-stretch: 1; }
     }
 }
 
