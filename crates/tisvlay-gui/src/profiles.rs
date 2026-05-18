@@ -515,18 +515,19 @@ async fn prime_rows(kind: ProfileKind, proxy: &ProfileProxy) -> Result<Vec<RowRa
 
 fn build_row(field: &FieldDef, resolved: &str, locally_set: &[String]) -> RowRaw {
     let is_locally_set = locally_set.iter().any(|f| f == field.wire_name);
-    // Inherit placeholder is rendered as `<resolved>*`. The trailing
-    // `*` marks the value as inherited (not locally-set); the value
-    // itself is the resolved fall-through, so the user can see what
-    // the row would render if they cleared the override.
-    let inherit_placeholder = format!("{}*", resolved);
-    let options: Vec<String> = std::iter::once(inherit_placeholder.clone())
-        .chain(field.options.iter().map(|o| (*o).to_string()))
-        .collect();
+    // Dropdown lists only the concrete action values — reverting to
+    // inheriting is the reset glyph's job. The displayed
+    // `current_value` carries a trailing `*` when inheriting so it
+    // (a) signals the inherit state visually and (b) doesn't exactly
+    // match any dropdown option, so picking the same-as-resolved
+    // value still fires `selected(v)` → `Properties.Set`. Without
+    // the asterisk, clicking the already-resolved value would be a
+    // ComboBox no-op and the user couldn't lock an inherited value.
+    let options: Vec<String> = field.options.iter().map(|o| (*o).to_string()).collect();
     let current = if is_locally_set {
         resolved.to_string()
     } else {
-        inherit_placeholder
+        format!("{}*", resolved)
     };
     RowRaw {
         field_name: field.wire_name.to_string(),
@@ -744,10 +745,9 @@ fn extract_resolved_from_row(row: &ProfileFieldEntry, _field: &FieldDef) -> Stri
 // Dispatch helpers — called from the lib.rs Slint callbacks
 // =============================================================================
 
-/// Apply a ComboBox edit. `value == ""` means the user picked the
-/// inherit placeholder — that's the `ResetField` codepath; the
-/// daemon's `Properties.Set` can't parse `""` as a SessionAction so
-/// the split lives here, not in Slint.
+/// Apply a ComboBox edit — the picked concrete value is written to
+/// the per-profile object's typed property. Reverting to inheriting
+/// goes through `dispatch_reset_field`, not here.
 pub(crate) async fn dispatch_value_edit(
     editor: &EditorHandle,
     field_wire_name: &str,
@@ -757,19 +757,15 @@ pub(crate) async fn dispatch_value_edit(
     let Some(state) = guard.as_ref() else {
         anyhow::bail!("no profile selected");
     };
-    if value.is_empty() {
-        state.proxy.reset_field(field_wire_name).await
-    } else {
-        let Some(field) = find_field(state.kind, field_wire_name) else {
-            anyhow::bail!("unknown field '{}'", field_wire_name);
-        };
-        state.proxy.set_field(field.prop_name, value).await
-    }
+    let Some(field) = find_field(state.kind, field_wire_name) else {
+        anyhow::bail!("unknown field '{}'", field_wire_name);
+    };
+    state.proxy.set_field(field.prop_name, value).await
 }
 
-/// Reset glyph clicked → `ResetField(field_wire_name)`. Functionally
-/// equivalent to `dispatch_value_edit(.., "")` but kept distinct so
-/// the call site reads as the user's intent.
+/// Reset glyph clicked → `ResetField(field_wire_name)`. The sole
+/// revert-to-inheriting path now that the inherit-placeholder
+/// dropdown option is gone.
 pub(crate) async fn dispatch_reset_field(
     editor: &EditorHandle,
     field_wire_name: &str,

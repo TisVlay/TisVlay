@@ -620,11 +620,12 @@ component ProfileDetailHeader inherits Rectangle {
 // hover-revealed): a row-wide TouchArea would block ComboBox clicks,
 // and IconBtn's ghost style already fades at rest + brightens on
 // hover to read "quiet until interacted" without overlay tricks.
+// It's also the sole revert-to-inheriting affordance — the dropdown
+// no longer carries an inherit option.
 //
-// `value-edited(field_name, "")` is emitted when the user picks the
-// inherit placeholder (`options[0]`); Rust interprets `""` as a
-// `ResetField` codepath. Concrete values pass through verbatim to
-// `Properties.Set`.
+// Every ComboBox pick is a concrete `Properties.Set`; the reset
+// glyph fires `reset-clicked(field_name)` which the pane routes to
+// `Profiles.reset-field` (daemon-side `ResetField`).
 component ProfileFieldRow inherits Rectangle {
     in property <ProfileFieldEntry> entry;
     callback value-edited(string, string);
@@ -662,12 +663,14 @@ component ProfileFieldRow inherits Rectangle {
             }
         }
 
-        // Value control — std-widgets ComboBox, model is the
-        // pre-built `options` array, `current-value` is the
-        // resolved value or the inherit placeholder. ComboBox
-        // `selected(v)` emits the new string; Rust splits the
-        // inherit-placeholder case from concrete values by
-        // comparing against `options[0]` server-side.
+        // Value control — std-widgets ComboBox. The model lists only
+        // concrete action values; `current-value` carries an extra
+        // trailing `*` when the field is inheriting (built Rust-side
+        // in `profiles::build_row`) so the user can read the inherit
+        // state at a glance and same-as-resolved picks still trigger
+        // a real `Properties.Set` rather than a ComboBox no-op.
+        // Reverting to inheriting is the reset glyph's job, not a
+        // dropdown option.
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
@@ -675,16 +678,7 @@ component ProfileFieldRow inherits Rectangle {
                 model: root.entry.options;
                 current-value: root.entry.current-value;
                 selected(v) => {
-                    // ComboBox emits the visible string verbatim;
-                    // index 0 is the inherit placeholder so
-                    // matching against `options[0]` is the simplest
-                    // way to flag the "clear" case to Rust without
-                    // round-tripping the index.
-                    if (root.entry.options.length > 0 && v == root.entry.options[0]) {
-                        root.value-edited(root.entry.field-name, "");
-                    } else {
-                        root.value-edited(root.entry.field-name, v);
-                    }
+                    root.value-edited(root.entry.field-name, v);
                 }
             }
         }
