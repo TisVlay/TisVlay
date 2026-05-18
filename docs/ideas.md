@@ -17,7 +17,6 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 
 - [User service auto-start after `nixos-rebuild switch`](ideas/nixos-user-service-auto-start.md)
 - [Atomic config writes (tempfile + rename)](ideas/atomic-config-writes.md)
-- [Profile rename](ideas/profile-rename.md)
 
 ## CLI
 
@@ -31,6 +30,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - ["Open logs" affordance](ideas/open-logs-affordance.md)
 - [Re-enable Slint `accessibility` feature once upstream blockers clear](ideas/re-enable-slint-accessibility.md)
 - [GUI test coverage fan-out (Layer-C end-to-end tests)](ideas/gui-test-coverage-fanout.md)
+- [User-profile idle-timeout spinner row](ideas/profile-user-idle-timeout-spinner.md)
 
 ## Build & CI
 

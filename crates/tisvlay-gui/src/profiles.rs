@@ -119,9 +119,9 @@ const SYSTEM_FIELDS: &[FieldDef] = &[
 ];
 
 // `IdleTimeoutSeconds` is intentionally absent from this table — the
-// numeric spinner row is deferred per `docs/plans/profile-crud-v2.md`
-// + `docs/ideas/profile-user-idle-timeout-spinner.md`. The proxy
-// still exposes the property; only the GUI surface is omitted.
+// numeric spinner row is deferred (see
+// `docs/ideas/profile-user-idle-timeout-spinner.md`). The proxy still
+// exposes the property; only the GUI surface is omitted.
 const USER_FIELDS: &[FieldDef] = &[
     FieldDef {
         prop_name: "OnSessionLock",

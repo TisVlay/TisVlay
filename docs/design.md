@@ -41,7 +41,7 @@ graph TD
 | **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle); reactively prunes orphan user-config `[[tv]]` assignments via `ObjectManager.InterfacesRemoved`. |
 | **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
 | **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Subscribes to daemon D-Bus signals for real-time state updates (30s fallback poll). Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
-| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. About pane built; Profiles / Session panes are placeholders pending the M3.5 / M4 / M5 work in [docs/plan.md](plan.md). |
+| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. Profiles pane with two-section master list (System / User) + per-profile detail editor (rename / duplicate / delete + per-field inherit-or-override rows). About pane built; Session pane still a placeholder pending M5 in [docs/plan.md](plan.md). |
 
 ### Crate Structure
 
@@ -196,25 +196,38 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 ├── /org/tisvlay                    ObjectManager
 ├── /org/tisvlay/Manager            org.tisvlay.Manager1
 │   ├── Methods:  GetSupportedVendors, GetPairingSchema, AddTv,
-│   │             CancelPair, ReloadConfig, ListSystemProfiles,
-│   │             GetUserProfileDefault, ListUserProfiles, DiscoverTvs
-│   └── Signals:  ConfigReloaded
-└── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
-    │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
-    ├── Properties (rw): Name, Managed, SystemProfile, PrimaryInput,
-    │                     IsScreenOn, Volume, Muted, Backlight
-    ├── Properties (ro): Uuid, Vendor, Connected, Capabilities,
-    │                     VendorInfo, AutomateWhen, Automated,
-    │                     PowerState, CurrentInput, AvailableInputs
-    ├── Methods:  Reconnect, RePair, Remove, GetConfig, UpdateConfig,
-    │             PowerOn, PowerOff, SwitchInput
-    └── Signals:  (standard PropertiesChanged only)
+│   │             CancelPair, ReloadConfig, CreateSystemProfile,
+│   │             DeleteSystemProfile, DuplicateSystemProfile, DiscoverTvs
+│   └── Signals:  ConfigReloaded, PairingProgress, DiscoveryFound
+├── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
+│   │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
+│   ├── Properties (rw): Name, Managed, SystemProfile, PrimaryInput,
+│   │                     IsScreenOn, Volume, Muted, Backlight
+│   ├── Properties (ro): Uuid, Vendor, Connected, Capabilities,
+│   │                     VendorInfo, AutomateWhen, Automated,
+│   │                     PowerState, CurrentInput, AvailableInputs
+│   ├── Methods:  Reconnect, RePair, Remove, GetConfig, UpdateConfig,
+│   │             PowerOn, PowerOff, SwitchInput
+│   └── Signals:  (standard PropertiesChanged only)
+└── /org/tisvlay/SystemProfile/{uuid_underscored}   org.tisvlay.SystemProfile1
+    ├── Properties (rw): Name, OnStartup, OnShutdown, OnReboot,
+    │                     OnNoSession, OnSleep, OnWake, AutomateWhen
+    ├── Properties (ro): Id, LocallySetFields, ReferencedBy
+    └── Methods:  ResetField, ResetAll
 
 org.tisvlay.Session  (session bus)
-└── /org/tisvlay/Session            org.tisvlay.Session1
-    ├── Methods:  ListUserProfiles, GetTvUserProfile, SetTvUserProfile,
-    │             GetEffectiveUserProfile, ReloadConfig
-    └── Signals:  UserProfileChanged
+├── /org/tisvlay                    ObjectManager
+├── /org/tisvlay/Session            org.tisvlay.Session1
+│   ├── Methods:  CreateUserProfile, DeleteUserProfile,
+│   │             DuplicateUserProfile, GetTvUserProfile,
+│   │             SetTvUserProfile, ReloadConfig
+│   └── Signals:  UserProfileChanged
+└── /org/tisvlay/UserProfile/{uuid_underscored}     org.tisvlay.UserProfile1
+    ├── Properties (rw): Name, OnSessionLock, OnSessionUnlock,
+    │                     OnGreeterWake, OnIdleTimeout, OnIdleResume,
+    │                     IdleTimeoutSeconds
+    ├── Properties (ro): Id, LocallySetFields, ReferencedBy
+    └── Methods:  ResetField, ResetAll
 ```
 
 ### Clients and signal flow
@@ -235,10 +248,12 @@ Methods:
 - `AddTv(name: s, vendor: s, config_json: s, managed: b) → (os)` — reserve a TV id and start pairing. **Returns immediately** after sync validation (unknown-vendor / `ConfigInvalidVendorConfig` surface as RPC errors); the handshake itself runs in a daemon-side spawned task. Outcome is reported via `Manager1.PairingProgress` filtered on the returned `tv_uuid` to a terminal phase (`complete` or `failed`). `complete` only fires after the per-TV `Tv1.*` interfaces are registered, so clients observing it can immediately call into the new TV without racing the registration. `config_json` carries vendor-specific connection params as JSON (e.g. `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation. Per-TV lifecycle (`Remove`, `RePair`, `GetConfig`, `UpdateConfig`) lives on `Tv1` after pair.
 - `ReloadConfig()` — reload config from disk
 - `CancelPair(tv_id: s)` — cancel an in-flight pairing handshake. Works for both `AddTv` and `Tv1.RePair` via the daemon-side `pairing_sessions` registry. Returns `NotPairing` (typed) if the tv_id isn't currently pairing — matches the BlueZ `Adapter.RemoveDevice`-on-unknown-device convention.
-- `ListSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
-- `GetUserProfileDefault() → s` — admin baseline user profile as JSON; used by session services to inherit defaults
-- `ListUserProfiles() → a(ss)` — all user profiles (admin-defined) as `(name, json)` pairs
+- `CreateSystemProfile(name: s) → o` — mint a new UUID, register a `SystemProfile1` object at `/org/tisvlay/SystemProfile/<UUID_>` with every field inheriting, return the new path. Rejects empty / reserved (`default`) / duplicate names as `InvalidArgs`. New object surfaces via `ObjectManager.InterfacesAdded`.
+- `DeleteSystemProfile(uuid: s)` — drop a system profile + its D-Bus object (fires `InterfacesRemoved`). Rejects the reserved default UUID and any UUID currently referenced by a TV's `Tv1.SystemProfile` (`AccessDenied`; message names the offending TVs).
+- `DuplicateSystemProfile(source_uuid: s, new_name: s) → o` — clone an existing profile's locally-set fields under a fresh UUID + new name. Fields the source inherited stay inheriting on the copy; `ReferencedBy` starts empty.
 - `DiscoverTvs(timeout_ms: u) → a(sssss)` — SSDP discovery, returns `(id, name, address, hardware_id, vendor)` tuples. Only available when compiled with the `discovery` feature.
+
+Profile-catalog enumeration goes through `ObjectManager.GetManagedObjects()` at `/org/tisvlay` — same pattern TVs use. There's no `ListSystemProfiles` method on `Manager1`; clients walk the `SystemProfile1`-bearing object paths and read each one's `Id` / `Name` / `LocallySetFields` / `ReferencedBy` properties directly. `InterfacesAdded` / `InterfacesRemoved` from the ObjectManager root drive live updates.
 
 Signals: `ConfigReloaded`, `PairingProgress`, `DiscoveryFound`. (Per-TV add/remove fires standard `ObjectManager.InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay`.)
 
@@ -259,14 +274,52 @@ Single-field edits also flow through the per-property `Properties.Set` path — 
 
 ### org.tisvlay.Session1 (Session Service)
 
-Registered on the **session bus** by `tisvlay-session` under `org.tisvlay.Session`.
+Registered on the **session bus** by `tisvlay-session` under `org.tisvlay.Session`. Mirrors the system-bus profile-catalog shape: a single `Session1` interface for lifecycle + per-TV assignment, plus one `UserProfile1` object per profile under `/org/tisvlay/UserProfile/<UUID_>`. The session-bus ObjectManager is also rooted at `/org/tisvlay` so the per-profile objects are discoverable via `GetManagedObjects()`.
 
 Methods:
-- `ListUserProfiles() → a(ss)` — merged user profile list as `(name, json)` pairs; user-defined profiles take precedence over same-named admin profiles
-- `GetTvUserProfile(tv_id: s) → s` — user profile name assigned to a TV (or `"default"` if unassigned)
-- `SetTvUserProfile(tv_id: s, profile: s)` — assign a user profile; validates existence, saves to user config, live-reloads
-- `GetEffectiveUserProfile(tv_id: s) → s` — fully resolved user profile as JSON (user + admin baseline inheritance applied)
-- `ReloadConfig()` — re-query daemon for TV list and admin baseline, reload user config from disk
+- `CreateUserProfile(name: s) → o` — mirror of `Manager1.CreateSystemProfile`; mints a UUID, registers a `UserProfile1` object, returns the new path.
+- `DeleteUserProfile(uuid: s)` — mirror of `Manager1.DeleteSystemProfile`; rejects the reserved default UUID and any UUID currently referenced by a TV's `profile.user` assignment.
+- `DuplicateUserProfile(source_uuid: s, new_name: s) → o` — mirror of `Manager1.DuplicateSystemProfile`.
+- `GetTvUserProfile(tv_id: s) → s` — UUID of the user profile assigned to a TV (or the user-default UUID if unassigned).
+- `SetTvUserProfile(tv_id: s, profile_uuid: s)` — assign a user profile by UUID; validates the UUID is known, saves to user config, live-reloads.
+- `ReloadConfig()` — re-query daemon for TV list and admin baseline, reload user config from disk.
+
+User-profile enumeration goes through the user-bus `ObjectManager.GetManagedObjects()`; no `List*` method exists.
+
+`SetTvUserProfile`'s `UserProfileChanged(tv_id: s, profile_uuid: s)` signal carries the new UUID (was the name in v1); clients update their per-TV state from the UUID.
+
+### Per-profile interfaces (`SystemProfile1` / `UserProfile1`)
+
+Each profile is a first-class D-Bus object — `/org/tisvlay/SystemProfile/<UUID_>` on the system bus, `/org/tisvlay/UserProfile/<UUID_>` on the user bus. Mirrors the per-TV `Tv1` shape (`InterfacesAdded` / `InterfacesRemoved` + typed properties + `PropertiesChanged`), so clients can render and edit profiles without round-tripping JSON-encoded blobs.
+
+Both interfaces share the same property layout:
+
+- **Typed action properties (rw)**: one string property per inheritable field. Strings carry the serde `rename_all = "snake_case"` representation of `SessionAction` (`"power_on"`, `"power_off"`, `"screen_on"`, `"screen_off"`, `"none"`) and `AutomateWhen` (`"always"`, `"on_primary"`, `"off_primary"`). `Properties.Set` is the edit path; the daemon validates the value and writes it back. `UserProfile1` adds `IdleTimeoutSeconds: u` (unsigned 32-bit; `0` is a legitimate "disable idle" value distinct from inheriting).
+- `Name: s` (rw) — friendly name. Rename = `Properties.Set("Name", new_name)`. Daemon validates non-empty + uniqueness; rejects duplicates with `InvalidArgs`.
+- `Id: s` (ro, const) — the hyphenated UUID. Used as the path component (with hyphens underscored) and round-tripped through the GUI as the selection key.
+- `LocallySetFields: as` (ro) — names of the fields the user has *explicitly* set on this profile (e.g. `["on_startup", "on_shutdown"]`). Drives the GUI's gutter-accent stripe + reset-glyph visibility + inherit-marker rendering. Distinguishes "this value was inherited from the parent profile" from "the user picked this value verbatim, even if it happens to equal the inherited value." Inspired by gsettings's `get_value` / `get_user_value` split — same information density, packed as a single array property.
+- `ReferencedBy: as` (ro) — UUIDs of TVs that reference this profile (system bus: TVs whose `Tv1.SystemProfile` points here; user bus: TVs whose user-config `profile.user` points here). Drives the "Used by …" line in the GUI detail header and the in-use Delete rejection.
+
+Methods (both):
+
+- `ResetField(field: s)` — clear one field back to inheriting. Removes the entry from `LocallySetFields`; the typed property's value flips to the resolved fall-through and `PropertiesChanged` fires.
+- `ResetAll()` — clear every locally-set field on this profile. One signal burst.
+
+### Inheritance model
+
+Typed properties always report the *resolved* value — the daemon walks the chain server-side so clients never have to implement inheritance. The chain (three layers for system profiles, four for user profiles):
+
+```
+this profile body  (Some(value) → use this, None → walk up)
+        ↑
+default profile body  (the reserved-UUID `00000000-…-0001`/`-0002` profile)
+        ↑
+hardcoded baseline  (`ResolvedSystemProfile::default()` / `ResolvedUserProfile::default()`)
+```
+
+User profiles additionally interleave an *admin baseline* layer between the user profile and the default — the daemon-owned admin defaults for the same field. Invisible on the wire; the resolved value already accounts for it.
+
+`LocallySetFields` is the wire signal that lets the GUI distinguish "the user picked this value" from "this value was inherited"; without it, a profile that happens to match its parent's value would be indistinguishable from one inheriting. The single `as` array carries the same information per-field-bool pairs would, with half the property count and one signal per override-shape change.
 
 ### org.tisvlay.Tv1 (Base Interface)
 
@@ -317,29 +370,40 @@ Adding an editable field is a one-row schema entry — no D-Bus method changes, 
 
 ### System Config Example
 
+Profile sections are keyed by UUID, not name — UUIDs are the stable identity that survives renames. The reserved `00000000-0000-0000-0000-000000000001` (system) and `00000000-0000-0000-0000-000000000002` (user) UUIDs name the default profiles; the daemon ensures these sections exist on startup and rejects their deletion. Hand-editing the TOML is no longer ergonomic (UUIDs are opaque); GUI editing is the intended surface.
+
 ```toml
 # /var/lib/tisvlay/config.toml  (daemon-owned)
 
-# System profiles — daemon lifecycle events (per-TV via profile.system assignment)
-[system.profiles.default]
-on_startup = "power_on"          # action on system boot (default: power_on)
-on_shutdown = "power_off"        # action on poweroff/halt (default: power_off)
-on_reboot = "none"               # action on reboot/kexec (default: none)
+[system]
+default_profile = "00000000-0000-0000-0000-000000000001"
+
+# System profiles — daemon lifecycle events (per-TV via profile.system assignment).
+# Keyed by UUID; name lives as a body field so renames don't break references.
+[system.profiles."00000000-0000-0000-0000-000000000001"]
+name = "default"
+on_startup = "power_on"          # action on system boot
+on_shutdown = "power_off"        # action on poweroff/halt
+on_reboot = "none"               # action on reboot/kexec
 on_no_session = "none"           # action when all user sessions end (login screen)
-on_sleep = "power_off"           # action on system suspend/hibernate (default: power_off)
-on_wake = "power_on"             # action on system resume from sleep (default: power_on)
-automate_when = "always"         # always | on_primary | off_primary (default: always)
+on_sleep = "power_off"           # action on system suspend/hibernate
+on_wake = "power_on"             # action on system resume from sleep
+automate_when = "always"         # always | on_primary | off_primary
 
-[system.profiles.shared]
+[system.profiles."a1b2c3d4-0000-0000-0000-000000000001"]
+name = "shared"
 automate_when = "on_primary"     # only automate when showing the PC input
+                                 # (other fields inherit from default profile + baseline)
 
-[system.profiles.guest]
+[system.profiles."a1b2c3d4-0000-0000-0000-000000000002"]
+name = "guest"
 on_startup = "none"
 on_shutdown = "screen_off"
 
-# Admin-set baseline for session behavior.
-# Users without their own config inherit this.
-[user.profiles.default]
+# Admin-set baseline for session behavior — keyed by the reserved
+# user-default UUID. Users without their own config inherit this.
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 on_session_lock = "screen_off"   # screen_off | power_off | none
 on_session_unlock = "screen_on"  # screen_on | power_on | none
 on_greeter_wake = "screen_on"    # unblank on lock screen interaction (Wayland only)
@@ -353,14 +417,14 @@ name = "Living Room G4"
 vendor = "lg"
 primary_input = "HDMI_1"         # which input this PC uses (vendor-agnostic)
 managed = true                   # participates in automation (boot WoL, session events, shutdown)
-profile.system = "default"       # which system profile this TV uses
+profile.system = "00000000-0000-0000-0000-000000000001"  # which system profile this TV uses (UUID)
 
 [[tv]]
 uuid = "22222222-2222-4222-8222-222222222222"
 name = "Guest Room"
 vendor = "lg"
 managed = true
-profile.system = "guest"         # different lifecycle behavior
+profile.system = "a1b2c3d4-0000-0000-0000-000000000002"  # the "guest" profile by UUID
 
 # Vendor-specific config — connection params + vendor features.
 # Core has zero knowledge of these fields; each vendor crate
@@ -376,27 +440,30 @@ client_key = "abc123..."
 ```toml
 # ~/.config/tisvlay/config.toml  (session-owned, optional)
 
-# User's own profiles (override or extend admin defaults)
-[user.profiles.default]
+# User's own profiles (override or extend admin defaults).
+# Same UUID-keyed shape as the system config.
+[user.profiles."00000000-0000-0000-0000-000000000002"]
+name = "default"
 idle_timeout_seconds = 300
 on_idle_timeout = "screen_off"
 
-[user.profiles.gaming]
+[user.profiles."a1b2c3d4-0000-0000-0000-00000000f001"]
+name = "gaming"
 on_session_lock = "none"          # don't interrupt gameplay
 idle_timeout_seconds = 0
 on_idle_resume = "none"
 
-# Per-TV user profile assignments — `uuid` matches the system config.
+# Per-TV user profile assignments — `uuid` matches the system config's TV UUID.
 [[tv]]
 uuid = "11111111-1111-4111-8111-111111111111"
-profile.user = "gaming"
+profile.user = "a1b2c3d4-0000-0000-0000-00000000f001"  # by UUID, not name
 
-# guest-room inherits user.profiles.default (no override)
+# guest-room inherits user.profiles."00000000-…-0002" (no override)
 ```
 
 Both system and user configs use the same `[[tv]]` array-of-tables syntax. When using a single-file config, both parsers can read the same `[[tv]]` entries — each ignores fields it doesn't own (serde skips unknown fields by default).
 
-Fields unspecified in a user profile inherit from the admin baseline `user.profiles.default` (system config), not hard-coded defaults. A user who only sets `idle_timeout_seconds = 600` in `[user.profiles.default]` gets all other settings from the system admin's defaults.
+Fields unspecified in a user profile inherit from the admin baseline user-default profile (system config), not hard-coded defaults. A user who only sets `idle_timeout_seconds = 600` on their default user profile gets all other settings from the system admin's defaults.
 
 Key design: `TvConfig` uses `#[serde(flatten)]` to capture vendor-specific fields as raw `toml::Value`. Core has zero vendor knowledge — vendor crates define their own config structs and deserialize from the `toml::Value` internally.
 
