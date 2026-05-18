@@ -335,7 +335,11 @@ component ProfileList inherits Rectangle {
 
 component ProfileDetailHeader inherits Rectangle {
     in property <string> name;
+    in property <ProfileKind> kind;
     in property <[ProfileTvRef]> referenced-by;
+    /// True iff at least one referencing TV is currently automated.
+    /// Drives the Active/Inactive status badge.
+    in property <bool> active;
     /// Disable Delete on the reserved default profile — the daemon
     /// rejects deletion of the default UUID outright. Greying the
     /// button keeps the affordance discoverable without dispatching
@@ -411,137 +415,181 @@ component ProfileDetailHeader inherits Rectangle {
         background: Theme.border;
     }
 
-    header-layout := VerticalLayout {
+    // Three-column shape mirroring `TvDetailHeader`:
+    //   [ tile ] [ name + actions, Used-by ticker below ] [ status badges ]
+    // Padding values copied verbatim from `TvDetailHeader` so the
+    // two pane headers visually match by construction.
+    header-layout := HorizontalLayout {
         width: 100%;
         padding-left: Design.pad-pane;
         padding-right: Design.pad-pane;
         padding-top: 18px;
         padding-bottom: Design.gap-row;
-        spacing: Design.gap-form;
+        spacing: Design.gap-row;
+        alignment: stretch;
 
-        // Title row: profile name (large) + per-profile action buttons.
-        // Two layouts share the slot:
-        //   - View mode: Text + pencil + Duplicate + Delete.
-        //   - Edit mode: LineEditField + ✓ + ✗.
-        // Switching is exclusive via `if root.editing-name: ...` /
-        // `if !root.editing-name: ...` so the rendered children are
-        // disjoint — focus / spacing / accessibility tree all stay
-        // clean across the toggle.
-        HorizontalLayout {
-            spacing: Design.gap-row;
-            alignment: stretch;
+        // Col 1: identity tile.
+        VerticalLayout {
+            width: Design.size-tile-md;
+            alignment: center;
+            ProfileTile {
+                kind: root.kind;
+                tile-size: Design.size-tile-md;
+            }
+        }
 
-            // Name slot — Text in view mode, LineEditField in edit
-            // mode. Wraps a VerticalLayout to vertically-center the
-            // child within the title row's preferred height.
-            VerticalLayout {
-                horizontal-stretch: 1;
-                alignment: center;
-                if !root.editing-name: Text {
-                    text: root.name;
-                    color: Theme.text;
-                    font-size: Design.font-title-3;
-                    font-weight: 700;
-                    overflow: elide;
-                }
-                // Wrap the field in a FocusScope so Escape (which the
-                // inner LineEdit lets bubble out — only printable text
-                // and Enter are consumed) reaches `cancel-rename()`.
-                // Enter still rides `LineEditField.accepted(...)` and
-                // routes to `commit-rename()` directly.
-                if root.editing-name: FocusScope {
-                    key-pressed(event) => {
-                        if (event.text == Key.Escape) {
-                            root.cancel-rename();
-                            return accept;
+        // Col 2: name + action icons row, with the Used-by chip
+        // ticker below.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Design.gap-form;
+
+            // Title row. Two layouts share the name slot:
+            //   - View mode: Text + pencil + Duplicate + Delete.
+            //   - Edit mode: LineEditField + ✓ + ✗.
+            HorizontalLayout {
+                spacing: Design.gap-row;
+                alignment: stretch;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    if !root.editing-name: Text {
+                        text: root.name;
+                        color: Theme.text;
+                        font-size: Design.font-title-3;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    // Wrap the field in a FocusScope so Escape (which
+                    // the inner LineEdit lets bubble out — only
+                    // printable text and Enter are consumed) reaches
+                    // `cancel-rename()`. Enter still rides
+                    // `LineEditField.accepted(...)` and routes to
+                    // `commit-rename()` directly.
+                    if root.editing-name: FocusScope {
+                        key-pressed(event) => {
+                            if (event.text == Key.Escape) {
+                                root.cancel-rename();
+                                return accept;
+                            }
+                            return reject;
                         }
-                        return reject;
-                    }
 
-                    LineEditField {
-                        placeholder-text: @tr("Profile name");
-                        text <=> root.pending-name;
-                        accepted(v) => { root.commit-rename(); }
-                        // `init => self.focus-input()` removed —
-                        // Slint trips its property-recursion guard
-                        // when the LineEditField materializes
-                        // inside this `if`-branch and immediately
-                        // asks the inner LineEdit to grab focus.
-                        // User clicks into the field manually for
-                        // now; revisit when we have a non-recursive
-                        // way to drive focus on materialization.
+                        LineEditField {
+                            placeholder-text: @tr("Profile name");
+                            text <=> root.pending-name;
+                            accepted(v) => { root.commit-rename(); }
+                            // `init => self.focus-input()` removed
+                            // — Slint trips its property-recursion
+                            // guard when the LineEditField
+                            // materializes inside this `if`-branch
+                            // and immediately asks the inner
+                            // LineEdit to grab focus. User clicks
+                            // into the field manually for now;
+                            // revisit when we have a non-recursive
+                            // way to drive focus on materialization.
+                        }
+                    }
+                }
+
+                if !root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        source: Icons.edit;
+                        accessible-label: @tr("Rename profile");
+                        clicked => { root.begin-rename(); }
+                    }
+                }
+                if !root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        source: Icons.copy;
+                        accessible-label: @tr("Duplicate profile");
+                        clicked => { root.request-duplicate(); }
+                    }
+                }
+                if !root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        source: Icons.delete;
+                        accessible-label: @tr("Delete profile");
+                        enabled: root.can-delete;
+                        clicked => { root.request-delete(); }
+                    }
+                }
+                if root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        source: Icons.save;
+                        accessible-label: @tr("Save rename");
+                        clicked => { root.commit-rename(); }
+                    }
+                }
+                if root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        source: Icons.cancel;
+                        accessible-label: @tr("Cancel rename");
+                        clicked => { root.cancel-rename(); }
                     }
                 }
             }
 
-            // Action slot — Duplicate + Delete in view mode, ✓ + ✗ in
-            // edit mode. Hidden Duplicate / Delete during edit so the
-            // user can't accidentally trigger them while renaming,
-            // mirroring the TVs pane's CONFIG-group edit-mode handling.
-            if !root.editing-name: VerticalLayout {
-                alignment: center;
-                IconBtn {
-                    source: Icons.edit;
-                    accessible-label: @tr("Rename profile");
-                    clicked => { root.begin-rename(); }
-                }
-            }
-            if !root.editing-name: VerticalLayout {
-                alignment: center;
-                IconBtn {
-                    source: Icons.copy;
-                    accessible-label: @tr("Duplicate profile");
-                    clicked => { root.request-duplicate(); }
-                }
-            }
-            if !root.editing-name: VerticalLayout {
-                alignment: center;
-                IconBtn {
-                    source: Icons.delete;
-                    accessible-label: @tr("Delete profile");
-                    enabled: root.can-delete;
-                    clicked => { root.request-delete(); }
-                }
-            }
-            if root.editing-name: VerticalLayout {
-                alignment: center;
-                IconBtn {
-                    source: Icons.save;
-                    accessible-label: @tr("Save rename");
-                    clicked => { root.commit-rename(); }
-                }
-            }
-            if root.editing-name: VerticalLayout {
-                alignment: center;
-                IconBtn {
-                    source: Icons.cancel;
-                    accessible-label: @tr("Cancel rename");
-                    clicked => { root.cancel-rename(); }
+            // Used-by chip ticker. Wrapped in a ScrollView so a long
+            // chip list scrolls sideways instead of crashing into
+            // the status-badges column on the right. `as-needed`
+            // keeps the row at its natural height when the chips
+            // fit; `always-off` on the vertical axis blocks the row
+            // from sprouting a vertical scrollbar.
+            if root.referenced-by.length > 0: ScrollView {
+                horizontal-scrollbar-policy: as-needed;
+                vertical-scrollbar-policy: always-off;
+                HorizontalLayout {
+                    spacing: Design.gap-tight;
+                    alignment: start;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Text {
+                            text: @tr("Used by");
+                            color: Theme.text-dim;
+                            font-size: Design.font-meta;
+                        }
+                    }
+                    for tv in root.referenced-by: VerticalLayout {
+                        alignment: center;
+                        Chip {
+                            label: tv.name;
+                            tone: "info";
+                            interactive: true;
+                            clicked => { Profiles.open-tv(tv.uuid); }
+                        }
+                    }
                 }
             }
         }
 
-        // "Used by" chip row — hidden when no TVs reference this
-        // profile.
-        if root.referenced-by.length > 0: HorizontalLayout {
+        // Col 3: status badges. Same shape `TvDetailHeader` uses for
+        // its Connected/Disconnected + Managed-state pair.
+        VerticalLayout {
+            alignment: center;
             spacing: Design.gap-tight;
-            alignment: start;
-
-            VerticalLayout {
-                alignment: center;
-                Text {
-                    text: @tr("Used by");
-                    color: Theme.text-dim;
-                    font-size: Design.font-meta;
+            HorizontalLayout {
+                alignment: end;
+                Chip {
+                    label: root.referenced-by.length > 0
+                        ? @tr("Assigned")
+                        : @tr("Unassigned");
+                    tone: root.referenced-by.length > 0 ? "info" : "neutral";
                 }
             }
-            for tv in root.referenced-by: VerticalLayout {
-                alignment: center;
+            HorizontalLayout {
+                alignment: end;
                 Chip {
-                    label: tv.name;
-                    tone: "info";
-                    interactive: true;
-                    clicked => { Profiles.open-tv(tv.uuid); }
+                    label: root.active ? @tr("Active") : @tr("Inactive");
+                    tone: root.active ? "success" : "neutral";
                 }
             }
         }
@@ -648,7 +696,9 @@ component ProfileFieldRow inherits Rectangle {
 
 component ProfileDetail inherits Rectangle {
     in property <string> name;
+    in property <ProfileKind> kind;
     in property <[ProfileTvRef]> referenced-by;
+    in property <bool> active;
     in property <bool> can-delete: true;
     callback request-delete();
     callback request-duplicate();
@@ -662,7 +712,9 @@ component ProfileDetail inherits Rectangle {
 
         ProfileDetailHeader {
             name: root.name;
+            kind: root.kind;
             referenced-by: root.referenced-by;
+            active: root.active;
             can-delete: root.can-delete;
             request-delete => { root.request-delete(); }
             request-duplicate => { root.request-duplicate(); }
@@ -925,7 +977,9 @@ export component ProfilesPane {
                     width: 100%;
                     height: 100%;
                     name: Profiles.selected-row.name;
+                    kind: Profiles.selected-kind;
                     referenced-by: Profiles.selected-row.referenced-by;
+                    active: Profiles.selected-row.active;
                     can-delete: !Profiles.selected-row.is-default;
                     request-delete => { root.open-delete-dialog(); }
                     request-duplicate => { root.open-duplicate-dialog(); }
