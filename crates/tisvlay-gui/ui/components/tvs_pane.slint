@@ -445,7 +445,7 @@ component TvDetailHeader inherits Rectangle {
         width: 100%;
         padding-left: Design.pad-pane;
         padding-right: Design.pad-pane;
-        padding-top: 18px;
+        padding-top: Design.pad-header-top;
         padding-bottom: Design.gap-row;
         spacing: Design.gap-row;
         alignment: stretch;
@@ -472,7 +472,7 @@ component TvDetailHeader inherits Rectangle {
                 overflow: elide;
             }
             HorizontalLayout {
-                spacing: 10px;
+                spacing: Design.gap-meta;
                 alignment: start;
                 Text {
                     text: root.tv.primary-descriptor == "" ? "—" : root.tv.primary-descriptor;
@@ -563,7 +563,7 @@ component TvDetail inherits Rectangle {
                 width: 100%;
                 padding-left: Design.pad-pane;
                 padding-right: Design.pad-pane;
-                padding-top: 20px;
+                padding-top: Design.pad-body-top;
                 padding-bottom: Design.pad-pane;
                 spacing: Design.gap-pane;
                 alignment: start;

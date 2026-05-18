@@ -85,6 +85,44 @@ export component Chip inherits Rectangle {
 }
 
 // =============================================================================
+// LinkText — clickable single-line text with a tight hit area.
+// =============================================================================
+//
+// Slint's `TouchArea` doesn't auto-size to its child's preferred
+// dimensions; wrapping `Text { ... } TouchArea { ... }` in a layout
+// stretches the click area across the whole row, which makes per-name
+// click targets in a `[name · name · name]` ticker overlap. This
+// component pins a Rectangle to its inner Text's preferred size so
+// the TouchArea has a fitted hit area — useful for "Used by [name]"
+// rows and any future inline-link contexts.
+
+export component LinkText inherits Rectangle {
+    in property <string> text;
+    in property <brush> text-color: Theme.info-text;
+    in property <length> font-size: Design.font-helper;
+    callback clicked();
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    width: inner.preferred-width;
+    height: inner.preferred-height;
+
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+
+    inner := Text {
+        text: root.text;
+        color: root.text-color;
+        font-size: root.font-size;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// =============================================================================
 // VendorTile — small coloured square with a 2-letter vendor code.
 // =============================================================================
 //

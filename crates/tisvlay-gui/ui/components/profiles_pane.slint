@@ -22,7 +22,7 @@ import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, Group, IconBtn, InlineError, LineEditField, NameInputDialog, ProfileTile } from "../widgets.slint";
+import { ConfirmDialog, Chip, Group, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -417,13 +417,13 @@ component ProfileDetailHeader inherits Rectangle {
 
     // Three-column shape mirroring `TvDetailHeader`:
     //   [ tile ] [ name + actions, Used-by ticker below ] [ status badges ]
-    // Padding values copied verbatim from `TvDetailHeader` so the
-    // two pane headers visually match by construction.
+    // Padding tokens shared with `TvDetailHeader` so the two pane
+    // headers visually match by construction.
     header-layout := HorizontalLayout {
         width: 100%;
         padding-left: Design.pad-pane;
         padding-right: Design.pad-pane;
-        padding-top: 18px;
+        padding-top: Design.pad-header-top;
         padding-bottom: Design.gap-row;
         spacing: Design.gap-row;
         alignment: stretch;
@@ -553,7 +553,7 @@ component ProfileDetailHeader inherits Rectangle {
                 height: usedby-row.preferred-height;
                 viewport-width: usedby-row.preferred-width;
                 usedby-row := HorizontalLayout {
-                    spacing: 10px;
+                    spacing: Design.gap-meta;
                     alignment: start;
                     Text {
                         text: @tr("Used by:");
@@ -566,26 +566,16 @@ component ProfileDetailHeader inherits Rectangle {
                         font-size: Design.font-helper;
                     }
                     for tv[i] in root.referenced-by: HorizontalLayout {
-                        spacing: 10px;
+                        spacing: Design.gap-meta;
                         alignment: start;
                         if i > 0: Text {
                             text: "·";
                             color: Theme.text-dim;
                             font-size: Design.font-helper;
                         }
-                        Rectangle {
-                            horizontal-stretch: 0;
-                            tv-text := Text {
-                                text: tv.name;
-                                color: Theme.info-text;
-                                font-size: Design.font-helper;
-                            }
-                            width: tv-text.preferred-width;
-                            height: tv-text.preferred-height;
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { Profiles.open-tv(tv.uuid); }
-                            }
+                        LinkText {
+                            text: tv.name;
+                            clicked => { Profiles.open-tv(tv.uuid); }
                         }
                     }
                 }
@@ -754,7 +744,7 @@ component ProfileDetail inherits Rectangle {
                 width: 100%;
                 padding-left: Design.pad-pane;
                 padding-right: Design.pad-pane;
-                padding-top: 20px;
+                padding-top: Design.pad-body-top;
                 padding-bottom: Design.pad-pane;
                 spacing: Design.gap-pane;
                 alignment: start;
