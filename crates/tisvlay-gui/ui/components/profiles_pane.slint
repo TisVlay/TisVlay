@@ -622,31 +622,65 @@ component ProfileDetail inherits Rectangle {
                 padding-bottom: Design.pad-pane;
                 spacing: Design.gap-pane;
 
-                Group {
-                    title: @tr("FIELDS");
-                    body-spacing: 0;
+                // Inlines the `Group` widget's title-row + card
+                // structure rather than wrapping `Group` so the
+                // "Reset all" action can sit on the title row itself
+                // (mirrors the TVs-pane CONFIG group's Edit / Save /
+                // Cancel placement).
+                VerticalLayout {
+                    spacing: 0;
 
-                    for entry[i] in Profiles.editor-fields: ProfileFieldRow {
-                        entry: entry;
-                        value-edited(field, value) => {
-                            Profiles.value-edited(field, value);
+                    // Title row — same styling as `Group`'s title,
+                    // plus the right-aligned Reset-all action.
+                    HorizontalLayout {
+                        padding-left: 2px;
+                        padding-bottom: Design.gap-stack;
+                        spacing: Design.gap-form;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: @tr("FIELDS");
+                                color: Theme.text-dim;
+                                font-size: Design.font-mini;
+                                font-weight: 600;
+                                letter-spacing: 0.6px;
+                            }
                         }
-                        reset-clicked(field) => {
-                            Profiles.reset-field(field);
+                        Rectangle { horizontal-stretch: 1; }
+                        IconBtn {
+                            source: Icons.reload;
+                            label: @tr("Reset all");
+                            enabled: Profiles.editor-can-reset-all;
+                            clicked => { Profiles.reset-all(); }
                         }
                     }
-                }
 
-                // "Reset all" toolbar — right-aligned at the bottom
-                // of the field stack. Disabled when no field is
-                // locally set so the affordance reads inert rather
-                // than dispatching a no-op `ResetAll()` round-trip.
-                HorizontalLayout {
-                    alignment: end;
-                    Button {
-                        text: @tr("Reset all");
-                        enabled: Profiles.editor-can-reset-all;
-                        clicked => { Profiles.reset-all(); }
+                    // Card — same surface treatment as `Group`'s
+                    // body. `spacing: 0` keeps the per-row gutter
+                    // accent continuous across rows (locally-set
+                    // fields read as one tall stripe instead of
+                    // dashed segments).
+                    Rectangle {
+                        background: Theme.surface;
+                        border-color: Theme.border;
+                        border-width: Design.border-thin;
+                        border-radius: Design.radius-card;
+
+                        VerticalLayout {
+                            width: 100%;
+                            padding: Design.pad-card;
+                            spacing: 0;
+                            for entry[i] in Profiles.editor-fields: ProfileFieldRow {
+                                entry: entry;
+                                value-edited(field, value) => {
+                                    Profiles.value-edited(field, value);
+                                }
+                                reset-clicked(field) => {
+                                    Profiles.reset-field(field);
+                                }
+                            }
+                        }
                     }
                 }
             }
