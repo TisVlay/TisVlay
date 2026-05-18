@@ -1802,16 +1802,54 @@ fn register_callbacks(
         });
     });
 
-    // Duplicate-selected — stub for commit 6. The proper duplication
-    // path needs the per-field body, which the editor in commit 7
-    // brings into Rust-side reach. Surfacing as a toast keeps the
-    // affordance discoverable without silently doing nothing.
+    // Duplicate-profile. The daemon copies the source's locally-set
+    // fields server-side and registers the new per-profile object;
+    // the new profile appears via `InterfacesAdded` and the master
+    // list refresh picks it up.
+    let d = daemon.clone();
+    let s = session.clone();
     let app_weak = app.as_weak();
-    profiles_global.on_duplicate_selected(move || {
-        show_toast(
-            app_weak.clone(),
-            &gettext("Profile duplication lands in a follow-up commit."),
-        );
+    profiles_global.on_confirm_duplicate(move |kind, source_uuid_str, new_name| {
+        let d = d.clone();
+        let s = s.clone();
+        let app_weak = app_weak.clone();
+        let source_uuid_str = source_uuid_str.to_string();
+        let new_name = new_name.to_string();
+        let Ok(source_uuid) = uuid::Uuid::parse_str(&source_uuid_str) else {
+            warn!(uuid = %source_uuid_str, "confirm_duplicate: not a valid UUID, ignoring");
+            return;
+        };
+        tokio::spawn(async move {
+            let result = match kind {
+                ProfileKind::System => d
+                    .duplicate_system_profile(source_uuid, &new_name)
+                    .await
+                    .map(|_| ()),
+                ProfileKind::User => {
+                    let session_ref = s.read().await;
+                    match session_ref.as_ref() {
+                        Some(client) => client
+                            .duplicate_user_profile(source_uuid, &new_name)
+                            .await
+                            .map(|_| ()),
+                        None => {
+                            warn!(name = %new_name, "duplicate_user_profile: session unavailable");
+                            show_toast(app_weak.clone(), &gettext("Session service unavailable"));
+                            return;
+                        }
+                    }
+                }
+                ProfileKind::None => return,
+            };
+            if let Err(e) = result {
+                let msg = format!("{e:#}");
+                warn!(name = %new_name, error = %msg, "duplicate_*_profile failed");
+                show_toast(
+                    app_weak.clone(),
+                    &gettext("Couldn't duplicate profile: {0}").replace("{0}", &msg),
+                );
+            }
+        });
     });
 
     // Used-by chip → TVs pane navigation. Walks the in-memory TV

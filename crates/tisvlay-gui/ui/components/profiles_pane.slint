@@ -714,6 +714,12 @@ export component ProfilesPane {
     /// Rust handler.
     property <string> pending-new-error;
 
+    // --- Pending Duplicate dialog state ---
+    property <ProfileKind> pending-duplicate-kind: ProfileKind.none;
+    property <string> pending-duplicate-source-uuid;
+    property <string> pending-duplicate-name;
+    property <string> pending-duplicate-error;
+
     function validate-new-name(name: string) -> string {
         if (name == "") {
             return "";
@@ -748,6 +754,22 @@ export component ProfilesPane {
         root.pending-delete-uuid = "";
         root.pending-delete-name = "";
         root.pending-delete-referenced-summary = "";
+    }
+
+    function open-duplicate-dialog() {
+        root.pending-duplicate-kind = Profiles.selected-kind;
+        root.pending-duplicate-source-uuid = Profiles.selected-row.uuid;
+        // Pre-populate with a suggested name. The user can edit before
+        // committing; the daemon enforces uniqueness server-side.
+        root.pending-duplicate-name = @tr("{} (copy)", Profiles.selected-row.name);
+        root.pending-duplicate-error = root.validate-new-name(root.pending-duplicate-name);
+    }
+
+    function close-duplicate-dialog() {
+        root.pending-duplicate-kind = ProfileKind.none;
+        root.pending-duplicate-source-uuid = "";
+        root.pending-duplicate-name = "";
+        root.pending-duplicate-error = "";
     }
 
     VerticalLayout {
@@ -808,7 +830,7 @@ export component ProfilesPane {
                     referenced-by: Profiles.selected-row.referenced-by;
                     can-delete: !Profiles.selected-row.is-default;
                     request-delete => { root.open-delete-dialog(); }
-                    request-duplicate => { Profiles.duplicate-selected(); }
+                    request-duplicate => { root.open-duplicate-dialog(); }
                 }
             }
         }
@@ -857,5 +879,31 @@ export component ProfilesPane {
             root.close-create-dialog();
         }
         cancelled => { root.close-create-dialog(); }
+    }
+
+    // Duplicate-profile name-input dialog. Pre-populated with
+    // "<source name> (copy)"; the daemon enforces uniqueness server-
+    // side (no client-side iteration of existing names available in
+    // Slint pure expressions).
+    NameInputDialog {
+        open: root.pending-duplicate-kind != ProfileKind.none;
+        title: @tr("Duplicate profile");
+        prompt: @tr("Enter a name for the new profile.");
+        placeholder: @tr("guest");
+        confirm-label: @tr("Duplicate");
+        name <=> root.pending-duplicate-name;
+        error-message: root.pending-duplicate-error;
+        name-changed(v) => {
+            root.pending-duplicate-error = root.validate-new-name(v);
+        }
+        confirmed => {
+            Profiles.confirm-duplicate(
+                root.pending-duplicate-kind,
+                root.pending-duplicate-source-uuid,
+                root.pending-duplicate-name,
+            );
+            root.close-duplicate-dialog();
+        }
+        cancelled => { root.close-duplicate-dialog(); }
     }
 }

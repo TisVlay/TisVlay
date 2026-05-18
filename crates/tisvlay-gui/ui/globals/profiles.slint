@@ -105,11 +105,14 @@ export global Profiles {
     /// to `Manager1.DeleteSystemProfile` /
     /// `Session1.DeleteUserProfile`.
     callback confirm-delete(ProfileKind, string);
-    /// Detail-header Duplicate. Stubbed in commit 6 — fires a
-    /// toast saying the feature lands in commit 9. The proper
-    /// implementation needs the per-field body which Commit 7
-    /// brings in.
-    callback duplicate-selected();
+    /// Confirm-duplicate from the name-input dialog. Args:
+    /// `(kind, source_uuid, new_name)`. Rust routes to
+    /// `Manager1.DuplicateSystemProfile` /
+    /// `Session1.DuplicateUserProfile`. The new profile's locally-
+    /// set fields mirror the source; the daemon validates the new
+    /// name (non-empty, reserved-name, uniqueness) and surfaces
+    /// rejections as a toast.
+    callback confirm-duplicate(ProfileKind, string, string);
     /// "Used by" chip clicked — navigate to the TVs pane and
     /// select the named TV. Rust flips `AppWindow.active-pane` +
     /// sets `selected-tv-index`.

@@ -403,6 +403,41 @@ impl ManagerService {
             .map_err(|e| zbus::fdo::Error::Failed(format!("Failed to build profile path: {}", e)))
     }
 
+    /// Duplicate an existing system profile under a new friendly name.
+    /// The new profile copies the source's locally-set fields verbatim
+    /// (inheriting fields stay inheriting), gets a fresh UUID, and is
+    /// registered as a sibling `SystemProfile1` object.
+    ///
+    /// Validates the new name the same way `CreateSystemProfile` does
+    /// (non-empty, not the reserved default, unique within the
+    /// catalog) and rejects unknown `source_uuid` values; both error
+    /// paths surface as `org.freedesktop.DBus.Error.InvalidArgs`.
+    async fn duplicate_system_profile(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        source_uuid: &str,
+        new_name: &str,
+    ) -> zbus::fdo::Result<ObjectPath<'static>> {
+        info!(source = %source_uuid, name = %new_name, "D-Bus: DuplicateSystemProfile");
+        let parsed: uuid::Uuid = source_uuid.parse().map_err(|_| {
+            zbus::fdo::Error::InvalidArgs(format!("Invalid system profile UUID: {source_uuid}"))
+        })?;
+
+        let new_uuid = self
+            .manager
+            .duplicate_system_profile(parsed, new_name.to_string())
+            .await
+            .map_err(create_system_profile_err)?;
+
+        if let Err(e) = register_system_profile(connection, new_uuid, self.manager.clone()).await {
+            tracing::warn!(uuid = %new_uuid, error = %e, "Failed to register SystemProfile interface");
+        }
+
+        let path = system_profile_path(&new_uuid);
+        ObjectPath::try_from(path)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("Failed to build profile path: {}", e)))
+    }
+
     /// Delete an existing system profile by UUID.
     ///
     /// Malformed UUIDs return the standard

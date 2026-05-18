@@ -5,8 +5,8 @@
 
 use crate::SessionState;
 use crate::user_profile::{
-    UserProfileEvent, UserProfileEventTx, create_user_profile, delete_user_profile, profile_err,
-    register_user_profile, unregister_user_profile,
+    UserProfileEvent, UserProfileEventTx, create_user_profile, delete_user_profile,
+    duplicate_user_profile, profile_err, register_user_profile, unregister_user_profile,
 };
 use anyhow::Context;
 use std::collections::HashSet;
@@ -137,6 +137,45 @@ impl SessionService {
         }
 
         let path = user_profile_path(&uuid);
+        ObjectPath::try_from(path)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("Failed to build profile path: {}", e)))
+    }
+
+    /// Duplicate an existing user profile under a new friendly name.
+    /// Mirror of `Manager1.DuplicateSystemProfile` on the user bus.
+    async fn duplicate_user_profile(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        source_uuid: &str,
+        new_name: &str,
+    ) -> zbus::fdo::Result<ObjectPath<'static>> {
+        info!(source = %source_uuid, name = %new_name, "D-Bus: DuplicateUserProfile");
+        let parsed: Uuid = source_uuid.parse().map_err(|_| {
+            zbus::fdo::Error::InvalidArgs(format!("Invalid user profile UUID: {source_uuid}"))
+        })?;
+
+        let new_uuid = duplicate_user_profile(
+            &self.state,
+            self.config_path.as_ref(),
+            parsed,
+            new_name.to_string(),
+        )
+        .await
+        .map_err(profile_err)?;
+
+        if let Err(e) = register_user_profile(
+            connection,
+            self.state.clone(),
+            self.config_path.clone(),
+            self.events.clone(),
+            new_uuid,
+        )
+        .await
+        {
+            warn!(uuid = %new_uuid, error = %e, "Failed to register UserProfile interface");
+        }
+
+        let path = user_profile_path(&new_uuid);
         ObjectPath::try_from(path)
             .map_err(|e| zbus::fdo::Error::Failed(format!("Failed to build profile path: {}", e)))
     }

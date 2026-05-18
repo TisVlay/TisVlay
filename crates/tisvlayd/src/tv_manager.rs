@@ -1445,6 +1445,54 @@ impl TvManager {
         Ok(uuid)
     }
 
+    /// Duplicate an existing system profile under a new friendly name.
+    /// The new profile inherits the source's locally-set fields
+    /// verbatim — fields the source had set explicitly stay set on the
+    /// copy; fields the source inherited stay inheriting. The new
+    /// `ReferencedBy` set is empty.
+    pub async fn duplicate_system_profile(
+        &self,
+        source_uuid: uuid::Uuid,
+        new_name: String,
+    ) -> Result<uuid::Uuid, TvManagerError> {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            return Err(TvManagerError::ConfigError(
+                "profile name cannot be empty".into(),
+            ));
+        }
+        if trimmed == tisvlay_core::DEFAULT_PROFILE_NAME {
+            return Err(TvManagerError::ConfigError(format!(
+                "'{}' is reserved for the default system profile",
+                tisvlay_core::DEFAULT_PROFILE_NAME
+            )));
+        }
+
+        let new_uuid = uuid::Uuid::new_v4();
+        {
+            let mut system = self.system_section.write().await;
+            if system.find_profile_by_name(trimmed).is_some() {
+                return Err(TvManagerError::ConfigError(format!(
+                    "A system profile named '{}' already exists",
+                    trimmed
+                )));
+            }
+            let Some(source_body) = system.profiles.get(&source_uuid).cloned() else {
+                return Err(TvManagerError::ConfigError(format!(
+                    "Unknown system profile uuid: {}",
+                    source_uuid
+                )));
+            };
+            let mut new_body = source_body;
+            new_body.name = trimmed.to_string();
+            system.profiles.insert(new_uuid, new_body);
+        }
+
+        self.persist_system_profile_change().await?;
+        info!(source = %source_uuid, new_uuid = %new_uuid, name = %trimmed, "System profile duplicated");
+        Ok(new_uuid)
+    }
+
     /// Delete an existing system profile.
     ///
     /// Rejects:

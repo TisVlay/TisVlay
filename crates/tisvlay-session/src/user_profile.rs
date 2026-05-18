@@ -621,6 +621,55 @@ pub async fn create_user_profile(
     Ok(uuid)
 }
 
+/// Duplicate an existing user profile under a new friendly name. The
+/// new profile inherits the source's locally-set fields verbatim
+/// (inheriting fields stay inheriting), gets a fresh UUID, and has an
+/// empty `ReferencedBy` set.
+pub async fn duplicate_user_profile(
+    state: &Arc<RwLock<SessionState>>,
+    config_path: Option<&PathBuf>,
+    source_uuid: Uuid,
+    new_name: String,
+) -> Result<Uuid, UserProfileMutationError> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err(UserProfileMutationError::Invalid(
+            "profile name cannot be empty".into(),
+        ));
+    }
+    if trimmed == DEFAULT_PROFILE_NAME {
+        return Err(UserProfileMutationError::Invalid(format!(
+            "'{}' is reserved for the default user profile",
+            DEFAULT_PROFILE_NAME
+        )));
+    }
+
+    let new_uuid = Uuid::new_v4();
+    {
+        let mut s = state.write().await;
+        if s.user_config.user.find_profile_by_name(trimmed).is_some() {
+            return Err(UserProfileMutationError::Invalid(format!(
+                "A user profile named '{}' already exists",
+                trimmed
+            )));
+        }
+        let Some(source_body) = s.user_config.user.profiles.get(&source_uuid).cloned() else {
+            return Err(UserProfileMutationError::Invalid(format!(
+                "Unknown user profile uuid: {}",
+                source_uuid
+            )));
+        };
+        let mut new_body = source_body;
+        new_body.name = trimmed.to_string();
+        s.user_config.user.profiles.insert(new_uuid, new_body);
+    }
+
+    refresh_all_resolved_user_profiles(state).await;
+    persist_user_config(state, config_path).await?;
+    info!(source = %source_uuid, new_uuid = %new_uuid, name = %trimmed, "User profile duplicated");
+    Ok(new_uuid)
+}
+
 /// Delete an existing user profile.
 ///
 /// Rejects:

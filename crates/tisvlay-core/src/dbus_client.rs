@@ -195,6 +195,17 @@ trait TisvlayManager {
     /// to the reserved `"default"`, and duplicates as `InvalidArgs`.
     fn create_system_profile(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
 
+    /// Duplicate an existing system profile under a new friendly
+    /// name. Copies the source's locally-set fields verbatim
+    /// (inheriting fields stay inheriting). Same name-validation as
+    /// `CreateSystemProfile`; unknown `source_uuid` also surfaces as
+    /// `InvalidArgs`.
+    fn duplicate_system_profile(
+        &self,
+        source_uuid: &str,
+        new_name: &str,
+    ) -> zbus::Result<OwnedObjectPath>;
+
     /// Delete an existing system profile by UUID. Rejects the default
     /// UUID and any UUID currently referenced by a TV via
     /// `AccessDenied`.
@@ -1799,6 +1810,22 @@ impl DaemonClient {
             .with_context(|| format!("Failed to create system profile '{}'", name))
     }
 
+    /// Duplicate a system profile by source UUID under a new friendly
+    /// name. Returns the new object path. Copies the source's
+    /// locally-set fields server-side; inheriting fields stay
+    /// inheriting on the copy.
+    pub async fn duplicate_system_profile(
+        &self,
+        source_uuid: uuid::Uuid,
+        new_name: &str,
+    ) -> Result<zbus::zvariant::OwnedObjectPath> {
+        debug!(source = %source_uuid, name = %new_name, "Calling DuplicateSystemProfile on daemon");
+        self.manager
+            .duplicate_system_profile(source_uuid.to_string().as_str(), new_name)
+            .await
+            .with_context(|| format!("Failed to duplicate system profile '{}'", new_name))
+    }
+
     /// Delete an existing system profile by UUID.
     ///
     /// Rejects the default UUID and any UUID referenced by a TV via
@@ -1927,6 +1954,14 @@ trait TisvlaySession {
     /// `"default"`, and duplicates as `InvalidArgs`.
     fn create_user_profile(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
 
+    /// Duplicate a user profile by source UUID under a new friendly
+    /// name. Same shape as `Manager1.DuplicateSystemProfile`.
+    fn duplicate_user_profile(
+        &self,
+        source_uuid: &str,
+        new_name: &str,
+    ) -> zbus::Result<OwnedObjectPath>;
+
     /// Delete an existing user profile by UUID. Rejects the default
     /// UUID and any UUID currently referenced by a TV via
     /// `AccessDenied`.
@@ -2036,6 +2071,19 @@ impl SessionClient {
             .create_user_profile(name)
             .await
             .with_context(|| format!("Failed to create user profile '{}'", name))
+    }
+
+    /// Duplicate a user profile by source UUID. Mirror of
+    /// [`DaemonClient::duplicate_system_profile`].
+    pub async fn duplicate_user_profile(
+        &self,
+        source_uuid: uuid::Uuid,
+        new_name: &str,
+    ) -> Result<zbus::zvariant::OwnedObjectPath> {
+        self.proxy
+            .duplicate_user_profile(source_uuid.to_string().as_str(), new_name)
+            .await
+            .with_context(|| format!("Failed to duplicate user profile '{}'", new_name))
     }
 
     /// Delete an existing user profile by UUID.
