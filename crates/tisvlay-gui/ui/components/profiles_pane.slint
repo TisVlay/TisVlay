@@ -213,13 +213,6 @@ component ProfileList inherits Rectangle {
             selected: Profiles.selected-kind == ProfileKind.system
                    && Profiles.selected-uuid == r.uuid;
             clicked => {
-                // Hand the row off to `selected-row` here so the
-                // detail header (gated on `selected-row.uuid != ""`)
-                // materializes on the same frame as the click. Rust
-                // can't push `selected-row` in response to a click
-                // without a state-refresh tick, which previously
-                // left the detail pane empty until the next
-                // fallback poll (up to 30 s of dead air).
                 Profiles.selected-kind = ProfileKind.system;
                 Profiles.selected-uuid = r.uuid;
                 Profiles.selected-row = r;
@@ -401,14 +394,6 @@ component ProfileDetailHeader inherits Rectangle {
                         placeholder-text: @tr("Profile name");
                         text <=> root.pending-name;
                         accepted(v) => { root.commit-rename(); }
-                        // `init => self.focus-input()` removed —
-                        // Slint trips its property-recursion guard
-                        // when the LineEditField materializes
-                        // inside this `if`-branch and immediately
-                        // asks the inner LineEdit to grab focus.
-                        // User clicks into the field manually for
-                        // now; revisit when we have a non-recursive
-                        // way to drive focus on materialization.
                     }
                 }
             }

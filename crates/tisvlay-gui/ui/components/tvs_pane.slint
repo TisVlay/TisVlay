@@ -51,15 +51,10 @@ export struct TvViewModel {
     backlight: int,
     current-input: string,
     available-input-ids: [string],
-    /// Friendly name resolved Rust-side from
-    /// `system-profile-uuid` for the ComboBox `current-value`.
-    /// Empty when no assignment exists (Slint binding falls back
-    /// to "default" in that case).
+    /// Friendly name (ComboBox display); empty when unassigned.
     system-profile: string,
-    /// Immutable UUID for the navigation pencil. Pre-resolved
-    /// Rust-side so an empty assignment surfaces as the
-    /// `DEFAULT_SYSTEM_PROFILE_UUID` sentinel rather than `""`,
-    /// keeping the Slint click handler free of fallback logic.
+    /// Wire UUID (navigation pencil); empty assignment collapses to
+    /// the system-default UUID Rust-side.
     system-profile-uuid: string,
     user-profile: string,
     user-profile-uuid: string,
@@ -649,16 +644,6 @@ component TvDetail inherits Rectangle {
                 Group {
                     title: @tr("PROFILES");
 
-                    // Each row pairs the profile picker with a trailing
-                    // pencil shortcut that hands off to the Profiles
-                    // pane with the assigned profile pre-selected —
-                    // symmetric with the Profiles pane's "Used by"
-                    // chips that route the other way. Trailing-icon
-                    // placement matches the INFO group's CopyBtn and
-                    // the Profiles-pane field-row reset glyph. We
-                    // nest a HorizontalLayout inside the FormRow body
-                    // so the picker + pencil get the per-row spacing
-                    // FormRow's bare `@children` slot otherwise omits.
                     FormRow {
                         label: @tr("System");
                         // helper: "Drives daemon lifecycle (boot/shutdown/sleep).";

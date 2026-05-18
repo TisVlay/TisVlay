@@ -137,11 +137,9 @@ fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: Str
     });
 }
 
-/// Profiles-pane sticky banner — same shape as `push_tvs_error` but
-/// routes into `Errors.profiles`. Used for state-level failures that
-/// the user needs to address until resolved (reload-config). Action
-/// failures (create/delete/rename/field-edit/reset) stay on the
-/// transient toast path since the user can immediately retry.
+/// Profiles-pane sticky banner. Reserved for state-level failures the
+/// user must address (e.g. reload-config); per-action failures use
+/// transient toasts.
 fn push_profiles_error(app_weak: &slint::Weak<AppWindow>, title: String, message: String) {
     on_ui(app_weak, move |app| {
         let errors = app.global::<Errors>();
@@ -766,12 +764,7 @@ fn register_callbacks(
         let tv_id = tv_id.to_string();
         let profile_name = profile_name.to_string();
         tokio::spawn(async move {
-            // The TVs-pane ComboBox model is the profile-name list,
-            // so `selected(v)` hands us a name. The daemon-side
-            // `Tv1.SystemProfile` setter expects the UUID — fetch
-            // the catalog and look it up. Profile lists are small;
-            // one round-trip per click is cheaper than threading a
-            // shared name→UUID cache through every callback.
+            // Name → UUID; the wire setter takes a UUID.
             let uuid = match d.list_system_profiles_full().await {
                 Ok(profiles) => profiles
                     .into_iter()
@@ -826,7 +819,6 @@ fn register_callbacks(
                 return;
             };
 
-            // Same name → UUID dance as the system case above.
             let uuid = match client.list_user_profiles_full().await {
                 Ok(profiles) => profiles
                     .into_iter()
@@ -899,9 +891,6 @@ fn register_callbacks(
         let s = s.clone();
         let app_weak = app_weak.clone();
         tokio::spawn(async move {
-            // Reload affects both TVs and profiles — dual-route the
-            // banner so the user sees it on whichever pane they're
-            // on. Per-pane dismiss clears each slot independently.
             if let Err(e) = d.reload_config().await {
                 let msg = format!("{e}");
                 warn!(error = %msg, "daemon reload_config failed");
@@ -1841,15 +1830,9 @@ fn register_callbacks(
         }
     });
 
-    // TVs-pane PROFILES-row pencil → Profiles pane navigation. The
-    // reverse of `open_tv` above. Routed by UUID rather than friendly
-    // name so a rename race or a transient duplicate name can't
-    // misroute the navigation — UUIDs are immutable. Walks the
-    // Profiles global's `system` / `user` model for the matching row
-    // (UUID + referenced-by + …), populates the selection triple so
-    // the detail header materializes on the same frame as the pane
-    // switch, then spawns the same editor-priming task the master-
-    // list `select` callback runs.
+    // UUID-routed: name lookups would race with renames. The matching
+    // row is required for the selection-triple write; an unparseable
+    // or unknown UUID drops us back on the calling pane.
     let d_conn = daemon.connection().clone();
     let s = session.clone();
     let editor = editor_handle.clone();
@@ -1882,9 +1865,6 @@ fn register_callbacks(
             }
         }
         let Some(row) = matched else {
-            // Stale-state race (the catalog was just edited by
-            // another client). The user is dropped back on the TVs
-            // pane with the in-place toast surface still active.
             warn!(
                 kind = ?kind,
                 uuid = %profile_uuid,
@@ -1897,7 +1877,6 @@ fn register_callbacks(
         profiles.set_selected_row(row);
         app.set_active_pane(Pane::Profiles);
 
-        // Editor priming runs off the UI thread — mirrors `on_select`.
         let d_conn = d_conn.clone();
         let s = s.clone();
         let editor = editor.clone();
