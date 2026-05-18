@@ -104,20 +104,22 @@ Branch off `main`. Each commit compiles and ships a self-contained slice; one PR
 - Update `build_profile_rows` Rust unit tests to cover the 3 states + the "any automated" rollup.
 - No UI changes in this commit; the field is unused until commit 3/4.
 
-### Commit 3 — Master-list row redesign
-- Replace `ProfileListRow`'s inner `HorizontalLayout` with the TVs-pane shape: `ProfileTile` (size-tile-sm) + name column (stretchy) where the row 2 shows the 3-state status label with the status dot.
+### Commit 3 — Master-list row redesign (shape only, height unchanged)
+- Replace `ProfileListRow`'s inner `HorizontalLayout` with the TVs-pane shape: `ProfileTile` (size-tile-sm) + name column (stretchy) where row 2 shows the 3-state status label with the status dot.
 - Drop the trailing `Nx` `Text`. `(default)` badge stays where it is.
 - Drop `referenced_by_summary` from the master-list row visuals (still on the struct for the delete dialog).
-- Row height grows from 40 px → 64 px? Or keep 40 px and pack tighter? Decision: match `TvListRow` at 64 px so the masters feel identical.
+- **Row height stays at 40 px in this commit.** Content will read cramped; that's intentional — Commit 5 either bumps to 64 px (TVs parity) or tightens inner padding instead, after we see how the new contents render. Splitting "shape right" from "dimensions right" lets us back out the height change without reverting two commits.
 
 ### Commit 4 — Detail header restructure
 - Rewrite `ProfileDetailHeader`'s `header-layout` from `VerticalLayout` to `HorizontalLayout` with 3 columns: tile + middle (2 rows: name+actions, Used-by chip ticker) + status badges stack.
-- Wrap the Used-by chip row in a horizontal `ScrollView` (`viewport-height: self.visible-height; vertical-scrollbar-policy: always-off;`) so overflow ticks sideways. Verify behavior with a synthetic profile that references 10+ TVs.
+- Wrap the Used-by chip row in a `ScrollView` with `horizontal-scrollbar-policy: as-needed` and `vertical-scrollbar-policy: always-off`. `as-needed` keeps the row at its natural height when the chips fit; the scrollbar only renders when the chip list overflows. Desktop discoverability beats touch-style invisible flicking. If `ScrollView`'s `viewport-width` math fights the parent layout (claiming more horizontal space than the column allows), fall back to `Flickable` with a wide inner content rect.
+- Verify behavior with a synthetic profile that references 10+ TVs.
 - Status badge column uses the same `VerticalLayout { alignment: center; spacing: gap-tight; }` shape as `TvDetailHeader`.
 - Padding values copied from `TvDetailHeader` (`padding-top: 18px; padding-bottom: gap-row;`) — header heights should match by construction.
 
-### Commit 5 — Visual polish + tests
-- Side-by-side visual check vs TVs pane. Record any tweaks (probably: spacing between columns, vertical alignment of action icons against name).
+### Commit 5 — Row-height decision + visual polish + tests
+- Side-by-side visual check vs TVs pane. Expected outcome: bump `ProfileListRow` height from 40 → 64 px to match `TvListRow`. If the bumped row looks too sparse against the 50/50 master split (e.g. only 3 visible rows per section on a normal window), back off and tighten the row's inner padding at 40 px instead — both panes can later move to a `size-list-row` design token if we want shared density.
+- Other expected tweaks: spacing between columns, vertical alignment of action icons against name in the detail header.
 - Add an integration check (Rust state-snapshot test): pseudo-profile with 0 / 1-non-automated / 1-automated referencing TVs produces the expected `active` values.
 - Refresh `tisvlay-gui.pot` for new strings (`Assigned`, `Unassigned`, `Active`, `Inactive`).
 
