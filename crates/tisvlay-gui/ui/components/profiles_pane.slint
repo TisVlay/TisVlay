@@ -537,34 +537,55 @@ component ProfileDetailHeader inherits Rectangle {
                 }
             }
 
-            // Used-by chip ticker. Wrapped in a ScrollView so a long
-            // chip list scrolls sideways instead of crashing into
-            // the status-badges column on the right. `as-needed`
-            // keeps the row at its natural height when the chips
-            // fit; `always-off` on the vertical axis blocks the row
-            // from sprouting a vertical scrollbar.
-            if root.referenced-by.length > 0: ScrollView {
-                horizontal-scrollbar-policy: as-needed;
-                vertical-scrollbar-policy: always-off;
-                HorizontalLayout {
-                    spacing: Design.gap-tight;
+            // Used-by row. Plain Text spans + middot separators
+            // matching the TVs-pane descriptor row — chips would
+            // run ~5 px taller (border + padding) and push the
+            // header noticeably above the TVs-pane header. TV
+            // names tint to `info-text` and carry a per-name
+            // TouchArea so the click-through to each TV survives.
+            // Always renders so the header height is stable across
+            // assigned + unassigned states (matches TVs-pane row 2
+            // which falls back to `—` when the descriptor values
+            // are empty); wrapped in a Flickable so a wide list
+            // scrolls sideways (drag) instead of clipping into the
+            // status-badges column.
+            Flickable {
+                height: usedby-row.preferred-height;
+                viewport-width: usedby-row.preferred-width;
+                usedby-row := HorizontalLayout {
+                    spacing: 10px;
                     alignment: start;
-
-                    VerticalLayout {
-                        alignment: center;
-                        Text {
-                            text: @tr("Used by");
-                            color: Theme.text-dim;
-                            font-size: Design.font-meta;
-                        }
+                    Text {
+                        text: @tr("Used by:");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
                     }
-                    for tv in root.referenced-by: VerticalLayout {
-                        alignment: center;
-                        Chip {
-                            label: tv.name;
-                            tone: "info";
-                            interactive: true;
-                            clicked => { Profiles.open-tv(tv.uuid); }
+                    if root.referenced-by.length == 0: Text {
+                        text: "—";
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                    }
+                    for tv[i] in root.referenced-by: HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        if i > 0: Text {
+                            text: "·";
+                            color: Theme.text-dim;
+                            font-size: Design.font-helper;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 0;
+                            tv-text := Text {
+                                text: tv.name;
+                                color: Theme.info-text;
+                                font-size: Design.font-helper;
+                            }
+                            width: tv-text.preferred-width;
+                            height: tv-text.preferred-height;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Profiles.open-tv(tv.uuid); }
+                            }
                         }
                     }
                 }
