@@ -361,6 +361,12 @@ pub fn run() -> Result<()> {
     icons.set_copy(load_themed_icon(&["edit-copy"]));
     // Delete: the action-verb `edit-delete` glyph.
     icons.set_delete(load_themed_icon(&["edit-delete"]));
+    // Profile-identity tiles. `im-user` and `system-users` are the
+    // freedesktop names the tray already uses for its user / system
+    // profile submenus — pairing the GUI tile with the same glyph
+    // keeps the cross-surface affordance consistent.
+    icons.set_im_user(load_themed_icon(&["im-user"]));
+    icons.set_system_users(load_themed_icon(&["system-users"]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing

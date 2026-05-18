@@ -9,6 +9,7 @@ import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 import { Clipboard } from "globals/clipboard.slint";
 import { Icons } from "globals/icons.slint";
+import { ProfileKind } from "globals/profiles.slint";
 
 // =============================================================================
 // Chip — small status pill (Connected, Managed, Unmanaged, etc.).
@@ -128,6 +129,42 @@ export component VendorTile inherits Rectangle {
         vertical-alignment: center;
         width: 100%;
         height: 100%;
+    }
+}
+
+// =============================================================================
+// ProfileTile — small icon tile for system / user profile entries.
+// =============================================================================
+//
+// Parallels VendorTile in role: an identity glyph rendered next to
+// the profile name in master-list rows and detail headers. Disambig-
+// uates system from user profiles via the freedesktop `system-users`
+// and `im-user` glyphs — same affordance the tray uses for its
+// profile submenus, so the cross-surface idiom stays consistent.
+//
+// `ProfileKind.none` is the unselected sentinel and shouldn't reach
+// a tile; the renderer falls through to the user glyph to keep the
+// surface non-empty if a race ever lands here.
+
+export component ProfileTile inherits Rectangle {
+    in property <ProfileKind> kind;
+    in property <length> tile-size: 28px;
+
+    width: tile-size;
+    height: tile-size;
+    border-radius: 5px;
+    background: Theme.chip;
+    border-width: Design.border-thin;
+    border-color: Theme.border;
+
+    Image {
+        source: root.kind == ProfileKind.system ? Icons.system_users : Icons.im_user;
+        width: root.tile-size * 0.7;
+        height: root.tile-size * 0.7;
+        x: (root.tile-size - self.width) / 2;
+        y: (root.tile-size - self.height) / 2;
+        image-fit: contain;
+        colorize: Theme.chip-text;
     }
 }
 
