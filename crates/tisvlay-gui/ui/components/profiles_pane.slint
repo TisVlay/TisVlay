@@ -16,7 +16,7 @@
 // The detail body in commit 6 is a placeholder; `ProfileFieldRow` +
 // the inheritance-driven editor lands in commit 7.
 
-import { Button, ComboBox, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Button, ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
@@ -508,7 +508,7 @@ component ProfileFieldRow inherits Rectangle {
     callback value-edited(string, string);
     callback reset-clicked(string);
 
-    height: row-layout.preferred-height + 2 * Design.gap-stack;
+    height: row-layout.preferred-height;
 
     // Left gutter accent — 2 px stripe in Theme.accent for locally-set
     // fields; transparent otherwise. Mirrors v1's design (the user
