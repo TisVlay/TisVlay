@@ -666,8 +666,8 @@ component ProfileFieldRow inherits Rectangle {
         // pre-built `options` array, `current-value` is the
         // resolved value or the inherit placeholder. ComboBox
         // `selected(v)` emits the new string; Rust splits the
-        // `(inherit: X)` form from concrete values by comparing
-        // against `options[0]` server-side.
+        // inherit-placeholder case from concrete values by
+        // comparing against `options[0]` server-side.
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
@@ -676,7 +676,7 @@ component ProfileFieldRow inherits Rectangle {
                 current-value: root.entry.current-value;
                 selected(v) => {
                     // ComboBox emits the visible string verbatim;
-                    // index 0 is the `(inherit: X)` placeholder so
+                    // index 0 is the inherit placeholder so
                     // matching against `options[0]` is the simplest
                     // way to flag the "clear" case to Rust without
                     // round-tripping the index.

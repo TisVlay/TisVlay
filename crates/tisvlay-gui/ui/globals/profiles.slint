@@ -43,9 +43,11 @@ export struct ProfileFieldEntry {
     /// (e.g. `"On startup"`). Rust formats with `gettext` so the
     /// translator catalog stays the source of truth.
     label: string,
-    /// Pre-built ComboBox model. Index 0 is the
-    /// `"(inherit: <X>)"` placeholder; subsequent entries are the
-    /// concrete values (`"power_on"`, `"power_off"`, …).
+    /// Pre-built ComboBox model. Index 0 is the inherit
+    /// placeholder; subsequent entries are the concrete values
+    /// (`"power_on"`, `"power_off"`, …). Placeholder shape is
+    /// built by `profiles::build_row` Rust-side; the Slint side
+    /// matches on `options[0]` and doesn't depend on the literal.
     options: [string],
     /// Resolved value to render in the ComboBox. When
     /// `is-locally-set` is false this matches `options[0]` (the

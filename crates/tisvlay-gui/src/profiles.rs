@@ -515,11 +515,11 @@ async fn prime_rows(kind: ProfileKind, proxy: &ProfileProxy) -> Result<Vec<RowRa
 
 fn build_row(field: &FieldDef, resolved: &str, locally_set: &[String]) -> RowRaw {
     let is_locally_set = locally_set.iter().any(|f| f == field.wire_name);
-    // Inherit placeholder is rendered as `(inherit: <resolved>)`
-    // — the resolved value IS what the field falls through to when
-    // unset, so showing it here primes the user's "what will happen
-    // if I clear this?" expectation. v1 used the same shape.
-    let inherit_placeholder = format!("({}: {})", gettext("inherit"), resolved);
+    // Inherit placeholder is rendered as `<resolved>*`. The trailing
+    // `*` marks the value as inherited (not locally-set); the value
+    // itself is the resolved fall-through, so the user can see what
+    // the row would render if they cleared the override.
+    let inherit_placeholder = format!("{}*", resolved);
     let options: Vec<String> = std::iter::once(inherit_placeholder.clone())
         .chain(field.options.iter().map(|o| (*o).to_string()))
         .collect();
@@ -727,26 +727,17 @@ async fn apply_signal_update(
 }
 
 /// Reverse-engineer the resolved value from an existing row. The
-/// row's `current-value` is either the concrete value (when
-/// locally-set) or the `(inherit: X)` placeholder; we strip the
-/// placeholder shape when the latter is the case so callers always
-/// see the raw resolved string. Used in the signal-update path
-/// when a field outside `updates` needs its row rebuilt to track a
-/// `LocallySetFields` flip.
+/// row's `current-value` is either the concrete value (when locally
+/// set) or the `<resolved>*` placeholder; strip the trailing `*` in
+/// the latter case so callers always see the raw resolved string.
+/// Used in the signal-update path when a field outside `updates`
+/// needs its row rebuilt to track a `LocallySetFields` flip.
 fn extract_resolved_from_row(row: &ProfileFieldEntry, _field: &FieldDef) -> String {
     let current = row.current_value.as_str();
     if row.is_locally_set {
         return current.to_string();
     }
-    // Inherit placeholder shape is `({localized-inherit}: {value})`
-    // — strip the prefix + trailing `)` to recover the value.
-    let prefix = format!("({}: ", gettext("inherit"));
-    if let Some(rest) = current.strip_prefix(prefix.as_str())
-        && let Some(value) = rest.strip_suffix(')')
-    {
-        return value.to_string();
-    }
-    String::new()
+    current.strip_suffix('*').unwrap_or(current).to_string()
 }
 
 // =============================================================================
