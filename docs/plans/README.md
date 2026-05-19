@@ -15,4 +15,5 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
+- [profile-unification.md](profile-unification.md) — unify the system / user profile D-Bus interfaces (generic `ProfileService<K>`, `ProfileKind` trait, declarative macro for property pairs) and land a typed field-kind registry (Enum / Number / Bool / Text) so the Profiles pane can render non-enum field rows.
 - [tray-i18n.md](tray-i18n.md) — extend gettext-based i18n to `tisvlay-tray`; track [slint#7949](https://github.com/slint-ui/slint/issues/7949) as the trigger to revisit pure-Rust i18n backends.
