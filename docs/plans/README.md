@@ -15,4 +15,4 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-(none — last completed plan was `screen-on-always-reliable.md`, migrated into [docs/lg/firmware-quirks.md](../lg/firmware-quirks.md) and the "Reliable screen-state actions" section of [docs/design.md](../design.md) when the work shipped.)
+- [tray-i18n.md](tray-i18n.md) — extend gettext-based i18n to `tisvlay-tray`; track [slint#7949](https://github.com/slint-ui/slint/issues/7949) as the trigger to revisit pure-Rust i18n backends.
