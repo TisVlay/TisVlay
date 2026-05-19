@@ -486,6 +486,25 @@ pub enum SystemEvent {
     Wake,
 }
 
+/// Trim `name` and reject empty / reserved-default values. Returns
+/// the trimmed slice on success. Caller must still verify uniqueness
+/// against the live profile catalog under whatever lock is held.
+fn validate_new_system_profile_name(name: &str) -> Result<&str, TvManagerError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(TvManagerError::ConfigError(
+            "profile name cannot be empty".into(),
+        ));
+    }
+    if trimmed == tisvlay_core::DEFAULT_PROFILE_NAME {
+        return Err(TvManagerError::ConfigError(format!(
+            "'{}' is reserved for the default system profile",
+            tisvlay_core::DEFAULT_PROFILE_NAME
+        )));
+    }
+    Ok(trimmed)
+}
+
 /// Parse a [`SessionAction`] from its serde `rename_all = "snake_case"`
 /// wire form. Surfaces failure as `TvManagerError::ConfigError`
 /// (mapped to `zbus::fdo::Error::InvalidArgs` at the D-Bus boundary).
@@ -856,6 +875,25 @@ impl TvManager {
     fn emit_state_change(&self, event: StateChangeEvent) {
         if let Err(e) = self.state_change_tx.send(event) {
             debug!("Failed to send state change event: {}", e);
+        }
+    }
+
+    /// Emit `SystemProfileBodyChanged` for the previously-assigned and
+    /// newly-assigned UUIDs after a TV reassignment, deduping when
+    /// they match. Mirrors the session-side `TvReassigned` event but
+    /// fans the refresh out per-profile rather than via a set.
+    fn emit_system_profile_reassign(&self, prev: Option<uuid::Uuid>, new: Option<uuid::Uuid>) {
+        let mut to_emit = Vec::new();
+        if let Some(p) = prev {
+            to_emit.push(p);
+        }
+        if let Some(n) = new
+            && !to_emit.contains(&n)
+        {
+            to_emit.push(n);
+        }
+        for uuid in to_emit {
+            self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
         }
     }
 
@@ -1404,20 +1442,7 @@ impl TvManager {
     /// so `ObjectManager.InterfacesAdded` fires for clients tracking
     /// the catalog.
     pub async fn create_system_profile(&self, name: String) -> Result<uuid::Uuid, TvManagerError> {
-        // Trim trailing/leading whitespace before validation — a name
-        // that's only whitespace counts as empty for our purposes.
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(TvManagerError::ConfigError(
-                "profile name cannot be empty".into(),
-            ));
-        }
-        if trimmed == tisvlay_core::DEFAULT_PROFILE_NAME {
-            return Err(TvManagerError::ConfigError(format!(
-                "'{}' is reserved for the default system profile",
-                tisvlay_core::DEFAULT_PROFILE_NAME
-            )));
-        }
+        let trimmed = validate_new_system_profile_name(&name)?;
         {
             let system = self.system_section.read().await;
             if system.find_profile_by_name(trimmed).is_some() {
@@ -1447,26 +1472,13 @@ impl TvManager {
 
     /// Duplicate an existing system profile under a new friendly name.
     /// The new profile inherits the source's locally-set fields
-    /// verbatim — fields the source had set explicitly stay set on the
-    /// copy; fields the source inherited stay inheriting. The new
-    /// `ReferencedBy` set is empty.
+    /// verbatim; fresh UUID, empty `ReferencedBy`.
     pub async fn duplicate_system_profile(
         &self,
         source_uuid: uuid::Uuid,
         new_name: String,
     ) -> Result<uuid::Uuid, TvManagerError> {
-        let trimmed = new_name.trim();
-        if trimmed.is_empty() {
-            return Err(TvManagerError::ConfigError(
-                "profile name cannot be empty".into(),
-            ));
-        }
-        if trimmed == tisvlay_core::DEFAULT_PROFILE_NAME {
-            return Err(TvManagerError::ConfigError(format!(
-                "'{}' is reserved for the default system profile",
-                tisvlay_core::DEFAULT_PROFILE_NAME
-            )));
-        }
+        let trimmed = validate_new_system_profile_name(&new_name)?;
 
         let new_uuid = uuid::Uuid::new_v4();
         {
@@ -3482,18 +3494,7 @@ impl TvManager {
             // here is cheap relative to the disk-write hop and keeps
             // the variable types local to this block.
             let new_uuid: Option<uuid::Uuid> = value.parse().ok();
-            let mut to_emit = Vec::new();
-            if let Some(prev) = prev_profile_uuid {
-                to_emit.push(prev);
-            }
-            if let Some(new) = new_uuid
-                && !to_emit.contains(&new)
-            {
-                to_emit.push(new);
-            }
-            for uuid in to_emit {
-                self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
-            }
+            self.emit_system_profile_reassign(prev_profile_uuid, new_uuid);
         }
 
         info!(tv_id = %tv_id, key = %key, value = %value, "TV option updated");
@@ -3804,18 +3805,7 @@ impl TvManager {
                 .iter()
                 .find(|(k, _)| k == "system_profile")
                 .and_then(|(_, v)| v.parse().ok());
-            let mut to_emit = Vec::new();
-            if let Some(prev) = prev_profile_uuid {
-                to_emit.push(prev);
-            }
-            if let Some(new) = new_uuid
-                && !to_emit.contains(&new)
-            {
-                to_emit.push(new);
-            }
-            for uuid in to_emit {
-                self.emit_state_change(StateChangeEvent::SystemProfileBodyChanged { uuid });
-            }
+            self.emit_system_profile_reassign(prev_profile_uuid, new_uuid);
         }
 
         // Vendor-field changes invalidate the live connection (IP

@@ -473,10 +473,6 @@ trait TisvlayTvBacklight {
     default_service = "org.tisvlay.Daemon"
 )]
 pub trait TisvlaySystemProfile {
-    /// Stable UUID (hyphenated string). Const for the object's lifetime.
-    #[zbus(property)]
-    fn id(&self) -> zbus::Result<String>;
-
     /// Friendly profile name.
     #[zbus(property)]
     fn name(&self) -> zbus::Result<String>;
@@ -528,14 +524,9 @@ pub trait TisvlaySystemProfile {
     fn set_automate_when(&self, value: &str) -> zbus::Result<()>;
 
     /// Field names explicitly set on this profile (e.g.
-    /// `["on_startup", "on_wake"]`). Drives the GUI's gutter accent +
-    /// `(inherit: X)` placeholder visibility.
+    /// `["on_startup", "on_wake"]`). Drives the GUI's gutter accent.
     #[zbus(property)]
     fn locally_set_fields(&self) -> zbus::Result<Vec<String>>;
-
-    /// UUIDs of TVs referencing this profile.
-    #[zbus(property)]
-    fn referenced_by(&self) -> zbus::Result<Vec<String>>;
 
     /// Clear one field back to inheriting. Triggers `PropertiesChanged`
     /// on both the field's property and `LocallySetFields`.
@@ -556,9 +547,6 @@ pub trait TisvlaySystemProfile {
     default_service = "org.tisvlay.Session"
 )]
 pub trait TisvlayUserProfile {
-    #[zbus(property)]
-    fn id(&self) -> zbus::Result<String>;
-
     #[zbus(property)]
     fn name(&self) -> zbus::Result<String>;
 
@@ -603,9 +591,6 @@ pub trait TisvlayUserProfile {
 
     #[zbus(property)]
     fn locally_set_fields(&self) -> zbus::Result<Vec<String>>;
-
-    #[zbus(property)]
-    fn referenced_by(&self) -> zbus::Result<Vec<String>>;
 
     fn reset_field(&self, field: &str) -> zbus::Result<()>;
 

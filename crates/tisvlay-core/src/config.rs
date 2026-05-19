@@ -532,37 +532,18 @@ impl SystemSection {
             .map(|(id, body)| (*id, body))
     }
 
-    /// Mutable variant of [`find_profile_by_name`].
-    pub fn find_profile_by_name_mut(
-        &mut self,
-        name: &str,
-    ) -> Option<(Uuid, &mut SystemProfileConfig)> {
-        self.profiles
-            .iter_mut()
-            .find(|(_, body)| body.name == name)
-            .map(|(id, body)| (*id, body))
-    }
-
-    /// Insert the reserved `"default"` profile under
-    /// [`DEFAULT_SYSTEM_PROFILE_UUID`] if it doesn't already exist.
-    /// Daemon-side invariant: the default UUID always has a body on
-    /// the bus, even when the on-disk TOML omits the section. The
-    /// synthesized body is empty (every field `None`) — the
-    /// resolution walk falls through to
-    /// [`ResolvedSystemProfile::default`] for unset fields, and the
-    /// section appears on disk only after the user makes their first
-    /// edit (a normal save round-trip persists whatever is in memory
-    /// at that point).
+    /// Materialize the reserved-default profile if absent and pin its
+    /// name to [`DEFAULT_PROFILE_NAME`]. Invariant: the default UUID
+    /// always has a body in memory, even when the on-disk TOML omits
+    /// the section. The synthesized body is empty (every field
+    /// `None`) so the resolution walk falls through to
+    /// [`ResolvedSystemProfile::default`]; the section appears on
+    /// disk only after the user makes their first edit.
     pub fn ensure_default(&mut self) {
         self.profiles
             .entry(DEFAULT_SYSTEM_PROFILE_UUID)
+            .and_modify(|body| body.name = DEFAULT_PROFILE_NAME.to_string())
             .or_insert_with(SystemProfileConfig::empty_default);
-        // Force the reserved name regardless of what was on disk —
-        // the friendly name is just a label, but pinning it keeps
-        // the tray's UUID→name lookup deterministic for the default.
-        if let Some(body) = self.profiles.get_mut(&DEFAULT_SYSTEM_PROFILE_UUID) {
-            body.name = DEFAULT_PROFILE_NAME.to_string();
-        }
     }
 }
 
@@ -589,17 +570,6 @@ impl UserSection {
     pub fn find_profile_by_name(&self, name: &str) -> Option<(Uuid, &UserProfileConfig)> {
         self.profiles
             .iter()
-            .find(|(_, body)| body.name == name)
-            .map(|(id, body)| (*id, body))
-    }
-
-    /// Mutable variant of [`find_profile_by_name`].
-    pub fn find_profile_by_name_mut(
-        &mut self,
-        name: &str,
-    ) -> Option<(Uuid, &mut UserProfileConfig)> {
-        self.profiles
-            .iter_mut()
             .find(|(_, body)| body.name == name)
             .map(|(id, body)| (*id, body))
     }
@@ -648,16 +618,14 @@ impl UserSection {
         merged.resolve()
     }
 
-    /// Insert the reserved `"default"` profile if missing — empty
-    /// body, inheriting from the resolution chain below. See
-    /// [`SystemSection::ensure_default`].
+    /// Materialize the reserved-default profile if absent and pin its
+    /// name to [`DEFAULT_PROFILE_NAME`]. See
+    /// [`SystemSection::ensure_default`] for the rationale.
     pub fn ensure_default(&mut self) {
         self.profiles
             .entry(DEFAULT_USER_PROFILE_UUID)
+            .and_modify(|body| body.name = DEFAULT_PROFILE_NAME.to_string())
             .or_insert_with(UserProfileConfig::empty_default);
-        if let Some(body) = self.profiles.get_mut(&DEFAULT_USER_PROFILE_UUID) {
-            body.name = DEFAULT_PROFILE_NAME.to_string();
-        }
     }
 }
 

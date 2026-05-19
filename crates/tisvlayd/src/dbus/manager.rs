@@ -390,7 +390,7 @@ impl ManagerService {
             .manager
             .create_system_profile(name.to_string())
             .await
-            .map_err(create_system_profile_err)?;
+            .map_err(system_profile_err)?;
 
         // Register the per-profile interface so `InterfacesAdded`
         // fires for clients watching the catalog.
@@ -427,7 +427,7 @@ impl ManagerService {
             .manager
             .duplicate_system_profile(parsed, new_name.to_string())
             .await
-            .map_err(create_system_profile_err)?;
+            .map_err(system_profile_err)?;
 
         if let Err(e) = register_system_profile(connection, new_uuid, self.manager.clone()).await {
             tracing::warn!(uuid = %new_uuid, error = %e, "Failed to register SystemProfile interface");
@@ -459,7 +459,7 @@ impl ManagerService {
         self.manager
             .delete_system_profile(parsed)
             .await
-            .map_err(delete_system_profile_err)?;
+            .map_err(system_profile_err)?;
 
         // Drop the per-profile interface so `InterfacesRemoved` fires.
         unregister_system_profile(connection, parsed).await;
@@ -539,18 +539,7 @@ impl ManagerService {
 /// Map `TvManager::create_system_profile` errors to standard fdo
 /// names. Validation failures (empty / reserved / duplicate name)
 /// land on `InvalidArgs`; anything else goes to `Failed`.
-fn create_system_profile_err(e: crate::tv_manager::TvManagerError) -> zbus::fdo::Error {
-    use crate::tv_manager::TvManagerError;
-    match e {
-        TvManagerError::ConfigError(msg) => zbus::fdo::Error::InvalidArgs(msg),
-        other => zbus::fdo::Error::Failed(other.to_string()),
-    }
-}
-
-/// Map `TvManager::delete_system_profile` errors to standard fdo
-/// names. Reserved + in-use rejections become `AccessDenied`; an
-/// unknown UUID becomes `InvalidArgs`; anything else `Failed`.
-fn delete_system_profile_err(e: crate::tv_manager::TvManagerError) -> zbus::fdo::Error {
+fn system_profile_err(e: crate::tv_manager::TvManagerError) -> zbus::fdo::Error {
     use crate::tv_manager::TvManagerError;
     match e {
         TvManagerError::ProfileReserved(msg) => zbus::fdo::Error::AccessDenied(msg),

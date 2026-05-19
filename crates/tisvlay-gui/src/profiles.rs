@@ -26,8 +26,8 @@ use futures_util::StreamExt;
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
-    DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, FieldDef, FieldKind, SYSTEM_FIELDS,
-    SessionClient, TisvlaySystemProfileProxy, TisvlayUserProfileProxy, USER_FIELDS,
+    FieldDef, FieldKind, SYSTEM_FIELDS, SessionClient, TisvlaySystemProfileProxy,
+    TisvlayUserProfileProxy, USER_FIELDS,
     dbus_paths::{system_profile_path, user_profile_path},
     find_profile_field, find_profile_field_by_prop,
 };
@@ -902,20 +902,6 @@ pub(crate) async fn reprime_if_selected(editor: &EditorHandle, app_weak: &slint:
     };
     let locally_set = proxy.read_locally_set_fields().await.unwrap_or_default();
     publish_initial_rows(app_weak, rows, !locally_set.is_empty());
-}
-
-/// Return `true` if the daemon-side fixed UUID matches; the editor
-/// uses this for the "is this the reserved default?" check, e.g.
-/// to decide whether `set_name` should be offered (v2's rename
-/// surface; commit 8 wires the GUI button — for now the daemon
-/// still rejects rename on the default UUID).
-#[allow(dead_code)]
-pub(crate) fn is_default_uuid(kind: ProfileKind, uuid: Uuid) -> bool {
-    match kind {
-        ProfileKind::System => uuid == DEFAULT_SYSTEM_PROFILE_UUID,
-        ProfileKind::User => uuid == DEFAULT_USER_PROFILE_UUID,
-        ProfileKind::None => false,
-    }
 }
 
 /// Convenience for callers that want the bound selection's

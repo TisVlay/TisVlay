@@ -138,25 +138,11 @@ impl SessionProfileManager {
     }
 
     /// Create a new user profile with the given friendly name and
-    /// every field inheriting. Generates a fresh [`Uuid::new_v4`],
-    /// validates the name (non-empty, not reserved, not a duplicate),
-    /// inserts the body, persists, and returns the new UUID.
-    ///
-    /// The D-Bus handler registers the per-profile `UserProfile1`
-    /// interface against this UUID immediately after this call
-    /// returns so `ObjectManager.InterfacesAdded` fires on the user
-    /// bus.
+    /// every field inheriting. Generates a fresh UUID, validates the
+    /// name (non-empty, not reserved, not a duplicate), inserts the
+    /// body, persists, and returns the new UUID.
     pub async fn create(&self, name: String) -> Result<Uuid, ProfileError> {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(ProfileError::Invalid("profile name cannot be empty".into()));
-        }
-        if trimmed == DEFAULT_PROFILE_NAME {
-            return Err(ProfileError::Invalid(format!(
-                "'{}' is reserved for the default user profile",
-                DEFAULT_PROFILE_NAME
-            )));
-        }
+        let trimmed = validate_new_profile_name(&name)?;
         {
             let s = self.state.read().await;
             if s.user_config.user.find_profile_by_name(trimmed).is_some() {
@@ -187,23 +173,13 @@ impl SessionProfileManager {
 
     /// Duplicate an existing user profile under a new friendly name.
     /// The new profile inherits the source's locally-set fields
-    /// verbatim (inheriting fields stay inheriting), gets a fresh
-    /// UUID, and has an empty `ReferencedBy` set.
+    /// verbatim; gets a fresh UUID and an empty `ReferencedBy` set.
     pub async fn duplicate(
         &self,
         source_uuid: Uuid,
         new_name: String,
     ) -> Result<Uuid, ProfileError> {
-        let trimmed = new_name.trim();
-        if trimmed.is_empty() {
-            return Err(ProfileError::Invalid("profile name cannot be empty".into()));
-        }
-        if trimmed == DEFAULT_PROFILE_NAME {
-            return Err(ProfileError::Invalid(format!(
-                "'{}' is reserved for the default user profile",
-                DEFAULT_PROFILE_NAME
-            )));
-        }
+        let trimmed = validate_new_profile_name(&new_name)?;
 
         let new_uuid = Uuid::new_v4();
         {
@@ -666,6 +642,23 @@ pub(crate) fn profile_err(e: ProfileError) -> zbus::fdo::Error {
         ProfileError::Failed(msg) => zbus::fdo::Error::Failed(msg),
         ProfileError::AccessDenied(msg) => zbus::fdo::Error::AccessDenied(msg),
     }
+}
+
+/// Trim `name` and reject empty / reserved-default values. Returns
+/// the trimmed slice on success. Caller must still verify uniqueness
+/// against the live profile catalog under whatever lock is held.
+fn validate_new_profile_name(name: &str) -> Result<&str, ProfileError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(ProfileError::Invalid("profile name cannot be empty".into()));
+    }
+    if trimmed == DEFAULT_PROFILE_NAME {
+        return Err(ProfileError::Invalid(format!(
+            "'{}' is reserved for the default user profile",
+            DEFAULT_PROFILE_NAME
+        )));
+    }
+    Ok(trimmed)
 }
 
 /// Parse a [`SessionAction`] from its serde `rename_all =

@@ -218,25 +218,16 @@ impl SessionService {
             )));
         }
 
-        // Capture the previous + new profile UUIDs so we can fan
-        // ReferencedBy refreshes out to the affected UserProfile1
-        // interfaces after persistence.
-        let prev_profile_uuid = s.user_config.get_tv_user_profile(tv_id);
+        // Capture both UUIDs before mutation so we can fan ReferencedBy
+        // refreshes out after persistence.
+        let affected_uuids: HashSet<Uuid> =
+            HashSet::from([s.user_config.get_tv_user_profile(tv_id), parsed_uuid]);
 
-        // Update assignment
         s.user_config.set_tv_user_profile(tv_id, parsed_uuid);
-
-        // Re-resolve the user profile for this TV
         let resolved = s
             .user_config
             .resolve_user_profile(tv_id, &s.admin_user_default);
         s.profiles.insert(tv_id.to_string(), resolved);
-
-        // Fan ReferencedBy refreshes to previously- and newly-affected
-        // UserProfile1 interfaces (direct UUID set).
-        let mut affected_uuids: HashSet<Uuid> = HashSet::new();
-        affected_uuids.insert(prev_profile_uuid);
-        affected_uuids.insert(parsed_uuid);
 
         // Save user config to disk
         let save_result = match self.manager.config_path() {
@@ -249,19 +240,16 @@ impl SessionService {
 
         drop(s);
 
-        // Notify subscribers that the profile changed
         if let Err(e) = Self::user_profile_changed(&ctxt, tv_id, profile_uuid).await {
             warn!(error = %e, tv_id = %tv_id, "Failed to emit UserProfileChanged signal");
         }
 
-        // Fan ReferencedBy refresh out to the previously-affected and
-        // newly-affected UserProfile1 caches.
-        if !affected_uuids.is_empty() {
-            let _ = self
-                .manager
-                .events()
-                .send(UserProfileEvent::TvReassigned { affected_uuids });
-        }
+        // Fan ReferencedBy refresh to the previously- and newly-affected
+        // UserProfile1 caches.
+        let _ = self
+            .manager
+            .events()
+            .send(UserProfileEvent::TvReassigned { affected_uuids });
 
         Ok(())
     }
