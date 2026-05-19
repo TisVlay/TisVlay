@@ -1642,6 +1642,27 @@ fn register_callbacks(
         });
     });
 
+    // Field SpinBox commit (numeric kinds, e.g. UserProfile1.IdleTimeoutSeconds).
+    // Same shape as the enum dispatch above; the helper clamps to the
+    // field's `[min, max]` bounds before issuing `Properties.Set`.
+    let editor = editor_handle.clone();
+    let app_weak = app.as_weak();
+    profiles_global.on_value_edited_number(move |field, value| {
+        let editor = editor.clone();
+        let app_weak = app_weak.clone();
+        let field = field.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = profiles::dispatch_value_edit_number(&editor, &field, value).await {
+                let msg = format!("{e:#}");
+                warn!(field = %field, value, error = %msg, "profile numeric edit failed");
+                show_toast(
+                    app_weak.clone(),
+                    &gettext("Couldn't update field: {0}").replace("{0}", &msg),
+                );
+            }
+        });
+    });
+
     // Reset glyph clicked on a single row.
     let editor = editor_handle.clone();
     let app_weak = app.as_weak();

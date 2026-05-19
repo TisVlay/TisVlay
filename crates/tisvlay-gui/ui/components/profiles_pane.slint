@@ -16,7 +16,7 @@
 // The detail body in commit 6 is a placeholder; `ProfileFieldRow` +
 // the inheritance-driven editor lands in commit 7.
 
-import { ComboBox, ScrollView } from "std-widgets.slint";
+import { ComboBox, ScrollView, SpinBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
@@ -608,7 +608,7 @@ component ProfileDetailHeader inherits Rectangle {
 }
 
 // =============================================================================
-// ProfileFieldRow — one inheritable-field row in the detail editor.
+// ProfileFieldRowEnum — one enum-kind row in the detail editor.
 // =============================================================================
 //
 // Visual:
@@ -626,7 +626,7 @@ component ProfileDetailHeader inherits Rectangle {
 // Every ComboBox pick is a concrete `Properties.Set`; the reset
 // glyph fires `reset-clicked(field_name)` which the pane routes to
 // `Profiles.reset-field` (daemon-side `ResetField`).
-component ProfileFieldRow inherits Rectangle {
+component ProfileFieldRowEnum inherits Rectangle {
     in property <ProfileFieldEntry> entry;
     callback value-edited(string, string);
     callback reset-clicked(string);
@@ -687,6 +687,94 @@ component ProfileFieldRow inherits Rectangle {
         // so the row reads "quiet" while inheriting. `IconBtn`'s
         // ghost style fades at rest + brightens on hover, giving
         // the same affordance v1 used.
+        VerticalLayout {
+            alignment: center;
+            width: 24px;
+            if root.entry.is-locally-set: IconBtn {
+                source: Icons.reload;
+                accessible-label: @tr("Reset to inherit");
+                clicked => { root.reset-clicked(root.entry.field-name); }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// ProfileFieldRowNumber — one numeric-kind row in the detail editor.
+// =============================================================================
+//
+// Visual mirrors `ProfileFieldRowEnum`: 2 px gutter + label + value
+// control + reset glyph. Value control is a SpinBox bounded by
+// `entry.min-value` / `entry.max-value` with step `entry.step`; a
+// translator-facing `entry.unit` suffix renders beside it.
+//
+// Unlike enum rows, no `*` overlay marks the inherit state on the
+// numeric value — the left gutter accent + reset glyph carry that
+// signal alone, since prefixing a number with `*` would parse oddly.
+component ProfileFieldRowNumber inherits Rectangle {
+    in property <ProfileFieldEntry> entry;
+    callback value-edited-number(string, int);
+    callback reset-clicked(string);
+
+    height: row-layout.preferred-height;
+
+    Rectangle {
+        x: 0;
+        width: 2px;
+        background: root.entry.is-locally-set ? Theme.accent : transparent;
+    }
+
+    row-layout := HorizontalLayout {
+        width: 100%;
+        padding-left: Design.gap-row;
+        padding-right: Design.gap-stack;
+        padding-top: Design.gap-stack;
+        padding-bottom: Design.gap-stack;
+        spacing: Design.gap-row;
+        alignment: stretch;
+
+        // Label column — same width as the enum row's.
+        VerticalLayout {
+            width: Design.width-label-col;
+            alignment: center;
+            Text {
+                text: root.entry.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+                vertical-alignment: center;
+            }
+        }
+
+        // Value column — SpinBox + unit suffix.
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-stack;
+            alignment: stretch;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                SpinBox {
+                    value: root.entry.number-value;
+                    minimum: root.entry.min-value;
+                    maximum: root.entry.max-value;
+                    step-size: root.entry.step;
+                    edited(v) => {
+                        root.value-edited-number(root.entry.field-name, v);
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.entry.unit;
+                    color: Theme.text-dim;
+                    font-size: Design.font-body;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Reset glyph — same affordance as the enum row.
         VerticalLayout {
             alignment: center;
             width: 24px;
@@ -792,13 +880,29 @@ component ProfileDetail inherits Rectangle {
                             width: 100%;
                             padding: Design.pad-card;
                             spacing: 0;
-                            for entry[i] in Profiles.editor-fields: ProfileFieldRow {
-                                entry: entry;
-                                value-edited(field, value) => {
-                                    Profiles.value-edited(field, value);
+                            for entry[i] in Profiles.editor-fields: VerticalLayout {
+                                // Kind-dispatch: one row component per
+                                // `FieldKind` variant. Exactly one `if`
+                                // evaluates to true per entry; the
+                                // outer VerticalLayout collapses to the
+                                // rendered child's height.
+                                if entry.kind == "enum": ProfileFieldRowEnum {
+                                    entry: entry;
+                                    value-edited(field, value) => {
+                                        Profiles.value-edited(field, value);
+                                    }
+                                    reset-clicked(field) => {
+                                        Profiles.reset-field(field);
+                                    }
                                 }
-                                reset-clicked(field) => {
-                                    Profiles.reset-field(field);
+                                if entry.kind == "number": ProfileFieldRowNumber {
+                                    entry: entry;
+                                    value-edited-number(field, value) => {
+                                        Profiles.value-edited-number(field, value);
+                                    }
+                                    reset-clicked(field) => {
+                                        Profiles.reset-field(field);
+                                    }
                                 }
                             }
                         }

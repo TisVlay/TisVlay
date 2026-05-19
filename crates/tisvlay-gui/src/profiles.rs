@@ -26,9 +26,10 @@ use futures_util::StreamExt;
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
-    DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, SessionClient,
-    TisvlaySystemProfileProxy, TisvlayUserProfileProxy,
+    DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, FieldDef, FieldKind, SYSTEM_FIELDS,
+    SessionClient, TisvlaySystemProfileProxy, TisvlayUserProfileProxy, USER_FIELDS,
     dbus_paths::{system_profile_path, user_profile_path},
+    find_profile_field, find_profile_field_by_prop,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
@@ -40,120 +41,12 @@ use crate::{AppWindow, ProfileFieldEntry, ProfileKind, Profiles, on_ui};
 // =============================================================================
 // Field tables
 // =============================================================================
-
-/// One inheritable field's static metadata: D-Bus property name
-/// (capitalized as on the wire), `LocallySetFields` token (snake
-/// case), human-readable label key fed through `gettext`, and the
-/// fixed value-option set the ComboBox renders.
-struct FieldDef {
-    /// Capitalized property name as it appears on the D-Bus interface
-    /// (e.g. `"OnStartup"`). Used as the first arg to `Properties.Set`.
-    prop_name: &'static str,
-    /// snake_case wire id (matches `LocallySetFields` entries on the
-    /// daemon side). Round-trips through Slint as the `field-name`
-    /// callback argument; the daemon's `ResetField` expects this form.
-    wire_name: &'static str,
-    /// English label fed through `gettext` for display. Defined as a
-    /// literal string so the slint-tr-extractor and `xgettext` agree
-    /// on what the catalog needs to translate.
-    label_en: &'static str,
-    /// Concrete value options (without the inherit-placeholder
-    /// prepended). `SessionAction` fields share the same set; the
-    /// AutomateWhen field uses its own.
-    options: &'static [&'static str],
-}
-
-/// `SessionAction` value set as serde wire strings (`rename_all =
-/// "snake_case"`). Shared by all six system-side per-event hooks +
-/// every user-side per-event hook.
-const SESSION_ACTION_OPTIONS: &[&str] =
-    &["power_on", "power_off", "screen_on", "screen_off", "none"];
-
-/// `AutomateWhen` value set. Only used on the system side's
-/// `automate_when` field.
-const AUTOMATE_WHEN_OPTIONS: &[&str] = &["always", "on_primary", "off_primary"];
-
-const SYSTEM_FIELDS: &[FieldDef] = &[
-    FieldDef {
-        prop_name: "OnStartup",
-        wire_name: "on_startup",
-        label_en: "On startup",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "OnShutdown",
-        wire_name: "on_shutdown",
-        label_en: "On shutdown",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "OnReboot",
-        wire_name: "on_reboot",
-        label_en: "On reboot",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "OnNoSession",
-        wire_name: "on_no_session",
-        label_en: "On no session",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "OnSleep",
-        wire_name: "on_sleep",
-        label_en: "On sleep",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "OnWake",
-        wire_name: "on_wake",
-        label_en: "On wake",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "AutomateWhen",
-        wire_name: "automate_when",
-        label_en: "Automate when",
-        options: AUTOMATE_WHEN_OPTIONS,
-    },
-];
-
-// `IdleTimeoutSeconds` is intentionally absent from this table — the
-// numeric spinner row is deferred (see
-// `docs/ideas/profile-user-idle-timeout-spinner.md`). The proxy still
-// exposes the property; only the GUI surface is omitted.
-const USER_FIELDS: &[FieldDef] = &[
-    FieldDef {
-        prop_name: "OnSessionLock",
-        wire_name: "on_session_lock",
-        label_en: "On session lock",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "OnSessionUnlock",
-        wire_name: "on_session_unlock",
-        label_en: "On session unlock",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "OnGreeterWake",
-        wire_name: "on_greeter_wake",
-        label_en: "On greeter wake",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "OnIdleTimeout",
-        wire_name: "on_idle_timeout",
-        label_en: "On idle timeout",
-        options: SESSION_ACTION_OPTIONS,
-    },
-    FieldDef {
-        prop_name: "OnIdleResume",
-        wire_name: "on_idle_resume",
-        label_en: "On idle resume",
-        options: SESSION_ACTION_OPTIONS,
-    },
-];
+//
+// The canonical `FieldDef` / `FieldKind` registry lives in
+// `tisvlay-core::profile_fields` so the daemon, session, and GUI all
+// share one source of truth for the per-profile inheritable fields.
+// This module imports the tables and dispatches the GUI row build +
+// proxy reads based on each field's `kind`.
 
 /// Look up the static field table for one profile kind.
 fn field_table(kind: ProfileKind) -> &'static [FieldDef] {
@@ -171,19 +64,38 @@ fn field_table(kind: ProfileKind) -> &'static [FieldDef] {
 /// Find a field def by its wire id (snake_case) — the Slint side
 /// emits this as the first callback arg.
 fn find_field(kind: ProfileKind, wire_name: &str) -> Option<&'static FieldDef> {
-    field_table(kind).iter().find(|f| f.wire_name == wire_name)
+    find_profile_field(field_table(kind), wire_name)
+}
+
+/// Find a field def by its PascalCase D-Bus property name — the
+/// `PropertiesChanged` listener receives the prop names in that form.
+fn find_field_by_prop(kind: ProfileKind, prop_name: &str) -> Option<&'static FieldDef> {
+    find_profile_field_by_prop(field_table(kind), prop_name)
 }
 
 /// Plain-data row carrying everything needed to build a Slint
 /// `ProfileFieldEntry`. Distinct from the Slint struct so it crosses
 /// tokio→Slint thread boundaries (`ModelRc` holds an `Rc` and isn't
 /// `Send`). Same split `state.rs` uses for the TV view model.
+///
+/// `kind` is the dispatch tag the Slint side reads to pick a row
+/// component. The variant-specific fields (`options` for enum,
+/// `number_value` / `min` / `max` / `step` / `unit` for number) are
+/// always present in the struct — empty / zeroed for the inactive
+/// variants. Slint structs have no tagged-union shape, so this is
+/// the standard pattern.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RowRaw {
     field_name: String,
     label: String,
+    kind: &'static str,
     options: Vec<String>,
     current_value: String,
+    number_value: i32,
+    min_value: i32,
+    max_value: i32,
+    step: i32,
+    unit: String,
     is_locally_set: bool,
 }
 
@@ -193,8 +105,14 @@ impl RowRaw {
         ProfileFieldEntry {
             field_name: SharedString::from(self.field_name),
             label: SharedString::from(self.label),
+            kind: SharedString::from(self.kind),
             options: ModelRc::new(VecModel::from(options)),
             current_value: SharedString::from(self.current_value),
+            number_value: self.number_value,
+            min_value: self.min_value,
+            max_value: self.max_value,
+            step: self.step,
+            unit: SharedString::from(self.unit),
             is_locally_set: self.is_locally_set,
         }
     }
@@ -228,6 +146,17 @@ impl ProfileProxy {
         }
     }
 
+    /// Read a `u32`-typed property (currently just
+    /// `UserProfile1.IdleTimeoutSeconds`). Same shape as
+    /// `read_string_field`; pairs with [`set_u32_field`](Self::set_u32_field)
+    /// on the write path.
+    async fn read_u32_field(&self, prop_name: &str) -> Result<u32> {
+        match self {
+            Self::System(p) => read_property_u32(p.inner(), prop_name).await,
+            Self::User(p) => read_property_u32(p.inner(), prop_name).await,
+        }
+    }
+
     /// Read the current `LocallySetFields: as` list. Used at prime
     /// time + whenever that property fires `PropertiesChanged`.
     async fn read_locally_set_fields(&self) -> Result<Vec<String>> {
@@ -251,6 +180,22 @@ impl ProfileProxy {
         match self {
             Self::System(p) => set_system_field(p, prop_name, value).await,
             Self::User(p) => set_user_field(p, prop_name, value).await,
+        }
+    }
+
+    /// Dispatch `Properties.Set(prop_name, value: u32)` via the
+    /// typed numeric setter on the proxy. Today only the user-side
+    /// `IdleTimeoutSeconds` is numeric; future numeric fields land
+    /// here as additional match arms.
+    async fn set_u32_field(&self, prop_name: &str, value: u32) -> Result<()> {
+        match self {
+            Self::System(_) => {
+                anyhow::bail!(
+                    "SystemProfile1 has no numeric fields (got prop '{}')",
+                    prop_name
+                )
+            }
+            Self::User(p) => set_user_u32_field(p, prop_name, value).await,
         }
     }
 
@@ -306,6 +251,14 @@ async fn read_property_string(proxy: &zbus::Proxy<'_>, prop_name: &str) -> Resul
     Ok(value)
 }
 
+async fn read_property_u32(proxy: &zbus::Proxy<'_>, prop_name: &str) -> Result<u32> {
+    let value = proxy
+        .get_property::<u32>(prop_name)
+        .await
+        .with_context(|| format!("Failed to read property '{}'", prop_name))?;
+    Ok(value)
+}
+
 async fn set_system_field(
     proxy: &TisvlaySystemProfileProxy<'_>,
     prop_name: &str,
@@ -341,6 +294,20 @@ async fn set_user_field(
         "Name" => proxy.set_name(value).await,
         other => {
             anyhow::bail!("Unknown UserProfile1 field '{}'", other);
+        }
+    }
+    .with_context(|| format!("Failed to set UserProfile1.{}", prop_name))
+}
+
+async fn set_user_u32_field(
+    proxy: &TisvlayUserProfileProxy<'_>,
+    prop_name: &str,
+    value: u32,
+) -> Result<()> {
+    match prop_name {
+        "IdleTimeoutSeconds" => proxy.set_idle_timeout_seconds(value).await,
+        other => {
+            anyhow::bail!("Unknown numeric UserProfile1 field '{}'", other);
         }
     }
     .with_context(|| format!("Failed to set UserProfile1.{}", prop_name))
@@ -504,37 +471,99 @@ async fn prime_rows(kind: ProfileKind, proxy: &ProfileProxy) -> Result<Vec<RowRa
     let locally_set = proxy.read_locally_set_fields().await.unwrap_or_default();
     let mut rows = Vec::with_capacity(field_table(kind).len());
     for field in field_table(kind) {
-        let resolved = proxy
-            .read_string_field(field.prop_name)
-            .await
-            .unwrap_or_default();
-        rows.push(build_row(field, &resolved, &locally_set));
+        let (resolved_str, resolved_num) = match field.kind {
+            FieldKind::Enum { .. } => (
+                proxy
+                    .read_string_field(field.prop_name)
+                    .await
+                    .unwrap_or_default(),
+                0i64,
+            ),
+            FieldKind::Number { .. } => (
+                String::new(),
+                proxy.read_u32_field(field.prop_name).await.unwrap_or(0) as i64,
+            ),
+            // No in-tree fields use Bool/Text yet; skip silently so
+            // adding a placeholder to the registry doesn't blow up
+            // the editor before the row component lands.
+            FieldKind::Bool | FieldKind::Text { .. } => continue,
+        };
+        if let Some(row) = build_row(field, &resolved_str, resolved_num, &locally_set) {
+            rows.push(row);
+        }
     }
     Ok(rows)
 }
 
-fn build_row(field: &FieldDef, resolved: &str, locally_set: &[String]) -> RowRaw {
+/// Build a Slint row for one field. Dispatches on `field.kind` to
+/// pick the right shape — `Enum` rows carry `options` + a possibly-
+/// `*`-suffixed `current_value`; `Number` rows carry `number_value`,
+/// bounds, and a `unit` suffix. Returns `None` for kinds without a
+/// row component yet (`Bool`, `Text`).
+fn build_row(
+    field: &FieldDef,
+    resolved_str: &str,
+    resolved_num: i64,
+    locally_set: &[String],
+) -> Option<RowRaw> {
     let is_locally_set = locally_set.iter().any(|f| f == field.wire_name);
-    // Dropdown lists only the concrete action values — reverting to
-    // inheriting is the reset glyph's job. The displayed
-    // `current_value` carries a trailing `*` when inheriting so it
-    // (a) signals the inherit state visually and (b) doesn't exactly
-    // match any dropdown option, so picking the same-as-resolved
-    // value still fires `selected(v)` → `Properties.Set`. Without
-    // the asterisk, clicking the already-resolved value would be a
-    // ComboBox no-op and the user couldn't lock an inherited value.
-    let options: Vec<String> = field.options.iter().map(|o| (*o).to_string()).collect();
-    let current = if is_locally_set {
-        resolved.to_string()
-    } else {
-        format!("{}*", resolved)
-    };
-    RowRaw {
-        field_name: field.wire_name.to_string(),
-        label: gettext(field.label_en),
-        options,
-        current_value: current,
-        is_locally_set,
+    let label = gettext(field.label_msgid);
+    let field_name = field.wire_name.to_string();
+    match field.kind {
+        FieldKind::Enum { options } => {
+            // Dropdown lists only the concrete action values —
+            // reverting to inheriting is the reset glyph's job. The
+            // displayed `current_value` carries a trailing `*` when
+            // inheriting so it (a) signals the inherit state visually
+            // and (b) doesn't exactly match any dropdown option, so
+            // picking the same-as-resolved value still fires
+            // `selected(v)` → `Properties.Set`. Without the asterisk,
+            // clicking the already-resolved value would be a ComboBox
+            // no-op and the user couldn't lock an inherited value.
+            let options: Vec<String> = options.iter().map(|o| (*o).to_string()).collect();
+            let current = if is_locally_set {
+                resolved_str.to_string()
+            } else {
+                format!("{}*", resolved_str)
+            };
+            Some(RowRaw {
+                field_name,
+                label,
+                kind: "enum",
+                options,
+                current_value: current,
+                number_value: 0,
+                min_value: 0,
+                max_value: 0,
+                step: 0,
+                unit: String::new(),
+                is_locally_set,
+            })
+        }
+        FieldKind::Number {
+            min,
+            max,
+            step,
+            unit,
+        } => Some(RowRaw {
+            field_name,
+            label,
+            kind: "number",
+            options: Vec::new(),
+            current_value: String::new(),
+            number_value: resolved_num.clamp(min, max) as i32,
+            min_value: min as i32,
+            max_value: max as i32,
+            step: step as i32,
+            // Wrap so the unit suffix translates alongside the rest
+            // of the row. `unit` is a `&'static str` from the core
+            // registry; `xgettext` can't see it from this call site
+            // (only literal arguments), so the .pot must carry the
+            // msgid explicitly when the catalog is next refreshed.
+            unit: gettext(unit),
+            is_locally_set,
+        }),
+        FieldKind::Bool | FieldKind::Text { .. } => None,
     }
 }
 
@@ -670,16 +699,28 @@ async fn apply_signal_update(
     // Build the prop_name → resolved-value map for the touched
     // fields. Misses (e.g. `ReferencedBy`, `Id`, `Name`) don't
     // map to editor rows; they're skipped without re-reads.
-    let mut updates: Vec<(String, String)> = Vec::new();
+    //
+    // Values are read in the kind-appropriate type — `Enum` reads
+    // string, `Number` reads u32 — so the model rebuild downstream
+    // doesn't have to re-parse a number out of a string round-trip.
+    let mut updates: Vec<(String, ResolvedValue)> = Vec::new();
     for prop_name in &union {
         if prop_name == "LocallySetFields" || prop_name == "ReferencedBy" {
             continue;
         }
-        if !field_table(kind).iter().any(|f| f.prop_name == prop_name) {
+        let Some(field) = find_field_by_prop(kind, prop_name) else {
             continue;
-        }
-        let resolved = proxy.read_string_field(prop_name).await.unwrap_or_default();
-        updates.push((prop_name.clone(), resolved));
+        };
+        let value = match field.kind {
+            FieldKind::Enum { .. } => {
+                ResolvedValue::Str(proxy.read_string_field(prop_name).await.unwrap_or_default())
+            }
+            FieldKind::Number { .. } => {
+                ResolvedValue::Num(proxy.read_u32_field(prop_name).await.unwrap_or(0) as i64)
+            }
+            FieldKind::Bool | FieldKind::Text { .. } => continue,
+        };
+        updates.push((prop_name.to_string(), value));
     }
 
     if gen_counter.load(Ordering::SeqCst) != my_gen {
@@ -705,13 +746,18 @@ async fn apply_signal_update(
             // shift; rebuild from the freshly-read set. The
             // resolved-value field carries forward from the prior
             // model unless this row is also in `updates`.
-            let prior_resolved = extract_resolved_from_row(&row, field);
-            let resolved = updates
+            let (prior_str, prior_num) = extract_resolved_from_row(&row, field);
+            let (resolved_str, resolved_num) = updates
                 .iter()
                 .find(|(p, _)| p == field.prop_name)
-                .map(|(_, v)| v.clone())
-                .unwrap_or(prior_resolved);
-            let fresh = build_row(field, &resolved, &locally_set).into_slint();
+                .map(|(_, v)| match v {
+                    ResolvedValue::Str(s) => (s.clone(), 0i64),
+                    ResolvedValue::Num(n) => (String::new(), *n),
+                })
+                .unwrap_or((prior_str, prior_num));
+            let Some(fresh) = build_row(field, &resolved_str, resolved_num, &locally_set) else {
+                continue;
+            };
             // `set_row_data` is in-place — Slint fires `row_changed`
             // (not a model reset) so the ComboBox row's internal
             // state survives across pushes. Worth noting: an
@@ -721,24 +767,44 @@ async fn apply_signal_update(
             // dropdown means the user is mid-pick, and a remote
             // edit cancelling the local pick is a rare-enough
             // collision to ignore for v2.
-            vec_model.set_row_data(i, fresh);
+            vec_model.set_row_data(i, fresh.into_slint());
         }
         profiles.set_editor_can_reset_all(can_reset_all);
     });
 }
 
-/// Reverse-engineer the resolved value from an existing row. The
-/// row's `current-value` is either the concrete value (when locally
-/// set) or the `<resolved>*` placeholder; strip the trailing `*` in
-/// the latter case so callers always see the raw resolved string.
-/// Used in the signal-update path when a field outside `updates`
-/// needs its row rebuilt to track a `LocallySetFields` flip.
-fn extract_resolved_from_row(row: &ProfileFieldEntry, _field: &FieldDef) -> String {
-    let current = row.current_value.as_str();
-    if row.is_locally_set {
-        return current.to_string();
+/// Newly-read value for one property, read in the kind-appropriate
+/// type. `apply_signal_update` builds a list of these for the
+/// `PropertiesChanged` payload and matches each to its row.
+#[derive(Debug, Clone)]
+enum ResolvedValue {
+    Str(String),
+    Num(i64),
+}
+
+/// Reverse-engineer the resolved value from an existing row.
+///
+/// For `Enum` rows: `current-value` is either the concrete value
+/// (when locally set) or the `<resolved>*` placeholder; strip the
+/// trailing `*` in the latter case so callers always see the raw
+/// resolved string.
+///
+/// For `Number` rows: `number-value` is already the resolved
+/// integer; the `current-value` is unused.
+fn extract_resolved_from_row(row: &ProfileFieldEntry, field: &FieldDef) -> (String, i64) {
+    match field.kind {
+        FieldKind::Enum { .. } => {
+            let current = row.current_value.as_str();
+            let resolved = if row.is_locally_set {
+                current.to_string()
+            } else {
+                current.strip_suffix('*').unwrap_or(current).to_string()
+            };
+            (resolved, 0)
+        }
+        FieldKind::Number { .. } => (String::new(), row.number_value as i64),
+        FieldKind::Bool | FieldKind::Text { .. } => (String::new(), 0),
     }
-    current.strip_suffix('*').unwrap_or(current).to_string()
 }
 
 // =============================================================================
@@ -761,6 +827,40 @@ pub(crate) async fn dispatch_value_edit(
         anyhow::bail!("unknown field '{}'", field_wire_name);
     };
     state.proxy.set_field(field.prop_name, value).await
+}
+
+/// Apply a SpinBox commit — clamp the integer to the field's bounds
+/// and write it to the per-profile object's typed numeric property.
+/// Reverting to inheriting still goes through `dispatch_reset_field`.
+pub(crate) async fn dispatch_value_edit_number(
+    editor: &EditorHandle,
+    field_wire_name: &str,
+    value: i32,
+) -> Result<()> {
+    let guard = editor.read().await;
+    let Some(state) = guard.as_ref() else {
+        anyhow::bail!("no profile selected");
+    };
+    let Some(field) = find_field(state.kind, field_wire_name) else {
+        anyhow::bail!("unknown field '{}'", field_wire_name);
+    };
+    let FieldKind::Number { min, max, .. } = field.kind else {
+        anyhow::bail!(
+            "field '{}' is not numeric (got kind {:?})",
+            field_wire_name,
+            field.kind
+        );
+    };
+    let clamped = (value as i64).clamp(min, max);
+    let wire_value = u32::try_from(clamped).map_err(|e| {
+        anyhow::anyhow!(
+            "Field '{}' value {} out of u32 range: {}",
+            field_wire_name,
+            clamped,
+            e
+        )
+    })?;
+    state.proxy.set_u32_field(field.prop_name, wire_value).await
 }
 
 /// Reset glyph clicked → `ResetField(field_wire_name)`. The sole
