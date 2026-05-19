@@ -18,8 +18,8 @@ pub mod __internals {
     pub use crate::session_dbus::{SessionDbusBundle, register_session_dbus_on};
     pub use crate::session_monitor::SessionEvent;
     pub use crate::user_profile::{
-        UserProfileEvent, UserProfileEventTx, UserProfileService, register_user_profile,
-        unregister_user_profile, user_profile_state_forwarder,
+        SessionProfileManager, UserProfileEvent, UserProfileEventTx, UserProfileService,
+        register_user_profile, unregister_user_profile, user_profile_state_forwarder,
     };
 }
 

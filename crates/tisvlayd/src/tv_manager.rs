@@ -4013,6 +4013,64 @@ impl TvManager {
     }
 }
 
+/// Bridge from the daemon-side system-profile mutation methods on
+/// `TvManager` to the cross-side `ProfileManager` trait the per-
+/// profile interface wrappers call into. System profiles have no
+/// numeric fields today; `set_u32_field` returns `Invalid` so the
+/// first numeric system field can be added without trait churn.
+#[async_trait::async_trait]
+impl tisvlay_core::ProfileManager for TvManager {
+    async fn set_string_field(
+        &self,
+        uuid: uuid::Uuid,
+        field: &str,
+        value: &str,
+    ) -> Result<(), tisvlay_core::ProfileError> {
+        self.set_system_profile_field(uuid, field, value)
+            .await
+            .map_err(tv_manager_err_to_profile_err)
+    }
+
+    async fn set_u32_field(
+        &self,
+        _uuid: uuid::Uuid,
+        field: &str,
+        _value: u32,
+    ) -> Result<(), tisvlay_core::ProfileError> {
+        Err(tisvlay_core::ProfileError::Invalid(format!(
+            "SystemProfile1 has no numeric field '{}'",
+            field
+        )))
+    }
+
+    async fn reset_field(
+        &self,
+        uuid: uuid::Uuid,
+        field: &str,
+    ) -> Result<(), tisvlay_core::ProfileError> {
+        self.reset_system_profile_field(uuid, field)
+            .await
+            .map_err(tv_manager_err_to_profile_err)
+    }
+
+    async fn reset_all(&self, uuid: uuid::Uuid) -> Result<(), tisvlay_core::ProfileError> {
+        self.reset_system_profile(uuid)
+            .await
+            .map_err(tv_manager_err_to_profile_err)
+    }
+}
+
+/// Map `TvManagerError` to `ProfileError`. Mirrors the prior
+/// `profile_err` in `system_profile.rs`: parse / range failures
+/// surface as `Invalid` so callers can route on the error category
+/// without parsing the body string.
+fn tv_manager_err_to_profile_err(e: TvManagerError) -> tisvlay_core::ProfileError {
+    match e {
+        TvManagerError::ConfigError(msg) => tisvlay_core::ProfileError::Invalid(msg),
+        other => tisvlay_core::ProfileError::Failed(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

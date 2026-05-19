@@ -154,9 +154,9 @@ async fn main() -> Result<()> {
         let retry_event_tx = event_tx.clone();
         let retry_is_locked = is_locked.clone();
         let retry_connection = session_dbus_bundle.as_ref().map(|b| b.connection.clone());
-        let retry_profile_events = session_dbus_bundle
+        let retry_manager = session_dbus_bundle
             .as_ref()
-            .map(|b| b.user_profile_events.clone());
+            .map(|b| b.profile_manager.clone());
         tokio::spawn(async move {
             let retry_interval = std::time::Duration::from_secs(5);
             loop {
@@ -180,15 +180,13 @@ async fn main() -> Result<()> {
                         // Materialize per-profile `UserProfile1` D-Bus objects for
                         // the freshly-loaded profiles. Idempotent so we don't have
                         // to track which UUIDs were already registered.
-                        if let (Some(conn), Some(profile_tx)) =
-                            (retry_connection.as_ref(), retry_profile_events.as_ref())
+                        if let (Some(conn), Some(manager)) =
+                            (retry_connection.as_ref(), retry_manager.as_ref())
                         {
                             if let Err(e) =
                                 tisvlay_session::session_dbus::register_user_profile_objects(
                                     conn,
-                                    retry_state.clone(),
-                                    retry_config.clone(),
-                                    profile_tx.clone(),
+                                    manager.clone(),
                                 )
                                 .await
                             {

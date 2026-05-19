@@ -13,11 +13,18 @@
 //! Cached fields are populated at registration and kept fresh by the
 //! `state_forwarder`'s `SystemProfileBodyChanged` handler — same
 //! mechanic the per-TV `OptionChanged` path uses.
+//!
+//! Mutation routes through [`ProfileManager`] (implemented for
+//! [`TvManager`](crate::tv_manager::TvManager)) so the per-property
+//! setters' bodies have the same shape as the session-side
+//! `UserProfile1` setters — both call `manager.set_string_field`.
 
 use crate::tv_manager::TvManager;
 use std::sync::Arc;
 use tisvlay_core::dbus_paths::system_profile_path;
-use tisvlay_core::{DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID};
+use tisvlay_core::{
+    DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, ProfileError, ProfileManager,
+};
 use tracing::info;
 use uuid::Uuid;
 use zbus::interface;
@@ -60,16 +67,15 @@ impl SystemProfileService {
         &self.name
     }
 
-    /// Set the friendly profile name.
-    ///
-    /// Validates non-empty + uniqueness + reserved-name rules. The
+    /// Set the friendly profile name. Validates non-empty +
+    /// uniqueness + reserved-name rules on the manager side. The
     /// default-UUID profile is locked to `"default"`; non-default
     /// profiles cannot be renamed to `"default"`.
     #[zbus(property)]
     async fn set_name(&mut self, name: String) -> zbus::fdo::Result<()> {
         info!(uuid = %self.uuid, name = %name, "D-Bus: SystemProfile1.set Name");
         self.manager
-            .set_system_profile_field(self.uuid, "name", &name)
+            .set_string_field(self.uuid, "name", &name)
             .await
             .map_err(profile_err)?;
         self.name = name;
@@ -158,17 +164,16 @@ impl SystemProfileService {
     }
 
     /// Names of the fields this profile explicitly sets. Drives the
-    /// GUI's gutter accent + `(inherit: X)` placeholder visibility.
-    /// Refresh fans out automatically when any setter completes —
-    /// see [`crate::tv_manager::StateChangeEvent::SystemProfileBodyChanged`].
+    /// GUI's gutter accent + reset-glyph visibility. Refresh fans out
+    /// automatically when any setter completes — see
+    /// [`crate::tv_manager::StateChangeEvent::SystemProfileBodyChanged`].
     #[zbus(property)]
     fn locally_set_fields(&self) -> Vec<String> {
         self.locally_set_fields.clone()
     }
 
     /// UUIDs of TVs that reference this profile via
-    /// `Tv1.SystemProfile`. v2 keeps references name-based on disk;
-    /// the resolution is name → UUID at the time of this read.
+    /// `Tv1.SystemProfile`.
     #[zbus(property)]
     fn referenced_by(&self) -> Vec<String> {
         self.referenced_by.clone()
@@ -181,8 +186,7 @@ impl SystemProfileService {
     /// manager, not on this setter directly.
     async fn reset_field(&self, field: &str) -> zbus::fdo::Result<()> {
         info!(uuid = %self.uuid, field = %field, "D-Bus: SystemProfile1.ResetField");
-        self.manager
-            .reset_system_profile_field(self.uuid, field)
+        ProfileManager::reset_field(&*self.manager, self.uuid, field)
             .await
             .map_err(profile_err)
     }
@@ -192,20 +196,15 @@ impl SystemProfileService {
     /// cached value shifts.
     async fn reset_all(&self) -> zbus::fdo::Result<()> {
         info!(uuid = %self.uuid, "D-Bus: SystemProfile1.ResetAll");
-        self.manager
-            .reset_system_profile(self.uuid)
-            .await
-            .map_err(profile_err)
+        self.manager.reset_all(self.uuid).await.map_err(profile_err)
     }
 }
 
 impl SystemProfileService {
-    /// Helper for the seven typed-field setters that follow the
-    /// same shape — parse + persist via manager, update the cached
-    /// field on success. zbus's `#[interface]` macro generates a
-    /// `<field>_changed()` emit when a `&mut self` setter mutates
-    /// state, so updating `self.<field>` here is what fires the
-    /// `PropertiesChanged` for *this* property; the cross-profile
+    /// Setter helper for the seven typed-field setters. Routes
+    /// through [`ProfileManager::set_string_field`] and updates
+    /// `self.<field>` on success so zbus's `#[interface]` macro
+    /// emits `<field>_changed()` automatically. The cross-profile
     /// fan-out (default-edit shifting every other profile's
     /// resolved value) rides through the state-forwarder loop.
     async fn set_field(&mut self, field: &str, value: String) -> zbus::fdo::Result<()> {
@@ -216,7 +215,7 @@ impl SystemProfileService {
             "D-Bus: SystemProfile1.set field"
         );
         self.manager
-            .set_system_profile_field(self.uuid, field, &value)
+            .set_string_field(self.uuid, field, &value)
             .await
             .map_err(profile_err)?;
         match field {
@@ -233,15 +232,14 @@ impl SystemProfileService {
     }
 }
 
-/// Map a [`TvManagerError`](crate::tv_manager::TvManagerError) from
-/// the profile-mutation helpers to a `zbus::fdo` error. Parse / range
-/// failures surface as `InvalidArgs` so clients can route on the
-/// error name without parsing the body string.
-fn profile_err(e: crate::tv_manager::TvManagerError) -> zbus::fdo::Error {
-    use crate::tv_manager::TvManagerError;
+/// Map a [`ProfileError`] to a `zbus::fdo` error name. `Invalid` →
+/// `InvalidArgs` so clients can route on the standard error name
+/// without parsing the body string.
+fn profile_err(e: ProfileError) -> zbus::fdo::Error {
     match e {
-        TvManagerError::ConfigError(msg) => zbus::fdo::Error::InvalidArgs(msg),
-        other => zbus::fdo::Error::Failed(other.to_string()),
+        ProfileError::Invalid(msg) => zbus::fdo::Error::InvalidArgs(msg),
+        ProfileError::Failed(msg) => zbus::fdo::Error::Failed(msg),
+        ProfileError::AccessDenied(msg) => zbus::fdo::Error::AccessDenied(msg),
     }
 }
 

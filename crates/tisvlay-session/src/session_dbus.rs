@@ -5,8 +5,8 @@
 
 use crate::SessionState;
 use crate::user_profile::{
-    UserProfileEvent, UserProfileEventTx, create_user_profile, delete_user_profile,
-    duplicate_user_profile, profile_err, register_user_profile, unregister_user_profile,
+    SessionProfileManager, UserProfileEvent, profile_err, register_user_profile,
+    unregister_user_profile,
 };
 use anyhow::Context;
 use std::collections::HashSet;
@@ -48,29 +48,18 @@ pub enum SessionError {
 /// D-Bus service for session profile management.
 #[derive(Debug)]
 pub struct SessionService {
-    state: Arc<RwLock<SessionState>>,
     daemon: Arc<DaemonClient>,
-    config_path: Option<std::path::PathBuf>,
-    /// Sender for user-profile events. Used by `SetTvUserProfile` to
-    /// fan a `ReferencedBy` refresh out to the affected `UserProfile1`
-    /// interfaces (previously-affected + newly-affected profile UUIDs).
-    /// Mirrors the daemon's `state_change_sender` plumbing.
-    events: UserProfileEventTx,
+    /// User-profile mutation manager. Bundles the session-state
+    /// handle, config path, and event sender previously threaded as
+    /// separate fields. `SetTvUserProfile` reaches through it for the
+    /// event sender; profile-body mutations call manager methods
+    /// directly (via the `ProfileManager` trait).
+    manager: Arc<SessionProfileManager>,
 }
 
 impl SessionService {
-    pub fn new(
-        state: Arc<RwLock<SessionState>>,
-        daemon: Arc<DaemonClient>,
-        config_path: Option<std::path::PathBuf>,
-        events: UserProfileEventTx,
-    ) -> Self {
-        Self {
-            state,
-            daemon,
-            config_path,
-            events,
-        }
+    pub fn new(daemon: Arc<DaemonClient>, manager: Arc<SessionProfileManager>) -> Self {
+        Self { daemon, manager }
     }
 }
 
@@ -91,8 +80,9 @@ impl SessionService {
     #[zbus(property(emits_changed_signal = "const"))]
     fn config_path(&self) -> String {
         let resolved = self
-            .config_path
-            .clone()
+            .manager
+            .config_path()
+            .cloned()
             .or_else(|| tisvlay_core::UserConfig::config_path().ok());
         resolved
             .as_ref()
@@ -118,21 +108,15 @@ impl SessionService {
         name: &str,
     ) -> zbus::fdo::Result<ObjectPath<'static>> {
         info!(name = %name, "D-Bus: CreateUserProfile");
-        let uuid = create_user_profile(&self.state, self.config_path.as_ref(), name.to_string())
+        let uuid = self
+            .manager
+            .create(name.to_string())
             .await
             .map_err(profile_err)?;
 
         // Register the per-profile interface so `InterfacesAdded`
         // fires for clients watching the user-bus catalog.
-        if let Err(e) = register_user_profile(
-            connection,
-            self.state.clone(),
-            self.config_path.clone(),
-            self.events.clone(),
-            uuid,
-        )
-        .await
-        {
+        if let Err(e) = register_user_profile(connection, self.manager.clone(), uuid).await {
             warn!(uuid = %uuid, error = %e, "Failed to register UserProfile interface");
         }
 
@@ -154,24 +138,13 @@ impl SessionService {
             zbus::fdo::Error::InvalidArgs(format!("Invalid user profile UUID: {source_uuid}"))
         })?;
 
-        let new_uuid = duplicate_user_profile(
-            &self.state,
-            self.config_path.as_ref(),
-            parsed,
-            new_name.to_string(),
-        )
-        .await
-        .map_err(profile_err)?;
+        let new_uuid = self
+            .manager
+            .duplicate(parsed, new_name.to_string())
+            .await
+            .map_err(profile_err)?;
 
-        if let Err(e) = register_user_profile(
-            connection,
-            self.state.clone(),
-            self.config_path.clone(),
-            self.events.clone(),
-            new_uuid,
-        )
-        .await
-        {
+        if let Err(e) = register_user_profile(connection, self.manager.clone(), new_uuid).await {
             warn!(uuid = %new_uuid, error = %e, "Failed to register UserProfile interface");
         }
 
@@ -196,9 +169,7 @@ impl SessionService {
             zbus::fdo::Error::InvalidArgs(format!("Invalid user profile UUID: {uuid}"))
         })?;
 
-        delete_user_profile(&self.state, self.config_path.as_ref(), parsed)
-            .await
-            .map_err(profile_err)?;
+        self.manager.delete(parsed).await.map_err(profile_err)?;
 
         unregister_user_profile(connection, parsed).await;
         Ok(())
@@ -212,7 +183,7 @@ impl SessionService {
     /// [`DEFAULT_USER_PROFILE_UUID`]: tisvlay_core::DEFAULT_USER_PROFILE_UUID
     async fn get_tv_user_profile(&self, tv_id: &str) -> String {
         debug!(tv_id = %tv_id, "D-Bus: GetTvUserProfile");
-        let s = self.state.read().await;
+        let s = self.manager.state().read().await;
         s.user_config.get_tv_user_profile(tv_id).to_string()
     }
 
@@ -233,7 +204,7 @@ impl SessionService {
             SessionError::InvalidArgs(format!("Invalid user profile UUID: {profile_uuid}"))
         })?;
 
-        let mut s = self.state.write().await;
+        let mut s = self.manager.state().write().await;
 
         // Accept the user-default UUID even when no `[user.profiles.<uuid>]`
         // body exists for it in the user config — resolution falls
@@ -268,7 +239,7 @@ impl SessionService {
         affected_uuids.insert(parsed_uuid);
 
         // Save user config to disk
-        let save_result = match &self.config_path {
+        let save_result = match self.manager.config_path() {
             Some(path) => s.user_config.save_to(path),
             None => s.user_config.save(),
         };
@@ -287,7 +258,8 @@ impl SessionService {
         // newly-affected UserProfile1 caches.
         if !affected_uuids.is_empty() {
             let _ = self
-                .events
+                .manager
+                .events()
                 .send(UserProfileEvent::TvReassigned { affected_uuids });
         }
 
@@ -299,7 +271,7 @@ impl SessionService {
     /// Returns the user profile with all inheritance applied (user -> admin -> defaults).
     async fn get_effective_user_profile(&self, tv_id: &str) -> Result<String, SessionError> {
         debug!(tv_id = %tv_id, "D-Bus: GetEffectiveUserProfile");
-        let s = self.state.read().await;
+        let s = self.manager.state().read().await;
 
         let resolved = s.profiles.get(tv_id).cloned().unwrap_or_else(|| {
             s.user_config
@@ -339,13 +311,13 @@ impl SessionService {
     async fn reload_config(&self) -> Result<(), SessionError> {
         info!("D-Bus: ReloadConfig");
 
-        let new_state = SessionState::load(&self.daemon, self.config_path.as_ref())
+        let new_state = SessionState::load(&self.daemon, self.manager.config_path())
             .await
             .map_err(|e| {
                 SessionError::OperationFailed(format!("Failed to reload config: {}", e))
             })?;
 
-        let mut s = self.state.write().await;
+        let mut s = self.manager.state().write().await;
         *s = new_state;
 
         info!(tvs = s.tv_ids.len(), "Configuration reloaded via D-Bus");
@@ -365,11 +337,12 @@ pub struct SessionDbusBundle {
     pub connection: zbus::Connection,
     pub forwarder_task: tokio::task::JoinHandle<()>,
     /// Sender side of the user-profile event channel — clone this to
-    /// drive `register_user_profile_objects` outside of the initial
-    /// registration call (e.g. after a late daemon-connect reloads the
-    /// session state and the per-profile D-Bus objects need to be
-    /// brought in line with disk).
-    pub user_profile_events: UserProfileEventTx,
+    /// Shared mutation manager. Clone this Arc to share state /
+    /// config-path / event-sender access with the retry task in
+    /// `main.rs` so a late daemon-connect can call
+    /// `register_user_profile_objects` after the session state has
+    /// been reloaded.
+    pub profile_manager: Arc<SessionProfileManager>,
 }
 
 /// Register the session D-Bus service on the session bus.
@@ -412,19 +385,18 @@ pub async fn register_session_dbus_on(
         .context("Failed to build session D-Bus connection")?;
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let manager = Arc::new(SessionProfileManager::new(
+        state.clone(),
+        config_path,
+        event_tx,
+    ));
 
     // Register one `UserProfile1` object per UUID in the user config.
     // Admin baseline isn't separately registered — it's the
     // inheritance ancestor and lives on the daemon side.
-    register_user_profile_objects(
-        &connection,
-        state.clone(),
-        config_path.clone(),
-        event_tx.clone(),
-    )
-    .await?;
+    register_user_profile_objects(&connection, manager.clone()).await?;
 
-    let service = SessionService::new(state.clone(), daemon, config_path, event_tx.clone());
+    let service = SessionService::new(daemon, manager.clone());
     connection
         .object_server()
         .at(SESSION_PATH, service)
@@ -435,11 +407,11 @@ pub async fn register_session_dbus_on(
     // in response to mutation events. Aborted by the caller on
     // shutdown via `SessionDbusBundle::forwarder_task`.
     let forwarder_conn = connection.clone();
-    let forwarder_state = state.clone();
+    let forwarder_manager = manager.clone();
     let forwarder_task = tokio::spawn(async move {
         crate::user_profile::user_profile_state_forwarder(
             forwarder_conn,
-            forwarder_state,
+            forwarder_manager,
             event_rx,
         )
         .await;
@@ -449,7 +421,7 @@ pub async fn register_session_dbus_on(
     Ok(SessionDbusBundle {
         connection,
         forwarder_task,
-        user_profile_events: event_tx,
+        profile_manager: manager,
     })
 }
 
@@ -474,24 +446,16 @@ pub async fn register_session_dbus_on(
 ///    profiles.
 pub async fn register_user_profile_objects(
     connection: &zbus::Connection,
-    state: Arc<RwLock<SessionState>>,
-    config_path: Option<std::path::PathBuf>,
-    events: UserProfileEventTx,
+    manager: Arc<SessionProfileManager>,
 ) -> anyhow::Result<()> {
     let profile_uuids: Vec<uuid::Uuid> = {
-        let s = state.read().await;
+        let s = manager.state().read().await;
         s.user_config.user.profiles.keys().copied().collect()
     };
     for uuid in profile_uuids {
-        register_user_profile(
-            connection,
-            state.clone(),
-            config_path.clone(),
-            events.clone(),
-            uuid,
-        )
-        .await
-        .with_context(|| format!("Failed to register UserProfile interface for {}", uuid))?;
+        register_user_profile(connection, manager.clone(), uuid)
+            .await
+            .with_context(|| format!("Failed to register UserProfile interface for {}", uuid))?;
     }
     Ok(())
 }
