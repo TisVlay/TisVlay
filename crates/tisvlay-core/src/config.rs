@@ -238,6 +238,21 @@ impl SystemProfileConfig {
         }
     }
 
+    /// Materialized-but-empty default body — every field `None` (i.e.,
+    /// inheriting from the hardcoded baseline). Used by
+    /// [`SystemSection::ensure_default`] to guarantee the reserved
+    /// default UUID always has a body on the bus without committing
+    /// any opinion on the field values; the daemon's resolution walk
+    /// falls through to [`ResolvedSystemProfile::default`] for every
+    /// field. Lets the user customize the default via `Properties.Set`
+    /// without first creating the section by hand on disk.
+    pub fn empty_default() -> Self {
+        Self {
+            name: DEFAULT_PROFILE_NAME.to_string(),
+            ..Self::default()
+        }
+    }
+
     /// Merge this profile with a base profile.
     ///
     /// Fields that are `None` in `self` are filled from `base`. Fields
@@ -374,6 +389,16 @@ impl UserProfileConfig {
             idle_timeout_seconds: Some(d.idle_timeout_seconds),
             on_idle_timeout: Some(d.on_idle_timeout),
             on_idle_resume: Some(d.on_idle_resume),
+        }
+    }
+
+    /// Materialized-but-empty default body — every field `None`.
+    /// Mirror of [`SystemProfileConfig::empty_default`]; used by
+    /// [`UserSection::ensure_default`].
+    pub fn empty_default() -> Self {
+        Self {
+            name: DEFAULT_PROFILE_NAME.to_string(),
+            ..Self::default()
         }
     }
 
@@ -520,11 +545,18 @@ impl SystemSection {
 
     /// Insert the reserved `"default"` profile under
     /// [`DEFAULT_SYSTEM_PROFILE_UUID`] if it doesn't already exist.
-    /// Daemon-side invariant: the default UUID always has a body.
+    /// Daemon-side invariant: the default UUID always has a body on
+    /// the bus, even when the on-disk TOML omits the section. The
+    /// synthesized body is empty (every field `None`) — the
+    /// resolution walk falls through to
+    /// [`ResolvedSystemProfile::default`] for unset fields, and the
+    /// section appears on disk only after the user makes their first
+    /// edit (a normal save round-trip persists whatever is in memory
+    /// at that point).
     pub fn ensure_default(&mut self) {
         self.profiles
             .entry(DEFAULT_SYSTEM_PROFILE_UUID)
-            .or_insert_with(SystemProfileConfig::full_default);
+            .or_insert_with(SystemProfileConfig::empty_default);
         // Force the reserved name regardless of what was on disk —
         // the friendly name is just a label, but pinning it keeps
         // the tray's UUID→name lookup deterministic for the default.
@@ -616,12 +648,13 @@ impl UserSection {
         merged.resolve()
     }
 
-    /// Insert the reserved `"default"` profile if missing. See
+    /// Insert the reserved `"default"` profile if missing — empty
+    /// body, inheriting from the resolution chain below. See
     /// [`SystemSection::ensure_default`].
     pub fn ensure_default(&mut self) {
         self.profiles
             .entry(DEFAULT_USER_PROFILE_UUID)
-            .or_insert_with(UserProfileConfig::full_default);
+            .or_insert_with(UserProfileConfig::empty_default);
         if let Some(body) = self.profiles.get_mut(&DEFAULT_USER_PROFILE_UUID) {
             body.name = DEFAULT_PROFILE_NAME.to_string();
         }
@@ -1558,6 +1591,60 @@ ip = "192.168.1.101"
         let full = SystemProfileConfig::full_default();
         let resolved = full.resolve();
         assert_eq!(resolved, ResolvedSystemProfile::default());
+    }
+
+    #[test]
+    fn ensure_default_materializes_empty_body_when_missing() {
+        // The reserved default UUID must always have a body on the
+        // bus, even when the TOML omits the section. The body the
+        // daemon synthesizes is empty (every field None) so the
+        // resolution walk falls through to the hardcoded baseline.
+        // The user can't recover any other way — reserved-name
+        // validation blocks `CreateSystemProfile("default")` /
+        // `CreateUserProfile("default")`.
+        let mut system = SystemSection::default();
+        assert!(!system.profiles.contains_key(&DEFAULT_SYSTEM_PROFILE_UUID));
+        system.ensure_default();
+        let body = system
+            .profiles
+            .get(&DEFAULT_SYSTEM_PROFILE_UUID)
+            .expect("default materialized");
+        assert_eq!(body.name, DEFAULT_PROFILE_NAME);
+        assert!(body.on_startup.is_none());
+        assert!(body.on_shutdown.is_none());
+        assert!(body.automate_when.is_none());
+        // Resolution falls through to the hardcoded baseline.
+        let resolved = system.resolve_profile_by_uuid(DEFAULT_SYSTEM_PROFILE_UUID);
+        assert_eq!(resolved, ResolvedSystemProfile::default());
+
+        let mut user = UserSection::default();
+        assert!(!user.profiles.contains_key(&DEFAULT_USER_PROFILE_UUID));
+        user.ensure_default();
+        let body = user
+            .profiles
+            .get(&DEFAULT_USER_PROFILE_UUID)
+            .expect("user default materialized");
+        assert_eq!(body.name, DEFAULT_PROFILE_NAME);
+        assert!(body.on_session_lock.is_none());
+        assert!(body.idle_timeout_seconds.is_none());
+    }
+
+    #[test]
+    fn ensure_default_preserves_existing_body() {
+        // If the TOML already defines the default, ensure_default
+        // is a no-op on the body — the user's customizations stay.
+        let mut system = SystemSection::default();
+        system.profiles.insert(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            SystemProfileConfig {
+                name: DEFAULT_PROFILE_NAME.to_string(),
+                on_startup: Some(SessionAction::ScreenOff),
+                ..SystemProfileConfig::default()
+            },
+        );
+        system.ensure_default();
+        let body = system.profiles.get(&DEFAULT_SYSTEM_PROFILE_UUID).unwrap();
+        assert_eq!(body.on_startup, Some(SessionAction::ScreenOff));
     }
 
     #[test]

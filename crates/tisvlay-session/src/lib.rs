@@ -92,7 +92,7 @@ impl SessionState {
         };
 
         // Load user config (optional)
-        let user_config = match user_config_path {
+        let mut user_config = match user_config_path {
             Some(path) => match UserConfig::load_from(path) {
                 Ok(Some(config)) => {
                     info!(
@@ -131,6 +131,12 @@ impl SessionState {
                 }
             },
         };
+        // Guarantee the reserved user-default UUID has a body on the
+        // session bus even when the user config omits the section —
+        // otherwise the GUI shows no default user profile, and the
+        // user can't recover (reserved-name validation blocks
+        // creating one via `CreateUserProfile`).
+        user_config.user.ensure_default();
 
         // Validate TV references in user config
         for tv_entry in &user_config.tv {
