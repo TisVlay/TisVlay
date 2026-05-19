@@ -699,18 +699,9 @@ component ProfileFieldRowEnum inherits Rectangle {
     }
 }
 
-// =============================================================================
-// ProfileFieldRowNumber — one numeric-kind row in the detail editor.
-// =============================================================================
-//
-// Visual mirrors `ProfileFieldRowEnum`: 2 px gutter + label + value
-// control + reset glyph. Value control is a SpinBox bounded by
-// `entry.min-value` / `entry.max-value` with step `entry.step`; a
-// translator-facing `entry.unit` suffix renders beside it.
-//
-// Unlike enum rows, no `*` overlay marks the inherit state on the
-// numeric value — the left gutter accent + reset glyph carry that
-// signal alone, since prefixing a number with `*` would parse oddly.
+// Numeric sibling of `ProfileFieldRowEnum` — SpinBox + unit suffix.
+// Inherit signal rides gutter + reset glyph only (no `*` overlay —
+// see `ProfileFieldEntry.current-value` for the enum-row convention).
 component ProfileFieldRowNumber inherits Rectangle {
     in property <ProfileFieldEntry> entry;
     callback value-edited-number(string, int);

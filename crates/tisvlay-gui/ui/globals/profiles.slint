@@ -32,58 +32,35 @@ export struct ProfileTvRef {
 
 /// One inheritable field rendered as a row in the detail editor.
 /// Built Rust-side per-field from the selected profile's typed
-/// `SystemProfile1` / `UserProfile1` properties; the
-/// `value-edited` / `value-edited-number` / `reset-clicked`
-/// callbacks on `Profiles` route the edit back to
-/// `Properties.Set` / `ResetField`.
+/// `SystemProfile1` / `UserProfile1` properties. `kind` is the
+/// dispatch tag — `"enum"` (ComboBox) or `"number"` (SpinBox);
+/// `"bool"` and `"text"` are reserved placeholders. Variant-specific
+/// fields below are populated by Rust only for the matching kind;
+/// inactive variants are zeroed / empty.
+///
+/// `current-value` carries a trailing `*` (e.g. `"power_on*"`) when
+/// an enum field is inheriting — both signals the state visually and
+/// ensures picking the same-as-resolved value still fires
+/// `selected(v)` (no ComboBox no-op). Number rows skip the `*`
+/// overlay; gutter accent + reset glyph carry the inherit signal.
 export struct ProfileFieldEntry {
-    /// Wire id of the field (e.g. `"on_startup"`). Sent verbatim
-    /// to `Properties.Set` / `ResetField` via the callbacks.
     field-name: string,
-    /// User-facing label rendered in the row's label column
-    /// (e.g. `"On startup"`). Rust formats with `gettext` so the
-    /// translator catalog stays the source of truth.
     label: string,
-    /// Dispatch tag — `"enum"` for ComboBox rows, `"number"` for
-    /// SpinBox rows. Future kinds: `"bool"`, `"text"`. The
-    /// repeater in `profiles_pane.slint` switches on this to pick
-    /// the right row component; variant-specific fields below are
-    /// populated by Rust only for the matching kind.
     kind: string,
-    /// Pre-built ComboBox model — concrete action values only
-    /// (`"power_on"`, `"power_off"`, …). Reverting to inheriting
-    /// is the row's reset glyph, not a dropdown option. Populated
-    /// when `kind == "enum"`; empty otherwise.
+    /// ComboBox model for `kind == "enum"`.
     options: [string],
-    /// Displayed text for the ComboBox row (`kind == "enum"`).
-    /// When the field is locally-set this matches a model entry
-    /// (e.g. `"power_on"`); when it's inheriting Rust appends a
-    /// trailing `*` (e.g. `"power_on*"`) so the displayed text
-    /// signals the inherit state visually AND can't exact-match
-    /// any dropdown option — which means picking the same-as-
-    /// resolved value still fires `selected(v)` and locks the
-    /// inherited value in.
+    /// ComboBox displayed text for `kind == "enum"` (with possible
+    /// `*` suffix while inheriting — see above).
     current-value: string,
-    /// Resolved integer for SpinBox rows (`kind == "number"`).
-    /// Clamped Rust-side to `[min-value, max-value]`. The
-    /// inherit-vs-locally-set distinction rides on the left
-    /// gutter accent + the reset glyph — no `*` overlay for
-    /// numerics.
+    /// SpinBox value + bounds + step + unit for `kind == "number"`.
+    /// Rust clamps `number-value` to `[min-value, max-value]` at
+    /// row-build time.
     number-value: int,
-    /// SpinBox bounds (`kind == "number"`). Both clamps the user
-    /// input and bounds the up/down step keys.
     min-value: int,
     max-value: int,
-    /// SpinBox step (`kind == "number"`). 1 for second-granularity
-    /// timeouts.
     step: int,
-    /// Translator-facing unit suffix (`"seconds"`, `"minutes"`,
-    /// …) rendered next to the SpinBox for `kind == "number"`.
-    /// Empty for other kinds.
     unit: string,
-    /// Whether the field is in `LocallySetFields` for this
-    /// profile. Drives the 2 px left gutter accent + reset-glyph
-    /// visibility.
+    /// Drives the 2 px left gutter accent + reset-glyph visibility.
     is-locally-set: bool,
 }
 
@@ -169,11 +146,9 @@ export global Profiles {
     /// `Properties.Set`. Reverting to inheriting goes through
     /// `reset-field`, not here.
     callback value-edited(string, string);
-    /// A SpinBox commit in a numeric `ProfileFieldRowNumber`. Args
-    /// are `(field_name, value)` — the wire-id of the field plus
-    /// the picked integer. Rust clamps to the field's `[min, max]`
-    /// bounds, casts to `u32`, and dispatches to `Properties.Set`.
-    /// Reverting to inheriting still goes through `reset-field`.
+    /// Numeric counterpart to `value-edited`. Arg 2 is the picked
+    /// integer; Rust clamps to the field's `[min, max]` and casts to
+    /// `u32` before `Properties.Set`.
     callback value-edited-number(string, int);
     /// Reset glyph on a `ProfileFieldRow` clicked. Arg is the
     /// field-name; Rust dispatches `ResetField(field_name)` on the

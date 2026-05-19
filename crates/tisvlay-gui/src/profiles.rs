@@ -140,21 +140,14 @@ impl ProfileProxy {
     /// Read the current resolved value of one property by name. Used
     /// at prime time + on `PropertiesChanged` to refresh a row.
     async fn read_string_field(&self, prop_name: &str) -> Result<String> {
-        match self {
-            Self::System(p) => read_property_string(p.inner(), prop_name).await,
-            Self::User(p) => read_property_string(p.inner(), prop_name).await,
-        }
+        read_property(self.inner_proxy(), prop_name).await
     }
 
     /// Read a `u32`-typed property (currently just
-    /// `UserProfile1.IdleTimeoutSeconds`). Same shape as
-    /// `read_string_field`; pairs with [`set_u32_field`](Self::set_u32_field)
-    /// on the write path.
+    /// `UserProfile1.IdleTimeoutSeconds`). Pairs with
+    /// [`set_u32_field`](Self::set_u32_field) on the write path.
     async fn read_u32_field(&self, prop_name: &str) -> Result<u32> {
-        match self {
-            Self::System(p) => read_property_u32(p.inner(), prop_name).await,
-            Self::User(p) => read_property_u32(p.inner(), prop_name).await,
-        }
+        read_property(self.inner_proxy(), prop_name).await
     }
 
     /// Read the current `LocallySetFields: as` list. Used at prime
@@ -243,20 +236,15 @@ impl ProfileProxy {
     }
 }
 
-async fn read_property_string(proxy: &zbus::Proxy<'_>, prop_name: &str) -> Result<String> {
-    let value = proxy
-        .get_property::<String>(prop_name)
+async fn read_property<T>(proxy: &zbus::Proxy<'_>, prop_name: &str) -> Result<T>
+where
+    T: TryFrom<zbus::zvariant::OwnedValue>,
+    <T as TryFrom<zbus::zvariant::OwnedValue>>::Error: Into<zbus::Error>,
+{
+    proxy
+        .get_property::<T>(prop_name)
         .await
-        .with_context(|| format!("Failed to read property '{}'", prop_name))?;
-    Ok(value)
-}
-
-async fn read_property_u32(proxy: &zbus::Proxy<'_>, prop_name: &str) -> Result<u32> {
-    let value = proxy
-        .get_property::<u32>(prop_name)
-        .await
-        .with_context(|| format!("Failed to read property '{}'", prop_name))?;
-    Ok(value)
+        .with_context(|| format!("Failed to read property '{}'", prop_name))
 }
 
 async fn set_system_field(
@@ -678,22 +666,12 @@ async fn apply_signal_update(
     if union.is_empty() {
         return;
     }
-    // `LocallySetFields` changing flips the gutter accent + reset
-    // glyph + the inherit-placeholder vs concrete value for every
-    // row whose resolved value just shifted (default-profile edits
-    // fan out, and a `ResetField` toggles its row's locally-set
-    // flag). Re-read it once whenever it shows up so all downstream
-    // row builds use the fresh set.
-    let locally_set_changed = union.iter().any(|p| p == "LocallySetFields");
-    let locally_set = if locally_set_changed {
-        proxy.read_locally_set_fields().await.unwrap_or_default()
-    } else {
-        // No change → no need to re-read; the prior model already
-        // carries the right `is_locally_set` for the affected
-        // rows. We pull from the proxy anyway to keep the codepath
-        // simple — it's a cheap cached read.
-        proxy.read_locally_set_fields().await.unwrap_or_default()
-    };
+    // Re-read `LocallySetFields` unconditionally — it's a cheap
+    // cached round-trip and the downstream row builds need a fresh
+    // set whether or not this signal mentioned it. `LocallySetFields`
+    // flipping drives the gutter accent + reset-glyph visibility +
+    // the inherit-vs-concrete value distinction.
+    let locally_set = proxy.read_locally_set_fields().await.unwrap_or_default();
     let can_reset_all = !locally_set.is_empty();
 
     // Build the prop_name → resolved-value map for the touched
