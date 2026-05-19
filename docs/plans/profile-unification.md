@@ -2,30 +2,51 @@
 
 ## Motivation
 
-The just-shipped profile-CRUD v2 work lives across `crates/tisvlayd/src/dbus/system_profile.rs` (317 lines) and `crates/tisvlay-session/src/user_profile.rs` (1052 lines). The two interfaces are isomorphic — same per-profile object pattern, same typed properties, same `Properties.Set` + `ResetField` + `ResetAll` shape — but the source diverged. The system side delegates the heavy lifting (create / delete / duplicate / reset / refresh, name validation, persistence) to `TvManager`; the user side grew an inline parallel of that same machinery as free functions taking `&Arc<RwLock<SessionState>>`. Roughly **~700 lines of `user_profile.rs` are parallels of `TvManager` methods** rather than legitimate user-side specialization. The per-property getter/setter repetition (~80 lines per interface) is a real but secondary find.
+The just-shipped profile-CRUD v2 work has two duplicated implementations of the same essential pattern: `crates/tisvlayd/src/dbus/system_profile.rs` (317 lines) and `crates/tisvlay-session/src/user_profile.rs` (1052 lines). The interfaces are isomorphic — same per-profile object pattern, same typed properties + `Properties.Set` + `ResetField` / `ResetAll`, same `LocallySetFields` + `ReferencedBy` companion properties — but the source diverged.
 
-In parallel, the field-editor row in the Profiles pane is enum-only — `ProfileFieldRow` renders a ComboBox over `SessionAction` values. `UserProfile1.IdleTimeoutSeconds` (typed `u`, range `0..=86400`) is therefore intentionally absent from `USER_FIELDS` in `crates/tisvlay-gui/src/profiles.rs`. Filed as a deferred idea ([docs/ideas/profile-user-idle-timeout-spinner.md](../ideas/profile-user-idle-timeout-spinner.md)) but the underlying problem — no row-type dispatch beyond enums — blocks every future non-enum field (`Number`, `Bool`, `Text`).
+A previous attempt at this work landed two commits (`SessionProfileManager` extraction; field-kind registry + spinner) but inflated the branch by ~500 lines while claiming dedup. The branch was hard-reset back to the pre-refactor baseline; this plan is the honest re-scope after a FOSS prior-art survey.
 
-This plan does the structural cleanup and the field-kind unlock in one branch. Net savings: ~850–1000 lines deleted in daemon/session code, ~50 lines added in GUI for the field-kind dispatch.
+In parallel, the field-editor row in the Profiles pane is enum-only — `ProfileFieldRow` renders a ComboBox over `SessionAction` values. `UserProfile1.IdleTimeoutSeconds` (typed `u`, range `0..=86400`) is therefore intentionally absent from the GUI's `USER_FIELDS` table. The underlying problem — no row-type dispatch beyond enums — blocks every future non-enum field (`Number`, `Bool`, `Text`).
 
-No wire-protocol changes user-visible (per-property names, signatures, paths all stay the same). Internal Rust shape changes substantially.
+## What the FOSS survey showed
 
-## What's decided
+Five FOSS daemons surveyed: NetworkManager, systemd-homed, BlueZ, AccountsService, PowerProfiles, plus context from logind, GeoClue, PowerDevil / KConfigXT.
 
-Five refactors, landed in order. Each is a discrete commit (or small series).
+Findings that changed the scope:
 
-### P1 — Hoist user-side profile-CRUD onto a `SessionProfileManager` (≈ −300 lines)
+1. **Our wire shape is approximately idiomatic.** Per-object pattern, typed `#[zbus(property)]` properties, `Properties.Set` mutation — all match BlueZ (the cleanest precedent). No grand restructure is warranted.
+2. **Wire-level unification of the two interfaces** (one `Profile1` schema served on both buses) is not viable. The field sets are disjoint (system: `OnStartup` / `OnShutdown` / …; user: `OnSessionLock` / `OnIdleTimeout` / …), so a union schema would expose dead properties per bus. An `a{sv}` body bag (NetworkManager-style) loses per-field `PropertiesChanged` signals our GUI relies on.
+3. **Rust-impl unification via generics has language constraints** — zbus's `#[interface(name=...)]` is monomorphic per impl block; struct fields differ per kind. The previous attempt at a generic `ProfileService<K>` newtype-wrapper hit these constraints and saved fewer lines than it added in trait machinery.
+4. **The actual duplication is per-property setter boilerplate** — the same 4-line shape repeated 7 times on the system side and 6 times on the user side. A declarative macro collapses this cleanly, with no new abstraction layer.
 
-The free functions in `crates/tisvlay-session/src/user_profile.rs` (`create_user_profile`, `duplicate_user_profile`, `delete_user_profile`, `reset_user_profile`, `refresh_user_profile_cached_fields`, `user_profile_locally_set_fields`, `user_profile_referenced_by`, plus the inline `set_user_profile_*_field` helpers) move onto a `SessionProfileManager` struct owned by `SessionState`. Param signatures collapse from `(state: &Arc<RwLock<SessionState>>, config_path: Option<&PathBuf>, …)` to `&self` / `&mut self`. The `UserProfileEvent` channel stays where it is — the manager owns the sender and the forwarder task owns the receiver.
+## Scope
 
-Pure refactor, no behavior change. Touches `crates/tisvlay-session/src/user_profile.rs`, `crates/tisvlay-session/src/lib.rs` (`SessionState` gets a `pub profile_manager: SessionProfileManager` field), `crates/tisvlay-session/src/session_dbus.rs` (Session1 method bodies call through the manager). Tests should pass unchanged since the surface they hit is the D-Bus interface, not the internal helpers.
+Three deliverables, smallest to largest. The set is deliberately narrow.
 
-### P2 — Typed field-kind registry + Slint dispatch (≈ +50 lines, unblocks numeric / bool / text fields)
+### 1. `trait ProfileManager` + `SessionProfileManager` extraction
 
-One source of truth for field metadata, used by daemon-side property dispatch, session-side property dispatch, and GUI-side row rendering. Lives in `tisvlay-core` so all three sides import the same const tables.
+`tisvlay-core` gains `trait ProfileManager` with four async methods covering the per-profile mutation surface:
 
 ```rust
-// crates/tisvlay-core/src/profile_fields.rs (new)
+pub trait ProfileManager: Send + Sync + 'static {
+    async fn set_string_field(&self, uuid: Uuid, field: &str, value: &str) -> Result<(), ProfileError>;
+    async fn set_u32_field(&self, uuid: Uuid, field: &str, value: u32) -> Result<(), ProfileError>;
+    async fn reset_field(&self, uuid: Uuid, field: &str) -> Result<(), ProfileError>;
+    async fn reset_all(&self, uuid: Uuid) -> Result<(), ProfileError>;
+}
+```
+
+`tisvlayd`'s `TvManager` implements `ProfileManager` for system profiles (delegates to existing `set_system_profile_field`, etc.). The system side has no numeric fields today; `set_u32_field` returns `ProfileError::UnknownField` for any caller, leaving room for future numeric system fields without further trait churn.
+
+`tisvlay-session` gets a new `SessionProfileManager` struct that consolidates the inline `create_user_profile` / `duplicate_user_profile` / `delete_user_profile` / `reset_user_profile` / `refresh_*` free functions onto methods, and implements `ProfileManager`. State (`Arc<RwLock<SessionState>>`) + config path + event sender are bundled into the manager so the per-profile interface struct (`UserProfileService`) holds only `Arc<SessionProfileManager>` + cached fields, not three plumbing fields.
+
+This piece is **scaffolding for the macro, not a standalone line-savings refactor**. The honest cost is roughly neutral on raw lines once you count the trait declaration overhead. The structural value is symmetry between the daemon-side and session-side mutation entry points + a uniform call shape the macro can target.
+
+### 2. Field-kind registry + IdleTimeoutSeconds spinner
+
+`tisvlay-core::profile_fields` — canonical `FieldDef` / `FieldKind` const tables.
+
+```rust
 pub enum FieldKind {
     Enum { options: &'static [&'static str] },
     Number { min: i64, max: i64, step: i64, unit: &'static str },
@@ -34,163 +55,125 @@ pub enum FieldKind {
 }
 
 pub struct FieldDef {
-    pub name: &'static str,           // wire id: "on_startup", "idle_timeout_seconds"
-    pub label_msgid: &'static str,    // gettext msgid for the UI label
+    pub prop_name: &'static str,   // "OnStartup" — D-Bus property
+    pub wire_name: &'static str,   // "on_startup" — LocallySetFields token + ResetField arg
+    pub label_msgid: &'static str, // gettext msgid for the GUI label
     pub kind: FieldKind,
 }
 
-pub const SYSTEM_FIELDS: &[FieldDef] = &[/* … */];
+pub const SYSTEM_FIELDS: &[FieldDef] = &[/* 7 enum entries */];
 pub const USER_FIELDS: &[FieldDef] = &[
-    FieldDef { name: "on_session_lock", label_msgid: "On session lock",
-               kind: FieldKind::Enum { options: SESSION_ACTIONS } },
-    /* … */
-    FieldDef { name: "idle_timeout_seconds", label_msgid: "Idle timeout (seconds)",
-               kind: FieldKind::Number { min: 0, max: 86400, step: 1, unit: "seconds" } },
+    /* 5 enum entries */,
+    FieldDef {
+        prop_name: "IdleTimeoutSeconds",
+        wire_name: "idle_timeout_seconds",
+        label_msgid: "Idle timeout (seconds)",
+        kind: FieldKind::Number { min: 0, max: 86_400, step: 1, unit: "seconds" },
+    },
 ];
 ```
 
-GUI side:
+Only `Enum` and `Number` have GUI row components today; `Bool` and `Text` are placeholders in the kind enum so adding the first instance is a one-table-entry change.
 
-```slint
-// crates/tisvlay-gui/ui/globals/profiles.slint
-export struct ProfileFieldEntry {
-    field-name: string,
-    label: string,
-    kind: string,        // "enum", "number", "bool", "text"
-    options: [string],   // populated for kind == "enum"
-    current-value: string,
-    number-value: int,   // populated for kind == "number"
-    bool-value: bool,    // populated for kind == "bool"
-    min-value: int,
-    max-value: int,
-    step: int,
-    unit: string,
-    is-locally-set: bool,
-}
-```
+GUI changes:
 
-```slint
-// crates/tisvlay-gui/ui/components/profiles_pane.slint
-for entry[i] in Profiles.editor-fields:
-    if entry.kind == "enum":   ProfileFieldRowEnum   { entry: entry; … }
-    if entry.kind == "number": ProfileFieldRowNumber { entry: entry; … }
-    if entry.kind == "bool":   ProfileFieldRowBool   { entry: entry; … }
-    if entry.kind == "text":   ProfileFieldRowText   { entry: entry; … }
-```
+- `crates/tisvlay-gui/src/profiles.rs` deletes its local `FieldDef` + tables, imports from core.
+- `ProfileFieldEntry` Slint struct grows `kind` + variant-specific fields (`number-value`, `min-value`, `max-value`, `step`, `unit`).
+- New `ProfileFieldRowNumber` Slint component (wraps `std-widgets.slint::SpinBox`).
+- New `Profiles.value-edited-number(string, int)` callback + Rust dispatch.
+- Repeater in `profiles_pane.slint` dispatches on `entry.kind` via conditional `if entry.kind == "enum" / "number"`.
 
-Each row component wraps the appropriate widget — Slint's built-in `SpinBox` (with `read-only`, `step-size`, `edited` callback) for `Number`, `Switch` for `Bool`, `LineEdit` for `Text`. The reset glyph + 2 px left gutter accent + `is-locally-set` semantics are shared via a common header strip; only the value-input control varies.
+Closes `docs/ideas/profile-user-idle-timeout-spinner.md` (delete the file + its `docs/ideas.md` index entry).
 
-Rust side: `Profiles.value-edited` callback grows a kind-aware payload. Today's `(field_name: string, value: string)` becomes either a tagged enum payload or a per-kind callback set (`value-edited-enum(name, value)`, `value-edited-number(name, value)`, …). Decision deferred to implementation — both shapes work; pick whichever reads cleaner once the row components are in place.
+### 3. `profile_field_props!` declarative macro
 
-Net cost: +50 lines for the second row variant (`ProfileFieldRowNumber`) plus the shared header strip. Subsequent row variants are ~15 lines each. `IdleTimeoutSeconds` joins `USER_FIELDS` once `Number` is in.
-
-Field-kind metadata removes from `crates/tisvlay-gui/src/profiles.rs` — the GUI imports `SYSTEM_FIELDS` / `USER_FIELDS` from `tisvlay-core` and maps each `FieldDef` to a `ProfileFieldEntry` instead of carrying its own copy.
-
-### P3 — Generic `ProfileService<K>` + `ProfileKind` trait (≈ −300 to −400 lines)
-
-```rust
-pub trait ProfileKind: 'static {
-    type Config;                          // SystemProfileConfig | UserProfileConfig
-    type Resolved;                        // ResolvedSystemProfile | ResolvedUserProfile
-    type MutationError: Into<zbus::fdo::Error>;
-    fn interface_name() -> &'static str;  // "org.tisvlay.SystemProfile1" | "…UserProfile1"
-    fn object_path(uuid: &Uuid) -> String;
-    fn fields() -> &'static [FieldDef];
-    /* … per-field apply / clear / read accessors */
-}
-
-pub struct ProfileService<K: ProfileKind> {
-    pub uuid: Uuid,
-    pub name: String,
-    pub fields: HashMap<&'static str, FieldValue>,  // typed union, dispatched by FieldKind
-    pub locally_set_fields: Vec<String>,
-    pub referenced_by: Vec<String>,
-    _kind: PhantomData<K>,
-}
-```
-
-zbus 5.x's `#[interface]` macro accepts generic `impl<K> ProfileService<K>` blocks but the interface name is monomorphic (resolved at macro-expansion time, not generic over `K`). Workaround: two newtype wrappers carry the interface name attribute:
-
-```rust
-pub struct SystemProfileService(ProfileService<SystemKind>);
-pub struct UserProfileService(ProfileService<UserKind>);
-
-#[interface(name = "org.tisvlay.SystemProfile1")]
-impl SystemProfileService { /* methods delegate to self.0 */ }
-
-#[interface(name = "org.tisvlay.UserProfile1")]
-impl UserProfileService  { /* methods delegate to self.0 */ }
-```
-
-The bulk of the implementation — the typed property getters/setters, the `set_field` dispatch, the `ResetField` / `ResetAll` plumbing, the cache refresh — lives once on `ProfileService<K>`. The newtypes are thin delegation layers.
-
-Risk: medium. Trait error messages get noisier; one more layer of indirection between the wire surface and the manager. Pays for itself because we go from "two parallel impls" to "one impl + cheap K substitution."
-
-### P4 — Declarative macro for the residual per-field property pairs (≈ −150 lines)
-
-Even with P3's generic, each `#[zbus(property)]` getter/setter pair has to be spelled out — zbus's macro doesn't auto-derive setters from struct field access. A workspace-local declarative macro expands the pairs from a field list:
+In `tisvlay-core::profile_field_props` (or a sibling module). Takes a field-list invocation and expands to N typed-property getter/setter pairs that all route through the wrapper's `set_field` helper.
 
 ```rust
 profile_field_props! {
-    on_startup: String,
-    on_shutdown: String,
-    /* … */
+    self.manager =>
+    OnStartup    => on_startup,
+    OnShutdown   => on_shutdown,
+    OnReboot     => on_reboot,
+    OnNoSession  => on_no_session,
+    OnSleep      => on_sleep,
+    OnWake       => on_wake,
+    AutomateWhen => automate_when,
 }
 ```
 
-Expands to seven getter/setter pairs that all route through `self.set_field("on_startup", value).await`. Needs `paste` for identifier concatenation; `paste` is already a transitive dep of the zbus / slint stacks. No new top-level dep.
+Expands to seven `#[zbus(property)]` getter/setter pairs. Numeric properties (just `IdleTimeoutSeconds` today) stay hand-written; the macro generates string-typed pairs only — the numeric case is rare enough that one-off code is clearer than a second macro arm.
 
-Lives in `tisvlay-core` (or in the consuming crate — declarative macros are per-crate-fine). Stays as `macro_rules!` unless a proc-macro need surfaces.
+Needs `paste` for `set_<field>` identifier composition (already a transitive dep via slint / zbus stacks; no new top-level dep).
 
-### P5 — Unified inheritance walker (≈ −80 lines)
+Applied to both `SystemProfileService` and `UserProfileService` to replace ~84 lines of repetitive declarations per interface with one ~10-line invocation.
 
-`SystemSection::resolve_profile_by_uuid` walks 2 hops (named → default → baseline); `UserSection::resolve_profile_by_uuid` walks 4 hops (named → user-default → admin-by-name → admin-default → baseline). Both fold the chain the same way, just with different chain lengths and one user-specific name-keyed step.
+## What's NOT in scope
 
-```rust
-fn resolve_chain<C: ProfileChainItem>(chain: impl IntoIterator<Item = Option<&C>>) -> Resolved<C> {
-    /* fold last-wins-with-overlay across the chain */
-}
+- **Generic `ProfileService<K>` newtype-wrapper pattern.** Original plan's "P3". Constrained by zbus macro monomorphism + per-kind struct fields. The macro takes most of what the generic was supposed to deliver without the abstraction tax.
+- **Unified inheritance walker.** Original plan's "P5". Small standalone win; defer until a third profile family or a future inheritance-feature ask makes it worth touching.
+- **Wire-level interface unification.** Architecturally inadvisable per the FOSS survey (disjoint field sets + per-field signal granularity).
+
+## File-by-file changes
+
+```
+crates/tisvlay-core/
+  src/lib.rs                            +~13 lines (re-exports for new modules)
+  src/profile_fields.rs                 +~230 lines (new — FieldDef + tables)
+  src/profile_manager.rs                +~80 lines (new — trait ProfileManager + ProfileError)
+  src/profile_field_props.rs            +~80 lines (new — declarative macro)
+
+crates/tisvlayd/
+  src/dbus/system_profile.rs            roughly −80 / +20 lines
+  src/tv_manager.rs                     +~50 lines (impl ProfileManager for TvManager)
+
+crates/tisvlay-session/
+  src/user_profile.rs                   roughly −350 / +250 lines
+  src/session_dbus.rs                   roughly −40 / +20 lines
+  src/main.rs                           roughly −10 / +10 lines
+  src/lib.rs                            +~3 lines
+
+crates/tisvlay-gui/
+  src/profiles.rs                       roughly −180 / +250 lines
+  src/lib.rs                            +~18 lines
+  ui/globals/profiles.slint             +~35 lines
+  ui/components/profiles_pane.slint     +~110 lines
+
+docs/
+  ideas.md                              −1 line
+  ideas/profile-user-idle-timeout-spinner.md  −31 lines (delete)
 ```
 
-Each `SystemSection` / `UserSection` builds its own iterator and hands it off. Pure refactor inside `crates/tisvlay-core/src/config.rs`. Very low risk.
+## Expected outcome
 
-## Sequencing rationale
+The value here is structural + a user-visible feature, not raw line-count savings. Specifically:
 
-P1 first because it's pure refactor with no behavior change — closes the asymmetry that makes the diff look huge, easiest to review, gives the cleanest "before / after" line-count delta. Single PR-worthy commit on its own merits.
+- **Symmetric manager surface** between daemon and session sides via `trait ProfileManager`.
+- **Per-property setter boilerplate collapses** into one macro invocation per interface — the actual repetition we have today.
+- **IdleTimeoutSeconds spinner ships** as a typed `Number` row in the Profiles pane.
+- **Single source of truth** for field metadata in `tisvlay-core::profile_fields` — daemon, session, and GUI all import the same const tables.
 
-P2 second because it ships the field-kind metadata shape that P3 needs to abstract over. Doing P3 before P2 would mean designing the trait against today's enum-only `String` properties, then either re-doing the trait when P2 lands or carrying a second-pass adjustment. P2 also delivers user-visible value (unblocks `IdleTimeoutSeconds` and any future numeric/bool field) which justifies its mid-branch landing if the branch slips and we ship without P3-P5.
-
-P3 third — now informed by the typed-field shape — collapses the two parallel `#[interface]` impls into one generic with two newtype wrappers.
-
-P4 fourth as a cleanup pass inside the generic, eliminating the residual per-property getter/setter boilerplate.
-
-P5 last because it's small, isolated, and the lowest-risk win — perfect ending move that doesn't depend on anything else in the sequence.
-
-## Dependency decisions
-
-- **No new top-level deps required.** `paste` is already in the transitive tree (via zbus / slint). The field-kind work is pure Rust + Slint.
-- **`tisvlay-macros` crate is not introduced now.** Proc macros (custom derive, attribute macros) require a separate crate type (`proc-macro = true` in `Cargo.toml`). Declarative `macro_rules!` macros do not. P4 is declarative. If a later refactor needs a proc macro (e.g. `#[derive(ProfileFields)]` that reads a struct definition), stand up `tisvlay-macros` at that point — it's a routine pattern (`serde` / `serde_derive`, `tokio` / `tokio-macros`, `zbus` / `zbus_macros`) and adding it later carries no migration burden.
-- **`tisvlay-core` is the home for `FieldDef` / `FieldKind` / `SYSTEM_FIELDS` / `USER_FIELDS`.** Daemon, session, GUI all import from one place. Gettext `msgid` strings cross the core/GUI boundary but that's fine — `msgid` is a stable wire-format string, not a translated value.
-
-## What's not in scope (real divergences that resist unification)
-
-- **`TvManager` ownership vs `SessionState` ownership.** Daemon owns TVs + system profiles in one struct; session owns user profiles + a daemon client + Wayland listeners + idle watchers. Different lifetimes and concerns. P1 hoists user-side helpers onto a `SessionProfileManager` *within* `SessionState`; it does **not** try to fold that into a single cross-process struct.
-- **State-change fan-out plumbing.** Daemon uses `TvManager`'s internal `StateChangeEvent` channel (private to the daemon process). Session uses an explicit `UserProfileEventTx` (private to the session process). Both work, both are correct. The asymmetry reflects the process boundary, not a missed abstraction.
-- **Admin-baseline lookup in user inheritance.** Name-keyed (admin reuses baselines by profile name across users). No system-side equivalent. P5's unified walker takes the chain as input; the user-side iterator includes the admin step, the system-side iterator doesn't.
-- **Disk persistence paths.** System config is `/var/lib/tisvlay/daemon.toml` (root-writable); user config is `~/.config/tisvlay/session.toml` (user-writable). Different paths, different writer identities. The unification stops at the in-memory shape.
+Raw line count expectation: **roughly neutral to slightly negative** in implementation code (counted via `tokei`, excluding comments + blank lines). The final commit message will report the before / after `tokei` delta as the authoritative measurement.
 
 ## Risks
 
-- **`#[interface]` macro generic limits.** zbus 5.x supports generic `impl<K>` blocks but the interface-name attribute is monomorphic. The newtype-wrapper pattern in P3 is the known-working escape hatch; if it surprises (zbus version bumps, generic-bound interactions), fall back to P3-without-newtypes — two `#[interface]` impls that each delegate to a shared `ProfileServiceInner` struct. Same line savings, marginally less elegant.
-- **Trait error message readability.** `ProfileKind` adds a generic parameter to every error trace inside the service code. We accept this cost in exchange for the dedup.
-- **Slint heterogeneous repeater rendering.** P2's `if entry.kind == "enum"` / `"number"` / … pattern is idiomatic Slint and used elsewhere in the codebase (the conditional reset-glyph render in today's `ProfileFieldRow`), but the four row components add component-instantiation overhead per row. For ~6–7 rows per profile detail, the overhead is irrelevant. If a future pane needs hundreds of variant rows, revisit.
-- **Field-kind metadata desync.** `FieldDef` lives in `tisvlay-core`; the underlying struct fields live in `SystemProfileConfig` / `UserProfileConfig` (also `tisvlay-core`). Adding a field requires touching both. Mitigation: a `cargo test` that walks each `FieldDef` and asserts the named field exists on the corresponding config struct via a derive macro or an exhaustive match. Defer until a field-add actually causes a desync; the failure mode is loud (`set_field` panics on unknown name).
+- **Macro hygiene.** Declarative macros with `paste::paste!` ident composition can be brittle when expanding inside `#[interface]` impl blocks (the macro must expand to valid `#[zbus(property)]` annotated methods). Mitigation: write the macro against a small fixture first, verify it works via introspection, then apply to the real interfaces.
+- **Trait async signatures.** `trait ProfileManager` uses stable async-fn-in-trait. No `dyn ProfileManager` support means everything stays generic — fine for our call sites (which are monomorphic per profile kind).
+- **Re-entrance.** `SessionProfileManager` methods take `&self` and lock state internally. Callers must not hold the state lock across manager calls (tokio RwLock isn't re-entrant). Same constraint the existing free functions follow.
+
+## Verification
+
+- `nix develop --command just check` end-to-end green.
+- `nix develop --command prek run -a` end-to-end green.
+- Full test suite (435 tests + doc tests) passes unchanged.
+- Manual GUI smoke test: launch `tisvlay-gui`, verify (a) existing profile editor still works for the enum fields, (b) `IdleTimeoutSeconds` SpinBox renders and commits.
+- `tokei` before / after comparison reported in the final commit body.
 
 ## Migration path on durable docs after this plan ships
 
 Per `docs/plans/README.md` convention, when this work merges:
 
-- The generic-`ProfileService<K>` shape and the `ProfileKind` trait fold into the "Per-profile interfaces" subsection of [docs/design.md](../design.md).
-- The `FieldDef` / `FieldKind` registry pattern folds into a new "Field-kind registry" subsection alongside it — covers the contract for adding a new field type (config struct + `FieldDef` entry + a `ProfileFieldRow*` component if it's a new kind).
+- `trait ProfileManager` + the macro pattern fold into [docs/design.md](../design.md) as a "Profile-interface abstraction" subsection.
+- The `FieldDef` / `FieldKind` registry contract folds into a "Field-kind registry" subsection alongside it.
 - The Slint heterogeneous-repeater rationale folds into [.claude/slint.md](../../.claude/slint.md) as a recipe for future variant-list panes.
 - This plan file is deleted; git history is the archive.
