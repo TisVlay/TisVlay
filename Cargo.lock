@@ -5749,6 +5749,7 @@ name = "tisvlay-session"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "futures-util",
  "serde_json",

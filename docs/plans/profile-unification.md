@@ -21,7 +21,7 @@ Findings that changed the scope:
 
 ## Scope
 
-Three deliverables, smallest to largest. The set is deliberately narrow.
+Three deliverables planned; **deliverable 3 was dropped during execution** after discovering a zbus macro-expansion limitation (see "What was attempted but dropped" below). The shipped set is the first two.
 
 ### 1. `trait ProfileManager` + `SessionProfileManager` extraction
 
@@ -85,28 +85,21 @@ GUI changes:
 
 Closes `docs/ideas/profile-user-idle-timeout-spinner.md` (delete the file + its `docs/ideas.md` index entry).
 
-### 3. `profile_field_props!` declarative macro
+### ~~3. `profile_field_props!` declarative macro~~ (dropped)
 
-In `tisvlay-core::profile_field_props` (or a sibling module). Takes a field-list invocation and expands to N typed-property getter/setter pairs that all route through the wrapper's `set_field` helper.
+Was attempted. See "What was attempted but dropped" below.
 
-```rust
-profile_field_props! {
-    self.manager =>
-    OnStartup    => on_startup,
-    OnShutdown   => on_shutdown,
-    OnReboot     => on_reboot,
-    OnNoSession  => on_no_session,
-    OnSleep      => on_sleep,
-    OnWake       => on_wake,
-    AutomateWhen => automate_when,
-}
-```
+## What was attempted but dropped
 
-Expands to seven `#[zbus(property)]` getter/setter pairs. Numeric properties (just `IdleTimeoutSeconds` today) stay hand-written; the macro generates string-typed pairs only — the numeric case is rare enough that one-off code is clearer than a second macro arm.
+A declarative macro `profile_field_props!(on_startup, on_shutdown, ...)` to collapse the N typed-property getter/setter pairs into a single invocation per interface. The macro generated `#[zbus(property)] fn <field>(&self) -> &str` getters and `#[zbus(property)] async fn set_<field>(&mut self, value: String)` setters via `paste::paste!` for identifier composition.
 
-Needs `paste` for `set_<field>` identifier composition (already a transitive dep via slint / zbus stacks; no new top-level dep).
+**Why it didn't work.** zbus's `#[interface]` attribute macro parses the impl block with `syn` and iterates `ImplItem::Fn` + `ImplItem::Verbatim`. It does **not** expand inner `ImplItem::Macro` invocations — declarative macros inside the impl block are seen as opaque tokens. The compiler expands them *after* `#[interface]` runs, so the resulting `#[zbus(property)]` annotations on the macro-generated methods never make it through zbus's introspection generation. The runtime result: methods exist on the struct but the D-Bus property registration + `<field>_changed()` emitters are missing, and `Properties.Set` from a client misses the routing entirely.
 
-Applied to both `SystemProfileService` and `UserProfileService` to replace ~84 lines of repetitive declarations per interface with one ~10-line invocation.
+Confirmed against `libs/zbus/zbus_macros/src/iface.rs:346` — only `ImplItem::Fn` and `ImplItem::Verbatim` arms in the dispatch loop.
+
+**Workaround paths considered, all rejected for this branch.** (a) Write a custom proc-macro crate (`tisvlay-macros`) that wraps `#[interface]` and inserts the property pairs before forwarding to zbus's macro — high effort for the LoC savings on offer. (b) Wrap the entire `#[interface] impl { ... }` block in an outer declarative macro that emits the pairs inline — `paste!` for `set_<field>` is still inner-macro to `#[interface]`, same dead-end. (c) Build-script codegen of `.rs` files — adds a compile-time tool dependency.
+
+If a future profile family adds enough fields to make the boilerplate painful again, the proc-macro crate is the right move. Filed mentally; not in scope here.
 
 ## What's NOT in scope
 
@@ -118,30 +111,39 @@ Applied to both `SystemProfileService` and `UserProfileService` to replace ~84 l
 
 ```
 crates/tisvlay-core/
-  src/lib.rs                            +~13 lines (re-exports for new modules)
-  src/profile_fields.rs                 +~230 lines (new — FieldDef + tables)
-  src/profile_manager.rs                +~80 lines (new — trait ProfileManager + ProfileError)
-  src/profile_field_props.rs            +~80 lines (new — declarative macro)
+  src/lib.rs                            module decls + re-exports
+  src/profile_fields.rs                 new — FieldDef + tables
+  src/profile_manager.rs                new — trait ProfileManager + ProfileError
 
 crates/tisvlayd/
-  src/dbus/system_profile.rs            roughly −80 / +20 lines
-  src/tv_manager.rs                     +~50 lines (impl ProfileManager for TvManager)
+  src/dbus/system_profile.rs            route through ProfileManager trait
+  src/tv_manager.rs                     impl ProfileManager for TvManager
 
 crates/tisvlay-session/
-  src/user_profile.rs                   roughly −350 / +250 lines
-  src/session_dbus.rs                   roughly −40 / +20 lines
-  src/main.rs                           roughly −10 / +10 lines
-  src/lib.rs                            +~3 lines
+  Cargo.toml                            +async-trait dep
+  src/user_profile.rs                   SessionProfileManager extraction
+                                        + impl ProfileManager
+                                        + UserProfileService rewires
+  src/session_dbus.rs                   thread Arc<SessionProfileManager>
+  src/main.rs                           retry task uses bundle.profile_manager
+  src/lib.rs                            __internals re-export
 
 crates/tisvlay-gui/
-  src/profiles.rs                       roughly −180 / +250 lines
-  src/lib.rs                            +~18 lines
-  ui/globals/profiles.slint             +~35 lines
-  ui/components/profiles_pane.slint     +~110 lines
+  src/profiles.rs                       delete local FieldDef + tables;
+                                        kind-dispatched build_row;
+                                        u32 read/write paths;
+                                        dispatch_value_edit_number
+  src/lib.rs                            on_value_edited_number callback
+  ui/globals/profiles.slint             extended ProfileFieldEntry +
+                                        value-edited-number
+  ui/components/profiles_pane.slint     ProfileFieldRowEnum (renamed) +
+                                        ProfileFieldRowNumber (new) +
+                                        kind-dispatch in repeater
 
 docs/
-  ideas.md                              −1 line
-  ideas/profile-user-idle-timeout-spinner.md  −31 lines (delete)
+  ideas.md                              drop spinner entry
+  ideas/profile-user-idle-timeout-spinner.md  delete (feature shipped)
+  plans/profile-unification.md          this file (updated mid-execution)
 ```
 
 ## Expected outcome
@@ -149,11 +151,26 @@ docs/
 The value here is structural + a user-visible feature, not raw line-count savings. Specifically:
 
 - **Symmetric manager surface** between daemon and session sides via `trait ProfileManager`.
-- **Per-property setter boilerplate collapses** into one macro invocation per interface — the actual repetition we have today.
 - **IdleTimeoutSeconds spinner ships** as a typed `Number` row in the Profiles pane.
 - **Single source of truth** for field metadata in `tisvlay-core::profile_fields` — daemon, session, and GUI all import the same const tables.
+- ~~Per-property setter boilerplate collapse via macro~~ — attempted, dropped (see "What was attempted but dropped"). The per-property pairs remain hand-written on both interfaces.
 
-Raw line count expectation: **roughly neutral to slightly negative** in implementation code (counted via `tokei`, excluding comments + blank lines). The final commit message will report the before / after `tokei` delta as the authoritative measurement.
+### Actual `tokei` delta (touched files)
+
+| Language | Pre-refactor (code LoC) | Post-refactor | Δ |
+|---|---|---|---|
+| Rust | 9 360 | 9 543 | **+183** |
+| Slint | 4 117 | 4 201 | **+84** |
+| **Total** | **13 477** | **13 744** | **+267** |
+
+Decomposition of the +267:
+
+- Spinner feature: ~+85 Slint (new `ProfileFieldRowNumber` component) + ~+60 Rust (numeric proxy + dispatch paths).
+- `ProfileManager` trait + `ProfileError` + `#[async_trait]` impls: ~+50 Rust.
+- `profile_fields` module: +~230 Rust new, offset by deleting ~75 Rust of the GUI's local tables = **~+155 net**.
+- `SessionProfileManager` extraction: ~neutral (manager methods replace free functions of similar length).
+
+The dropped macro deliverable was the only piece of the plan that would have produced negative LoC; without it, **the branch is +267 LoC total** for the structural cleanup + spinner feature. Honest measurement.
 
 ## Risks
 

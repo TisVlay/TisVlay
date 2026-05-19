@@ -53,6 +53,8 @@ pub mod errors;
 mod hardware_id;
 mod pairing;
 mod pairing_schema;
+mod profile_fields;
+mod profile_manager;
 mod reconciler;
 mod refresh_trigger;
 mod state;
@@ -87,6 +89,16 @@ pub use pairing::{
     PairingState,
 };
 pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
+
+// Profile-field registry — typed metadata shared across the daemon,
+// session, and GUI for the per-profile interfaces' inheritable fields.
+pub use profile_fields::{
+    AUTOMATE_WHEN_OPTIONS, FieldDef, FieldKind, SESSION_ACTIONS, SYSTEM_FIELDS, USER_FIELDS,
+    find_in as find_profile_field, find_in_by_prop as find_profile_field_by_prop,
+};
+
+// Backend-agnostic mutation surface for per-profile D-Bus interfaces.
+pub use profile_manager::{ProfileError, ProfileManager};
 
 // Configuration
 pub use config::{
