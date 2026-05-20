@@ -375,13 +375,19 @@ component ProfileFieldRowEnum inherits Rectangle {
             alignment: stretch;
 
             VerticalLayout {
-                width: Design.width-label-col;
-                alignment: center;
+                width: Design.width-label-col-profile;
+                alignment: start;
                 Text {
                     text: root.entry.label;
                     color: Theme.text;
                     font-size: Design.font-meta;
                     font-weight: 500;
+                    // Wrap rather than clip when a label exceeds the
+                    // column width (long fields, localization
+                    // expansion). The fixed column still keeps every
+                    // ComboBox / SpinBox aligned at the same x; only
+                    // the affected row grows taller.
+                    wrap: word-wrap;
                 }
             }
 
@@ -436,13 +442,19 @@ component ProfileFieldRowNumber inherits Rectangle {
             alignment: stretch;
 
             VerticalLayout {
-                width: Design.width-label-col;
-                alignment: center;
+                width: Design.width-label-col-profile;
+                alignment: start;
                 Text {
                     text: root.entry.label;
                     color: Theme.text;
                     font-size: Design.font-meta;
                     font-weight: 500;
+                    // Wrap rather than clip when a label exceeds the
+                    // column width (long fields, localization
+                    // expansion). The fixed column still keeps every
+                    // ComboBox / SpinBox aligned at the same x; only
+                    // the affected row grows taller.
+                    wrap: word-wrap;
                 }
             }
 
