@@ -26,6 +26,44 @@ After two rounds of cleanup the net delta against `origin/main` is +133 code lin
 
 This plan keeps the property-bag wire shape v1 had, keeps the UUID-as-stable-identity pattern v2 introduced (decouples display from identity for i18n + rename robustness across client caches), fixes v1's GUI-side latency with a layer cache, and carries forward every UI polish + dialog primitive + widget + token + bug fix v2 contributed.
 
+## Progress
+
+Phases 1–4 have landed; Phase 5 (docs migration into `docs/design.md` + plan deletion) is what remains. The actual commit sequence ran longer than the planned 11 commits — 20 commits total, with the breakdowns below.
+
+### Phase status
+
+- **Phase 1 (plan)** — done. 5 plan-doc commits as the plan absorbed two rounds of agent review (atomic-replace + `references_of` semantics; `deny_unknown_fields` + `body_version` drop + cross-bus re-fire drop). The body shape + signal contract + footprint table all settled here before any code landed.
+- **Phase 2 (UI polish, commits 2–5)** — done. Four commits as planned: widgets + icons, design tokens, Profiles-pane Slint shell, `Errors.profiles` slot + dual-route reload banner.
+- **Phase 3 (daemon + session surface, commits 6–7)** — done. **Commit 6 split into four sub-commits during execution** because the literal scope (~2 500–3 000 LoC including the v2 commit 5 UUID-migration carry) exceeded what a single review unit could carry: (a) body types + `From` impl blocks + dict round-trip tests in `tisvlay-core`, (b) UUID-key migration of `TvProfileAssignment` + `SystemSection.profiles` + `references_of` helper, (c) `Manager1` 8 methods + 3 signals + `tv_manager` handlers with persistence-failure rollback, (d) `DaemonClient` typed wrappers + 13 integration tests. Commit 7 (Session1 mirror) landed as a single ~2 100 LoC commit with 13 mirror tests.
+- **Phase 4 (GUI rebind, commits 8–10)** — done as planned: `state.rs` + `state_watch.rs` rebind to the property-bag list + signal subscriptions + body-fetch primitives; `profiles.rs` editor rebuild with `ProfileLayers` cache + signal-driven row refresh; dispatch helpers + Slint callback wiring + rename / duplicate / spinner / dialog wires.
+- **Phase 5 (docs migration, commit 11)** — pending. Next step: migrate the durable architecture into `docs/design.md` per `docs/plans/README.md` convention and delete this plan file.
+
+### Carry-partial misses surfaced after Phase 4
+
+Two `CARRY-PARTIAL` rows from the v2 triage table slipped through commit 8 and landed as follow-on commits:
+
+- **v2 `53fc607`** (TVs-pane combobox display name, not UUID) — `convert_snapshot` was passing the wire UUID through to Slint's ComboBox `current-value` verbatim; picker showed UUIDs, and `on_set_*_profile` sent names to the daemon (which expected UUIDs). Fix landed as a separate `fix(gui)` commit: UUID → name resolve in `convert_snapshot`, name → UUID translate in the set callbacks via on-click catalog fetch, plus three positive `convert_snapshot` tests.
+- **v2 `cbf9ff3`** (TVs-pane PROFILES-row pencil → Profiles pane navigation by UUID) — `TvViewModel` was missing the `*-profile-uuid` mirror fields; the pencil shortcut didn't exist. Fix added the UUID fields with empty-assignment → reserved-default collapse, wrapped the ComboBoxes in HorizontalLayouts with trailing `IconBtn` pencils that fire `Profiles.open-profile-by-uuid(kind, uuid)`, plus a test pinning the default-UUID collapse.
+
+### Lesson — CARRY-PARTIAL needs entry-by-entry re-check during the wire-rebind commit
+
+The triage table marked these rows correctly, but commit 8's agent prompt didn't enumerate them as concrete carry items — they got picked up only when the user manually noticed the broken combobox + missing pencil during smoke testing. **For future multi-stage refactors with a similar triage shape**: the wire-rebind commit's checklist should explicitly enumerate every `CARRY-PARTIAL` row's required wire-side rework, not just the wire-coupled portion of the obvious ones.
+
+### Bug fix not anticipated by the plan
+
+The plan's `Manager1.ReloadConfig` / `Session1.ReloadConfig` handlers emitted only the coarse `ConfigReloaded` signal — no per-profile signals when the on-disk catalog changed. The GUI's master list refreshed via `convert_snapshot`'s re-fetch, but the editor's `ProfileLayers.bodies` cache (only invalidated by per-UUID body-mutation signals) stayed stale until the user clicked away and back.
+
+**Fix landed as a separate commit**: `ReloadDiff` grows `system_profiles_{added,removed,changed}: Vec<String>` fields; `tv_manager::reload_config` snapshots the old section under the write lock via `std::mem::take`, computes a three-way diff, and `apply_reload_diff` emits the matching `Manager1.SystemProfile{Added,Changed,Removed}` signals. `Session1.reload_config` mirrors this for the user side. Two integration tests pin the contract (system + session). **Architectural lesson**: a config-file edit should be observationally identical to an external client mutation — same signals, same client cache invalidation. This belongs in `docs/design.md` when Phase 5 migrates.
+
+### Footprint at landing (approximate, against `origin/main`)
+
+Updated against the planned budget; the working-tree delta lines up closely with the Phase 4 estimate from "Estimated v3 footprint" below, with two adjustments worth noting in the durable docs:
+
+- Test count came in higher than the ~410-passing target: actual is ~500 tests passing on the branch. The 13-tests-per-commit slot held for commits 6/7, but commit 9's editor rebuild added 12 more unit tests + commit 10's dispatch helpers added 21 unit tests, plus the carry-partial follow-ups + the reload-signals fix added another ~5. Per-test floor stayed ~98 LoC.
+- The GUI rebind's `profiles.rs` editor (commit 9) ran ~1 371 LoC — within the planned ~700-budget when measured against just the cache + walker + signal handler, but the included field-kind registry + parsers + Send-safe `ProfileFieldRaw` intermediate shape pushed it higher than v2's `profiles.rs` equivalent.
+
+The architectural win against v2 holds: ~3 600 LoC saved by dropping per-profile D-Bus object infrastructure + state-forwarder cross-profile fan-out + per-property typed properties, with the same user-visible feature parity.
+
 ## v3 architecture
 
 ### Wire surface
