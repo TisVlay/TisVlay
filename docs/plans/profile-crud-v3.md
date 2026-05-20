@@ -84,7 +84,7 @@ pub struct UserProfileBody {
     pub on_greeter_wake:      Option<SessionAction>,
     pub on_idle_timeout:      Option<SessionAction>,
     pub on_idle_resume:       Option<SessionAction>,
-    pub idle_timeout_seconds: Option<u32>,
+    pub idle_timeout_seconds: Option<u64>,
 }
 ```
 
@@ -118,9 +118,7 @@ v2 had `ReferencedBy: as` as a typed property on each per-profile D-Bus object �
 
 When the default profile's body changes, every *inheriting* profile's resolved values shift. The daemon fires `SystemProfileChanged(DEFAULT_SYSTEM_PROFILE_UUID)` once. Clients caching layers (`baseline` + `default_body` + `bodies[uuid]`) re-resolve on demand — no per-profile cascade is needed because the cache structure separates the layers. Clients that cache *resolved* values (rather than layers) must subscribe to `SystemProfileChanged` on the default UUID and recompute.
 
-**User-side cross-bus gap.** The user-profile inheritance chain crosses bus boundaries: `user → user-default → admin baseline named profile → admin user-default → hardcoded baseline`. The last two layers live in the daemon's system-config TOML (administrator-provisioned baselines for user profiles, surfaced through `Manager1`), not the session's user-config. When the daemon mutates one of those system-side admin-baseline layers, the *session bus* doesn't fire `UserProfileChanged` automatically — but every session-side user profile's resolved values shift.
-
-Resolution: the session daemon subscribes to `Manager1.SystemProfileChanged(uuid)` for the admin-baseline UUIDs and re-fires `Session1.UserProfileChanged(uuid)` for every session-side user profile that inherits from them. Cheap (the admin-baseline catalog is small + rarely mutated). Lands in commit 7.
+**Cross-bus inheritance**: the user-profile chain spans both buses (`user → user-default → admin baseline named profile → admin user-default → hardcoded baseline` — the last two layers live in the daemon's system-config TOML, surfaced through `Manager1`). The session daemon does **not** re-fire `Session1.UserProfileChanged` when an admin-baseline body mutates — clients that need to react to either side subscribe to both buses' signals directly. The GUI already does this (commit 8 wires `Manager1.SystemProfileChanged` on the system bus + `Session1.UserProfileChanged` on the session bus into a unified event handler), so the re-resolve path is structurally complete client-side. A future non-GUI session-bus consumer that needed a unified signal could add the daemon-side re-fire later without a wire break — keeping it out of v3 saves ~120 LoC of session-as-signal-router complexity for no current consumer.
 
 ### Inheritance model
 
@@ -222,6 +220,8 @@ Carry from v2 (commit 42):
 Forty-four commits to triage. Each is one of:
 
 - **CARRY** — cherry-pickable as-is (or with trivial conflict resolution against the missing per-profile-object infrastructure).
+- **CARRY-PARTIAL** — visual / state-shaping logic ports verbatim, but a wire-coupled portion (typically a v2 helper call site) needs a rewrite against the v3 surface.
+- **CARRY-IN-SPIRIT** — the user-visible feature lands in v3 but the implementation shape changes substantially (e.g. field-kind dispatch moves between crates).
 - **RE-IMPLEMENT** — the user-visible feature lands in v3 but via a different commit because the underlying machinery is different.
 - **DROP** — purely architectural, no v3 analog.
 - **DOC-ONLY** — plan doc or design doc; will be re-written or absorbed into the v3 plan / design.md migration.
@@ -273,11 +273,11 @@ Forty-four commits to triage. Each is one of:
 | 43 | `b32686c` | shave LoC from refactor | DROP | cleanup of v2-only commits |
 | 44 | `c0e8927` | trim dead code, hoist validators | DROP | cleanup of v2-only commits |
 
-Counted from the table: 18 CARRY, 3 CARRY-PARTIAL, 6 RE-IMPLEMENT, 12 DROP, 5 DOC-ONLY = 44. The CARRY-PARTIAL rows are the wire-coupled UI commits (5, 14, 15) that need their daemon-side data source rewired even though the visual / state-shaping logic ports verbatim.
+Counted from the table: 17 CARRY, 3 CARRY-PARTIAL, 1 CARRY-IN-SPIRIT, 7 RE-IMPLEMENT, 9 DROP, 7 DOC-ONLY = 44. The CARRY-PARTIAL rows (5, 14, 15) are the wire-coupled UI commits whose visual / state-shaping logic ports verbatim but whose daemon-side data source rewires to the v3 surface. The CARRY-IN-SPIRIT row (42) is the field-kind dispatch from v2 that lands in v3 but moves out of `tisvlay-core` into the GUI.
 
 ## v3 implementation sequence
 
-Eleven commits planned across five phases, each green on `just check`. Phase 2 holds the wire-independent UI polish (widgets, tokens, dialog primitives, layout) so visual review lands early; Phase 3 lands the daemon-side property-bag surface; Phase 4 splits the GUI rebind into three reviewable commits (8 = state.rs, 9 = editor + signal handler, 10 = dispatch + dialogs + spinner); Phase 5 migrates the architecture into `docs/design.md` and deletes the plan.
+Eleven commits planned across five phases, each green on `just check`. Phase 2 holds the wire-independent UI polish (widgets, tokens, dialog primitives, layout) so visual review lands early; Phase 3 lands the daemon-side property-bag surface; Phase 4 splits the GUI rebind into three reviewable commits (8 = state.rs, 9 = editor + signal handler, 10 = dispatch + rename + duplicate + spinner + dialog wires); Phase 5 migrates the architecture into `docs/design.md` and deletes the plan.
 
 A handful of v2 commits look like Phase 2 UI polish but actually call the v2 `list_*_profiles_full` ObjectManager-walking helpers — they need v3's `Manager1.ListSystemProfiles` to compile. Those (commits 5, 14, 15, 27) defer to Phase 4 even though their visual changes are pure polish.
 
@@ -315,20 +315,19 @@ A handful of v2 commits look like Phase 2 UI polish but actually call the v2 `li
 Checklist:
 
 - `tisvlay-core::config`: add the `Type` derive companion + an explicit string-signature attribute (`signature = "s"`) on `SessionAction` and `AutomateWhen` enums. Without these the dict-derive macro can't compute the body's enum-field variant signature. Lock the unit-variant-only invariant with a `// SAFETY:` style comment per the "Body types" section.
-- `tisvlay-core`: `SystemProfileBody` `#[derive(Type, SerializeDict, DeserializeDict)]` struct with `signature = "a{sv}", deny_unknown_fields` (per "Body types" section above) + lossless `From<SystemProfileConfig>` / `Into<SystemProfileConfig>` (existing `Option<T>` shape lines up).
-- `tisvlay-core`: optional `body_version: Option<u64>` inert field on the body — server emits `Some(monotonic_counter)` on every successful `Update`, clients ignore it. Deferred ETag-style concurrency tracking is added inert now so it can become load-bearing later without a wire break. See risks section.
+- `tisvlay-core`: `SystemProfileBody` `#[derive(Type, SerializeDict, DeserializeDict)]` struct with `signature = "a{sv}", deny_unknown_fields` (per "Body types" section above) + lossless `From<SystemProfileBody> for SystemProfileConfig` and reverse (existing `Option<T>` shape lines up).
 - `tisvlay-core`: `references_of(uuid, &[TvAssignment]) -> Vec<Uuid>` helper encoding the fan-out rule. Mirror `user_references_of`.
 - `tisvlay-core::dbus_client`: typed `DaemonClient::*_system_profile` wrappers (per "Client API").
 - `tisvlayd::dbus::manager`: eight methods (`List*`, `Get*`, `Update*`, `Create*`, `Duplicate*`, `Delete*`, `GetResolvedSystemProfileDefaults`, `GetEffectiveSystemProfile`) plus three signals (`SystemProfileChanged(uuid)`, `SystemProfileAdded(uuid)`, `SystemProfileRemoved(uuid)`). Rename folds into `Update` per "Wire surface" — no dedicated method. `Added` fires once after persistence for both Create and Duplicate (Duplicate's body is the source's copy; clients fetch on `Added` without waiting for `Changed`).
 - `tisvlayd::tv_manager`:
   - `Create` / `Delete` / `Duplicate` (carry the validation rules from v2 commit 6).
-  - `Update` — full-body atomic replace. Name validation (non-empty, unique, default-name rules) gates the write; `body_version` increments under the write lock.
+  - `Update` — full-body atomic replace. Name validation (non-empty, unique, default-name rules) gates the write.
   - `ensure_default` materialization (carry v2 commit 36's invariant; UUID-keyed).
   - Persistence-failure semantics for all mutators (`Update` / `Create` / `Duplicate` / `Delete`): daemon validates → mutates in-memory state under the write lock → persists via atomic-rename (`save_to` writes a temp file + renames). If persistence fails, the in-memory mutation is rolled back to its pre-mutation snapshot, no signal fires, and the D-Bus method returns `org.tisvlay.Error.IoError` with the underlying error text. Tests cover this for at least `Update` (simulate a read-only config dir).
 - `tisvlay-cli`: UUID args for `tisvlay profile {show,set,delete}`; display-name resolution via `Manager1.ListSystemProfiles` for the menu output. (~50 LoC; budget allocated in footprint table.)
 - 13 integration tests: list / get / update / create / duplicate / delete / inherit-fallthrough / reference-blocks-delete / persistence-failure / rename-via-update / unknown-key-rejected / `SystemProfileChanged` signal contract / `SystemProfileAdded` + `SystemProfileRemoved` signal contracts. Also adapts existing `profile_dispatch.rs` and `reload_resolves_system_profile.rs` tests to the new wire shape.
 
-**Commit 7** — `feat(session,core): UserProfileBody type + Session1 CRUD methods + user_references_of helper`. Mirror of commit 6 on the session bus. 13 integration tests. **Plus**: cross-bus signal subscription — the session daemon subscribes to `Manager1.SystemProfileChanged(uuid)` for the admin-baseline UUIDs (the system-config user-default + admin-baseline named profile referenced from `[user.profiles]`) and re-fires `Session1.UserProfileChanged(uuid)` for every session-side user profile whose resolution depends on those baselines. See "User-side cross-bus gap" in the inheritance-signaling section above. Test: mutate the admin baseline via `Manager1.UpdateSystemProfile`, verify `Session1.UserProfileChanged` arrives for inheriting profiles.
+**Commit 7** — `feat(session,core): UserProfileBody type + Session1 CRUD methods + user_references_of helper`. Mirror of commit 6 on the session bus. 13 integration tests. No cross-bus signal re-fire — admin-baseline mutations land as `Manager1.SystemProfileChanged` on the system bus and clients (the GUI being the only current consumer) subscribe to both buses directly. See "Cross-profile inheritance signaling".
 
 ### Phase 4 — GUI rebind (commits 8–10)
 
@@ -371,7 +370,7 @@ Three commits split from a single ~1 800 LoC monolith — each leaves the GUI in
 
 **Commit 11** — `docs: migrate v3 architecture into design.md + i18n catalog refresh + delete plan`.
 
-- `docs/design.md`: Components row marks Profiles pane built. Manager1 / Session1 sections updated with the v3 CRUD methods + body-dict types + signal trio. New "Profile catalog" subsection covers the CRUD surface table, the inheritance-chain layers, the editor's instant-commit model, and the live-refresh signal contract. TOML examples keep the v2 UUID-keyed `[system.profiles."<UUID>"]` shape with `name = "..."` as a body field.
+- `docs/design.md`: Components row marks Profiles pane built. Manager1 / Session1 sections updated with the v3 CRUD methods + body-dict types + signal trio (Changed / Added / Removed). New "Profile catalog" subsection covers the CRUD surface table, the inheritance-chain layers, the editor's instant-commit model, the live-refresh signal contract, and the GUI's two-bus subscription as the cross-bus inheritance resolution path. Also documents the `deny_unknown_fields` rationale on the body structs (rejects client-typo'd keys at the boundary) and the `Type` derive + `signature = "s"` invariant on `SessionAction` / `AutomateWhen`. TOML examples keep the v2 UUID-keyed `[system.profiles."<UUID>"]` shape with `name = "..."` as a body field.
 - `just i18n-extract` + `just i18n-update` — refresh `crates/tisvlay-gui/lang/tisvlay-gui.pot` and merge into existing per-locale `.po` files for every new user-facing string introduced across Phase 2 + Phase 4 commits (dialog copy, helper text, error toasts, FIELDS labels, etc.). Single-shot at the tail keeps the per-commit signal-to-noise high.
 - `docs/plans/profile-crud-v3.md` (this file): deleted, per `docs/plans/README.md` convention.
 
@@ -384,8 +383,8 @@ Working budget against `origin/main`, with v2-equivalent file deltas measured ag
 | Component | v3 budget | v2 actual (equivalent files) | Notes |
 |---|---:|---:|---|
 | `tisvlay-core` body types + `references_of` + dbus_client wrappers | ~500 | ~530 (config +240 - profile-fields +82 - profile-manager +35 + dbus_client +378) | Wrappers, UUID-keyed config, dict-derive companions; v2 had `profile_fields` + `profile_manager` overhead that v3 drops, but the wrapper surface is comparable. |
-| `tisvlayd` Manager1 + TvManager + CLI | ~700 | ~700 (manager +74, tv_manager +615 catalog ops, cli +9) | v3 adds `Update` atomic-replace + `body_version` increment; v2 had `system_profile.rs` + `state_forwarder` fan-out that v3 drops entirely (~330 LoC saved). |
-| `tisvlay-session` Session1 + helpers + cross-bus signal | ~700 | ~800 (session_dbus +107, user_profile +798 minus per-property forwarding) | Mirrors daemon catalog CRUD + idle-timeout numeric; cross-bus signal subscription adds ~50 LoC. |
+| `tisvlayd` Manager1 + TvManager + CLI | ~700 | ~700 (manager +74, tv_manager +615 catalog ops, cli +9) | v3 adds `Update` atomic-replace; v2 had `system_profile.rs` + `state_forwarder` fan-out that v3 drops entirely (~330 LoC saved). |
+| `tisvlay-session` Session1 + helpers | ~600 | ~800 (session_dbus +107, user_profile +798 minus per-property forwarding) | Mirrors daemon catalog CRUD + idle-timeout numeric. No cross-bus signal re-fire — see "Cross-profile inheritance signaling". |
 | GUI Slint shell (master + detail + dialogs) | ~1 600 | ~1 627 (profiles_pane +1 129, profiles global +205, widgets +272, icons/design +21) | Slint markup verbosity is a constant — same visual shape carries from v2 at the same LoC. |
 | GUI Rust state.rs + state_watch + harness adapt (commit 8) | ~700 | ~530 (state +371, state_watch +152) + ~80 references-walker | v3 adds `references_of` reverse-walk + body-fetch primitive + `references_of` unit tests + harness adapt that v2 didn't isolate. |
 | GUI Rust editor cache + walker + signal handler (commit 9) | ~700 | ~774 (profiles.rs) | v2 ran a per-profile proxy + generation-counter; v3 substitutes a 3-layer cache + walker, comparable in scope. |
@@ -394,11 +393,11 @@ Working budget against `origin/main`, with v2-equivalent file deltas measured ag
 | Tray updates (UUID-keyed menu items, display names) | ~100 | ~38 | v2 actual lower than budget — headroom. |
 | Integration tests | ~2 500 | ~3 144 (32 files × ~98 LoC/test) | v2's per-test floor is ~98 LoC of harness boilerplate (private-bus setup, mock registration); v3 targets ~30 tests at the same floor. |
 | Plan doc (this file, deleted on merge) | ~750 | n/a | |
-| **Total** | **~9 100** | **+12 646 v2 total** | |
+| **Total** | **~9 000** | **+12 646 v2 total** | |
 
-vs v2's +12 646 LoC. **Estimated savings: ~3 500 LoC**, same user-level features + the spinner.
+vs v2's +12 646 LoC. **Estimated savings: ~3 600 LoC**, same user-level features + the spinner.
 
-The footprint estimate is higher than the earlier ~6 800 sketch because measuring v2-equivalent files surfaced floors the previous estimate missed: Slint markup verbosity (~1 600 LoC for the visual shape, regardless of wire surface), per-test harness boilerplate (~98 LoC/test), and dbus_client wrapper surface area. The architectural win — dropping per-profile D-Bus object infrastructure + per-property typed properties + state-forwarder cross-profile fan-out — still saves ~3 500 LoC against v2's ceiling, and the wire-shape simplification is the actual prize, not the LoC delta.
+The footprint estimate is higher than the earlier ~6 800 sketch because measuring v2-equivalent files surfaced floors the previous estimate missed: Slint markup verbosity (~1 600 LoC for the visual shape, regardless of wire surface), per-test harness boilerplate (~98 LoC/test), and dbus_client wrapper surface area. The architectural win — dropping per-profile D-Bus object infrastructure + per-property typed properties + state-forwarder cross-profile fan-out — still saves ~3 600 LoC against v2's ceiling, and the wire-shape simplification is the actual prize, not the LoC delta.
 
 ### User-visible features parity with v2
 
@@ -417,7 +416,7 @@ All of:
 - Toasts for per-action errors.
 - Reserved-default materialization.
 
-Nothing user-visible regresses. The only architectural feature v2 had that v3 explicitly does not is **per-field PropertiesChanged granularity**. v3 substitutes per-body re-fetch on `SystemProfileChanged(name)`, which is one dict deserialize — cheaper than v2's per-property fan-out machinery and equivalent latency in practice. Verified at acceptance: same ≤ 50 ms perceived-latency target v2 set.
+Nothing user-visible regresses. The only architectural feature v2 had that v3 explicitly does not is **per-field PropertiesChanged granularity**. v3 substitutes per-body re-fetch on `SystemProfileChanged(uuid)`, which is one dict deserialize — cheaper than v2's per-property fan-out machinery and equivalent latency in practice. Verified at acceptance: same ≤ 50 ms perceived-latency target v2 set.
 
 ## Risks
 
@@ -425,7 +424,7 @@ Nothing user-visible regresses. The only architectural feature v2 had that v3 ex
 
 - **Dict-derive behavior round-trip.** The plan rides on `Option<T>::None` ⇔ absent key. Verified against the workspace's current 5.10 pin via a small fixture; the round-trip works. **Mitigation**: commit 6's test suite includes a round-trip test for `SystemProfileBody` + `UserProfileBody` that fails loudly if the absent-key ↔ `None` mapping diverges.
 
-- **Concurrent body updates (read-modify-write is racy).** Two clients each clone-patch-send on the same UUID. Atomic-replace means last-write-wins on the *whole body* — fields the second client didn't touch but the first client did revert to the second's body. The realistic loss scenario isn't two GUI users; it's a scripted CLI loop (`for tv in ...; tisvlay profile set ...`) interleaved with an open GUI session whose cached body is seconds-stale. By the time the post-edit `SystemProfileChanged` signal arrives, the loss is already persisted to disk — the signal can't reconcile retroactively. **Mitigation**: the body's `body_version: Option<u64>` (commit 6) lands **inert** in v3 — server emits a monotonic counter on every `Update`, clients ignore it. If multi-client editing ever becomes a real workflow, `Update` grows an `expected_version: Option<u64>` arg + daemon-side compare-and-swap with a typed `org.tisvlay.Error.Conflict` rejection. Inert-now means the wire grows additively, without breaking the existing contract, when the concurrency feature ships.
+- **Concurrent body updates (read-modify-write is racy).** Two clients each clone-patch-send on the same UUID. Atomic-replace means last-write-wins on the *whole body* — fields the second client didn't touch but the first client did revert to the second's body. The realistic loss scenario isn't two GUI users; it's a scripted CLI loop (`for tv in ...; tisvlay profile set ...`) interleaved with an open GUI session whose cached body is seconds-stale. By the time the post-edit `SystemProfileChanged` signal arrives, the loss is already persisted to disk — the signal can't reconcile retroactively. **Mitigation**: out of scope for v3. If multi-client editing ever becomes a real workflow, the right shape is a *new* method (`UpdateSystemProfileChecked(uuid, body, expected_version: t)`) with a typed `org.tisvlay.Error.Conflict` rejection — that's genuinely additive on the wire. Landing an inert `body_version` field on the body now was considered and rejected: the counter would live only in-memory (since the existing `SystemProfileConfig` has no version field) and reset every daemon restart, defeating the only invariant ETag relies on.
 
 - **Body validation surface.** `UpdateSystemProfile(uuid, body)` accepts an `a{sv}`. With `deny_unknown_fields` on the body struct (per "Body types" section), the dict-derive rejects unknown keys at the boundary and the typed-field deserializers reject wrong-typed values. The daemon still has to reject domain-invalid values (e.g. `automate_when = "always_but_only_on_tuesdays"`); `SystemProfileConfig` already has serde-enforced enums, and `From<SystemProfileBody>` → `SystemProfileConfig` inherits that. **Mitigation**: commit 6's `unknown-key-rejected` test pins the strict-mode behavior; a sibling `invalid-enum-value` test pins domain validation.
 
@@ -440,6 +439,10 @@ Nothing user-visible regresses. The only architectural feature v2 had that v3 ex
 - `just check` end-to-end green at every commit.
 - `prek run -a` end-to-end green at every commit.
 - Test count: existing 380-something baseline plus ~30 new v3 integration tests (13 daemon + 13 session + ~4 in `tisvlay-core` for the dict-derive round-trip + `references_of` fan-out unit tests) = ~410 passing.
+- Wire-correctness checks pinned by tests:
+  - `UpdateSystemProfile` with an unknown key returns `InvalidArgs` (verifies `deny_unknown_fields`).
+  - `references_of` returns the inheriting TV under both default-implicit and explicit-assignment cases (system + user).
+  - Mutating the default profile fires `SystemProfileChanged(DEFAULT_SYSTEM_PROFILE_UUID)` once; the GUI's two-bus subscriber re-resolves inheriting profiles client-side.
 - Manual GUI smoke test:
   - Profile create flow (System + User).
   - Profile rename flow (default + non-default).
