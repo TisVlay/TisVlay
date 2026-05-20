@@ -23,10 +23,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
-    DaemonClient, ResolvedUserProfile, SessionAction, UserConfig, UserProfileConfig,
+    DEFAULT_PROFILE_NAME, DEFAULT_USER_PROFILE_UUID, DaemonClient, ResolvedUserProfile,
+    SessionAction, TvAssignment, UserConfig, UserProfileBody, UserProfileConfig,
+    user_references_of,
 };
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 /// Session state: resolved profiles per TV, kept in sync with config reloads.
 #[derive(Debug)]
@@ -350,4 +353,425 @@ pub async fn event_handler(
     }
 
     info!("Event handler stopped");
+}
+
+// =============================================================================
+// User-profile CRUD
+//
+// Session-side mirror of the daemon's system-profile CRUD shape. The four
+// mutators (`create`, `duplicate`, `update`, `delete`) follow the same
+// validate → mutate in-memory → persist → rollback-on-IO-failure pattern.
+// Persistence is gated by `disk_write_lock` so concurrent CRUD calls
+// serialize against each other (matches `set_tv_user_profile`'s save path).
+//
+// None of these helpers emit D-Bus signals directly — the `Session1`
+// handlers do that after a successful return so the catalog is guaranteed
+// fetchable by the moment a client receives `Added` / `Changed` / `Removed`.
+// =============================================================================
+
+/// Error type for user-profile CRUD operations on [`SessionState`].
+///
+/// Mirrors the daemon-side `TvManagerError` profile variants so the
+/// `Session1` D-Bus error mapping can map onto the same wire names
+/// (`org.tisvlay.Session1.Error.ProfileNotFound`, etc.).
+#[derive(Debug, thiserror::Error)]
+pub enum UserProfileError {
+    /// Target profile UUID not present in the catalog.
+    #[error("Profile not found: {0}")]
+    NotFound(String),
+    /// Attempt to delete or otherwise mutate a reserved profile in a
+    /// way the session doesn't allow (currently: deleting
+    /// [`DEFAULT_USER_PROFILE_UUID`]).
+    #[error("Reserved profile cannot be modified: {0}")]
+    Reserved(String),
+    /// Body's `name` is empty, claims the reserved `"default"` literal
+    /// for a non-default UUID, or collides with an existing profile.
+    #[error("Profile name invalid: {0}")]
+    NameInvalid(String),
+    /// At least one TV still references the target via
+    /// `UserTvConfig.profile.user`.
+    #[error("Profile still referenced by {count} TV(s): {profile_uuid}")]
+    Referenced { profile_uuid: String, count: usize },
+    /// Persistence failed after the in-memory mutation already landed.
+    /// Callers roll the in-memory state back before propagating.
+    #[error("I/O error: {0}")]
+    Io(String),
+}
+
+impl SessionState {
+    /// Resolve a user-profile body to its dict-derive wire shape.
+    fn user_body_for_uuid(&self, uuid: Uuid) -> Option<UserProfileBody> {
+        self.user_config
+            .user
+            .profiles
+            .get(&uuid)
+            .map(UserProfileBody::from_config)
+    }
+
+    /// Snapshot of the user-profile catalog suitable for
+    /// `Session1.ListUserProfiles -> a{sa{sv}}`. The session merges the
+    /// admin baseline (from the daemon) with user-defined bodies — the
+    /// admin baseline always supplies the reserved default UUID even
+    /// when no user-defined body exists.
+    pub fn list_user_profile_bodies(&self) -> Vec<(Uuid, UserProfileBody)> {
+        let mut merged: std::collections::BTreeMap<Uuid, UserProfileBody> =
+            std::collections::BTreeMap::new();
+
+        // Admin baseline: every admin user profile flows through under
+        // the reserved default UUID. The session only knows about names
+        // for admin profiles, so the daemon-supplied admin default
+        // becomes the body for [`DEFAULT_USER_PROFILE_UUID`].
+        let admin_default = UserProfileConfig {
+            name: DEFAULT_PROFILE_NAME.to_string(),
+            ..self.admin_user_default.clone()
+        };
+        merged.insert(
+            DEFAULT_USER_PROFILE_UUID,
+            UserProfileBody::from_config(&admin_default),
+        );
+
+        // User-defined profiles override the admin baseline. The
+        // catalog is UUID-keyed, so a user-defined default-UUID body
+        // displaces the admin baseline cleanly.
+        for (uuid, body) in &self.user_config.user.profiles {
+            merged.insert(*uuid, UserProfileBody::from_config(body));
+        }
+
+        merged.into_iter().collect()
+    }
+
+    /// Hard-coded baseline body — every user profile inherits from this
+    /// when its fields are all `None`. Static; mirrors
+    /// [`tisvlay_core::ResolvedUserProfile::default`] as a wire body.
+    pub fn resolved_user_profile_defaults() -> UserProfileBody {
+        UserProfileBody::from_config(&UserProfileConfig {
+            name: DEFAULT_PROFILE_NAME.to_string(),
+            ..UserProfileConfig::full_default()
+        })
+    }
+
+    /// Fetch one body by UUID. Returns
+    /// [`UserProfileError::NotFound`] for absent UUIDs. The reserved
+    /// default UUID is always fetchable — it surfaces the admin
+    /// baseline body when no user body exists for it.
+    pub fn get_user_profile_body(&self, uuid: Uuid) -> Result<UserProfileBody, UserProfileError> {
+        if let Some(body) = self.user_body_for_uuid(uuid) {
+            return Ok(body);
+        }
+        if uuid == DEFAULT_USER_PROFILE_UUID {
+            // Fall through to the admin baseline — the user's catalog
+            // doesn't have a body under the default UUID yet, but the
+            // wire surface still owes the caller something.
+            let admin_default = UserProfileConfig {
+                name: DEFAULT_PROFILE_NAME.to_string(),
+                ..self.admin_user_default.clone()
+            };
+            return Ok(UserProfileBody::from_config(&admin_default));
+        }
+        Err(UserProfileError::NotFound(uuid.to_string()))
+    }
+
+    /// Resolve the per-TV walk to a fully-populated body. Mirrors
+    /// `Manager1.GetEffectiveSystemProfile`: per-TV body → user
+    /// default body → admin baseline body → hardcoded defaults. Every
+    /// `Option<T>` in the returned body is `Some`.
+    pub fn get_effective_user_profile_body(&self, tv_id: &str) -> UserProfileBody {
+        let resolved = self
+            .user_config
+            .resolve_user_profile(tv_id, &self.admin_user_default);
+        let assigned_uuid = self.user_config.get_tv_user_profile(tv_id);
+        // Surface the assigned profile's display name when available.
+        // Falls back to the reserved-default name when the catalog has
+        // no body for this UUID — same convention as the system side.
+        let display_name = self
+            .user_config
+            .user
+            .profiles
+            .get(&assigned_uuid)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| DEFAULT_PROFILE_NAME.to_string());
+        UserProfileBody {
+            name: display_name,
+            on_session_lock: Some(resolved.on_session_lock),
+            on_session_unlock: Some(resolved.on_session_unlock),
+            on_greeter_wake: Some(resolved.on_greeter_wake),
+            on_idle_timeout: Some(resolved.on_idle_timeout),
+            on_idle_resume: Some(resolved.on_idle_resume),
+            idle_timeout_seconds: Some(resolved.idle_timeout_seconds),
+        }
+    }
+
+    /// Collect lightweight per-TV user-profile assignments suitable
+    /// for [`user_references_of`] walks.
+    fn user_assignments_for_refs(&self) -> Vec<TvAssignment> {
+        let mut out = Vec::with_capacity(self.user_config.tv.len());
+        for entry in &self.user_config.tv {
+            let Ok(parsed) = Uuid::parse_str(&entry.uuid) else {
+                continue;
+            };
+            out.push(TvAssignment {
+                tv_uuid: parsed,
+                system_profile: None,
+                user_profile: Some(entry.profile.user),
+            });
+        }
+        out
+    }
+}
+
+/// Persist a user config snapshot to disk, with fallback to the XDG
+/// default when no explicit path is configured. Returns
+/// `UserProfileError::Io` carrying the failure detail.
+fn persist_user_config(
+    config: &UserConfig,
+    config_path: Option<&PathBuf>,
+) -> Result<(), UserProfileError> {
+    let result = match config_path {
+        Some(path) => config.save_to(path),
+        None => config.save(),
+    };
+    result.map_err(|e| UserProfileError::Io(format!("Failed to save user config: {e}")))
+}
+
+/// Create a new user profile with the given display name. Validates
+/// `name` (non-empty, not the reserved `"default"` literal, unique
+/// across the catalog body names), mints a fresh UUID, inserts a
+/// minimal body, persists, and returns the new UUID.
+///
+/// On persistence failure the in-memory insert is rolled back; no
+/// caller-side cleanup needed beyond mapping the error onto the wire.
+pub async fn create_user_profile(
+    state: &Arc<RwLock<SessionState>>,
+    config_path: Option<&PathBuf>,
+    name: &str,
+) -> Result<Uuid, UserProfileError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(UserProfileError::NameInvalid(
+            "name must be non-empty".to_string(),
+        ));
+    }
+    if trimmed == DEFAULT_PROFILE_NAME {
+        return Err(UserProfileError::NameInvalid(format!(
+            "\"{DEFAULT_PROFILE_NAME}\" is reserved for the default profile"
+        )));
+    }
+
+    let mut s = state.write().await;
+    if s.user_config
+        .user
+        .profiles
+        .values()
+        .any(|p| p.name == trimmed)
+    {
+        return Err(UserProfileError::NameInvalid(format!(
+            "name \"{trimmed}\" already in use"
+        )));
+    }
+
+    let new_uuid = Uuid::new_v4();
+    if s.user_config.user.profiles.contains_key(&new_uuid) {
+        return Err(UserProfileError::Io(
+            "UUID collision on new profile (retry)".to_string(),
+        ));
+    }
+    let new_body = UserProfileConfig {
+        name: trimmed.to_string(),
+        ..UserProfileConfig::default()
+    };
+    s.user_config.user.profiles.insert(new_uuid, new_body);
+
+    if let Err(e) = persist_user_config(&s.user_config, config_path) {
+        s.user_config.user.profiles.remove(&new_uuid);
+        return Err(e);
+    }
+
+    info!(profile_uuid = %new_uuid, name = %trimmed, "User profile created");
+    Ok(new_uuid)
+}
+
+/// Duplicate an existing user profile under a new display name. Same
+/// validation rules as [`create_user_profile`] — the new body inherits
+/// every field besides `name` from the source.
+pub async fn duplicate_user_profile(
+    state: &Arc<RwLock<SessionState>>,
+    config_path: Option<&PathBuf>,
+    source_uuid: Uuid,
+    new_name: &str,
+) -> Result<Uuid, UserProfileError> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err(UserProfileError::NameInvalid(
+            "name must be non-empty".to_string(),
+        ));
+    }
+    if trimmed == DEFAULT_PROFILE_NAME {
+        return Err(UserProfileError::NameInvalid(format!(
+            "\"{DEFAULT_PROFILE_NAME}\" is reserved for the default profile"
+        )));
+    }
+
+    let mut s = state.write().await;
+    let source = s
+        .user_config
+        .user
+        .profiles
+        .get(&source_uuid)
+        .cloned()
+        .ok_or_else(|| UserProfileError::NotFound(source_uuid.to_string()))?;
+    if s.user_config
+        .user
+        .profiles
+        .values()
+        .any(|p| p.name == trimmed)
+    {
+        return Err(UserProfileError::NameInvalid(format!(
+            "name \"{trimmed}\" already in use"
+        )));
+    }
+
+    let new_uuid = Uuid::new_v4();
+    if s.user_config.user.profiles.contains_key(&new_uuid) {
+        return Err(UserProfileError::Io(
+            "UUID collision on new profile (retry)".to_string(),
+        ));
+    }
+    let mut cloned = source;
+    cloned.name = trimmed.to_string();
+    s.user_config.user.profiles.insert(new_uuid, cloned);
+
+    if let Err(e) = persist_user_config(&s.user_config, config_path) {
+        s.user_config.user.profiles.remove(&new_uuid);
+        return Err(e);
+    }
+
+    info!(
+        profile_uuid = %new_uuid,
+        source_uuid = %source_uuid,
+        name = %trimmed,
+        "User profile duplicated"
+    );
+    Ok(new_uuid)
+}
+
+/// Delete a user profile. Rejects [`DEFAULT_USER_PROFILE_UUID`]
+/// outright; rejects when at least one `[[tv]] profile.user` still
+/// references the target. Persistence failure rolls the in-memory
+/// removal back.
+pub async fn delete_user_profile(
+    state: &Arc<RwLock<SessionState>>,
+    config_path: Option<&PathBuf>,
+    uuid: Uuid,
+) -> Result<(), UserProfileError> {
+    if uuid == DEFAULT_USER_PROFILE_UUID {
+        return Err(UserProfileError::Reserved(uuid.to_string()));
+    }
+
+    let mut s = state.write().await;
+
+    let referencing = {
+        let assignments = s.user_assignments_for_refs();
+        user_references_of(uuid, &assignments)
+    };
+    if !referencing.is_empty() {
+        return Err(UserProfileError::Referenced {
+            profile_uuid: uuid.to_string(),
+            count: referencing.len(),
+        });
+    }
+
+    let removed_body = match s.user_config.user.profiles.remove(&uuid) {
+        Some(b) => b,
+        None => return Err(UserProfileError::NotFound(uuid.to_string())),
+    };
+
+    if let Err(e) = persist_user_config(&s.user_config, config_path) {
+        s.user_config.user.profiles.insert(uuid, removed_body);
+        return Err(e);
+    }
+
+    info!(profile_uuid = %uuid, "User profile deleted");
+    Ok(())
+}
+
+/// Atomic full-body replace for an existing user profile. Validates
+/// `body.name` (non-empty, unique across the catalog excluding the
+/// same UUID, default-name reserved for the default UUID). Overwrites
+/// the catalog entry wholesale via `UserProfileConfig::from(&body)`.
+/// Persistence failure restores the previous body.
+///
+/// A successful update also refreshes the resolved-profile cache for
+/// every TV — body changes shift inheritance for TVs that point at
+/// this UUID (or, when `uuid` is the default, every TV with no
+/// explicit assignment).
+pub async fn update_user_profile(
+    state: &Arc<RwLock<SessionState>>,
+    config_path: Option<&PathBuf>,
+    uuid: Uuid,
+    body: UserProfileBody,
+) -> Result<(), UserProfileError> {
+    let trimmed = body.name.trim();
+    if trimmed.is_empty() {
+        return Err(UserProfileError::NameInvalid(
+            "name must be non-empty".to_string(),
+        ));
+    }
+    if uuid == DEFAULT_USER_PROFILE_UUID {
+        if trimmed != DEFAULT_PROFILE_NAME {
+            return Err(UserProfileError::NameInvalid(format!(
+                "default profile's name must be \"{DEFAULT_PROFILE_NAME}\""
+            )));
+        }
+    } else if trimmed == DEFAULT_PROFILE_NAME {
+        return Err(UserProfileError::NameInvalid(format!(
+            "\"{DEFAULT_PROFILE_NAME}\" is reserved for the default profile"
+        )));
+    }
+
+    let mut s = state.write().await;
+
+    // The default UUID is always updatable — even if no body exists
+    // for it in the user catalog yet, an update materializes one.
+    if uuid != DEFAULT_USER_PROFILE_UUID && !s.user_config.user.profiles.contains_key(&uuid) {
+        return Err(UserProfileError::NotFound(uuid.to_string()));
+    }
+    if s.user_config
+        .user
+        .profiles
+        .iter()
+        .any(|(other, p)| *other != uuid && p.name == trimmed)
+    {
+        return Err(UserProfileError::NameInvalid(format!(
+            "name \"{trimmed}\" already in use"
+        )));
+    }
+
+    let mut new_config = UserProfileConfig::from(&body);
+    new_config.name = trimmed.to_string();
+    let prior_body = s.user_config.user.profiles.insert(uuid, new_config);
+
+    if let Err(e) = persist_user_config(&s.user_config, config_path) {
+        match prior_body {
+            Some(prev) => {
+                s.user_config.user.profiles.insert(uuid, prev);
+            }
+            None => {
+                s.user_config.user.profiles.remove(&uuid);
+            }
+        }
+        return Err(e);
+    }
+
+    // Refresh resolved-profile cache for every TV; body change may
+    // shift inheritance for any TV that points at this UUID.
+    let admin_default = s.admin_user_default.clone();
+    let user_config_snapshot = s.user_config.clone();
+    let tv_ids: Vec<String> = s.tv_ids.clone();
+    for tv_id in &tv_ids {
+        let resolved = user_config_snapshot.resolve_user_profile(tv_id, &admin_default);
+        s.profiles.insert(tv_id.clone(), resolved);
+    }
+
+    info!(profile_uuid = %uuid, name = %trimmed, "User profile updated");
+    Ok(())
 }

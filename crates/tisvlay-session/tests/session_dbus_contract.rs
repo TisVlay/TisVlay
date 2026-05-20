@@ -24,7 +24,7 @@ async fn list_user_profiles_includes_default() {
     let conn = bus.connect().await.unwrap();
     let proxy = session_proxy(&conn).await.unwrap();
 
-    let profiles: Vec<(String, String)> = proxy.call("ListUserProfiles", &()).await.unwrap();
+    let profiles: Vec<(String, String)> = proxy.call("ListUserProfilesJson", &()).await.unwrap();
 
     // The default profile should always be present.
     assert!(
@@ -58,7 +58,7 @@ async fn get_effective_user_profile_returns_json() {
     let proxy = session_proxy(&conn).await.unwrap();
 
     let json: String = proxy
-        .call("GetEffectiveUserProfile", &("eff_tv",))
+        .call("GetEffectiveUserProfileJson", &("eff_tv",))
         .await
         .unwrap();
 
@@ -126,10 +126,10 @@ async fn set_unknown_profile_returns_error() {
     assert!(result.is_err(), "setting unknown profile should fail");
 }
 
-/// Regression: the JSON returned by `GetEffectiveUserProfile` must
-/// carry every `ResolvedUserProfile` field. A prior version of the
-/// ad-hoc json! builder omitted `on_idle_resume`, silently breaking
-/// consumers that read it.
+/// Regression: the JSON returned by `GetEffectiveUserProfileJson`
+/// must carry every `ResolvedUserProfile` field. A prior version of
+/// the ad-hoc json! builder omitted `on_idle_resume`, silently
+/// breaking consumers that read it.
 #[tokio::test]
 async fn get_effective_user_profile_includes_all_fields() {
     let _session = TestSession::new("eff_full_tv").await.unwrap();
@@ -138,7 +138,7 @@ async fn get_effective_user_profile_includes_all_fields() {
     let proxy = session_proxy(&conn).await.unwrap();
 
     let json: String = proxy
-        .call("GetEffectiveUserProfile", &("eff_full_tv",))
+        .call("GetEffectiveUserProfileJson", &("eff_full_tv",))
         .await
         .unwrap();
     let value: serde_json::Value =

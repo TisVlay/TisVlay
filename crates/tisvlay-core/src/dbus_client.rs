@@ -40,8 +40,8 @@ use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use crate::SystemProfileBody;
 use crate::dbus_paths::{DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH, tv_path};
+use crate::{SystemProfileBody, UserProfileBody};
 
 // =============================================================================
 // Bus Selection
@@ -1853,7 +1853,11 @@ trait TisvlaySession {
     #[zbus(property(emits_changed_signal = "false"))]
     fn config_path(&self) -> zbus::Result<String>;
 
-    /// List all available user profiles.
+    /// JSON-shape user-profile catalog. Returns `(name, json)` pairs
+    /// where the JSON serializes a `UserProfileConfig`. Bound to the
+    /// `ListUserProfilesJson` wire slot — the `ListUserProfiles` wire
+    /// name carries the property-bag `a{sa{sv}}` shape.
+    #[zbus(name = "ListUserProfilesJson")]
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
     /// Get the user profile UUID assigned to a TV (string-formatted).
@@ -1862,8 +1866,68 @@ trait TisvlaySession {
     /// Assign a user profile to a TV by UUID (string-formatted).
     fn set_tv_user_profile(&self, tv_id: &str, profile_uuid: &str) -> zbus::Result<()>;
 
-    /// Get the fully resolved user profile for a TV as JSON.
+    /// JSON-shape effective profile. Bound to the
+    /// `GetEffectiveUserProfileJson` wire slot — the
+    /// `GetEffectiveUserProfile` wire name carries the property-bag
+    /// `a{sv}` shape via the new CRUD surface.
+    #[zbus(name = "GetEffectiveUserProfileJson")]
     fn get_effective_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
+
+    // ---- User-Profile property-bag CRUD surface --------------------------
+
+    /// Catalog list: every user profile keyed by UUID string. Wire
+    /// shape `a{sa{sv}}` (uuid → body). Includes the reserved-default
+    /// UUID body (admin baseline when no user body shadows it).
+    #[zbus(name = "ListUserProfiles")]
+    fn list_user_profile_bodies(&self) -> zbus::Result<HashMap<String, UserProfileBody>>;
+
+    /// Fetch one body by UUID string. Malformed or absent UUIDs
+    /// return `org.tisvlay.Session1.Error.ProfileNotFound`.
+    fn get_user_profile(&self, uuid: &str) -> zbus::Result<UserProfileBody>;
+
+    /// Atomic full-body replace. Renames fold into this method —
+    /// the new name lives on `body.name`.
+    fn update_user_profile(&self, uuid: &str, body: UserProfileBody) -> zbus::Result<()>;
+
+    /// Mint a new UUID under the given display name. Empty / reserved
+    /// / duplicate names are rejected with
+    /// `org.tisvlay.Session1.Error.ProfileNameInvalid`. Returns the
+    /// new UUID as a string.
+    fn create_user_profile(&self, name: &str) -> zbus::Result<String>;
+
+    /// Clone an existing body under a new UUID + name. Returns the
+    /// new UUID as a string.
+    fn duplicate_user_profile(&self, source_uuid: &str, new_name: &str) -> zbus::Result<String>;
+
+    /// Delete a profile. Rejects the reserved default UUID
+    /// (`org.tisvlay.Session1.Error.ReservedProfile`) and rejects if
+    /// at least one TV references the target via `[[tv]] profile.user`
+    /// (`org.tisvlay.Session1.Error.ProfileReferenced`).
+    fn delete_user_profile(&self, uuid: &str) -> zbus::Result<()>;
+
+    /// Hard-coded baseline body — every user profile inherits from
+    /// this when its fields are all `None`. Static.
+    fn get_resolved_user_profile_defaults(&self) -> zbus::Result<UserProfileBody>;
+
+    /// Per-TV resolved walk: returns the fully-resolved body for
+    /// the named TV's assigned user profile (per-TV body → user
+    /// default body → admin baseline → hardcoded defaults).
+    fn get_effective_user_profile_body(&self, tv_id: &str) -> zbus::Result<UserProfileBody>;
+
+    /// A user profile's body was mutated (any field including
+    /// `name`). Clients with a cached body should re-fetch via
+    /// `GetUserProfile(uuid)`.
+    #[zbus(signal)]
+    fn user_profile_body_changed(&self, uuid: String) -> zbus::Result<()>;
+
+    /// A new user profile appeared in the catalog (Create or
+    /// Duplicate).
+    #[zbus(signal)]
+    fn user_profile_added(&self, uuid: String) -> zbus::Result<()>;
+
+    /// A user profile was removed from the catalog.
+    #[zbus(signal)]
+    fn user_profile_removed(&self, uuid: String) -> zbus::Result<()>;
 
     /// Reload user configuration from disk.
     fn reload_config(&self) -> zbus::Result<()>;
@@ -1890,6 +1954,14 @@ impl SessionClient {
             .await
             .context("Failed to connect to session D-Bus")?;
 
+        Self::from_connection(connection).await
+    }
+
+    /// Create a client from an existing D-Bus connection. Mirror of
+    /// [`DaemonClient::from_connection`] — used by tests pointing at
+    /// a private `dbus-daemon` to bypass `zbus`'s per-process
+    /// `OnceCell` cache.
+    pub async fn from_connection(connection: zbus::Connection) -> Result<Self> {
         let proxy = TisvlaySessionProxy::new(&connection)
             .await
             .context("Failed to create session proxy")?;
@@ -1897,7 +1969,9 @@ impl SessionClient {
         Ok(Self { proxy })
     }
 
-    /// Check if the session service is available.
+    /// Check if the session service is available. Pings the
+    /// JSON-shape catalog (no body deserialization) so an availability
+    /// probe doesn't drag in `UserProfileBody` deserialization failures.
     pub async fn is_available(&self) -> bool {
         self.proxy.list_user_profiles().await.is_ok()
     }
@@ -1961,6 +2035,191 @@ impl SessionClient {
             .reload_config()
             .await
             .context("Failed to reload session configuration")
+    }
+
+    // -------------------------------------------------------------------------
+    // User-Profile property-bag CRUD
+    //
+    // Mirrors the eight `Session1` body-dict methods. Bodies round-trip
+    // as `UserProfileBody`; UUID returns parse from the wire's `String`
+    // representation.
+    // -------------------------------------------------------------------------
+
+    /// Catalog list: every user profile keyed by parsed UUID. The
+    /// session emits wire UUIDs that are always well-formed, so a
+    /// parse failure here means a buggy peer; the unparsable entry
+    /// is skipped with a debug log.
+    pub async fn list_user_profile_bodies(&self) -> Result<HashMap<Uuid, UserProfileBody>> {
+        debug!("Calling ListUserProfiles on session service");
+        let raw = self
+            .proxy
+            .list_user_profile_bodies()
+            .await
+            .context("Failed to list user profile bodies from session service")?;
+        let mut out = HashMap::with_capacity(raw.len());
+        for (uuid_str, body) in raw {
+            match Uuid::parse_str(&uuid_str) {
+                Ok(uuid) => {
+                    out.insert(uuid, body);
+                }
+                Err(e) => {
+                    warn!(uuid = %uuid_str, error = %e, "Skipping malformed UUID from ListUserProfiles");
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch one body by UUID. Malformed or absent UUIDs surface as
+    /// `org.tisvlay.Session1.Error.ProfileNotFound`.
+    pub async fn get_user_profile(&self, uuid: Uuid) -> Result<UserProfileBody> {
+        debug!(uuid = %uuid, "Calling GetUserProfile on session service");
+        let uuid_str = uuid.to_string();
+        self.proxy
+            .get_user_profile(&uuid_str)
+            .await
+            .with_context(|| format!("Failed to get user profile '{}'", uuid_str))
+    }
+
+    /// Atomic full-body replace. Includes the new name on `body.name`;
+    /// rename is just an update with a fresh `name`.
+    pub async fn update_user_profile(&self, uuid: Uuid, body: &UserProfileBody) -> Result<()> {
+        debug!(uuid = %uuid, name = %body.name, "Calling UpdateUserProfile on session service");
+        let uuid_str = uuid.to_string();
+        self.proxy
+            .update_user_profile(&uuid_str, body.clone())
+            .await
+            .with_context(|| format!("Failed to update user profile '{}'", uuid_str))
+    }
+
+    /// Mint a new user profile under the given display name. Returns
+    /// the new UUID. Empty / reserved / duplicate names are rejected
+    /// with `org.tisvlay.Session1.Error.ProfileNameInvalid`.
+    pub async fn create_user_profile(&self, name: &str) -> Result<Uuid> {
+        debug!(name = %name, "Calling CreateUserProfile on session service");
+        let raw = self
+            .proxy
+            .create_user_profile(name)
+            .await
+            .with_context(|| format!("Failed to create user profile '{}'", name))?;
+        Uuid::parse_str(&raw).with_context(|| {
+            format!(
+                "Session service returned malformed UUID '{}' from CreateUserProfile",
+                raw
+            )
+        })
+    }
+
+    /// Clone `source_uuid`'s body under a new UUID + name. Returns
+    /// the new UUID.
+    pub async fn duplicate_user_profile(&self, source_uuid: Uuid, new_name: &str) -> Result<Uuid> {
+        debug!(source_uuid = %source_uuid, new_name = %new_name, "Calling DuplicateUserProfile on session service");
+        let source_str = source_uuid.to_string();
+        let raw = self
+            .proxy
+            .duplicate_user_profile(&source_str, new_name)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to duplicate user profile '{}' as '{}'",
+                    source_str, new_name
+                )
+            })?;
+        Uuid::parse_str(&raw).with_context(|| {
+            format!(
+                "Session service returned malformed UUID '{}' from DuplicateUserProfile",
+                raw
+            )
+        })
+    }
+
+    /// Delete a profile. Rejects the reserved default UUID with
+    /// `org.tisvlay.Session1.Error.ReservedProfile`; rejects when at
+    /// least one TV references the target via `[[tv]] profile.user`
+    /// with `org.tisvlay.Session1.Error.ProfileReferenced`.
+    pub async fn delete_user_profile(&self, uuid: Uuid) -> Result<()> {
+        debug!(uuid = %uuid, "Calling DeleteUserProfile on session service");
+        let uuid_str = uuid.to_string();
+        self.proxy
+            .delete_user_profile(&uuid_str)
+            .await
+            .with_context(|| format!("Failed to delete user profile '{}'", uuid_str))
+    }
+
+    /// Hard-coded baseline body — the inheritance ancestor every
+    /// user profile falls back to when its own fields are all `None`.
+    /// Static; the session exposes it so clients don't have to
+    /// duplicate the table.
+    pub async fn get_resolved_user_profile_defaults(&self) -> Result<UserProfileBody> {
+        debug!("Calling GetResolvedUserProfileDefaults on session service");
+        self.proxy
+            .get_resolved_user_profile_defaults()
+            .await
+            .context("Failed to get resolved user-profile defaults")
+    }
+
+    /// Per-TV resolved walk: the fully-resolved body the session
+    /// will dispatch against (per-TV body → user default body →
+    /// admin baseline → hardcoded defaults).
+    pub async fn get_effective_user_profile_body(&self, tv_id: &str) -> Result<UserProfileBody> {
+        debug!(tv_id = %tv_id, "Calling GetEffectiveUserProfile on session service");
+        self.proxy
+            .get_effective_user_profile_body(tv_id)
+            .await
+            .with_context(|| format!("Failed to get effective user profile for TV '{}'", tv_id))
+    }
+
+    /// Subscribe to `Session1.UserProfileBodyChanged` signals.
+    ///
+    /// Emits the UUID (parsed) every time a user-profile body is
+    /// mutated server-side. Set up the stream **before** the mutation
+    /// you want to observe — signals emitted prior to subscription
+    /// are dropped.
+    pub async fn user_profile_body_changed_stream(
+        &self,
+    ) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .proxy
+            .receive_user_profile_body_changed()
+            .await
+            .context("failed to subscribe to UserProfileBodyChanged signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Subscribe to `Session1.UserProfileAdded` signals.
+    pub async fn user_profile_added_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .proxy
+            .receive_user_profile_added()
+            .await
+            .context("failed to subscribe to UserProfileAdded signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Subscribe to `Session1.UserProfileRemoved` signals.
+    pub async fn user_profile_removed_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .proxy
+            .receive_user_profile_removed()
+            .await
+            .context("failed to subscribe to UserProfileRemoved signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Access the underlying D-Bus connection. Useful for tests and
+    /// clients that need to set up custom proxies (e.g., raw
+    /// `Proxy::call_method` to exercise the deserialize boundary).
+    pub fn connection(&self) -> &zbus::Connection {
+        self.proxy.inner().connection()
     }
 }
 

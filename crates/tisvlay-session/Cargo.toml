@@ -30,6 +30,7 @@ anyhow = { workspace = true }
 futures-util = { workspace = true }
 clap = { workspace = true }
 uuid = { workspace = true }
+thiserror = { workspace = true }
 
 # Wayland idle detection (greeter wake)
 wayland-client = { workspace = true }
