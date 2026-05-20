@@ -332,6 +332,20 @@ pub fn run() -> Result<()> {
     // naming spec) and is present in every shipped theme. Same icon
     // the Tray uses for its `Manager1.ReloadConfig` affordance.
     icons.set_reload(load_themed_icon(&["view-refresh"]));
+    // `edit-copy` is the canonical freedesktop name for the
+    // duplicate / copy glyph; `Clipboard.copy-icon` carries the
+    // same image but is wired to the clipboard-write callback. The
+    // `Icons.copy` slot here is for "duplicate this thing"
+    // affordances that don't touch the clipboard.
+    icons.set_copy(load_themed_icon(&["edit-copy"]));
+    // Delete: the action-verb `edit-delete` glyph.
+    icons.set_delete(load_themed_icon(&["edit-delete"]));
+    // Profile-identity tiles. `im-user` and `system-users` are the
+    // freedesktop names the tray already uses for its user / system
+    // profile submenus — pairing the GUI tile with the same glyph
+    // keeps the cross-surface affordance consistent.
+    icons.set_im_user(load_themed_icon(&["im-user"]));
+    icons.set_system_users(load_themed_icon(&["system-users"]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing

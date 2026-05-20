@@ -1,0 +1,12 @@
+// Profiles-pane shared types.
+//
+// `ProfileTile` in `widgets.slint` dispatches on this enum to pick
+// the freedesktop identity glyph (`system-users` vs `im-user`), so
+// the discriminator lives here on the cross-pane globals path
+// rather than inside the pane that owns the rest of profile state.
+
+export enum ProfileKind {
+    none,
+    system,
+    user,
+}
