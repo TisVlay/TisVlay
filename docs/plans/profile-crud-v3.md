@@ -4,7 +4,7 @@
 
 This is the third attempt at landing profile management. The first two are instructive context, not noise — every architectural choice in v3 traces back to a lesson from v1 or v2.
 
-**v1** (PR #58, `feat/profile-crud`, 13 commits, +4 947 / −131 LoC, 28 files): whole-body JSON CRUD on `Manager1` / `Session1`. `Get`/`Create`/`Update`/`Delete` carrying a JSON-serialized `SystemProfileConfig` plus `GetResolvedProfileDefaults` for the inheritance baseline. The GUI computed three-layer inheritance client-side (`profiles_state.rs`) and refetched all three layers on every field edit + rebuilt the Slint model. **Rejected** during smoke testing because the per-edit latency was visible to the user — every ComboBox click produced a JSON parse, an `UpdateProfile` round-trip, three further refetches, and a full model rebuild.
+**v1** (PR #58, `feat/profile-crud`, 13 commits, +4 947 / −131 LoC, 28 files): whole-body JSON CRUD on `Manager1` / `Session1`. `Get`/`Create`/`Update`/`Delete` carrying a JSON-serialized `SystemProfileConfig` plus `GetResolvedProfileDefaults` for the inheritance baseline. The GUI computed three-layer inheritance client-side (`profiles_state.rs`) and re-fetched all three layers on every field edit + rebuilt the Slint model. **Rejected** during smoke testing because the per-edit latency was visible to the user — every ComboBox click produced a JSON parse, an `UpdateProfile` round-trip, three further re-fetches, and a full model rebuild.
 
 **v2** (PR #59, `feat/profile-crud-v2`, 44 commits, +12 646 / −2 077 LoC, 86 files): lifted profiles to first-class D-Bus objects under `/org/tisvlay/{System,User}Profile/<UUID_>` with one typed `#[zbus(property)]` per field, mirroring the per-TV `Tv1.*` pattern. Field edits become single `Properties.Set` round-trips. `LocallySetFields: as` companion property carries the inheritance status; `ReferencedBy: as` lists referencing TV UUIDs; per-profile object adds `ResetField` + `ResetAll` methods. UUID-keyed both on disk and on the wire so rename doesn't have to walk and rewrite references.
 
@@ -18,38 +18,39 @@ v2 fixed the responsiveness problem but at a structural cost that grew through t
 
 After two rounds of cleanup the net delta against `origin/main` is +133 code lines, but only because most of the v2 commits added structural overhead the cleanup rounds then trimmed. The "more concise idiomatic code" goal failed at the architectural level.
 
-**v1 was right that whole-body CRUD is the idiomatic shape** for configuration over D-Bus — `NetworkManager.Settings.Connection.Update(a{sa{sv}})`, `systemd-homed.Home.Update(s)`, `power-profiles-daemon`'s `Profiles: aa{sv}` all use property-bag bodies, not per-field typed properties. **v1 was wrong about how to make the GUI fast** — the three-layer refetch was unnecessary work, not a wire-protocol shortcoming. The hardcoded baseline never changes; the "default" profile body changes rarely; only the selected body ever needs refetching on an edit, and even then it's one round-trip, not three.
+**v1 was right that whole-body CRUD is the idiomatic shape** for configuration over D-Bus — `NetworkManager.Settings.Connection.Update(a{sa{sv}})`, `systemd-homed.Home.Update(s)`, `power-profiles-daemon`'s `Profiles: aa{sv}` all use property-bag bodies, not per-field typed properties. **v1 was wrong about how to make the GUI fast** — the three-layer re-fetch was unnecessary work, not a wire-protocol shortcoming. The hardcoded baseline never changes; the "default" profile body changes rarely; only the selected body ever needs re-fetching on an edit, and even then it's one round-trip, not three.
 
 **v2 corrected the wrong thing** — it kept the typed wire surface as the GUI's data source (good) but rewrote the wire shape from configuration-idiomatic (property bag) to operational-state-idiomatic (typed-property-per-object). The result was fast but structurally over-engineered for what is fundamentally configuration data: 5–7 mostly-static fields per profile, 1–10 profiles per catalog.
 
 **Unblocking development**: zbus / zvariant 5.11.0 (PR z-galaxy/zbus#1779, merged April 2026) added support for nested dictionaries in `#[derive(DeserializeDict, SerializeDict)]`. Pre-5.11 the property-bag pattern required hand-rolled `HashMap<String, OwnedValue>` marshalling on the client side, which was a real ergonomic tax. With 5.11+, the GUI can `#[derive(DeserializeDict)]` directly into a typed Rust struct — the wire is `a{sv}`, the types are concrete, no hand-rolled marshalling. **This is the missing piece that makes property-bag the right call now.**
 
-This plan resets to v1's wire shape, fixes v1's GUI-side latency with a 50-line baseline cache + ~50-line GUI rebind, and carries forward every UI polish + dialog primitive + widget + token + bug fix that v2 contributed.
+This plan keeps the property-bag wire shape v1 had, keeps the UUID-as-stable-identity pattern v2 introduced (decouples display from identity for i18n + rename robustness across client caches), fixes v1's GUI-side latency with a layer cache, and carries forward every UI polish + dialog primitive + widget + token + bug fix v2 contributed.
 
 ## v3 architecture
 
 ### Wire surface
 
-Two interfaces grow CRUD methods + change signals. No per-profile D-Bus objects. No `ObjectManager` walking. No per-property `PropertiesChanged` granularity.
+Two interfaces grow CRUD methods + change signals. No per-profile D-Bus objects. No `ObjectManager` walking. No per-property `PropertiesChanged` granularity. Identity is UUID; the display name is a field of the body dict.
 
 **`org.tisvlay.Manager1`** (system bus, daemon-owned):
 
 ```
-ListSystemProfiles() -> a{sa{sv}}                   ; name → body dict
-GetSystemProfile(name: s) -> a{sv}                  ; one body
-UpdateSystemProfile(name: s, body: a{sv})           ; replace body atomically
-CreateSystemProfile(name: s)                        ; insert empty body
-RenameSystemProfile(old: s, new: s)                 ; atomic rewrite under daemon lock
-DuplicateSystemProfile(source: s, new: s)           ; clone body under new name
-DeleteSystemProfile(name: s)                        ; rejects "default" + referenced
-GetResolvedSystemProfileDefaults() -> a{sv}         ; static baseline, cached client-side
-GetEffectiveSystemProfile(tv_id: s) -> a{sv}        ; resolved-for-this-TV walk
+ListSystemProfiles() -> a{sa{sv}}                                ; uuid → body
+GetSystemProfile(uuid: s) -> a{sv}                               ; one body
+UpdateSystemProfile(uuid: s, body: a{sv})                        ; replace body atomically
+CreateSystemProfile(name: s) -> s                                ; mint uuid; returns it
+DuplicateSystemProfile(source_uuid: s, new_name: s) -> s         ; mint uuid for clone
+DeleteSystemProfile(uuid: s)                                     ; rejects default uuid + referenced
+GetResolvedSystemProfileDefaults() -> a{sv}                      ; static baseline
+GetEffectiveSystemProfile(tv_id: s) -> a{sv}                     ; resolved-for-this-TV walk
 
-signal SystemProfileChanged(name: s)                ; fired on Update/Rename
-signal SystemProfileListChanged                     ; fired on Create/Delete/Duplicate/Rename
+signal SystemProfileChanged(uuid: s)                             ; body mutation (incl. rename)
+signal SystemProfileListChanged                                  ; Create / Delete / Duplicate
 ```
 
-**`org.tisvlay.Session1`** (session bus, session-owned): mirror surface for user profiles + the existing `SetTvUserProfile` / `GetTvUserProfile` per-TV assignment methods (unchanged from main).
+**Rename** has no dedicated method — it's `UpdateSystemProfile(uuid, body_with_new_name)`. The daemon validates the new name (non-empty, unique, not the reserved `"default"` literal when applied to non-default UUIDs) and fires `SystemProfileChanged(uuid)`. TV references stay valid because `Tv1.SystemProfile` carries the UUID, not the name. Stale-name races during rename are eliminated by construction — clients cache by UUID, the only mutable thing is the display label.
+
+**`org.tisvlay.Session1`** (session bus, session-owned): mirror surface for user profiles + the existing `SetTvUserProfile` / `GetTvUserProfile` per-TV assignment methods (unchanged from main). Both take UUIDs.
 
 ### Body types
 
@@ -58,6 +59,7 @@ signal SystemProfileListChanged                     ; fired on Create/Delete/Dup
 ```rust
 #[zvariant(signature = "a{sv}")]
 pub struct SystemProfileBody {
+    pub name:          String,                  // mandatory; mutable display label
     pub on_startup:    Option<SessionAction>,
     pub on_shutdown:   Option<SessionAction>,
     pub on_reboot:     Option<SessionAction>,
@@ -69,6 +71,7 @@ pub struct SystemProfileBody {
 
 #[zvariant(signature = "a{sv}")]
 pub struct UserProfileBody {
+    pub name:                 String,
     pub on_session_lock:      Option<SessionAction>,
     pub on_session_unlock:    Option<SessionAction>,
     pub on_greeter_wake:      Option<SessionAction>,
@@ -78,7 +81,11 @@ pub struct UserProfileBody {
 }
 ```
 
+`name` is mandatory because every profile has one. The other fields are inheritable: `None` ⇒ key absent ⇒ inherits from the chain below.
+
 zvariant 5.11+ serializes `Option<T>::None` fields as **absent keys** in the dict, not as null entries. `Some(value)` → key present with the variant-wrapped value. This is exactly the inherit-vs-locally-set distinction v2 needed `LocallySetFields` to express: present ⇒ locally set, absent ⇒ inheriting. **`LocallySetFields` is no longer a separate wire concept.**
+
+The reserved-default UUIDs (`DEFAULT_SYSTEM_PROFILE_UUID` / `DEFAULT_USER_PROFILE_UUID`) keep their v2 semantics: their `name` field is locked to the literal `"default"` so the daemon's inheritance walker has a stable wire-recognizable ancestor and the GUI's `(default)` badge has a stable predicate. The GUI is free to render the displayed label through gettext (`gettext("default")` → localized translation per the user's locale) without the daemon ever seeing the localized string — wire identity is the UUID, the rendered label is a client concern.
 
 ### Inheritance model
 
@@ -93,37 +100,36 @@ The GUI cache:
 
 ```rust
 struct ProfileLayers {
-    baseline: SystemProfileBody,           // static — fetched once at GUI start
-    default_body: SystemProfileBody,       // refetched on SystemProfileChanged("default")
-    bodies: HashMap<String, SystemProfileBody>, // refetched on SystemProfileChanged(name)
+    baseline: SystemProfileBody,                // static — fetched once at GUI start
+    default_body: SystemProfileBody,            // re-fetched on SystemProfileChanged(DEFAULT_SYSTEM_PROFILE_UUID)
+    bodies: HashMap<Uuid, SystemProfileBody>,   // re-fetched on SystemProfileChanged(uuid)
 }
 ```
 
-Three layers, fetched on signal, not on every edit. v1's perf failure was refetching all three per edit — that's gone.
+Three layers, fetched on signal, not on every edit. v1's perf failure was re-fetching all three per edit — that's gone.
 
 ### Reference shape
 
-TVs reference profiles by name, same as v1: `[[tv]] profile.system = "office"`, `[[tv]] profile.user = "evening"`. Rename works because:
+TVs reference profiles by UUID, same as v2: `[[tv]] profile.system = "<uuid>"`, `[[tv]] profile.user = "<uuid>"`. `Tv1.SystemProfile` property is the UUID string. The GUI resolves UUID → display name via the cached profile list.
 
-1. Daemon takes the write lock once.
-2. Updates the profile entry under its new key in the catalog.
-3. Walks every `[[tv]]` entry in the same lock-held section and rewrites matching references.
-4. Persists.
-5. Drops lock, emits one `SystemProfileChanged(new_name)` + one `SystemProfileListChanged`.
-6. Each affected TV's `Tv1.SystemProfile` property is refreshed (existing per-property signal contract on the per-TV interface, which v3 does not touch).
+### Why UUIDs (decoupled from display name)
 
-The "atomic walk-and-rewrite" cost v2 cited as motivation for UUIDs is one serialized in-memory operation per rename — not a per-edit cost, not a wire-protocol concern. UUIDs aren't needed.
+Two independent reasons:
 
-### Why rename can stay name-keyed safely
+1. **i18n decoupling.** Profile names are user-facing strings. If names were wire identifiers, the reserved `"default"` literal couldn't be localized — `gettext("default")` would break the daemon's name-recognition for the inheritance ancestor. UUIDs decouple the two: wire identity stays `DEFAULT_SYSTEM_PROFILE_UUID`, the rendered label is a client-side gettext lookup.
 
-The race v2 worried about — two clients editing the same profile under conflicting names — doesn't exist in practice:
+2. **Stable refs across rename.** A tray menu rendered with `"Office"` is clicked half a second after another client renamed the profile to `"Living Room"`. Names-as-refs would have the daemon return "profile not found." UUIDs make the click still resolve; the menu just re-renders with the new label on the next signal. The same shape protects any other cached cross-reference (TV-assignment displays, error toasts referencing a profile that was just renamed, scripted CLI calls binding to a display label).
 
-- Single daemon, single write lock per config section.
-- Renames are rare (manual user action).
-- Reads happen between renames; clients re-resolve via signal.
-- `Manager1.RenameSystemProfile(old, new)` is one atomic call; the daemon either succeeds (old name no longer exists, new name resolves) or returns `InvalidArgs` (new name duplicate, old name unknown).
+### Rename mechanics
 
-The signal sequence on rename is `SystemProfileListChanged` (catalog topology changed) → clients refetch list. No client needs to track stable identifiers across renames at a finer granularity than that.
+Rename has no dedicated D-Bus method — it's `UpdateSystemProfile(uuid, body_with_new_name)`. The daemon under one write lock:
+
+1. Validates the new name (non-empty, unique within catalog, not the reserved `"default"` literal when applied to a non-default UUID).
+2. Updates the profile body's `name` field in place under the existing UUID key.
+3. Persists.
+4. Drops lock, emits `SystemProfileChanged(uuid)`.
+
+TV references don't move because the UUID didn't move. Clients refresh the displayed label on the signal.
 
 ### Client API
 
@@ -131,13 +137,12 @@ The signal sequence on rename is `SystemProfileListChanged` (catalog topology ch
 
 ```rust
 impl DaemonClient {
-    pub async fn list_system_profiles(&self) -> Result<HashMap<String, SystemProfileBody>>;
-    pub async fn get_system_profile(&self, name: &str) -> Result<SystemProfileBody>;
-    pub async fn update_system_profile(&self, name: &str, body: &SystemProfileBody) -> Result<()>;
-    pub async fn create_system_profile(&self, name: &str) -> Result<()>;
-    pub async fn rename_system_profile(&self, old: &str, new: &str) -> Result<()>;
-    pub async fn duplicate_system_profile(&self, source: &str, new: &str) -> Result<()>;
-    pub async fn delete_system_profile(&self, name: &str) -> Result<()>;
+    pub async fn list_system_profiles(&self) -> Result<HashMap<Uuid, SystemProfileBody>>;
+    pub async fn get_system_profile(&self, uuid: Uuid) -> Result<SystemProfileBody>;
+    pub async fn update_system_profile(&self, uuid: Uuid, body: &SystemProfileBody) -> Result<()>;
+    pub async fn create_system_profile(&self, name: &str) -> Result<Uuid>;
+    pub async fn duplicate_system_profile(&self, source: Uuid, new_name: &str) -> Result<Uuid>;
+    pub async fn delete_system_profile(&self, uuid: Uuid) -> Result<()>;
     pub async fn get_resolved_system_profile_defaults(&self) -> Result<SystemProfileBody>;
     pub async fn get_effective_system_profile(&self, tv_id: &str) -> Result<SystemProfileBody>;
 }
@@ -151,11 +156,11 @@ The GUI's editor commits an edit by:
 
 1. Cloning the cached body for the selected profile.
 2. Patching the one field (`body.on_startup = Some(SessionAction::ScreenOff)` to set, `= None` to reset).
-3. One `Manager1.UpdateSystemProfile(name, body)` round-trip.
-4. Daemon validates + persists + fires `SystemProfileChanged(name)`.
-5. GUI's signal handler refetches the body and refreshes the field rows.
+3. One `Manager1.UpdateSystemProfile(uuid, body)` round-trip.
+4. Daemon validates + persists + fires `SystemProfileChanged(uuid)`.
+5. GUI's signal handler re-fetches the body and refreshes the field rows.
 
-One D-Bus round-trip per edit, exactly matching v2's per-property latency. The body refetch is one trivial dict deserialize — much cheaper than v2's per-property `Properties.Get` per row.
+One D-Bus round-trip per edit, exactly matching v2's per-property latency. The body re-fetch is one trivial dict deserialize — much cheaper than v2's per-property `Properties.Get` per row.
 
 ### Inheritance display in the editor
 
@@ -189,10 +194,10 @@ Forty-four commits to triage. Each is one of:
 | # | sha | One-line | Decision | v3 home |
 |---|---|---|---|---|
 | 1 | `0662377` | docs(plan): v2 plan | DOC-ONLY | superseded by this doc |
-| 2 | `f45ae07` | profile UUIDs + per-profile D-Bus object scaffolding | DROP | name-keyed; no per-profile objects |
+| 2 | `f45ae07` | profile UUIDs + per-profile D-Bus object scaffolding | RE-IMPLEMENT | carry UUID-keyed catalog + `name` field + reserved-default UUID constants; drop per-profile D-Bus registration |
 | 3 | `4701e2b` | typed properties on SystemProfile1 + cross-profile fanout | DROP | property-bag instead |
 | 4 | `35255de` | typed properties on UserProfile1 + cross-profile fanout | DROP | property-bag instead |
-| 5 | `77cfd56` | TV profile refs migrate to UUIDs | DROP | name-keyed refs stay |
+| 5 | `77cfd56` | TV profile refs migrate to UUIDs | CARRY | UUIDs stay on disk + wire |
 | 6 | `d3a206d` | Manager1 + Session1 Create/Delete + drop list RPCs | RE-IMPLEMENT | broader Manager1 surface (Update/Rename/Duplicate too) |
 | 7 | `b356834` | rebind Profiles pane master list to ObjectManager | RE-IMPLEMENT | bind to `Manager1.ListSystemProfiles` + `SystemProfileListChanged` |
 | 8 | `774750f` | bind ProfileFieldRow to per-profile D-Bus properties | RE-IMPLEMENT | bind to cached body + `SystemProfileChanged` |
@@ -201,8 +206,8 @@ Forty-four commits to triage. Each is one of:
 | 11 | `56c06ee` | Errors.profiles banner + a11y | CARRY | Errors slot + a11y; signal-routing detail re-implemented |
 | 12 | `f3a1d8a` | register UserProfile1 D-Bus objects after late daemon connect | DROP | no per-profile objects to register |
 | 13 | `8b45e1a` | clear "Session service unavailable" on SessionAppeared | CARRY | session-available sync; orthogonal |
-| 14 | `53fc607` | TVs-pane combobox display name not UUID | DROP | refs already name-keyed |
-| 15 | `cbf9ff3` | route TVs-pane pencil → Profiles by UUID | DROP | route by name (simpler) |
+| 14 | `53fc607` | TVs-pane combobox display name not UUID | CARRY | UUID → name resolve at display |
+| 15 | `cbf9ff3` | route TVs-pane pencil → Profiles by UUID | CARRY | UUID-keyed navigation |
 | 16 | `f1c71d3` | tighten Profiles-pane ComboBox rows | CARRY | row-padding fix; orthogonal |
 | 17 | `383349e` | strip tombstone comments | DROP | (was reverted in v2) |
 | 18 | `60f7f59` | revert tombstone strip | DROP | (revert of #17) |
@@ -223,7 +228,7 @@ Forty-four commits to triage. Each is one of:
 | 33 | `f4f9350` | inherit-placeholder is `<resolved>*` | CARRY | display convention; orthogonal |
 | 34 | `22f09f6` | drop inherit-placeholder from ComboBox dropdown | CARRY | ComboBox shape; orthogonal |
 | 35 | `a1c9fc1` | docs: migrate v2 + parity plans into design.md | DOC-ONLY | superseded; v3's design.md migration will be similar in shape |
-| 36 | `590bfde` | materialize reserved-default profiles when TOML omits the section | RE-IMPLEMENT | same `ensure_default` invariant, name-keyed |
+| 36 | `590bfde` | materialize reserved-default profiles when TOML omits the section | CARRY | same `ensure_default` invariant on the UUID-keyed catalog |
 | 37 | `51bf8be` | tray-i18n plan | DOC-ONLY | docs/plans/tray-i18n.md already lives outside v2's scope; preserve via cherry-pick |
 | 38 | `301ad5f` | profile-unification plan | DOC-ONLY | v2-internal; drop |
 | 39 | `b43446d` | rescope profile-unification | DOC-ONLY | v2-internal; drop |
@@ -233,7 +238,7 @@ Forty-four commits to triage. Each is one of:
 | 43 | `b32686c` | shave LoC from refactor | DROP | cleanup of v2-only commits |
 | 44 | `c0e8927` | trim dead code, hoist validators | DROP | cleanup of v2-only commits |
 
-Counted: 19 CARRY, 6 RE-IMPLEMENT, 14 DROP, 5 DOC-ONLY. (Sums to 44 with overlaps: some commits are both CARRY for UI polish and partly RE-IMPLEMENT for the wire-bound side.)
+Counted: 22 CARRY, 5 RE-IMPLEMENT, 12 DROP, 5 DOC-ONLY. (Sums to 44 with overlaps: some commits are both CARRY for UI polish and partly RE-IMPLEMENT for the wire-bound side.)
 
 ## v3 implementation sequence
 
@@ -291,7 +296,7 @@ Roughly 14 of the v2 commits are CARRY; many can be combined per the "larger chu
 **Commit 10** — `feat(gui): Profiles pane wired to property-bag CRUD + spinner`.
 
 - `tisvlay-gui/src/profiles.rs`: ~250 LoC editor state owning the three-layer cache (`baseline` + `default_body` + `bodies: HashMap<String, Body>`).
-- `state_watch.rs`: subscribe to `SystemProfileChanged(name)` (system bus) + `UserProfileListChanged` + `SystemProfileListChanged`; refetch the affected body or the full list. Carry the session-bus signal-routing from v2 commit 7.
+- `state_watch.rs`: subscribe to `SystemProfileChanged(name)` (system bus) + `UserProfileListChanged` + `SystemProfileListChanged`; re-fetch the affected body or the full list. Carry the session-bus signal-routing from v2 commit 7.
 - `lib.rs`: wire the Profiles callbacks (select, confirm-create, confirm-delete, confirm-duplicate, confirm-rename, value-edited, value-edited-number, reset-field, reset-all) onto `DaemonClient` / `SessionClient` methods.
 - Field-kind registry + `ProfileFieldRowEnum` / `ProfileFieldRowNumber` Slint components + dispatch (carry v2 commit 42). Registry lives in `tisvlay-gui/src/profiles.rs`, not `tisvlay-core`.
 - Inherit-placeholder = `<resolved>*` (carry v2 commit 33); ComboBox dropdown lists concrete values only (carry v2 commit 34); reset glyph is the sole revert path.
@@ -305,7 +310,7 @@ This is the biggest commit; ~1 200 LoC GUI Rust + ~150 LoC Slint adjustments. Sp
 
 **Commit 11** — `docs: migrate v3 architecture into design.md + delete plan`.
 
-- `docs/design.md`: Components row marks Profiles pane built. Manager1 / Session1 sections updated with the v3 CRUD methods + body-dict types + two signals. New "Profile catalog" subsection covers the CRUD surface table, the inheritance-chain layers, the editor's instant-commit model, and the live-refresh signal contract. TOML examples switch to name-keyed `[system.profiles.<name>]`.
+- `docs/design.md`: Components row marks Profiles pane built. Manager1 / Session1 sections updated with the v3 CRUD methods + body-dict types + two signals. New "Profile catalog" subsection covers the CRUD surface table, the inheritance-chain layers, the editor's instant-commit model, and the live-refresh signal contract. TOML examples keep the v2 UUID-keyed `[system.profiles."<UUID>"]` shape with `name = "..."` as a body field.
 - `docs/plans/profile-crud-v3.md` (this file): deleted, per `docs/plans/README.md` convention.
 
 ## What this gets us
@@ -323,8 +328,8 @@ Working budget against `origin/main`:
 | GUI Rust adapter (editor cache + dispatch) | ~400 |
 | GUI Rust callbacks + state.rs additions | ~250 |
 | Widget + icon + token additions | ~250 |
-| CLI updates (name-keyed args) | ~50 |
-| Tray updates (name-keyed menu items) | ~100 |
+| CLI updates (UUID args, display names from list) | ~50 |
+| Tray updates (UUID-keyed menu items, display names) | ~100 |
 | Integration tests | ~1 500 |
 | Plan doc (this file, deleted on merge) | ~700 |
 | **Total** | **~5 500** |
@@ -350,15 +355,15 @@ All of:
 - Toasts for per-action errors.
 - Reserved-default materialization.
 
-Nothing user-visible regresses. The only architectural feature v2 had that v3 explicitly does not is **per-field PropertiesChanged granularity**. v3 substitutes per-body refetch on `SystemProfileChanged(name)`, which is one dict deserialize — cheaper than v2's per-property fan-out machinery and equivalent latency in practice. Verified at acceptance: same ≤ 50 ms perceived-latency target v2 set.
+Nothing user-visible regresses. The only architectural feature v2 had that v3 explicitly does not is **per-field PropertiesChanged granularity**. v3 substitutes per-body re-fetch on `SystemProfileChanged(name)`, which is one dict deserialize — cheaper than v2's per-property fan-out machinery and equivalent latency in practice. Verified at acceptance: same ≤ 50 ms perceived-latency target v2 set.
 
 ## Risks
 
-- **Migration UX from v2's UUID-keyed TOML.** If we have any local test rigs or in-house configs that already moved to v2's UUID-keyed `[system.profiles."<UUID>"]` shape, v3 won't load them. **Mitigation**: v3 ships against `origin/main`'s name-keyed format; v2's UUID-keyed configs only existed in working trees, not in any deployed install. The repo's `docs/configs/daemon.toml` example reverts to the name-keyed shape.
+- **TOML format compatibility.** v3 keeps v2's UUID-keyed `[system.profiles."<UUID>"]` shape on disk (same name field on the body), so configs that survived v2 development load cleanly into v3. `origin/main` is name-keyed, so a fresh install on top of `origin/main` will hit v3's "load fails on missing UUID key" path. **Mitigation**: v3's `SystemConfig::load_from` materializes the reserved-default UUID on startup if the section is absent (carries v2 commit 590bfde's invariant), so a `main`-shaped config gets quietly upgraded on first save. Old name-keyed `[[tv]] profile.system = "office"` entries fail to deserialize loudly — no auto-migration shim, mirroring v2's choice.
 
 - **zvariant 5.11+ derive behavior for `Option<T>` in `DeserializeDict`.** PR z-galaxy/zbus#1779 explicitly added nested-dict support, but our use case (top-level `Option<T>` fields, no nested dicts) was already working pre-5.11 for simple types. **Mitigation**: commit 2 adds a round-trip test for `SystemProfileBody` + `UserProfileBody` that fails loudly if the absent-key ↔ `None` mapping diverges from expectation. We need 5.11+ specifically for `idle_timeout_seconds: Option<u32>` — pre-5.11 had a known bug with `Option<u32>` in `DeserializeDict` (issue #312 / #1777 lineage).
 
-- **Rename atomicity under concurrent reads.** A client doing `ListSystemProfiles` concurrent with a rename could see a transient state where the old name no longer exists. **Mitigation**: the daemon's write lock prevents concurrent `Update` + `Rename`; the read of `ListSystemProfiles` doesn't take the write lock and could race. In practice this is fine — the client gets a consistent snapshot of whichever side of the rename the read fell on, and the post-rename `SystemProfileListChanged` signal will trigger a refetch.
+- **Concurrent body updates.** Two clients each call `UpdateSystemProfile(uuid, body)` on the same UUID. Last-write-wins on the whole body — fields the second client didn't touch but the first client did revert to the second's body. **Mitigation**: in practice we have a single GUI client + occasional CLI / scripted D-Bus writes; the race window is ms-scale. If it ever materializes, the post-edit `SystemProfileChanged(uuid)` re-fetch reconciles the editor's local view. Add ETag-style version tracking later if multi-client editing ever becomes a real workflow.
 
 - **Body validation surface.** `UpdateSystemProfile(name, body)` accepts an arbitrary `a{sv}`. zvariant's `DeserializeDict` will reject unknown keys and wrong-typed values at the boundary, but the daemon should also reject domain-invalid values (e.g. `automate_when = "always_but_only_on_tuesdays"`). **Mitigation**: `SystemProfileConfig` already has serde-enforced enums; the `From<SystemProfileBody>` → `SystemProfileConfig` step inherits that. Add an explicit test that `UpdateSystemProfile` returns `InvalidArgs` on a malformed value.
 
