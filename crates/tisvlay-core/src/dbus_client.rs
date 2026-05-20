@@ -188,6 +188,13 @@ trait TisvlayManager {
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
     /// Get all system profiles as (name, json) pairs.
+    ///
+    /// Wire-named `ListSystemProfilesJson` after v3 Stage 3a — the v1
+    /// `ListSystemProfiles` wire slot now carries the property-bag
+    /// `a{sa{sv}}` shape, but the JSON-blob form lives on under the
+    /// renamed slot so existing GUI / tray / CLI consumers keep
+    /// working unchanged.
+    #[zbus(name = "ListSystemProfilesJson")]
     fn list_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
     /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
