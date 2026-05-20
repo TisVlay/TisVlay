@@ -1,5 +1,5 @@
 //! `Session1.ReloadConfig` must fan out per-profile catalog signals
-//! (`UserProfileAdded` / `UserProfileBodyChanged` / `UserProfileRemoved`)
+//! (`UserProfileAdded` / `UserProfileChanged` / `UserProfileRemoved`)
 //! for any user profile that appeared, changed, or disappeared on
 //! disk — so a direct user-config-file edit is observationally
 //! identical to an external `CreateUserProfile` / `UpdateUserProfile`
@@ -72,9 +72,9 @@ async fn reload_emits_added_changed_removed_for_user_profile_catalog() {
         .await
         .expect("added stream");
     let changed = client
-        .user_profile_body_changed_stream()
+        .user_profile_changed_stream()
         .await
-        .expect("body_changed stream");
+        .expect("changed stream");
     let removed_stream = client
         .user_profile_removed_stream()
         .await
@@ -120,11 +120,11 @@ async fn reload_emits_added_changed_removed_for_user_profile_catalog() {
 
     let changed_uuid_signal = tokio::time::timeout(Duration::from_secs(2), changed.next())
         .await
-        .expect("UserProfileBodyChanged must arrive after reload")
+        .expect("UserProfileChanged must arrive after reload")
         .expect("Changed stream yields");
     assert_eq!(
         changed_uuid_signal, mutated,
-        "BodyChanged payload must match the mutated UUID",
+        "Changed payload must match the mutated UUID",
     );
 
     let removed_uuid_signal = tokio::time::timeout(Duration::from_secs(2), removed_stream.next())

@@ -348,11 +348,11 @@ async fn watch_state(
         match event {
             StateEvent::DaemonStateChanged(_)
             | StateEvent::DaemonAppeared
-            | StateEvent::SessionProfileChanged
+            | StateEvent::TvUserProfileChanged
             | StateEvent::SystemProfileChanged(_)
             | StateEvent::SystemProfileAdded(_)
             | StateEvent::SystemProfileRemoved(_)
-            | StateEvent::UserProfileBodyChanged(_)
+            | StateEvent::UserProfileChanged(_)
             | StateEvent::UserProfileAdded(_)
             | StateEvent::UserProfileRemoved(_)
             | StateEvent::FallbackPoll => {

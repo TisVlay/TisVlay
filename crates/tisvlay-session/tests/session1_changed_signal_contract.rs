@@ -1,12 +1,12 @@
-//! `Session1.UserProfileBodyChanged(uuid)` fires exactly once per
+//! `Session1.UserProfileChanged(uuid)` fires exactly once per
 //! successful `UpdateUserProfile` and carries the UUID of the mutated
 //! body. The signal is the client's cue to drop any cached body for
 //! the named UUID.
 //!
-//! Distinct from the pre-existing `Session1.UserProfileChanged(tv_id,
-//! profile_uuid)` signal, which fires on per-TV assignment writes via
-//! `SetTvUserProfile`. Two signals with different responsibilities;
-//! this test pins the body-mutation one.
+//! Distinct from `Session1.TvUserProfileChanged(tv_id, profile_uuid)`,
+//! which fires on per-TV assignment writes via `SetTvUserProfile`.
+//! Two signals with different responsibilities; this test pins the
+//! body-mutation one.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -45,10 +45,7 @@ async fn body_changed_fires_once_with_matching_uuid() {
     let client = session_client_on_test_bus().await;
     // Subscribe BEFORE the mutation; signals emitted before the
     // subscription is set up would be dropped.
-    let stream = client
-        .user_profile_body_changed_stream()
-        .await
-        .expect("stream");
+    let stream = client.user_profile_changed_stream().await.expect("stream");
     tokio::pin!(stream);
 
     let mut body = client.get_user_profile(target).await.unwrap();
@@ -65,6 +62,6 @@ async fn body_changed_fires_once_with_matching_uuid() {
     let extra = tokio::time::timeout(Duration::from_millis(100), stream.next()).await;
     assert!(
         extra.is_err(),
-        "exactly one UserProfileBodyChanged per UpdateUserProfile; got extra: {extra:?}",
+        "exactly one UserProfileChanged per UpdateUserProfile; got extra: {extra:?}",
     );
 }

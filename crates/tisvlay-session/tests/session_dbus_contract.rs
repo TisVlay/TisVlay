@@ -74,13 +74,13 @@ async fn set_tv_user_profile_emits_signal() {
     let _session = TestSession::new("sig_tv").await.unwrap();
     let bus = tisvlay_test::PrivateBus::shared();
 
-    // Subscribe to UserProfileChanged before making the call.
+    // Subscribe to TvUserProfileChanged before making the call.
     let sub_conn = bus.connect().await.unwrap();
     let rule = MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .interface("org.tisvlay.Session1")
         .expect("iface")
-        .member("UserProfileChanged")
+        .member("TvUserProfileChanged")
         .expect("member")
         .build();
     let mut stream = zbus::MessageStream::for_match_rule(rule, &sub_conn, None)

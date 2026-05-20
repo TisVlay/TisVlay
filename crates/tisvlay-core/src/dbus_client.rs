@@ -1918,7 +1918,7 @@ trait TisvlaySession {
     /// `name`). Clients with a cached body should re-fetch via
     /// `GetUserProfile(uuid)`.
     #[zbus(signal)]
-    fn user_profile_body_changed(&self, uuid: String) -> zbus::Result<()>;
+    fn user_profile_changed(&self, uuid: String) -> zbus::Result<()>;
 
     /// A new user profile appeared in the catalog (Create or
     /// Duplicate).
@@ -2169,20 +2169,18 @@ impl SessionClient {
             .with_context(|| format!("Failed to get effective user profile for TV '{}'", tv_id))
     }
 
-    /// Subscribe to `Session1.UserProfileBodyChanged` signals.
+    /// Subscribe to `Session1.UserProfileChanged` signals.
     ///
     /// Emits the UUID (parsed) every time a user-profile body is
     /// mutated server-side. Set up the stream **before** the mutation
     /// you want to observe — signals emitted prior to subscription
     /// are dropped.
-    pub async fn user_profile_body_changed_stream(
-        &self,
-    ) -> Result<impl Stream<Item = Uuid> + use<>> {
+    pub async fn user_profile_changed_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
         let raw = self
             .proxy
-            .receive_user_profile_body_changed()
+            .receive_user_profile_changed()
             .await
-            .context("failed to subscribe to UserProfileBodyChanged signal")?;
+            .context("failed to subscribe to UserProfileChanged signal")?;
         Ok(raw.filter_map(|sig| async move {
             let args = sig.args().ok()?;
             Uuid::parse_str(&args.uuid).ok()
@@ -2385,11 +2383,11 @@ pub enum StateEvent {
     /// The session service disappeared from D-Bus.
     SessionDisappeared,
 
-    /// A `UserProfileChanged` signal was received from the session
-    /// service — emitted when a TV's user-profile assignment changes.
-    /// Distinct from [`Self::UserProfileBodyChanged`], which fires on
-    /// a body mutation of the named profile UUID.
-    SessionProfileChanged,
+    /// `Session1.TvUserProfileChanged(tv_id, profile_uuid)`: a TV's
+    /// user-profile assignment changed via `SetTvUserProfile`.
+    /// Distinct from [`Self::UserProfileChanged`], which fires on a
+    /// body mutation of the named profile UUID.
+    TvUserProfileChanged,
 
     /// `Manager1.SystemProfileChanged(uuid)`: a system profile body
     /// was mutated. Consumers with a cached body should re-fetch via
@@ -2404,10 +2402,10 @@ pub enum StateEvent {
     /// removed from the catalog.
     SystemProfileRemoved(Uuid),
 
-    /// `Session1.UserProfileBodyChanged(uuid)`: a user profile body
-    /// was mutated. Distinct from [`Self::SessionProfileChanged`],
-    /// which fires on a per-TV assignment change.
-    UserProfileBodyChanged(Uuid),
+    /// `Session1.UserProfileChanged(uuid)`: a user profile body was
+    /// mutated. Distinct from [`Self::TvUserProfileChanged`], which
+    /// fires on a per-TV assignment change.
+    UserProfileChanged(Uuid),
 
     /// `Session1.UserProfileAdded(uuid)`: a new user profile appeared
     /// in the catalog.
@@ -2457,7 +2455,7 @@ impl Default for StateWatcherConfig {
 /// - Daemon `PropertiesChanged`, `ObjectManager`, and `Manager1` signals
 /// - Daemon well-known name appear/disappear (`NameOwnerChanged`)
 /// - Session service well-known name appear/disappear
-/// - Session `UserProfileChanged` signals
+/// - Session `TvUserProfileChanged` + `UserProfileChanged` signals
 ///
 /// # Example
 ///
@@ -2491,17 +2489,18 @@ enum SystemProfileSignal {
 }
 
 /// Session-bus signals the watcher consumes — body mutations carry a
-/// UUID; assignment changes don't.
+/// profile UUID; assignment changes carry only the TV id (dropped here
+/// since `StateEvent::TvUserProfileChanged` is a payload-less refresh
+/// hint today).
 ///
-/// Body-level signals (`UserProfileBodyChanged`, `UserProfileAdded`,
+/// Body-level signals (`UserProfileChanged`, `UserProfileAdded`,
 /// `UserProfileRemoved`) carry the profile UUID parsed from the wire
-/// argument. `AssignmentChanged` is the per-TV
-/// `UserProfileChanged(tv_id)` signal — no profile UUID, just a
-/// refresh-the-assignment-map hint.
+/// argument. `TvAssignmentChanged` is the per-TV
+/// `TvUserProfileChanged(tv_id, profile_uuid)` signal.
 #[derive(Debug, Clone)]
 enum SessionSignal {
-    AssignmentChanged,
-    BodyChanged(Uuid),
+    TvAssignmentChanged,
+    Changed(Uuid),
     Added(Uuid),
     Removed(Uuid),
 }
@@ -2522,9 +2521,9 @@ pub struct StateWatcher {
     daemon_watch: Option<BoxedStream<ServiceEvent>>,
     /// Stream of session service appear/disappear events.
     session_watch: Option<BoxedStream<ServiceEvent>>,
-    /// Stream of session-side signals: per-TV `UserProfileChanged`
-    /// (assignment) plus the body-level
-    /// `UserProfile{BodyChanged,Added,Removed}` triad. A single
+    /// Stream of session-side signals: per-TV
+    /// `TvUserProfileChanged` (assignment) plus the body-level
+    /// `UserProfile{Changed,Added,Removed}` triad. A single
     /// MessageStream filters all four wire signatures.
     session_signal_stream: Option<BoxedStream<SessionSignal>>,
     /// Stream of tray service appear/disappear events.
@@ -2556,7 +2555,8 @@ impl StateWatcher {
     /// `daemon_conn` is used for `PropertiesChanged` / `ObjectManager` /
     /// `Manager1` signal subscriptions and the daemon name watch.
     /// `session_conn` is used for session-service name watching and
-    /// `UserProfileChanged` signals; pass `None` to skip session watching.
+    /// `TvUserProfileChanged` + `UserProfileChanged` signals; pass
+    /// `None` to skip session watching.
     ///
     /// In tests, both arguments can point at the same private bus —
     /// the daemon and session-service registrations live on one bus
@@ -2717,13 +2717,14 @@ impl StateWatcher {
 
         // --- Session1 signals: assignment + body triad ---
         //
-        // Per-TV `UserProfileChanged` carries `tv_id` (no profile
-        // UUID — clients refresh the assignment map). The body triad
-        // (`UserProfileBodyChanged`, `UserProfileAdded`,
-        // `UserProfileRemoved`) carries the profile UUID as a string
-        // argument; we parse it here so the StateEvent payload is
-        // typed. All four signals share a single match rule by
-        // interface so one `add_signal_match` covers the stream.
+        // `TvUserProfileChanged` carries `(tv_id, profile_uuid)` — the
+        // tv_id is dropped here since the StateEvent variant is a
+        // payload-less refresh hint. The body triad
+        // (`UserProfileChanged`, `UserProfileAdded`, `UserProfileRemoved`)
+        // carries the profile UUID as a string argument; we parse it
+        // here so the StateEvent payload is typed. All four signals
+        // share a single match rule by interface so one
+        // `add_signal_match` covers the stream.
         let session_signal_stream: Option<
             std::pin::Pin<Box<dyn Stream<Item = SessionSignal> + Send>>,
         > = match session_conn {
@@ -2739,16 +2740,13 @@ impl StateWatcher {
                             let header = msg.header();
                             let member = header.member()?.to_string();
                             match member.as_str() {
-                                "UserProfileChanged" => Some(SessionSignal::AssignmentChanged),
-                                "UserProfileBodyChanged"
-                                | "UserProfileAdded"
+                                "TvUserProfileChanged" => Some(SessionSignal::TvAssignmentChanged),
+                                "UserProfileChanged" | "UserProfileAdded"
                                 | "UserProfileRemoved" => {
                                     let uuid_str: String = msg.body().deserialize().ok()?;
                                     let uuid = Uuid::parse_str(&uuid_str).ok()?;
                                     Some(match member.as_str() {
-                                        "UserProfileBodyChanged" => {
-                                            SessionSignal::BodyChanged(uuid)
-                                        }
+                                        "UserProfileChanged" => SessionSignal::Changed(uuid),
                                         "UserProfileAdded" => SessionSignal::Added(uuid),
                                         "UserProfileRemoved" => SessionSignal::Removed(uuid),
                                         _ => unreachable!(),
@@ -2863,13 +2861,13 @@ impl StateWatcher {
                 }
             } => {
                 match sig {
-                    SessionSignal::AssignmentChanged => {
-                        debug!("Session UserProfileChanged signal received");
-                        Some(StateEvent::SessionProfileChanged)
+                    SessionSignal::TvAssignmentChanged => {
+                        debug!("Session TvUserProfileChanged signal received");
+                        Some(StateEvent::TvUserProfileChanged)
                     }
-                    SessionSignal::BodyChanged(uuid) => {
-                        debug!(uuid = %uuid, "Session UserProfileBodyChanged signal received");
-                        Some(StateEvent::UserProfileBodyChanged(uuid))
+                    SessionSignal::Changed(uuid) => {
+                        debug!(uuid = %uuid, "Session UserProfileChanged signal received");
+                        Some(StateEvent::UserProfileChanged(uuid))
                     }
                     SessionSignal::Added(uuid) => {
                         debug!(uuid = %uuid, "Session UserProfileAdded signal received");

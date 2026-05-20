@@ -186,7 +186,7 @@ impl SessionService {
     /// Assign a user profile to a TV by UUID (string-formatted).
     ///
     /// Saves to user config and re-resolves profiles immediately.
-    /// Emits a `UserProfileChanged` signal on success. Unknown UUIDs
+    /// Emits a `TvUserProfileChanged` signal on success. Unknown UUIDs
     /// are rejected with `InvalidArgs`.
     async fn set_tv_user_profile(
         &self,
@@ -234,9 +234,9 @@ impl SessionService {
 
         drop(s);
 
-        // Notify subscribers that the profile changed
-        if let Err(e) = Self::user_profile_changed(&ctxt, tv_id, profile_uuid).await {
-            warn!(error = %e, tv_id = %tv_id, "Failed to emit UserProfileChanged signal");
+        // Notify subscribers that the profile assignment changed
+        if let Err(e) = Self::tv_user_profile_changed(&ctxt, tv_id, profile_uuid).await {
+            warn!(error = %e, tv_id = %tv_id, "Failed to emit TvUserProfileChanged signal");
         }
 
         Ok(())
@@ -317,8 +317,8 @@ impl SessionService {
         info!(uuid = %uuid, name = %body.name, "D-Bus: UpdateUserProfile");
         let parsed = parse_profile_uuid(uuid)?;
         update_user_profile(&self.state, self.config_path.as_ref(), parsed, body).await?;
-        if let Err(e) = Self::user_profile_body_changed(&emitter, uuid).await {
-            warn!(uuid = %uuid, error = %e, "Failed to emit UserProfileBodyChanged");
+        if let Err(e) = Self::user_profile_changed(&emitter, uuid).await {
+            warn!(uuid = %uuid, error = %e, "Failed to emit UserProfileChanged");
         }
         Ok(())
     }
@@ -403,15 +403,12 @@ impl SessionService {
     // Signals
     // -------------------------------------------------------------------------
 
-    /// Signal emitted when a TV's user profile assignment changes.
-    ///
-    /// `profile_uuid` is the UUID string of the newly assigned profile.
-    /// Subscribers should refresh profile state for the affected TV.
-    /// Distinct from `UserProfileBodyChanged` (which fires on
-    /// catalog-body mutations) — this signal fires on per-TV
-    /// assignment writes via `SetTvUserProfile`.
+    /// Signal emitted when a TV's user profile assignment changes
+    /// via `SetTvUserProfile`. `profile_uuid` is the UUID string of
+    /// the newly assigned profile; subscribers should refresh profile
+    /// state for the affected TV.
     #[zbus(signal)]
-    pub async fn user_profile_changed(
+    pub async fn tv_user_profile_changed(
         emitter: &SignalEmitter<'_>,
         tv_id: &str,
         profile_uuid: &str,
@@ -425,10 +422,7 @@ impl SessionService {
     /// `UpdateUserProfile` after persistence; clients are guaranteed
     /// to be able to fetch the new body the moment the signal arrives.
     #[zbus(signal)]
-    pub async fn user_profile_body_changed(
-        emitter: &SignalEmitter<'_>,
-        uuid: &str,
-    ) -> zbus::Result<()>;
+    pub async fn user_profile_changed(emitter: &SignalEmitter<'_>, uuid: &str) -> zbus::Result<()>;
 
     /// A new user profile appeared in the catalog (Create or
     /// Duplicate). Body is fetchable by the moment the signal
@@ -446,7 +440,7 @@ impl SessionService {
     ///
     /// Also re-queries the daemon for the TV list and system default profile.
     ///
-    /// Emits per-profile `UserProfileAdded` / `UserProfileBodyChanged` /
+    /// Emits per-profile `UserProfileAdded` / `UserProfileChanged` /
     /// `UserProfileRemoved` signals for any catalog entries that
     /// appeared, mutated, or disappeared during the reload, so a direct
     /// user-config-file edit is observationally identical to an
@@ -500,11 +494,11 @@ impl SessionService {
             }
         }
         for uuid in &changed {
-            if let Err(e) = Self::user_profile_body_changed(&emitter, uuid).await {
+            if let Err(e) = Self::user_profile_changed(&emitter, uuid).await {
                 warn!(
                     uuid = %uuid,
                     error = %e,
-                    "ReloadConfig: failed to emit UserProfileBodyChanged"
+                    "ReloadConfig: failed to emit UserProfileChanged"
                 );
             }
         }

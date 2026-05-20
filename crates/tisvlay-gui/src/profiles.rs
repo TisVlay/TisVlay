@@ -952,7 +952,7 @@ pub(crate) async fn handle_user_changed(
 ) {
     let session_ref = session.read().await;
     let Some(client) = session_ref.as_ref() else {
-        debug!(uuid = %uuid, "UserProfileBodyChanged arrived while session service unavailable");
+        debug!(uuid = %uuid, "UserProfileChanged arrived while session service unavailable");
         return;
     };
     let new_body = match fetch_user_profile_body(client, uuid).await {

@@ -215,7 +215,7 @@ async fn watch_state(
                 trigger_refresh();
             }
             StateEvent::DaemonStateChanged(_)
-            | StateEvent::SessionProfileChanged
+            | StateEvent::TvUserProfileChanged
             | StateEvent::FallbackPoll => {
                 trigger_refresh();
             }
@@ -244,7 +244,7 @@ async fn watch_state(
                 profiles::handle_system_removed(&editor, app_weak.clone(), uuid);
                 trigger_refresh();
             }
-            StateEvent::UserProfileBodyChanged(uuid) => {
+            StateEvent::UserProfileChanged(uuid) => {
                 let session = session.clone();
                 let editor = editor.clone();
                 let app_weak = app_weak.clone();

@@ -1,7 +1,7 @@
 //! Persistence-failure rollback: when `UpdateUserProfile` cannot write
 //! its mutation to disk, the in-memory snapshot must roll back to the
 //! pre-mutation body and the call must surface
-//! `org.tisvlay.Session1.Error.IoError`. No `UserProfileBodyChanged`
+//! `org.tisvlay.Session1.Error.IoError`. No `UserProfileChanged`
 //! signal must fire — the contract is "fetchable by the moment the
 //! signal arrives", so a signal without a persisted change would lie
 //! to subscribers.
@@ -45,12 +45,9 @@ async fn update_rolls_back_in_memory_on_persist_failure() {
     let client = session_client_on_test_bus().await;
     let pre_mutation = client.get_user_profile(target).await.unwrap();
 
-    // Subscribe to UserProfileBodyChanged BEFORE the failing mutation
+    // Subscribe to UserProfileChanged BEFORE the failing mutation
     // so we can drain afterwards and confirm no signal fires.
-    let changed_stream = client
-        .user_profile_body_changed_stream()
-        .await
-        .expect("stream");
+    let changed_stream = client.user_profile_changed_stream().await.expect("stream");
     tokio::pin!(changed_stream);
 
     // Drop write permission on the config FILE itself so the session's
@@ -95,6 +92,6 @@ async fn update_rolls_back_in_memory_on_persist_failure() {
     let drain = tokio::time::timeout(Duration::from_millis(100), changed_stream.next()).await;
     assert!(
         drain.is_err(),
-        "no UserProfileBodyChanged signal should fire on failed update; got: {drain:?}",
+        "no UserProfileChanged signal should fire on failed update; got: {drain:?}",
     );
 }
