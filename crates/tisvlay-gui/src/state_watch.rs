@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
+use crate::profiles::{self, ProfileEditor};
 use crate::state::{ProfileRowRaw, StateSnapshot, fetch_state};
 use crate::{
     AppWindow, PairingWizard, ProfileRow, ProfileTvRef, Profiles, Reconcilers, TvViewModel,
@@ -29,6 +30,7 @@ pub(crate) async fn initial_fetch_and_watch(
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
     supported_vendors_cache: SupportedVendorsCache,
+    editor: ProfileEditor,
 ) {
     let initial_session_available = session.read().await.is_some();
     let initial_tray_available = tray.read().await.is_some();
@@ -42,6 +44,16 @@ pub(crate) async fn initial_fetch_and_watch(
             None
         }
     };
+
+    // Prime baseline + default body for each kind. The bodies catalog
+    // stays lazy — only the current selection's UUID gets fetched on
+    // demand by `profiles::select`. Errors here are non-fatal; the
+    // baselines fall back to all-`None` and the inherit walk lands
+    // on an empty resolved value rather than blowing up the editor.
+    profiles::prime_system_layers(&daemon, &editor).await;
+    if let Some(client) = session.read().await.as_ref() {
+        profiles::prime_user_layers(client, &editor).await;
+    }
 
     // Fetch + publish the daemon's vendor list. If the daemon is
     // offline at startup the call returns an empty list and the
@@ -74,6 +86,7 @@ pub(crate) async fn initial_fetch_and_watch(
         reconcilers,
         app_weak,
         supported_vendors_cache,
+        editor,
     )
     .await;
 }
@@ -129,6 +142,7 @@ async fn watch_state(
     reconcilers: Reconcilers,
     app_weak: slint::Weak<AppWindow>,
     supported_vendors_cache: SupportedVendorsCache,
+    editor: ProfileEditor,
 ) {
     // No debounce: every D-Bus state signal triggers a refresh fire.
     // The default 100ms (originally a flood guard before
@@ -193,21 +207,62 @@ async fn watch_state(
                 // binary, so a duplicate fetch is wasted work but
                 // cheap; `DaemonAppeared` isn't high-frequency.
                 fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
+                // Re-prime the system-side baseline + default body
+                // — the daemon may have been restarted with edited
+                // defaults on disk, in which case the inherit walk
+                // would otherwise resolve against a stale ancestor.
+                profiles::prime_system_layers(&daemon, &editor).await;
                 trigger_refresh();
             }
             StateEvent::DaemonStateChanged(_)
             | StateEvent::SessionProfileChanged
-            | StateEvent::SystemProfileChanged(_)
-            | StateEvent::SystemProfileAdded(_)
-            | StateEvent::SystemProfileRemoved(_)
-            | StateEvent::UserProfileBodyChanged(_)
-            | StateEvent::UserProfileAdded(_)
-            | StateEvent::UserProfileRemoved(_)
             | StateEvent::FallbackPoll => {
-                // Coarse refresh for any body-mutation signal: a
-                // future commit threads a per-row cache so the
-                // editor and master list can refresh from a
-                // targeted `get_*_profile(uuid)` fetch instead.
+                trigger_refresh();
+            }
+            StateEvent::SystemProfileChanged(uuid) => {
+                // Editor cache + selected-row refresh. The master
+                // list also needs a redraw because `referenced_by`
+                // chip counts can shift when a profile's `name`
+                // changes.
+                let daemon = daemon.clone();
+                let editor = editor.clone();
+                let app_weak = app_weak.clone();
+                tokio::spawn(async move {
+                    profiles::handle_system_changed(editor, daemon, app_weak, uuid).await;
+                });
+                trigger_refresh();
+            }
+            StateEvent::SystemProfileAdded(uuid) => {
+                let daemon = daemon.clone();
+                let editor = editor.clone();
+                tokio::spawn(async move {
+                    profiles::handle_system_added(editor, daemon, uuid).await;
+                });
+                trigger_refresh();
+            }
+            StateEvent::SystemProfileRemoved(uuid) => {
+                profiles::handle_system_removed(&editor, app_weak.clone(), uuid);
+                trigger_refresh();
+            }
+            StateEvent::UserProfileBodyChanged(uuid) => {
+                let session = session.clone();
+                let editor = editor.clone();
+                let app_weak = app_weak.clone();
+                tokio::spawn(async move {
+                    profiles::handle_user_changed(editor, session, app_weak, uuid).await;
+                });
+                trigger_refresh();
+            }
+            StateEvent::UserProfileAdded(uuid) => {
+                let session = session.clone();
+                let editor = editor.clone();
+                tokio::spawn(async move {
+                    profiles::handle_user_added(editor, session, uuid).await;
+                });
+                trigger_refresh();
+            }
+            StateEvent::UserProfileRemoved(uuid) => {
+                profiles::handle_user_removed(&editor, app_weak.clone(), uuid);
                 trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
@@ -222,6 +277,7 @@ async fn watch_state(
                 if let Ok(client) = SessionClient::new().await
                     && client.is_available().await
                 {
+                    profiles::prime_user_layers(&client, &editor).await;
                     *session.write().await = Some(client);
                     on_ui(&app_weak, move |app| {
                         app.set_session_available(true);

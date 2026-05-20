@@ -21,6 +21,7 @@ mod edit_pane;
 mod file_manager;
 mod icon_theme;
 mod power_cycle;
+mod profiles;
 mod schema_form;
 mod state;
 mod state_watch;
@@ -50,6 +51,7 @@ use edit_pane::{
 };
 use icon_theme::load_themed_icon;
 use power_cycle::run_power_on_with_progress;
+use profiles::{EditorKind, ProfileEditor, new_editor};
 use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
@@ -535,6 +537,14 @@ pub fn run() -> Result<()> {
     // wizard. See `wizard::WizardGen`.
     let wizard_gen: WizardGen = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
+    // Profiles-pane editor state. Owns the three-layer body cache +
+    // per-kind generation counters for stale-callback protection.
+    // Shared between the state-watcher (refresh on
+    // `*ProfileChanged` / `*Added` / `*Removed`) and the Slint
+    // callback handlers (`select`, plus the dispatch helpers wired
+    // in a follow-up commit).
+    let editor: ProfileEditor = new_editor();
+
     // Wire callbacks before the event loop starts so they're ready when
     // the user interacts with controls.
     register_callbacks(
@@ -544,6 +554,7 @@ pub fn run() -> Result<()> {
         reconcilers.clone(),
         wizard_entries.clone(),
         wizard_gen.clone(),
+        editor.clone(),
     );
 
     // Background watcher: refresh on every signal-driven state change.
@@ -555,6 +566,7 @@ pub fn run() -> Result<()> {
         reconcilers,
         app_weak,
         supported_vendors_cache.clone(),
+        editor,
     ));
 
     // Background watcher for the user's DE-chosen accent color via
@@ -579,6 +591,7 @@ fn register_callbacks(
     reconcilers: Reconcilers,
     wizard_entries: WizardEntries,
     wizard_gen: WizardGen,
+    editor: ProfileEditor,
 ) {
     // Slint global handles. Bound once for the registration phase;
     // closures captured by `move` re-acquire from the upgraded
@@ -597,13 +610,36 @@ fn register_callbacks(
     errors_global.on_profiles_action(|| {});
     errors_global.on_pairing_action(|| {});
 
-    // Profiles-pane callback surface — wired as no-ops while the
-    // Slint shell is reviewable on its own. The state.rs rebind +
-    // dispatch helpers replace these with real handlers; binding
-    // them inert now keeps `lib.rs` as a single discoverable map
-    // of every Slint-side callback the pane can fire.
+    // Profiles-pane callback surface. `select` primes the per-kind
+    // editor model from the daemon/session-side body cache; the
+    // remaining callbacks (value-edited / reset-field / rename-
+    // selected / confirm-create / confirm-delete / confirm-
+    // duplicate / open-tv / open-profile-by-uuid) stay as no-ops
+    // for now — they become real in the dispatch / dialog
+    // follow-up commits.
     let profiles_global = app.global::<Profiles>();
-    profiles_global.on_select(|_kind, _uuid| {});
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_select(move |kind, uuid_str| {
+            let Some(editor_kind) = EditorKind::from_slint(kind) else {
+                return;
+            };
+            let Ok(uuid) = uuid::Uuid::parse_str(&uuid_str) else {
+                warn!(uuid = %uuid_str, "Profiles.select: malformed UUID, ignoring");
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            tokio::spawn(async move {
+                profiles::select(ed, d, s, app_weak, editor_kind, uuid).await;
+            });
+        });
+    }
     profiles_global.on_confirm_create(|_kind, _name| {});
     profiles_global.on_confirm_delete(|_kind, _uuid| {});
     profiles_global.on_confirm_duplicate(|_kind, _source, _name| {});
