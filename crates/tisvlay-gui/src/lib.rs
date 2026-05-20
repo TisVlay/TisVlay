@@ -51,7 +51,10 @@ use edit_pane::{
 };
 use icon_theme::load_themed_icon;
 use power_cycle::run_power_on_with_progress;
-use profiles::{EditorKind, ProfileEditor, new_editor};
+use profiles::{
+    EditorKind, ProfileEditor, dispatch_rename, dispatch_reset_all, dispatch_reset_field,
+    dispatch_select_after_create, dispatch_value_edit, dispatch_value_edit_number, new_editor,
+};
 use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
@@ -137,6 +140,21 @@ fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: Str
             action_label: SharedString::default(),
         });
     });
+}
+
+/// Read the currently-selected `(EditorKind, uuid)` from the Slint
+/// `Profiles` global. Returns `None` when the selection is empty,
+/// the kind sentinel is `None`, or the UUID can't be parsed —
+/// callers treat all three as "no-op".
+fn current_selection(app_weak: &slint::Weak<AppWindow>) -> Option<(EditorKind, uuid::Uuid)> {
+    let app = app_weak.upgrade()?;
+    let profiles = app.global::<Profiles>();
+    let kind = EditorKind::from_slint(profiles.get_selected_kind())?;
+    let uuid_str = profiles.get_selected_uuid();
+    if uuid_str.is_empty() {
+        return None;
+    }
+    uuid::Uuid::parse_str(&uuid_str).ok().map(|u| (kind, u))
 }
 
 /// Profiles-pane sticky banner — same shape as `push_tvs_error` but
@@ -612,11 +630,12 @@ fn register_callbacks(
 
     // Profiles-pane callback surface. `select` primes the per-kind
     // editor model from the daemon/session-side body cache; the
-    // remaining callbacks (value-edited / reset-field / rename-
-    // selected / confirm-create / confirm-delete / confirm-
-    // duplicate / open-tv / open-profile-by-uuid) stay as no-ops
-    // for now — they become real in the dispatch / dialog
-    // follow-up commits.
+    // value-edited / reset-field / reset-all / rename-selected
+    // callbacks route through the per-kind dispatch helpers in
+    // `profiles.rs`. `confirm-*` runs the catalog-mutating call,
+    // then auto-selects the new UUID after eager-fetching its
+    // body. `open-tv` / `open-profile-by-uuid` flip
+    // `AppWindow.active-pane` to drive cross-pane navigation.
     let profiles_global = app.global::<Profiles>();
     {
         let d = daemon.clone();
@@ -640,16 +659,385 @@ fn register_callbacks(
             });
         });
     }
-    profiles_global.on_confirm_create(|_kind, _name| {});
-    profiles_global.on_confirm_delete(|_kind, _uuid| {});
-    profiles_global.on_confirm_duplicate(|_kind, _source, _name| {});
-    profiles_global.on_open_tv(|_uuid| {});
-    profiles_global.on_open_profile_by_uuid(|_kind, _uuid| {});
-    profiles_global.on_value_edited(|_field, _value| {});
-    profiles_global.on_value_edited_number(|_field, _value| {});
-    profiles_global.on_reset_field(|_field| {});
-    profiles_global.on_reset_all(|| {});
-    profiles_global.on_rename_selected(|_name| {});
+
+    // confirm-create: create the new profile, eager-fetch its body,
+    // then auto-select. The catalog-list refresh is handled by the
+    // `*ProfileAdded` signal handler upstream of this; we only own
+    // the auto-select side. Failures route to a toast — transient,
+    // user can retry from the same dialog.
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_confirm_create(move |kind, name| {
+            let Some(editor_kind) = EditorKind::from_slint(kind) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let name = name.to_string();
+            tokio::spawn(async move {
+                let result: anyhow::Result<uuid::Uuid> = match editor_kind {
+                    EditorKind::System => d.create_system_profile(&name).await,
+                    EditorKind::User => {
+                        let session_ref = s.read().await;
+                        match session_ref.as_ref() {
+                            Some(client) => client.create_user_profile(&name).await,
+                            None => Err(anyhow::anyhow!("Session service unavailable")),
+                        }
+                    }
+                };
+                match result {
+                    Ok(uuid) => {
+                        dispatch_select_after_create(ed, d, s, app_weak, editor_kind, uuid).await;
+                    }
+                    Err(e) => {
+                        warn!(name = %name, error = %e, "create_profile failed");
+                        show_toast(
+                            app_weak,
+                            &gettext("Create profile failed: {0}").replace("{0}", &format!("{e}")),
+                        );
+                    }
+                }
+            });
+        });
+    }
+
+    // confirm-duplicate: clone source_uuid's body under the new name,
+    // eager-fetch the resulting body, auto-select.
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_confirm_duplicate(move |kind, source_uuid, new_name| {
+            let Some(editor_kind) = EditorKind::from_slint(kind) else {
+                return;
+            };
+            let Ok(source) = uuid::Uuid::parse_str(&source_uuid) else {
+                warn!(uuid = %source_uuid, "confirm_duplicate: malformed source UUID, ignoring");
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let new_name = new_name.to_string();
+            tokio::spawn(async move {
+                let result: anyhow::Result<uuid::Uuid> = match editor_kind {
+                    EditorKind::System => d.duplicate_system_profile(source, &new_name).await,
+                    EditorKind::User => {
+                        let session_ref = s.read().await;
+                        match session_ref.as_ref() {
+                            Some(client) => client.duplicate_user_profile(source, &new_name).await,
+                            None => Err(anyhow::anyhow!("Session service unavailable")),
+                        }
+                    }
+                };
+                match result {
+                    Ok(uuid) => {
+                        dispatch_select_after_create(
+                            ed,
+                            d,
+                            s,
+                            app_weak,
+                            editor_kind,
+                            uuid,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        warn!(source = %source, name = %new_name, error = %e, "duplicate_profile failed");
+                        show_toast(
+                            app_weak,
+                            &gettext("Duplicate profile failed: {0}")
+                                .replace("{0}", &format!("{e}")),
+                        );
+                    }
+                }
+            });
+        });
+    }
+
+    // confirm-delete: delete the profile. Preemptively drop the body
+    // from the cache + clear the selection if it matched, so the post-
+    // delete render doesn't briefly show a stale row. The
+    // `*ProfileRemoved` signal handler is idempotent and also clears
+    // the entry; the eager clear here just avoids the flicker.
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_confirm_delete(move |kind, uuid_str| {
+            let Some(editor_kind) = EditorKind::from_slint(kind) else {
+                return;
+            };
+            let Ok(uuid) = uuid::Uuid::parse_str(&uuid_str) else {
+                warn!(uuid = %uuid_str, "confirm_delete: malformed UUID, ignoring");
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            tokio::spawn(async move {
+                let result: anyhow::Result<()> = match editor_kind {
+                    EditorKind::System => d.delete_system_profile(uuid).await,
+                    EditorKind::User => {
+                        let session_ref = s.read().await;
+                        match session_ref.as_ref() {
+                            Some(client) => client.delete_user_profile(uuid).await,
+                            None => Err(anyhow::anyhow!("Session service unavailable")),
+                        }
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        // Preemptive cache clear so the selected-row
+                        // disappears before the next state push.
+                        match editor_kind {
+                            EditorKind::System => {
+                                profiles::handle_system_removed(&ed, app_weak.clone(), uuid);
+                            }
+                            EditorKind::User => {
+                                profiles::handle_user_removed(&ed, app_weak.clone(), uuid);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(uuid = %uuid, error = %e, "delete_profile failed");
+                        show_toast(
+                            app_weak,
+                            &gettext("Delete profile failed: {0}").replace("{0}", &format!("{e}")),
+                        );
+                    }
+                }
+            });
+        });
+    }
+
+    // open-tv: jump to the TVs pane and select the named TV. Empty
+    // UUID or unknown TV is treated as a no-op (covers race against
+    // a removal mid-click).
+    {
+        let app_weak = app.as_weak();
+        profiles_global.on_open_tv(move |tv_uuid| {
+            if tv_uuid.is_empty() {
+                return;
+            }
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            let tvs = app.get_tvs();
+            let mut found_index: i32 = -1;
+            for i in 0..tvs.row_count() {
+                if let Some(row) = tvs.row_data(i)
+                    && row.uuid == tv_uuid
+                {
+                    found_index = i as i32;
+                    break;
+                }
+            }
+            if found_index < 0 {
+                warn!(tv_uuid = %tv_uuid, "open_tv: TV not in current list");
+                return;
+            }
+            app.set_selected_tv_index(found_index);
+            app.set_active_pane(Pane::Tvs);
+        });
+    }
+
+    // open-profile-by-uuid: jump to the Profiles pane and select the
+    // named profile. The TVs pane's PROFILES-row pencil routes here.
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_open_profile_by_uuid(move |kind, uuid_str| {
+            let Some(editor_kind) = EditorKind::from_slint(kind) else {
+                return;
+            };
+            let Ok(uuid) = uuid::Uuid::parse_str(&uuid_str) else {
+                warn!(uuid = %uuid_str, "open_profile_by_uuid: malformed UUID, ignoring");
+                return;
+            };
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            // Find the matching ProfileRow in the catalog so the
+            // detail header materializes on the same frame as the
+            // pane flip — same `selected-row` push the master-list
+            // click handler uses.
+            let profiles_g = app.global::<Profiles>();
+            let model = match editor_kind {
+                EditorKind::System => profiles_g.get_system(),
+                EditorKind::User => profiles_g.get_user(),
+            };
+            let mut matched_row: Option<ProfileRow> = None;
+            for i in 0..model.row_count() {
+                if let Some(row) = model.row_data(i)
+                    && row.uuid == uuid_str
+                {
+                    matched_row = Some(row);
+                    break;
+                }
+            }
+            profiles_g.set_selected_kind(kind);
+            profiles_g.set_selected_uuid(uuid_str);
+            if let Some(row) = matched_row {
+                profiles_g.set_selected_row(row);
+            }
+            app.set_active_pane(Pane::Profiles);
+
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            tokio::spawn(async move {
+                profiles::select(ed, d, s, app_weak, editor_kind, uuid).await;
+            });
+        });
+    }
+
+    // value-edited / value-edited-number / reset-field / reset-all
+    // all read the current selection on the UI thread and route to
+    // the matching dispatch helper. Failures land on the toast
+    // surface — every field edit is naturally retryable so the user
+    // can pick the value again.
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_value_edited(move |field, value| {
+            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let field = field.to_string();
+            let value = value.to_string();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    dispatch_value_edit(&ed, &d, &s, editor_kind, uuid, &field, &value).await
+                {
+                    warn!(field = %field, value = %value, error = %e, "value_edited failed");
+                    show_toast(
+                        app_weak,
+                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                    );
+                }
+            });
+        });
+    }
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_value_edited_number(move |field, value| {
+            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let field = field.to_string();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    dispatch_value_edit_number(&ed, &d, &s, editor_kind, uuid, &field, value).await
+                {
+                    warn!(field = %field, value, error = %e, "value_edited_number failed");
+                    show_toast(
+                        app_weak,
+                        &gettext("Save change failed: {0}").replace("{0}", &format!("{e}")),
+                    );
+                }
+            });
+        });
+    }
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_reset_field(move |field| {
+            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let field = field.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = dispatch_reset_field(&ed, &d, &s, editor_kind, uuid, &field).await {
+                    warn!(field = %field, error = %e, "reset_field failed");
+                    show_toast(
+                        app_weak,
+                        &gettext("Reset field failed: {0}").replace("{0}", &format!("{e}")),
+                    );
+                }
+            });
+        });
+    }
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_reset_all(move || {
+            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            tokio::spawn(async move {
+                if let Err(e) = dispatch_reset_all(&ed, &d, &s, editor_kind, uuid).await {
+                    warn!(error = %e, "reset_all failed");
+                    show_toast(
+                        app_weak,
+                        &gettext("Reset all failed: {0}").replace("{0}", &format!("{e}")),
+                    );
+                }
+            });
+        });
+    }
+    {
+        let d = daemon.clone();
+        let s = session.clone();
+        let ed = editor.clone();
+        let app_weak = app.as_weak();
+        profiles_global.on_rename_selected(move |new_name| {
+            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
+                return;
+            };
+            let d = d.clone();
+            let s = s.clone();
+            let ed = ed.clone();
+            let app_weak = app_weak.clone();
+            let new_name = new_name.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = dispatch_rename(&ed, &d, &s, editor_kind, uuid, &new_name).await {
+                    warn!(name = %new_name, error = %e, "rename_selected failed");
+                    show_toast(
+                        app_weak,
+                        &gettext("Rename failed: {0}").replace("{0}", &format!("{e}")),
+                    );
+                }
+            });
+        });
+    }
 
     // Slider drags coalesce per TV via `Coalescer`: each `changed(v)`
     // tick fires into the per-TV worker, which drains-keep-latest

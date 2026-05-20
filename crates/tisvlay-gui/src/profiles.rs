@@ -52,6 +52,17 @@ use crate::{AppWindow, ProfileFieldEntry, ProfileKind, Profiles, on_ui};
 // Field-kind registry
 // =============================================================================
 
+/// Which enum class an `Enum`-kind field carries. Drives the
+/// dispatch fork in [`parse_enum_token`] without a pointer-equality
+/// comparison on the option slice — Rust `const` items inline at
+/// each use site and produce per-site anonymous statics, so
+/// `std::ptr::eq` on the slice is unreliable across invocations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnumClass {
+    SessionAction,
+    AutomateWhen,
+}
+
 /// Discriminator + per-variant data for one row in the profile-editor
 /// model. The Slint side reads `kind` (as a string) to pick a
 /// `ProfileFieldRowEnum` vs `ProfileFieldRowNumber`; the matching
@@ -62,6 +73,7 @@ use crate::{AppWindow, ProfileFieldEntry, ProfileKind, Profiles, on_ui};
 pub(crate) enum FieldKind {
     Enum {
         options: &'static [&'static str],
+        class: EnumClass,
     },
     Number {
         min: i32,
@@ -97,42 +109,49 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
         wire: "on_startup",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "on_shutdown",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "on_reboot",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "on_no_session",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "on_sleep",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "on_wake",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "automate_when",
         kind: FieldKind::Enum {
             options: AUTOMATE_WHEN_OPTIONS,
+            class: EnumClass::AutomateWhen,
         },
     },
 ];
@@ -146,30 +165,35 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
         wire: "on_session_lock",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "on_session_unlock",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "on_greeter_wake",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "on_idle_timeout",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
         wire: "on_idle_resume",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
@@ -773,7 +797,7 @@ fn build_field_raw(field: &FieldSpec, resolved: &ResolvedValue) -> ProfileFieldR
     };
 
     match field.kind {
-        FieldKind::Enum { options } => {
+        FieldKind::Enum { options, .. } => {
             raw.options = options.iter().map(|opt| (*opt).to_string()).collect();
             raw.current_value = resolved.current().to_string();
         }
@@ -1026,6 +1050,440 @@ fn clear_selection_in_slint(app_weak: slint::Weak<AppWindow>) {
         profiles.set_editor_fields(ModelRc::new(VecModel::<ProfileFieldEntry>::default()));
         profiles.set_editor_can_reset_all(false);
     });
+}
+
+// =============================================================================
+// Field-mutation primitives
+// =============================================================================
+
+/// Patch instruction passed to [`set_system_field`] / [`set_user_field`].
+/// `Clear` is the "reset to inherit" path (sets the `Option<T>` to
+/// `None`); the typed variants carry the parsed Rust value for the
+/// target field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyPatch {
+    SessionAction(SessionAction),
+    AutomateWhen(AutomateWhen),
+    Number(u64),
+    Clear,
+}
+
+/// Parse a ComboBox-emitted token into the matching `SessionAction`
+/// variant. Tokens mirror the `#[serde(rename_all = "snake_case")]`
+/// emitted by [`session_action_token`] — if either diverges this
+/// match arm catches it.
+fn parse_session_action(token: &str) -> anyhow::Result<SessionAction> {
+    match token {
+        "none" => Ok(SessionAction::None),
+        "screen_off" => Ok(SessionAction::ScreenOff),
+        "screen_on" => Ok(SessionAction::ScreenOn),
+        "power_off" => Ok(SessionAction::PowerOff),
+        "power_on" => Ok(SessionAction::PowerOn),
+        other => Err(anyhow::anyhow!("Unknown SessionAction variant: {other}")),
+    }
+}
+
+fn parse_automate_when(token: &str) -> anyhow::Result<AutomateWhen> {
+    match token {
+        "always" => Ok(AutomateWhen::Always),
+        "on_primary" => Ok(AutomateWhen::OnPrimary),
+        "off_primary" => Ok(AutomateWhen::OffPrimary),
+        other => Err(anyhow::anyhow!("Unknown AutomateWhen variant: {other}")),
+    }
+}
+
+/// Mutate one field on a `SystemProfileBody`. The patch's variant
+/// must match the target's `FieldKind` — passing `BodyPatch::Number`
+/// to an enum field surfaces as an `anyhow::Error`.
+fn set_system_field(
+    body: &mut SystemProfileBody,
+    wire: &str,
+    patch: BodyPatch,
+) -> anyhow::Result<()> {
+    // Macro-free: the table is short and the explicit match keeps
+    // the wire-name <-> body-field mapping searchable. Each arm
+    // collapses the four possible `BodyPatch` shapes into the one
+    // the field accepts.
+    match wire {
+        "on_startup" => body.on_startup = session_action_patch(patch, "on_startup")?,
+        "on_shutdown" => body.on_shutdown = session_action_patch(patch, "on_shutdown")?,
+        "on_reboot" => body.on_reboot = session_action_patch(patch, "on_reboot")?,
+        "on_no_session" => body.on_no_session = session_action_patch(patch, "on_no_session")?,
+        "on_sleep" => body.on_sleep = session_action_patch(patch, "on_sleep")?,
+        "on_wake" => body.on_wake = session_action_patch(patch, "on_wake")?,
+        "automate_when" => body.automate_when = automate_when_patch(patch, "automate_when")?,
+        other => anyhow::bail!("Unknown system-profile field: {other}"),
+    }
+    Ok(())
+}
+
+/// User-side mirror of [`set_system_field`].
+fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> anyhow::Result<()> {
+    match wire {
+        "on_session_lock" => body.on_session_lock = session_action_patch(patch, "on_session_lock")?,
+        "on_session_unlock" => {
+            body.on_session_unlock = session_action_patch(patch, "on_session_unlock")?
+        }
+        "on_greeter_wake" => body.on_greeter_wake = session_action_patch(patch, "on_greeter_wake")?,
+        "on_idle_timeout" => body.on_idle_timeout = session_action_patch(patch, "on_idle_timeout")?,
+        "on_idle_resume" => body.on_idle_resume = session_action_patch(patch, "on_idle_resume")?,
+        "idle_timeout_seconds" => {
+            body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
+        }
+        other => anyhow::bail!("Unknown user-profile field: {other}"),
+    }
+    Ok(())
+}
+
+/// Convert a [`BodyPatch`] targeting a `SessionAction` field into
+/// `Option<SessionAction>`. `Clear` returns `None`; the
+/// `SessionAction` variant returns `Some(action)`; anything else is
+/// a programmer error.
+fn session_action_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<SessionAction>> {
+    match patch {
+        BodyPatch::SessionAction(a) => Ok(Some(a)),
+        BodyPatch::Clear => Ok(None),
+        BodyPatch::AutomateWhen(_) => {
+            anyhow::bail!("Field '{field}' expects SessionAction, got AutomateWhen")
+        }
+        BodyPatch::Number(_) => {
+            anyhow::bail!("Field '{field}' expects SessionAction, got Number")
+        }
+    }
+}
+
+fn automate_when_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<AutomateWhen>> {
+    match patch {
+        BodyPatch::AutomateWhen(w) => Ok(Some(w)),
+        BodyPatch::Clear => Ok(None),
+        BodyPatch::SessionAction(_) => {
+            anyhow::bail!("Field '{field}' expects AutomateWhen, got SessionAction")
+        }
+        BodyPatch::Number(_) => {
+            anyhow::bail!("Field '{field}' expects AutomateWhen, got Number")
+        }
+    }
+}
+
+fn number_patch(patch: BodyPatch, field: &str) -> anyhow::Result<Option<u64>> {
+    match patch {
+        BodyPatch::Number(n) => Ok(Some(n)),
+        BodyPatch::Clear => Ok(None),
+        BodyPatch::SessionAction(_) => {
+            anyhow::bail!("Field '{field}' expects Number, got SessionAction")
+        }
+        BodyPatch::AutomateWhen(_) => {
+            anyhow::bail!("Field '{field}' expects Number, got AutomateWhen")
+        }
+    }
+}
+
+/// Look up a field's [`FieldKind`] from the wire name. Returns `None`
+/// for unknown wires.
+fn field_kind_for(kind: EditorKind, wire: &str) -> Option<FieldKind> {
+    let table = match kind {
+        EditorKind::System => SYSTEM_FIELDS,
+        EditorKind::User => USER_FIELDS,
+    };
+    table.iter().find(|f| f.wire == wire).map(|f| f.kind)
+}
+
+/// Parse an enum-field's ComboBox token into a [`BodyPatch`]. Routes
+/// by the spec's `EnumClass` tag so we pick the right parser for
+/// `SessionAction` vs `AutomateWhen` without a per-wire switch.
+fn parse_enum_token(kind: FieldKind, token: &str) -> anyhow::Result<BodyPatch> {
+    match kind {
+        FieldKind::Enum {
+            class: EnumClass::SessionAction,
+            ..
+        } => Ok(BodyPatch::SessionAction(parse_session_action(token)?)),
+        FieldKind::Enum {
+            class: EnumClass::AutomateWhen,
+            ..
+        } => Ok(BodyPatch::AutomateWhen(parse_automate_when(token)?)),
+        FieldKind::Number { .. } => {
+            anyhow::bail!("Cannot parse an enum token for a number field")
+        }
+    }
+}
+
+// =============================================================================
+// Dispatch helpers
+// =============================================================================
+
+/// Read the cached body for the current selection (the per-uuid entry
+/// if present, the `default_body` slot when `uuid` matches the
+/// reserved default, or an empty body as a last resort). Returned by
+/// value so the caller can mutate without holding the editor lock
+/// across the daemon call.
+fn snapshot_system_body(state: &ProfileEditorState, uuid: Uuid) -> SystemProfileBody {
+    state
+        .system
+        .bodies
+        .get(&uuid)
+        .cloned()
+        .or_else(|| {
+            if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
+                Some(state.system.default_body.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn snapshot_user_body(state: &ProfileEditorState, uuid: Uuid) -> UserProfileBody {
+    state
+        .user
+        .bodies
+        .get(&uuid)
+        .cloned()
+        .or_else(|| {
+            if uuid == DEFAULT_USER_PROFILE_UUID {
+                Some(state.user.default_body.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Read-modify-write helper for a single field on a system profile.
+/// Snapshots the cached body, applies `mutate`, then writes it back
+/// over D-Bus. The lock is held only for the snapshot; the daemon
+/// round-trip happens after `drop`.
+async fn update_system_field(
+    editor: &ProfileEditor,
+    daemon: &DaemonClient,
+    uuid: Uuid,
+    wire: &str,
+    patch: BodyPatch,
+) -> anyhow::Result<()> {
+    let mut body = {
+        let state = editor.lock();
+        snapshot_system_body(&state, uuid)
+    };
+    set_system_field(&mut body, wire, patch)?;
+    daemon.update_system_profile(uuid, &body).await
+}
+
+async fn update_user_field(
+    editor: &ProfileEditor,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    uuid: Uuid,
+    wire: &str,
+    patch: BodyPatch,
+) -> anyhow::Result<()> {
+    let mut body = {
+        let state = editor.lock();
+        snapshot_user_body(&state, uuid)
+    };
+    set_user_field(&mut body, wire, patch)?;
+    let session_ref = session.read().await;
+    let client = session_ref
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
+    client.update_user_profile(uuid, &body).await
+}
+
+/// Apply a ComboBox-driven enum edit to the selected profile. The
+/// dispatch helpers all read the selection's `(kind, uuid)` from the
+/// caller (Slint reads the global at task-start) so the editor cache
+/// doesn't need an extra round-trip to confirm it.
+pub(crate) async fn dispatch_value_edit(
+    editor: &ProfileEditor,
+    daemon: &DaemonClient,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    kind: EditorKind,
+    uuid: Uuid,
+    field_wire: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    let field_kind = field_kind_for(kind, field_wire)
+        .ok_or_else(|| anyhow::anyhow!("Unknown field '{field_wire}'"))?;
+    let patch = parse_enum_token(field_kind, value)?;
+    match kind {
+        EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
+        EditorKind::User => update_user_field(editor, session, uuid, field_wire, patch).await,
+    }
+}
+
+/// Apply a SpinBox-driven numeric edit. Clamps the i32 to the field's
+/// declared `[min, max]` before casting to u64. Number fields only
+/// exist user-side today but the dispatch fork keeps the system arm
+/// reachable if one ever lands there.
+pub(crate) async fn dispatch_value_edit_number(
+    editor: &ProfileEditor,
+    daemon: &DaemonClient,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    kind: EditorKind,
+    uuid: Uuid,
+    field_wire: &str,
+    value: i32,
+) -> anyhow::Result<()> {
+    let field_kind = field_kind_for(kind, field_wire)
+        .ok_or_else(|| anyhow::anyhow!("Unknown field '{field_wire}'"))?;
+    let FieldKind::Number { min, max, .. } = field_kind else {
+        return Err(anyhow::anyhow!(
+            "Field '{field_wire}' is not a number field"
+        ));
+    };
+    let clamped = value.max(min).min(max).max(0) as u64;
+    let patch = BodyPatch::Number(clamped);
+    match kind {
+        EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
+        EditorKind::User => update_user_field(editor, session, uuid, field_wire, patch).await,
+    }
+}
+
+/// Reset one field to inherit-from-chain by setting its body slot to
+/// `None`.
+pub(crate) async fn dispatch_reset_field(
+    editor: &ProfileEditor,
+    daemon: &DaemonClient,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    kind: EditorKind,
+    uuid: Uuid,
+    field_wire: &str,
+) -> anyhow::Result<()> {
+    match kind {
+        EditorKind::System => {
+            update_system_field(editor, daemon, uuid, field_wire, BodyPatch::Clear).await
+        }
+        EditorKind::User => {
+            update_user_field(editor, session, uuid, field_wire, BodyPatch::Clear).await
+        }
+    }
+}
+
+/// Reset every inheritable field to `None`, preserving the name. One
+/// atomic body replace; daemon-side history shows a single mutation.
+pub(crate) async fn dispatch_reset_all(
+    editor: &ProfileEditor,
+    daemon: &DaemonClient,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    kind: EditorKind,
+    uuid: Uuid,
+) -> anyhow::Result<()> {
+    match kind {
+        EditorKind::System => {
+            let snapshot = {
+                let state = editor.lock();
+                snapshot_system_body(&state, uuid)
+            };
+            let body = SystemProfileBody {
+                name: snapshot.name,
+                ..Default::default()
+            };
+            daemon.update_system_profile(uuid, &body).await
+        }
+        EditorKind::User => {
+            let snapshot = {
+                let state = editor.lock();
+                snapshot_user_body(&state, uuid)
+            };
+            let body = UserProfileBody {
+                name: snapshot.name,
+                ..Default::default()
+            };
+            let session_ref = session.read().await;
+            let client = session_ref
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
+            client.update_user_profile(uuid, &body).await
+        }
+    }
+}
+
+/// Rename the selected profile. Issues a body update that carries the
+/// new name + every other field from the current cached body — the
+/// daemon's atomic replace semantic means we have to round-trip the
+/// full body even for a name-only change.
+pub(crate) async fn dispatch_rename(
+    editor: &ProfileEditor,
+    daemon: &DaemonClient,
+    session: &Arc<RwLock<Option<SessionClient>>>,
+    kind: EditorKind,
+    uuid: Uuid,
+    new_name: &str,
+) -> anyhow::Result<()> {
+    match kind {
+        EditorKind::System => {
+            let mut body = {
+                let state = editor.lock();
+                snapshot_system_body(&state, uuid)
+            };
+            body.name = new_name.to_string();
+            daemon.update_system_profile(uuid, &body).await
+        }
+        EditorKind::User => {
+            let mut body = {
+                let state = editor.lock();
+                snapshot_user_body(&state, uuid)
+            };
+            body.name = new_name.to_string();
+            let session_ref = session.read().await;
+            let client = session_ref
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
+            client.update_user_profile(uuid, &body).await
+        }
+    }
+}
+
+/// Eager-fetch the body for a freshly minted profile and insert it
+/// into the cache, then push the selection through the Slint global.
+/// Order matters: the cache must contain the new body before the
+/// Slint selection lands so the resulting `Profiles.select(...)`
+/// call's lazy-prime branch sees a hit and skips the redundant
+/// fetch.
+pub(crate) async fn dispatch_select_after_create(
+    editor: ProfileEditor,
+    daemon: Arc<DaemonClient>,
+    session: Arc<RwLock<Option<SessionClient>>>,
+    app_weak: slint::Weak<AppWindow>,
+    kind: EditorKind,
+    uuid: Uuid,
+) {
+    // Eager fetch so the auto-select doesn't race the
+    // `*ProfileAdded` signal-handler's cache insert. The fetch
+    // result is mirrored straight into the editor cache; the
+    // subsequent `select` call still runs the lazy-prime branch
+    // (and finds the cache populated, so it skips the second
+    // fetch).
+    match kind {
+        EditorKind::System => {
+            if let Ok(body) = fetch_system_profile_body(&daemon, uuid).await {
+                editor.lock().system.bodies.insert(uuid, body);
+            }
+        }
+        EditorKind::User => {
+            let session_ref = session.read().await;
+            if let Some(client) = session_ref.as_ref()
+                && let Ok(body) = fetch_user_profile_body(client, uuid).await
+            {
+                editor.lock().user.bodies.insert(uuid, body);
+            }
+        }
+    }
+
+    // Push the selection. The detail-header materializes once
+    // `selected-row.uuid` becomes non-empty; the master list pushes
+    // a fully populated row through `push_profiles` shortly after
+    // the `*ProfileAdded` signal handler runs. Until then the
+    // header reads name = empty, but the field-editor below is
+    // populated correctly from the eager-fetched body.
+    let uuid_str = SharedString::from(uuid.to_string());
+    let app_weak_for_ui = app_weak.clone();
+    on_ui(&app_weak_for_ui, move |app| {
+        let profiles = app.global::<Profiles>();
+        profiles.set_selected_kind(match kind {
+            EditorKind::System => ProfileKind::System,
+            EditorKind::User => ProfileKind::User,
+        });
+        profiles.set_selected_uuid(uuid_str);
+    });
+    select(editor, daemon, session, app_weak, kind, uuid).await;
 }
 
 // =============================================================================
@@ -1367,5 +1825,329 @@ mod tests {
         };
         let (_rows, can_reset) = build_system_rows(&layers, uuid);
         assert!(!can_reset);
+    }
+
+    // -----------------------------------------------------------------
+    // Field-setter helpers
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn set_system_field_writes_every_session_action_wire() {
+        // One round-trip per `SessionAction`-typed wire — make sure
+        // each lands on the right body slot. Catches regression of
+        // the wire <-> field mapping.
+        let mut body = SystemProfileBody::default();
+        for wire in [
+            "on_startup",
+            "on_shutdown",
+            "on_reboot",
+            "on_no_session",
+            "on_sleep",
+            "on_wake",
+        ] {
+            set_system_field(
+                &mut body,
+                wire,
+                BodyPatch::SessionAction(SessionAction::PowerOn),
+            )
+            .expect("known wire");
+        }
+        assert_eq!(body.on_startup, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_shutdown, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_reboot, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_no_session, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_sleep, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_wake, Some(SessionAction::PowerOn));
+    }
+
+    #[test]
+    fn set_system_field_writes_automate_when() {
+        let mut body = SystemProfileBody::default();
+        set_system_field(
+            &mut body,
+            "automate_when",
+            BodyPatch::AutomateWhen(AutomateWhen::OnPrimary),
+        )
+        .expect("known wire");
+        assert_eq!(body.automate_when, Some(AutomateWhen::OnPrimary));
+    }
+
+    #[test]
+    fn set_system_field_clear_sets_none() {
+        let mut body = SystemProfileBody {
+            name: "n".into(),
+            on_startup: Some(SessionAction::PowerOn),
+            ..Default::default()
+        };
+        set_system_field(&mut body, "on_startup", BodyPatch::Clear).expect("known wire");
+        assert_eq!(body.on_startup, None);
+    }
+
+    #[test]
+    fn set_system_field_rejects_unknown_wire() {
+        let mut body = SystemProfileBody::default();
+        let err = set_system_field(
+            &mut body,
+            "bogus_field",
+            BodyPatch::SessionAction(SessionAction::None),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("bogus_field"));
+    }
+
+    #[test]
+    fn set_system_field_rejects_wrong_patch_kind() {
+        let mut body = SystemProfileBody::default();
+        // Number patch on a SessionAction wire.
+        let err = set_system_field(&mut body, "on_startup", BodyPatch::Number(42))
+            .expect_err("should reject Number");
+        assert!(err.to_string().contains("on_startup"));
+        // AutomateWhen patch on a SessionAction wire.
+        let err = set_system_field(
+            &mut body,
+            "on_startup",
+            BodyPatch::AutomateWhen(AutomateWhen::Always),
+        )
+        .expect_err("should reject AutomateWhen");
+        assert!(err.to_string().contains("on_startup"));
+        // SessionAction patch on the AutomateWhen wire.
+        let err = set_system_field(
+            &mut body,
+            "automate_when",
+            BodyPatch::SessionAction(SessionAction::None),
+        )
+        .expect_err("should reject SessionAction");
+        assert!(err.to_string().contains("automate_when"));
+    }
+
+    #[test]
+    fn set_user_field_writes_every_session_action_wire() {
+        let mut body = UserProfileBody::default();
+        for wire in [
+            "on_session_lock",
+            "on_session_unlock",
+            "on_greeter_wake",
+            "on_idle_timeout",
+            "on_idle_resume",
+        ] {
+            set_user_field(
+                &mut body,
+                wire,
+                BodyPatch::SessionAction(SessionAction::ScreenOff),
+            )
+            .expect("known wire");
+        }
+        assert_eq!(body.on_session_lock, Some(SessionAction::ScreenOff));
+        assert_eq!(body.on_session_unlock, Some(SessionAction::ScreenOff));
+        assert_eq!(body.on_greeter_wake, Some(SessionAction::ScreenOff));
+        assert_eq!(body.on_idle_timeout, Some(SessionAction::ScreenOff));
+        assert_eq!(body.on_idle_resume, Some(SessionAction::ScreenOff));
+    }
+
+    #[test]
+    fn set_user_field_writes_idle_timeout_number() {
+        let mut body = UserProfileBody::default();
+        set_user_field(&mut body, "idle_timeout_seconds", BodyPatch::Number(900))
+            .expect("known wire");
+        assert_eq!(body.idle_timeout_seconds, Some(900));
+    }
+
+    #[test]
+    fn set_user_field_idle_timeout_clear_sets_none() {
+        let mut body = UserProfileBody {
+            idle_timeout_seconds: Some(900),
+            ..Default::default()
+        };
+        set_user_field(&mut body, "idle_timeout_seconds", BodyPatch::Clear).expect("known wire");
+        assert_eq!(body.idle_timeout_seconds, None);
+    }
+
+    #[test]
+    fn set_user_field_rejects_unknown_wire() {
+        let mut body = UserProfileBody::default();
+        let err = set_user_field(&mut body, "bogus", BodyPatch::Clear).unwrap_err();
+        assert!(err.to_string().contains("bogus"));
+    }
+
+    #[test]
+    fn set_user_field_rejects_wrong_patch_kind() {
+        let mut body = UserProfileBody::default();
+        // Number patch on a SessionAction user wire.
+        let err = set_user_field(&mut body, "on_session_lock", BodyPatch::Number(0))
+            .expect_err("should reject");
+        assert!(err.to_string().contains("on_session_lock"));
+        // SessionAction patch on the numeric wire.
+        let err = set_user_field(
+            &mut body,
+            "idle_timeout_seconds",
+            BodyPatch::SessionAction(SessionAction::None),
+        )
+        .expect_err("should reject");
+        assert!(err.to_string().contains("idle_timeout_seconds"));
+    }
+
+    // -----------------------------------------------------------------
+    // Enum-token parsers
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parse_session_action_round_trips_every_variant() {
+        for action in [
+            SessionAction::None,
+            SessionAction::ScreenOff,
+            SessionAction::ScreenOn,
+            SessionAction::PowerOff,
+            SessionAction::PowerOn,
+        ] {
+            let token = session_action_token(action);
+            let parsed = parse_session_action(&token).expect("known token");
+            assert_eq!(parsed, action);
+        }
+    }
+
+    #[test]
+    fn parse_automate_when_round_trips_every_variant() {
+        for when in [
+            AutomateWhen::Always,
+            AutomateWhen::OnPrimary,
+            AutomateWhen::OffPrimary,
+        ] {
+            let token = automate_when_token(when);
+            let parsed = parse_automate_when(&token).expect("known token");
+            assert_eq!(parsed, when);
+        }
+    }
+
+    #[test]
+    fn parse_session_action_rejects_unknown_token() {
+        let err = parse_session_action("invalid_token").unwrap_err();
+        assert!(err.to_string().contains("invalid_token"));
+    }
+
+    #[test]
+    fn parse_automate_when_rejects_unknown_token() {
+        let err = parse_automate_when("invalid_token").unwrap_err();
+        assert!(err.to_string().contains("invalid_token"));
+    }
+
+    #[test]
+    fn parse_enum_token_routes_by_field_kind() {
+        // The `SessionAction` field-spec at `on_startup` carries the
+        // SESSION_ACTION_OPTIONS pointer; `automate_when` carries
+        // AUTOMATE_WHEN_OPTIONS. parse_enum_token must dispatch on
+        // the option-list pointer.
+        let on_startup = find_system("on_startup");
+        let automate_when = find_system("automate_when");
+
+        let patch = parse_enum_token(on_startup.kind, "power_on").expect("ok");
+        assert_eq!(patch, BodyPatch::SessionAction(SessionAction::PowerOn));
+
+        let patch = parse_enum_token(automate_when.kind, "always").expect("ok");
+        assert_eq!(patch, BodyPatch::AutomateWhen(AutomateWhen::Always));
+    }
+
+    // -----------------------------------------------------------------
+    // dispatch_reset_all body shape (synchronous portion only — the
+    // daemon round-trip isn't tested here)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn reset_all_body_preserves_name_and_clears_all_fields_system() {
+        // Mirrors `dispatch_reset_all`'s inner construction step.
+        let snapshot = SystemProfileBody {
+            name: "evening".into(),
+            on_startup: Some(SessionAction::ScreenOn),
+            on_shutdown: Some(SessionAction::PowerOff),
+            automate_when: Some(AutomateWhen::OnPrimary),
+            ..Default::default()
+        };
+        let body = SystemProfileBody {
+            name: snapshot.name.clone(),
+            ..Default::default()
+        };
+        assert_eq!(body.name, "evening");
+        assert_eq!(body.on_startup, None);
+        assert_eq!(body.on_shutdown, None);
+        assert_eq!(body.on_reboot, None);
+        assert_eq!(body.on_no_session, None);
+        assert_eq!(body.on_sleep, None);
+        assert_eq!(body.on_wake, None);
+        assert_eq!(body.automate_when, None);
+    }
+
+    #[test]
+    fn reset_all_body_preserves_name_and_clears_all_fields_user() {
+        let snapshot = UserProfileBody {
+            name: "movies".into(),
+            on_session_lock: Some(SessionAction::ScreenOff),
+            idle_timeout_seconds: Some(600),
+            ..Default::default()
+        };
+        let body = UserProfileBody {
+            name: snapshot.name.clone(),
+            ..Default::default()
+        };
+        assert_eq!(body.name, "movies");
+        assert_eq!(body.on_session_lock, None);
+        assert_eq!(body.on_session_unlock, None);
+        assert_eq!(body.on_greeter_wake, None);
+        assert_eq!(body.on_idle_timeout, None);
+        assert_eq!(body.on_idle_resume, None);
+        assert_eq!(body.idle_timeout_seconds, None);
+    }
+
+    // -----------------------------------------------------------------
+    // snapshot_*_body cache lookup
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn snapshot_system_body_falls_back_to_default_for_reserved_uuid() {
+        let mut state = ProfileEditorState::default();
+        state.system.default_body = SystemProfileBody {
+            name: "default".into(),
+            on_startup: Some(SessionAction::PowerOn),
+            ..Default::default()
+        };
+        let snap = snapshot_system_body(&state, DEFAULT_SYSTEM_PROFILE_UUID);
+        assert_eq!(snap.name, "default");
+        assert_eq!(snap.on_startup, Some(SessionAction::PowerOn));
+    }
+
+    #[test]
+    fn snapshot_system_body_returns_per_uuid_entry_when_cached() {
+        let mut state = ProfileEditorState::default();
+        let uuid = Uuid::new_v4();
+        state.system.bodies.insert(
+            uuid,
+            SystemProfileBody {
+                name: "evening".into(),
+                on_startup: Some(SessionAction::ScreenOff),
+                ..Default::default()
+            },
+        );
+        let snap = snapshot_system_body(&state, uuid);
+        assert_eq!(snap.name, "evening");
+        assert_eq!(snap.on_startup, Some(SessionAction::ScreenOff));
+    }
+
+    #[test]
+    fn snapshot_system_body_returns_empty_for_uncached_non_default_uuid() {
+        let state = ProfileEditorState::default();
+        let snap = snapshot_system_body(&state, Uuid::new_v4());
+        assert_eq!(snap.name, "");
+        assert_eq!(snap.on_startup, None);
+    }
+
+    #[test]
+    fn snapshot_user_body_falls_back_to_default_for_reserved_uuid() {
+        let mut state = ProfileEditorState::default();
+        state.user.default_body = UserProfileBody {
+            name: "default".into(),
+            idle_timeout_seconds: Some(300),
+            ..Default::default()
+        };
+        let snap = snapshot_user_body(&state, DEFAULT_USER_PROFILE_UUID);
+        assert_eq!(snap.name, "default");
+        assert_eq!(snap.idle_timeout_seconds, Some(300));
     }
 }
