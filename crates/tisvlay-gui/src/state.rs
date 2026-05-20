@@ -44,7 +44,15 @@ pub struct TvViewRaw {
     pub current_input: SharedString,
     pub available_input_ids: Vec<SharedString>,
     pub system_profile: SharedString,
+    /// Immutable UUID of the TV's assigned system profile. Mirrors
+    /// the display name above for ComboBox rendering, but feeds the
+    /// PROFILES-row pencil's navigation handoff to the Profiles
+    /// pane. Empty assignments collapse to `DEFAULT_SYSTEM_PROFILE_UUID`
+    /// here so the Slint click handler never has to fall back from
+    /// `""`.
+    pub system_profile_uuid: SharedString,
     pub user_profile: SharedString,
+    pub user_profile_uuid: SharedString,
     pub primary_input: SharedString,
     pub managed: bool,
     pub automated: bool,
@@ -198,6 +206,21 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             .cloned()
             .unwrap_or_default();
 
+        // Pre-resolved UUIDs for the PROFILES-row pencil. Empty
+        // source (no assignment) collapses to the reserved-default
+        // UUID so the Slint click handler can route unconditionally
+        // without a `== "" ? default` fallback.
+        let system_profile_uuid = if tv.system_profile.is_empty() {
+            DEFAULT_SYSTEM_PROFILE_UUID.hyphenated().to_string()
+        } else {
+            tv.system_profile.clone()
+        };
+        let user_profile_uuid = if user_profile.is_empty() {
+            DEFAULT_USER_PROFILE_UUID.hyphenated().to_string()
+        } else {
+            user_profile.clone()
+        };
+
         let available_input_ids: Vec<SharedString> = tv
             .inputs
             .iter()
@@ -239,10 +262,12 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
                 &tv.system_profile,
                 &system_profile_bodies,
             )),
+            system_profile_uuid: SharedString::from(system_profile_uuid),
             user_profile: SharedString::from(resolve_profile_name(
                 &user_profile,
                 &user_profile_bodies,
             )),
+            user_profile_uuid: SharedString::from(user_profile_uuid),
             primary_input: SharedString::from(tv.primary_input.as_str()),
             managed: tv.managed,
             automated: tv.automated,
@@ -666,6 +691,8 @@ mod tests {
         // `Tv1.SystemProfile` carries the UUID; the TVs-pane combobox
         // renders `current-value` verbatim against the names model, so
         // `convert_snapshot` must do the UUID -> name translation.
+        // The mirror `system_profile_uuid` field carries the immutable
+        // UUID for the navigation pencil.
         let other_uuid = Uuid::new_v4();
         let mut tv_a = sample_tv("00000000-0000-0000-0000-00000000000a", "TV-A");
         tv_a.system_profile = DEFAULT_SYSTEM_PROFILE_UUID.to_string();
@@ -683,10 +710,49 @@ mod tests {
         let by_uuid: HashMap<_, _> = snap
             .tvs
             .iter()
-            .map(|t| (t.uuid.to_string(), t.system_profile.to_string()))
+            .map(|t| {
+                (
+                    t.uuid.to_string(),
+                    (
+                        t.system_profile.to_string(),
+                        t.system_profile_uuid.to_string(),
+                    ),
+                )
+            })
             .collect();
-        assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000a"], "default");
-        assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000b"], "evening");
+        assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000a"].0, "default");
+        assert_eq!(
+            by_uuid["00000000-0000-0000-0000-00000000000a"].1,
+            DEFAULT_SYSTEM_PROFILE_UUID.hyphenated().to_string()
+        );
+        assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000b"].0, "evening");
+        assert_eq!(
+            by_uuid["00000000-0000-0000-0000-00000000000b"].1,
+            other_uuid.hyphenated().to_string()
+        );
+    }
+
+    #[test]
+    fn tv_with_empty_profile_assignment_collapses_to_default_uuid() {
+        // A TV with no `Tv1.SystemProfile` set surfaces an empty
+        // string on the wire. The navigation pencil needs a real UUID
+        // to route on, so `system_profile_uuid` collapses to the
+        // reserved-default UUID rather than `""`.
+        let tv = sample_tv("00000000-0000-0000-0000-00000000000a", "TV-A");
+        // Leave tv.system_profile as default (empty String from sample_tv).
+        let inputs = SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        assert_eq!(
+            snap.tvs[0].system_profile_uuid.as_str(),
+            DEFAULT_SYSTEM_PROFILE_UUID.hyphenated().to_string()
+        );
+        assert_eq!(
+            snap.tvs[0].user_profile_uuid.as_str(),
+            DEFAULT_USER_PROFILE_UUID.hyphenated().to_string()
+        );
     }
 
     #[test]
