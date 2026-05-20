@@ -64,7 +64,16 @@ use uuid::Uuid;
 // =============================================================================
 
 /// Actions the session service or daemon can take in response to events.
+//
+// SAFETY: the `signature = "s"` attribute is a hand-declared wire-format
+// promise that this enum stays unit-variant-only. Adding a struct variant
+// would silently diverge the declared signature from what serde emits
+// (string per-variant via `rename_all = "snake_case"`), with no compile
+// error — so the type stays append-only-of-unit-variants. Same goes for
+// `AutomateWhen` below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "dbus", derive(zbus::zvariant::Type))]
+#[cfg_attr(feature = "dbus", zvariant(signature = "s"))]
 #[serde(rename_all = "snake_case")]
 pub enum SessionAction {
     /// Do nothing.
@@ -88,7 +97,12 @@ pub enum SessionAction {
 ///
 /// Combined with the per-TV `primary_input` and the global `managed` flag
 /// to produce the `Automated` D-Bus property.
+///
+/// See the SAFETY note on `SessionAction` — the `signature = "s"` attribute
+/// keeps this enum unit-variant-only as a wire-format invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "dbus", derive(zbus::zvariant::Type))]
+#[cfg_attr(feature = "dbus", zvariant(signature = "s"))]
 #[serde(rename_all = "snake_case")]
 pub enum AutomateWhen {
     /// Always apply automation regardless of current input.
@@ -386,6 +400,161 @@ impl Default for ResolvedUserProfile {
             idle_timeout_seconds: 0,
             on_idle_timeout: SessionAction::ScreenOff,
             on_idle_resume: SessionAction::ScreenOn,
+        }
+    }
+}
+
+// =============================================================================
+// Reserved-default profile identities
+// =============================================================================
+
+/// Reserved UUID for the system-side `default` profile.
+///
+/// Wire-stable identity for the inheritance ancestor every other system
+/// profile falls back to. The displayed label is the literal `"default"`
+/// at the daemon boundary; clients are free to render it through
+/// `gettext("default")` for localized display without the daemon ever
+/// seeing the localized string.
+pub const DEFAULT_SYSTEM_PROFILE_UUID: Uuid =
+    Uuid::from_u128(0x00000000_0000_0000_0000_000000005159);
+
+/// Reserved UUID for the user-side `default` profile. Mirror of
+/// [`DEFAULT_SYSTEM_PROFILE_UUID`] on the user-config side.
+pub const DEFAULT_USER_PROFILE_UUID: Uuid = Uuid::from_u128(0x00000000_0000_0000_0000_00000000515A);
+
+// =============================================================================
+// SystemProfileBody — wire body for the D-Bus property-bag CRUD surface
+// =============================================================================
+
+/// Wire-format body for a system profile, exchanged across `Manager1`'s
+/// CRUD methods as an `a{sv}` dict.
+///
+/// `name` is the mutable display label (always present on the wire);
+/// every other field is `Option<T>` so an absent key signals
+/// "inherits from the chain below" — exactly the present-vs-absent
+/// semantic clients need without a separate `LocallySetFields`
+/// companion property. `deny_unknown_fields` rejects mis-spelled keys
+/// at the dict-derive boundary instead of silently absorbing them
+/// as `None`.
+///
+/// Lossless round-trip with [`SystemProfileConfig`] via the `From`
+/// impls below — the on-disk shape (TOML) keeps the same
+/// inheritable-`Option<T>` layout; only `name` lives here as a body
+/// field rather than the TOML section key.
+#[cfg(feature = "dbus")]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    zbus::zvariant::Type,
+    zbus::zvariant::SerializeDict,
+    zbus::zvariant::DeserializeDict,
+)]
+#[zvariant(signature = "a{sv}", deny_unknown_fields)]
+pub struct SystemProfileBody {
+    /// Mutable display label. Always present on the wire (the dict-derive
+    /// emits it unconditionally). Renames are body updates with a new
+    /// `name`; UUID identity stays stable.
+    pub name: String,
+    pub on_startup: Option<SessionAction>,
+    pub on_shutdown: Option<SessionAction>,
+    pub on_reboot: Option<SessionAction>,
+    pub on_no_session: Option<SessionAction>,
+    pub on_sleep: Option<SessionAction>,
+    pub on_wake: Option<SessionAction>,
+    pub automate_when: Option<AutomateWhen>,
+}
+
+#[cfg(feature = "dbus")]
+impl SystemProfileBody {
+    /// Construct a body from a `SystemProfileConfig` plus its display name.
+    /// Name lives on the wire body, not on the on-disk config struct, so
+    /// the caller supplies it from the catalog's lookup key.
+    pub fn from_config(name: impl Into<String>, config: &SystemProfileConfig) -> Self {
+        Self {
+            name: name.into(),
+            on_startup: config.on_startup,
+            on_shutdown: config.on_shutdown,
+            on_reboot: config.on_reboot,
+            on_no_session: config.on_no_session,
+            on_sleep: config.on_sleep,
+            on_wake: config.on_wake,
+            automate_when: config.automate_when,
+        }
+    }
+}
+
+#[cfg(feature = "dbus")]
+impl From<&SystemProfileBody> for SystemProfileConfig {
+    /// Discards `name` — that lives outside the persisted config struct
+    /// (it's the catalog's lookup-key role today, and a separately tracked
+    /// display label once catalogs become UUID-keyed).
+    fn from(body: &SystemProfileBody) -> Self {
+        SystemProfileConfig {
+            on_startup: body.on_startup,
+            on_shutdown: body.on_shutdown,
+            on_reboot: body.on_reboot,
+            on_no_session: body.on_no_session,
+            on_sleep: body.on_sleep,
+            on_wake: body.on_wake,
+            automate_when: body.automate_when,
+        }
+    }
+}
+
+// =============================================================================
+// UserProfileBody — mirror of SystemProfileBody on the session bus
+// =============================================================================
+
+/// Wire-format body for a user profile. Shape mirrors [`SystemProfileBody`]
+/// — `name` always present, every other field `Option<T>` for the
+/// inherit-from-chain semantic. `idle_timeout_seconds` is the only numeric
+/// field on either body; the rest are enum-typed `SessionAction`s.
+#[cfg(feature = "dbus")]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    zbus::zvariant::Type,
+    zbus::zvariant::SerializeDict,
+    zbus::zvariant::DeserializeDict,
+)]
+#[zvariant(signature = "a{sv}", deny_unknown_fields)]
+pub struct UserProfileBody {
+    pub name: String,
+    pub on_session_lock: Option<SessionAction>,
+    pub on_session_unlock: Option<SessionAction>,
+    pub on_greeter_wake: Option<SessionAction>,
+    pub on_idle_timeout: Option<SessionAction>,
+    pub on_idle_resume: Option<SessionAction>,
+    pub idle_timeout_seconds: Option<u64>,
+}
+
+#[cfg(feature = "dbus")]
+impl UserProfileBody {
+    pub fn from_config(name: impl Into<String>, config: &UserProfileConfig) -> Self {
+        Self {
+            name: name.into(),
+            on_session_lock: config.on_session_lock,
+            on_session_unlock: config.on_session_unlock,
+            on_greeter_wake: config.on_greeter_wake,
+            on_idle_timeout: config.on_idle_timeout,
+            on_idle_resume: config.on_idle_resume,
+            idle_timeout_seconds: config.idle_timeout_seconds,
+        }
+    }
+}
+
+#[cfg(feature = "dbus")]
+impl From<&UserProfileBody> for UserProfileConfig {
+    fn from(body: &UserProfileBody) -> Self {
+        UserProfileConfig {
+            on_session_lock: body.on_session_lock,
+            on_session_unlock: body.on_session_unlock,
+            on_greeter_wake: body.on_greeter_wake,
+            on_idle_timeout: body.on_idle_timeout,
+            on_idle_resume: body.on_idle_resume,
+            idle_timeout_seconds: body.idle_timeout_seconds,
         }
     }
 }
@@ -2054,5 +2223,123 @@ ip = "192.168.1.1"
         config.tv.push(TvConfig::new("Living Room", "lg", true));
         config.tv.push(TvConfig::new("Office", "lg", true));
         config.validate_tv_ids().unwrap();
+    }
+
+    // =========================================================================
+    // SystemProfileBody / UserProfileBody dict-derive round-trip
+    // =========================================================================
+    //
+    // The wire shape rides on `Option<T>::None` ⇔ absent-key + `name`
+    // always-present. These tests pin both halves so a future zvariant or
+    // zbus bump that changes the dict-derive's skip-if-None or
+    // mandatory-field semantics fails loudly here instead of silently
+    // breaking the inherit-vs-locally-set distinction the GUI relies on.
+
+    use zbus::zvariant::{self, LE, serialized::Context, to_bytes};
+
+    fn round_trip<T>(value: &T) -> T
+    where
+        T: zvariant::Type + serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug,
+    {
+        let ctx = Context::new_dbus(LE, 0);
+        let encoded = to_bytes(ctx, value).expect("encode");
+        let (decoded, _): (T, usize) = encoded.deserialize().expect("decode");
+        decoded
+    }
+
+    #[test]
+    fn system_profile_body_round_trip_full() {
+        let body = SystemProfileBody {
+            name: "office".into(),
+            on_startup: Some(SessionAction::PowerOn),
+            on_shutdown: Some(SessionAction::PowerOff),
+            on_reboot: Some(SessionAction::None),
+            on_no_session: Some(SessionAction::None),
+            on_sleep: Some(SessionAction::PowerOff),
+            on_wake: Some(SessionAction::PowerOn),
+            automate_when: Some(AutomateWhen::Always),
+        };
+
+        let decoded = round_trip(&body);
+
+        assert_eq!(decoded.name, body.name);
+        assert_eq!(decoded.on_startup, body.on_startup);
+        assert_eq!(decoded.automate_when, body.automate_when);
+    }
+
+    #[test]
+    fn system_profile_body_round_trip_minimal_omits_none() {
+        // Body with only `name` set; every optional field is None.
+        // The dict-derive must serialize *only* the `name` key on the wire,
+        // and the round-trip must come back with the same None fields.
+        let body = SystemProfileBody {
+            name: "guest".into(),
+            ..Default::default()
+        };
+
+        let decoded = round_trip(&body);
+
+        assert_eq!(decoded.name, "guest");
+        assert!(decoded.on_startup.is_none());
+        assert!(decoded.on_shutdown.is_none());
+        assert!(decoded.automate_when.is_none());
+    }
+
+    #[test]
+    fn user_profile_body_round_trip_with_numeric() {
+        let body = UserProfileBody {
+            name: "default".into(),
+            on_session_lock: Some(SessionAction::ScreenOff),
+            on_session_unlock: Some(SessionAction::ScreenOn),
+            on_greeter_wake: None,
+            on_idle_timeout: Some(SessionAction::ScreenOff),
+            on_idle_resume: Some(SessionAction::ScreenOn),
+            idle_timeout_seconds: Some(600),
+        };
+
+        let decoded = round_trip(&body);
+
+        assert_eq!(decoded.idle_timeout_seconds, Some(600));
+        assert!(decoded.on_greeter_wake.is_none());
+        assert_eq!(decoded.on_idle_timeout, Some(SessionAction::ScreenOff));
+    }
+
+    #[test]
+    fn system_profile_body_from_config_preserves_options() {
+        let cfg = SystemProfileConfig {
+            on_startup: Some(SessionAction::PowerOn),
+            on_shutdown: None,
+            on_reboot: Some(SessionAction::None),
+            on_no_session: None,
+            on_sleep: Some(SessionAction::PowerOff),
+            on_wake: None,
+            automate_when: Some(AutomateWhen::OnPrimary),
+        };
+        let body = SystemProfileBody::from_config("office", &cfg);
+        assert_eq!(body.name, "office");
+        assert_eq!(body.on_startup, cfg.on_startup);
+        assert_eq!(body.on_shutdown, cfg.on_shutdown);
+        assert_eq!(body.automate_when, cfg.automate_when);
+
+        // Reverse: name is intentionally discarded; everything else round-trips.
+        let back: SystemProfileConfig = (&body).into();
+        assert_eq!(back.on_startup, cfg.on_startup);
+        assert_eq!(back.on_shutdown, cfg.on_shutdown);
+        assert_eq!(back.automate_when, cfg.automate_when);
+    }
+
+    #[test]
+    fn system_profile_body_dict_signature_is_a_sv() {
+        // Pin the wire signature so a future struct-variant addition to
+        // `SessionAction` (which would silently change the variant signature
+        // from "s" to "us" or similar) is caught at test time.
+        assert_eq!(
+            <SystemProfileBody as zvariant::Type>::SIGNATURE.to_string(),
+            "a{sv}"
+        );
+        assert_eq!(
+            <UserProfileBody as zvariant::Type>::SIGNATURE.to_string(),
+            "a{sv}"
+        );
     }
 }

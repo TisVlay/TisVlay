@@ -90,10 +90,13 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 
 // Configuration
 pub use config::{
-    AutomateWhen, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
-    SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
-    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
+    AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, ResolvedSystemProfile,
+    ResolvedUserProfile, SessionAction, SystemConfig, SystemProfileConfig, SystemSection, TvConfig,
+    TvProfileAssignment, UserConfig, UserProfileConfig, UserSection, UserTvConfig,
+    UserTvProfileAssignment, absolutize,
 };
+#[cfg(feature = "dbus")]
+pub use config::{SystemProfileBody, UserProfileBody};
 
 // State
 pub use state::{DiscoveredTv, InputInfo, PowerCyclePhase, PowerState, TvState};
