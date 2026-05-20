@@ -161,7 +161,7 @@ impl std::fmt::Display for AutomateWhen {
 ///
 /// Use [`SystemProfileConfig::resolve()`] or [`SystemProfileConfig::merge_with_base()`]
 /// to produce a [`ResolvedSystemProfile`] with concrete values.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemProfileConfig {
     /// Friendly name shown in the GUI / CLI. Enforced unique across
     /// the system catalog. Profile identity itself is the
@@ -307,7 +307,7 @@ impl Default for ResolvedSystemProfile {
 ///
 /// Use [`UserProfileConfig::resolve()`] or [`UserProfileConfig::merge_with_base()`]
 /// to produce a [`ResolvedUserProfile`] with concrete values.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserProfileConfig {
     /// Friendly name shown in the GUI / CLI. Enforced unique across
     /// the user catalog. Profile identity itself is the containing-map's

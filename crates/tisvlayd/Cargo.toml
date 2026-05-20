@@ -66,6 +66,10 @@ tisvlay-test = { workspace = true }
 # `mock` feature on tisvlay-backends is what TestDaemon needs to wire up
 # the in-memory backend; enabled here for integration tests only.
 tisvlay-backends = { workspace = true, features = ["mock"] }
+# Unit tests need temp config files to exercise `reload_config`'s
+# disk-load path; integration tests pull this in transitively via
+# tisvlay-harness, but the in-lib tests are a direct consumer.
+tempfile = { workspace = true }
 
 
 # =============================================================================

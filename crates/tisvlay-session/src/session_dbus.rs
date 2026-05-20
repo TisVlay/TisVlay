@@ -445,7 +445,18 @@ impl SessionService {
     /// Reload user configuration from disk.
     ///
     /// Also re-queries the daemon for the TV list and system default profile.
-    async fn reload_config(&self) -> Result<(), SessionError> {
+    ///
+    /// Emits per-profile `UserProfileAdded` / `UserProfileBodyChanged` /
+    /// `UserProfileRemoved` signals for any catalog entries that
+    /// appeared, mutated, or disappeared during the reload, so a direct
+    /// user-config-file edit is observationally identical to an
+    /// external mutation call. Without these, clients with cached
+    /// profile bodies stay stale until they happen to call a `Get*`
+    /// method. Failures are best-effort.
+    async fn reload_config(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), SessionError> {
         info!("D-Bus: ReloadConfig");
 
         let new_state = SessionState::load(&self.daemon, self.config_path.as_ref())
@@ -454,10 +465,55 @@ impl SessionService {
                 SessionError::OperationFailed(format!("Failed to reload config: {}", e))
             })?;
 
-        let mut s = self.state.write().await;
-        *s = new_state;
+        // Snapshot the old user-profile catalog under the write lock,
+        // swap, then diff against the new catalog. UUID ordering
+        // follows the BTreeMap (sorted) so the signal sequence is
+        // deterministic across reloads.
+        let (added, changed, removed) = {
+            let mut s = self.state.write().await;
+            let old_profiles = std::mem::take(&mut s.user_config.user.profiles);
+            *s = new_state;
+            let new_profiles = &s.user_config.user.profiles;
 
-        info!(tvs = s.tv_ids.len(), "Configuration reloaded via D-Bus");
+            let mut added = Vec::new();
+            let mut changed = Vec::new();
+            let mut removed = Vec::new();
+            for (uuid, new_body) in new_profiles {
+                match old_profiles.get(uuid) {
+                    Some(old_body) if old_body == new_body => { /* unchanged */ }
+                    Some(_) => changed.push(uuid.to_string()),
+                    None => added.push(uuid.to_string()),
+                }
+            }
+            for uuid in old_profiles.keys() {
+                if !new_profiles.contains_key(uuid) {
+                    removed.push(uuid.to_string());
+                }
+            }
+            info!(tvs = s.tv_ids.len(), "Configuration reloaded via D-Bus");
+            (added, changed, removed)
+        };
+
+        for uuid in &added {
+            if let Err(e) = Self::user_profile_added(&emitter, uuid).await {
+                warn!(uuid = %uuid, error = %e, "ReloadConfig: failed to emit UserProfileAdded");
+            }
+        }
+        for uuid in &changed {
+            if let Err(e) = Self::user_profile_body_changed(&emitter, uuid).await {
+                warn!(
+                    uuid = %uuid,
+                    error = %e,
+                    "ReloadConfig: failed to emit UserProfileBodyChanged"
+                );
+            }
+        }
+        for uuid in &removed {
+            if let Err(e) = Self::user_profile_removed(&emitter, uuid).await {
+                warn!(uuid = %uuid, error = %e, "ReloadConfig: failed to emit UserProfileRemoved");
+            }
+        }
+
         Ok(())
     }
 }

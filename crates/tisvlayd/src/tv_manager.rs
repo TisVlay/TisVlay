@@ -235,10 +235,24 @@ pub struct TvInfo {
 /// state. The `Manager1.AddTv` and `Tv1.Remove` flows already keep
 /// path lifecycle and manager state symmetric; reload was the only
 /// mutation site that diverged.
+///
+/// The `system_profiles_*` lists carry the per-profile catalog diff
+/// for the system bus side. `Manager1` emits `SystemProfileAdded` /
+/// `SystemProfileChanged` / `SystemProfileRemoved` signals against
+/// these UUIDs after a successful reload so clients with cached
+/// profile bodies know to re-fetch. UUIDs are stringified hyphenated
+/// to match the wire shape of the corresponding signals.
+///
+/// The session daemon owns the user-profile catalog diff for the
+/// user-config layer and emits its own signals — see
+/// `tisvlay-session::session_dbus::reload_config`.
 #[derive(Debug, Clone, Default)]
 pub struct ReloadDiff {
     pub added: Vec<String>,
     pub removed: Vec<String>,
+    pub system_profiles_added: Vec<String>,
+    pub system_profiles_removed: Vec<String>,
+    pub system_profiles_changed: Vec<String>,
 }
 
 /// Managed TV connection state.
@@ -3758,13 +3772,42 @@ impl TvManager {
 
         info!(tv_count = tv_count, "Configuration reloaded");
 
-        // Update system section (system profiles)
+        // Update system section (system profiles).
+        //
+        // Snapshot the old catalog under the write lock, compute the
+        // three-set diff against `new_config.system.profiles`, then
+        // swap. The diff lists are surfaced via `ReloadDiff` so the
+        // dbus layer can emit per-profile signals (Added / Changed /
+        // Removed) that match the wire contract of the equivalent
+        // external mutation calls. Without this clients with cached
+        // profile bodies stay stale until they hit a `Get*` call.
         {
             let mut system = self.system_section.write().await;
+            let old_profiles = std::mem::take(&mut system.profiles);
+            let new_profiles = &new_config.system.profiles;
+
+            for (uuid, new_body) in new_profiles {
+                let uuid_str = uuid.to_string();
+                match old_profiles.get(uuid) {
+                    Some(old_body) if old_body == new_body => { /* unchanged */ }
+                    Some(_) => diff.system_profiles_changed.push(uuid_str),
+                    None => diff.system_profiles_added.push(uuid_str),
+                }
+            }
+            for uuid in old_profiles.keys() {
+                if !new_profiles.contains_key(uuid) {
+                    diff.system_profiles_removed.push(uuid.to_string());
+                }
+            }
+
             *system = new_config.system;
         }
 
-        // Update user section (user profiles)
+        // Update user section (user profiles). The system daemon's
+        // user_section is the admin baseline; the live user-config
+        // catalog (and its per-profile signals) is owned by the
+        // session daemon, which runs its own diff in
+        // `Session1.ReloadConfig`. No signals fire from here.
         {
             let mut user = self.user_section.write().await;
             *user = new_config.user;
@@ -3908,5 +3951,148 @@ mod tests {
         run_subscription_task("ghost_tv".to_string(), tvs, tx, state_rx).await;
 
         assert!(rx.try_recv().is_err());
+    }
+
+    /// `reload_config` snapshots the system-profile catalog before
+    /// swapping in the new section and surfaces a three-way diff on
+    /// the returned `ReloadDiff` so the dbus layer can fan out
+    /// per-profile signals (Added / Changed / Removed) matching the
+    /// equivalent external mutation calls.
+    #[tokio::test]
+    async fn reload_config_emits_system_profile_catalog_diff() {
+        use crate::registry::BackendRegistry;
+        use std::collections::BTreeMap;
+        use tisvlay_core::AutomateWhen;
+        use tisvlay_core::SystemSection;
+        use uuid::Uuid;
+
+        // Build an initial config with two profiles besides the
+        // reserved default: one we'll keep unchanged, one we'll mutate.
+        let unchanged = Uuid::new_v4();
+        let mutated = Uuid::new_v4();
+        let removed = Uuid::new_v4();
+
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            SystemProfileConfig::full_default(),
+        );
+        profiles.insert(
+            unchanged,
+            SystemProfileConfig {
+                name: "unchanged".to_string(),
+                automate_when: Some(AutomateWhen::Always),
+                ..Default::default()
+            },
+        );
+        profiles.insert(
+            mutated,
+            SystemProfileConfig {
+                name: "mutated".to_string(),
+                automate_when: Some(AutomateWhen::Always),
+                ..Default::default()
+            },
+        );
+        profiles.insert(
+            removed,
+            SystemProfileConfig {
+                name: "to_remove".to_string(),
+                ..Default::default()
+            },
+        );
+        let mut config = SystemConfig {
+            system: SystemSection { profiles },
+            ..Default::default()
+        };
+        // `SystemConfig::load_from` normalizes the reserved-default
+        // profile body (forces `name = "default"`). Apply the same
+        // normalization to the seed config so the in-memory view
+        // and the disk-load view start byte-identical — otherwise
+        // the reserved default would spuriously surface as
+        // `system_profiles_changed` on the first reload.
+        config.system.ensure_default();
+        config.user.ensure_default();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        config.save_to(&config_path).expect("save initial config");
+
+        let registry = Arc::new(BackendRegistry::new());
+        let (manager, _state_rx) = TvManager::new(config, config_path.clone(), registry);
+
+        // Now mutate the config on disk: change `mutated`'s
+        // `automate_when`, drop `removed`, insert a brand-new entry.
+        let added_uuid = Uuid::new_v4();
+        let mut new_profiles = BTreeMap::new();
+        new_profiles.insert(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            SystemProfileConfig::full_default(),
+        );
+        new_profiles.insert(
+            unchanged,
+            SystemProfileConfig {
+                name: "unchanged".to_string(),
+                automate_when: Some(AutomateWhen::Always),
+                ..Default::default()
+            },
+        );
+        new_profiles.insert(
+            mutated,
+            SystemProfileConfig {
+                name: "mutated".to_string(),
+                // Field flip: signal callers should observe this UUID
+                // in `system_profiles_changed`.
+                automate_when: Some(AutomateWhen::OnPrimary),
+                ..Default::default()
+            },
+        );
+        new_profiles.insert(
+            added_uuid,
+            SystemProfileConfig {
+                name: "fresh".to_string(),
+                ..Default::default()
+            },
+        );
+        let new_config = SystemConfig {
+            system: SystemSection {
+                profiles: new_profiles,
+            },
+            ..Default::default()
+        };
+        new_config
+            .save_to(&config_path)
+            .expect("save mutated config");
+
+        let diff = manager.reload_config().await.expect("reload");
+
+        assert_eq!(
+            diff.system_profiles_added,
+            vec![added_uuid.to_string()],
+            "fresh profile must surface as Added",
+        );
+        assert_eq!(
+            diff.system_profiles_changed,
+            vec![mutated.to_string()],
+            "mutated body must surface as Changed",
+        );
+        assert_eq!(
+            diff.system_profiles_removed,
+            vec![removed.to_string()],
+            "removed profile must surface as Removed",
+        );
+        // `unchanged` and the reserved default both must be absent
+        // from every diff list — equal bodies are no-ops.
+        assert!(
+            !diff
+                .system_profiles_changed
+                .contains(&unchanged.to_string()),
+            "unchanged profile must not surface in Changed",
+        );
+        assert!(
+            !diff
+                .system_profiles_changed
+                .contains(&DEFAULT_SYSTEM_PROFILE_UUID.to_string()),
+            "reserved-default profile must not surface in Changed when body is byte-identical",
+        );
     }
 }

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tisvlay_core::BusKind;
 use tracing::warn;
+use zbus::object_server::SignalEmitter;
 
 use crate::dbus::{
     DBUS_NAME, MANAGER_PATH, ManagerService, OBJECT_MANAGER_PATH, register_tv_interfaces, tv_path,
@@ -126,6 +127,39 @@ pub async fn apply_reload_diff(
         .await
         {
             warn!(tv_id = %tv_id, error = %e, "ReloadConfig: failed to register TV interfaces");
+        }
+    }
+
+    // Per-profile catalog signals: emit the same Added / Changed /
+    // Removed signals that `CreateSystemProfile` / `UpdateSystemProfile`
+    // / `DeleteSystemProfile` would have fired, so a direct config-file
+    // edit is observationally identical to an external mutation call.
+    // Without these, clients with cached profile bodies stay stale
+    // until they happen to call a `Get*` method.
+    //
+    // Failures are best-effort: a broken connection mid-reload has no
+    // meaningful recovery path here, and we already logged any per-TV
+    // register/unregister failures above.
+    let emitter = match SignalEmitter::new(connection, MANAGER_PATH) {
+        Ok(emitter) => emitter,
+        Err(e) => {
+            warn!(error = %e, "ReloadConfig: failed to build SignalEmitter for Manager1");
+            return;
+        }
+    };
+    for uuid in &diff.system_profiles_added {
+        if let Err(e) = ManagerService::system_profile_added(&emitter, uuid).await {
+            warn!(uuid = %uuid, error = %e, "ReloadConfig: failed to emit SystemProfileAdded");
+        }
+    }
+    for uuid in &diff.system_profiles_changed {
+        if let Err(e) = ManagerService::system_profile_changed(&emitter, uuid).await {
+            warn!(uuid = %uuid, error = %e, "ReloadConfig: failed to emit SystemProfileChanged");
+        }
+    }
+    for uuid in &diff.system_profiles_removed {
+        if let Err(e) = ManagerService::system_profile_removed(&emitter, uuid).await {
+            warn!(uuid = %uuid, error = %e, "ReloadConfig: failed to emit SystemProfileRemoved");
         }
     }
 }
