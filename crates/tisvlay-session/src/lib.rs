@@ -145,7 +145,7 @@ impl SessionState {
             let resolved = user_config.resolve_user_profile(tv_id, &admin_user_default);
             debug!(
                 tv_id = %tv_id,
-                profile = user_config.get_tv_user_profile_name(tv_id),
+                profile = %user_config.get_tv_user_profile(tv_id),
                 idle_timeout = resolved.idle_timeout_seconds,
                 "Resolved user profile"
             );

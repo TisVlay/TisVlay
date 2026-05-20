@@ -19,6 +19,7 @@ use std::time::Duration;
 use tisvlay_core::{UserConfig, UserProfileConfig, UserTvConfig, UserTvProfileAssignment};
 use tisvlay_harness::daemon::test_tv_uuid;
 use tisvlay_harness::session::TestSession;
+use uuid::Uuid;
 
 /// Yield to the executor + brief real-time settle so the daemon can
 /// emit `InterfacesRemoved`, the session's signal stream can drain,
@@ -40,15 +41,17 @@ async fn removing_tv_prunes_orphan_user_config_entry() {
     let tv_uuid = test_tv_uuid("orphan_prune").to_string();
 
     let mut user_config = UserConfig::default();
-    user_config
-        .user
-        .profiles
-        .insert("gaming".to_string(), UserProfileConfig::full_default());
+    let gaming_uuid = Uuid::new_v4();
+    user_config.user.profiles.insert(
+        gaming_uuid,
+        UserProfileConfig {
+            name: "gaming".to_string(),
+            ..UserProfileConfig::full_default()
+        },
+    );
     user_config.tv.push(UserTvConfig {
         uuid: tv_uuid.clone(),
-        profile: UserTvProfileAssignment {
-            user: "gaming".to_string(),
-        },
+        profile: UserTvProfileAssignment { user: gaming_uuid },
     });
     user_config.save_to(&config_path).unwrap();
 

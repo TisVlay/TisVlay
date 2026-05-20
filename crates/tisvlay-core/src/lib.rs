@@ -53,6 +53,7 @@ pub mod errors;
 mod hardware_id;
 mod pairing;
 mod pairing_schema;
+mod profile_refs;
 mod reconciler;
 mod refresh_trigger;
 mod state;
@@ -90,13 +91,16 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 
 // Configuration
 pub use config::{
-    AutomateWhen, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, ResolvedSystemProfile,
-    ResolvedUserProfile, SessionAction, SystemConfig, SystemProfileConfig, SystemSection, TvConfig,
-    TvProfileAssignment, UserConfig, UserProfileConfig, UserSection, UserTvConfig,
-    UserTvProfileAssignment, absolutize,
+    AutomateWhen, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID,
+    ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig, SystemProfileConfig,
+    SystemSection, TvConfig, TvProfileAssignment, UserConfig, UserProfileConfig, UserSection,
+    UserTvConfig, UserTvProfileAssignment, absolutize,
 };
 #[cfg(feature = "dbus")]
 pub use config::{SystemProfileBody, UserProfileBody};
+
+// Profile-reference computation (used by daemon + clients)
+pub use profile_refs::{TvAssignment, references_of, user_references_of};
 
 // State
 pub use state::{DiscoveredTv, InputInfo, PowerCyclePhase, PowerState, TvState};

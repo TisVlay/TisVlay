@@ -54,8 +54,9 @@ async fn unmanaged_tv_is_not_automated() {
 fn on_primary_config(tv_id: &str, primary_input: &str) -> SystemConfig {
     let mut config = mock_tv_config(tv_id, true, Some(primary_input));
     config.system.profiles.insert(
-        "default".to_string(),
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
         SystemProfileConfig {
+            name: "default".to_string(),
             on_shutdown: Some(SessionAction::PowerOff),
             automate_when: Some(AutomateWhen::OnPrimary),
             ..Default::default()
@@ -131,8 +132,9 @@ async fn on_primary_skips_when_input_differs() {
 fn off_primary_config(tv_id: &str, primary_input: &str) -> SystemConfig {
     let mut config = mock_tv_config(tv_id, true, Some(primary_input));
     config.system.profiles.insert(
-        "default".to_string(),
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
         SystemProfileConfig {
+            name: "default".to_string(),
             on_shutdown: Some(SessionAction::PowerOff),
             automate_when: Some(AutomateWhen::OffPrimary),
             ..Default::default()

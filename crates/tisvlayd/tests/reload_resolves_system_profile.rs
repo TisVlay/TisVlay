@@ -18,8 +18,9 @@ use tisvlay_harness::daemon::{TestDaemon, mock_tv_config, test_tv_uuid};
 fn config_with_automate_when(tv_id: &str, primary_input: &str, when: AutomateWhen) -> SystemConfig {
     let mut config = mock_tv_config(tv_id, true, Some(primary_input));
     config.system.profiles.insert(
-        "default".to_string(),
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
         SystemProfileConfig {
+            name: "default".to_string(),
             on_shutdown: Some(SessionAction::PowerOff),
             automate_when: Some(when),
             ..Default::default()

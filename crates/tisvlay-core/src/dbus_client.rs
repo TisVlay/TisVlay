@@ -247,13 +247,13 @@ trait TisvlayTv {
     #[zbus(property)]
     fn set_managed(&self, managed: bool) -> zbus::Result<()>;
 
-    /// System profile name assigned to this TV.
+    /// System profile UUID assigned to this TV (string-formatted).
     #[zbus(property)]
     fn system_profile(&self) -> zbus::Result<String>;
 
-    /// Set the system profile for this TV.
+    /// Set the system profile UUID for this TV.
     #[zbus(property)]
-    fn set_system_profile(&self, profile: &str) -> zbus::Result<()>;
+    fn set_system_profile(&self, profile_uuid: &str) -> zbus::Result<()>;
 
     /// The HDMI input the controlling PC is plugged into. Drives
     /// `Tv1.Automated` recomputation.
@@ -563,7 +563,7 @@ pub struct TvInfo {
     /// Computed from `managed`, `automate_when`, `primary_input`, and
     /// the TV's current input.
     pub automated: bool,
-    /// System profile name assigned to this TV.
+    /// System profile UUID assigned to this TV (string-formatted).
     pub system_profile: String,
     /// Primary-input ID for this TV (the HDMI port the controlling PC
     /// is plugged into). Empty when unset; "_unknown_" when set to
@@ -900,7 +900,7 @@ impl DaemonClient {
             let system_profile = {
                 let sp = get_str("SystemProfile");
                 if sp.is_empty() {
-                    "default".to_string()
+                    crate::DEFAULT_SYSTEM_PROFILE_UUID.to_string()
                 } else {
                     sp
                 }
@@ -1563,15 +1563,16 @@ impl DaemonClient {
         .await
     }
 
-    /// Set the system profile for a TV (e.g. `"default"`, `"guest"`).
+    /// Set the system profile for a TV by UUID (string-formatted).
     ///
     /// Routes through the per-object `Tv1.SystemProfile` writable
-    /// property.
-    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
-        let profile_name = profile_name.to_string();
+    /// property. The daemon rejects unknown or malformed UUIDs with
+    /// `InvalidArgs`.
+    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_uuid: &str) -> Result<()> {
+        let profile_uuid = profile_uuid.to_string();
         self.with_proxies(tv_id, "set system profile", move |p| {
-            let profile_name = profile_name.clone();
-            Box::pin(async move { p.base.set_system_profile(&profile_name).await })
+            let profile_uuid = profile_uuid.clone();
+            Box::pin(async move { p.base.set_system_profile(&profile_uuid).await })
         })
         .await
     }
@@ -1614,11 +1615,11 @@ trait TisvlaySession {
     /// List all available user profiles.
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Get the user profile name assigned to a TV.
+    /// Get the user profile UUID assigned to a TV (string-formatted).
     fn get_tv_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
 
-    /// Assign a user profile to a TV.
-    fn set_tv_user_profile(&self, tv_id: &str, profile_name: &str) -> zbus::Result<()>;
+    /// Assign a user profile to a TV by UUID (string-formatted).
+    fn set_tv_user_profile(&self, tv_id: &str, profile_uuid: &str) -> zbus::Result<()>;
 
     /// Get the fully resolved user profile for a TV as JSON.
     fn get_effective_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
@@ -1691,7 +1692,7 @@ impl SessionClient {
             .context("Failed to list user profiles from session service")
     }
 
-    /// Get the user profile name assigned to a TV.
+    /// Get the user profile UUID assigned to a TV (string-formatted).
     pub async fn get_tv_user_profile(&self, tv_id: &str) -> Result<String> {
         self.proxy
             .get_tv_user_profile(tv_id)
@@ -1699,15 +1700,16 @@ impl SessionClient {
             .context("Failed to get TV user profile from session service")
     }
 
-    /// Assign a user profile to a TV.
-    pub async fn set_tv_user_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
+    /// Assign a user profile to a TV by UUID (string-formatted). The
+    /// session service rejects unknown UUIDs with `InvalidArgs`.
+    pub async fn set_tv_user_profile(&self, tv_id: &str, profile_uuid: &str) -> Result<()> {
         self.proxy
-            .set_tv_user_profile(tv_id, profile_name)
+            .set_tv_user_profile(tv_id, profile_uuid)
             .await
             .with_context(|| {
                 format!(
                     "Failed to set user profile '{}' for TV '{}'",
-                    profile_name, tv_id
+                    profile_uuid, tv_id
                 )
             })
     }

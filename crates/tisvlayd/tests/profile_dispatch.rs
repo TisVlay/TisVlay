@@ -225,8 +225,9 @@ fn config_with_profile_actions(
 ) -> SystemConfig {
     let mut config = mock_tv_config(tv_id, true, None);
     config.system.profiles.insert(
-        "default".to_string(),
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
         SystemProfileConfig {
+            name: "default".to_string(),
             on_wake: Some(on_wake),
             on_startup: Some(on_startup),
             ..Default::default()

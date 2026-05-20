@@ -46,7 +46,8 @@ async fn get_tv_user_profile_returns_default_when_unset() {
         .await
         .unwrap();
 
-    assert_eq!(profile, "default");
+    // An unset TV resolves to DEFAULT_USER_PROFILE_UUID (string-formatted).
+    assert_eq!(profile, tisvlay_core::DEFAULT_USER_PROFILE_UUID.to_string());
 }
 
 #[tokio::test]
@@ -86,12 +87,12 @@ async fn set_tv_user_profile_emits_signal() {
         .await
         .expect("match rule");
 
-    // SetTvUserProfile with "default" — should succeed since "default"
-    // is always available.
+    // SetTvUserProfile with the default UUID — always available.
     let call_conn = bus.connect().await.unwrap();
     let proxy = session_proxy(&call_conn).await.unwrap();
+    let default_uuid_str = tisvlay_core::DEFAULT_USER_PROFILE_UUID.to_string();
     let _: () = proxy
-        .call("SetTvUserProfile", &("sig_tv", "default"))
+        .call("SetTvUserProfile", &("sig_tv", default_uuid_str.as_str()))
         .await
         .unwrap();
 
@@ -103,10 +104,10 @@ async fn set_tv_user_profile_emits_signal() {
         .expect("stream ended")
         .expect("message");
 
-    let (tv_id, profile_name): (String, String) =
+    let (tv_id, profile_uuid): (String, String) =
         msg.body().deserialize().expect("deserialize signal body");
     assert_eq!(tv_id, "sig_tv");
-    assert_eq!(profile_name, "default");
+    assert_eq!(profile_uuid, default_uuid_str);
 }
 
 #[tokio::test]
@@ -116,8 +117,10 @@ async fn set_unknown_profile_returns_error() {
     let conn = bus.connect().await.unwrap();
     let proxy = session_proxy(&conn).await.unwrap();
 
+    // Well-formed UUID but absent from the catalog → InvalidArgs.
+    let unknown = uuid::Uuid::new_v4().to_string();
     let result: zbus::Result<()> = proxy
-        .call("SetTvUserProfile", &("err_tv", "nonexistent_profile_xyz"))
+        .call("SetTvUserProfile", &("err_tv", unknown.as_str()))
         .await;
 
     assert!(result.is_err(), "setting unknown profile should fail");
