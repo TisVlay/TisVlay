@@ -500,6 +500,11 @@ component ProfileDetailHeader inherits Rectangle {
     /// confirm-delete dialog and the duplicate dialog.
     callback request-delete();
     callback request-duplicate();
+    /// Bubble the Reset-all action up so ProfilesPane can open its
+    /// confirm dialog before invoking `Profiles.reset-all()`. Enabled
+    /// only when the selected profile has at least one locally-set
+    /// field (`Profiles.editor-can-reset-all`).
+    callback request-reset-all();
     /// Bubble a friendly-name rename request up. ProfilesPane forwards
     /// to `Profiles.rename-selected(...)`. The daemon validates the
     /// new name (non-empty, reserved-name rules, uniqueness); failures
@@ -666,6 +671,15 @@ component ProfileDetailHeader inherits Rectangle {
                 if !root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
+                        source: Icons.reload;
+                        accessible-label: @tr("Reset all locally-set fields");
+                        enabled: Profiles.editor-can-reset-all;
+                        clicked => { root.request-reset-all(); }
+                    }
+                }
+                if !root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
                         source: Icons.delete;
                         accessible-label: @tr("Delete profile");
                         enabled: root.can-delete;
@@ -768,6 +782,7 @@ component ProfileDetail inherits Rectangle {
     in property <bool> can-delete: true;
     callback request-delete();
     callback request-duplicate();
+    callback request-reset-all();
 
     background: Theme.surface-alt;
 
@@ -784,13 +799,13 @@ component ProfileDetail inherits Rectangle {
             can-delete: root.can-delete;
             request-delete => { root.request-delete(); }
             request-duplicate => { root.request-duplicate(); }
+            request-reset-all => { root.request-reset-all(); }
             request-rename(new-name) => { Profiles.rename-selected(new-name); }
         }
 
-        // Field editor surface. The FIELDS title row + Reset-all
-        // action live here so the visual shell reads complete; the
-        // card body shows a placeholder while the field-row binding
-        // is being built out.
+        // Field editor surface. The Reset-all action lives in the
+        // detail-header toolbar alongside Rename / Duplicate / Delete;
+        // the FIELDS section header is just a label.
         ScrollView {
             viewport-width: self.visible-width;
             VerticalLayout {
@@ -802,20 +817,13 @@ component ProfileDetail inherits Rectangle {
                 spacing: Design.gap-pane;
                 alignment: start;
 
-                // Inlines the `Group` widget's title-row + card
-                // structure rather than wrapping `Group` so the
-                // "Reset all" action can sit on the title row itself
-                // (mirrors the TVs-pane CONFIG group's Edit / Save /
-                // Cancel placement).
                 VerticalLayout {
                     spacing: 0;
 
-                    // Title row — same styling as `Group`'s title,
-                    // plus the right-aligned Reset-all action.
+                    // Title row — same styling as `Group`'s title.
                     HorizontalLayout {
                         padding-left: 2px;
                         padding-bottom: Design.gap-stack;
-                        spacing: Design.gap-form;
 
                         VerticalLayout {
                             alignment: center;
@@ -826,13 +834,6 @@ component ProfileDetail inherits Rectangle {
                                 font-weight: 600;
                                 letter-spacing: 0.6px;
                             }
-                        }
-                        Rectangle { horizontal-stretch: 1; }
-                        IconBtn {
-                            source: Icons.reload;
-                            label: @tr("Reset all");
-                            enabled: Profiles.editor-can-reset-all;
-                            clicked => { Profiles.reset-all(); }
                         }
                     }
 
@@ -938,6 +939,15 @@ export component ProfilesPane {
     property <string> pending-duplicate-name;
     property <string> pending-duplicate-error;
 
+    // --- Pending Reset-all dialog state ---
+    //
+    // Open when the user clicks the reload glyph in the detail-header
+    // toolbar. Snapshots the selected profile's display name so the
+    // dialog wording stays stable if a concurrent rename lands during
+    // the prompt.
+    property <ProfileKind> pending-reset-all-kind: ProfileKind.none;
+    property <string> pending-reset-all-name;
+
     function validate-new-name(name: string) -> string {
         if (name == "") {
             return "";
@@ -988,6 +998,16 @@ export component ProfilesPane {
         root.pending-duplicate-source-uuid = "";
         root.pending-duplicate-name = "";
         root.pending-duplicate-error = "";
+    }
+
+    function open-reset-all-dialog() {
+        root.pending-reset-all-kind = Profiles.selected-kind;
+        root.pending-reset-all-name = Profiles.selected-row.name;
+    }
+
+    function close-reset-all-dialog() {
+        root.pending-reset-all-kind = ProfileKind.none;
+        root.pending-reset-all-name = "";
     }
 
     VerticalLayout {
@@ -1051,6 +1071,7 @@ export component ProfilesPane {
                     can-delete: !Profiles.selected-row.is-default;
                     request-delete => { root.open-delete-dialog(); }
                     request-duplicate => { root.open-duplicate-dialog(); }
+                    request-reset-all => { root.open-reset-all-dialog(); }
                 }
             }
         }
@@ -1126,5 +1147,21 @@ export component ProfilesPane {
             root.close-duplicate-dialog();
         }
         cancelled => { root.close-duplicate-dialog(); }
+    }
+
+    // Reset-all confirm dialog. Bulk field clear is destructive
+    // enough that the user gets one chance to back out — symmetric
+    // with the delete-confirm dialog. Single round-trip on confirm.
+    ConfirmDialog {
+        open: root.pending-reset-all-kind != ProfileKind.none;
+        title: @tr("Reset all fields");
+        message: @tr("Clear every locally-set field on '{}'? Inheriting values resume from the default profile.",
+                     root.pending-reset-all-name);
+        confirm-label: @tr("Reset all");
+        confirmed => {
+            Profiles.reset-all();
+            root.close-reset-all-dialog();
+        }
+        cancelled => { root.close-reset-all-dialog(); }
     }
 }
