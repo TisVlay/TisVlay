@@ -2385,8 +2385,37 @@ pub enum StateEvent {
     /// The session service disappeared from D-Bus.
     SessionDisappeared,
 
-    /// A `UserProfileChanged` signal was received from the session service.
+    /// A `UserProfileChanged` signal was received from the session
+    /// service — emitted when a TV's user-profile assignment changes.
+    /// Distinct from [`Self::UserProfileBodyChanged`], which fires on
+    /// a body mutation of the named profile UUID.
     SessionProfileChanged,
+
+    /// `Manager1.SystemProfileChanged(uuid)`: a system profile body
+    /// was mutated. Consumers with a cached body should re-fetch via
+    /// `DaemonClient::get_system_profile(uuid)`.
+    SystemProfileChanged(Uuid),
+
+    /// `Manager1.SystemProfileAdded(uuid)`: a new system profile
+    /// appeared in the catalog.
+    SystemProfileAdded(Uuid),
+
+    /// `Manager1.SystemProfileRemoved(uuid)`: a system profile was
+    /// removed from the catalog.
+    SystemProfileRemoved(Uuid),
+
+    /// `Session1.UserProfileBodyChanged(uuid)`: a user profile body
+    /// was mutated. Distinct from [`Self::SessionProfileChanged`],
+    /// which fires on a per-TV assignment change.
+    UserProfileBodyChanged(Uuid),
+
+    /// `Session1.UserProfileAdded(uuid)`: a new user profile appeared
+    /// in the catalog.
+    UserProfileAdded(Uuid),
+
+    /// `Session1.UserProfileRemoved(uuid)`: a user profile was
+    /// removed from the catalog.
+    UserProfileRemoved(Uuid),
 
     /// The tray service appeared on D-Bus.
     TrayAppeared,
@@ -2450,17 +2479,56 @@ impl Default for StateWatcherConfig {
 ///     }
 /// }
 /// ```
+/// Catalog-level system-profile signal kinds emitted by `Manager1`.
+///
+/// Used internally by [`StateWatcher`] to demultiplex the daemon-side
+/// signal stream — each variant maps 1:1 to the matching `StateEvent`.
+#[derive(Debug, Clone, Copy)]
+enum SystemProfileSignal {
+    Changed,
+    Added,
+    Removed,
+}
+
+/// Session-bus signals the watcher consumes — body mutations carry a
+/// UUID; assignment changes don't.
+///
+/// Body-level signals (`UserProfileBodyChanged`, `UserProfileAdded`,
+/// `UserProfileRemoved`) carry the profile UUID parsed from the wire
+/// argument. `AssignmentChanged` is the per-TV
+/// `UserProfileChanged(tv_id)` signal — no profile UUID, just a
+/// refresh-the-assignment-map hint.
+#[derive(Debug, Clone)]
+enum SessionSignal {
+    AssignmentChanged,
+    BodyChanged(Uuid),
+    Added(Uuid),
+    Removed(Uuid),
+}
+
+/// Type alias for the `Box<dyn Stream<Item = T> + Send>` shape used by
+/// every signal stream the watcher owns. Factored out to satisfy
+/// `clippy::type_complexity` and to keep the field declarations
+/// readable.
+type BoxedStream<T> = std::pin::Pin<Box<dyn Stream<Item = T> + Send>>;
+
 pub struct StateWatcher {
     /// Stream of daemon PropertiesChanged / ObjectManager / ConfigReloaded signals.
-    signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = TvStateChange> + Send>>>,
+    signal_stream: Option<BoxedStream<TvStateChange>>,
+    /// Stream of `Manager1.SystemProfile{Changed,Added,Removed}` signals
+    /// — each carries the parsed UUID from the wire argument.
+    system_profile_signal_stream: Option<BoxedStream<(SystemProfileSignal, Uuid)>>,
     /// Stream of daemon service appear/disappear events.
-    daemon_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
+    daemon_watch: Option<BoxedStream<ServiceEvent>>,
     /// Stream of session service appear/disappear events.
-    session_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
-    /// Stream of session UserProfileChanged signals (filtered).
-    session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>>,
+    session_watch: Option<BoxedStream<ServiceEvent>>,
+    /// Stream of session-side signals: per-TV `UserProfileChanged`
+    /// (assignment) plus the body-level
+    /// `UserProfile{BodyChanged,Added,Removed}` triad. A single
+    /// MessageStream filters all four wire signatures.
+    session_signal_stream: Option<BoxedStream<SessionSignal>>,
     /// Stream of tray service appear/disappear events.
-    tray_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
+    tray_watch: Option<BoxedStream<ServiceEvent>>,
     /// Configuration.
     config: StateWatcherConfig,
 }
@@ -2538,9 +2606,16 @@ impl StateWatcher {
         let tv_prefix = format!("{}/", TV_BASE_PATH);
         let raw_stream = zbus::MessageStream::from(conn.clone());
 
-        let signal_stream: std::pin::Pin<Box<dyn Stream<Item = TvStateChange> + Send>> =
-            Box::pin(raw_stream.filter_map(move |msg_result| {
-                let tv_prefix = tv_prefix.clone();
+        // The TV-state filter consumes message *clones* and returns
+        // `None` for `Manager1.SystemProfile*` signals; the body-mutation
+        // path below filters the same shared stream for those, so
+        // splitting the dispatch by interface keeps both branches
+        // typed cleanly without dropping any signal.
+        let tv_prefix_for_state = tv_prefix.clone();
+        let raw_for_state = raw_stream.clone();
+        let signal_stream: BoxedStream<TvStateChange> =
+            Box::pin(raw_for_state.filter_map(move |msg_result| {
+                let tv_prefix = tv_prefix_for_state.clone();
                 async move {
                     let msg = msg_result.ok()?;
                     let header = msg.header();
@@ -2570,6 +2645,38 @@ impl StateWatcher {
                         _ => None,
                     }
                 }
+            }));
+
+        // --- Manager1.SystemProfile{Changed,Added,Removed} signals ---
+        //
+        // The body-mutation signals share the bus's existing
+        // `org.tisvlay.Manager1` `add_signal_match` rule installed
+        // above, so no extra match rule is needed; we just filter the
+        // same MessageStream for the three body-mutation members. The
+        // wire argument is the profile UUID as a string; parse to
+        // `Uuid` here so the StateEvent payload is typed.
+        let system_profile_signal_stream: BoxedStream<(SystemProfileSignal, Uuid)> =
+            Box::pin(raw_stream.filter_map(|msg_result| async move {
+                let msg = msg_result.ok()?;
+                let header = msg.header();
+                let iface = header.interface()?.to_string();
+                let member = header.member()?.to_string();
+                if iface != "org.tisvlay.Manager1" {
+                    return None;
+                }
+                let kind = match member.as_str() {
+                    "SystemProfileChanged" => SystemProfileSignal::Changed,
+                    "SystemProfileAdded" => SystemProfileSignal::Added,
+                    "SystemProfileRemoved" => SystemProfileSignal::Removed,
+                    _ => return None,
+                };
+                // The wire signature is `(s)` — UUID as string. zbus's
+                // `Message::body()` deserializes to whatever shape the
+                // caller asks for; `String` is the only argument.
+                let uuid_str: String = msg.body().deserialize().ok()?;
+                let uuid = Uuid::parse_str(&uuid_str).ok()?;
+                trace!(uuid = %uuid, kind = ?kind, "Manager1 system-profile signal");
+                Some((kind, uuid))
             }));
 
         // --- Daemon name watch ---
@@ -2608,42 +2715,65 @@ impl StateWatcher {
                 None => None,
             };
 
-        // --- Session UserProfileChanged signals ---
-        let session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>> =
-            match session_conn {
-                Some(sconn) => {
-                    let rule = format!(
-                        "type='signal',sender='{}',interface='{}',member='UserProfileChanged',path='{}'",
-                        SESSION_SERVICE, SESSION_INTERFACE, SESSION_PATH,
-                    );
-                    match subscribe_signals(sconn, &rule).await {
-                        Ok(raw) => {
-                            let filtered = raw.filter_map(|msg_result| async move {
-                                let msg = msg_result.ok()?;
-                                let header = msg.header();
-                                let member = header.member()?.to_string();
-                                if member == "UserProfileChanged" {
-                                    Some(())
-                                } else {
-                                    None
+        // --- Session1 signals: assignment + body triad ---
+        //
+        // Per-TV `UserProfileChanged` carries `tv_id` (no profile
+        // UUID — clients refresh the assignment map). The body triad
+        // (`UserProfileBodyChanged`, `UserProfileAdded`,
+        // `UserProfileRemoved`) carries the profile UUID as a string
+        // argument; we parse it here so the StateEvent payload is
+        // typed. All four signals share a single match rule by
+        // interface so one `add_signal_match` covers the stream.
+        let session_signal_stream: Option<
+            std::pin::Pin<Box<dyn Stream<Item = SessionSignal> + Send>>,
+        > = match session_conn {
+            Some(sconn) => {
+                let rule = format!(
+                    "type='signal',sender='{}',interface='{}',path='{}'",
+                    SESSION_SERVICE, SESSION_INTERFACE, SESSION_PATH,
+                );
+                match subscribe_signals(sconn, &rule).await {
+                    Ok(raw) => {
+                        let filtered = raw.filter_map(|msg_result| async move {
+                            let msg = msg_result.ok()?;
+                            let header = msg.header();
+                            let member = header.member()?.to_string();
+                            match member.as_str() {
+                                "UserProfileChanged" => Some(SessionSignal::AssignmentChanged),
+                                "UserProfileBodyChanged"
+                                | "UserProfileAdded"
+                                | "UserProfileRemoved" => {
+                                    let uuid_str: String = msg.body().deserialize().ok()?;
+                                    let uuid = Uuid::parse_str(&uuid_str).ok()?;
+                                    Some(match member.as_str() {
+                                        "UserProfileBodyChanged" => {
+                                            SessionSignal::BodyChanged(uuid)
+                                        }
+                                        "UserProfileAdded" => SessionSignal::Added(uuid),
+                                        "UserProfileRemoved" => SessionSignal::Removed(uuid),
+                                        _ => unreachable!(),
+                                    })
                                 }
-                            });
-                            debug!("Subscribed to session UserProfileChanged signals");
-                            Some(Box::pin(filtered))
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to subscribe to session signals");
-                            None
-                        }
+                                _ => None,
+                            }
+                        });
+                        debug!("Subscribed to session signals");
+                        Some(Box::pin(filtered))
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to subscribe to session signals");
+                        None
                     }
                 }
-                None => None,
-            };
+            }
+            None => None,
+        };
 
         info!("State watcher initialized");
 
         Ok(Self {
             signal_stream: Some(signal_stream),
+            system_profile_signal_stream: Some(system_profile_signal_stream),
             daemon_watch,
             session_watch,
             session_signal_stream,
@@ -2725,15 +2855,54 @@ impl StateWatcher {
                 }
             }
 
-            // Branch 4: session UserProfileChanged signal
-            Some(()) = async {
+            // Branch 4: session-bus signals (assignment + body triad)
+            Some(sig) = async {
                 match self.session_signal_stream.as_mut() {
                     Some(s) => s.next().await,
                     None => std::future::pending().await,
                 }
             } => {
-                debug!("Session UserProfileChanged signal received");
-                Some(StateEvent::SessionProfileChanged)
+                match sig {
+                    SessionSignal::AssignmentChanged => {
+                        debug!("Session UserProfileChanged signal received");
+                        Some(StateEvent::SessionProfileChanged)
+                    }
+                    SessionSignal::BodyChanged(uuid) => {
+                        debug!(uuid = %uuid, "Session UserProfileBodyChanged signal received");
+                        Some(StateEvent::UserProfileBodyChanged(uuid))
+                    }
+                    SessionSignal::Added(uuid) => {
+                        debug!(uuid = %uuid, "Session UserProfileAdded signal received");
+                        Some(StateEvent::UserProfileAdded(uuid))
+                    }
+                    SessionSignal::Removed(uuid) => {
+                        debug!(uuid = %uuid, "Session UserProfileRemoved signal received");
+                        Some(StateEvent::UserProfileRemoved(uuid))
+                    }
+                }
+            }
+
+            // Branch 4b: Manager1 system-profile body-mutation signals
+            Some((kind, uuid)) = async {
+                match self.system_profile_signal_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                Some(match kind {
+                    SystemProfileSignal::Changed => {
+                        debug!(uuid = %uuid, "Manager1 SystemProfileChanged signal received");
+                        StateEvent::SystemProfileChanged(uuid)
+                    }
+                    SystemProfileSignal::Added => {
+                        debug!(uuid = %uuid, "Manager1 SystemProfileAdded signal received");
+                        StateEvent::SystemProfileAdded(uuid)
+                    }
+                    SystemProfileSignal::Removed => {
+                        debug!(uuid = %uuid, "Manager1 SystemProfileRemoved signal received");
+                        StateEvent::SystemProfileRemoved(uuid)
+                    }
+                })
             }
 
             // Branch 5: tray service appeared/disappeared

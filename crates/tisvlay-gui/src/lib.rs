@@ -33,7 +33,10 @@ mod wizard;
 /// public API and may change without notice.
 #[doc(hidden)]
 pub mod __internals {
-    pub use crate::state::{SnapshotInputs, StateSnapshot, TvViewRaw, convert_snapshot};
+    pub use crate::state::{
+        ProfileRowRaw, ProfileTvRefRaw, SnapshotInputs, StateSnapshot, TvViewRaw, convert_snapshot,
+        fetch_system_profile_body, fetch_user_profile_body,
+    };
 }
 
 use about::{

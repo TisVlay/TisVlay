@@ -12,9 +12,10 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe_cli_version};
-use crate::state::{StateSnapshot, fetch_state};
+use crate::state::{ProfileRowRaw, StateSnapshot, fetch_state};
 use crate::{
-    AppWindow, PairingWizard, Reconcilers, TvViewModel, VendorInfoRow, VendorOption, on_ui,
+    AppWindow, PairingWizard, ProfileRow, ProfileTvRef, Profiles, Reconcilers, TvViewModel,
+    VendorInfoRow, VendorOption, on_ui,
 };
 
 /// Boot the state-watch loop. One-shot startup: do the initial state
@@ -57,6 +58,12 @@ pub(crate) async fn initial_fetch_and_watch(
         app.set_daemon_available(initial_daemon_available);
         app.set_session_available(initial_session_available);
         app.set_tray_available(initial_tray_available);
+        // Profiles-pane User section needs its own copy of the
+        // session-bus availability flag so the "Session service
+        // unavailable" hint and the disabled "+" button can bind
+        // against the Profiles global directly.
+        app.global::<Profiles>()
+            .set_session_available(initial_session_available);
     });
 
     refresh_about_components(&daemon, &session, &tray, &app_weak).await;
@@ -190,7 +197,17 @@ async fn watch_state(
             }
             StateEvent::DaemonStateChanged(_)
             | StateEvent::SessionProfileChanged
+            | StateEvent::SystemProfileChanged(_)
+            | StateEvent::SystemProfileAdded(_)
+            | StateEvent::SystemProfileRemoved(_)
+            | StateEvent::UserProfileBodyChanged(_)
+            | StateEvent::UserProfileAdded(_)
+            | StateEvent::UserProfileRemoved(_)
             | StateEvent::FallbackPoll => {
+                // Coarse refresh for any body-mutation signal: a
+                // future commit threads a per-row cache so the
+                // editor and master list can refresh from a
+                // targeted `get_*_profile(uuid)` fetch instead.
                 trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
@@ -208,6 +225,7 @@ async fn watch_state(
                     *session.write().await = Some(client);
                     on_ui(&app_weak, move |app| {
                         app.set_session_available(true);
+                        app.global::<Profiles>().set_session_available(true);
                     });
                     trigger_refresh();
                 }
@@ -216,6 +234,7 @@ async fn watch_state(
                 *session.write().await = None;
                 on_ui(&app_weak, move |app| {
                     app.set_session_available(false);
+                    app.global::<Profiles>().set_session_available(false);
                 });
                 trigger_refresh();
             }
@@ -376,6 +395,49 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
     sync_vec_model(&app.get_user_profiles(), snapshot.user_profiles, |m| {
         app.set_user_profiles(m)
     });
+
+    // Profiles pane master lists. ProfileRow is generated from
+    // `ui/globals/profiles.slint` and exported through `main.slint`;
+    // the `referenced_by` inner list is wrapped here on the event-
+    // loop thread because Slint's `ModelRc` is `!Send`.
+    let profiles = app.global::<Profiles>();
+    let system_rows: Vec<ProfileRow> = snapshot
+        .system_profile_rows
+        .into_iter()
+        .map(profile_row_into_slint)
+        .collect();
+    let user_rows: Vec<ProfileRow> = snapshot
+        .user_profile_rows
+        .into_iter()
+        .map(profile_row_into_slint)
+        .collect();
+    sync_vec_model(&profiles.get_system(), system_rows, |m| {
+        profiles.set_system(m)
+    });
+    sync_vec_model(&profiles.get_user(), user_rows, |m| profiles.set_user(m));
+}
+
+/// Wrap one Rust-side profile row into the Slint-generated `ProfileRow`
+/// shape — `referenced_by` becomes a `ModelRc` here because Slint's
+/// model handles are `!Send` and can only be built on the event-loop
+/// thread.
+fn profile_row_into_slint(raw: ProfileRowRaw) -> ProfileRow {
+    let refs: Vec<ProfileTvRef> = raw
+        .referenced_by
+        .into_iter()
+        .map(|r| ProfileTvRef {
+            uuid: r.uuid,
+            name: r.name,
+        })
+        .collect();
+    ProfileRow {
+        uuid: raw.uuid,
+        name: raw.name,
+        is_default: raw.is_default,
+        referenced_by: ModelRc::new(VecModel::from(refs)),
+        referenced_by_summary: raw.referenced_by_summary,
+        active: raw.active,
+    }
 }
 
 /// Replace a `ModelRc` content **in place** when it's backed by a

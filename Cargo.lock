@@ -5681,6 +5681,7 @@ dependencies = [
  "tisvlay-core",
  "tokio",
  "tracing",
+ "uuid",
  "webbrowser",
  "wl-clipboard-rs",
  "zbus",

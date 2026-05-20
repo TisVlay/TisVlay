@@ -104,8 +104,8 @@ fn pairing_a_mock_tv_renders_in_master_list_with_correct_metadata() {
         // No Slint runtime needed for this leg.
         let snapshot = convert_snapshot(SnapshotInputs {
             tvs,
-            system_profiles: Vec::new(),
-            user_profiles: Vec::new(),
+            system_profile_bodies: HashMap::new(),
+            user_profile_bodies: HashMap::new(),
             user_profile_by_uuid: HashMap::new(),
         });
         assert_eq!(snapshot.tvs.len(), 1);

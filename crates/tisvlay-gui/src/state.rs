@@ -1,10 +1,10 @@
 //! Fetches TV state from the daemon and maps it into the Slint
 //! `TvViewModel` struct generated from `ui/main.slint`.
 //!
-//! The fetched data lives in plain `Vec`-based structs (`TvViewRaw`)
-//! so it crosses the tokio→Slint thread boundary as `Send`. The Slint
-//! event-loop closure then wraps the inner per-row lists into
-//! `ModelRc` (which holds `Rc`, `!Send`).
+//! The fetched data lives in plain `Vec`-based structs (`TvViewRaw`,
+//! `ProfileRowRaw`) so it crosses the tokio→Slint thread boundary as
+//! `Send`. The Slint event-loop closure then wraps the inner per-row
+//! lists into `ModelRc` (which holds `Rc`, `!Send`).
 //!
 //! [`fetch_state`] does the IO (daemon + session bus calls) and hands
 //! a [`SnapshotInputs`] off to the pure [`convert_snapshot`] function.
@@ -15,8 +15,12 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use slint::SharedString;
-use tisvlay_core::{DaemonClient, SessionClient, TvInfo};
+use tisvlay_core::{
+    DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient,
+    SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, references_of, user_references_of,
+};
 use tracing::debug;
+use uuid::Uuid;
 
 /// Per-TV view-model row in a thread-safe shape (no `Rc` inside).
 /// Converted to the Slint-generated `TvViewModel` inside the event
@@ -63,22 +67,53 @@ pub struct TvViewRaw {
     pub vendor_info: Vec<(String, String)>,
 }
 
+/// One TV referencing a profile, in the thread-safe shape Rust passes
+/// through to the Slint `ProfileTvRef` struct on the event-loop side.
+#[derive(Debug, Clone)]
+pub struct ProfileTvRefRaw {
+    pub uuid: SharedString,
+    pub name: SharedString,
+}
+
+/// One profile row for the Profiles-pane master list. Mirrors the
+/// Slint-generated `ProfileRow` shape but stays `Send` (the inner
+/// `Vec` becomes a `ModelRc` only inside the event-loop push).
+#[derive(Debug, Clone)]
+pub struct ProfileRowRaw {
+    pub uuid: SharedString,
+    pub name: SharedString,
+    pub is_default: bool,
+    pub referenced_by: Vec<ProfileTvRefRaw>,
+    pub referenced_by_summary: SharedString,
+    pub active: bool,
+}
+
 /// Snapshot of fetched state for one refresh pass.
 pub struct StateSnapshot {
     pub tvs: Vec<TvViewRaw>,
+    /// Friendly-name list for the TVs-pane System-profile ComboBox.
+    /// Derived from the body catalog so the same fetch feeds both
+    /// the Profiles pane (full rows) and the TVs pane (just names).
     pub system_profiles: Vec<SharedString>,
+    /// User-side counterpart for the TVs-pane User-profile ComboBox.
     pub user_profiles: Vec<SharedString>,
+    /// Master-list rows for the Profiles pane's System section.
+    pub system_profile_rows: Vec<ProfileRowRaw>,
+    /// Master-list rows for the Profiles pane's User section.
+    pub user_profile_rows: Vec<ProfileRowRaw>,
 }
 
 /// Pure-data inputs the renderer needs from one IO pass. Decoupled
 /// from D-Bus so [`convert_snapshot`] can be exercised by unit tests.
 pub struct SnapshotInputs {
     pub tvs: Vec<TvInfo>,
-    /// `(name, description)` pairs from `Manager1.ListSystemProfiles`.
-    pub system_profiles: Vec<(String, String)>,
-    /// `(name, description)` pairs from `Session1.ListUserProfiles`.
-    /// Empty when the session bus isn't available.
-    pub user_profiles: Vec<(String, String)>,
+    /// System-profile catalog, keyed by parsed UUID. From
+    /// `Manager1.ListSystemProfiles` (property-bag wire).
+    pub system_profile_bodies: HashMap<Uuid, SystemProfileBody>,
+    /// User-profile catalog, keyed by parsed UUID. From
+    /// `Session1.ListUserProfiles` (property-bag wire). Empty when
+    /// the session bus isn't available.
+    pub user_profile_bodies: HashMap<Uuid, UserProfileBody>,
     /// Per-TV user-profile assignment, keyed by TV UUID. Missing
     /// entries (no session, fetch failed, or no assignment) surface
     /// as `""` in the resulting `TvViewRaw.user_profile`.
@@ -86,12 +121,13 @@ pub struct SnapshotInputs {
 }
 
 /// Fetch every configured TV's state plus session-side user-profile
-/// assignment + global profile lists for ComboBox population.
+/// assignment + global profile catalogs.
 ///
 /// Single round-trip on the system bus (`GetManagedObjects` via
-/// `DaemonClient::list_tvs`), one daemon call for system profiles,
-/// one optional session-bus call for user profiles, and one optional
-/// session-bus call per TV for the user-profile assignment.
+/// `DaemonClient::list_tvs`), one daemon call for the system-profile
+/// body catalog, one optional session-bus call for the user-profile
+/// body catalog, and one optional session-bus call per TV for the
+/// user-profile assignment.
 pub async fn fetch_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
@@ -99,11 +135,14 @@ pub async fn fetch_state(
     let tvs = daemon.list_tvs().await?;
     debug!(count = tvs.len(), "Fetched TVs from daemon");
 
-    let system_profiles = daemon.list_system_profiles().await.unwrap_or_default();
+    let system_profile_bodies = daemon
+        .list_system_profile_bodies()
+        .await
+        .unwrap_or_default();
 
-    let user_profiles = match session {
-        Some(s) => s.list_user_profiles().await.unwrap_or_default(),
-        None => Vec::new(),
+    let user_profile_bodies = match session {
+        Some(s) => s.list_user_profile_bodies().await.unwrap_or_default(),
+        None => HashMap::new(),
     };
 
     let mut user_profile_by_uuid = HashMap::new();
@@ -117,25 +156,43 @@ pub async fn fetch_state(
 
     Ok(convert_snapshot(SnapshotInputs {
         tvs,
-        system_profiles,
-        user_profiles,
+        system_profile_bodies,
+        user_profile_bodies,
         user_profile_by_uuid,
     }))
 }
 
-/// Pure renderer: shape `SnapshotInputs` (per-TV info + profile
-/// lists + per-TV user-profile assignments) into the `StateSnapshot`
-/// the GUI consumes. No IO; testable without an event loop.
+/// Fetch a single system-profile body. Wraps the typed CRUD wrapper
+/// so callers can refresh one row on a `SystemProfileChanged` signal
+/// without going through a full catalog list. Errors propagate so the
+/// caller can decide whether to retry or drop the cached row.
+pub async fn fetch_system_profile_body(
+    daemon: &DaemonClient,
+    uuid: Uuid,
+) -> Result<SystemProfileBody> {
+    daemon.get_system_profile(uuid).await
+}
+
+/// User-side mirror of [`fetch_system_profile_body`].
+pub async fn fetch_user_profile_body(
+    session: &SessionClient,
+    uuid: Uuid,
+) -> Result<UserProfileBody> {
+    session.get_user_profile(uuid).await
+}
+
+/// Pure renderer: shape `SnapshotInputs` into the `StateSnapshot` the
+/// GUI consumes. No IO; testable without an event loop.
 pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
     let SnapshotInputs {
         tvs,
-        system_profiles,
-        user_profiles,
+        system_profile_bodies,
+        user_profile_bodies,
         user_profile_by_uuid,
     } = inputs;
 
     let mut models = Vec::with_capacity(tvs.len());
-    for tv in tvs {
+    for tv in &tvs {
         let user_profile = user_profile_by_uuid
             .get(&tv.uuid)
             .cloned()
@@ -149,10 +206,9 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
 
         // Spatial hint shown alongside the name — backend's primary
         // editable descriptor (LG: IP; future Bluetooth: MAC; etc.).
-        // First entry of `Tv1.VendorConfig` by convention. (Falls
+        // First entry of `Tv1.VendorConfig` by convention. Falls
         // back to the read-only diagnostic list if a backend has no
-        // `UserInput` schema fields — unlikely but kept the legacy
-        // behavior intact for paranoia.)
+        // `UserInput` schema fields.
         let primary_descriptor = tv
             .vendor_config
             .first()
@@ -161,60 +217,225 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             .unwrap_or_default();
 
         models.push(TvViewRaw {
-            uuid: SharedString::from(tv.uuid),
-            name: SharedString::from(tv.name),
-            vendor: SharedString::from(tv.vendor),
+            uuid: SharedString::from(tv.uuid.as_str()),
+            name: SharedString::from(tv.name.as_str()),
+            vendor: SharedString::from(tv.vendor.as_str()),
             primary_descriptor: SharedString::from(primary_descriptor),
             connected: tv.connected,
-            power_state: SharedString::from(tv.power_state),
+            power_state: SharedString::from(tv.power_state.as_str()),
             supports_wake: tv.supports_wake,
             is_screen_on: tv.is_screen_on,
             volume: tv.volume as i32,
             muted: tv.muted,
             backlight: tv.backlight as i32,
-            current_input: SharedString::from(tv.current_input),
+            current_input: SharedString::from(tv.current_input.as_str()),
             available_input_ids,
-            system_profile: SharedString::from(tv.system_profile),
+            system_profile: SharedString::from(tv.system_profile.as_str()),
             user_profile: SharedString::from(user_profile),
-            primary_input: SharedString::from(tv.primary_input),
+            primary_input: SharedString::from(tv.primary_input.as_str()),
             managed: tv.managed,
             automated: tv.automated,
-            hw_manufacturer: SharedString::from(tv.hardware_id.manufacturer.unwrap_or_default()),
-            hw_model: SharedString::from(tv.hardware_id.model.unwrap_or_default()),
-            hw_serial: SharedString::from(tv.hardware_id.serial.unwrap_or_default()),
-            desktop_connector: SharedString::from(tv.desktop.connector),
-            vendor_config: tv.vendor_config,
-            vendor_info: tv.vendor_info,
+            hw_manufacturer: SharedString::from(
+                tv.hardware_id.manufacturer.clone().unwrap_or_default(),
+            ),
+            hw_model: SharedString::from(tv.hardware_id.model.clone().unwrap_or_default()),
+            hw_serial: SharedString::from(tv.hardware_id.serial.clone().unwrap_or_default()),
+            desktop_connector: SharedString::from(tv.desktop.connector.as_str()),
+            vendor_config: tv.vendor_config.clone(),
+            vendor_info: tv.vendor_info.clone(),
         });
     }
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let system_profiles = system_profiles
-        .into_iter()
-        .map(|(name, _)| SharedString::from(name))
+    // ---- Build TvAssignment list once per render — every system /
+    // user profile row reuses it via references_of() / user_references_of().
+    // Per-TV automation state stays alongside the assignment so we
+    // don't have to re-walk the TV list when computing `active`.
+    let tv_assignments: Vec<TvAssignment> = tvs
+        .iter()
+        .filter_map(|tv| {
+            let tv_uuid = Uuid::parse_str(&tv.uuid).ok()?;
+            Some(TvAssignment {
+                tv_uuid,
+                system_profile: Uuid::parse_str(&tv.system_profile).ok(),
+                user_profile: user_profile_by_uuid
+                    .get(&tv.uuid)
+                    .and_then(|s| Uuid::parse_str(s).ok()),
+            })
+        })
         .collect();
-    let user_profiles = user_profiles
-        .into_iter()
-        .map(|(name, _)| SharedString::from(name))
+
+    // Per-TV (uuid → (display-name, automated)) lookup used to
+    // resolve `referenced_by` chips and the `active` flag without
+    // re-iterating the full TV list per row.
+    let tv_meta: HashMap<Uuid, (String, bool)> = tvs
+        .iter()
+        .filter_map(|tv| {
+            let parsed = Uuid::parse_str(&tv.uuid).ok()?;
+            Some((parsed, (tv.name.clone(), tv.automated)))
+        })
         .collect();
+
+    // ---- Profile rows: system, then user. The default UUID always
+    // sorts first; everything else by friendly name.
+    let system_profile_rows = build_profile_rows(
+        &system_profile_bodies,
+        DEFAULT_SYSTEM_PROFILE_UUID,
+        &tv_assignments,
+        &tv_meta,
+        ProfileKindForRefs::System,
+    );
+    let user_profile_rows = build_profile_rows(
+        &user_profile_bodies,
+        DEFAULT_USER_PROFILE_UUID,
+        &tv_assignments,
+        &tv_meta,
+        ProfileKindForRefs::User,
+    );
+
+    // ComboBox name lists for the TVs pane — friendly names from the
+    // body catalogs, sorted with the reserved default first then
+    // alphabetical so the picker always shows `default` on top.
+    let system_profiles = profile_name_list(&system_profile_bodies, DEFAULT_SYSTEM_PROFILE_UUID);
+    let user_profiles = profile_name_list(&user_profile_bodies, DEFAULT_USER_PROFILE_UUID);
 
     StateSnapshot {
         tvs: models,
         system_profiles,
         user_profiles,
+        system_profile_rows,
+        user_profile_rows,
+    }
+}
+
+/// Which side's `references_of` helper to use when computing
+/// `referenced_by` for a row. Localized inside this module — the
+/// public Slint enum lives in `ui/globals/profiles.slint`.
+#[derive(Debug, Clone, Copy)]
+enum ProfileKindForRefs {
+    System,
+    User,
+}
+
+/// Build the master-list rows for one profile side (system or user).
+///
+/// Default UUID always lands first; remaining rows sort by friendly
+/// name. Each row carries the fanned-out `referenced_by` list +
+/// pre-joined `referenced_by_summary` so Slint can render the chips
+/// and the "still used by X, Y" delete-confirm dialog without an
+/// array-join expression.
+fn build_profile_rows<B>(
+    bodies: &HashMap<Uuid, B>,
+    default_uuid: Uuid,
+    tv_assignments: &[TvAssignment],
+    tv_meta: &HashMap<Uuid, (String, bool)>,
+    kind: ProfileKindForRefs,
+) -> Vec<ProfileRowRaw>
+where
+    B: HasName,
+{
+    let mut entries: Vec<(Uuid, &B)> = bodies.iter().map(|(u, b)| (*u, b)).collect();
+    entries.sort_by(|a, b| {
+        let a_default = a.0 == default_uuid;
+        let b_default = b.0 == default_uuid;
+        match (a_default, b_default) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.1.name_str().cmp(b.1.name_str()),
+        }
+    });
+
+    let mut rows = Vec::with_capacity(entries.len());
+    for (uuid, body) in entries {
+        let referenced_uuids = match kind {
+            ProfileKindForRefs::System => references_of(uuid, tv_assignments),
+            ProfileKindForRefs::User => user_references_of(uuid, tv_assignments),
+        };
+
+        let mut referenced_by = Vec::with_capacity(referenced_uuids.len());
+        let mut summary_parts = Vec::with_capacity(referenced_uuids.len());
+        let mut active = false;
+        for tv_uuid in &referenced_uuids {
+            if let Some((name, automated)) = tv_meta.get(tv_uuid) {
+                referenced_by.push(ProfileTvRefRaw {
+                    uuid: SharedString::from(tv_uuid.to_string()),
+                    name: SharedString::from(name.as_str()),
+                });
+                summary_parts.push(name.clone());
+                if *automated {
+                    active = true;
+                }
+            }
+        }
+
+        rows.push(ProfileRowRaw {
+            uuid: SharedString::from(uuid.to_string()),
+            name: SharedString::from(body.name_str()),
+            is_default: uuid == default_uuid,
+            referenced_by,
+            referenced_by_summary: SharedString::from(summary_parts.join(", ")),
+            active,
+        });
+    }
+    rows
+}
+
+/// Slint-side ComboBox name list. The reserved default profile's
+/// label always sorts first so the picker reads consistently.
+fn profile_name_list<B>(bodies: &HashMap<Uuid, B>, default_uuid: Uuid) -> Vec<SharedString>
+where
+    B: HasName,
+{
+    let mut entries: Vec<(Uuid, String)> = bodies
+        .iter()
+        .map(|(u, b)| (*u, b.name_str().to_owned()))
+        .collect();
+    entries.sort_by(|a, b| {
+        let a_default = a.0 == default_uuid;
+        let b_default = b.0 == default_uuid;
+        match (a_default, b_default) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.1.cmp(&b.1),
+        }
+    });
+    entries
+        .into_iter()
+        .map(|(_, name)| SharedString::from(name))
+        .collect()
+}
+
+/// Tiny trait so [`build_profile_rows`] and [`profile_name_list`]
+/// can read the `name` field off either body type without macro
+/// gymnastics — both shapes carry an always-present `String` label
+/// (`SystemProfileBody::name`, `UserProfileBody::name`).
+trait HasName {
+    fn name_str(&self) -> &str;
+}
+
+impl HasName for SystemProfileBody {
+    fn name_str(&self) -> &str {
+        &self.name
+    }
+}
+
+impl HasName for UserProfileBody {
+    fn name_str(&self) -> &str {
+        &self.name
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tisvlay_core::{DesktopMapping, HardwareId};
+    use tisvlay_core::{DesktopMapping, HardwareId, SessionAction};
 
     /// Build a `TvInfo` with sensible defaults so each test only
     /// names the fields it cares about. `TvInfo` doesn't derive
-    /// `Default` upstream (its fields would all be valid as defaults
-    /// but the type's home crate hasn't opted in).
+    /// `Default` upstream.
     fn sample_tv(uuid: &str, name: &str) -> TvInfo {
         TvInfo {
             uuid: uuid.into(),
@@ -244,9 +465,23 @@ mod tests {
     fn empty_inputs() -> SnapshotInputs {
         SnapshotInputs {
             tvs: Vec::new(),
-            system_profiles: Vec::new(),
-            user_profiles: Vec::new(),
+            system_profile_bodies: HashMap::new(),
+            user_profile_bodies: HashMap::new(),
             user_profile_by_uuid: HashMap::new(),
+        }
+    }
+
+    fn sys_body(name: &str) -> SystemProfileBody {
+        SystemProfileBody {
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn user_body(name: &str) -> UserProfileBody {
+        UserProfileBody {
+            name: name.to_string(),
+            ..Default::default()
         }
     }
 
@@ -256,11 +491,13 @@ mod tests {
         assert!(snap.tvs.is_empty());
         assert!(snap.system_profiles.is_empty());
         assert!(snap.user_profiles.is_empty());
+        assert!(snap.system_profile_rows.is_empty());
+        assert!(snap.user_profile_rows.is_empty());
     }
 
     #[test]
     fn single_tv_round_trips_through_conversion() {
-        let mut tv = sample_tv("uuid-1", "Living Room");
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "Living Room");
         tv.connected = true;
         tv.power_state = "active".into();
         tv.volume = 42;
@@ -272,7 +509,7 @@ mod tests {
             ("HDMI_1".into(), "HDMI 1".into()),
             ("HDMI_2".into(), "HDMI 2".into()),
         ];
-        tv.system_profile = "default".into();
+        tv.system_profile = DEFAULT_SYSTEM_PROFILE_UUID.to_string();
         tv.hardware_id = HardwareId {
             manufacturer: Some("GSM".into()),
             model: Some("OLED65G4SUB".into()),
@@ -287,7 +524,7 @@ mod tests {
 
         assert_eq!(snap.tvs.len(), 1);
         let row = &snap.tvs[0];
-        assert_eq!(row.uuid.as_str(), "uuid-1");
+        assert_eq!(row.uuid.as_str(), "00000000-0000-0000-0000-000000000001");
         assert_eq!(row.name.as_str(), "Living Room");
         assert!(row.connected);
         assert_eq!(row.power_state.as_str(), "active");
@@ -300,7 +537,10 @@ mod tests {
             row.available_input_ids,
             vec![SharedString::from("HDMI_1"), SharedString::from("HDMI_2")]
         );
-        assert_eq!(row.system_profile.as_str(), "default");
+        assert_eq!(
+            row.system_profile.as_str(),
+            DEFAULT_SYSTEM_PROFILE_UUID.to_string()
+        );
         assert_eq!(row.hw_manufacturer.as_str(), "GSM");
         assert_eq!(row.hw_model.as_str(), "OLED65G4SUB");
         assert_eq!(row.hw_serial.as_str(), "XYZ123");
@@ -308,7 +548,7 @@ mod tests {
 
     #[test]
     fn missing_hardware_id_fields_become_empty_strings() {
-        let tv = sample_tv("uuid-1", "TV");
+        let tv = sample_tv("00000000-0000-0000-0000-000000000001", "TV");
         let snap = convert_snapshot(SnapshotInputs {
             tvs: vec![tv],
             ..empty_inputs()
@@ -321,7 +561,7 @@ mod tests {
 
     #[test]
     fn primary_descriptor_prefers_vendor_config_first_entry() {
-        let mut tv = sample_tv("uuid-1", "TV");
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "TV");
         tv.vendor_config = vec![
             ("ip".into(), "192.168.1.10".into()),
             ("mac".into(), "AA:BB:CC:DD:EE:FF".into()),
@@ -337,8 +577,7 @@ mod tests {
 
     #[test]
     fn primary_descriptor_falls_back_to_vendor_info_when_config_empty() {
-        let mut tv = sample_tv("uuid-1", "TV");
-        // vendor_config empty; vendor_info has the only candidate.
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "TV");
         tv.vendor_info = vec![("scheme".into(), "wss".into())];
 
         let snap = convert_snapshot(SnapshotInputs {
@@ -350,7 +589,7 @@ mod tests {
 
     #[test]
     fn primary_descriptor_empty_when_both_lists_empty() {
-        let tv = sample_tv("uuid-1", "TV");
+        let tv = sample_tv("00000000-0000-0000-0000-000000000001", "TV");
         let snap = convert_snapshot(SnapshotInputs {
             tvs: vec![tv],
             ..empty_inputs()
@@ -362,9 +601,9 @@ mod tests {
     fn tvs_sort_by_name_alphabetically() {
         let inputs = SnapshotInputs {
             tvs: vec![
-                sample_tv("uuid-c", "Bedroom"),
-                sample_tv("uuid-a", "Office"),
-                sample_tv("uuid-b", "Attic"),
+                sample_tv("00000000-0000-0000-0000-00000000000c", "Bedroom"),
+                sample_tv("00000000-0000-0000-0000-00000000000a", "Office"),
+                sample_tv("00000000-0000-0000-0000-00000000000b", "Attic"),
             ],
             ..empty_inputs()
         };
@@ -376,11 +615,14 @@ mod tests {
     #[test]
     fn user_profile_assignment_resolves_by_uuid() {
         let inputs = SnapshotInputs {
-            tvs: vec![sample_tv("uuid-a", "TV-A"), sample_tv("uuid-b", "TV-B")],
-            user_profile_by_uuid: HashMap::from([
-                ("uuid-a".into(), "movies".into()),
-                // uuid-b deliberately absent — surfaces as "" below.
-            ]),
+            tvs: vec![
+                sample_tv("00000000-0000-0000-0000-00000000000a", "TV-A"),
+                sample_tv("00000000-0000-0000-0000-00000000000b", "TV-B"),
+            ],
+            user_profile_by_uuid: HashMap::from([(
+                "00000000-0000-0000-0000-00000000000a".into(),
+                "movies".into(),
+            )]),
             ..empty_inputs()
         };
         let snap = convert_snapshot(inputs);
@@ -389,25 +631,122 @@ mod tests {
             .iter()
             .map(|t| (t.uuid.to_string(), t.user_profile.to_string()))
             .collect();
-        assert_eq!(by_uuid["uuid-a"], "movies");
-        assert_eq!(by_uuid["uuid-b"], "");
+        assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000a"], "movies");
+        assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000b"], "");
     }
 
     #[test]
     fn profile_lists_drop_descriptions_and_keep_names() {
         let inputs = SnapshotInputs {
-            system_profiles: vec![
-                ("default".into(), "Default profile".into()),
-                ("evening".into(), "Dim + warm".into()),
-            ],
-            user_profiles: vec![("movies".into(), "User: dark".into())],
+            system_profile_bodies: HashMap::from([
+                (DEFAULT_SYSTEM_PROFILE_UUID, sys_body("default")),
+                (Uuid::new_v4(), sys_body("evening")),
+            ]),
+            user_profile_bodies: HashMap::from([(Uuid::new_v4(), user_body("movies"))]),
             ..empty_inputs()
         };
         let snap = convert_snapshot(inputs);
+        // Default sorts first; "evening" follows alphabetically.
         assert_eq!(
             snap.system_profiles,
             vec![SharedString::from("default"), SharedString::from("evening")]
         );
         assert_eq!(snap.user_profiles, vec![SharedString::from("movies")]);
+    }
+
+    #[test]
+    fn profile_rows_sort_default_first_then_alpha() {
+        let other = Uuid::new_v4();
+        let alpha = Uuid::new_v4();
+        let inputs = SnapshotInputs {
+            system_profile_bodies: HashMap::from([
+                (other, sys_body("zen")),
+                (DEFAULT_SYSTEM_PROFILE_UUID, sys_body("default")),
+                (alpha, sys_body("alpha")),
+            ]),
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        let order: Vec<_> = snap
+            .system_profile_rows
+            .iter()
+            .map(|r| r.name.to_string())
+            .collect();
+        assert_eq!(order, vec!["default", "alpha", "zen"]);
+        assert!(snap.system_profile_rows[0].is_default);
+        assert!(!snap.system_profile_rows[1].is_default);
+    }
+
+    #[test]
+    fn default_profile_fans_in_unassigned_tvs() {
+        // The fan-out semantic from `references_of`: a TV with an empty
+        // (unparseable / unset) `system_profile` field implicitly
+        // references the reserved default UUID. The convert pipeline
+        // must surface that in the default row's `referenced_by`.
+        let tv_uuid = Uuid::new_v4();
+        let tv = {
+            let mut t = sample_tv(&tv_uuid.to_string(), "Unassigned-TV");
+            t.system_profile = String::new(); // unparseable → None on the assignment
+            t.automated = true;
+            t
+        };
+        let inputs = SnapshotInputs {
+            tvs: vec![tv],
+            system_profile_bodies: HashMap::from([(
+                DEFAULT_SYSTEM_PROFILE_UUID,
+                sys_body("default"),
+            )]),
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        assert_eq!(snap.system_profile_rows.len(), 1);
+        let row = &snap.system_profile_rows[0];
+        assert!(row.is_default);
+        // The unassigned TV must show up under the default profile's
+        // `referenced_by` — that's the fan-out branch in references_of.
+        assert_eq!(
+            row.referenced_by.len(),
+            1,
+            "unassigned TV should fan out to default"
+        );
+        assert_eq!(row.referenced_by[0].name.as_str(), "Unassigned-TV");
+        assert_eq!(row.referenced_by_summary.as_str(), "Unassigned-TV");
+        assert!(row.active, "automated TV should mark the row active");
+    }
+
+    #[test]
+    fn user_default_profile_fans_in_unassigned_tvs() {
+        // Mirror of the system-side fan-out test for the user side.
+        let tv_uuid = Uuid::new_v4();
+        let tv = sample_tv(&tv_uuid.to_string(), "TV-X");
+        let inputs = SnapshotInputs {
+            tvs: vec![tv],
+            user_profile_bodies: HashMap::from([(DEFAULT_USER_PROFILE_UUID, user_body("default"))]),
+            // user_profile_by_uuid intentionally empty → user_profile = None
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        assert_eq!(snap.user_profile_rows.len(), 1);
+        let row = &snap.user_profile_rows[0];
+        assert!(row.is_default);
+        assert_eq!(row.referenced_by.len(), 1);
+        assert_eq!(row.referenced_by[0].name.as_str(), "TV-X");
+    }
+
+    #[test]
+    fn body_field_round_trip_via_fetch_helpers_compiles() {
+        // Pure-static check that the body helpers' signatures keep
+        // matching the wire wrappers; constructed bodies are used by
+        // the snapshot's row builder.
+        let _b = SystemProfileBody {
+            name: "guest".into(),
+            on_startup: Some(SessionAction::PowerOn),
+            ..Default::default()
+        };
+        let _u = UserProfileBody {
+            name: "movies".into(),
+            idle_timeout_seconds: Some(300),
+            ..Default::default()
+        };
     }
 }

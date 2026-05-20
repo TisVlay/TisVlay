@@ -349,6 +349,12 @@ async fn watch_state(
             StateEvent::DaemonStateChanged(_)
             | StateEvent::DaemonAppeared
             | StateEvent::SessionProfileChanged
+            | StateEvent::SystemProfileChanged(_)
+            | StateEvent::SystemProfileAdded(_)
+            | StateEvent::SystemProfileRemoved(_)
+            | StateEvent::UserProfileBodyChanged(_)
+            | StateEvent::UserProfileAdded(_)
+            | StateEvent::UserProfileRemoved(_)
             | StateEvent::FallbackPoll => {
                 trigger_refresh();
             }
