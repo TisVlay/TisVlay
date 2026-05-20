@@ -575,6 +575,24 @@ fn register_callbacks(
     errors_global.on_tvs_action(|| {});
     errors_global.on_pairing_action(|| {});
 
+    // Profiles-pane callback surface — wired as no-ops while the
+    // Slint shell is reviewable on its own. The state.rs rebind +
+    // dispatch helpers replace these with real handlers; binding
+    // them inert now keeps `lib.rs` as a single discoverable map
+    // of every Slint-side callback the pane can fire.
+    let profiles_global = app.global::<Profiles>();
+    profiles_global.on_select(|_kind, _uuid| {});
+    profiles_global.on_confirm_create(|_kind, _name| {});
+    profiles_global.on_confirm_delete(|_kind, _uuid| {});
+    profiles_global.on_confirm_duplicate(|_kind, _source, _name| {});
+    profiles_global.on_open_tv(|_uuid| {});
+    profiles_global.on_open_profile_by_uuid(|_kind, _uuid| {});
+    profiles_global.on_value_edited(|_field, _value| {});
+    profiles_global.on_value_edited_number(|_field, _value| {});
+    profiles_global.on_reset_field(|_field| {});
+    profiles_global.on_reset_all(|| {});
+    profiles_global.on_rename_selected(|_name| {});
+
     // Slider drags coalesce per TV via `Coalescer`: each `changed(v)`
     // tick fires into the per-TV worker, which drains-keep-latest
     // before each daemon round-trip. Bounds in-flight calls to one
