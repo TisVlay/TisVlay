@@ -1204,14 +1204,41 @@ fn register_callbacks(
     let d = daemon.clone();
     let app_weak = app.as_weak();
     daemon_global.on_set_system_profile(move |tv_id, profile| {
+        // The ComboBox emits the display name; the daemon's
+        // `Tv1.SystemProfile` setter wants a UUID. Translate via a
+        // fresh catalog fetch (profile catalogs are small; an on-click
+        // round-trip is cheaper than threading a shared name->UUID
+        // cache through every callback).
         let d = d.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
-        let profile = profile.to_string();
+        let picked_name = profile.to_string();
         tokio::spawn(async move {
-            if let Err(e) = d.set_tv_system_profile(&tv_id, &profile).await {
+            let bodies = match d.list_system_profile_bodies().await {
+                Ok(b) => b,
+                Err(e) => {
+                    let msg = format!("{e}");
+                    warn!(tv_id = %tv_id, name = %picked_name, error = %msg, "set_system_profile: list_system_profile_bodies failed");
+                    push_tvs_error(&app_weak, gettext("Couldn't change system profile"), msg);
+                    return;
+                }
+            };
+            let Some(uuid) = bodies
+                .iter()
+                .find(|(_, b)| b.name == picked_name)
+                .map(|(u, _)| *u)
+            else {
+                warn!(tv_id = %tv_id, name = %picked_name, "set_system_profile: name not in catalog");
+                push_tvs_error(
+                    &app_weak,
+                    gettext("Couldn't change system profile"),
+                    gettext("Selected profile is no longer in the catalog."),
+                );
+                return;
+            };
+            if let Err(e) = d.set_tv_system_profile(&tv_id, &uuid.to_string()).await {
                 let msg = format!("{e}");
-                warn!(tv_id = %tv_id, profile = %profile, error = %msg, "set_system_profile failed");
+                warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_system_profile failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change system profile"), msg);
             }
         });
@@ -1220,20 +1247,16 @@ fn register_callbacks(
     let s = session.clone();
     let app_weak = app.as_weak();
     daemon_global.on_set_user_profile(move |tv_id, profile| {
+        // Same translation as `on_set_system_profile`, but the
+        // user-profile catalog lives on the session bus.
         let s = s.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
-        let profile = profile.to_string();
+        let picked_name = profile.to_string();
         tokio::spawn(async move {
             let session_ref = s.read().await;
-            match session_ref.as_ref() {
-                Some(client) => {
-                    if let Err(e) = client.set_tv_user_profile(&tv_id, &profile).await {
-                        let msg = format!("{e}");
-                        warn!(tv_id = %tv_id, profile = %profile, error = %msg, "set_user_profile failed");
-                        push_tvs_error(&app_weak, gettext("Couldn't change user profile"), msg);
-                    }
-                }
+            let client = match session_ref.as_ref() {
+                Some(c) => c,
                 None => {
                     warn!(tv_id = %tv_id, "set_user_profile: session service unavailable");
                     push_tvs_error(
@@ -1243,7 +1266,35 @@ fn register_callbacks(
                             "User-profile assignments require the per-user tisvlay-session service.",
                         ),
                     );
+                    return;
                 }
+            };
+            let bodies = match client.list_user_profile_bodies().await {
+                Ok(b) => b,
+                Err(e) => {
+                    let msg = format!("{e}");
+                    warn!(tv_id = %tv_id, name = %picked_name, error = %msg, "set_user_profile: list_user_profile_bodies failed");
+                    push_tvs_error(&app_weak, gettext("Couldn't change user profile"), msg);
+                    return;
+                }
+            };
+            let Some(uuid) = bodies
+                .iter()
+                .find(|(_, b)| b.name == picked_name)
+                .map(|(u, _)| *u)
+            else {
+                warn!(tv_id = %tv_id, name = %picked_name, "set_user_profile: name not in catalog");
+                push_tvs_error(
+                    &app_weak,
+                    gettext("Couldn't change user profile"),
+                    gettext("Selected profile is no longer in the catalog."),
+                );
+                return;
+            };
+            if let Err(e) = client.set_tv_user_profile(&tv_id, &uuid.to_string()).await {
+                let msg = format!("{e}");
+                warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_user_profile failed");
+                push_tvs_error(&app_weak, gettext("Couldn't change user profile"), msg);
             }
         });
     });

@@ -230,8 +230,19 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             backlight: tv.backlight as i32,
             current_input: SharedString::from(tv.current_input.as_str()),
             available_input_ids,
-            system_profile: SharedString::from(tv.system_profile.as_str()),
-            user_profile: SharedString::from(user_profile),
+            // ComboBox renders `current-value` verbatim. Resolve the
+            // wire UUID to the friendly name so the picker matches its
+            // `system-profiles` / `user-profiles` model. Unknown UUIDs
+            // fall through to the raw string so a stale-state drift
+            // stays visible instead of blanking the cell.
+            system_profile: SharedString::from(resolve_profile_name(
+                &tv.system_profile,
+                &system_profile_bodies,
+            )),
+            user_profile: SharedString::from(resolve_profile_name(
+                &user_profile,
+                &user_profile_bodies,
+            )),
             primary_input: SharedString::from(tv.primary_input.as_str()),
             managed: tv.managed,
             automated: tv.automated,
@@ -380,6 +391,21 @@ where
         });
     }
     rows
+}
+
+/// Resolve a profile UUID string to its display name via the bodies
+/// catalog. Unknown / malformed UUIDs fall through to the raw input
+/// so a stale-state drift stays visible rather than collapsing to
+/// an empty cell.
+fn resolve_profile_name<B>(uuid_str: &str, bodies: &HashMap<Uuid, B>) -> String
+where
+    B: HasName,
+{
+    Uuid::parse_str(uuid_str)
+        .ok()
+        .and_then(|u| bodies.get(&u))
+        .map(|b| b.name_str().to_owned())
+        .unwrap_or_else(|| uuid_str.to_owned())
 }
 
 /// Slint-side ComboBox name list. The reserved default profile's
@@ -633,6 +659,73 @@ mod tests {
             .collect();
         assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000a"], "movies");
         assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000b"], "");
+    }
+
+    #[test]
+    fn tv_system_profile_field_resolves_uuid_to_name() {
+        // `Tv1.SystemProfile` carries the UUID; the TVs-pane combobox
+        // renders `current-value` verbatim against the names model, so
+        // `convert_snapshot` must do the UUID -> name translation.
+        let other_uuid = Uuid::new_v4();
+        let mut tv_a = sample_tv("00000000-0000-0000-0000-00000000000a", "TV-A");
+        tv_a.system_profile = DEFAULT_SYSTEM_PROFILE_UUID.to_string();
+        let mut tv_b = sample_tv("00000000-0000-0000-0000-00000000000b", "TV-B");
+        tv_b.system_profile = other_uuid.to_string();
+        let inputs = SnapshotInputs {
+            tvs: vec![tv_a, tv_b],
+            system_profile_bodies: HashMap::from([
+                (DEFAULT_SYSTEM_PROFILE_UUID, sys_body("default")),
+                (other_uuid, sys_body("evening")),
+            ]),
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        let by_uuid: HashMap<_, _> = snap
+            .tvs
+            .iter()
+            .map(|t| (t.uuid.to_string(), t.system_profile.to_string()))
+            .collect();
+        assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000a"], "default");
+        assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000b"], "evening");
+    }
+
+    #[test]
+    fn tv_system_profile_field_falls_through_on_unknown_uuid() {
+        // A TV assigned to a profile no longer in the catalog (stale-
+        // state drift) keeps showing the raw UUID so the broken state
+        // stays visible rather than blanking the cell.
+        let stale = "11111111-1111-1111-1111-111111111111";
+        let mut tv = sample_tv("00000000-0000-0000-0000-00000000000a", "TV-A");
+        tv.system_profile = stale.into();
+        let inputs = SnapshotInputs {
+            tvs: vec![tv],
+            system_profile_bodies: HashMap::from([(
+                DEFAULT_SYSTEM_PROFILE_UUID,
+                sys_body("default"),
+            )]),
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        assert_eq!(snap.tvs[0].system_profile.as_str(), stale);
+    }
+
+    #[test]
+    fn tv_user_profile_field_resolves_uuid_to_name() {
+        // Same shape as the system test, but the user side feeds
+        // `convert_snapshot` via `user_profile_by_uuid` (the wire
+        // assignment from `Session1.GetTvUserProfile`).
+        let movies_uuid = Uuid::new_v4();
+        let inputs = SnapshotInputs {
+            tvs: vec![sample_tv("00000000-0000-0000-0000-00000000000a", "TV-A")],
+            user_profile_by_uuid: HashMap::from([(
+                "00000000-0000-0000-0000-00000000000a".into(),
+                movies_uuid.to_string(),
+            )]),
+            user_profile_bodies: HashMap::from([(movies_uuid, user_body("movies"))]),
+            ..empty_inputs()
+        };
+        let snap = convert_snapshot(inputs);
+        assert_eq!(snap.tvs[0].user_profile.as_str(), "movies");
     }
 
     #[test]
