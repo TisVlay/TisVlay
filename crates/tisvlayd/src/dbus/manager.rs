@@ -342,15 +342,10 @@ impl ManagerService {
         })
     }
 
-    /// Get all system profiles as (name, json) pairs.
-    ///
-    /// Returns all system profiles defined in the system config.
-    /// Used by tray, GUI, and CLI to display available system profiles.
-    ///
-    /// **Wire name**: `ListSystemProfilesJson` — v3 added a property-bag
-    /// shape under the v1 `ListSystemProfiles` name (`a{sa{sv}}`); this
-    /// JSON-blob form keeps the same Rust handler so existing
-    /// `dbus_client.list_system_profiles` wrappers keep working.
+    /// Get all system profiles as `(name, json)` pairs. The JSON
+    /// serializes a `SystemProfileConfig`. Bound to the
+    /// `ListSystemProfilesJson` wire slot; the `ListSystemProfiles`
+    /// wire name carries the property-bag `a{sa{sv}}` shape.
     #[zbus(name = "ListSystemProfilesJson")]
     async fn list_system_profiles(&self) -> Result<Vec<(String, String)>, DaemonError> {
         debug!("D-Bus: ListSystemProfilesJson");
@@ -385,19 +380,17 @@ impl ManagerService {
     }
 
     // -------------------------------------------------------------------------
-    // System profile CRUD (v3 property-bag surface)
+    // System profile property-bag CRUD
     //
-    // Wire shape: see `docs/plans/profile-crud-v3.md`. The eight
-    // methods + three signals replace v2's per-profile D-Bus object
-    // with a property-bag CRUD surface anchored on `Manager1`. Bodies
-    // round-trip as `SystemProfileBody` (`a{sv}` via dict-derive);
-    // the catalog list is `a{sa{sv}}` (uuid string → body dict).
+    // Bodies round-trip as `SystemProfileBody` (`a{sv}` via dict-derive);
+    // the catalog list is `a{sa{sv}}` (uuid string → body dict). Eight
+    // methods + three signals anchored on `Manager1`.
     // -------------------------------------------------------------------------
 
-    /// v3 catalog list: returns every system profile keyed by UUID
-    /// string. The wire shape is `a{sa{sv}}`.
+    /// Catalog list: every system profile keyed by UUID string. Wire
+    /// shape `a{sa{sv}}`.
     #[zbus(name = "ListSystemProfiles")]
-    async fn list_system_profiles_v3(
+    async fn list_system_profile_bodies(
         &self,
     ) -> Result<HashMap<String, SystemProfileBody>, DaemonError> {
         debug!("D-Bus: ListSystemProfiles");
@@ -408,8 +401,8 @@ impl ManagerService {
             .collect())
     }
 
-    /// v3 fetch: one body by UUID string. Returns `ProfileNotFound`
-    /// if the UUID is malformed or absent from the catalog.
+    /// Fetch one body by UUID string. Returns `ProfileNotFound` if
+    /// the UUID is malformed or absent from the catalog.
     async fn get_system_profile(&self, uuid: &str) -> Result<SystemProfileBody, DaemonError> {
         debug!(uuid = %uuid, "D-Bus: GetSystemProfile");
         let parsed = parse_profile_uuid(uuid)?;
@@ -419,8 +412,8 @@ impl ManagerService {
             .map_err(DaemonError::from)
     }
 
-    /// v3 atomic full-body replace. Rename folds into this method —
-    /// the new name lives on `body.name`.
+    /// Atomic full-body replace. Rename folds into this method — the
+    /// new name lives on `body.name`.
     async fn update_system_profile(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
@@ -439,8 +432,8 @@ impl ManagerService {
         Ok(())
     }
 
-    /// v3 create: mint a new UUID, insert an empty body under the
-    /// given display name, persist, emit `SystemProfileAdded(uuid)`.
+    /// Mint a new UUID, insert an empty body under the given display
+    /// name, persist, emit `SystemProfileAdded(uuid)`.
     async fn create_system_profile(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
@@ -459,9 +452,9 @@ impl ManagerService {
         Ok(uuid_str)
     }
 
-    /// v3 duplicate: clone an existing body under a new UUID + name,
-    /// persist, emit `SystemProfileAdded(new_uuid)`. The new body
-    /// has every field from the source except `name`.
+    /// Clone an existing body under a new UUID + name, persist, emit
+    /// `SystemProfileAdded(new_uuid)`. The new body has every field
+    /// from the source except `name`.
     async fn duplicate_system_profile(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
@@ -482,9 +475,9 @@ impl ManagerService {
         Ok(uuid_str)
     }
 
-    /// v3 delete: reject the reserved default UUID, reject if at
-    /// least one TV references the target (explicit or implicit-default
-    /// fan-out), persist, emit `SystemProfileRemoved(uuid)`.
+    /// Delete a profile. Reject the reserved default UUID, reject if
+    /// at least one TV references the target (explicit or implicit-
+    /// default fan-out), persist, emit `SystemProfileRemoved(uuid)`.
     async fn delete_system_profile(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
@@ -502,16 +495,16 @@ impl ManagerService {
         Ok(())
     }
 
-    /// v3 hard-coded baseline: the body every profile inherits from
-    /// when its fields are all `None`. Static, but exposed so clients
-    /// don't have to duplicate the table — `gettext("default")` is
-    /// the client-side concern.
+    /// Hard-coded baseline: the body every profile inherits from when
+    /// its fields are all `None`. Static, but exposed so clients don't
+    /// have to duplicate the table — `gettext("default")` is the
+    /// client-side concern.
     fn get_resolved_system_profile_defaults(&self) -> SystemProfileBody {
         debug!("D-Bus: GetResolvedSystemProfileDefaults");
         TvManager::resolved_system_profile_defaults()
     }
 
-    /// v3 per-TV resolved walk: returns the fully-resolved body for
+    /// Per-TV resolved walk: returns the fully-resolved body for
     /// the named TV's assigned profile (per-TV body → default body
     /// → hardcoded baseline). Used by the CLI's `tisvlay profile
     /// show <tv>` and any client that wants the resolved-by-server
@@ -625,7 +618,7 @@ impl ManagerService {
     ) -> zbus::Result<()>;
 }
 
-/// Parse a UUID string coming off the v3 system-profile CRUD wire
+/// Parse a UUID string coming off the system-profile CRUD wire
 /// surface. Malformed UUIDs return `ProfileNotFound` rather than a
 /// generic `InvalidArgs` so clients can route the "unknown profile"
 /// case uniformly whether the UUID is well-formed-but-absent or

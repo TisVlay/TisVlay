@@ -79,7 +79,7 @@ pub enum DaemonError {
     /// TV references a profile name that doesn't exist.
     ConfigInvalidProfileReference(String),
 
-    // -- Profile CRUD (Stage 3a) --
+    // -- Profile CRUD --
     /// Profile UUID not in the catalog.
     ProfileNotFound(String),
     /// Reserved profile UUID cannot be deleted / mutated this way

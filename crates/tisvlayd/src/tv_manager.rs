@@ -1035,8 +1035,9 @@ impl TvManager {
     }
 
     /// Get all user profiles as (name, UserProfileConfig) pairs. The
-    /// name comes from the body — profiles are UUID-keyed internally;
-    /// the wire shape is name-keyed for v3.
+    /// name comes from the body — profiles are UUID-keyed internally
+    /// in the catalog; this projection feeds the name-keyed wire
+    /// methods.
     pub async fn list_user_profiles(&self) -> Vec<(String, UserProfileConfig)> {
         let user = self.user_section.read().await;
         user.profiles
@@ -1057,7 +1058,7 @@ impl TvManager {
     }
 
     // -------------------------------------------------------------------------
-    // System-profile CRUD (Stage 3a)
+    // System-profile CRUD
     //
     // The four mutators (`create_system_profile`, `duplicate_system_profile`,
     // `update_system_profile`, `delete_system_profile`) follow the same
@@ -1074,7 +1075,7 @@ impl TvManager {
     // `Changed` / `Removed`.
     // -------------------------------------------------------------------------
 
-    /// Snapshot of the system-profile catalog suitable for v3
+    /// Snapshot of the system-profile catalog suitable for
     /// `Manager1.ListSystemProfiles -> a{sa{sv}}`. Returns `(uuid,
     /// body)` pairs so the wire encoder can map UUIDs to strings
     /// without re-locking.
@@ -1440,8 +1441,8 @@ impl TvManager {
         for (id, (_, tv_arc)) in tvs.iter() {
             let parsed = match Uuid::parse_str(id) {
                 Ok(u) => u,
-                // Defensive: tv ids are always UUIDs in v3, but a
-                // bad ID shouldn't poison the whole walk.
+                // Defensive: tv ids are always UUIDs, but a bad ID
+                // shouldn't poison the whole walk.
                 Err(_) => continue,
             };
             let tv = tv_arc.lock().await;

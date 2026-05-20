@@ -35,10 +35,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
+use uuid::Uuid;
 use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
+use crate::SystemProfileBody;
 use crate::dbus_paths::{DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH, tv_path};
 
 // =============================================================================
@@ -187,15 +189,67 @@ trait TisvlayManager {
     /// Get all user profiles as (name, json) pairs.
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Get all system profiles as (name, json) pairs.
-    ///
-    /// Wire-named `ListSystemProfilesJson` after v3 Stage 3a — the v1
-    /// `ListSystemProfiles` wire slot now carries the property-bag
-    /// `a{sa{sv}}` shape, but the JSON-blob form lives on under the
-    /// renamed slot so existing GUI / tray / CLI consumers keep
-    /// working unchanged.
+    /// JSON-shape system-profile catalog. Returns `(name, json)` pairs
+    /// where the JSON serializes a `SystemProfileConfig`. Bound to the
+    /// `ListSystemProfilesJson` wire slot — the `ListSystemProfiles`
+    /// wire name carries the property-bag `a{sa{sv}}` shape.
     #[zbus(name = "ListSystemProfilesJson")]
     fn list_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+
+    // ---- System-Profile property-bag CRUD surface ----------------------
+
+    /// Catalog list: every system profile keyed by UUID string.
+    /// Wire shape: `a{sa{sv}}` (uuid → body).
+    #[zbus(name = "ListSystemProfiles")]
+    fn list_system_profile_bodies(&self) -> zbus::Result<HashMap<String, SystemProfileBody>>;
+
+    /// Fetch one body by UUID string. Malformed or absent UUIDs
+    /// return `org.tisvlay.Error.ProfileNotFound`.
+    fn get_system_profile(&self, uuid: &str) -> zbus::Result<SystemProfileBody>;
+
+    /// Atomic full-body replace. Renames fold into this method —
+    /// the new name lives on `body.name`.
+    fn update_system_profile(&self, uuid: &str, body: SystemProfileBody) -> zbus::Result<()>;
+
+    /// Mint a new UUID under the given display name. Empty / reserved
+    /// / duplicate names are rejected with
+    /// `org.tisvlay.Error.ProfileNameInvalid`. Returns the new UUID
+    /// as a string.
+    fn create_system_profile(&self, name: &str) -> zbus::Result<String>;
+
+    /// Clone an existing body under a new UUID + name. Returns the
+    /// new UUID as a string.
+    fn duplicate_system_profile(&self, source_uuid: &str, new_name: &str) -> zbus::Result<String>;
+
+    /// Delete a profile. Rejects the reserved default UUID
+    /// (`org.tisvlay.Error.ReservedProfile`) and rejects if at least
+    /// one TV references the target
+    /// (`org.tisvlay.Error.ProfileReferenced`).
+    fn delete_system_profile(&self, uuid: &str) -> zbus::Result<()>;
+
+    /// Hard-coded baseline body — every profile inherits from this
+    /// when its fields are all `None`. Static.
+    fn get_resolved_system_profile_defaults(&self) -> zbus::Result<SystemProfileBody>;
+
+    /// Per-TV resolved walk: returns the fully-resolved body for
+    /// the named TV's assigned profile (per-TV body → default body
+    /// → hardcoded baseline).
+    fn get_effective_system_profile(&self, tv_id: &str) -> zbus::Result<SystemProfileBody>;
+
+    /// A system profile's body was mutated (any field including
+    /// `name`). Clients with a cached body should re-fetch via
+    /// `GetSystemProfile(uuid)`.
+    #[zbus(signal)]
+    fn system_profile_changed(&self, uuid: String) -> zbus::Result<()>;
+
+    /// A new system profile appeared in the catalog (Create or
+    /// Duplicate).
+    #[zbus(signal)]
+    fn system_profile_added(&self, uuid: String) -> zbus::Result<()>;
+
+    /// A system profile was removed from the catalog.
+    #[zbus(signal)]
+    fn system_profile_removed(&self, uuid: String) -> zbus::Result<()>;
 
     /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
     /// `awaiting_input`, `complete`, `failed`. See
@@ -1542,6 +1596,186 @@ impl DaemonClient {
             .list_system_profiles()
             .await
             .context("Failed to list system profiles from daemon")
+    }
+
+    // -------------------------------------------------------------------------
+    // System-Profile property-bag CRUD
+    //
+    // Mirrors the eight `Manager1` body-dict methods. Bodies round-trip
+    // as `SystemProfileBody`; UUID returns parse from the wire's
+    // `String` representation.
+    // -------------------------------------------------------------------------
+
+    /// Catalog list: every system profile keyed by parsed UUID. The
+    /// daemon emits wire UUIDs that are always well-formed, so a parse
+    /// failure here means a buggy peer; the unparsable entry is
+    /// skipped with a debug log rather than aborting the whole call.
+    pub async fn list_system_profile_bodies(&self) -> Result<HashMap<Uuid, SystemProfileBody>> {
+        debug!("Calling ListSystemProfiles on daemon");
+        let raw = self
+            .manager
+            .list_system_profile_bodies()
+            .await
+            .context("Failed to list system profile bodies from daemon")?;
+        let mut out = HashMap::with_capacity(raw.len());
+        for (uuid_str, body) in raw {
+            match Uuid::parse_str(&uuid_str) {
+                Ok(uuid) => {
+                    out.insert(uuid, body);
+                }
+                Err(e) => {
+                    warn!(uuid = %uuid_str, error = %e, "Skipping malformed UUID from ListSystemProfiles");
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch one body by UUID. Malformed or absent UUIDs surface as
+    /// `org.tisvlay.Error.ProfileNotFound`.
+    pub async fn get_system_profile(&self, uuid: Uuid) -> Result<SystemProfileBody> {
+        debug!(uuid = %uuid, "Calling GetSystemProfile on daemon");
+        let uuid_str = uuid.to_string();
+        self.manager
+            .get_system_profile(&uuid_str)
+            .await
+            .with_context(|| format!("Failed to get system profile '{}'", uuid_str))
+    }
+
+    /// Atomic full-body replace. Includes the new name on `body.name`;
+    /// rename is just an update with a fresh `name`.
+    pub async fn update_system_profile(&self, uuid: Uuid, body: &SystemProfileBody) -> Result<()> {
+        debug!(uuid = %uuid, name = %body.name, "Calling UpdateSystemProfile on daemon");
+        let uuid_str = uuid.to_string();
+        self.manager
+            .update_system_profile(&uuid_str, body.clone())
+            .await
+            .with_context(|| format!("Failed to update system profile '{}'", uuid_str))
+    }
+
+    /// Mint a new system profile under the given display name. Returns
+    /// the new UUID. Empty / reserved / duplicate names are rejected
+    /// with `org.tisvlay.Error.ProfileNameInvalid`.
+    pub async fn create_system_profile(&self, name: &str) -> Result<Uuid> {
+        debug!(name = %name, "Calling CreateSystemProfile on daemon");
+        let raw = self
+            .manager
+            .create_system_profile(name)
+            .await
+            .with_context(|| format!("Failed to create system profile '{}'", name))?;
+        Uuid::parse_str(&raw).with_context(|| {
+            format!(
+                "Daemon returned malformed UUID '{}' from CreateSystemProfile",
+                raw
+            )
+        })
+    }
+
+    /// Clone `source_uuid`'s body under a new UUID + name. Returns the
+    /// new UUID.
+    pub async fn duplicate_system_profile(
+        &self,
+        source_uuid: Uuid,
+        new_name: &str,
+    ) -> Result<Uuid> {
+        debug!(source_uuid = %source_uuid, new_name = %new_name, "Calling DuplicateSystemProfile on daemon");
+        let source_str = source_uuid.to_string();
+        let raw = self
+            .manager
+            .duplicate_system_profile(&source_str, new_name)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to duplicate system profile '{}' as '{}'",
+                    source_str, new_name
+                )
+            })?;
+        Uuid::parse_str(&raw).with_context(|| {
+            format!(
+                "Daemon returned malformed UUID '{}' from DuplicateSystemProfile",
+                raw
+            )
+        })
+    }
+
+    /// Delete a profile. Rejects the reserved default UUID with
+    /// `org.tisvlay.Error.ReservedProfile`; rejects when at least one
+    /// TV references the target with
+    /// `org.tisvlay.Error.ProfileReferenced`.
+    pub async fn delete_system_profile(&self, uuid: Uuid) -> Result<()> {
+        debug!(uuid = %uuid, "Calling DeleteSystemProfile on daemon");
+        let uuid_str = uuid.to_string();
+        self.manager
+            .delete_system_profile(&uuid_str)
+            .await
+            .with_context(|| format!("Failed to delete system profile '{}'", uuid_str))
+    }
+
+    /// Hard-coded baseline body — the inheritance ancestor every
+    /// profile falls back to when its own fields are all `None`.
+    /// Static; the daemon exposes it so clients don't have to
+    /// duplicate the table.
+    pub async fn get_resolved_system_profile_defaults(&self) -> Result<SystemProfileBody> {
+        debug!("Calling GetResolvedSystemProfileDefaults on daemon");
+        self.manager
+            .get_resolved_system_profile_defaults()
+            .await
+            .context("Failed to get resolved system-profile defaults")
+    }
+
+    /// Per-TV resolved walk: the fully-resolved body the daemon
+    /// will dispatch against (per-TV body → default body → hardcoded
+    /// baseline).
+    pub async fn get_effective_system_profile(&self, tv_id: &str) -> Result<SystemProfileBody> {
+        debug!(tv_id = %tv_id, "Calling GetEffectiveSystemProfile on daemon");
+        self.manager
+            .get_effective_system_profile(tv_id)
+            .await
+            .with_context(|| format!("Failed to get effective system profile for TV '{}'", tv_id))
+    }
+
+    /// Subscribe to `Manager1.SystemProfileChanged` signals.
+    ///
+    /// Emits the UUID (parsed) every time a system profile body is
+    /// mutated server-side. Set up the stream **before** the mutation
+    /// you want to observe — signals emitted prior to subscription
+    /// are dropped.
+    pub async fn system_profile_changed_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .manager
+            .receive_system_profile_changed()
+            .await
+            .context("failed to subscribe to SystemProfileChanged signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Subscribe to `Manager1.SystemProfileAdded` signals.
+    pub async fn system_profile_added_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .manager
+            .receive_system_profile_added()
+            .await
+            .context("failed to subscribe to SystemProfileAdded signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Subscribe to `Manager1.SystemProfileRemoved` signals.
+    pub async fn system_profile_removed_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .manager
+            .receive_system_profile_removed()
+            .await
+            .context("failed to subscribe to SystemProfileRemoved signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
     }
 
     /// Set a TV's friendly name.
