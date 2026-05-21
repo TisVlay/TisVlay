@@ -13,9 +13,10 @@
 //   referencing TV — the "Find Usages" idiom (GitHub package "Used
 //   by", VS Code peek).
 //
-// The detail body shows a placeholder until the inheritance-driven
-// editor lands; the FIELDS title row + Reset-all action live here so
-// the visual shell is reviewable on its own.
+// The detail-header toolbar carries the name + rename pencil +
+// Delete (catalog removal). The SYSTEM PROFILE / USER PROFILE
+// section title row above the FIELDS card groups catalog-body
+// actions (Duplicate, Reset all) with the body they act on.
 
 import { ComboBox, ScrollView, SpinBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
@@ -511,12 +512,6 @@ component ProfileDetailHeader inherits Rectangle {
     /// Bubble actions up to the pane; ProfilesPane owns the
     /// confirm-delete dialog and the duplicate dialog.
     callback request-delete();
-    callback request-duplicate();
-    /// Bubble the Reset-all action up so ProfilesPane can open its
-    /// confirm dialog before invoking `Profiles.reset-all()`. Enabled
-    /// only when the selected profile has at least one locally-set
-    /// field (`Profiles.editor-can-reset-all`).
-    callback request-reset-all();
     /// Bubble a friendly-name rename request up. ProfilesPane forwards
     /// to `Profiles.rename-selected(...)`. The daemon validates the
     /// new name (non-empty, reserved-name rules, uniqueness); failures
@@ -675,23 +670,6 @@ component ProfileDetailHeader inherits Rectangle {
                 if !root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
-                        source: Icons.copy;
-                        accessible-label: @tr("Duplicate profile");
-                        clicked => { root.request-duplicate(); }
-                    }
-                }
-                if !root.editing-name: VerticalLayout {
-                    alignment: center;
-                    IconBtn {
-                        source: Icons.reload;
-                        accessible-label: @tr("Reset all locally-set fields");
-                        enabled: Profiles.editor-can-reset-all;
-                        clicked => { root.request-reset-all(); }
-                    }
-                }
-                if !root.editing-name: VerticalLayout {
-                    alignment: center;
-                    IconBtn {
                         source: Icons.delete;
                         accessible-label: @tr("Delete profile");
                         enabled: root.can-delete;
@@ -810,14 +788,17 @@ component ProfileDetail inherits Rectangle {
             active: root.active;
             can-delete: root.can-delete;
             request-delete => { root.request-delete(); }
-            request-duplicate => { root.request-duplicate(); }
-            request-reset-all => { root.request-reset-all(); }
             request-rename(new-name) => { Profiles.rename-selected(new-name); }
         }
 
-        // Field editor surface. The Reset-all action lives in the
-        // detail-header toolbar alongside Rename / Duplicate / Delete;
-        // the FIELDS section header is just a label.
+        // Field editor surface. The detail header carries the name +
+        // rename pencil + Delete (catalog-removal scope); the catalog-
+        // body actions (Duplicate, Reset all) live on the title row
+        // above the FIELDS card so they group with the body they act
+        // on. Section label calls out the kind explicitly
+        // ("SYSTEM PROFILE" / "USER PROFILE") so a user who arrived
+        // via the TVs-pane pencil pane-hop sees the context without
+        // relying on the col-1 tile glyph alone.
         ScrollView {
             viewport-width: self.visible-width;
             VerticalLayout {
@@ -832,19 +813,42 @@ component ProfileDetail inherits Rectangle {
                 VerticalLayout {
                     spacing: 0;
 
-                    // Title row — same styling as `Group`'s title.
+                    // Title row — section label on the left, catalog-
+                    // body action toolbar (Duplicate + Reset all) on
+                    // the right.
                     HorizontalLayout {
                         padding-left: 2px;
                         padding-bottom: Design.gap-stack;
+                        spacing: Design.gap-form;
 
                         VerticalLayout {
                             alignment: center;
                             Text {
-                                text: @tr("FIELDS");
+                                text: root.kind == ProfileKind.user
+                                    ? @tr("USER PROFILE")
+                                    : @tr("SYSTEM PROFILE");
                                 color: Theme.text-dim;
                                 font-size: Design.font-mini;
                                 font-weight: 600;
                                 letter-spacing: 0.6px;
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            IconBtn {
+                                source: Icons.copy;
+                                accessible-label: @tr("Duplicate profile");
+                                clicked => { root.request-duplicate(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconBtn {
+                                source: Icons.reload;
+                                accessible-label: @tr("Reset all locally-set fields");
+                                enabled: Profiles.editor-can-reset-all;
+                                clicked => { root.request-reset-all(); }
                             }
                         }
                     }
