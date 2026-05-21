@@ -15,4 +15,4 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [profile-crud-v3.md](profile-crud-v3.md) — third attempt at landing profile management. Resets to a property-bag wire surface (`Manager1.UpdateSystemProfile(name, a{sv})` etc.) after v2's per-property typed-property pattern over-corrected for v1's GUI-side latency problem. Carries every UI polish + widget + dialog primitive v2 contributed; drops the per-profile D-Bus object infrastructure. Unblocked by zvariant 5.11+'s nested `DeserializeDict` support.
+_None._ Recently retired: `profile-crud-v3.md` migrated into [docs/design.md](../design.md)'s "Profile catalog" subsection on merge of the v3 profile-management work.

@@ -15,13 +15,12 @@ See [docs/design.md](docs/design.md) for the full architecture, D-Bus interface 
 
 ## What's Next
 
-The TVs-pane half of `tisvlay-gui` is feature-complete (master/detail with live-state controls, edit-mode pencil, pairing wizard with discovery streaming, About pane). Remaining GUI work, packaging, and architectural follow-ups:
+The TVs and Profiles panes of `tisvlay-gui` are feature-complete (master/detail with live-state controls + edit-mode pencil for TVs; master/detail with create/rename/delete/duplicate + per-field inheritance editor for Profiles; pairing wizard with discovery streaming; About pane). Remaining GUI work, packaging, and architectural follow-ups:
 
-- **Profile CRUD daemon methods + Profiles pane** — system + user profile create/update/delete/get D-Bus methods on `Manager1` / `Session1`, then the GUI's two-sub-tab profile editor. Tracked as M3.5 + M4 in [docs/plan.md](../docs/plan.md).
 - **Session pane + polish** — user-bus connection indicator, session-service status, default user-profile selector, error toasts, keyboard nav, window-state persistence. M5 in [docs/plan.md](../docs/plan.md).
 - **GUI packaging** — NixOS module `enableGui` flag, nfpm desktop entry, XDG `.desktop` file. M6 in [docs/plan.md](../docs/plan.md).
 - **Event-driven power-management redesign** — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md).
-- **Plus other deferred ideas**: polkit gating for multi-user workstations, profile rename UX, CLI shorthand for `Tv1.UpdateConfig`, `a{sv}` wire-format migration, atomic config writes, typed `Failed { reason }` payload, "Open logs" affordance. All filed in [docs/ideas.md](../docs/ideas.md).
+- **Plus other deferred ideas**: polkit gating for multi-user workstations, CLI shorthand for `Tv1.UpdateConfig`, `a{sv}` wire-format migration for vendor configs, atomic config writes, typed `Failed { reason }` payload, "Open logs" affordance. All filed in [docs/ideas.md](../docs/ideas.md).
 
 ## Current Project Structure
 
@@ -120,9 +119,13 @@ tisvlay/
 │   │
 │   └── tisvlay-gui/               # Slint-based settings window
 │       ├── src/
-│       │   ├── main.rs           # Entry point, Daemon/Session client wiring, EditPane callbacks
-│       │   ├── state.rs          # TvViewRaw, fetch_state (daemon → Slint snapshot)
-│       │   └── schema_form.rs    # Schema-driven form helpers (validate, autofill, prefill)
+│       │   ├── lib.rs            # Library root: run() entry, AppWindow construction, all Slint callback wiring
+│       │   ├── main.rs           # Thin binary entry, delegates to lib::run
+│       │   ├── state.rs          # TvViewRaw, ProfileRowRaw, fetch_state (daemon → Slint snapshot)
+│       │   ├── state_watch.rs    # StateEvent → Slint signal-driven refresh dispatcher
+│       │   ├── profiles.rs       # Profile editor — ProfileLayers cache, dispatch helpers, signal handlers
+│       │   ├── schema_form.rs    # Schema-driven form helpers (validate, autofill, prefill)
+│       │   └── dbus.rs           # Single-instance D-Bus claim + Activate handler
 │       ├── ui/
 │       │   ├── main.slint        # Window root + sidebar nav, AppWindow component
 │       │   ├── theme.slint       # Theme tokens global (dark/light)

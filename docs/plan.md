@@ -1,8 +1,8 @@
 # tisvlay-gui plan
 
-> **Status:** M1–M3 shipped; the per-TV editor is feature-complete with edit-mode (pencil → ✓/✗) wired through `Tv1.UpdateConfig` / `Tv1.GetConfig`. M3.5 (profile CRUD daemon methods) and M4 (profiles pane) are not started; the GUI's Profiles pane is a placeholder. M5 (Session/About panes) is partial — About pane is built; Session pane is a stub. M6 (packaging + NixOS module flag) is not started.
+> **Status:** M1–M4 shipped; the per-TV editor is feature-complete with edit-mode (pencil → ✓/✗) wired through `Tv1.UpdateConfig` / `Tv1.GetConfig`, and the Profiles pane is feature-complete with property-bag-body CRUD over `Manager1` / `Session1` (see [docs/design.md § Profile catalog](design.md#profile-catalog)). M3.5's daemon surface ended up reshaped into the v3 property-bag wire surface rather than the name-keyed JSON sketch originally proposed. M5 (Session/About panes) is partial — About pane is built; Session pane is a stub. M6 (packaging + NixOS module flag) is partial — binary packaged; NixOS `enableGui` flag + `.desktop` entry remain.
 >
-> Several plans not on the original M1–M6 list landed alongside the milestones and shaped the resulting surface — see "Beyond the original roadmap" below for pointers to git-history of those (plans 2–6, all archived after their completion).
+> Several plans not on the original M1–M6 list landed alongside the milestones and shaped the resulting surface — see "Beyond the original roadmap" below for pointers to git-history of those (plans 2–6, all archived after their completion). The Profiles pane shipped via three plan iterations of its own — v1 (PR #58), v2 (PR #59), v3 (current); design notes archived in git history under `docs/plans/profile-crud-v3.md`.
 >
 > | Milestone | Status |
 > |---|---|
@@ -10,10 +10,10 @@
 > | M1.5 — `Tv1.Power.PowerCycleProgress` signal | ✅ shipped |
 > | M2 — Per-TV editor + control surface | ✅ shipped + extended through Plan 6's edit-mode flow |
 > | M3 — Pairing wizard + discovery streaming | ✅ shipped |
-> | M3.5 — Profile CRUD + `ConfigReloadStatus` (daemon) | not started |
-> | M4 — Profiles pane | not started (pane is placeholder) |
+> | M3.5 — Profile CRUD + `ConfigReloadStatus` (daemon) | ✅ shipped as the v3 property-bag CRUD surface (see [design.md § Profile catalog](design.md#profile-catalog)) |
+> | M4 — Profiles pane | ✅ shipped |
 > | M5 — Session pane + About pane + polish | partial — About pane built; Session pane stub |
-> | M6 — Packaging + distribution | not started |
+> | M6 — Packaging + distribution | partial — binary packaged; NixOS `enableGui` flag + `.desktop` entry pending |
 
 Slint-based settings + management window for tisvlay. Sibling to `tisvlay-tray`. Pure-Rust, Linux-only, talks to the existing `tisvlayd` (system bus) and `tisvlay-session` (user bus) over D-Bus. No direct config-file writes — every mutation goes through the daemon, which owns its config dir and applies changes on the user's behalf (same pattern `AddTv` already uses).
 
@@ -115,26 +115,18 @@ Per-TV (`Tv1.*`):
 
 The session service also reactively prunes orphan `[[tv]]` user-profile assignments from its on-disk user config when the daemon's `ObjectManager.InterfacesRemoved` fires (i.e. after a TV is removed via `Tv1.Remove`). No GUI work needed for that surface.
 
-### New surface still pending for M3.5 / M4
+### Profile CRUD surface (shipped in v3)
 
-The GUI's Profiles pane (M4) needs Manager1 + Session1 profile-CRUD methods that haven't been added yet. Same shape as the M3.5 design originally proposed:
+The Manager1 + Session1 profile-CRUD surface shipped through three iterations (PR #58 / #59 / current). Final shape is documented in [docs/design.md § Profile catalog](design.md#profile-catalog):
 
-`Manager1` (system bus):
-- `CreateSystemProfile(name: s, json: s) -> ()` — fails if name exists.
-- `UpdateSystemProfile(name: s, json: s) -> ()` — fails if name doesn't exist.
-- `DeleteSystemProfile(name: s) -> ()` — fails if `name == "default"` or any TV references it.
-- `GetSystemProfile(name: s) -> json: s` — returns the unmerged `SystemProfileConfig` (with `Option<T>` fields preserved as JSON `null`s) so the GUI edits the profile as written, not as resolved.
-- `ConfigReloadStatus(success: b, error_msg: s)` signal — fired after `ReloadConfig` completes.
-- `SystemProfileChanged(name: s, kind: s)` signal — kind ∈ `created`, `updated`, `deleted`.
+- Identity is UUID, not name. Eight CRUD methods per bus (`List` / `Get` / `Update` / `Create` / `Duplicate` / `Delete` / `GetResolvedDefaults` / `GetEffective`).
+- Bodies ride as `a{sv}` property bags via `#[derive(SerializeDict, DeserializeDict)]`, not JSON strings. `Option<T>::None` ⇔ absent key ⇔ "inherits from the chain below".
+- Topology signals split into `*Added(uuid)` + `*Removed(uuid)`; body mutations fire `*Changed(uuid)`. Three signals per bus.
+- Rename folds into `Update` with a new `name` in the body — no dedicated method.
+- `Duplicate` is a daemon method (mints a new UUID under one write lock), not a client-side `Get` + `Create`.
+- `ReloadConfig` emits the same per-UUID signals an external client would, so config-file edits are observationally identical to client mutations.
 
-`Session1` (user bus):
-- `CreateUserProfile(name: s, json: s) -> ()`.
-- `UpdateUserProfile(name: s, json: s) -> ()`.
-- `DeleteUserProfile(name: s) -> ()` — fails if `name == "default"` (the merged default) or any TV assigns it.
-- `GetUserProfile(name: s) -> json: s` — returns the user-config profile (unmerged), or the admin baseline if not in user config.
-- `UserProfileListChanged(name: s, kind: s)` signal — kind ∈ `created`, `updated`, `deleted`. Distinct from the existing per-TV `UserProfileChanged`.
-
-Clone is **not** a daemon method — the GUI does `Get` + `Create` client-side. Rename is filed under "post-v1" and tracked in [docs/ideas.md](ideas.md).
+The original M3.5 sketch (name-keyed identity, JSON-string bodies, `ConfigReloadStatus` signal) is preserved here as the v1 attempt's shape. v3's prose iteration history lives in git under the deleted `docs/plans/profile-crud-v3.md` plan.
 
 ## Screens
 
@@ -235,13 +227,13 @@ Daemon-side: `Manager1.DiscoveryFound` + `Manager1.PairingProgress` signals ship
 
 GUI-side: four-step pairing wizard component (Discover → Configure → Pair → Done) with schema-driven step-2 form. The schema-driven path (Plan 5 Phase 2) supplanted the hard-coded LG-only fields originally sketched here — every field comes from `Manager1.GetPairingSchema(vendor)`, and the wizard stays vendor-agnostic.
 
-### M3.5 — Profile CRUD + ConfigReloadStatus (daemon, not started)
+### ✅ M3.5 — Profile CRUD (daemon)
 
-Daemon-side surface listed under "New surface still pending for M3.5 / M4" above. Blocks M4.
+Shipped as the v3 property-bag CRUD surface — see [docs/design.md § Profile catalog](design.md#profile-catalog) for the durable architecture. Two prior attempts (PR #58 whole-body JSON, PR #59 per-property typed properties) shaped the final design; v3's iteration history lives in git under the deleted `docs/plans/profile-crud-v3.md`. The `ConfigReloadStatus` signal sketch was superseded by per-profile `*Added` / `*Changed` / `*Removed` signals emitted from `ReloadConfig` — a config-file edit now looks identical on the wire to an external client mutation.
 
-### M4 — Profiles pane (not started)
+### ✅ M4 — Profiles pane
 
-The placeholder pane currently just displays "System and user profile editing arrives in M4." Real implementation matches the original sketch — two sub-tabs (System / User), list + editor layout, strongly-typed form inputs.
+Shipped. Master/detail layout with stacked System / User sections (single pane, not sub-tabs as originally sketched). Create / Rename / Delete / Duplicate flows; per-field inheritance editor with locally-set indicator (accent gutter) + per-field reset glyph + reset-all confirm; IdleTimeoutSeconds spinner; Used-by chip ticker with click-through to TVs pane; instant-commit edits (one D-Bus round-trip per field) instead of the originally-sketched Save button. The editor's three-layer `ProfileLayers` cache + signal-driven row refresh is the perf-critical piece v1 (PR #58) lacked.
 
 ### M5 — Session pane + About pane + polish (partial — About done)
 

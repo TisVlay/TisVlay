@@ -853,7 +853,7 @@ Forward-looking work that hasn't shipped yet. No fixed sequencing — entries la
 
 ### GUI Configuration
 
-`tisvlay-gui` is largely built and packaged — see [docs/plan.md](plan.md) for the full milestone status, and [packaging/README.md](../packaging/README.md) for the shipping channels. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), and About pane shipped through M3 + Plan-6 follow-on work. The Profiles pane, Session pane, NixOS module's `enableGui` flag, and the XDG `.desktop` entry remain as M3.5 / M4 / M5 / M6 follow-ups.
+`tisvlay-gui` is largely built and packaged — see [docs/plan.md](plan.md) for the full milestone status, and [packaging/README.md](../packaging/README.md) for the shipping channels. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), About pane, and Profiles pane (master/detail catalog editor with inheritance + per-field reset — see [Profile catalog](#profile-catalog)) shipped through M3 + M3.5 + M4 + Plan-6 follow-on work. The Session pane, NixOS module's `enableGui` flag, and the XDG `.desktop` entry remain as M5 / M6 follow-ups.
 
 ### Event-Driven Power Management
 
