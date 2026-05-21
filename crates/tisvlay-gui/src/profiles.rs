@@ -271,7 +271,7 @@ pub(crate) struct UserProfileLayers {
 /// Outcome of an inherit-chain walk for one field. Carries both the
 /// underlying resolved-to value (as the wire-token string for enum
 /// fields, decimal integer for number fields) and a separate "current
-/// for the row" string. `Inheriting` adds the `*` overlay to
+/// for the row" string. `Inheriting` adds the inherit overlay to
 /// `current_string` so the visual cue shows in the ComboBox and the
 /// `selected()` callback fires even when the user picks the same value
 /// that's already resolved.
@@ -282,8 +282,8 @@ pub(crate) enum ResolvedValue {
     LocallySet { current: String },
     /// Field is `None` on its body — value walked from the default
     /// body, then the baseline. `resolved` is the underlying token;
-    /// `current` is what the ComboBox displays (resolved + `*` for
-    /// enums; resolved verbatim for numbers).
+    /// `current` is what the ComboBox displays (resolved + inherit
+    /// overlay for enums; resolved verbatim for numbers).
     Inheriting { resolved: String, current: String },
 }
 
@@ -364,15 +364,17 @@ pub(crate) fn resolve_user_field(
     ResolvedValue::Inheriting { resolved, current }
 }
 
-/// Build the trailing-`*` overlay for an inheriting enum field, or
-/// pass the resolved string through verbatim for non-enum kinds. The
-/// `*` is the visual cue + the workaround for ComboBox's no-op when
-/// `selected(v)` matches the current text — by surfacing the overlay
-/// at row-build time, picking the resolved value still fires the
-/// callback (different text → state change → emit).
+/// Build the trailing inherit overlay for an inheriting enum field,
+/// or pass the resolved string through verbatim for non-enum kinds.
+/// The overlay is the visual cue + the workaround for ComboBox's
+/// no-op when `selected(v)` matches the current text — by surfacing
+/// a distinct trailing string at row-build time, picking the
+/// resolved value still fires the callback (different text → state
+/// change → emit). The exact glyph is a presentation detail; only
+/// the "differs from any wire token" property is load-bearing.
 fn inherit_overlay(field: &FieldSpec, resolved: &str) -> String {
     match field.kind {
-        FieldKind::Enum { .. } => format!("{resolved}*"),
+        FieldKind::Enum { .. } => format!("{resolved} ⚙️"),
         FieldKind::Number { .. } => resolved.to_string(),
     }
 }
@@ -1588,22 +1590,27 @@ mod tests {
         };
 
         // Default-set field — inheriting, value from the default body.
-        let resolved = resolve_system_field(&layers, uuid, find_system("on_startup"));
+        // The `current` string carries the inherit overlay produced by
+        // `inherit_overlay()` for enum kinds; computing it through that
+        // helper keeps the test from hardcoding the presentation glyph.
+        let on_startup = find_system("on_startup");
+        let resolved = resolve_system_field(&layers, uuid, on_startup);
         assert_eq!(
             resolved,
             ResolvedValue::Inheriting {
                 resolved: "screen_off".to_string(),
-                current: "screen_off*".to_string(),
+                current: inherit_overlay(on_startup, "screen_off"),
             }
         );
 
         // Default-absent field — falls through to baseline.
-        let resolved = resolve_system_field(&layers, uuid, find_system("on_shutdown"));
+        let on_shutdown = find_system("on_shutdown");
+        let resolved = resolve_system_field(&layers, uuid, on_shutdown);
         assert_eq!(
             resolved,
             ResolvedValue::Inheriting {
                 resolved: "power_off".to_string(),
-                current: "power_off*".to_string(),
+                current: inherit_overlay(on_shutdown, "power_off"),
             }
         );
     }
@@ -1662,9 +1669,9 @@ mod tests {
     }
 
     #[test]
-    fn inheriting_user_number_field_carries_no_star() {
-        // Number fields don't get the `*` overlay — the gutter accent
-        // + reset glyph carry the inherit signal instead.
+    fn inheriting_user_number_field_carries_no_overlay() {
+        // Number fields don't get the inherit overlay — the gutter
+        // accent + reset glyph carry the inherit signal instead.
         let uuid = Uuid::new_v4();
         let mut bodies = HashMap::new();
         bodies.insert(
@@ -1770,14 +1777,18 @@ mod tests {
 
     #[test]
     fn build_field_raw_enum_carries_options_and_current() {
+        // build_field_raw is glyph-agnostic — it should pass whatever
+        // `current` string the resolver produced through to
+        // `current_value` verbatim. Using a sentinel proves that.
+        let sentinel_current = "power_on<<sentinel>>";
         let resolved = ResolvedValue::Inheriting {
             resolved: "power_on".to_string(),
-            current: "power_on*".to_string(),
+            current: sentinel_current.to_string(),
         };
         let spec = find_system("on_startup");
         let raw = build_field_raw(spec, &resolved);
         assert_eq!(raw.kind, "enum");
-        assert_eq!(raw.current_value, "power_on*");
+        assert_eq!(raw.current_value, sentinel_current);
         assert!(!raw.is_locally_set);
         assert_eq!(
             raw.options,

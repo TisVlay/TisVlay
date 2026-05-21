@@ -86,7 +86,7 @@ component ProfileListRow inherits Rectangle {
                     overflow: elide;
                 }
                 if root.entry.is-default: Text {
-                    text: @tr("(default)");
+                    text: @tr("⚙️");
                     color: Theme.text-dim;
                     font-size: Design.font-mini;
                     vertical-alignment: center;
@@ -342,10 +342,10 @@ component ProfileList inherits Rectangle {
 // Reset is only rendered for locally-set rows — inheriting fields
 // can't be "reset" because they already inherit.
 //
-// The `*` overlay on `entry.current-value` for enum rows is the visual
-// inherit cue AND the workaround for `ComboBox.selected(v)` no-op when
-// picked == current. Number rows skip the overlay; the gutter + reset
-// glyph carry the inherit signal alone.
+// The inherit overlay on `entry.current-value` for enum rows is the
+// visual inherit cue AND the workaround for `ComboBox.selected(v)`
+// no-op when picked == current. Number rows skip the overlay; the
+// gutter + reset glyph carry the inherit signal alone.
 
 component ProfileFieldRowEnum inherits Rectangle {
     in property <ProfileFieldEntry> entry;

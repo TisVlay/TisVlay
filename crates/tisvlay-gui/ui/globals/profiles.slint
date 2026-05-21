@@ -44,11 +44,12 @@ export struct ProfileTvRef {
 /// trigger a full Slint reload in a later commit that produced no
 /// visual change.
 ///
-/// `current-value` carries a trailing `*` (e.g. `"power_on*"`) when
-/// an enum field is inheriting — both signals the state visually and
-/// ensures picking the same-as-resolved value still fires
-/// `selected(v)` (no ComboBox no-op). Number rows skip the `*`
-/// overlay; gutter accent + reset glyph carry the inherit signal.
+/// `current-value` carries a trailing inherit overlay (the resolved
+/// token plus a presentation-only marker) when an enum field is
+/// inheriting — both signals the state visually and ensures picking
+/// the same-as-resolved value still fires `selected(v)` (no ComboBox
+/// no-op). Number rows skip the overlay; gutter accent + reset glyph
+/// carry the inherit signal.
 export struct ProfileFieldEntry {
     field-name: string,
     label: string,
@@ -56,7 +57,7 @@ export struct ProfileFieldEntry {
     /// ComboBox model for `kind == "enum"`.
     options: [string],
     /// ComboBox displayed text for `kind == "enum"` (with possible
-    /// `*` suffix while inheriting — see above).
+    /// inherit-overlay suffix while inheriting — see above).
     current-value: string,
     /// SpinBox value + bounds + step + unit for `kind == "number"`.
     /// Rust clamps `number-value` to `[min-value, max-value]` at
