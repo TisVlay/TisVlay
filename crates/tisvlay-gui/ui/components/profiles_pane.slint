@@ -684,11 +684,20 @@ component ProfileDetailHeader inherits Rectangle {
                     }
                 }
 
+                // Rename + Delete share the same enabled predicate:
+                // the reserved-default profile rejects body mutations
+                // that change its name (the daemon's
+                // `UpdateSystemProfile` / `UpdateUserProfile`
+                // validators force `body.name == "default"` for the
+                // default UUID) AND rejects Delete outright. Greying
+                // each button keeps the affordance discoverable
+                // without dispatching a call the daemon will reject.
                 if !root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
                         source: Icons.edit;
                         accessible-label: @tr("Rename profile");
+                        enabled: root.can-delete;
                         clicked => { root.begin-rename(); }
                     }
                 }
