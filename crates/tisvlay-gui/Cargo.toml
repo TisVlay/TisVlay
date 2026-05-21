@@ -19,6 +19,11 @@ path = "src/main.rs"
 [dependencies]
 tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
 tokio = { workspace = true }
+# UUID parsing for client-side profile-references fan-out. The GUI
+# round-trips daemon-emitted hyphenated UUID strings through the typed
+# core helpers (`references_of`, `user_references_of`), so the dep is
+# exposed directly rather than re-exporting `Uuid` from tisvlay-core.
+uuid = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
 # `accessibility` is dropped from the default features. The local
@@ -117,10 +122,18 @@ libc = "0.2"
 # x11+wayland, and unifying that with our Wayland-only slint config
 # would silently re-enable x11rb on `--features dev-mcp` (and thus
 # on `--all-features` builds like `just check`).
+#
+# Both `selector` and `backend-testing` are needed: selector wires up
+# the `mcp` feature in the dep graph, but its `mcp_server::init()`
+# hook only fires through the legacy `with_platform()` path —
+# `BackendSelector::select()` (which we use for the winit attributes
+# hook) bypasses it. So we call `i_slint_backend_testing::
+# mcp_server::init()` explicitly in `lib.rs`.
 i-slint-backend-selector = { version = "=1.16.1", default-features = false, features = ["mcp"], optional = true }
+i-slint-backend-testing = { version = "=1.16.1", features = ["mcp"], optional = true }
 
 [features]
-dev-mcp = ["dep:i-slint-backend-selector"]
+dev-mcp = ["dep:i-slint-backend-selector", "dep:i-slint-backend-testing"]
 
 [dev-dependencies]
 # Headless Slint backend for `find_by_accessible_id` / `single_click`
@@ -128,7 +141,9 @@ dev-mcp = ["dep:i-slint-backend-selector"]
 # crate's README warns "preliminary API, no semver" and 1.17 already
 # moved test helpers between modules
 # (slint-ui/slint#11516 merged 2026-04-27); treat upstream bumps as
-# breaking.
+# breaking. Same crate declared as an optional runtime dep above
+# under the `dev-mcp` feature; Cargo unifies the two and pulls in
+# `mcp` only when the feature is active.
 i-slint-backend-testing = "=1.16.1"
 
 [build-dependencies]
@@ -137,12 +152,12 @@ slint-build = "1.16"
 [lints]
 workspace = true
 
-# `cargo machete` flags both as unused because there is no `use …` in
-# the Rust source, but both are real consumers:
+# `cargo machete` flags these as unused because the Rust source
+# either uses an aliased name or only imports them under a cfg gate:
 #   - `gettext-rs`: imported as `gettextrs::gettext` (Cargo names use
 #     `-`, the Rust crate alias drops it; machete doesn't reconcile).
-#   - `i-slint-backend-selector`: feature-gated on `dev-mcp`; its
-#     `mcp` feature registers Slint's MCP backend at link time, so no
-#     direct `use` ever appears in our source.
+#   - `i-slint-backend-selector`: feature-gated on `dev-mcp`; pulls
+#     the matching `mcp` feature into the dep graph for
+#     `i-slint-backend-testing`, but has no direct `use` site.
 [package.metadata.cargo-machete]
 ignored = ["gettext-rs", "i-slint-backend-selector"]

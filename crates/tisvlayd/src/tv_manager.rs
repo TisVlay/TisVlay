@@ -25,11 +25,14 @@ use std::time::Duration;
 /// here.
 const DIRECT_CONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 use tisvlay_core::{
-    Capabilities, FieldVisibility, PowerState, ResolvedSystemProfile, SessionAction, SystemConfig,
-    SystemSection, TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
+    Capabilities, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, FieldVisibility, PowerState,
+    ResolvedSystemProfile, SessionAction, SystemConfig, SystemProfileBody, SystemProfileConfig,
+    SystemSection, TvAssignment, TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
+    references_of,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 /// Error type for TV manager operations.
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +99,41 @@ pub enum TvManagerError {
     /// Configuration I/O error (load/save).
     #[error("Config error: {0}")]
     ConfigError(String),
+
+    /// Profile-CRUD: target profile UUID not in the catalog.
+    ///
+    /// Distinct from [`TvNotFound`](Self::TvNotFound) because the
+    /// D-Bus surface routes the two to different error names; clients
+    /// disambiguate "TV gone" from "profile gone" without parsing the
+    /// message string.
+    #[error("Profile not found: {0}")]
+    ProfileNotFound(String),
+
+    /// Profile-CRUD: attempt to delete or otherwise mutate a reserved
+    /// profile in a way the daemon doesn't allow (currently: deleting
+    /// the reserved `DEFAULT_SYSTEM_PROFILE_UUID`).
+    #[error("Reserved profile cannot be modified: {0}")]
+    ReservedProfile(String),
+
+    /// Profile-CRUD: a profile body's `name` collides with an existing
+    /// profile, is empty, or attempts to claim the reserved
+    /// `"default"` literal for a non-default UUID.
+    #[error("Profile name invalid: {0}")]
+    ProfileNameInvalid(String),
+
+    /// Profile-CRUD: attempt to delete a profile that is still
+    /// referenced by at least one TV (`Tv.profile.system` points at
+    /// it, or the TV has no explicit assignment and the target is
+    /// the reserved default).
+    #[error("Profile still referenced by {count} TV(s): {profile_uuid}")]
+    ProfileReferenced { profile_uuid: String, count: usize },
+
+    /// Profile-CRUD: persistence failed after the in-memory mutation
+    /// already landed. Carries the underlying I/O error message; the
+    /// caller is responsible for rolling back the in-memory snapshot
+    /// before propagating this variant.
+    #[error("I/O error: {0}")]
+    Io(String),
 }
 
 /// Event emitted when TV state changes or daemon-wide events occur.
@@ -197,10 +235,24 @@ pub struct TvInfo {
 /// state. The `Manager1.AddTv` and `Tv1.Remove` flows already keep
 /// path lifecycle and manager state symmetric; reload was the only
 /// mutation site that diverged.
+///
+/// The `system_profiles_*` lists carry the per-profile catalog diff
+/// for the system bus side. `Manager1` emits `SystemProfileAdded` /
+/// `SystemProfileChanged` / `SystemProfileRemoved` signals against
+/// these UUIDs after a successful reload so clients with cached
+/// profile bodies know to re-fetch. UUIDs are stringified hyphenated
+/// to match the wire shape of the corresponding signals.
+///
+/// The session daemon owns the user-profile catalog diff for the
+/// user-config layer and emits its own signals — see
+/// `tisvlay-session::session_dbus::reload_config`.
 #[derive(Debug, Clone, Default)]
 pub struct ReloadDiff {
     pub added: Vec<String>,
     pub removed: Vec<String>,
+    pub system_profiles_added: Vec<String>,
+    pub system_profiles_removed: Vec<String>,
+    pub system_profiles_changed: Vec<String>,
 }
 
 /// Managed TV connection state.
@@ -471,7 +523,9 @@ fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvMa
             tv.name = value.to_string();
         }
         "profile.system" => {
-            tv.profile.system = value.to_string();
+            tv.profile.system = value.parse::<uuid::Uuid>().map_err(|_| {
+                TvManagerError::ConfigError(format!("Invalid system profile UUID: {value}"))
+            })?;
         }
         _ => {
             return Err(TvManagerError::ConfigError(format!(
@@ -982,37 +1036,466 @@ impl TvManager {
 
     /// Get the admin baseline for user profiles.
     ///
-    /// Returns the `[user.profiles.default]` from the system config,
-    /// or an empty UserProfileConfig if not defined.
+    /// Returns the body at [`DEFAULT_USER_PROFILE_UUID`] from the system
+    /// config, or an empty `UserProfileConfig` if not defined.
+    ///
+    /// [`DEFAULT_USER_PROFILE_UUID`]: tisvlay_core::DEFAULT_USER_PROFILE_UUID
     pub async fn get_user_profile_default(&self) -> UserProfileConfig {
         let user = self.user_section.read().await;
-        user.profiles.get("default").cloned().unwrap_or_default()
+        user.profiles
+            .get(&tisvlay_core::DEFAULT_USER_PROFILE_UUID)
+            .cloned()
+            .unwrap_or_default()
     }
 
-    /// Get all user profiles as (name, UserProfileConfig) pairs.
+    /// Get all user profiles as (name, UserProfileConfig) pairs. The
+    /// name comes from the body — profiles are UUID-keyed internally
+    /// in the catalog; this projection feeds the name-keyed wire
+    /// methods.
     pub async fn list_user_profiles(&self) -> Vec<(String, UserProfileConfig)> {
         let user = self.user_section.read().await;
         user.profiles
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .values()
+            .map(|v| (v.name.clone(), v.clone()))
             .collect()
     }
 
     /// Get all system profiles as (name, SystemProfileConfig) pairs.
+    /// Same name-keyed wire shape as [`list_user_profiles`](Self::list_user_profiles).
     pub async fn list_system_profiles(&self) -> Vec<(String, tisvlay_core::SystemProfileConfig)> {
         let system = self.system_section.read().await;
         system
             .profiles
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .values()
+            .map(|v| (v.name.clone(), v.clone()))
             .collect()
     }
 
-    /// Get the system profile name assigned to a TV.
+    // -------------------------------------------------------------------------
+    // System-profile CRUD
+    //
+    // The four mutators (`create_system_profile`, `duplicate_system_profile`,
+    // `update_system_profile`, `delete_system_profile`) follow the same
+    // shape: validate under the write lock, mutate in-memory, persist via
+    // `spawn_blocking`, and roll the in-memory mutation back to its
+    // pre-mutation snapshot if persistence fails. Persistence is gated
+    // by `disk_write_lock` so concurrent CRUD calls serialize against
+    // each other and against `set_tv_option` / `update_tv_config`
+    // load-modify-save cycles.
+    //
+    // None of these emit D-Bus signals directly — the `Manager1`
+    // handlers do that after a successful return so the catalog is
+    // guaranteed fetchable by the moment a client receives `Added` /
+    // `Changed` / `Removed`.
+    // -------------------------------------------------------------------------
+
+    /// Snapshot of the system-profile catalog suitable for
+    /// `Manager1.ListSystemProfiles -> a{sa{sv}}`. Returns `(uuid,
+    /// body)` pairs so the wire encoder can map UUIDs to strings
+    /// without re-locking.
+    pub async fn list_system_profile_bodies(&self) -> Vec<(Uuid, SystemProfileBody)> {
+        let system = self.system_section.read().await;
+        system
+            .profiles
+            .iter()
+            .map(|(uuid, body)| (*uuid, SystemProfileBody::from_config(body)))
+            .collect()
+    }
+
+    /// Fetch one system-profile body by UUID. Returns
+    /// [`TvManagerError::ProfileNotFound`] if the UUID isn't in the
+    /// catalog.
+    pub async fn get_system_profile_body(
+        &self,
+        uuid: Uuid,
+    ) -> Result<SystemProfileBody, TvManagerError> {
+        let system = self.system_section.read().await;
+        system
+            .profiles
+            .get(&uuid)
+            .map(SystemProfileBody::from_config)
+            .ok_or_else(|| TvManagerError::ProfileNotFound(uuid.to_string()))
+    }
+
+    /// Hard-coded baseline that every system profile inherits from
+    /// when its body has all fields `None`. Wire-side mirror of
+    /// [`ResolvedSystemProfile::default()`] expressed as a
+    /// [`SystemProfileBody`] (name = [`DEFAULT_PROFILE_NAME`], every
+    /// other field `Some(default)`).
+    pub fn resolved_system_profile_defaults() -> SystemProfileBody {
+        SystemProfileBody::from_config(&SystemProfileConfig {
+            name: DEFAULT_PROFILE_NAME.to_string(),
+            ..SystemProfileConfig::full_default()
+        })
+    }
+
+    /// Resolve the full inheritance walk for a TV's assigned system
+    /// profile and return the result as a [`SystemProfileBody`] —
+    /// every field present, suitable for `Manager1.GetEffectiveSystemProfile`.
+    ///
+    /// The walker is `SystemSection::resolve_profile_by_uuid` (which
+    /// already encodes the per-TV → default → hardcoded chain); this
+    /// wrapper just projects the resolved values back into a body.
+    pub async fn get_effective_system_profile(
+        &self,
+        tv_id: &str,
+    ) -> Result<SystemProfileBody, TvManagerError> {
+        let tv_arc = self.get_tv(tv_id).await?;
+        let assigned_uuid = {
+            let tv = tv_arc.lock().await;
+            tv.config.profile.system
+        };
+        let resolved = {
+            let system = self.system_section.read().await;
+            system.resolve_profile_by_uuid(assigned_uuid)
+        };
+        // Surface the assigned profile's display name when available
+        // (clients usually know it client-side, but emitting it here
+        // keeps the wire body self-describing). Fall back to the
+        // reserved default name for unknown UUIDs.
+        let display_name = {
+            let system = self.system_section.read().await;
+            system
+                .profiles
+                .get(&assigned_uuid)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| DEFAULT_PROFILE_NAME.to_string())
+        };
+        Ok(SystemProfileBody {
+            name: display_name,
+            on_startup: Some(resolved.on_startup),
+            on_shutdown: Some(resolved.on_shutdown),
+            on_reboot: Some(resolved.on_reboot),
+            on_no_session: Some(resolved.on_no_session),
+            on_sleep: Some(resolved.on_sleep),
+            on_wake: Some(resolved.on_wake),
+            automate_when: Some(resolved.automate_when),
+        })
+    }
+
+    /// Create a new system profile with the given display name.
+    ///
+    /// Validates `name` (non-empty, not the reserved `"default"`
+    /// literal, unique against existing catalog body names), mints a
+    /// fresh UUID, inserts an empty (`SystemProfileConfig::default`)
+    /// body under the new UUID, and persists. Returns the new UUID
+    /// on success.
+    pub async fn create_system_profile(&self, name: String) -> Result<Uuid, TvManagerError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(TvManagerError::ProfileNameInvalid(
+                "name must be non-empty".to_string(),
+            ));
+        }
+        if trimmed == DEFAULT_PROFILE_NAME {
+            return Err(TvManagerError::ProfileNameInvalid(format!(
+                "\"{DEFAULT_PROFILE_NAME}\" is reserved for the default profile"
+            )));
+        }
+
+        // Hold `disk_write_lock` for the whole validate→mutate→persist
+        // window so concurrent CRUD callers (or `set_tv_option`)
+        // can't observe a partially-committed state.
+        let _disk_lock = self.disk_write_lock.lock().await;
+        let new_uuid = Uuid::new_v4();
+        let new_body = SystemProfileConfig {
+            name: trimmed.to_string(),
+            ..SystemProfileConfig::default()
+        };
+
+        {
+            let mut system = self.system_section.write().await;
+            // Uniqueness check across the existing catalog.
+            if system.profiles.values().any(|p| p.name == trimmed) {
+                return Err(TvManagerError::ProfileNameInvalid(format!(
+                    "name \"{trimmed}\" already in use"
+                )));
+            }
+            // The minted UUID is fresh from `Uuid::new_v4`; collision
+            // probability is effectively zero, but guard against the
+            // theoretical case so we never silently overwrite a body.
+            if system.profiles.contains_key(&new_uuid) {
+                return Err(TvManagerError::ConfigError(
+                    "UUID collision on new profile (retry)".to_string(),
+                ));
+            }
+            system.profiles.insert(new_uuid, new_body);
+        } // section write lock released before disk I/O
+
+        // Persist; roll back the in-memory insert on I/O failure.
+        match self.persist_full_config().await {
+            Ok(()) => {
+                info!(
+                    profile_uuid = %new_uuid,
+                    name = %trimmed,
+                    "System profile created"
+                );
+                Ok(new_uuid)
+            }
+            Err(e) => {
+                let mut system = self.system_section.write().await;
+                system.profiles.remove(&new_uuid);
+                Err(e)
+            }
+        }
+    }
+
+    /// Duplicate an existing system profile under a new display name.
+    ///
+    /// Same validation rules as [`create_system_profile`](Self::create_system_profile),
+    /// but the new body inherits every field (besides `name`) from
+    /// the source.
+    pub async fn duplicate_system_profile(
+        &self,
+        source_uuid: Uuid,
+        new_name: String,
+    ) -> Result<Uuid, TvManagerError> {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            return Err(TvManagerError::ProfileNameInvalid(
+                "name must be non-empty".to_string(),
+            ));
+        }
+        if trimmed == DEFAULT_PROFILE_NAME {
+            return Err(TvManagerError::ProfileNameInvalid(format!(
+                "\"{DEFAULT_PROFILE_NAME}\" is reserved for the default profile"
+            )));
+        }
+
+        let _disk_lock = self.disk_write_lock.lock().await;
+        let new_uuid = Uuid::new_v4();
+
+        {
+            let mut system = self.system_section.write().await;
+            let source = system
+                .profiles
+                .get(&source_uuid)
+                .ok_or_else(|| TvManagerError::ProfileNotFound(source_uuid.to_string()))?;
+            if system.profiles.values().any(|p| p.name == trimmed) {
+                return Err(TvManagerError::ProfileNameInvalid(format!(
+                    "name \"{trimmed}\" already in use"
+                )));
+            }
+            if system.profiles.contains_key(&new_uuid) {
+                return Err(TvManagerError::ConfigError(
+                    "UUID collision on new profile (retry)".to_string(),
+                ));
+            }
+            let mut cloned = source.clone();
+            cloned.name = trimmed.to_string();
+            system.profiles.insert(new_uuid, cloned);
+        }
+
+        match self.persist_full_config().await {
+            Ok(()) => {
+                info!(
+                    profile_uuid = %new_uuid,
+                    source_uuid = %source_uuid,
+                    name = %trimmed,
+                    "System profile duplicated"
+                );
+                Ok(new_uuid)
+            }
+            Err(e) => {
+                let mut system = self.system_section.write().await;
+                system.profiles.remove(&new_uuid);
+                Err(e)
+            }
+        }
+    }
+
+    /// Delete a system profile.
+    ///
+    /// Rejects the reserved [`DEFAULT_SYSTEM_PROFILE_UUID`] outright;
+    /// rejects when at least one TV still references the profile
+    /// (either explicitly via `Tv.profile.system` or implicitly via
+    /// the default-fan-out rule from `references_of`). Persistence
+    /// failure rolls the in-memory removal back.
+    pub async fn delete_system_profile(&self, uuid: Uuid) -> Result<(), TvManagerError> {
+        if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
+            return Err(TvManagerError::ReservedProfile(uuid.to_string()));
+        }
+
+        let _disk_lock = self.disk_write_lock.lock().await;
+
+        // Reference check: walk every TV's assignment via `references_of`
+        // so the implicit-default fan-out rule matches the client-side
+        // check (deleting a non-default UUID never falls into the
+        // implicit-default branch, so `references_of` returns only
+        // explicit references here; we still call it to keep the
+        // semantics one-source-of-truth).
+        let referencing = {
+            let assignments = self.tv_assignments_for_refs().await;
+            references_of(uuid, &assignments)
+        };
+        if !referencing.is_empty() {
+            return Err(TvManagerError::ProfileReferenced {
+                profile_uuid: uuid.to_string(),
+                count: referencing.len(),
+            });
+        }
+
+        // Take a snapshot of the removed body so we can re-insert on
+        // I/O failure (preserves the catalog's pre-mutation state).
+        let removed_body = {
+            let mut system = self.system_section.write().await;
+            match system.profiles.remove(&uuid) {
+                Some(b) => b,
+                None => return Err(TvManagerError::ProfileNotFound(uuid.to_string())),
+            }
+        };
+
+        match self.persist_full_config().await {
+            Ok(()) => {
+                info!(profile_uuid = %uuid, "System profile deleted");
+                Ok(())
+            }
+            Err(e) => {
+                let mut system = self.system_section.write().await;
+                system.profiles.insert(uuid, removed_body);
+                Err(e)
+            }
+        }
+    }
+
+    /// Atomic full-body replace for an existing system profile.
+    ///
+    /// Validates `body.name` (non-empty, unique across the catalog
+    /// excluding the same UUID, default-name reserved for the
+    /// default UUID), overwrites the catalog entry wholesale via
+    /// `SystemProfileConfig::from(&body)`, persists. On I/O failure
+    /// the previous body is restored.
+    pub async fn update_system_profile(
+        &self,
+        uuid: Uuid,
+        body: SystemProfileBody,
+    ) -> Result<(), TvManagerError> {
+        let trimmed = body.name.trim();
+        if trimmed.is_empty() {
+            return Err(TvManagerError::ProfileNameInvalid(
+                "name must be non-empty".to_string(),
+            ));
+        }
+        if uuid == DEFAULT_SYSTEM_PROFILE_UUID {
+            // Reserved-default UUID must always render as
+            // `DEFAULT_PROFILE_NAME`; the daemon's inheritance walker
+            // and the GUI's `(default)` badge rely on it.
+            if trimmed != DEFAULT_PROFILE_NAME {
+                return Err(TvManagerError::ProfileNameInvalid(format!(
+                    "default profile's name must be \"{DEFAULT_PROFILE_NAME}\""
+                )));
+            }
+        } else if trimmed == DEFAULT_PROFILE_NAME {
+            return Err(TvManagerError::ProfileNameInvalid(format!(
+                "\"{DEFAULT_PROFILE_NAME}\" is reserved for the default profile"
+            )));
+        }
+
+        let _disk_lock = self.disk_write_lock.lock().await;
+
+        // Build the new config under the write lock so the
+        // uniqueness check observes the same snapshot the swap-in
+        // operates against.
+        let prior_body = {
+            let mut system = self.system_section.write().await;
+            if !system.profiles.contains_key(&uuid) {
+                return Err(TvManagerError::ProfileNotFound(uuid.to_string()));
+            }
+            // Uniqueness excludes the entry being updated itself.
+            if system
+                .profiles
+                .iter()
+                .any(|(other_uuid, body)| *other_uuid != uuid && body.name == trimmed)
+            {
+                return Err(TvManagerError::ProfileNameInvalid(format!(
+                    "name \"{trimmed}\" already in use"
+                )));
+            }
+            let mut new_config = SystemProfileConfig::from(&body);
+            new_config.name = trimmed.to_string();
+            system
+                .profiles
+                .insert(uuid, new_config)
+                .expect("contains_key guarded the entry; insert must return Some")
+        };
+
+        match self.persist_full_config().await {
+            Ok(()) => {
+                info!(
+                    profile_uuid = %uuid,
+                    name = %trimmed,
+                    "System profile updated"
+                );
+                // Re-resolve every TV's cached system profile in case
+                // the body change shifts inheritance for TVs that point
+                // at this UUID (or, when `uuid` is the default, every
+                // TV with no explicit assignment).
+                let system = self.system_section.read().await;
+                let tvs = self.tvs.read().await;
+                for (_, tv_arc) in tvs.values() {
+                    let mut tv = tv_arc.lock().await;
+                    tv.system_profile = system.resolve_profile_by_uuid(tv.config.profile.system);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let mut system = self.system_section.write().await;
+                system.profiles.insert(uuid, prior_body);
+                Err(e)
+            }
+        }
+    }
+
+    /// Collect lightweight per-TV profile assignments suitable for
+    /// `references_of` walks. Reads only the outer `tvs` map + each
+    /// per-TV lock briefly; never touches the network.
+    async fn tv_assignments_for_refs(&self) -> Vec<TvAssignment> {
+        let tvs = self.tvs.read().await;
+        let mut out = Vec::with_capacity(tvs.len());
+        for (id, (_, tv_arc)) in tvs.iter() {
+            let parsed = match Uuid::parse_str(id) {
+                Ok(u) => u,
+                // Defensive: tv ids are always UUIDs, but a bad ID
+                // shouldn't poison the whole walk.
+                Err(_) => continue,
+            };
+            let tv = tv_arc.lock().await;
+            out.push(TvAssignment {
+                tv_uuid: parsed,
+                system_profile: Some(tv.config.profile.system),
+                user_profile: None,
+            });
+        }
+        out
+    }
+
+    /// Load the on-disk config, replace the `[system]` section from
+    /// the current in-memory state, save it back atomically.
+    ///
+    /// Used by every system-profile CRUD mutator. Holding
+    /// `disk_write_lock` upstream is the caller's responsibility — this
+    /// helper never grabs it itself so the lock can span the
+    /// in-memory mutation + persistence window without nesting.
+    async fn persist_full_config(&self) -> Result<(), TvManagerError> {
+        let config_path = self.config_path.clone();
+        let system_snapshot = self.system_section.read().await.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), TvManagerError> {
+            let mut config = SystemConfig::load_from(&config_path)
+                .map_err(|e| TvManagerError::Io(format!("Failed to load config: {e}")))?;
+            config.system = system_snapshot;
+            config
+                .save_to(&config_path)
+                .map_err(|e| TvManagerError::Io(format!("Failed to save config: {e}")))
+        })
+        .await
+        .map_err(|e| TvManagerError::Io(format!("Task join error: {e}")))?
+    }
+
+    /// Get the system profile UUID assigned to a TV, string-formatted.
     pub async fn get_tv_system_profile(&self, tv_id: &str) -> Option<String> {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
         let tv = tv_arc.lock().await;
-        Some(tv.config.profile.system.clone())
+        Some(tv.config.profile.system.to_string())
     }
 
     /// Get the resolved `automate_when` policy for a TV.
@@ -2194,7 +2677,7 @@ impl TvManager {
         // TV-map reader/writer.
         let system_profile = {
             let system = self.system_section.read().await;
-            system.resolve_profile(&tv_config.profile.system)
+            system.resolve_profile_by_uuid(tv_config.profile.system)
         };
         let mut managed_tv = ManagedTv::new(tv_config.clone(), system_profile);
         managed_tv.connection = Some(conn);
@@ -2798,13 +3281,15 @@ impl TvManager {
         value: &str,
     ) -> Result<(), TvManagerError> {
         // Validate and apply to in-memory TV config first.
-        // Validate system profile name exists before applying.
+        // Validate system profile UUID exists in the catalog before applying.
         if key == "profile.system" {
+            let parsed: uuid::Uuid = value.parse().map_err(|_| {
+                TvManagerError::ConfigError(format!("Invalid system profile UUID: {value}"))
+            })?;
             let system = self.system_section.read().await;
-            if !system.profiles.contains_key(value) {
+            if !system.profiles.contains_key(&parsed) {
                 return Err(TvManagerError::ConfigError(format!(
-                    "Unknown system profile: {}",
-                    value
+                    "Unknown system profile: {value}"
                 )));
             }
         }
@@ -2817,7 +3302,8 @@ impl TvManager {
             // Re-resolve the system profile when the assignment changes.
             if key == "profile.system" {
                 let system = self.system_section.read().await;
-                managed.system_profile = system.resolve_profile(&managed.config.profile.system);
+                managed.system_profile =
+                    system.resolve_profile_by_uuid(managed.config.profile.system);
             }
         } // per-TV lock released before I/O
 
@@ -2889,7 +3375,7 @@ impl TvManager {
         );
         obj.insert(
             "system_profile".to_string(),
-            serde_json::Value::String(config.profile.system.clone()),
+            serde_json::Value::String(config.profile.system.to_string()),
         );
         if let Some(ref pi) = config.primary_input {
             obj.insert(
@@ -2988,11 +3474,15 @@ impl TvManager {
                     }
                 };
                 if key == "system_profile" {
+                    let parsed: uuid::Uuid = str_value.parse().map_err(|_| {
+                        TvManagerError::ConfigError(format!(
+                            "Invalid system profile UUID: {str_value}"
+                        ))
+                    })?;
                     let system = self.system_section.read().await;
-                    if !system.profiles.contains_key(&str_value) {
+                    if !system.profiles.contains_key(&parsed) {
                         return Err(TvManagerError::ConfigError(format!(
-                            "Unknown system profile: {}",
-                            str_value
+                            "Unknown system profile: {str_value}"
                         )));
                     }
                 }
@@ -3075,7 +3565,7 @@ impl TvManager {
             }
             if system_profile_changed {
                 let system = self.system_section.read().await;
-                tv.system_profile = system.resolve_profile(&tv.config.profile.system);
+                tv.system_profile = system.resolve_profile_by_uuid(tv.config.profile.system);
             }
         }
 
@@ -3237,8 +3727,9 @@ impl TvManager {
                 } else {
                     // New TV: add to map immediately (no connection to close).
                     info!(tv_id = %tv_id, "Adding new TV from config");
-                    let system_profile =
-                        new_config.system.resolve_profile(&tv_config.profile.system);
+                    let system_profile = new_config
+                        .system
+                        .resolve_profile_by_uuid(tv_config.profile.system);
                     tvs.insert(
                         tv_id.clone(),
                         (
@@ -3281,13 +3772,42 @@ impl TvManager {
 
         info!(tv_count = tv_count, "Configuration reloaded");
 
-        // Update system section (system profiles)
+        // Update system section (system profiles).
+        //
+        // Snapshot the old catalog under the write lock, compute the
+        // three-set diff against `new_config.system.profiles`, then
+        // swap. The diff lists are surfaced via `ReloadDiff` so the
+        // dbus layer can emit per-profile signals (Added / Changed /
+        // Removed) that match the wire contract of the equivalent
+        // external mutation calls. Without this clients with cached
+        // profile bodies stay stale until they hit a `Get*` call.
         {
             let mut system = self.system_section.write().await;
+            let old_profiles = std::mem::take(&mut system.profiles);
+            let new_profiles = &new_config.system.profiles;
+
+            for (uuid, new_body) in new_profiles {
+                let uuid_str = uuid.to_string();
+                match old_profiles.get(uuid) {
+                    Some(old_body) if old_body == new_body => { /* unchanged */ }
+                    Some(_) => diff.system_profiles_changed.push(uuid_str),
+                    None => diff.system_profiles_added.push(uuid_str),
+                }
+            }
+            for uuid in old_profiles.keys() {
+                if !new_profiles.contains_key(uuid) {
+                    diff.system_profiles_removed.push(uuid.to_string());
+                }
+            }
+
             *system = new_config.system;
         }
 
-        // Update user section (user profiles)
+        // Update user section (user profiles). The system daemon's
+        // user_section is the admin baseline; the live user-config
+        // catalog (and its per-profile signals) is owned by the
+        // session daemon, which runs its own diff in
+        // `Session1.ReloadConfig`. No signals fire from here.
         {
             let mut user = self.user_section.write().await;
             *user = new_config.user;
@@ -3301,7 +3821,7 @@ impl TvManager {
             let tvs = self.tvs.read().await;
             for (_, tv_arc) in tvs.values() {
                 let mut tv = tv_arc.lock().await;
-                tv.system_profile = system.resolve_profile(&tv.config.profile.system);
+                tv.system_profile = system.resolve_profile_by_uuid(tv.config.profile.system);
             }
         }
 
@@ -3431,5 +3951,148 @@ mod tests {
         run_subscription_task("ghost_tv".to_string(), tvs, tx, state_rx).await;
 
         assert!(rx.try_recv().is_err());
+    }
+
+    /// `reload_config` snapshots the system-profile catalog before
+    /// swapping in the new section and surfaces a three-way diff on
+    /// the returned `ReloadDiff` so the dbus layer can fan out
+    /// per-profile signals (Added / Changed / Removed) matching the
+    /// equivalent external mutation calls.
+    #[tokio::test]
+    async fn reload_config_emits_system_profile_catalog_diff() {
+        use crate::registry::BackendRegistry;
+        use std::collections::BTreeMap;
+        use tisvlay_core::AutomateWhen;
+        use tisvlay_core::SystemSection;
+        use uuid::Uuid;
+
+        // Build an initial config with two profiles besides the
+        // reserved default: one we'll keep unchanged, one we'll mutate.
+        let unchanged = Uuid::new_v4();
+        let mutated = Uuid::new_v4();
+        let removed = Uuid::new_v4();
+
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            SystemProfileConfig::full_default(),
+        );
+        profiles.insert(
+            unchanged,
+            SystemProfileConfig {
+                name: "unchanged".to_string(),
+                automate_when: Some(AutomateWhen::Always),
+                ..Default::default()
+            },
+        );
+        profiles.insert(
+            mutated,
+            SystemProfileConfig {
+                name: "mutated".to_string(),
+                automate_when: Some(AutomateWhen::Always),
+                ..Default::default()
+            },
+        );
+        profiles.insert(
+            removed,
+            SystemProfileConfig {
+                name: "to_remove".to_string(),
+                ..Default::default()
+            },
+        );
+        let mut config = SystemConfig {
+            system: SystemSection { profiles },
+            ..Default::default()
+        };
+        // `SystemConfig::load_from` normalizes the reserved-default
+        // profile body (forces `name = "default"`). Apply the same
+        // normalization to the seed config so the in-memory view
+        // and the disk-load view start byte-identical — otherwise
+        // the reserved default would spuriously surface as
+        // `system_profiles_changed` on the first reload.
+        config.system.ensure_default();
+        config.user.ensure_default();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        config.save_to(&config_path).expect("save initial config");
+
+        let registry = Arc::new(BackendRegistry::new());
+        let (manager, _state_rx) = TvManager::new(config, config_path.clone(), registry);
+
+        // Now mutate the config on disk: change `mutated`'s
+        // `automate_when`, drop `removed`, insert a brand-new entry.
+        let added_uuid = Uuid::new_v4();
+        let mut new_profiles = BTreeMap::new();
+        new_profiles.insert(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            SystemProfileConfig::full_default(),
+        );
+        new_profiles.insert(
+            unchanged,
+            SystemProfileConfig {
+                name: "unchanged".to_string(),
+                automate_when: Some(AutomateWhen::Always),
+                ..Default::default()
+            },
+        );
+        new_profiles.insert(
+            mutated,
+            SystemProfileConfig {
+                name: "mutated".to_string(),
+                // Field flip: signal callers should observe this UUID
+                // in `system_profiles_changed`.
+                automate_when: Some(AutomateWhen::OnPrimary),
+                ..Default::default()
+            },
+        );
+        new_profiles.insert(
+            added_uuid,
+            SystemProfileConfig {
+                name: "fresh".to_string(),
+                ..Default::default()
+            },
+        );
+        let new_config = SystemConfig {
+            system: SystemSection {
+                profiles: new_profiles,
+            },
+            ..Default::default()
+        };
+        new_config
+            .save_to(&config_path)
+            .expect("save mutated config");
+
+        let diff = manager.reload_config().await.expect("reload");
+
+        assert_eq!(
+            diff.system_profiles_added,
+            vec![added_uuid.to_string()],
+            "fresh profile must surface as Added",
+        );
+        assert_eq!(
+            diff.system_profiles_changed,
+            vec![mutated.to_string()],
+            "mutated body must surface as Changed",
+        );
+        assert_eq!(
+            diff.system_profiles_removed,
+            vec![removed.to_string()],
+            "removed profile must surface as Removed",
+        );
+        // `unchanged` and the reserved default both must be absent
+        // from every diff list — equal bodies are no-ops.
+        assert!(
+            !diff
+                .system_profiles_changed
+                .contains(&unchanged.to_string()),
+            "unchanged profile must not surface in Changed",
+        );
+        assert!(
+            !diff
+                .system_profiles_changed
+                .contains(&DEFAULT_SYSTEM_PROFILE_UUID.to_string()),
+            "reserved-default profile must not surface in Changed when body is byte-identical",
+        );
     }
 }

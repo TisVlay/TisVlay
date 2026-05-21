@@ -15,4 +15,4 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-(none — last completed plan was `screen-on-always-reliable.md`, migrated into [docs/lg/firmware-quirks.md](../lg/firmware-quirks.md) and the "Reliable screen-state actions" section of [docs/design.md](../design.md) when the work shipped.)
+_None._ Recently retired: `profile-crud-v3.md` migrated into [docs/design.md](../design.md)'s "Profile catalog" subsection on merge of the v3 profile-management work.

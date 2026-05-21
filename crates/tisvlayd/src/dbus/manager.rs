@@ -8,9 +8,11 @@ use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tisvlay_core::SystemProfileBody;
 use tisvlay_core::dbus_paths::tv_path;
+use uuid::Uuid;
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::ObjectPath;
@@ -340,12 +342,13 @@ impl ManagerService {
         })
     }
 
-    /// Get all system profiles as (name, json) pairs.
-    ///
-    /// Returns all system profiles defined in the system config.
-    /// Used by tray, GUI, and CLI to display available system profiles.
+    /// Get all system profiles as `(name, json)` pairs. The JSON
+    /// serializes a `SystemProfileConfig`. Bound to the
+    /// `ListSystemProfilesJson` wire slot; the `ListSystemProfiles`
+    /// wire name carries the property-bag `a{sa{sv}}` shape.
+    #[zbus(name = "ListSystemProfilesJson")]
     async fn list_system_profiles(&self) -> Result<Vec<(String, String)>, DaemonError> {
-        debug!("D-Bus: ListSystemProfiles");
+        debug!("D-Bus: ListSystemProfilesJson");
         let profiles = self.manager.list_system_profiles().await;
         profiles
             .into_iter()
@@ -377,6 +380,147 @@ impl ManagerService {
     }
 
     // -------------------------------------------------------------------------
+    // System profile property-bag CRUD
+    //
+    // Bodies round-trip as `SystemProfileBody` (`a{sv}` via dict-derive);
+    // the catalog list is `a{sa{sv}}` (uuid string → body dict). Eight
+    // methods + three signals anchored on `Manager1`.
+    // -------------------------------------------------------------------------
+
+    /// Catalog list: every system profile keyed by UUID string. Wire
+    /// shape `a{sa{sv}}`.
+    #[zbus(name = "ListSystemProfiles")]
+    async fn list_system_profile_bodies(
+        &self,
+    ) -> Result<HashMap<String, SystemProfileBody>, DaemonError> {
+        debug!("D-Bus: ListSystemProfiles");
+        let bodies = self.manager.list_system_profile_bodies().await;
+        Ok(bodies
+            .into_iter()
+            .map(|(uuid, body)| (uuid.to_string(), body))
+            .collect())
+    }
+
+    /// Fetch one body by UUID string. Returns `ProfileNotFound` if
+    /// the UUID is malformed or absent from the catalog.
+    async fn get_system_profile(&self, uuid: &str) -> Result<SystemProfileBody, DaemonError> {
+        debug!(uuid = %uuid, "D-Bus: GetSystemProfile");
+        let parsed = parse_profile_uuid(uuid)?;
+        self.manager
+            .get_system_profile_body(parsed)
+            .await
+            .map_err(DaemonError::from)
+    }
+
+    /// Atomic full-body replace. Rename folds into this method — the
+    /// new name lives on `body.name`.
+    async fn update_system_profile(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        uuid: &str,
+        body: SystemProfileBody,
+    ) -> Result<(), DaemonError> {
+        info!(uuid = %uuid, name = %body.name, "D-Bus: UpdateSystemProfile");
+        let parsed = parse_profile_uuid(uuid)?;
+        self.manager
+            .update_system_profile(parsed, body)
+            .await
+            .map_err(DaemonError::from)?;
+        if let Err(e) = Self::system_profile_changed(&emitter, uuid).await {
+            warn!(uuid = %uuid, error = %e, "Failed to emit SystemProfileChanged");
+        }
+        Ok(())
+    }
+
+    /// Mint a new UUID, insert an empty body under the given display
+    /// name, persist, emit `SystemProfileAdded(uuid)`.
+    async fn create_system_profile(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        name: &str,
+    ) -> Result<String, DaemonError> {
+        info!(name = %name, "D-Bus: CreateSystemProfile");
+        let new_uuid = self
+            .manager
+            .create_system_profile(name.to_string())
+            .await
+            .map_err(DaemonError::from)?;
+        let uuid_str = new_uuid.to_string();
+        if let Err(e) = Self::system_profile_added(&emitter, &uuid_str).await {
+            warn!(uuid = %uuid_str, error = %e, "Failed to emit SystemProfileAdded");
+        }
+        Ok(uuid_str)
+    }
+
+    /// Clone an existing body under a new UUID + name, persist, emit
+    /// `SystemProfileAdded(new_uuid)`. The new body has every field
+    /// from the source except `name`.
+    async fn duplicate_system_profile(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        source_uuid: &str,
+        new_name: &str,
+    ) -> Result<String, DaemonError> {
+        info!(source_uuid = %source_uuid, new_name = %new_name, "D-Bus: DuplicateSystemProfile");
+        let parsed = parse_profile_uuid(source_uuid)?;
+        let new_uuid = self
+            .manager
+            .duplicate_system_profile(parsed, new_name.to_string())
+            .await
+            .map_err(DaemonError::from)?;
+        let uuid_str = new_uuid.to_string();
+        if let Err(e) = Self::system_profile_added(&emitter, &uuid_str).await {
+            warn!(uuid = %uuid_str, error = %e, "Failed to emit SystemProfileAdded");
+        }
+        Ok(uuid_str)
+    }
+
+    /// Delete a profile. Reject the reserved default UUID, reject if
+    /// at least one TV references the target (explicit or implicit-
+    /// default fan-out), persist, emit `SystemProfileRemoved(uuid)`.
+    async fn delete_system_profile(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        uuid: &str,
+    ) -> Result<(), DaemonError> {
+        info!(uuid = %uuid, "D-Bus: DeleteSystemProfile");
+        let parsed = parse_profile_uuid(uuid)?;
+        self.manager
+            .delete_system_profile(parsed)
+            .await
+            .map_err(DaemonError::from)?;
+        if let Err(e) = Self::system_profile_removed(&emitter, uuid).await {
+            warn!(uuid = %uuid, error = %e, "Failed to emit SystemProfileRemoved");
+        }
+        Ok(())
+    }
+
+    /// Hard-coded baseline: the body every profile inherits from when
+    /// its fields are all `None`. Static, but exposed so clients don't
+    /// have to duplicate the table — `gettext("default")` is the
+    /// client-side concern.
+    fn get_resolved_system_profile_defaults(&self) -> SystemProfileBody {
+        debug!("D-Bus: GetResolvedSystemProfileDefaults");
+        TvManager::resolved_system_profile_defaults()
+    }
+
+    /// Per-TV resolved walk: returns the fully-resolved body for
+    /// the named TV's assigned profile (per-TV body → default body
+    /// → hardcoded baseline). Used by the CLI's `tisvlay profile
+    /// show <tv>` and any client that wants the resolved-by-server
+    /// view without computing the chain itself.
+    async fn get_effective_system_profile(
+        &self,
+        tv_id: &str,
+    ) -> Result<SystemProfileBody, DaemonError> {
+        debug!(tv_id = %tv_id, "D-Bus: GetEffectiveSystemProfile");
+        self.manager
+            .get_effective_system_profile(tv_id)
+            .await
+            .map_err(DaemonError::from)
+    }
+
+    // -------------------------------------------------------------------------
     // Signals
     // -------------------------------------------------------------------------
 
@@ -397,6 +541,34 @@ impl ManagerService {
     /// Subscribers should refresh profile lists and TV properties.
     #[zbus(signal)]
     pub async fn config_reloaded(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    /// A system profile's body was mutated (any field, including
+    /// `name` — rename folds into `UpdateSystemProfile`).
+    ///
+    /// Clients with a cached body for this UUID should re-fetch via
+    /// `GetSystemProfile(uuid)`. Fires once per successful
+    /// `UpdateSystemProfile` after persistence; clients are guaranteed
+    /// to be able to fetch the new body the moment the signal arrives.
+    #[zbus(signal)]
+    pub async fn system_profile_changed(
+        emitter: &SignalEmitter<'_>,
+        uuid: &str,
+    ) -> zbus::Result<()>;
+
+    /// A new system profile appeared in the catalog (Create or
+    /// Duplicate). Body is fetchable by the moment the signal
+    /// arrives — both flows commit body + emit under the same
+    /// write lock.
+    #[zbus(signal)]
+    pub async fn system_profile_added(emitter: &SignalEmitter<'_>, uuid: &str) -> zbus::Result<()>;
+
+    /// A system profile was removed from the catalog. Clients should
+    /// drop any cached body for this UUID.
+    #[zbus(signal)]
+    pub async fn system_profile_removed(
+        emitter: &SignalEmitter<'_>,
+        uuid: &str,
+    ) -> zbus::Result<()>;
 
     /// Pairing-flow phase transition.
     ///
@@ -444,4 +616,13 @@ impl ManagerService {
         vendor: &str,
         vendor_data: HashMap<String, String>,
     ) -> zbus::Result<()>;
+}
+
+/// Parse a UUID string coming off the system-profile CRUD wire
+/// surface. Malformed UUIDs return `ProfileNotFound` rather than a
+/// generic `InvalidArgs` so clients can route the "unknown profile"
+/// case uniformly whether the UUID is well-formed-but-absent or
+/// just garbage.
+fn parse_profile_uuid(value: &str) -> Result<Uuid, DaemonError> {
+    Uuid::parse_str(value).map_err(|_| DaemonError::ProfileNotFound(value.to_string()))
 }

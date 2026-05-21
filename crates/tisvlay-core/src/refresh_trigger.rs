@@ -27,7 +27,7 @@
 ///     match event {
 ///         StateEvent::DaemonStateChanged(_)
 ///         | StateEvent::DaemonAppeared
-///         | StateEvent::SessionProfileChanged
+///         | StateEvent::TvUserProfileChanged
 ///         | StateEvent::FallbackPoll => {
 ///             let daemon = daemon.clone();
 ///             let session = session.clone();

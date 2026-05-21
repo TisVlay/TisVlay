@@ -1,32 +1,1198 @@
-import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+// Profiles pane — master-detail with two stacked sections (System /
+// User) in the left column and a single detail header on the right.
+//
+// Silhouette mirrors the TVs pane (left list + right detail), with
+// two key divergences:
+//
+// - Sub-tabs live in the left column as stacked sections, not a top
+//   segmented control. Gives the editor full vertical height; matches
+//   KDE/GNOME settings sidebar idioms.
+// - Detail has no live-state chrome (no power chip, no pencil/edit
+//   mode); the field editor commits every change instantly. The
+//   header carries "Used by [chip][chip]" linking back to each
+//   referencing TV — the "Find Usages" idiom (GitHub package "Used
+//   by", VS Code peek).
+//
+// The detail-header toolbar carries the name + rename pencil +
+// Delete (catalog removal). The SYSTEM PROFILE / USER PROFILE
+// section title row above the FIELDS card groups catalog-body
+// actions (Duplicate, Reset all) with the body they act on.
+
+import { ComboBox, ScrollView, SpinBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { Icons } from "../globals/icons.slint";
+import { Errors } from "../globals/errors.slint";
+import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
+import { ConfirmDialog, Chip, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
 
-export component ProfilesPane inherits Rectangle {
+// =============================================================================
+// Master list — left column, stacked System / User sections.
+// =============================================================================
+
+component ProfileListRow inherits Rectangle {
+    in property <ProfileRow> entry;
+    in property <ProfileKind> kind;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 64px;
+    background: selected ? Theme.row-selected
+              : (touch.has-hover ? Theme.row-hover : transparent);
+    animate background { duration: 150ms; }
+
+    accessible-role: list-item;
+    accessible-label: root.entry.name;
+    accessible-action-default => { root.clicked(); }
+
+    // 3px left accent stripe when selected — mirrors TvListRow.
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: root.selected ? Theme.accent : transparent;
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        alignment: start;
+
+        VerticalLayout {
+            width: Design.size-tile-sm;
+            alignment: center;
+            ProfileTile {
+                kind: root.kind;
+                tile-size: Design.size-tile-sm;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            // Name row + "(default)" badge alongside.
+            HorizontalLayout {
+                spacing: Design.gap-tight;
+                alignment: start;
+                Text {
+                    text: root.entry.name;
+                    color: root.selected ? Theme.row-selected-text : Theme.text;
+                    font-size: Design.font-body;
+                    font-weight: root.selected ? 600 : 500;
+                    overflow: elide;
+                }
+                if root.entry.is-default: Text {
+                    text: @tr("(default)");
+                    color: Theme.text-dim;
+                    font-size: Design.font-mini;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Status row: dot + label. 3-state classification:
+            //   Unassigned (no referencing TV)
+            //   Assigned (referenced, none automated)
+            //   Active (referenced + ≥1 automated)
+            HorizontalLayout {
+                spacing: Design.gap-tight;
+                alignment: start;
+
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: Design.size-status-dot;
+                    height: Design.size-status-dot;
+                    border-radius: 3px;
+                    background: root.entry.active
+                        ? Theme.success
+                        : (root.entry.referenced-by.length > 0
+                            ? Theme.info
+                            : Theme.text-faint);
+                }
+
+                Text {
+                    text: root.entry.active
+                        ? @tr("Active")
+                        : (root.entry.referenced-by.length > 0
+                            ? @tr("Assigned")
+                            : @tr("Unassigned"));
+                    color: root.entry.active
+                        ? Theme.success-text
+                        : (root.entry.referenced-by.length > 0
+                            ? Theme.info-text
+                            : Theme.text-faint);
+                    font-size: Design.font-mini;
+                }
+            }
+        }
+    }
+
+    // Bottom 1px separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component ProfileSectionHeader inherits Rectangle {
+    in property <string> title;
+    /// `+` enabled flag. False when the corresponding daemon isn't
+    /// reachable (no session bus → user-profile create disabled).
+    in property <bool> add-enabled: true;
+    callback add-clicked();
+
+    height: 40px;
+    background: Theme.surface;
+
+    // Bottom separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: Design.gap-stack;
+        spacing: Design.gap-stack;
+        alignment: stretch;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
+        }
+
+        // "+" New-profile button — same shape as TvList's pair button.
+        Rectangle {
+            width: 24px;
+            height: 24px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 12px;
+            background: !root.add-enabled
+                ? Theme.text-faint
+                : (add-touch.has-hover ? Theme.accent-pressed : Theme.accent);
+            animate background { duration: 150ms; }
+
+            accessible-role: button;
+            accessible-label: @tr("Create new {} profile", root.title);
+            accessible-action-default => {
+                if (root.add-enabled) {
+                    root.add-clicked();
+                }
+            }
+
+            Text {
+                text: "+";
+                color: white;
+                font-size: 16px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+            add-touch := TouchArea {
+                enabled: root.add-enabled;
+                clicked => { root.add-clicked(); }
+            }
+        }
+    }
+}
+
+component ProfileList inherits Rectangle {
+    /// Bubble the "+" clicks up to the pane so it can open the
+    /// name-input dialog. The section header itself can't host the
+    /// dialog (it needs to render over the whole pane).
+    callback request-create(ProfileKind);
+
+    width: Design.width-master;
     background: Theme.surface-alt;
 
-    VerticalBox {
+    // Right separator.
+    Rectangle {
+        x: parent.width - 1px;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        // System profiles section — top half. Section header is
+        // pinned at the top of the half; rows scroll below it once
+        // they exceed the available height. The two sections both
+        // claim `vertical-stretch: 1` so they split the available
+        // height 50/50 regardless of how many rows each holds —
+        // either list always has at least half the master column
+        // to work with, with its own scroll surface for overflow.
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0;
+            ProfileSectionHeader {
+                title: @tr("SYSTEM PROFILES");
+                add-enabled: true;
+                add-clicked => { root.request-create(ProfileKind.system); }
+            }
+            ScrollView {
+                viewport-width: self.visible-width;
+                VerticalLayout {
+                    spacing: 0;
+                    alignment: start;
+                    for r[i] in Profiles.system: ProfileListRow {
+                        entry: r;
+                        kind: ProfileKind.system;
+                        selected: Profiles.selected-kind == ProfileKind.system
+                               && Profiles.selected-uuid == r.uuid;
+                        clicked => {
+                            // Hand the row off to `selected-row` here so the
+                            // detail header (gated on `selected-row.uuid != ""`)
+                            // materializes on the same frame as the click. Rust
+                            // can't push `selected-row` in response to a click
+                            // without a state-refresh tick, which previously
+                            // left the detail pane empty until the next
+                            // fallback poll (up to 30 s of dead air).
+                            Profiles.selected-kind = ProfileKind.system;
+                            Profiles.selected-uuid = r.uuid;
+                            Profiles.selected-row = r;
+                            Profiles.select(ProfileKind.system, r.uuid);
+                        }
+                    }
+                }
+            }
+        }
+
+        // User profiles section — bottom half. Same shape as the
+        // system half. When the session bus isn't available, Rust
+        // pushes an empty `Profiles.user` model so the repeater
+        // renders nothing and the unavailable-notice carries the
+        // message instead.
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0;
+            ProfileSectionHeader {
+                title: @tr("USER PROFILES");
+                add-enabled: Profiles.session-available;
+                add-clicked => { root.request-create(ProfileKind.user); }
+            }
+            if !Profiles.session-available: Rectangle {
+                height: 56px;
+                VerticalLayout {
+                    width: 100%;
+                    alignment: center;
+                    padding: Design.gap-stack;
+                    Text {
+                        text: @tr("Session service unavailable");
+                        color: Theme.text-faint;
+                        font-size: Design.font-mini;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            ScrollView {
+                viewport-width: self.visible-width;
+                VerticalLayout {
+                    spacing: 0;
+                    alignment: start;
+                    for r[i] in Profiles.user: ProfileListRow {
+                        entry: r;
+                        kind: ProfileKind.user;
+                        selected: Profiles.selected-kind == ProfileKind.user
+                               && Profiles.selected-uuid == r.uuid;
+                        clicked => {
+                            Profiles.selected-kind = ProfileKind.user;
+                            Profiles.selected-uuid = r.uuid;
+                            Profiles.selected-row = r;
+                            Profiles.select(ProfileKind.user, r.uuid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Field-editor rows — one per `ProfileFieldEntry`, dispatched by `kind`.
+// =============================================================================
+//
+// Two row shapes share the same three-column rhythm:
+//   [2 px gutter] [label] [control + reset glyph]
+// The gutter accent flips to `Theme.accent` when `is-locally-set`,
+// signaling at a glance which fields override the inherit chain.
+// Reset is only rendered for locally-set rows — inheriting fields
+// can't be "reset" because they already inherit.
+//
+// The `*` overlay on `entry.current-value` for enum rows is the visual
+// inherit cue AND the workaround for `ComboBox.selected(v)` no-op when
+// picked == current. Number rows skip the overlay; the gutter + reset
+// glyph carry the inherit signal alone.
+
+component ProfileFieldRowEnum inherits Rectangle {
+    in property <ProfileFieldEntry> entry;
+
+    height: row-layout.preferred-height;
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: 0;
+        alignment: stretch;
+
+        // 2 px gutter — accent when the field is locally set,
+        // transparent otherwise. Visual cue distinct from the
+        // reset glyph so the row reads as "overridden" even when
+        // the user isn't hovering the glyph.
+        Rectangle {
+            width: 2px;
+            background: root.entry.is-locally-set ? Theme.accent : transparent;
+        }
+
+        row-layout := HorizontalLayout {
+            horizontal-stretch: 1;
+            padding-left: Design.gap-row;
+            padding-right: Design.gap-row;
+            padding-top: Design.gap-stack;
+            padding-bottom: Design.gap-stack;
+            spacing: Design.gap-row;
+            alignment: stretch;
+
+            VerticalLayout {
+                width: Design.width-label-col-profile;
+                alignment: center;
+                Text {
+                    text: root.entry.label;
+                    color: Theme.text;
+                    font-size: Design.font-meta;
+                    font-weight: 500;
+                    // Wrap rather than clip when a label exceeds the
+                    // column width (long fields, localization
+                    // expansion). The fixed column still keeps every
+                    // ComboBox / SpinBox aligned at the same x; only
+                    // the affected row grows taller.
+                    wrap: word-wrap;
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                ComboBox {
+                    model: root.entry.options;
+                    current-value: root.entry.current-value;
+                    selected(v) => { Profiles.value-edited(root.entry.field-name, v); }
+                }
+            }
+
+            // Reset glyph — only rendered for locally-set fields.
+            // 24 px column whether populated or not so the row
+            // rhythm stays consistent.
+            VerticalLayout {
+                width: 24px;
+                alignment: center;
+                if root.entry.is-locally-set: IconBtn {
+                    source: Icons.reload;
+                    accessible-label: @tr("Reset {} to inherit", root.entry.label);
+                    clicked => { Profiles.reset-field(root.entry.field-name); }
+                }
+            }
+        }
+    }
+}
+
+component ProfileFieldRowNumber inherits Rectangle {
+    in property <ProfileFieldEntry> entry;
+
+    height: row-layout.preferred-height;
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: 0;
+        alignment: stretch;
+
+        Rectangle {
+            width: 2px;
+            background: root.entry.is-locally-set ? Theme.accent : transparent;
+        }
+
+        row-layout := HorizontalLayout {
+            horizontal-stretch: 1;
+            padding-left: Design.gap-row;
+            padding-right: Design.gap-row;
+            padding-top: Design.gap-stack;
+            padding-bottom: Design.gap-stack;
+            spacing: Design.gap-row;
+            alignment: stretch;
+
+            VerticalLayout {
+                width: Design.width-label-col-profile;
+                alignment: start;
+                Text {
+                    text: root.entry.label;
+                    color: Theme.text;
+                    font-size: Design.font-meta;
+                    font-weight: 500;
+                    // Wrap rather than clip when a label exceeds the
+                    // column width (long fields, localization
+                    // expansion). The fixed column still keeps every
+                    // ComboBox / SpinBox aligned at the same x; only
+                    // the affected row grows taller.
+                    wrap: word-wrap;
+                }
+            }
+
+            // Value column. SpinBox + optional unit Text in a
+            // stretching HorizontalLayout. SpinBox's std-widget
+            // definition (every style) sets `min-width: max(128px,
+            // …)`; that floor would otherwise push the row-layout
+            // 4 px past its parent's width and shift the reset
+            // glyph right of the ComboBox rows' glyphs. We override
+            // the floor with `min-width: 0px` so the SpinBox's
+            // built-in `horizontal-stretch: 1` is free to shrink
+            // and absorb whatever space the unit Text leaves —
+            // keeping the reset column at the same x across rows.
+            // SpinBox's own internal minimum (text input + two
+            // buttons + padding ≈ 120 px) still applies inside,
+            // so we never compress the chrome below the usable
+            // floor.
+            HorizontalLayout {
+                horizontal-stretch: 1;
+                spacing: Design.gap-stack;
+                alignment: stretch;
+                SpinBox {
+                    min-width: 0px;
+                    value: root.entry.number-value;
+                    minimum: root.entry.min-value;
+                    maximum: root.entry.max-value;
+                    step-size: root.entry.step;
+                    edited(v) => { Profiles.value-edited-number(root.entry.field-name, v); }
+                }
+                if root.entry.unit != "": VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.entry.unit;
+                        color: Theme.text-dim;
+                        font-size: Design.font-meta;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                width: 24px;
+                alignment: center;
+                if root.entry.is-locally-set: IconBtn {
+                    source: Icons.reload;
+                    accessible-label: @tr("Reset {} to inherit", root.entry.label);
+                    clicked => { Profiles.reset-field(root.entry.field-name); }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Detail — right column, fills remaining width.
+// =============================================================================
+
+component ProfileDetailHeader inherits Rectangle {
+    in property <string> name;
+    in property <ProfileKind> kind;
+    in property <[ProfileTvRef]> referenced-by;
+    /// True iff at least one referencing TV is currently automated.
+    /// Drives the Active/Inactive status badge.
+    in property <bool> active;
+    /// Disable Delete on the reserved default profile — the daemon
+    /// rejects deletion of the default UUID outright. Greying the
+    /// button keeps the affordance discoverable without dispatching
+    /// a call the daemon will reject.
+    in property <bool> can-delete: true;
+    /// Bubble actions up to the pane; ProfilesPane owns the
+    /// confirm-delete dialog and the duplicate dialog.
+    callback request-delete();
+    /// Bubble a friendly-name rename request up. ProfilesPane forwards
+    /// to `Profiles.rename-selected(...)`. The daemon validates the
+    /// new name (non-empty, reserved-name rules, uniqueness); failures
+    /// surface as a toast from Rust.
+    callback request-rename(string);
+
+    // --- Inline-edit state ---
+    //
+    // Address-book / VS Code "F2 rename" pattern: the name renders as
+    // a plain Text by default with a pencil glyph trailing it; clicking
+    // the pencil flips this header into edit mode, swapping the Text
+    // for a LineEditField and the pencil + Duplicate / Delete buttons
+    // for ✓ / ✗. Commits ride a `name`-only body patch through
+    // `UpdateSystemProfile` / `UpdateUserProfile`; the echoed
+    // `SystemProfileChanged` / `UserProfileChanged` signal redraws
+    // `root.name` automatically.
+    //
+    // The pencil is only rendered while a profile is selected (the
+    // header itself doesn't render in the empty state — its only call
+    // site is gated on `has-selection` in `ProfilesPane`).
+    property <bool> editing-name: false;
+    /// Field-text buffer for the inline edit. Initialized from
+    /// `root.name` on every transition into edit mode; never written
+    /// back through to `root.name` — that channel belongs to the
+    /// daemon's signal echo.
+    property <string> pending-name;
+
+    /// Enter edit mode: snapshot the current name into the buffer +
+    /// flip the inline-edit toggle. The `LineEditField` is `if`-gated
+    /// on `editing-name`, so the widget materializes here and grabs
+    /// keyboard focus from its `init` block; nothing else needs to
+    /// reach into it.
+    function begin-rename() {
+        root.pending-name = root.name;
+        root.editing-name = true;
+    }
+
+    /// Commit the typed name: fire the rename callback + leave edit
+    /// mode. We flip the toggle unconditionally — the daemon's
+    /// validation outcome surfaces asynchronously through a toast, so
+    /// the editor doesn't sit in edit mode waiting for a verdict that
+    /// the user can't see from this widget.
+    function commit-rename() {
+        if (!root.editing-name) {
+            return;
+        }
+        root.editing-name = false;
+        root.request-rename(root.pending-name);
+    }
+
+    /// Discard the typed name + leave edit mode without firing the
+    /// callback. The displayed `root.name` is unchanged because we
+    /// only ever touched `pending-name`.
+    function cancel-rename() {
+        root.editing-name = false;
+        root.pending-name = "";
+    }
+
+    height: header-layout.preferred-height;
+    background: Theme.surface;
+
+    // Bottom separator.
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    // Three-column shape mirroring `TvDetailHeader`:
+    //   [ tile ] [ name + actions, Used-by ticker below ] [ status badges ]
+    // Padding tokens shared with `TvDetailHeader` so the two pane
+    // headers visually match by construction.
+    header-layout := HorizontalLayout {
+        width: 100%;
+        padding-left: Design.pad-pane;
+        padding-right: Design.pad-pane;
+        padding-top: Design.pad-header-top;
+        padding-bottom: Design.gap-row;
+        spacing: Design.gap-row;
+        alignment: stretch;
+
+        // Col 1: identity tile.
+        VerticalLayout {
+            width: Design.size-tile-md;
+            alignment: center;
+            ProfileTile {
+                kind: root.kind;
+                tile-size: Design.size-tile-md;
+            }
+        }
+
+        // Col 2: name + action icons row, with the Used-by chip
+        // ticker below.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Design.gap-form;
+
+            // Title row. Two layouts share the name slot:
+            //   - View mode: Text + pencil + Duplicate + Delete.
+            //   - Edit mode: LineEditField + ✓ + ✗.
+            HorizontalLayout {
+                spacing: Design.gap-row;
+                alignment: stretch;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    if !root.editing-name: Text {
+                        text: root.name;
+                        color: Theme.text;
+                        font-size: Design.font-title-3;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    // Wrap the field in a FocusScope so Escape (which
+                    // the inner LineEdit lets bubble out — only
+                    // printable text and Enter are consumed) reaches
+                    // `cancel-rename()`. Enter still rides
+                    // `LineEditField.accepted(...)` and routes to
+                    // `commit-rename()` directly.
+                    if root.editing-name: FocusScope {
+                        key-pressed(event) => {
+                            if (event.text == Key.Escape) {
+                                root.cancel-rename();
+                                return accept;
+                            }
+                            return reject;
+                        }
+
+                        LineEditField {
+                            placeholder-text: @tr("Profile name");
+                            text <=> root.pending-name;
+                            accepted(v) => { root.commit-rename(); }
+                            // `init => self.focus-input()` removed
+                            // — Slint trips its property-recursion
+                            // guard when the LineEditField
+                            // materializes inside this `if`-branch
+                            // and immediately asks the inner
+                            // LineEdit to grab focus. User clicks
+                            // into the field manually for now;
+                            // revisit when we have a non-recursive
+                            // way to drive focus on materialization.
+                        }
+                    }
+                }
+
+                if !root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        source: Icons.edit;
+                        accessible-label: @tr("Rename profile");
+                        clicked => { root.begin-rename(); }
+                    }
+                }
+                if !root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        source: Icons.delete;
+                        accessible-label: @tr("Delete profile");
+                        enabled: root.can-delete;
+                        clicked => { root.request-delete(); }
+                    }
+                }
+                if root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        source: Icons.save;
+                        accessible-label: @tr("Save rename");
+                        clicked => { root.commit-rename(); }
+                    }
+                }
+                if root.editing-name: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        source: Icons.cancel;
+                        accessible-label: @tr("Cancel rename");
+                        clicked => { root.cancel-rename(); }
+                    }
+                }
+            }
+
+            // Used-by row. Plain Text spans + middot separators
+            // matching the TVs-pane descriptor row — chips would
+            // run ~5 px taller (border + padding) and push the
+            // header noticeably above the TVs-pane header. TV
+            // names tint to `info-text` and carry a per-name
+            // TouchArea so the click-through to each TV survives.
+            // Always renders so the header height is stable across
+            // assigned + unassigned states (matches TVs-pane row 2
+            // which falls back to `—` when the descriptor values
+            // are empty); wrapped in a Flickable so a wide list
+            // scrolls sideways (drag) instead of clipping into the
+            // status-badges column.
+            Flickable {
+                height: usedby-row.preferred-height;
+                viewport-width: usedby-row.preferred-width;
+                usedby-row := HorizontalLayout {
+                    spacing: Design.gap-meta;
+                    alignment: start;
+                    Text {
+                        text: @tr("Used by:");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                    }
+                    if root.referenced-by.length == 0: Text {
+                        text: "—";
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                    }
+                    for tv[i] in root.referenced-by: HorizontalLayout {
+                        spacing: Design.gap-meta;
+                        alignment: start;
+                        if i > 0: Text {
+                            text: "·";
+                            color: Theme.text-dim;
+                            font-size: Design.font-helper;
+                        }
+                        LinkText {
+                            text: tv.name;
+                            clicked => { Profiles.open-tv(tv.uuid); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Col 3: status badges. Same shape `TvDetailHeader` uses for
+        // its Connected/Disconnected + Managed-state pair.
+        VerticalLayout {
+            alignment: center;
+            spacing: Design.gap-tight;
+            HorizontalLayout {
+                alignment: end;
+                Chip {
+                    label: root.referenced-by.length > 0
+                        ? @tr("Assigned")
+                        : @tr("Unassigned");
+                    tone: root.referenced-by.length > 0 ? "info" : "neutral";
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                Chip {
+                    label: root.active ? @tr("Active") : @tr("Inactive");
+                    tone: root.active ? "success" : "neutral";
+                }
+            }
+        }
+    }
+}
+
+component ProfileDetail inherits Rectangle {
+    in property <string> name;
+    in property <ProfileKind> kind;
+    in property <[ProfileTvRef]> referenced-by;
+    in property <bool> active;
+    in property <bool> can-delete: true;
+    callback request-delete();
+    callback request-duplicate();
+    callback request-reset-all();
+
+    background: Theme.surface-alt;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        ProfileDetailHeader {
+            name: root.name;
+            kind: root.kind;
+            referenced-by: root.referenced-by;
+            active: root.active;
+            can-delete: root.can-delete;
+            request-delete => { root.request-delete(); }
+            request-rename(new-name) => { Profiles.rename-selected(new-name); }
+        }
+
+        // Field editor surface. The detail header carries the name +
+        // rename pencil + Delete (catalog-removal scope); the catalog-
+        // body actions (Duplicate, Reset all) live on the title row
+        // above the FIELDS card so they group with the body they act
+        // on. Section label calls out the kind explicitly
+        // ("SYSTEM PROFILE" / "USER PROFILE") so a user who arrived
+        // via the TVs-pane pencil pane-hop sees the context without
+        // relying on the col-1 tile glyph alone.
+        ScrollView {
+            viewport-width: self.visible-width;
+            VerticalLayout {
+                width: 100%;
+                padding-left: Design.pad-pane;
+                padding-right: Design.pad-pane;
+                padding-top: Design.pad-body-top;
+                padding-bottom: Design.pad-pane;
+                spacing: Design.gap-pane;
+                alignment: start;
+
+                VerticalLayout {
+                    spacing: 0;
+
+                    // Title row — section label on the left, catalog-
+                    // body action toolbar (Duplicate + Reset all) on
+                    // the right.
+                    HorizontalLayout {
+                        padding-left: 2px;
+                        padding-bottom: Design.gap-stack;
+                        spacing: Design.gap-form;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: root.kind == ProfileKind.user
+                                    ? @tr("USER PROFILE")
+                                    : @tr("SYSTEM PROFILE");
+                                color: Theme.text-dim;
+                                font-size: Design.font-mini;
+                                font-weight: 600;
+                                letter-spacing: 0.6px;
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            IconBtn {
+                                source: Icons.copy;
+                                accessible-label: @tr("Duplicate profile");
+                                clicked => { root.request-duplicate(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconBtn {
+                                source: Icons.reload;
+                                accessible-label: @tr("Reset all locally-set fields");
+                                enabled: Profiles.editor-can-reset-all;
+                                clicked => { root.request-reset-all(); }
+                            }
+                        }
+                    }
+
+                    // Card — same surface treatment as `Group`'s
+                    // body. Repeats `Profiles.editor-fields`, picking
+                    // a row shape per `entry.kind` (`"enum"` /
+                    // `"number"`). Empty model renders an empty card
+                    // — Rust pushes the model whenever the selection
+                    // changes, so a blank card means "no selection"
+                    // (the empty-state branch above handles that
+                    // case at the pane level) or "this profile has
+                    // no editor fields" (currently never true; the
+                    // tables always emit at least one row).
+                    Rectangle {
+                        background: Theme.surface;
+                        border-color: Theme.border;
+                        border-width: Design.border-thin;
+                        border-radius: Design.radius-card;
+
+                        VerticalLayout {
+                            width: 100%;
+                            spacing: 0;
+                            alignment: start;
+                            for entry[i] in Profiles.editor-fields: VerticalLayout {
+                                if entry.kind == "enum": ProfileFieldRowEnum {
+                                    entry: entry;
+                                }
+                                if entry.kind == "number": ProfileFieldRowNumber {
+                                    entry: entry;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component ProfileDetailEmpty inherits Rectangle {
+    background: Theme.surface-alt;
+
+    VerticalLayout {
         width: 100%;
         height: 100%;
         alignment: center;
-        spacing: Design.gap-tight;
+        spacing: Design.gap-stack;
 
-        HorizontalBox {
+        HorizontalLayout {
             alignment: center;
             Text {
-                text: @tr("Profiles");
-                font-size: Design.font-title-2;
-                font-weight: 600;
+                text: @tr("Select a profile");
                 color: Theme.text;
+                font-size: 15px;
+                font-weight: 600;
             }
         }
-        HorizontalBox {
+        HorizontalLayout {
             alignment: center;
             Text {
-                text: @tr("System and user profile editing arrives in M4.");
+                text: @tr("Pick a profile from the list, or create one with the + button.");
                 color: Theme.text-dim;
-                font-size: Design.font-body;
+                font-size: Design.font-meta;
+                horizontal-alignment: center;
             }
         }
+    }
+}
+
+// =============================================================================
+// ProfilesPane — top-level composition.
+// =============================================================================
+
+export component ProfilesPane {
+    // Detail is gated on the selected row having a non-empty UUID —
+    // Rust pushes a blank `selected-row` when the selection clears
+    // (e.g. the selected profile was deleted by another client).
+    property <bool> has-selection:
+           Profiles.selected-kind != ProfileKind.none
+        && Profiles.selected-row.uuid != "";
+
+    // --- Pending Delete-confirm dialog state ---
+    property <ProfileKind> pending-delete-kind: ProfileKind.none;
+    property <string> pending-delete-uuid;
+    property <string> pending-delete-name;
+    property <string> pending-delete-referenced-summary;
+
+    // --- Pending New-profile dialog state ---
+    property <ProfileKind> pending-new-kind: ProfileKind.none;
+    property <string> pending-new-name;
+    /// Filled by Slint-side validation as the user types. Empty
+    /// means valid; the dialog disables Confirm while non-empty.
+    /// Duplicate-name checks happen server-side — Slint can't
+    /// iterate the existing `Profiles.system` / `Profiles.user`
+    /// lists from a `function` (no `for` in pure expressions), so
+    /// duplicates surface as a toast from the `confirm-create`
+    /// Rust handler.
+    property <string> pending-new-error;
+
+    // --- Pending Duplicate dialog state ---
+    property <ProfileKind> pending-duplicate-kind: ProfileKind.none;
+    property <string> pending-duplicate-source-uuid;
+    property <string> pending-duplicate-name;
+    property <string> pending-duplicate-error;
+
+    // --- Pending Reset-all dialog state ---
+    //
+    // Open when the user clicks the reload glyph in the detail-header
+    // toolbar. Snapshots the selected profile's display name so the
+    // dialog wording stays stable if a concurrent rename lands during
+    // the prompt.
+    property <ProfileKind> pending-reset-all-kind: ProfileKind.none;
+    property <string> pending-reset-all-name;
+
+    function validate-new-name(name: string) -> string {
+        if (name == "") {
+            return "";
+        }
+        if (name == "default") {
+            return @tr("'default' is reserved.");
+        }
+        return "";
+    }
+
+    function open-create-dialog(kind: ProfileKind) {
+        root.pending-new-kind = kind;
+        root.pending-new-name = "";
+        root.pending-new-error = "";
+    }
+
+    function close-create-dialog() {
+        root.pending-new-kind = ProfileKind.none;
+        root.pending-new-name = "";
+        root.pending-new-error = "";
+    }
+
+    function open-delete-dialog() {
+        root.pending-delete-kind = Profiles.selected-kind;
+        root.pending-delete-uuid = Profiles.selected-row.uuid;
+        root.pending-delete-name = Profiles.selected-row.name;
+        root.pending-delete-referenced-summary = Profiles.selected-row.referenced-by-summary;
+    }
+
+    function close-delete-dialog() {
+        root.pending-delete-kind = ProfileKind.none;
+        root.pending-delete-uuid = "";
+        root.pending-delete-name = "";
+        root.pending-delete-referenced-summary = "";
+    }
+
+    function open-duplicate-dialog() {
+        root.pending-duplicate-kind = Profiles.selected-kind;
+        root.pending-duplicate-source-uuid = Profiles.selected-row.uuid;
+        // Pre-populate with a suggested name. The user can edit before
+        // committing; the daemon enforces uniqueness server-side.
+        root.pending-duplicate-name = @tr("{} (copy)", Profiles.selected-row.name);
+        root.pending-duplicate-error = root.validate-new-name(root.pending-duplicate-name);
+    }
+
+    function close-duplicate-dialog() {
+        root.pending-duplicate-kind = ProfileKind.none;
+        root.pending-duplicate-source-uuid = "";
+        root.pending-duplicate-name = "";
+        root.pending-duplicate-error = "";
+    }
+
+    function open-reset-all-dialog() {
+        root.pending-reset-all-kind = Profiles.selected-kind;
+        root.pending-reset-all-name = Profiles.selected-row.name;
+    }
+
+    function close-reset-all-dialog() {
+        root.pending-reset-all-kind = ProfileKind.none;
+        root.pending-reset-all-name = "";
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        // Pane-level inline error surface (Kirigami inline-message
+        // pattern, same as the TVs pane). Reload-config failures
+        // dual-route here from Rust; per-action failures
+        // (create / delete / rename / field-edit / reset) stay on
+        // the transient-toast path since the user can retry
+        // immediately.
+        if Errors.profiles.title != "" || Errors.profiles.message != "": Rectangle {
+            background: Theme.surface-alt;
+            HorizontalLayout {
+                width: 100%;
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 12px;
+                padding-bottom: 0;
+                InlineError {
+                    tone: Errors.profiles.tone == "" ? "error" : Errors.profiles.tone;
+                    title: Errors.profiles.title;
+                    message: Errors.profiles.message;
+                    action-label: Errors.profiles.action-label;
+                    action-clicked => { Errors.profiles-action(); }
+                    dismissed => {
+                        Errors.profiles = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            width: 100%;
+            spacing: 0;
+            vertical-stretch: 1;
+
+            ProfileList {
+                request-create(kind) => { root.open-create-dialog(kind); }
+            }
+
+            // Detail column — fills remaining width.
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.surface-alt;
+
+                if !root.has-selection: ProfileDetailEmpty {
+                    width: 100%;
+                    height: 100%;
+                }
+
+                if root.has-selection: ProfileDetail {
+                    width: 100%;
+                    height: 100%;
+                    name: Profiles.selected-row.name;
+                    kind: Profiles.selected-kind;
+                    referenced-by: Profiles.selected-row.referenced-by;
+                    active: Profiles.selected-row.active;
+                    can-delete: !Profiles.selected-row.is-default;
+                    request-delete => { root.open-delete-dialog(); }
+                    request-duplicate => { root.open-duplicate-dialog(); }
+                    request-reset-all => { root.open-reset-all-dialog(); }
+                }
+            }
+        }
+    }
+
+    // Delete-confirm dialog. When the profile is referenced by one
+    // or more TVs the dialog flips into "cannot delete" mode:
+    // message names the offending TVs, Confirm is disabled, only
+    // Cancel works. The reference list is computed client-side via
+    // the shared `references_of` helper at master-list build time —
+    // no extra round-trip.
+    ConfirmDialog {
+        open: root.pending-delete-kind != ProfileKind.none;
+        title: @tr("Delete profile");
+        message: root.pending-delete-referenced-summary != ""
+            ? @tr("Cannot delete '{}': still used by {}. Remove or reassign these TVs first.",
+                  root.pending-delete-name,
+                  root.pending-delete-referenced-summary)
+            : @tr("Delete '{}'? This action cannot be undone.", root.pending-delete-name);
+        confirm-label: @tr("Delete");
+        confirm-enabled: root.pending-delete-referenced-summary == "";
+        confirmed => {
+            Profiles.confirm-delete(root.pending-delete-kind, root.pending-delete-uuid);
+            root.close-delete-dialog();
+        }
+        cancelled => { root.close-delete-dialog(); }
+    }
+
+    // New-profile name-input dialog. `kind` is set when opening; the
+    // post-confirm `confirm-create` routes to either Manager1 or
+    // Session1 based on it.
+    NameInputDialog {
+        open: root.pending-new-kind != ProfileKind.none;
+        title: root.pending-new-kind == ProfileKind.system
+            ? @tr("New system profile")
+            : @tr("New user profile");
+        prompt: @tr("Enter a name for the new profile.");
+        placeholder: @tr("guest");
+        confirm-label: @tr("Create");
+        name <=> root.pending-new-name;
+        error-message: root.pending-new-error;
+        name-changed(v) => {
+            root.pending-new-error = root.validate-new-name(v);
+        }
+        confirmed => {
+            Profiles.confirm-create(root.pending-new-kind, root.pending-new-name);
+            root.close-create-dialog();
+        }
+        cancelled => { root.close-create-dialog(); }
+    }
+
+    // Duplicate-profile name-input dialog. Pre-populated with
+    // "<source name> (copy)"; the daemon enforces uniqueness server-
+    // side (no client-side iteration of existing names available in
+    // Slint pure expressions).
+    NameInputDialog {
+        open: root.pending-duplicate-kind != ProfileKind.none;
+        title: @tr("Duplicate profile");
+        prompt: @tr("Enter a name for the new profile.");
+        placeholder: @tr("guest");
+        confirm-label: @tr("Duplicate");
+        name <=> root.pending-duplicate-name;
+        error-message: root.pending-duplicate-error;
+        name-changed(v) => {
+            root.pending-duplicate-error = root.validate-new-name(v);
+        }
+        confirmed => {
+            Profiles.confirm-duplicate(
+                root.pending-duplicate-kind,
+                root.pending-duplicate-source-uuid,
+                root.pending-duplicate-name,
+            );
+            root.close-duplicate-dialog();
+        }
+        cancelled => { root.close-duplicate-dialog(); }
+    }
+
+    // Reset-all confirm dialog. Bulk field clear is destructive
+    // enough that the user gets one chance to back out — symmetric
+    // with the delete-confirm dialog. Single round-trip on confirm.
+    ConfirmDialog {
+        open: root.pending-reset-all-kind != ProfileKind.none;
+        title: @tr("Reset all fields");
+        message: @tr("Clear every locally-set field on '{}'? Inheriting values resume from the default profile.",
+                     root.pending-reset-all-name);
+        confirm-label: @tr("Reset all");
+        confirmed => {
+            Profiles.reset-all();
+            root.close-reset-all-dialog();
+        }
+        cancelled => { root.close-reset-all-dialog(); }
     }
 }

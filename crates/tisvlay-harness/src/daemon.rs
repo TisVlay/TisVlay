@@ -117,7 +117,7 @@ impl TestDaemon {
     /// so the mock connector inside the daemon and the returned handle
     /// share state. Callers can pre-configure any combination of TVs,
     /// profiles, managed flags, primary_input, etc. in the config.
-    pub async fn with_config(config: SystemConfig) -> anyhow::Result<Self> {
+    pub async fn with_config(mut config: SystemConfig) -> anyhow::Result<Self> {
         let (registry, handle) = create_test_registry();
         let registry = Arc::new(registry);
         let registry_for_service = registry.clone();
@@ -126,6 +126,14 @@ impl TestDaemon {
             .prefix("tisvlay-test-daemon-")
             .tempdir()?;
         let config_path = config_dir.path().join("config.toml");
+        // Mirror SystemConfig::load_from's invariants: the reserved
+        // default profiles must exist before TvManager constructs.
+        // Without this, tests that hand-build a `SystemConfig::default()`
+        // would have empty `system.profiles` / `user.profiles` maps,
+        // breaking the `Tv1.SystemProfile` setter (which validates
+        // against the catalog).
+        config.system.ensure_default();
+        config.user.ensure_default();
         config.save_to(&config_path)?;
 
         let (tv_manager, state_change_rx) = TvManager::new(config, config_path, registry);

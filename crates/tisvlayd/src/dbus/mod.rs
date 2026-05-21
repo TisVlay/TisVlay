@@ -78,6 +78,25 @@ pub enum DaemonError {
     ConfigDuplicateTvId(String),
     /// TV references a profile name that doesn't exist.
     ConfigInvalidProfileReference(String),
+
+    // -- Profile CRUD --
+    /// Profile UUID not in the catalog.
+    ProfileNotFound(String),
+    /// Reserved profile UUID cannot be deleted / mutated this way
+    /// (currently: delete of `DEFAULT_SYSTEM_PROFILE_UUID`).
+    ReservedProfile(String),
+    /// Profile body's `name` failed validation (empty, duplicate, or
+    /// claimed the reserved `"default"` literal for a non-default
+    /// UUID).
+    ProfileNameInvalid(String),
+    /// Delete rejected because at least one TV still references the
+    /// profile. Message text carries the TV count + UUID for client
+    /// diagnostics; routing is by error name.
+    ProfileReferenced(String),
+    /// Persistence failed after the in-memory mutation was rolled
+    /// back. Maps from `TvManagerError::Io`; the underlying message
+    /// is the `io::Error` Display.
+    IoError(String),
 }
 
 impl From<tisvlay_core::errors::ConfigError> for DaemonError {
@@ -149,6 +168,16 @@ impl From<TvManagerError> for DaemonError {
                 DaemonError::NotPairing(format!("TV {} is not currently pairing", tv_id))
             }
             TvManagerError::ConfigError(msg) => DaemonError::OperationFailed(msg),
+            TvManagerError::ProfileNotFound(uuid) => DaemonError::ProfileNotFound(uuid),
+            TvManagerError::ReservedProfile(uuid) => DaemonError::ReservedProfile(uuid),
+            TvManagerError::ProfileNameInvalid(msg) => DaemonError::ProfileNameInvalid(msg),
+            TvManagerError::ProfileReferenced {
+                profile_uuid,
+                count,
+            } => DaemonError::ProfileReferenced(format!(
+                "Profile {profile_uuid} still referenced by {count} TV(s)"
+            )),
+            TvManagerError::Io(msg) => DaemonError::IoError(msg),
         }
     }
 }

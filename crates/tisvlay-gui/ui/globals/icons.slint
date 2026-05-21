@@ -26,4 +26,22 @@ export global Icons {
     /// icon the Tray uses for the same action — both clients invoke
     /// `Manager1.ReloadConfig`.
     in property <image> reload;
+    /// Copy / duplicate glyph (`edit-copy`). Distinct from
+    /// `Clipboard.copy-icon`, which carries the same visual but is
+    /// paired with the clipboard-write plumbing; this slot exists
+    /// for "duplicate this thing" affordances that don't write to
+    /// the clipboard.
+    in property <image> copy;
+    /// Delete glyph (trash can). Used for destructive actions whose
+    /// affordance reads as "throw away", e.g. the Profiles-pane
+    /// Delete button.
+    in property <image> delete;
+    /// User-profile glyph (`im-user`). Identity tile for User-side
+    /// profile entries in the Profiles pane; matches the tray's
+    /// user-profile submenu icon.
+    in property <image> im_user;
+    /// System-profile glyph (`system-users`). Identity tile for
+    /// System-side profile entries; matches the tray's system-
+    /// profile submenu icon.
+    in property <image> system_users;
 }

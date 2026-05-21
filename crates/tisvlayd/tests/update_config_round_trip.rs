@@ -80,7 +80,9 @@ async fn get_config_returns_top_level_and_vendor_fields() {
     assert_eq!(obj.get("managed"), Some(&serde_json::json!(true)));
     assert_eq!(
         obj.get("system_profile"),
-        Some(&serde_json::json!("default")),
+        Some(&serde_json::json!(
+            tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID.to_string()
+        )),
     );
 
     // Vendor fields included from `vendor_config`.

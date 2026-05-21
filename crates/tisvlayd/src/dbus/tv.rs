@@ -147,21 +147,27 @@ impl TvService {
         Ok(())
     }
 
-    /// System profile name assigned to this TV.
+    /// System profile UUID assigned to this TV (string-formatted).
     #[zbus(property)]
     fn system_profile(&self) -> &str {
         &self.system_profile
     }
 
-    /// Set the system profile name for this TV.
+    /// Set the system profile UUID for this TV. Input is parsed as a
+    /// UUID; unknown or malformed UUIDs are rejected with `InvalidArgs`.
     #[zbus(property)]
-    async fn set_system_profile(&mut self, profile: String) -> zbus::fdo::Result<()> {
-        info!(tv_id = %self.tv_id, profile = %profile, "D-Bus: set SystemProfile");
+    async fn set_system_profile(&mut self, profile_uuid: String) -> zbus::fdo::Result<()> {
+        info!(tv_id = %self.tv_id, profile = %profile_uuid, "D-Bus: set SystemProfile");
         self.manager
-            .set_tv_option(&self.tv_id, "profile.system", &profile)
+            .set_tv_option(&self.tv_id, "profile.system", &profile_uuid)
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        self.system_profile = profile;
+            .map_err(|e| match e {
+                crate::tv_manager::TvManagerError::ConfigError(msg) => {
+                    zbus::fdo::Error::InvalidArgs(msg)
+                }
+                other => zbus::fdo::Error::Failed(other.to_string()),
+            })?;
+        self.system_profile = profile_uuid;
         Ok(())
     }
 
@@ -679,7 +685,7 @@ pub async fn register_tv_interfaces(
     let system_profile = manager
         .get_tv_system_profile(&tv_id)
         .await
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(|| tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID.to_string());
     let primary_input = manager
         .get_tv_primary_input(&tv_id)
         .await

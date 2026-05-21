@@ -35,11 +35,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
+use uuid::Uuid;
 use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use crate::dbus_paths::{DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH, tv_path};
+use crate::{SystemProfileBody, UserProfileBody};
 
 // =============================================================================
 // Bus Selection
@@ -187,8 +189,67 @@ trait TisvlayManager {
     /// Get all user profiles as (name, json) pairs.
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Get all system profiles as (name, json) pairs.
+    /// JSON-shape system-profile catalog. Returns `(name, json)` pairs
+    /// where the JSON serializes a `SystemProfileConfig`. Bound to the
+    /// `ListSystemProfilesJson` wire slot — the `ListSystemProfiles`
+    /// wire name carries the property-bag `a{sa{sv}}` shape.
+    #[zbus(name = "ListSystemProfilesJson")]
     fn list_system_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+
+    // ---- System-Profile property-bag CRUD surface ----------------------
+
+    /// Catalog list: every system profile keyed by UUID string.
+    /// Wire shape: `a{sa{sv}}` (uuid → body).
+    #[zbus(name = "ListSystemProfiles")]
+    fn list_system_profile_bodies(&self) -> zbus::Result<HashMap<String, SystemProfileBody>>;
+
+    /// Fetch one body by UUID string. Malformed or absent UUIDs
+    /// return `org.tisvlay.Error.ProfileNotFound`.
+    fn get_system_profile(&self, uuid: &str) -> zbus::Result<SystemProfileBody>;
+
+    /// Atomic full-body replace. Renames fold into this method —
+    /// the new name lives on `body.name`.
+    fn update_system_profile(&self, uuid: &str, body: SystemProfileBody) -> zbus::Result<()>;
+
+    /// Mint a new UUID under the given display name. Empty / reserved
+    /// / duplicate names are rejected with
+    /// `org.tisvlay.Error.ProfileNameInvalid`. Returns the new UUID
+    /// as a string.
+    fn create_system_profile(&self, name: &str) -> zbus::Result<String>;
+
+    /// Clone an existing body under a new UUID + name. Returns the
+    /// new UUID as a string.
+    fn duplicate_system_profile(&self, source_uuid: &str, new_name: &str) -> zbus::Result<String>;
+
+    /// Delete a profile. Rejects the reserved default UUID
+    /// (`org.tisvlay.Error.ReservedProfile`) and rejects if at least
+    /// one TV references the target
+    /// (`org.tisvlay.Error.ProfileReferenced`).
+    fn delete_system_profile(&self, uuid: &str) -> zbus::Result<()>;
+
+    /// Hard-coded baseline body — every profile inherits from this
+    /// when its fields are all `None`. Static.
+    fn get_resolved_system_profile_defaults(&self) -> zbus::Result<SystemProfileBody>;
+
+    /// Per-TV resolved walk: returns the fully-resolved body for
+    /// the named TV's assigned profile (per-TV body → default body
+    /// → hardcoded baseline).
+    fn get_effective_system_profile(&self, tv_id: &str) -> zbus::Result<SystemProfileBody>;
+
+    /// A system profile's body was mutated (any field including
+    /// `name`). Clients with a cached body should re-fetch via
+    /// `GetSystemProfile(uuid)`.
+    #[zbus(signal)]
+    fn system_profile_changed(&self, uuid: String) -> zbus::Result<()>;
+
+    /// A new system profile appeared in the catalog (Create or
+    /// Duplicate).
+    #[zbus(signal)]
+    fn system_profile_added(&self, uuid: String) -> zbus::Result<()>;
+
+    /// A system profile was removed from the catalog.
+    #[zbus(signal)]
+    fn system_profile_removed(&self, uuid: String) -> zbus::Result<()>;
 
     /// Pairing-flow phase transition. Phase strings: `awaiting_tv`,
     /// `awaiting_input`, `complete`, `failed`. See
@@ -247,13 +308,13 @@ trait TisvlayTv {
     #[zbus(property)]
     fn set_managed(&self, managed: bool) -> zbus::Result<()>;
 
-    /// System profile name assigned to this TV.
+    /// System profile UUID assigned to this TV (string-formatted).
     #[zbus(property)]
     fn system_profile(&self) -> zbus::Result<String>;
 
-    /// Set the system profile for this TV.
+    /// Set the system profile UUID for this TV.
     #[zbus(property)]
-    fn set_system_profile(&self, profile: &str) -> zbus::Result<()>;
+    fn set_system_profile(&self, profile_uuid: &str) -> zbus::Result<()>;
 
     /// The HDMI input the controlling PC is plugged into. Drives
     /// `Tv1.Automated` recomputation.
@@ -563,7 +624,7 @@ pub struct TvInfo {
     /// Computed from `managed`, `automate_when`, `primary_input`, and
     /// the TV's current input.
     pub automated: bool,
-    /// System profile name assigned to this TV.
+    /// System profile UUID assigned to this TV (string-formatted).
     pub system_profile: String,
     /// Primary-input ID for this TV (the HDMI port the controlling PC
     /// is plugged into). Empty when unset; "_unknown_" when set to
@@ -900,7 +961,7 @@ impl DaemonClient {
             let system_profile = {
                 let sp = get_str("SystemProfile");
                 if sp.is_empty() {
-                    "default".to_string()
+                    crate::DEFAULT_SYSTEM_PROFILE_UUID.to_string()
                 } else {
                     sp
                 }
@@ -1537,6 +1598,186 @@ impl DaemonClient {
             .context("Failed to list system profiles from daemon")
     }
 
+    // -------------------------------------------------------------------------
+    // System-Profile property-bag CRUD
+    //
+    // Mirrors the eight `Manager1` body-dict methods. Bodies round-trip
+    // as `SystemProfileBody`; UUID returns parse from the wire's
+    // `String` representation.
+    // -------------------------------------------------------------------------
+
+    /// Catalog list: every system profile keyed by parsed UUID. The
+    /// daemon emits wire UUIDs that are always well-formed, so a parse
+    /// failure here means a buggy peer; the unparsable entry is
+    /// skipped with a debug log rather than aborting the whole call.
+    pub async fn list_system_profile_bodies(&self) -> Result<HashMap<Uuid, SystemProfileBody>> {
+        debug!("Calling ListSystemProfiles on daemon");
+        let raw = self
+            .manager
+            .list_system_profile_bodies()
+            .await
+            .context("Failed to list system profile bodies from daemon")?;
+        let mut out = HashMap::with_capacity(raw.len());
+        for (uuid_str, body) in raw {
+            match Uuid::parse_str(&uuid_str) {
+                Ok(uuid) => {
+                    out.insert(uuid, body);
+                }
+                Err(e) => {
+                    warn!(uuid = %uuid_str, error = %e, "Skipping malformed UUID from ListSystemProfiles");
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch one body by UUID. Malformed or absent UUIDs surface as
+    /// `org.tisvlay.Error.ProfileNotFound`.
+    pub async fn get_system_profile(&self, uuid: Uuid) -> Result<SystemProfileBody> {
+        debug!(uuid = %uuid, "Calling GetSystemProfile on daemon");
+        let uuid_str = uuid.to_string();
+        self.manager
+            .get_system_profile(&uuid_str)
+            .await
+            .with_context(|| format!("Failed to get system profile '{}'", uuid_str))
+    }
+
+    /// Atomic full-body replace. Includes the new name on `body.name`;
+    /// rename is just an update with a fresh `name`.
+    pub async fn update_system_profile(&self, uuid: Uuid, body: &SystemProfileBody) -> Result<()> {
+        debug!(uuid = %uuid, name = %body.name, "Calling UpdateSystemProfile on daemon");
+        let uuid_str = uuid.to_string();
+        self.manager
+            .update_system_profile(&uuid_str, body.clone())
+            .await
+            .with_context(|| format!("Failed to update system profile '{}'", uuid_str))
+    }
+
+    /// Mint a new system profile under the given display name. Returns
+    /// the new UUID. Empty / reserved / duplicate names are rejected
+    /// with `org.tisvlay.Error.ProfileNameInvalid`.
+    pub async fn create_system_profile(&self, name: &str) -> Result<Uuid> {
+        debug!(name = %name, "Calling CreateSystemProfile on daemon");
+        let raw = self
+            .manager
+            .create_system_profile(name)
+            .await
+            .with_context(|| format!("Failed to create system profile '{}'", name))?;
+        Uuid::parse_str(&raw).with_context(|| {
+            format!(
+                "Daemon returned malformed UUID '{}' from CreateSystemProfile",
+                raw
+            )
+        })
+    }
+
+    /// Clone `source_uuid`'s body under a new UUID + name. Returns the
+    /// new UUID.
+    pub async fn duplicate_system_profile(
+        &self,
+        source_uuid: Uuid,
+        new_name: &str,
+    ) -> Result<Uuid> {
+        debug!(source_uuid = %source_uuid, new_name = %new_name, "Calling DuplicateSystemProfile on daemon");
+        let source_str = source_uuid.to_string();
+        let raw = self
+            .manager
+            .duplicate_system_profile(&source_str, new_name)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to duplicate system profile '{}' as '{}'",
+                    source_str, new_name
+                )
+            })?;
+        Uuid::parse_str(&raw).with_context(|| {
+            format!(
+                "Daemon returned malformed UUID '{}' from DuplicateSystemProfile",
+                raw
+            )
+        })
+    }
+
+    /// Delete a profile. Rejects the reserved default UUID with
+    /// `org.tisvlay.Error.ReservedProfile`; rejects when at least one
+    /// TV references the target with
+    /// `org.tisvlay.Error.ProfileReferenced`.
+    pub async fn delete_system_profile(&self, uuid: Uuid) -> Result<()> {
+        debug!(uuid = %uuid, "Calling DeleteSystemProfile on daemon");
+        let uuid_str = uuid.to_string();
+        self.manager
+            .delete_system_profile(&uuid_str)
+            .await
+            .with_context(|| format!("Failed to delete system profile '{}'", uuid_str))
+    }
+
+    /// Hard-coded baseline body — the inheritance ancestor every
+    /// profile falls back to when its own fields are all `None`.
+    /// Static; the daemon exposes it so clients don't have to
+    /// duplicate the table.
+    pub async fn get_resolved_system_profile_defaults(&self) -> Result<SystemProfileBody> {
+        debug!("Calling GetResolvedSystemProfileDefaults on daemon");
+        self.manager
+            .get_resolved_system_profile_defaults()
+            .await
+            .context("Failed to get resolved system-profile defaults")
+    }
+
+    /// Per-TV resolved walk: the fully-resolved body the daemon
+    /// will dispatch against (per-TV body → default body → hardcoded
+    /// baseline).
+    pub async fn get_effective_system_profile(&self, tv_id: &str) -> Result<SystemProfileBody> {
+        debug!(tv_id = %tv_id, "Calling GetEffectiveSystemProfile on daemon");
+        self.manager
+            .get_effective_system_profile(tv_id)
+            .await
+            .with_context(|| format!("Failed to get effective system profile for TV '{}'", tv_id))
+    }
+
+    /// Subscribe to `Manager1.SystemProfileChanged` signals.
+    ///
+    /// Emits the UUID (parsed) every time a system profile body is
+    /// mutated server-side. Set up the stream **before** the mutation
+    /// you want to observe — signals emitted prior to subscription
+    /// are dropped.
+    pub async fn system_profile_changed_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .manager
+            .receive_system_profile_changed()
+            .await
+            .context("failed to subscribe to SystemProfileChanged signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Subscribe to `Manager1.SystemProfileAdded` signals.
+    pub async fn system_profile_added_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .manager
+            .receive_system_profile_added()
+            .await
+            .context("failed to subscribe to SystemProfileAdded signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Subscribe to `Manager1.SystemProfileRemoved` signals.
+    pub async fn system_profile_removed_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .manager
+            .receive_system_profile_removed()
+            .await
+            .context("failed to subscribe to SystemProfileRemoved signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
     /// Set a TV's friendly name.
     ///
     /// Routes through the per-object `Tv1.Name` writable property
@@ -1563,15 +1804,16 @@ impl DaemonClient {
         .await
     }
 
-    /// Set the system profile for a TV (e.g. `"default"`, `"guest"`).
+    /// Set the system profile for a TV by UUID (string-formatted).
     ///
     /// Routes through the per-object `Tv1.SystemProfile` writable
-    /// property.
-    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
-        let profile_name = profile_name.to_string();
+    /// property. The daemon rejects unknown or malformed UUIDs with
+    /// `InvalidArgs`.
+    pub async fn set_tv_system_profile(&self, tv_id: &str, profile_uuid: &str) -> Result<()> {
+        let profile_uuid = profile_uuid.to_string();
         self.with_proxies(tv_id, "set system profile", move |p| {
-            let profile_name = profile_name.clone();
-            Box::pin(async move { p.base.set_system_profile(&profile_name).await })
+            let profile_uuid = profile_uuid.clone();
+            Box::pin(async move { p.base.set_system_profile(&profile_uuid).await })
         })
         .await
     }
@@ -1611,17 +1853,81 @@ trait TisvlaySession {
     #[zbus(property(emits_changed_signal = "false"))]
     fn config_path(&self) -> zbus::Result<String>;
 
-    /// List all available user profiles.
+    /// JSON-shape user-profile catalog. Returns `(name, json)` pairs
+    /// where the JSON serializes a `UserProfileConfig`. Bound to the
+    /// `ListUserProfilesJson` wire slot — the `ListUserProfiles` wire
+    /// name carries the property-bag `a{sa{sv}}` shape.
+    #[zbus(name = "ListUserProfilesJson")]
     fn list_user_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
 
-    /// Get the user profile name assigned to a TV.
+    /// Get the user profile UUID assigned to a TV (string-formatted).
     fn get_tv_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
 
-    /// Assign a user profile to a TV.
-    fn set_tv_user_profile(&self, tv_id: &str, profile_name: &str) -> zbus::Result<()>;
+    /// Assign a user profile to a TV by UUID (string-formatted).
+    fn set_tv_user_profile(&self, tv_id: &str, profile_uuid: &str) -> zbus::Result<()>;
 
-    /// Get the fully resolved user profile for a TV as JSON.
+    /// JSON-shape effective profile. Bound to the
+    /// `GetEffectiveUserProfileJson` wire slot — the
+    /// `GetEffectiveUserProfile` wire name carries the property-bag
+    /// `a{sv}` shape via the new CRUD surface.
+    #[zbus(name = "GetEffectiveUserProfileJson")]
     fn get_effective_user_profile(&self, tv_id: &str) -> zbus::Result<String>;
+
+    // ---- User-Profile property-bag CRUD surface --------------------------
+
+    /// Catalog list: every user profile keyed by UUID string. Wire
+    /// shape `a{sa{sv}}` (uuid → body). Includes the reserved-default
+    /// UUID body (admin baseline when no user body shadows it).
+    #[zbus(name = "ListUserProfiles")]
+    fn list_user_profile_bodies(&self) -> zbus::Result<HashMap<String, UserProfileBody>>;
+
+    /// Fetch one body by UUID string. Malformed or absent UUIDs
+    /// return `org.tisvlay.Session1.Error.ProfileNotFound`.
+    fn get_user_profile(&self, uuid: &str) -> zbus::Result<UserProfileBody>;
+
+    /// Atomic full-body replace. Renames fold into this method —
+    /// the new name lives on `body.name`.
+    fn update_user_profile(&self, uuid: &str, body: UserProfileBody) -> zbus::Result<()>;
+
+    /// Mint a new UUID under the given display name. Empty / reserved
+    /// / duplicate names are rejected with
+    /// `org.tisvlay.Session1.Error.ProfileNameInvalid`. Returns the
+    /// new UUID as a string.
+    fn create_user_profile(&self, name: &str) -> zbus::Result<String>;
+
+    /// Clone an existing body under a new UUID + name. Returns the
+    /// new UUID as a string.
+    fn duplicate_user_profile(&self, source_uuid: &str, new_name: &str) -> zbus::Result<String>;
+
+    /// Delete a profile. Rejects the reserved default UUID
+    /// (`org.tisvlay.Session1.Error.ReservedProfile`) and rejects if
+    /// at least one TV references the target via `[[tv]] profile.user`
+    /// (`org.tisvlay.Session1.Error.ProfileReferenced`).
+    fn delete_user_profile(&self, uuid: &str) -> zbus::Result<()>;
+
+    /// Hard-coded baseline body — every user profile inherits from
+    /// this when its fields are all `None`. Static.
+    fn get_resolved_user_profile_defaults(&self) -> zbus::Result<UserProfileBody>;
+
+    /// Per-TV resolved walk: returns the fully-resolved body for
+    /// the named TV's assigned user profile (per-TV body → user
+    /// default body → admin baseline → hardcoded defaults).
+    fn get_effective_user_profile_body(&self, tv_id: &str) -> zbus::Result<UserProfileBody>;
+
+    /// A user profile's body was mutated (any field including
+    /// `name`). Clients with a cached body should re-fetch via
+    /// `GetUserProfile(uuid)`.
+    #[zbus(signal)]
+    fn user_profile_changed(&self, uuid: String) -> zbus::Result<()>;
+
+    /// A new user profile appeared in the catalog (Create or
+    /// Duplicate).
+    #[zbus(signal)]
+    fn user_profile_added(&self, uuid: String) -> zbus::Result<()>;
+
+    /// A user profile was removed from the catalog.
+    #[zbus(signal)]
+    fn user_profile_removed(&self, uuid: String) -> zbus::Result<()>;
 
     /// Reload user configuration from disk.
     fn reload_config(&self) -> zbus::Result<()>;
@@ -1648,6 +1954,14 @@ impl SessionClient {
             .await
             .context("Failed to connect to session D-Bus")?;
 
+        Self::from_connection(connection).await
+    }
+
+    /// Create a client from an existing D-Bus connection. Mirror of
+    /// [`DaemonClient::from_connection`] — used by tests pointing at
+    /// a private `dbus-daemon` to bypass `zbus`'s per-process
+    /// `OnceCell` cache.
+    pub async fn from_connection(connection: zbus::Connection) -> Result<Self> {
         let proxy = TisvlaySessionProxy::new(&connection)
             .await
             .context("Failed to create session proxy")?;
@@ -1655,7 +1969,9 @@ impl SessionClient {
         Ok(Self { proxy })
     }
 
-    /// Check if the session service is available.
+    /// Check if the session service is available. Pings the
+    /// JSON-shape catalog (no body deserialization) so an availability
+    /// probe doesn't drag in `UserProfileBody` deserialization failures.
     pub async fn is_available(&self) -> bool {
         self.proxy.list_user_profiles().await.is_ok()
     }
@@ -1691,7 +2007,7 @@ impl SessionClient {
             .context("Failed to list user profiles from session service")
     }
 
-    /// Get the user profile name assigned to a TV.
+    /// Get the user profile UUID assigned to a TV (string-formatted).
     pub async fn get_tv_user_profile(&self, tv_id: &str) -> Result<String> {
         self.proxy
             .get_tv_user_profile(tv_id)
@@ -1699,15 +2015,16 @@ impl SessionClient {
             .context("Failed to get TV user profile from session service")
     }
 
-    /// Assign a user profile to a TV.
-    pub async fn set_tv_user_profile(&self, tv_id: &str, profile_name: &str) -> Result<()> {
+    /// Assign a user profile to a TV by UUID (string-formatted). The
+    /// session service rejects unknown UUIDs with `InvalidArgs`.
+    pub async fn set_tv_user_profile(&self, tv_id: &str, profile_uuid: &str) -> Result<()> {
         self.proxy
-            .set_tv_user_profile(tv_id, profile_name)
+            .set_tv_user_profile(tv_id, profile_uuid)
             .await
             .with_context(|| {
                 format!(
                     "Failed to set user profile '{}' for TV '{}'",
-                    profile_name, tv_id
+                    profile_uuid, tv_id
                 )
             })
     }
@@ -1718,6 +2035,189 @@ impl SessionClient {
             .reload_config()
             .await
             .context("Failed to reload session configuration")
+    }
+
+    // -------------------------------------------------------------------------
+    // User-Profile property-bag CRUD
+    //
+    // Mirrors the eight `Session1` body-dict methods. Bodies round-trip
+    // as `UserProfileBody`; UUID returns parse from the wire's `String`
+    // representation.
+    // -------------------------------------------------------------------------
+
+    /// Catalog list: every user profile keyed by parsed UUID. The
+    /// session emits wire UUIDs that are always well-formed, so a
+    /// parse failure here means a buggy peer; the unparsable entry
+    /// is skipped with a debug log.
+    pub async fn list_user_profile_bodies(&self) -> Result<HashMap<Uuid, UserProfileBody>> {
+        debug!("Calling ListUserProfiles on session service");
+        let raw = self
+            .proxy
+            .list_user_profile_bodies()
+            .await
+            .context("Failed to list user profile bodies from session service")?;
+        let mut out = HashMap::with_capacity(raw.len());
+        for (uuid_str, body) in raw {
+            match Uuid::parse_str(&uuid_str) {
+                Ok(uuid) => {
+                    out.insert(uuid, body);
+                }
+                Err(e) => {
+                    warn!(uuid = %uuid_str, error = %e, "Skipping malformed UUID from ListUserProfiles");
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch one body by UUID. Malformed or absent UUIDs surface as
+    /// `org.tisvlay.Session1.Error.ProfileNotFound`.
+    pub async fn get_user_profile(&self, uuid: Uuid) -> Result<UserProfileBody> {
+        debug!(uuid = %uuid, "Calling GetUserProfile on session service");
+        let uuid_str = uuid.to_string();
+        self.proxy
+            .get_user_profile(&uuid_str)
+            .await
+            .with_context(|| format!("Failed to get user profile '{}'", uuid_str))
+    }
+
+    /// Atomic full-body replace. Includes the new name on `body.name`;
+    /// rename is just an update with a fresh `name`.
+    pub async fn update_user_profile(&self, uuid: Uuid, body: &UserProfileBody) -> Result<()> {
+        debug!(uuid = %uuid, name = %body.name, "Calling UpdateUserProfile on session service");
+        let uuid_str = uuid.to_string();
+        self.proxy
+            .update_user_profile(&uuid_str, body.clone())
+            .await
+            .with_context(|| format!("Failed to update user profile '{}'", uuid_str))
+    }
+
+    /// Mint a new user profile under the given display name. Returns
+    /// the new UUID. Empty / reserved / duplicate names are rejected
+    /// with `org.tisvlay.Session1.Error.ProfileNameInvalid`.
+    pub async fn create_user_profile(&self, name: &str) -> Result<Uuid> {
+        debug!(name = %name, "Calling CreateUserProfile on session service");
+        let raw = self
+            .proxy
+            .create_user_profile(name)
+            .await
+            .with_context(|| format!("Failed to create user profile '{}'", name))?;
+        Uuid::parse_str(&raw).with_context(|| {
+            format!(
+                "Session service returned malformed UUID '{}' from CreateUserProfile",
+                raw
+            )
+        })
+    }
+
+    /// Clone `source_uuid`'s body under a new UUID + name. Returns
+    /// the new UUID.
+    pub async fn duplicate_user_profile(&self, source_uuid: Uuid, new_name: &str) -> Result<Uuid> {
+        debug!(source_uuid = %source_uuid, new_name = %new_name, "Calling DuplicateUserProfile on session service");
+        let source_str = source_uuid.to_string();
+        let raw = self
+            .proxy
+            .duplicate_user_profile(&source_str, new_name)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to duplicate user profile '{}' as '{}'",
+                    source_str, new_name
+                )
+            })?;
+        Uuid::parse_str(&raw).with_context(|| {
+            format!(
+                "Session service returned malformed UUID '{}' from DuplicateUserProfile",
+                raw
+            )
+        })
+    }
+
+    /// Delete a profile. Rejects the reserved default UUID with
+    /// `org.tisvlay.Session1.Error.ReservedProfile`; rejects when at
+    /// least one TV references the target via `[[tv]] profile.user`
+    /// with `org.tisvlay.Session1.Error.ProfileReferenced`.
+    pub async fn delete_user_profile(&self, uuid: Uuid) -> Result<()> {
+        debug!(uuid = %uuid, "Calling DeleteUserProfile on session service");
+        let uuid_str = uuid.to_string();
+        self.proxy
+            .delete_user_profile(&uuid_str)
+            .await
+            .with_context(|| format!("Failed to delete user profile '{}'", uuid_str))
+    }
+
+    /// Hard-coded baseline body — the inheritance ancestor every
+    /// user profile falls back to when its own fields are all `None`.
+    /// Static; the session exposes it so clients don't have to
+    /// duplicate the table.
+    pub async fn get_resolved_user_profile_defaults(&self) -> Result<UserProfileBody> {
+        debug!("Calling GetResolvedUserProfileDefaults on session service");
+        self.proxy
+            .get_resolved_user_profile_defaults()
+            .await
+            .context("Failed to get resolved user-profile defaults")
+    }
+
+    /// Per-TV resolved walk: the fully-resolved body the session
+    /// will dispatch against (per-TV body → user default body →
+    /// admin baseline → hardcoded defaults).
+    pub async fn get_effective_user_profile_body(&self, tv_id: &str) -> Result<UserProfileBody> {
+        debug!(tv_id = %tv_id, "Calling GetEffectiveUserProfile on session service");
+        self.proxy
+            .get_effective_user_profile_body(tv_id)
+            .await
+            .with_context(|| format!("Failed to get effective user profile for TV '{}'", tv_id))
+    }
+
+    /// Subscribe to `Session1.UserProfileChanged` signals.
+    ///
+    /// Emits the UUID (parsed) every time a user-profile body is
+    /// mutated server-side. Set up the stream **before** the mutation
+    /// you want to observe — signals emitted prior to subscription
+    /// are dropped.
+    pub async fn user_profile_changed_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .proxy
+            .receive_user_profile_changed()
+            .await
+            .context("failed to subscribe to UserProfileChanged signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Subscribe to `Session1.UserProfileAdded` signals.
+    pub async fn user_profile_added_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .proxy
+            .receive_user_profile_added()
+            .await
+            .context("failed to subscribe to UserProfileAdded signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Subscribe to `Session1.UserProfileRemoved` signals.
+    pub async fn user_profile_removed_stream(&self) -> Result<impl Stream<Item = Uuid> + use<>> {
+        let raw = self
+            .proxy
+            .receive_user_profile_removed()
+            .await
+            .context("failed to subscribe to UserProfileRemoved signal")?;
+        Ok(raw.filter_map(|sig| async move {
+            let args = sig.args().ok()?;
+            Uuid::parse_str(&args.uuid).ok()
+        }))
+    }
+
+    /// Access the underlying D-Bus connection. Useful for tests and
+    /// clients that need to set up custom proxies (e.g., raw
+    /// `Proxy::call_method` to exercise the deserialize boundary).
+    pub fn connection(&self) -> &zbus::Connection {
+        self.proxy.inner().connection()
     }
 }
 
@@ -1883,8 +2383,37 @@ pub enum StateEvent {
     /// The session service disappeared from D-Bus.
     SessionDisappeared,
 
-    /// A `UserProfileChanged` signal was received from the session service.
-    SessionProfileChanged,
+    /// `Session1.TvUserProfileChanged(tv_id, profile_uuid)`: a TV's
+    /// user-profile assignment changed via `SetTvUserProfile`.
+    /// Distinct from [`Self::UserProfileChanged`], which fires on a
+    /// body mutation of the named profile UUID.
+    TvUserProfileChanged,
+
+    /// `Manager1.SystemProfileChanged(uuid)`: a system profile body
+    /// was mutated. Consumers with a cached body should re-fetch via
+    /// `DaemonClient::get_system_profile(uuid)`.
+    SystemProfileChanged(Uuid),
+
+    /// `Manager1.SystemProfileAdded(uuid)`: a new system profile
+    /// appeared in the catalog.
+    SystemProfileAdded(Uuid),
+
+    /// `Manager1.SystemProfileRemoved(uuid)`: a system profile was
+    /// removed from the catalog.
+    SystemProfileRemoved(Uuid),
+
+    /// `Session1.UserProfileChanged(uuid)`: a user profile body was
+    /// mutated. Distinct from [`Self::TvUserProfileChanged`], which
+    /// fires on a per-TV assignment change.
+    UserProfileChanged(Uuid),
+
+    /// `Session1.UserProfileAdded(uuid)`: a new user profile appeared
+    /// in the catalog.
+    UserProfileAdded(Uuid),
+
+    /// `Session1.UserProfileRemoved(uuid)`: a user profile was
+    /// removed from the catalog.
+    UserProfileRemoved(Uuid),
 
     /// The tray service appeared on D-Bus.
     TrayAppeared,
@@ -1926,7 +2455,7 @@ impl Default for StateWatcherConfig {
 /// - Daemon `PropertiesChanged`, `ObjectManager`, and `Manager1` signals
 /// - Daemon well-known name appear/disappear (`NameOwnerChanged`)
 /// - Session service well-known name appear/disappear
-/// - Session `UserProfileChanged` signals
+/// - Session `TvUserProfileChanged` + `UserProfileChanged` signals
 ///
 /// # Example
 ///
@@ -1948,17 +2477,57 @@ impl Default for StateWatcherConfig {
 ///     }
 /// }
 /// ```
+/// Catalog-level system-profile signal kinds emitted by `Manager1`.
+///
+/// Used internally by [`StateWatcher`] to demultiplex the daemon-side
+/// signal stream — each variant maps 1:1 to the matching `StateEvent`.
+#[derive(Debug, Clone, Copy)]
+enum SystemProfileSignal {
+    Changed,
+    Added,
+    Removed,
+}
+
+/// Session-bus signals the watcher consumes — body mutations carry a
+/// profile UUID; assignment changes carry only the TV id (dropped here
+/// since `StateEvent::TvUserProfileChanged` is a payload-less refresh
+/// hint today).
+///
+/// Body-level signals (`UserProfileChanged`, `UserProfileAdded`,
+/// `UserProfileRemoved`) carry the profile UUID parsed from the wire
+/// argument. `TvAssignmentChanged` is the per-TV
+/// `TvUserProfileChanged(tv_id, profile_uuid)` signal.
+#[derive(Debug, Clone)]
+enum SessionSignal {
+    TvAssignmentChanged,
+    Changed(Uuid),
+    Added(Uuid),
+    Removed(Uuid),
+}
+
+/// Type alias for the `Box<dyn Stream<Item = T> + Send>` shape used by
+/// every signal stream the watcher owns. Factored out to satisfy
+/// `clippy::type_complexity` and to keep the field declarations
+/// readable.
+type BoxedStream<T> = std::pin::Pin<Box<dyn Stream<Item = T> + Send>>;
+
 pub struct StateWatcher {
     /// Stream of daemon PropertiesChanged / ObjectManager / ConfigReloaded signals.
-    signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = TvStateChange> + Send>>>,
+    signal_stream: Option<BoxedStream<TvStateChange>>,
+    /// Stream of `Manager1.SystemProfile{Changed,Added,Removed}` signals
+    /// — each carries the parsed UUID from the wire argument.
+    system_profile_signal_stream: Option<BoxedStream<(SystemProfileSignal, Uuid)>>,
     /// Stream of daemon service appear/disappear events.
-    daemon_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
+    daemon_watch: Option<BoxedStream<ServiceEvent>>,
     /// Stream of session service appear/disappear events.
-    session_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
-    /// Stream of session UserProfileChanged signals (filtered).
-    session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>>,
+    session_watch: Option<BoxedStream<ServiceEvent>>,
+    /// Stream of session-side signals: per-TV
+    /// `TvUserProfileChanged` (assignment) plus the body-level
+    /// `UserProfile{Changed,Added,Removed}` triad. A single
+    /// MessageStream filters all four wire signatures.
+    session_signal_stream: Option<BoxedStream<SessionSignal>>,
     /// Stream of tray service appear/disappear events.
-    tray_watch: Option<std::pin::Pin<Box<dyn Stream<Item = ServiceEvent> + Send>>>,
+    tray_watch: Option<BoxedStream<ServiceEvent>>,
     /// Configuration.
     config: StateWatcherConfig,
 }
@@ -1986,7 +2555,8 @@ impl StateWatcher {
     /// `daemon_conn` is used for `PropertiesChanged` / `ObjectManager` /
     /// `Manager1` signal subscriptions and the daemon name watch.
     /// `session_conn` is used for session-service name watching and
-    /// `UserProfileChanged` signals; pass `None` to skip session watching.
+    /// `TvUserProfileChanged` + `UserProfileChanged` signals; pass
+    /// `None` to skip session watching.
     ///
     /// In tests, both arguments can point at the same private bus —
     /// the daemon and session-service registrations live on one bus
@@ -2036,9 +2606,16 @@ impl StateWatcher {
         let tv_prefix = format!("{}/", TV_BASE_PATH);
         let raw_stream = zbus::MessageStream::from(conn.clone());
 
-        let signal_stream: std::pin::Pin<Box<dyn Stream<Item = TvStateChange> + Send>> =
-            Box::pin(raw_stream.filter_map(move |msg_result| {
-                let tv_prefix = tv_prefix.clone();
+        // The TV-state filter consumes message *clones* and returns
+        // `None` for `Manager1.SystemProfile*` signals; the body-mutation
+        // path below filters the same shared stream for those, so
+        // splitting the dispatch by interface keeps both branches
+        // typed cleanly without dropping any signal.
+        let tv_prefix_for_state = tv_prefix.clone();
+        let raw_for_state = raw_stream.clone();
+        let signal_stream: BoxedStream<TvStateChange> =
+            Box::pin(raw_for_state.filter_map(move |msg_result| {
+                let tv_prefix = tv_prefix_for_state.clone();
                 async move {
                     let msg = msg_result.ok()?;
                     let header = msg.header();
@@ -2068,6 +2645,38 @@ impl StateWatcher {
                         _ => None,
                     }
                 }
+            }));
+
+        // --- Manager1.SystemProfile{Changed,Added,Removed} signals ---
+        //
+        // The body-mutation signals share the bus's existing
+        // `org.tisvlay.Manager1` `add_signal_match` rule installed
+        // above, so no extra match rule is needed; we just filter the
+        // same MessageStream for the three body-mutation members. The
+        // wire argument is the profile UUID as a string; parse to
+        // `Uuid` here so the StateEvent payload is typed.
+        let system_profile_signal_stream: BoxedStream<(SystemProfileSignal, Uuid)> =
+            Box::pin(raw_stream.filter_map(|msg_result| async move {
+                let msg = msg_result.ok()?;
+                let header = msg.header();
+                let iface = header.interface()?.to_string();
+                let member = header.member()?.to_string();
+                if iface != "org.tisvlay.Manager1" {
+                    return None;
+                }
+                let kind = match member.as_str() {
+                    "SystemProfileChanged" => SystemProfileSignal::Changed,
+                    "SystemProfileAdded" => SystemProfileSignal::Added,
+                    "SystemProfileRemoved" => SystemProfileSignal::Removed,
+                    _ => return None,
+                };
+                // The wire signature is `(s)` — UUID as string. zbus's
+                // `Message::body()` deserializes to whatever shape the
+                // caller asks for; `String` is the only argument.
+                let uuid_str: String = msg.body().deserialize().ok()?;
+                let uuid = Uuid::parse_str(&uuid_str).ok()?;
+                trace!(uuid = %uuid, kind = ?kind, "Manager1 system-profile signal");
+                Some((kind, uuid))
             }));
 
         // --- Daemon name watch ---
@@ -2106,42 +2715,63 @@ impl StateWatcher {
                 None => None,
             };
 
-        // --- Session UserProfileChanged signals ---
-        let session_signal_stream: Option<std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>> =
-            match session_conn {
-                Some(sconn) => {
-                    let rule = format!(
-                        "type='signal',sender='{}',interface='{}',member='UserProfileChanged',path='{}'",
-                        SESSION_SERVICE, SESSION_INTERFACE, SESSION_PATH,
-                    );
-                    match subscribe_signals(sconn, &rule).await {
-                        Ok(raw) => {
-                            let filtered = raw.filter_map(|msg_result| async move {
-                                let msg = msg_result.ok()?;
-                                let header = msg.header();
-                                let member = header.member()?.to_string();
-                                if member == "UserProfileChanged" {
-                                    Some(())
-                                } else {
-                                    None
+        // --- Session1 signals: assignment + body triad ---
+        //
+        // `TvUserProfileChanged` carries `(tv_id, profile_uuid)` — the
+        // tv_id is dropped here since the StateEvent variant is a
+        // payload-less refresh hint. The body triad
+        // (`UserProfileChanged`, `UserProfileAdded`, `UserProfileRemoved`)
+        // carries the profile UUID as a string argument; we parse it
+        // here so the StateEvent payload is typed. All four signals
+        // share a single match rule by interface so one
+        // `add_signal_match` covers the stream.
+        let session_signal_stream: Option<
+            std::pin::Pin<Box<dyn Stream<Item = SessionSignal> + Send>>,
+        > = match session_conn {
+            Some(sconn) => {
+                let rule = format!(
+                    "type='signal',sender='{}',interface='{}',path='{}'",
+                    SESSION_SERVICE, SESSION_INTERFACE, SESSION_PATH,
+                );
+                match subscribe_signals(sconn, &rule).await {
+                    Ok(raw) => {
+                        let filtered = raw.filter_map(|msg_result| async move {
+                            let msg = msg_result.ok()?;
+                            let header = msg.header();
+                            let member = header.member()?.to_string();
+                            match member.as_str() {
+                                "TvUserProfileChanged" => Some(SessionSignal::TvAssignmentChanged),
+                                "UserProfileChanged" | "UserProfileAdded"
+                                | "UserProfileRemoved" => {
+                                    let uuid_str: String = msg.body().deserialize().ok()?;
+                                    let uuid = Uuid::parse_str(&uuid_str).ok()?;
+                                    Some(match member.as_str() {
+                                        "UserProfileChanged" => SessionSignal::Changed(uuid),
+                                        "UserProfileAdded" => SessionSignal::Added(uuid),
+                                        "UserProfileRemoved" => SessionSignal::Removed(uuid),
+                                        _ => unreachable!(),
+                                    })
                                 }
-                            });
-                            debug!("Subscribed to session UserProfileChanged signals");
-                            Some(Box::pin(filtered))
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to subscribe to session signals");
-                            None
-                        }
+                                _ => None,
+                            }
+                        });
+                        debug!("Subscribed to session signals");
+                        Some(Box::pin(filtered))
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to subscribe to session signals");
+                        None
                     }
                 }
-                None => None,
-            };
+            }
+            None => None,
+        };
 
         info!("State watcher initialized");
 
         Ok(Self {
             signal_stream: Some(signal_stream),
+            system_profile_signal_stream: Some(system_profile_signal_stream),
             daemon_watch,
             session_watch,
             session_signal_stream,
@@ -2223,15 +2853,54 @@ impl StateWatcher {
                 }
             }
 
-            // Branch 4: session UserProfileChanged signal
-            Some(()) = async {
+            // Branch 4: session-bus signals (assignment + body triad)
+            Some(sig) = async {
                 match self.session_signal_stream.as_mut() {
                     Some(s) => s.next().await,
                     None => std::future::pending().await,
                 }
             } => {
-                debug!("Session UserProfileChanged signal received");
-                Some(StateEvent::SessionProfileChanged)
+                match sig {
+                    SessionSignal::TvAssignmentChanged => {
+                        debug!("Session TvUserProfileChanged signal received");
+                        Some(StateEvent::TvUserProfileChanged)
+                    }
+                    SessionSignal::Changed(uuid) => {
+                        debug!(uuid = %uuid, "Session UserProfileChanged signal received");
+                        Some(StateEvent::UserProfileChanged(uuid))
+                    }
+                    SessionSignal::Added(uuid) => {
+                        debug!(uuid = %uuid, "Session UserProfileAdded signal received");
+                        Some(StateEvent::UserProfileAdded(uuid))
+                    }
+                    SessionSignal::Removed(uuid) => {
+                        debug!(uuid = %uuid, "Session UserProfileRemoved signal received");
+                        Some(StateEvent::UserProfileRemoved(uuid))
+                    }
+                }
+            }
+
+            // Branch 4b: Manager1 system-profile body-mutation signals
+            Some((kind, uuid)) = async {
+                match self.system_profile_signal_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                Some(match kind {
+                    SystemProfileSignal::Changed => {
+                        debug!(uuid = %uuid, "Manager1 SystemProfileChanged signal received");
+                        StateEvent::SystemProfileChanged(uuid)
+                    }
+                    SystemProfileSignal::Added => {
+                        debug!(uuid = %uuid, "Manager1 SystemProfileAdded signal received");
+                        StateEvent::SystemProfileAdded(uuid)
+                    }
+                    SystemProfileSignal::Removed => {
+                        debug!(uuid = %uuid, "Manager1 SystemProfileRemoved signal received");
+                        StateEvent::SystemProfileRemoved(uuid)
+                    }
+                })
             }
 
             // Branch 5: tray service appeared/disappeared
