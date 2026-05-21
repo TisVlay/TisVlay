@@ -1,13 +1,16 @@
-[user.profiles."a1b2c3d4-0000-0000-0000-00000000f000"]
-name = "foo"
+[user.profiles.00000000-0000-0000-0000-00000000515a]
+name = "default"
 on_session_lock = "screen_off"
 on_session_unlock = "screen_on"
 on_greeter_wake = "screen_on"
-idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
+on_idle_resume = "screen_on"
+
+[user.profiles.a1b2c3d4-0000-0000-0000-00000000f000]
+name = "foo"
+idle_timeout_seconds = 15
 
 [[tv]]
-# Must match `[[tv]] uuid` in the system config (docs/configs/daemon.toml).
 uuid = "9a3f1b22-c4d8-4e90-b21f-7f1a2c8e5b40"
 
 [tv.profile]
