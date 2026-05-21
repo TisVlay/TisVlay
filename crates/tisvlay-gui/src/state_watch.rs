@@ -486,6 +486,7 @@ fn profile_row_into_slint(raw: ProfileRowRaw) -> ProfileRow {
         .map(|r| ProfileTvRef {
             uuid: r.uuid,
             name: r.name,
+            automated: r.automated,
         })
         .collect();
     ProfileRow {

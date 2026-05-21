@@ -731,9 +731,18 @@ component ProfileDetailHeader inherits Rectangle {
             // Used-by row. Plain Text spans + middot separators
             // matching the TVs-pane descriptor row — chips would
             // run ~5 px taller (border + padding) and push the
-            // header noticeably above the TVs-pane header. TV
-            // names tint to `info-text` and carry a per-name
-            // TouchArea so the click-through to each TV survives.
+            // header noticeably above the TVs-pane header. Each
+            // TV's `LinkText` tint matches the 3-state classifi-
+            // cation the master-list row dot/label uses for the
+            // row-level aggregate: `success-text` when the TV is
+            // currently automated (Active), `info-text` when only
+            // referenced (Assigned). The Unassigned state can't
+            // appear here because `references_of` only returns
+            // referencing TVs by construction. Per-TV
+            // `accessible-label-override` carries the same status
+            // word so screen readers announce "{name}, automated"
+            // alongside the visual tint — WCAG 1.4.1 mitigation
+            // for the color-only state encoding.
             // Always renders so the header height is stable across
             // assigned + unassigned states (matches TVs-pane row 2
             // which falls back to `—` when the descriptor values
@@ -766,6 +775,12 @@ component ProfileDetailHeader inherits Rectangle {
                         }
                         LinkText {
                             text: tv.name;
+                            text-color: tv.automated
+                                ? Theme.success-text
+                                : Theme.info-text;
+                            accessible-label-override: tv.automated
+                                ? @tr("{}, automated", tv.name)
+                                : "";
                             clicked => { Profiles.open-tv(tv.uuid); }
                         }
                     }

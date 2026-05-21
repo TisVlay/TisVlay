@@ -78,10 +78,15 @@ pub struct TvViewRaw {
 
 /// One TV referencing a profile, in the thread-safe shape Rust passes
 /// through to the Slint `ProfileTvRef` struct on the event-loop side.
+/// `automated` mirrors the per-TV `TvInfo::automated` flag — drives
+/// the Used-by row's per-TV color tint (Active/success vs
+/// Assigned/info), matching the 3-state classification the master
+/// list row uses for the row-level aggregate.
 #[derive(Debug, Clone)]
 pub struct ProfileTvRefRaw {
     pub uuid: SharedString,
     pub name: SharedString,
+    pub automated: bool,
 }
 
 /// One profile row for the Profiles-pane master list. Mirrors the
@@ -404,20 +409,26 @@ where
         };
 
         let mut referenced_by = Vec::with_capacity(referenced_uuids.len());
-        let mut summary_parts = Vec::with_capacity(referenced_uuids.len());
         let mut active = false;
         for tv_uuid in &referenced_uuids {
             if let Some((name, automated)) = tv_meta.get(tv_uuid) {
                 referenced_by.push(ProfileTvRefRaw {
                     uuid: SharedString::from(tv_uuid.to_string()),
                     name: SharedString::from(name.as_str()),
+                    automated: *automated,
                 });
-                summary_parts.push(name.clone());
                 if *automated {
                     active = true;
                 }
             }
         }
+        // Alphabetical by friendly name so the Used-by row + the
+        // delete-confirm reference-list read consistently across
+        // pane visits — the `references_of` helper preserves the TV
+        // registration order, which is arbitrary from the user's
+        // POV.
+        referenced_by.sort_by(|a, b| a.name.cmp(&b.name));
+        let summary_parts: Vec<String> = referenced_by.iter().map(|r| r.name.to_string()).collect();
 
         rows.push(ProfileRowRaw {
             uuid: SharedString::from(uuid.to_string()),

@@ -23,11 +23,15 @@ export enum ProfileKind {
 }
 
 /// One TV that references a profile. Carries the UUID for
-/// click-through navigation (`Profiles.open-tv(uuid)`) and the
-/// friendly name for chip rendering.
+/// click-through navigation (`Profiles.open-tv(uuid)`), the
+/// friendly name for the Used-by-row LinkText, and the per-TV
+/// `automated` state — drives the LinkText's `text-color` tint
+/// (success/info) so the Used-by row reads the same 3-state
+/// classification the master-list row aggregate uses.
 export struct ProfileTvRef {
     uuid: string,
     name: string,
+    automated: bool,
 }
 
 /// One inheritable field rendered as a row in the detail editor.
