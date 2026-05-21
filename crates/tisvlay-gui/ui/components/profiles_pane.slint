@@ -459,11 +459,26 @@ component ProfileFieldRowNumber inherits Rectangle {
                 }
             }
 
+            // Value column. SpinBox + optional unit Text in a
+            // stretching HorizontalLayout. SpinBox's std-widget
+            // definition (every style) sets `min-width: max(128px,
+            // …)`; that floor would otherwise push the row-layout
+            // 4 px past its parent's width and shift the reset
+            // glyph right of the ComboBox rows' glyphs. We override
+            // the floor with `min-width: 0px` so the SpinBox's
+            // built-in `horizontal-stretch: 1` is free to shrink
+            // and absorb whatever space the unit Text leaves —
+            // keeping the reset column at the same x across rows.
+            // SpinBox's own internal minimum (text input + two
+            // buttons + padding ≈ 120 px) still applies inside,
+            // so we never compress the chrome below the usable
+            // floor.
             HorizontalLayout {
                 horizontal-stretch: 1;
                 spacing: Design.gap-stack;
-                alignment: start;
+                alignment: stretch;
                 SpinBox {
+                    min-width: 0px;
                     value: root.entry.number-value;
                     minimum: root.entry.min-value;
                     maximum: root.entry.max-value;

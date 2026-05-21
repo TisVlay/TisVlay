@@ -201,8 +201,8 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Number {
             min: 0,
             max: 86_400,
-            step: 60,
-            unit: "s",
+            step: 15,
+            unit: "seconds",
         },
     },
 ];
@@ -1751,7 +1751,7 @@ mod tests {
         assert_eq!(min, 0);
         assert_eq!(max, 86_400, "idle timeout should cover 24h");
         assert!(step > 0);
-        assert_eq!(unit, "s");
+        assert_eq!(unit, "seconds");
     }
 
     #[test]
