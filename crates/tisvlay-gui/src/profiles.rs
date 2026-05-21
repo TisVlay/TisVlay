@@ -374,7 +374,7 @@ pub(crate) fn resolve_user_field(
 /// the "differs from any wire token" property is load-bearing.
 fn inherit_overlay(field: &FieldSpec, resolved: &str) -> String {
     match field.kind {
-        FieldKind::Enum { .. } => format!("{resolved} ⚙️"),
+        FieldKind::Enum { .. } => format!("{resolved}\u{00A0}\u{2713}"),
         FieldKind::Number { .. } => resolved.to_string(),
     }
 }
@@ -1044,6 +1044,7 @@ fn clear_selection_in_slint(app_weak: slint::Weak<AppWindow>) {
         profiles.set_selected_row(crate::ProfileRow {
             uuid: SharedString::default(),
             name: SharedString::default(),
+            display_name: SharedString::default(),
             is_default: false,
             referenced_by: ModelRc::new(VecModel::<crate::ProfileTvRef>::default()),
             referenced_by_summary: SharedString::default(),

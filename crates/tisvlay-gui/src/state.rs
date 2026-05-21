@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use gettextrs::gettext;
 use slint::SharedString;
 use tisvlay_core::{
     DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient,
@@ -86,10 +87,20 @@ pub struct ProfileTvRefRaw {
 /// One profile row for the Profiles-pane master list. Mirrors the
 /// Slint-generated `ProfileRow` shape but stays `Send` (the inner
 /// `Vec` becomes a `ModelRc` only inside the event-loop push).
+///
+/// `name` is the bare profile name as it lives on the daemon's wire
+/// — used by the rename-pencil input prefill and any daemon round-
+/// trip. `display_name` is the synthesized form shown in read-only
+/// surfaces: localized "default" for the reserved-default UUID,
+/// suffixed with the default-indicator glyph. See
+/// [`display_profile_name`] for the synthesis rules and
+/// [`docs/plans/profile-default-indicator.md`] for the design
+/// rationale.
 #[derive(Debug, Clone)]
 pub struct ProfileRowRaw {
     pub uuid: SharedString,
     pub name: SharedString,
+    pub display_name: SharedString,
     pub is_default: bool,
     pub referenced_by: Vec<ProfileTvRefRaw>,
     pub referenced_by_summary: SharedString,
@@ -261,11 +272,13 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             system_profile: SharedString::from(resolve_profile_name(
                 &tv.system_profile,
                 &system_profile_bodies,
+                DEFAULT_SYSTEM_PROFILE_UUID,
             )),
             system_profile_uuid: SharedString::from(system_profile_uuid),
             user_profile: SharedString::from(resolve_profile_name(
                 &user_profile,
                 &user_profile_bodies,
+                DEFAULT_USER_PROFILE_UUID,
             )),
             user_profile_uuid: SharedString::from(user_profile_uuid),
             primary_input: SharedString::from(tv.primary_input.as_str()),
@@ -409,6 +422,11 @@ where
         rows.push(ProfileRowRaw {
             uuid: SharedString::from(uuid.to_string()),
             name: SharedString::from(body.name_str()),
+            display_name: SharedString::from(display_profile_name(
+                uuid,
+                body.name_str(),
+                default_uuid,
+            )),
             is_default: uuid == default_uuid,
             referenced_by,
             referenced_by_summary: SharedString::from(summary_parts.join(", ")),
@@ -418,30 +436,60 @@ where
     rows
 }
 
-/// Resolve a profile UUID string to its display name via the bodies
-/// catalog. Unknown / malformed UUIDs fall through to the raw input
-/// so a stale-state drift stays visible rather than collapsing to
-/// an empty cell.
-fn resolve_profile_name<B>(uuid_str: &str, bodies: &HashMap<Uuid, B>) -> String
+/// Render a profile's name for read-only display surfaces. For the
+/// reserved-default UUID, returns the localized "default" word (via
+/// gettext on the bare name, which is always the English literal
+/// `"default"` for that UUID by daemon contract) followed by a
+/// non-breaking space and the default-indicator glyph
+/// (U+2713 CHECK MARK). For every other UUID the bare name passes
+/// through unchanged — user-typed names aren't gettext candidates.
+///
+/// The glyph here is **identity-decoupled presentation**: wire
+/// storage stays the bare name; only display strings carry the
+/// indicator. See `docs/plans/profile-default-indicator.md` §
+/// "Wire vs display split" for the reasoning, including why the
+/// indicator is **not** baked into `body.name` on disk.
+pub(crate) fn display_profile_name(uuid: Uuid, name: &str, default_uuid: Uuid) -> String {
+    if uuid == default_uuid {
+        format!("{}\u{00A0}\u{2713}", gettext(name))
+    } else {
+        name.to_owned()
+    }
+}
+
+/// Resolve a profile UUID string to the displayed name shown by the
+/// TVs-pane ComboBox's `current-value`. Routes through
+/// [`display_profile_name`] so the picker's value matches one of
+/// the items in its model — std `ComboBox.current-value` is a
+/// string-match against the model, so any drift between this and
+/// [`profile_name_list`] would render the field as a blank cell.
+/// Unknown / malformed UUIDs fall through to the raw input so a
+/// stale-state drift stays visible rather than collapsing.
+fn resolve_profile_name<B>(uuid_str: &str, bodies: &HashMap<Uuid, B>, default_uuid: Uuid) -> String
 where
     B: HasName,
 {
     Uuid::parse_str(uuid_str)
         .ok()
-        .and_then(|u| bodies.get(&u))
-        .map(|b| b.name_str().to_owned())
+        .and_then(|u| {
+            bodies
+                .get(&u)
+                .map(|b| display_profile_name(u, b.name_str(), default_uuid))
+        })
         .unwrap_or_else(|| uuid_str.to_owned())
 }
 
 /// Slint-side ComboBox name list. The reserved default profile's
 /// label always sorts first so the picker reads consistently.
+/// Items are display names — the reserved-default entry carries
+/// the indicator glyph appended via [`display_profile_name`].
 fn profile_name_list<B>(bodies: &HashMap<Uuid, B>, default_uuid: Uuid) -> Vec<SharedString>
 where
     B: HasName,
 {
     let mut entries: Vec<(Uuid, String)> = bodies
         .iter()
-        .map(|(u, b)| (*u, b.name_str().to_owned()))
+        .map(|(u, b)| (*u, display_profile_name(*u, b.name_str(), default_uuid)))
         .collect();
     entries.sort_by(|a, b| {
         let a_default = a.0 == default_uuid;
@@ -720,7 +768,18 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(by_uuid["00000000-0000-0000-0000-00000000000a"].0, "default");
+        // The reserved-default row carries the indicator glyph via
+        // display_profile_name; route the expectation through the
+        // same helper to stay glyph-agnostic.
+        let default_display = display_profile_name(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            "default",
+            DEFAULT_SYSTEM_PROFILE_UUID,
+        );
+        assert_eq!(
+            by_uuid["00000000-0000-0000-0000-00000000000a"].0,
+            default_display
+        );
         assert_eq!(
             by_uuid["00000000-0000-0000-0000-00000000000a"].1,
             DEFAULT_SYSTEM_PROFILE_UUID.hyphenated().to_string()
@@ -805,10 +864,21 @@ mod tests {
             ..empty_inputs()
         };
         let snap = convert_snapshot(inputs);
-        // Default sorts first; "evening" follows alphabetically.
+        // Default sorts first (carries the indicator glyph via
+        // display_profile_name; the test routes through the same
+        // helper to stay glyph-agnostic); "evening" follows
+        // alphabetically with the bare name.
+        let default_display = display_profile_name(
+            DEFAULT_SYSTEM_PROFILE_UUID,
+            "default",
+            DEFAULT_SYSTEM_PROFILE_UUID,
+        );
         assert_eq!(
             snap.system_profiles,
-            vec![SharedString::from("default"), SharedString::from("evening")]
+            vec![
+                SharedString::from(default_display),
+                SharedString::from("evening"),
+            ]
         );
         assert_eq!(snap.user_profiles, vec![SharedString::from("movies")]);
     }

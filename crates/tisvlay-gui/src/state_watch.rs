@@ -491,6 +491,7 @@ fn profile_row_into_slint(raw: ProfileRowRaw) -> ProfileRow {
     ProfileRow {
         uuid: raw.uuid,
         name: raw.name,
+        display_name: raw.display_name,
         is_default: raw.is_default,
         referenced_by: ModelRc::new(VecModel::from(refs)),
         referenced_by_summary: raw.referenced_by_summary,
