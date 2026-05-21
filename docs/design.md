@@ -41,7 +41,7 @@ graph TD
 | **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle); reactively prunes orphan user-config `[[tv]]` assignments via `ObjectManager.InterfacesRemoved`. |
 | **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
 | **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Subscribes to daemon D-Bus signals for real-time state updates (30s fallback poll). Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
-| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. About pane built; Profiles / Session panes are placeholders pending the M3.5 / M4 / M5 work in [docs/plan.md](plan.md). |
+| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. Profiles pane with master/detail layout, two-sub-tab system/user profile editor, inheritance with locally-set indicators + per-field reset glyph + reset-all, rename/duplicate/delete flows. About pane built; Session pane is a placeholder pending the M5 work in [docs/plan.md](plan.md). |
 
 ### Crate Structure
 
@@ -195,10 +195,13 @@ See `crates/tisvlayd/src/dbus/` for the implementation.
 org.tisvlay.Daemon  (system bus; session bus in dev)
 ├── /org/tisvlay                    ObjectManager
 ├── /org/tisvlay/Manager            org.tisvlay.Manager1
-│   ├── Methods:  GetSupportedVendors, GetPairingSchema, AddTv,
-│   │             CancelPair, ReloadConfig, ListSystemProfiles,
-│   │             GetUserProfileDefault, ListUserProfiles, DiscoverTvs
-│   └── Signals:  ConfigReloaded
+│   ├── Methods:  GetSupportedVendors, GetPairingSchema, AddTv, CancelPair,
+│   │             ReloadConfig, DiscoverTvs,
+│   │             ListSystemProfiles, GetSystemProfile, UpdateSystemProfile,
+│   │             CreateSystemProfile, DuplicateSystemProfile, DeleteSystemProfile,
+│   │             GetResolvedSystemProfileDefaults, GetEffectiveSystemProfile
+│   └── Signals:  ConfigReloaded, PairingProgress, DiscoveryFound,
+│                 SystemProfileChanged, SystemProfileAdded, SystemProfileRemoved
 └── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
     │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
     ├── Properties (rw): Name, Managed, SystemProfile, PrimaryInput,
@@ -212,9 +215,12 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 
 org.tisvlay.Session  (session bus)
 └── /org/tisvlay/Session            org.tisvlay.Session1
-    ├── Methods:  ListUserProfiles, GetTvUserProfile, SetTvUserProfile,
-    │             GetEffectiveUserProfile, ReloadConfig
-    └── Signals:  UserProfileChanged
+    ├── Methods:  GetTvUserProfile, SetTvUserProfile, ReloadConfig,
+    │             ListUserProfiles, GetUserProfile, UpdateUserProfile,
+    │             CreateUserProfile, DuplicateUserProfile, DeleteUserProfile,
+    │             GetResolvedUserProfileDefaults, GetEffectiveUserProfile
+    └── Signals:  TvUserProfileChanged,
+                  UserProfileChanged, UserProfileAdded, UserProfileRemoved
 ```
 
 ### Clients and signal flow
@@ -222,7 +228,8 @@ org.tisvlay.Session  (session bus)
 | Client | Calls | Subscribes to |
 |--------|-------|---------------|
 | **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (properties + commands), Session1 (user profiles) | — |
-| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `ConfigReloaded`; Session1: `UserProfileChanged`; DBus: `NameOwnerChanged` (service discovery) |
+| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `ConfigReloaded`, `SystemProfileAdded`/`Changed`/`Removed`; Session1: `TvUserProfileChanged`, `UserProfileAdded`/`Changed`/`Removed`; DBus: `NameOwnerChanged` (service discovery) |
+| **tisvlay-gui** | Manager1 (system-profile CRUD, config), Tv1.* (properties + commands), Session1 (user-profile CRUD + assignment) | Same as tray plus the body-mutation signals (`SystemProfileChanged(uuid)`, `UserProfileChanged(uuid)`) drive the editor's per-row refresh. The GUI subscribes to both buses directly — no cross-bus signal re-fire on the session daemon, since the only client that needs cross-bus body-change notifications is the GUI and it already does. |
 | **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions via writable properties) | — |
 
 `org.freedesktop.DBus.ObjectManager` at `/org/tisvlay` provides `GetManagedObjects()` — a single round-trip returning all TV object paths and their interface properties.
@@ -235,12 +242,27 @@ Methods:
 - `AddTv(name: s, vendor: s, config_json: s, managed: b) → (os)` — reserve a TV id and start pairing. **Returns immediately** after sync validation (unknown-vendor / `ConfigInvalidVendorConfig` surface as RPC errors); the handshake itself runs in a daemon-side spawned task. Outcome is reported via `Manager1.PairingProgress` filtered on the returned `tv_uuid` to a terminal phase (`complete` or `failed`). `complete` only fires after the per-TV `Tv1.*` interfaces are registered, so clients observing it can immediately call into the new TV without racing the registration. `config_json` carries vendor-specific connection params as JSON (e.g. `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation. Per-TV lifecycle (`Remove`, `RePair`, `GetConfig`, `UpdateConfig`) lives on `Tv1` after pair.
 - `ReloadConfig()` — reload config from disk
 - `CancelPair(tv_id: s)` — cancel an in-flight pairing handshake. Works for both `AddTv` and `Tv1.RePair` via the daemon-side `pairing_sessions` registry. Returns `NotPairing` (typed) if the tv_id isn't currently pairing — matches the BlueZ `Adapter.RemoveDevice`-on-unknown-device convention.
-- `ListSystemProfiles() → a(ss)` — all system profiles as `(name, json)` pairs
-- `GetUserProfileDefault() → s` — admin baseline user profile as JSON; used by session services to inherit defaults
-- `ListUserProfiles() → a(ss)` — all user profiles (admin-defined) as `(name, json)` pairs
 - `DiscoverTvs(timeout_ms: u) → a(sssss)` — SSDP discovery, returns `(id, name, address, hardware_id, vendor)` tuples. Only available when compiled with the `discovery` feature.
 
-Signals: `ConfigReloaded`, `PairingProgress`, `DiscoveryFound`. (Per-TV add/remove fires standard `ObjectManager.InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay`.)
+System-profile catalog (see [Profile catalog](#profile-catalog) for the full architecture):
+- `ListSystemProfiles() → a{sa{sv}}` — map from `uuid` to body dict (typed `SystemProfileBody`)
+- `GetSystemProfile(uuid: s) → a{sv}` — fetch one body by UUID
+- `UpdateSystemProfile(uuid: s, body: a{sv})` — atomic full-body replace (rename is `Update` with a new `name` in the body); validates uniqueness + reserved-name rules under one write lock; persists via atomic-rename; rolls back the in-memory swap and returns `IoError` on persistence failure
+- `CreateSystemProfile(name: s) → s` — mints a UUID, persists, returns it
+- `DuplicateSystemProfile(source_uuid: s, new_name: s) → s` — clones an existing body under a new UUID
+- `DeleteSystemProfile(uuid: s)` — rejects the reserved-default UUID outright; rejects when any TV references it (via `references_of` against in-memory TV assignments)
+- `GetResolvedSystemProfileDefaults() → a{sv}` — hard-coded baseline body (the ancestor every profile inherits from)
+- `GetEffectiveSystemProfile(tv_id: s) → a{sv}` — fully resolved body for one TV (walks profile → default → baseline)
+
+The legacy `ListSystemProfilesJson() → a(ss)` slot stays on the wire (back-compat for tray + CLI consumers that haven't migrated to the v3 surface). The Rust wrapper signature is unchanged; only the wire-method name moved via `#[zbus(name = ...)]`.
+
+Signals:
+- `ConfigReloaded`, `PairingProgress`, `DiscoveryFound` (lifecycle).
+- `SystemProfileChanged(uuid: s)` — body mutation (including rename). Fires once after persistence under the same write lock as the body commit, so a client receiving the signal can immediately `GetSystemProfile(uuid)` and get the body.
+- `SystemProfileAdded(uuid: s)` — fires once after persistence for both `Create` and `Duplicate`.
+- `SystemProfileRemoved(uuid: s)` — fires after `Delete` persists.
+
+`ReloadConfig` is observationally identical to an external client performing equivalent `Update` / `Create` / `Delete` calls: the daemon computes a three-way diff against the prior in-memory catalog and emits the matching `Added` / `Changed` / `Removed` signals so client caches invalidate through the same path. (Per-TV add/remove fires standard `ObjectManager.InterfacesAdded` / `InterfacesRemoved` from `/org/tisvlay`.)
 
 `PairingProgress(tv_id: s, phase: s, message: s)` is bus-wide — any client may be running a concurrent pairing. Clients filter on the `tv_id` they got from `Manager1.AddTv` (or passed to `Tv1.RePair`) and drain to a terminal phase (`complete` or `failed`). Non-terminal phases are `awaiting_tv` and `awaiting_input`. `tisvlay-core` exposes `DaemonClient::drain_pair_to_terminal(stream, target_tv_id, on_progress) -> Result<PairTerminal>` as the canonical client-side drain — used by the GUI wizard, the `tisvlay pair` / `tisvlay re-pair` CLI subcommands, and the integration test suite.
 
@@ -261,12 +283,114 @@ Single-field edits also flow through the per-property `Properties.Set` path — 
 
 Registered on the **session bus** by `tisvlay-session` under `org.tisvlay.Session`.
 
-Methods:
-- `ListUserProfiles() → a(ss)` — merged user profile list as `(name, json)` pairs; user-defined profiles take precedence over same-named admin profiles
-- `GetTvUserProfile(tv_id: s) → s` — user profile name assigned to a TV (or `"default"` if unassigned)
-- `SetTvUserProfile(tv_id: s, profile: s)` — assign a user profile; validates existence, saves to user config, live-reloads
-- `GetEffectiveUserProfile(tv_id: s) → s` — fully resolved user profile as JSON (user + admin baseline inheritance applied)
+Per-TV assignment methods (a TV's user profile is one of the catalog UUIDs; UUIDs are immutable across renames):
+- `GetTvUserProfile(tv_id: s) → s` — UUID of the user profile assigned to a TV (the reserved-default UUID if unassigned)
+- `SetTvUserProfile(tv_id: s, profile_uuid: s)` — assign a user profile by UUID; validates the UUID exists in the catalog, persists, live-reloads
 - `ReloadConfig()` — re-query daemon for TV list and admin baseline, reload user config from disk
+
+User-profile catalog (mirror of Manager1's system-profile surface; see [Profile catalog](#profile-catalog) for the full architecture):
+- `ListUserProfiles() → a{sa{sv}}` — map from `uuid` to body dict (typed `UserProfileBody`)
+- `GetUserProfile(uuid: s) → a{sv}`
+- `UpdateUserProfile(uuid: s, body: a{sv})` — atomic full-body replace
+- `CreateUserProfile(name: s) → s`
+- `DuplicateUserProfile(source_uuid: s, new_name: s) → s`
+- `DeleteUserProfile(uuid: s)` — rejects the reserved-default UUID; rejects when any TV references it (via `user_references_of` — the fan-out variant that counts unassigned TVs as implicit references to the reserved-default)
+- `GetResolvedUserProfileDefaults() → a{sv}` — hard-coded baseline body
+- `GetEffectiveUserProfile(tv_id: s) → a{sv}` — fully resolved body for one TV (walks user-profile → user-default → admin-baseline → admin-user-default → hardcoded-baseline)
+
+The legacy `ListUserProfilesJson()` + `GetEffectiveUserProfileJson()` slots stay on the wire (back-compat for tray + CLI consumers).
+
+Signals:
+- `TvUserProfileChanged(tv_id: s, profile_uuid: s)` — assignment change (a TV's `user_profile` field was rewritten). Pre-existing signal; the `Tv` prefix added during the v3 cleanup so reader convention becomes "methods + signals starting with `Tv` operate on a TV's assignment; without `Tv` they operate on the catalog."
+- `UserProfileChanged(uuid: s)` — body mutation. Mirrors `Manager1.SystemProfileChanged(uuid)`.
+- `UserProfileAdded(uuid: s)` — fires after `Create` or `Duplicate` persists.
+- `UserProfileRemoved(uuid: s)` — fires after `Delete` persists.
+
+`Session1.ReloadConfig` mirrors `Manager1.ReloadConfig`'s diff-and-emit shape: a config-file edit fires the same per-profile signals an external client would, so the GUI's editor cache invalidates through the single code path.
+
+Manager1 didn't face the assignment-vs-body naming collision because per-TV system-profile assignment writes through the standard `Tv1.SystemProfile` property surface (firing `PropertiesChanged`), not a custom signal.
+
+### Profile catalog
+
+The system-profile and user-profile catalogs share an architecture: a property-bag wire surface, immutable UUID identity, three-layer client cache, atomic full-body replace, and a body-mutation/topology signal trio per bus. The two halves are symmetric but live on different buses (Manager1 = system bus = `/var/lib/tisvlay/config.toml`; Session1 = session bus = `~/.config/tisvlay/config.toml`).
+
+**Why property-bag, not typed-property-per-object.** Configuration over D-Bus is property-bag-shaped — `NetworkManager.Settings.Connection`, `systemd-homed.Home`, `org.freedesktop.PowerProfiles` all use `a{sv}` bodies, not per-field typed properties. BlueZ-style typed properties fit *operational* state (a device's current connection state, a battery's current charge); they don't fit configuration. The v2 attempt at typed-property-per-object ballooned to +12 646 LoC because every field needed its own wire property + state-forwarder fan-out + `PropertiesChanged` plumbing; v3's property-bag shape collapses that to one dict-derive struct per kind.
+
+**Why UUID identity.** Profile names are mutable (rename is a feature) and localized (`"default"` displays through `gettext`). Anchoring TV assignments on names creates rename races + i18n collisions + cross-catalog ambiguity. UUIDs decouple identity from display: rename mutates `body.name`, TV references stay valid, and the reserved-default profile keeps its `name` field locked to the literal `"default"` so the daemon's inheritance walker has a stable wire-recognizable ancestor while the GUI renders the displayed label through `gettext("default")`.
+
+#### Body types
+
+`tisvlay-core` exports two structs feature-gated under `dbus`:
+
+```rust
+#[derive(Type, SerializeDict, DeserializeDict, Default, Clone, Debug)]
+#[zvariant(signature = "a{sv}", deny_unknown_fields)]
+pub struct SystemProfileBody {
+    pub name:          String,                  // mandatory; mutable display label
+    pub on_startup:    Option<SessionAction>,
+    pub on_shutdown:   Option<SessionAction>,
+    pub on_reboot:     Option<SessionAction>,
+    pub on_no_session: Option<SessionAction>,
+    pub on_sleep:      Option<SessionAction>,
+    pub on_wake:       Option<SessionAction>,
+    pub automate_when: Option<AutomateWhen>,
+}
+
+#[derive(Type, SerializeDict, DeserializeDict, Default, Clone, Debug)]
+#[zvariant(signature = "a{sv}", deny_unknown_fields)]
+pub struct UserProfileBody {
+    pub name:                 String,
+    pub on_session_lock:      Option<SessionAction>,
+    pub on_session_unlock:    Option<SessionAction>,
+    pub on_greeter_wake:      Option<SessionAction>,
+    pub on_idle_timeout:      Option<SessionAction>,
+    pub on_idle_resume:       Option<SessionAction>,
+    pub idle_timeout_seconds: Option<u64>,
+}
+```
+
+`name` is mandatory because every profile has one. Every other field is `Option<T>`; the dict-derive's skip-if-`None` semantic means absent-key on the wire ⇔ `None` in Rust ⇔ "inherits from the chain below." Same present-vs-absent semantic the GUI's locally-set indicator + per-field reset reads, without a separate `LocallySetFields` companion property.
+
+**`deny_unknown_fields` is load-bearing.** Without it the dict-derive silently absorbs misspelled client keys as `None`, defeating the present-vs-absent semantic the design rides on (a misspelled `"on_session_locked"` would look identical on the wire to "inherit this field"). With it, the deserializer rejects unknown keys at the dict boundary and the daemon returns `InvalidArgs` — clients get a loud rejection at edit time, not silent data loss.
+
+**`SessionAction` + `AutomateWhen` carry a `Type` derive + `#[zvariant(signature = "s")]` attribute** so the dict-derive macro can compute the body's enum-field variant signature. The signature attribute is a unit-variant-only promise; adding a struct variant would silently diverge declared signature from emitted serde shape with no compile error, so each enum carries a `// SAFETY:` invariant comment locking the contract.
+
+#### Inheritance chain
+
+Three layers per kind:
+
+1. **Baseline** — hard-coded body returned by `GetResolvedSystemProfileDefaults` / `GetResolvedUserProfileDefaults`. Fetched once at GUI start.
+2. **Default body** — the reserved-default profile's catalog body (UUIDs `…5159` for system, `…515A` for user). Refreshed on its own `Changed` signal.
+3. **Per-profile body** — the profile's catalog body, refreshed on `Changed(uuid)`.
+
+For user profiles the chain extends across buses: `user → user-default → admin-baseline → admin-user-default → hardcoded-baseline`. The GUI subscribes to both Manager1 and Session1 signals directly; the session daemon does **not** re-fire `Session1.UserProfileChanged` when an admin-baseline body mutates. The two-bus client-side subscription is the cross-bus resolution path.
+
+**`references_of` fan-out.** The TV-to-profile reference rule has one non-trivial case: an unassigned TV implicitly references the reserved-default profile. So deleting the default would orphan every unassigned TV. The shared helper `tisvlay_core::references_of(profile_uuid, &[TvAssignment]) -> Vec<Uuid>` (and `user_references_of` for the user variant) encodes the rule; daemon and clients both call it, single-sourcing the fan-out semantic. The daemon's `Delete` is authoritative; the GUI's client-side check is advisory.
+
+#### Editor instant-commit model
+
+The GUI keeps a three-layer `ProfileLayers` cache (`baseline` / `default_body` / `bodies: HashMap<Uuid, _>`) per kind. Edits commit atomically:
+
+1. Clone the cached body.
+2. Patch one field (or zero many, for `reset-all`).
+3. `Manager1.UpdateSystemProfile(uuid, body)` — the daemon validates uniqueness + reserved-name rules under one write lock, persists via atomic-rename, emits `SystemProfileChanged(uuid)`, and rolls back the in-memory swap (no signal fires) on persistence failure.
+4. The GUI's signal handler re-fetches the body and refreshes the field rows.
+
+One D-Bus round-trip per edit. The wire format (`Option<T>` + skip-if-`None`) has only two states per key — present or absent — so it can't express "leave this field alone." `Update` is full-body atomic replace; that's the same shape `NetworkManager.Settings.Connection.Update` uses. Concurrent body updates are last-write-wins; the realistic loss scenario is a scripted CLI loop interleaved with an open GUI session whose cached body is seconds-stale. ETag-style optimistic concurrency is deferred to a future `UpdateSystemProfileChecked(uuid, body, expected_version: t)` method when multi-client editing becomes a real workflow.
+
+Per-kind `AtomicU64` generation counters protect against stale callbacks during reselection — a click on the master list bumps the counter, captured by the in-flight `select` task; if the user picks a different profile before the body fetch returns, the prior task no-ops on its closing `on_ui` callback.
+
+#### Live-refresh signal contract
+
+Three signals per kind per bus, each carrying just a UUID:
+
+- `Changed(uuid)` — body mutation (including rename).
+- `Added(uuid)` — `Create` or `Duplicate`.
+- `Removed(uuid)` — `Delete`.
+
+Both `Create` + `Duplicate` commit body + emit `Added` under the same write lock, so a client receiving `Added` can immediately fetch the body without waiting for a separate `Changed`. `Update` re-resolves every TV's cached `system_profile` / `user_profile` after success so default-body edits propagate to inheriting TVs without an explicit reload.
+
+`ReloadConfig` emits the same per-UUID signals: the daemon snapshots the prior in-memory catalog under the write lock via `std::mem::take`, applies the new on-disk config, computes a three-way diff (added / removed / changed by body-content `PartialEq`), and emits the matching signals after the lock is dropped. Architectural lesson: a config-file edit should be observationally identical to an external client mutation — same signals, same client cache invalidation. The earlier coarse `ConfigReloaded` signal alone was not enough; the editor's per-UUID cache stayed stale until the user clicked away and back.
 
 ### org.tisvlay.Tv1 (Base Interface)
 
@@ -320,8 +444,14 @@ Adding an editable field is a one-row schema entry — no D-Bus method changes, 
 ```toml
 # /var/lib/tisvlay/config.toml  (daemon-owned)
 
-# System profiles — daemon lifecycle events (per-TV via profile.system assignment)
-[system.profiles.default]
+# System profiles — daemon lifecycle events (per-TV via profile.system assignment).
+# Sections are keyed by UUID (immutable identity); `name` is a mutable display
+# label in the body. The all-zero-prefix `…5159` UUID is the reserved-default
+# profile every other profile inherits from — its `name` field is locked to
+# the literal `"default"`. Clients render the displayed label through
+# gettext("default"); wire identity is the UUID.
+[system.profiles.00000000-0000-0000-0000-000000005159]
+name = "default"
 on_startup = "power_on"          # action on system boot (default: power_on)
 on_shutdown = "power_off"        # action on poweroff/halt (default: power_off)
 on_reboot = "none"               # action on reboot/kexec (default: none)
@@ -330,16 +460,19 @@ on_sleep = "power_off"           # action on system suspend/hibernate (default: 
 on_wake = "power_on"             # action on system resume from sleep (default: power_on)
 automate_when = "always"         # always | on_primary | off_primary (default: always)
 
-[system.profiles.shared]
+[system.profiles.a1b2c3d4-0000-0000-0000-00000000a000]
+name = "shared"
 automate_when = "on_primary"     # only automate when showing the PC input
 
-[system.profiles.guest]
+[system.profiles.a1b2c3d4-0000-0000-0000-00000000b000]
+name = "guest"
 on_startup = "none"
 on_shutdown = "screen_off"
 
 # Admin-set baseline for session behavior.
 # Users without their own config inherit this.
-[user.profiles.default]
+[user.profiles.00000000-0000-0000-0000-00000000515a]
+name = "default"
 on_session_lock = "screen_off"   # screen_off | power_off | none
 on_session_unlock = "screen_on"  # screen_on | power_on | none
 on_greeter_wake = "screen_on"    # unblank on lock screen interaction (Wayland only)
@@ -353,14 +486,14 @@ name = "Living Room G4"
 vendor = "lg"
 primary_input = "HDMI_1"         # which input this PC uses (vendor-agnostic)
 managed = true                   # participates in automation (boot WoL, session events, shutdown)
-profile.system = "default"       # which system profile this TV uses
+profile.system = "00000000-0000-0000-0000-000000005159"  # UUID of assigned system profile
 
 [[tv]]
 uuid = "22222222-2222-4222-8222-222222222222"
 name = "Guest Room"
 vendor = "lg"
 managed = true
-profile.system = "guest"         # different lifecycle behavior
+profile.system = "a1b2c3d4-0000-0000-0000-00000000b000"  # "guest" profile
 
 # Vendor-specific config — connection params + vendor features.
 # Core has zero knowledge of these fields; each vendor crate
@@ -376,20 +509,23 @@ client_key = "abc123..."
 ```toml
 # ~/.config/tisvlay/config.toml  (session-owned, optional)
 
-# User's own profiles (override or extend admin defaults)
-[user.profiles.default]
+# User's own profiles. Keyed by UUID; `name` is a body field.
+[user.profiles.00000000-0000-0000-0000-00000000515a]
+name = "default"
 idle_timeout_seconds = 300
 on_idle_timeout = "screen_off"
 
-[user.profiles.gaming]
+[user.profiles.a1b2c3d4-0000-0000-0000-00000000f000]
+name = "gaming"
 on_session_lock = "none"          # don't interrupt gameplay
 idle_timeout_seconds = 0
 on_idle_resume = "none"
 
-# Per-TV user profile assignments — `uuid` matches the system config.
+# Per-TV user profile assignments — `uuid` matches the system config;
+# `profile.user` is the UUID of the assigned user profile.
 [[tv]]
 uuid = "11111111-1111-4111-8111-111111111111"
-profile.user = "gaming"
+profile.user = "a1b2c3d4-0000-0000-0000-00000000f000"  # "gaming"
 
 # guest-room inherits user.profiles.default (no override)
 ```
@@ -691,6 +827,21 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 8. `ListSystemProfiles()` added to Manager1; `SystemProfile` property added to Tv1
 9. Tray gains dual submenus: "User Profile" and "System Profile" per TV
 10. CLI: `tisvlay profile user list/get/set` and `tisvlay profile system list/get/set`
+
+### Per-TV Profile Catalog v3 - COMPLETE
+
+**Goal**: Property-bag CRUD surface for system + user profiles over D-Bus; a Profiles pane in the GUI for create/rename/delete/duplicate/per-field-edit with live cross-client refresh.
+
+See [Profile catalog](#profile-catalog) for the durable architecture (body types, inheritance chain, instant-commit model, signal contract). Notable shape decisions:
+
+1. Property-bag `a{sv}` body dicts via `#[derive(SerializeDict, DeserializeDict)]`, not typed-property-per-object — drops ~3 600 LoC of per-property fan-out infrastructure against the v2 typed-property attempt.
+2. Identity decouples from display: TV references migrate to immutable UUIDs (`TvProfileAssignment.system: Uuid`, `UserTvProfileAssignment.user: Uuid`); `name` is a mutable field of the body. Reserved-default UUIDs `…5159` / `…515A` anchor the inheritance ancestor.
+3. `Update` is atomic full-body replace, not partial patch — wire format has only present/absent per key. GUI clones the cached body, patches one field, sends the whole thing back.
+4. `references_of` / `user_references_of` helpers single-source the fan-out rule (unassigned TV implicitly references the reserved-default). Daemon delete is authoritative; client checks are advisory.
+5. `ReloadConfig` emits the same per-UUID signals an external client would, so config-file edits are observationally identical to client mutations. Required a `ReloadDiff` extension on both `tv_manager::reload_config` and `Session1::reload_config`.
+6. Session1 signal naming aligned with Manager1: body mutation is `UserProfileChanged(uuid)` (mirrors `SystemProfileChanged(uuid)`); assignment change is `TvUserProfileChanged(tv_id, profile_uuid)`. Convention: methods + signals starting with `Tv` operate on a TV's assignment, without `Tv` they operate on the catalog.
+
+The GUI editor uses a three-layer `ProfileLayers` cache (baseline / default_body / per-profile bodies) refreshed on the daemon's `Changed(uuid)` signals; field rows render through a `resolve_field` walker that distinguishes `LocallySet` from `Inheriting`. Per-kind `AtomicU64` generation counters protect against stale callbacks during reselection.
 
 ### Brightness / Volume Sync (researched and scrapped)
 
