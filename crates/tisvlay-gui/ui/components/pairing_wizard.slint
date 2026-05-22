@@ -314,7 +314,13 @@ component StepDiscover {
             border-color: root.discovered.length > 0 ? Theme.border : Theme.border-strong;
             border-width: Design.border-thin;
             border-radius: Design.radius-card;
-            min-height: 160px;
+            // 2.5 × DiscoveryRow.height (56px) = 140px. The half-row
+            // peek at the bottom telegraphs "scroll me" the moment a
+            // 3rd TV is found — without that, the list would look
+            // exactly-fit at 2 rows and users might assume there's
+            // nothing more. Keep this in sync if DiscoveryRow.height
+            // moves.
+            min-height: 140px;
             vertical-stretch: 1;
 
             // Stack [content, ScanLine] so the ScanLine sits at the
