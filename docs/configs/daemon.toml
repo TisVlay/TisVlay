@@ -1,3 +1,10 @@
+# Discovery settings. Uncomment to pin the SSDP source UDP port so a
+# firewall can accept a single `--dport` rule instead of allowing the
+# unbounded ephemeral range. Defaults to OS-assigned ephemeral port —
+# fine on systems without a strict firewall. See docs/firewall.md.
+# [discovery]
+# bind_port = 1901
+
 [system.profiles.00000000-0000-0000-0000-000000005159]
 name = "default"
 on_startup = "power_on"

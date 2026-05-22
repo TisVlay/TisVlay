@@ -92,9 +92,9 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 // Configuration
 pub use config::{
     AutomateWhen, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID,
-    ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig, SystemProfileConfig,
-    SystemSection, TvConfig, TvProfileAssignment, UserConfig, UserProfileConfig, UserSection,
-    UserTvConfig, UserTvProfileAssignment, absolutize,
+    DiscoveryConfig, ResolvedSystemProfile, ResolvedUserProfile, SessionAction, SystemConfig,
+    SystemProfileConfig, SystemSection, TvConfig, TvProfileAssignment, UserConfig,
+    UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
 };
 #[cfg(feature = "dbus")]
 pub use config::{SystemProfileBody, UserProfileBody};

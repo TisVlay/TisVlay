@@ -902,6 +902,25 @@ impl TvConfig {
 // SystemConfig (aka Config)
 // =============================================================================
 
+/// Discovery-related daemon settings.
+///
+/// Lives under `[discovery]` in the system TOML. All fields are
+/// optional with `#[serde(default)]` so existing configs without the
+/// section continue to load unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    /// Source UDP port to bind for SSDP M-SEARCH. `None` (or omitted)
+    /// lets the OS pick an ephemeral port — the standard
+    /// SSDP-client behavior, which forces an overly broad
+    /// `accept any UDP from subnet` firewall rule because TV
+    /// replies arrive at an unpredictable destination port. Setting
+    /// a specific port (e.g. `1901`) lets a firewall accept a
+    /// single `--dport` rule. See `docs/firewall.md` for the rule
+    /// recipes per distro.
+    #[serde(default)]
+    pub bind_port: Option<u16>,
+}
+
 /// System-level configuration (daemon-owned).
 ///
 /// Contains TV definitions, vendor credentials, system profiles for daemon
@@ -918,6 +937,10 @@ pub struct SystemConfig {
     /// inherited by users who have not created their own config file.
     #[serde(default)]
     pub user: UserSection,
+
+    /// Discovery-related daemon settings (SSDP bind port, etc.).
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
 
     /// Configured TVs.
     #[serde(default)]

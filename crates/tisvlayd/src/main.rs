@@ -73,8 +73,11 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Create backend registry
-    let registry = Arc::new(create_registry());
+    // Create backend registry. Discovery settings (SSDP bind port, …)
+    // are read by reference here and don't need to outlive
+    // registration — the registry copies whatever each backend
+    // needs into its own state.
+    let registry = Arc::new(create_registry(&config.discovery));
     info!(
         vendors = ?registry.supported_vendors(),
         "Backend registry initialized"

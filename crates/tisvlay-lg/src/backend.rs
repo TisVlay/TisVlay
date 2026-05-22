@@ -787,28 +787,33 @@ impl TvConnector for LgConnector {
 
 /// LG-specific network discovery.
 #[cfg(feature = "discovery")]
-#[derive(Debug)]
-pub struct LgDiscovery;
-
-#[cfg(feature = "discovery")]
-impl LgDiscovery {
-    /// Create a new LG discovery instance.
-    pub fn new() -> Self {
-        Self
-    }
+#[derive(Debug, Default)]
+pub struct LgDiscovery {
+    /// Source UDP port for the SSDP M-SEARCH socket. `None` lets the
+    /// OS pick an ephemeral port; setting a value pins the source
+    /// port for a tractable firewall rule (see `docs/firewall.md`).
+    bind_port: Option<u16>,
 }
 
 #[cfg(feature = "discovery")]
-impl Default for LgDiscovery {
-    fn default() -> Self {
-        Self::new()
+impl LgDiscovery {
+    /// Create a new LG discovery instance with default options
+    /// (ephemeral bind port).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Pin the SSDP source UDP port. Builder.
+    pub fn with_bind_port(mut self, port: u16) -> Self {
+        self.bind_port = Some(port);
+        self
     }
 }
 
 #[cfg(feature = "discovery")]
 impl TvDiscovery for LgDiscovery {
     async fn discover(&self, timeout: std::time::Duration) -> Result<Vec<DiscoveredTv>> {
-        crate::discovery::discover_lg_tvs(timeout).await
+        crate::discovery::discover_lg_tvs(timeout, self.bind_port).await
     }
 }
 

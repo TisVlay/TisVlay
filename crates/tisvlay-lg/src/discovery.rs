@@ -7,6 +7,7 @@
 
 use futures_util::StreamExt;
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tisvlay_core::{DiscoveredTv, HardwareId, Result};
 use tisvlay_ssdp::{SearchOptions, SsdpResponse};
@@ -30,9 +31,17 @@ const LG_TARGETS: &[&str] = &[
 /// Sends an M-SEARCH burst to the SSDP multicast address and collects
 /// responses from LG WebOS TVs over `timeout`. Not finding any TVs is
 /// not an error — returns an empty list.
-pub async fn discover_lg_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
+///
+/// `bind_port`, when `Some`, pins the source UDP port — useful so a
+/// firewall can target it with a narrow rule. `None` lets the OS
+/// pick an ephemeral port (the default).
+pub async fn discover_lg_tvs(
+    timeout: Duration,
+    bind_port: Option<u16>,
+) -> Result<Vec<DiscoveredTv>> {
     tracing::debug!(
         timeout_ms = timeout.as_millis(),
+        ?bind_port,
         "Starting LG SSDP discovery"
     );
 
@@ -40,7 +49,12 @@ pub async fn discover_lg_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
     // with different UUIDs. We prefer entries with DLNA device names.
     let mut tvs: HashMap<String, DiscoveredTv> = HashMap::new();
 
-    let stream = match tisvlay_ssdp::search(LG_TARGETS, timeout, SearchOptions::default()).await {
+    let opts = SearchOptions {
+        bind_addr: bind_port.map(|p| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), p)),
+        ..SearchOptions::default()
+    };
+
+    let stream = match tisvlay_ssdp::search(LG_TARGETS, timeout, opts).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "SSDP search setup failed");

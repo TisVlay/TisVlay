@@ -13,7 +13,45 @@ The key issue: responses don't come from port 1900, so `--sport 1900` rules won'
 
 If discovery returns 0 TVs but the TV is reachable (WebSocket connection works), firewall is likely blocking UDP responses.
 
+## Recommended: pin the SSDP source port
+
+Add to `/var/lib/tisvlay/config.toml` (or `~/.config/tisvlay/config.toml` when running `tisvlayd --session`):
+
+```toml
+[discovery]
+bind_port = 1901
+```
+
+Any unused port above 1024 works. 1901 is a convention — adjacent to SSDP's well-known 1900, not assigned by IANA. Restart `tisvlayd` for the change to take effect.
+
+With a pinned `bind_port`, every distro recipe below collapses to a single-port `--dport` rule:
+
+```bash
+# Generic iptables: accept UDP destined for the pinned port
+sudo iptables -I INPUT -p udp --dport 1901 -j ACCEPT
+```
+
+```nix
+# NixOS — declarative form
+networking.firewall.allowedUDPPorts = [ 1901 ];
+```
+
+```bash
+# ufw (Ubuntu/Debian)
+sudo ufw allow 1901/udp
+
+# firewalld (Fedora)
+sudo firewall-cmd --permanent --add-port=1901/udp
+sudo firewall-cmd --reload
+```
+
+Without `bind_port`, the OS hands out an ephemeral port per scan, so no `--dport` rule can target it — the recipes below all fall back to allowing any UDP from the subnet, which is broader than necessary.
+
 ## Solutions by Distribution
+
+These accept any UDP from the local subnet — the fallback for users who have not pinned `bind_port` above. If you pinned a port, use the single-port rules instead.
+
+### NixOS
 
 ### NixOS
 
@@ -65,23 +103,24 @@ sudo iptables -A INPUT -p udp -s 192.168.1.0/24 -j ACCEPT
 
 ## Why This Is a Linux-Specific Problem
 
+The firewall issue is intrinsic to SSDP on Linux regardless of who runs the multicast — stateful firewalls treat the unicast TV reply as an unrelated new connection (see "Why conntrack Doesn't Help" below). Linux doesn't grant any process a "this is the system discovery daemon, exempt it" carve-out, which is how the other platforms hide the problem.
+
 ### Windows
-Windows has a built-in UPnP/SSDP system service ("Function Discovery") that:
-- Continuously discovers devices in the background
-- Handles all UDP multicast and firewall traversal internally
-- Registers discovered devices in Device Manager
-- Apps like LGTVCompanion just query Device Manager via `SetupDiGetClassDevs()` - no direct network access needed
+Windows ships a built-in UPnP/SSDP system service ("Function Discovery"). It runs in a privileged path with its own firewall exemption, and apps query already-discovered devices through Device Manager APIs (`SetupDiGetClassDevs()`) — never touching the network themselves. The firewall problem still exists at the protocol level; Windows just exempts the system service from it.
 
 ### Android
 Android has no firewall by default. Apps can send/receive UDP multicast freely.
 
 ### Linux
-Linux has **no equivalent system-wide UPnP service**. Options:
-- **Avahi** - mDNS/DNS-SD only (`.local` names), not SSDP/UPnP
-- **gupnp/gssdp** - Libraries for apps, but no system daemon
-- **minidlna, Rygel** - DLNA servers, not discovery clients
+Linux *has* attempted system-wide SSDP daemons of its own — every attempt either died or never covered our case:
 
-Applications must implement SSDP discovery themselves, which exposes firewall issues.
+- **Cagibi** (KDE, 2010-2017) — a system-bus SSDP cache/proxy daemon, backing `kio_network` and `kio-upnp-ms` in KDE SC 4.x. Exactly the right shape. Dropped during the KF5/Plasma 5 transition; repo now lives in [KDE's "unmaintained" group](https://invent.kde.org/unmaintained/cagibi) (last commit 2017). Plasma 6 ships nothing equivalent.
+- **dleyna** (GNOME, [gitlab.gnome.org/World/dLeyna](https://gitlab.gnome.org/World/dLeyna)) — alive (0.8.3, Sept 2023) and bus-activated on the session bus. Useful for media browsing, but its Manager filters discovered devices at the C-source level against `urn:schemas-upnp-org:device:MediaServer:` and `MediaRenderer:1` — no API surface to ask for vendor-specific URNs like `urn:lge-com:service:webostv:1`. Also not installed by default on Ubuntu, Arch, NixOS, or Fedora.
+- **GUPnP / GSSDP** (GNOME) — libraries, not a daemon. Each app does its own multicast.
+- **Avahi** — mDNS/DNS-SD only, not SSDP.
+- **freedesktop / systemd / xdg-desktop-portal** — nothing covers SSDP today. An mDNS device-discovery portal is in [open discussion](https://github.com/flatpak/xdg-desktop-portal/discussions/1365); no SSDP equivalent is proposed.
+
+So applications implement SSDP themselves, and the firewall problem surfaces as a per-app concern. `tisvlay` ships its own transport in the [`tisvlay-ssdp`](../crates/tisvlay-ssdp/) workspace crate, with `bind_port` configurable specifically so a firewall rule can target a known port (see [the section above](#recommended-pin-the-ssdp-source-port)).
 
 ### Why conntrack Doesn't Help
 
@@ -115,16 +154,11 @@ Most desktop Linux distributions ship with no firewall or permissive defaults, s
 - Hardened systems with custom firewall rules
 - Container/VM environments
 
-## Potential Upstream Improvement
+## Implementation
 
-The `ssdp-client` crate binds to an ephemeral port (OS-assigned). If it allowed binding to a **fixed port** (e.g., 1901), we could use a tighter firewall rule:
+`tisvlay` ships its own SSDP transport in the [`tisvlay-ssdp`](../crates/tisvlay-ssdp/) workspace crate — a focused implementation that supports source-port pinning (the missing knob in third-party crates like [`ssdp-client`](https://crates.io/crates/ssdp-client), which always binds an ephemeral port). The LG backend calls it from [`crates/tisvlay-lg/src/discovery.rs`](../crates/tisvlay-lg/src/discovery.rs); future vendor backends share the same transport.
 
-```bash
-# This would work IF ssdp-client bound to port 1901
-iptables -I nixos-fw -p udp --dport 1901 -j nixos-fw-accept
-```
-
-This would be more restrictive than allowing all UDP from the subnet. A PR to `ssdp-client` to add a `bind_port` parameter could enable this.
+A planned follow-up adds a passive `NOTIFY` listener so the daemon notices TV power-on events in real time (no polling) and picks up clean `ssdp:byebye` power-off signals — see [`docs/ideas/ssdp-notify-passive-listener.md`](ideas/ssdp-notify-passive-listener.md). That work doesn't change the firewall picture (it adds receive-only behavior on the same multicast group), but it reduces how often the daemon needs to send M-SEARCH bursts in steady state.
 
 ## Alternative: Skip Discovery
 
