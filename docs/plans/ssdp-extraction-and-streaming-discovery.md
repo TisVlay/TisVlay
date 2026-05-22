@@ -17,7 +17,7 @@ In:
 
 1. New workspace crate `tisvlay-ssdp` — vendor-neutral SSDP `M-SEARCH` transport with `bind_addr: Option<SocketAddr>`, published to crates.io.
 2. Refactor [crates/tisvlay-lg/src/discovery.rs](../../crates/tisvlay-lg/src/discovery.rs) to call `tisvlay_ssdp::search()` directly; remove `ssdp-client` from the workspace.
-3. Wire a `[discovery] bind_port` setting through `daemon.toml`; update [docs/firewall.md](../firewall.md) to recommend the tighter `--dport` rule.
+3. Wire a `[discovery] bind_port` setting through `daemon.toml`; rewrite [docs/firewall.md](../firewall.md) — replace the "Potential Upstream Improvement" section with a concrete config recipe + tighter `--dport` iptables rule, and reframe "Why this is a Linux-specific problem" to acknowledge that the firewall issue is intrinsic to SSDP on Linux regardless of who runs the multicast (see the new "Delegate to a system service" alternative below for the historical context this section should capture).
 4. New `Manager1.StartDiscovery` / `Manager1.StopDiscovery` D-Bus methods with session-id dedup and a server-side max-duration backstop; daemon spawns a task that loops `M-SEARCH` bursts and emits the existing `DiscoveryFound` signal incrementally.
 5. Switch [crates/tisvlay-gui/src/wizard.rs](../../crates/tisvlay-gui/src/wizard.rs) to start a session on wizard open, drain `DiscoveryFound` until close, stop on close / selection / cancel.
 
@@ -126,7 +126,7 @@ One PR, three commits. Commit boundaries follow the "scaffolding + first usage i
 1. `feat(ssdp): extract tisvlay-ssdp crate; migrate LG discovery off ssdp-client`
    New crate + LG refactor + workspace dep removal in one commit so we never have a "ssdp crate exists but nothing uses it" state.
 2. `feat(ssdp): configurable bind port for firewall-friendly discovery`
-   Config plumbing + [docs/firewall.md](../firewall.md) recipe rewrite.
+   Config plumbing + [docs/firewall.md](../firewall.md) rewrite: replace "Potential Upstream Improvement" with the new config recipe, and revise "Why this is a Linux-specific problem" to drop the implicit "missing system service is the problem" framing in favor of "the firewall issue is intrinsic to SSDP on Linux." Preserve Cagibi (2010-2017) and dleyna (DLNA-scoped) as the historical answer to "why doesn't a system service exist?" so future contributors don't re-ask.
 3. `feat(discovery): streaming Manager1.StartDiscovery + wizard integration`
    Daemon D-Bus methods + dedup + GUI wizard switch in one commit so the new D-Bus surface ships with its consumer.
 
@@ -134,6 +134,7 @@ Pre-publish prerequisites for the first commit landing on `main`: `tisvlay-ssdp`
 
 ## Alternatives considered
 
+- **Delegate to a system UPnP/SSDP service** (analogous to Windows' Function Discovery). No live, suitable-coverage option exists on Linux. KDE shipped **Cagibi** in KDE SC 4.5 (2010) — a system-bus SSDP cache/proxy daemon, *exactly* the shape we'd want — backing `kio_network` and `kio-upnp-ms`. It was dropped during the KF5/Plasma 5 transition and now lives at `invent.kde.org/unmaintained/cagibi` (last commit 2017). GNOME's **dleyna** ([gitlab.gnome.org/World/dLeyna](https://gitlab.gnome.org/World/dLeyna)) is alive (0.8.3, Sept 2023; one maintainer, ~one merge/year) but its Manager filters discovered devices at the C-source level against `urn:schemas-upnp-org:device:MediaServer:` / `MediaRenderer:1` — no API to ask for `urn:lge-com:service:webostv:1`. LG TVs *do* advertise `MediaRenderer:1`, so `dleyna-renderer` would surface them — but only with the MPRIS transport surface, not the SSAP control channel we need. Also not default-installed on Ubuntu/Arch/NixOS/Fedora, so we'd be forcing a transitive runtime dep on every user. **And the firewall problem persists regardless** — a system daemon doing the multicast hits the same stateful-firewall response-drop from a different process. The abandonment of Cagibi suggests there isn't community momentum toward a replacement either; nothing in `xdg-desktop-portal` or `systemd-resolved` covers SSDP today.
 - **Fork `ssdp-client`** instead of writing our own. Forking via `[patch.crates-io]` with a git URL works for our distro builds but `cargo install tisvlay-*` users would get unpatched code (crates.io rejects git deps in published manifests). Renaming-the-fork and publishing it under a tisvlay-namespaced name works but is fork pollution. Our usage surface is small enough (~4 call sites, one search function, four response accessors) that a focused 150-200 line crate is less long-term burden than a maintained fork.
 - **Reactive `VendorDiscovery` trait** that lets the registry coalesce all SSDP-using vendors into one `M-SEARCH` burst and dispatch responses by predicate. Tempting but premature with 1 live vendor and an `M-SEARCH` cost of one UDP datagram per vendor per poll cycle. The trait at `TvDiscovery::discover(timeout) -> Vec<DiscoveredTv>` is the right boundary today; coalescing is a future registry-internal optimization that wouldn't change the public surface.
 - **Wait for upstream PR #13** to merge in `ssdp-client`. The maintainer (`jakobhellermann`) shipped 2.1.0 in April 2025 but hasn't engaged with #13 in 13 months. Even if it merged tomorrow, it bundles IPv6 + bind-addr in one diff with quality issues (typos, `?` replaced with `.expect(…)`) that would likely need a rewrite first. Not a credible unblock path.
@@ -150,6 +151,6 @@ Pre-publish prerequisites for the first commit landing on `main`: `tisvlay-ssdp`
 Per [docs/plans/README.md](README.md):
 
 - Architecture/decisions (crate layout, why we own SSDP, trait boundary) → fold into [docs/design.md](../design.md) as a "Discovery" subsection.
-- Firewall recipe → already lives in [docs/firewall.md](../firewall.md) by design; just sweep that file's "Potential Upstream Improvement" section into a "Configuration" section.
+- Firewall recipe + "Why this is a Linux-specific problem" reframe → already in [docs/firewall.md](../firewall.md) by design as part of commit 2; no further migration needed.
 - Deferred follow-up → [docs/ideas/ssdp-notify-passive-listener.md](../ideas/ssdp-notify-passive-listener.md) already filed; cross-link from `docs/design.md`'s Discovery subsection.
 - Delete this plan file. `grep -rn 'docs/plans/ssdp-extraction-and-streaming-discovery'` to find and re-point any inbound refs.
