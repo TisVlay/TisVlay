@@ -1,0 +1,28 @@
+[package]
+name = "tisvlay-ssdp"
+description = "Vendor-neutral async SSDP M-SEARCH client with a configurable source-port bind, for firewall-friendly discovery on Linux."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords = ["ssdp", "upnp", "discovery", "multicast", "async"]
+categories = ["network-programming", "asynchronous"]
+readme = "README.md"
+publish = true
+
+[dependencies]
+tokio = { workspace = true }
+futures-core = { workspace = true }
+async-stream = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+futures-util = { workspace = true }
+
+[lints]
+workspace = true

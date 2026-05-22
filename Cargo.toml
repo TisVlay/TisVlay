@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/tisvlay-core",
+    "crates/tisvlay-ssdp",
     "crates/tisvlay-lg",
     "crates/tisvlay-mock",
     "crates/tisvlay-test",
@@ -87,10 +88,16 @@ indexmap = "2"
 # NetworkManager's connection-uuid pattern.
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
-# SSDP discovery
-ssdp-client = "2"
+# SSDP discovery (vendor-neutral transport lives in `tisvlay-ssdp`
+# below; `ssdp-client` was removed in favor of an in-workspace crate
+# that supports source-port bind for firewall-friendly discovery).
 urlencoding = "2"
 url = "2"
+
+# Async stream macro (used by `tisvlay-ssdp` to build the response
+# stream from the receive loop).
+async-stream = "0.3"
+futures-core = "0.3"
 
 # Wayland (for idle detection / greeter wake)
 wayland-client = "0.31"
@@ -101,6 +108,7 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # / publish (version is used when path is stripped from the published
 # manifest).
 tisvlay-core = { path = "crates/tisvlay-core", version = "0.1.0" }
+tisvlay-ssdp = { path = "crates/tisvlay-ssdp", version = "0.1.0" }
 tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.1.0" }
 tisvlay-mock = { path = "crates/tisvlay-mock", version = "0.1.0" }
 tisvlay-test = { path = "crates/tisvlay-test", version = "0.1.0" }
