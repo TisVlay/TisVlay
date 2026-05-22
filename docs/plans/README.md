@@ -15,4 +15,6 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None._ Recently retired: `profile-crud-v3.md` migrated into [docs/design.md](../design.md)'s "Profile catalog" subsection on merge of the v3 profile-management work.
+- [SSDP extraction + streaming discovery](ssdp-extraction-and-streaming-discovery.md) — spin out `tisvlay-ssdp`, refactor LG discovery, configurable bind port, convert pairing wizard from one-shot to streaming session.
+
+Recently retired: `profile-crud-v3.md` migrated into [docs/design.md](../design.md)'s "Profile catalog" subsection on merge of the v3 profile-management work.
