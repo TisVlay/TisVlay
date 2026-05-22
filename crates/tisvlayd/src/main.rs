@@ -76,8 +76,11 @@ async fn main() -> Result<()> {
     // Create backend registry. Discovery settings (SSDP bind port, …)
     // are read by reference here and don't need to outlive
     // registration — the registry copies whatever each backend
-    // needs into its own state.
+    // needs into its own state. The poll interval is read into a
+    // Duration here so it survives the move of `config` into
+    // TvManager below.
     let registry = Arc::new(create_registry(&config.discovery));
+    let discovery_poll_interval = config.discovery.poll_interval();
     info!(
         vendors = ?registry.supported_vendors(),
         "Backend registry initialized"
@@ -95,7 +98,11 @@ async fn main() -> Result<()> {
 
     // Create manager D-Bus service (before building connection so it's
     // registered via serve_at before the name is claimed).
-    let manager_service = ManagerService::new(shared_manager.clone(), registry.clone());
+    let manager_service = ManagerService::new(
+        shared_manager.clone(),
+        registry.clone(),
+        discovery_poll_interval,
+    );
 
     // Build D-Bus connection with all static and per-TV interfaces
     // registered before the well-known name is claimed. Tests reach

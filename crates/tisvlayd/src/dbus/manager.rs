@@ -6,16 +6,28 @@ use crate::dbus::{DaemonError, apply_reload_diff};
 use crate::json_toml::json_to_toml;
 use crate::registry::BackendRegistry;
 use crate::tv_manager::TvManager;
-use std::collections::HashMap;
+use parking_lot::Mutex;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tisvlay_core::SystemProfileBody;
-use tisvlay_core::dbus_paths::tv_path;
+use std::time::{Duration, Instant};
+use tisvlay_core::dbus_paths::{MANAGER_PATH, tv_path};
+use tisvlay_core::{DiscoveredTv, SystemProfileBody};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use tracing::{debug, info, warn};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::ObjectPath;
+
+/// Hard upper bound on any single streaming discovery session, regardless
+/// of the client's requested timeout. Backstop against a GUI that crashed
+/// after `StartDiscovery` without ever calling `StopDiscovery`.
+const STREAMING_DISCOVERY_HARD_CAP: Duration = Duration::from_secs(5 * 60);
+
+/// Per-iteration M-SEARCH timeout inside the streaming loop. Each
+/// iteration sends one burst then waits this long for responses.
+const STREAMING_SCAN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// D-Bus Manager service.
 ///
@@ -24,13 +36,45 @@ use zbus::zvariant::ObjectPath;
 pub struct ManagerService {
     manager: Arc<TvManager>,
     registry: Arc<BackendRegistry>,
+    /// Streaming discovery sessions started by
+    /// `Manager1.StartDiscovery`. Keyed by session id (UUID); the
+    /// value is a cancel-notify used by `StopDiscovery` and by the
+    /// session task's hard-cap path. Cleared by the session task on
+    /// any exit (cancel, timeout, hard cap).
+    discovery_sessions: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+    /// Per-iteration period for streaming discovery, read from
+    /// `[discovery] poll_interval_ms` at daemon startup.
+    poll_interval: Duration,
 }
 
 impl ManagerService {
     /// Create a new manager service.
-    pub fn new(manager: Arc<TvManager>, registry: Arc<BackendRegistry>) -> Self {
-        Self { manager, registry }
+    pub fn new(
+        manager: Arc<TvManager>,
+        registry: Arc<BackendRegistry>,
+        poll_interval: Duration,
+    ) -> Self {
+        Self {
+            manager,
+            registry,
+            discovery_sessions: Arc::new(Mutex::new(HashMap::new())),
+            poll_interval,
+        }
     }
+}
+
+/// Enrich a discovered TV with vendor_data["mac"] when an IP-addressed
+/// entry didn't already get one from its vendor backend. SSDP
+/// responses prime the ARP cache, so a passive kernel-neighbor lookup
+/// usually suffices.
+async fn enrich_with_arp(mut tv: DiscoveredTv) -> DiscoveredTv {
+    if !tv.vendor_data.contains_key("mac")
+        && let Ok(ip) = tv.address.parse::<std::net::IpAddr>()
+        && let Some(mac) = crate::netlink::arp_lookup(ip).await
+    {
+        tv.vendor_data.insert("mac".to_string(), mac.to_string());
+    }
+    tv
 }
 
 #[interface(name = "org.tisvlay.Manager1")]
@@ -100,19 +144,11 @@ impl ManagerService {
 
         // Discovery enrichment: for IP-addressed TVs whose vendor backend
         // didn't already provide a MAC, fill `vendor_data["mac"]` from
-        // the kernel neighbour table. SSDP responses themselves prime the
-        // ARP cache, so a passive lookup is usually enough — see
-        // `crate::netlink::arp_lookup`.
+        // the kernel neighbor table. Shared with the streaming
+        // `StartDiscovery` loop via the `enrich_with_arp` helper.
         let mut enriched = Vec::with_capacity(tvs.len());
-        for mut tv in tvs {
-            if !tv.vendor_data.contains_key("mac") {
-                if let Ok(ip) = tv.address.parse::<std::net::IpAddr>() {
-                    if let Some(mac) = crate::netlink::arp_lookup(ip).await {
-                        tv.vendor_data.insert("mac".to_string(), mac.to_string());
-                    }
-                }
-            }
-            enriched.push(tv);
+        for tv in tvs {
+            enriched.push(enrich_with_arp(tv).await);
         }
 
         let results = enriched
@@ -151,6 +187,85 @@ impl ManagerService {
         }
 
         Ok(results)
+    }
+
+    /// Start a streaming discovery session.
+    ///
+    /// Spawns a daemon-side task that loops M-SEARCH bursts at the
+    /// configured `[discovery] poll_interval_ms` (default 8 s) and
+    /// emits `DiscoveryFound` for each newly-seen TV. The session
+    /// runs until `StopDiscovery(session_id)`, until `timeout_ms`
+    /// elapses, or until the 5-minute server-side hard cap fires
+    /// (whichever first). `timeout_ms = 0` means "until stopped or
+    /// hard cap" — the natural choice for a pairing wizard that
+    /// stays open while the user walks across the room to power on
+    /// the TV.
+    ///
+    /// Within one session the same `(vendor, id)` pair is emitted
+    /// only once — daemon-side dedup. Across overlapping sessions
+    /// the same TV may be emitted by each session; client-side
+    /// dedup is the consumer's responsibility.
+    ///
+    /// Returns the `session_id` the caller must pass to
+    /// `StopDiscovery`.
+    #[cfg(feature = "discovery")]
+    async fn start_discovery(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        timeout_ms: u32,
+    ) -> Result<String, DaemonError> {
+        let session_id = Uuid::new_v4().to_string();
+        let cancel = Arc::new(Notify::new());
+
+        self.discovery_sessions
+            .lock()
+            .insert(session_id.clone(), cancel.clone());
+
+        info!(
+            session_id = %session_id,
+            timeout_ms,
+            poll_interval_ms = self.poll_interval.as_millis(),
+            "D-Bus: StartDiscovery",
+        );
+
+        let registry = self.registry.clone();
+        let sessions = self.discovery_sessions.clone();
+        let conn = connection.clone();
+        let sid = session_id.clone();
+        let poll_interval = self.poll_interval;
+        let soft_deadline = if timeout_ms > 0 {
+            Some(Instant::now() + Duration::from_millis(timeout_ms as u64))
+        } else {
+            None
+        };
+
+        tokio::spawn(async move {
+            run_discovery_session(
+                sid,
+                conn,
+                registry,
+                sessions,
+                cancel,
+                poll_interval,
+                soft_deadline,
+            )
+            .await;
+        });
+
+        Ok(session_id)
+    }
+
+    /// Stop a streaming discovery session.
+    ///
+    /// Idempotent — an unknown `session_id` is not an error (the
+    /// session may have already hit its deadline or hard cap).
+    #[cfg(feature = "discovery")]
+    async fn stop_discovery(&self, session_id: String) -> Result<(), DaemonError> {
+        debug!(session_id = %session_id, "D-Bus: StopDiscovery");
+        if let Some(cancel) = self.discovery_sessions.lock().remove(&session_id) {
+            cancel.notify_one();
+        }
+        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -625,4 +740,109 @@ impl ManagerService {
 /// just garbage.
 fn parse_profile_uuid(value: &str) -> Result<Uuid, DaemonError> {
     Uuid::parse_str(value).map_err(|_| DaemonError::ProfileNotFound(value.to_string()))
+}
+
+/// Drive one streaming `Manager1.StartDiscovery` session: M-SEARCH
+/// burst → emit `DiscoveryFound` for each newly-seen TV → wait for
+/// next burst or cancel, repeat. Exits on any of: caller-issued
+/// `StopDiscovery` (notify), caller-supplied soft deadline, the
+/// `STREAMING_DISCOVERY_HARD_CAP` server-side backstop, or a
+/// stop-emitting-and-fail mode that hits more than a handful of
+/// consecutive iteration errors. Always cleans its session-map
+/// entry on the way out.
+#[cfg(feature = "discovery")]
+async fn run_discovery_session(
+    session_id: String,
+    connection: zbus::Connection,
+    registry: Arc<BackendRegistry>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+    cancel: Arc<Notify>,
+    poll_interval: Duration,
+    soft_deadline: Option<Instant>,
+) {
+    let started = Instant::now();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
+    loop {
+        if started.elapsed() >= STREAMING_DISCOVERY_HARD_CAP {
+            info!(session_id = %session_id, "Discovery session hit hard cap");
+            break;
+        }
+        if let Some(deadline) = soft_deadline
+            && Instant::now() >= deadline
+        {
+            debug!(session_id = %session_id, "Discovery session reached soft deadline");
+            break;
+        }
+
+        // One iteration: discover_all blocks for STREAMING_SCAN_TIMEOUT,
+        // but cancel during the scan unblocks immediately — we abandon
+        // any in-flight per-response work for this iteration. The
+        // daemon stops emitting once we exit, so abandoned partial
+        // responses for *this* session are not surfaced anyway.
+        let scan = registry.discover_all(STREAMING_SCAN_TIMEOUT);
+        let tvs = tokio::select! {
+            biased;
+            _ = cancel.notified() => {
+                debug!(session_id = %session_id, "Discovery session cancelled mid-scan");
+                break;
+            }
+            res = scan => match res {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(session_id = %session_id, error = %e, "Discovery iteration failed");
+                    Vec::new()
+                }
+            },
+        };
+
+        for tv in tvs {
+            let key = (tv.vendor.clone(), tv.id.clone());
+            if !seen.insert(key) {
+                continue;
+            }
+            let tv = enrich_with_arp(tv).await;
+            let hardware_id = tv.hardware_id.clone().unwrap_or_default().to_dbus_tuple();
+            let Ok(emitter) = SignalEmitter::new(&connection, MANAGER_PATH) else {
+                warn!("Could not build SignalEmitter for streaming DiscoveryFound");
+                continue;
+            };
+            if let Err(e) = ManagerService::discovery_found(
+                &emitter,
+                &tv.id,
+                &tv.name,
+                &tv.address,
+                (&hardware_id.0, &hardware_id.1, &hardware_id.2),
+                &tv.vendor,
+                tv.vendor_data,
+            )
+            .await
+            {
+                warn!(error = %e, "Streaming DiscoveryFound emit failed");
+            }
+        }
+
+        // No additional sleep between scans — the scan's own timeout
+        // is the iteration period. `poll_interval` is therefore the
+        // *minimum* time between successive M-SEARCH bursts; the
+        // current default (8 s) gives ~8 s between bursts (the scan
+        // takes ≤ STREAMING_SCAN_TIMEOUT = 5 s, then the next iteration
+        // sleeps the remainder if poll_interval > scan timeout).
+        let remaining = poll_interval.saturating_sub(STREAMING_SCAN_TIMEOUT);
+        if !remaining.is_zero() {
+            tokio::select! {
+                biased;
+                _ = cancel.notified() => {
+                    debug!(session_id = %session_id, "Discovery session cancelled between scans");
+                    break;
+                }
+                _ = tokio::time::sleep(remaining) => {}
+            }
+        }
+    }
+
+    // Remove our session-map entry whether or not StopDiscovery already
+    // did so — keeps the map from leaking on deadline/hard-cap exits.
+    sessions.lock().remove(&session_id);
+    info!(session_id = %session_id, "Discovery session ended");
 }

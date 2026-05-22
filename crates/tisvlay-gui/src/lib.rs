@@ -58,8 +58,9 @@ use profiles::{
 use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
-    WizardEntries, WizardEntry, WizardGen, fetch_and_publish_schema, publish_wizard_entries,
-    reset_wizard, run_wizard_discovery, run_wizard_pair, run_wizard_re_pair,
+    WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen, cancel_wizard_discovery,
+    fetch_and_publish_schema, publish_wizard_entries, reset_wizard, run_wizard_discovery,
+    run_wizard_pair, run_wizard_re_pair,
 };
 
 use schema_form::{
@@ -566,6 +567,13 @@ pub fn run() -> Result<()> {
     // wizard. See `wizard::WizardGen`.
     let wizard_gen: WizardGen = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
+    // Cancel handle for the wizard's streaming discovery task. The
+    // request_pair handler installs a fresh oneshot::Sender here
+    // before spawning `run_wizard_discovery`; cancel paths
+    // (`reset_wizard`, step 1→2 transition) take it and signal so
+    // the daemon-side session stops promptly.
+    let wizard_cancel: WizardDiscoveryCancel = Arc::new(parking_lot::Mutex::new(None));
+
     // Profiles-pane editor state. Owns the three-layer body cache +
     // per-kind generation counters for stale-callback protection.
     // Shared between the state-watcher (refresh on
@@ -583,6 +591,7 @@ pub fn run() -> Result<()> {
         reconcilers.clone(),
         wizard_entries.clone(),
         wizard_gen.clone(),
+        wizard_cancel.clone(),
         editor.clone(),
     );
 
@@ -613,6 +622,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn register_callbacks(
     app: &AppWindow,
     daemon: Arc<DaemonClient>,
@@ -620,6 +630,7 @@ fn register_callbacks(
     reconcilers: Reconcilers,
     wizard_entries: WizardEntries,
     wizard_gen: WizardGen,
+    wizard_cancel: WizardDiscoveryCancel,
     editor: ProfileEditor,
 ) {
     // Slint global handles. Bound once for the registration phase;
@@ -1381,16 +1392,20 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     let we = wizard_entries.clone();
     let wg = wizard_gen.clone();
+    let wc = wizard_cancel.clone();
     daemon_global.on_request_pair(move || {
         let d = d.clone();
         let we = we.clone();
         let wg = wg.clone();
+        let wc = wc.clone();
         let app_weak = app_weak.clone();
         // Reset wizard state on the Slint side first so the user sees
-        // the wizard immediately, then kick off discovery.
+        // the wizard immediately, then kick off discovery. `reset_wizard`
+        // also cancels any in-flight discovery task from a prior
+        // session via the wizard_cancel sidecar.
         if let Some(app) = app_weak.upgrade() {
             let wizard = app.global::<PairingWizard>();
-            reset_wizard(&app, &wg);
+            reset_wizard(&app, &wg, &wc);
             wizard.set_active(true);
             wizard.set_step(1);
             wizard.set_discovery_streaming(true);
@@ -1399,8 +1414,13 @@ fn register_callbacks(
         // gets cleared by `reset_wizard`, but the sidecar lives
         // outside Slint and must be reset in lockstep.
         we.lock().clear();
+        // Install a fresh cancel handle before spawning so the cancel
+        // path (or the next request_pair) can stop us.
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        *wc.lock() = Some(cancel_tx);
+        let wg_task = wg.clone();
         tokio::spawn(async move {
-            run_wizard_discovery(d, we, app_weak).await;
+            run_wizard_discovery(d, we, wg_task, cancel_rx, app_weak).await;
         });
     });
 
@@ -1412,6 +1432,7 @@ fn register_callbacks(
     let d = daemon.clone();
     let app_weak = app.as_weak();
     let wg = wizard_gen.clone();
+    let wc = wizard_cancel.clone();
     daemon_global.on_request_re_pair(move |tv_id| {
         let d = d.clone();
         let wg = wg.clone();
@@ -1448,7 +1469,7 @@ fn register_callbacks(
         // properties so the live pair UI shows the right labels.
         // The gen bump also invalidates any in-flight pair task
         // from a prior session.
-        reset_wizard(&app, &wg);
+        reset_wizard(&app, &wg, &wc);
         let wizard = app.global::<PairingWizard>();
         let vendor_id = tv.vendor.clone();
         let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
@@ -1479,6 +1500,7 @@ fn register_callbacks(
     let d = daemon.clone();
     let app_weak = app.as_weak();
     let wg = wizard_gen.clone();
+    let wc = wizard_cancel.clone();
     wizard.on_cancel(move || {
         info!("wizard: cancel fired");
         let Some(app) = app_weak.upgrade() else {
@@ -1490,7 +1512,7 @@ fn register_callbacks(
         // close without waiting on the daemon round-trip. The gen
         // bump inside `reset_wizard` makes any in-flight pair
         // task's late callbacks no-op.
-        reset_wizard(&app, &wg);
+        reset_wizard(&app, &wg, &wc);
         if tv_id.is_empty() {
             return;
         }
@@ -1518,6 +1540,7 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     let we = wizard_entries.clone();
     let wg = wizard_gen.clone();
+    let wc = wizard_cancel.clone();
     wizard.on_step_next(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -1558,6 +1581,12 @@ fn register_callbacks(
                 if wizard.get_system_profile().is_empty() {
                     wizard.set_system_profile("default".into());
                 }
+                // User picked a TV — stop the streaming discovery
+                // session so the daemon stops scanning while the user
+                // configures. The wizard stays open (no reset_wizard),
+                // so we only cancel the discovery side.
+                cancel_wizard_discovery(&wc);
+
                 // Clear stale schema rows from a prior session so the
                 // form starts blank if the fetch is slow.
                 wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
@@ -1655,9 +1684,10 @@ fn register_callbacks(
 
     let app_weak = app.as_weak();
     let wg = wizard_gen.clone();
+    let wc = wizard_cancel.clone();
     wizard.on_finish(move || {
         if let Some(app) = app_weak.upgrade() {
-            reset_wizard(&app, &wg);
+            reset_wizard(&app, &wg, &wc);
         }
     });
 
@@ -1941,6 +1971,7 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     let we = wizard_entries.clone();
     let d = daemon.clone();
+    let wc = wizard_cancel.clone();
     wizard.on_manual_add(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -1997,6 +2028,9 @@ fn register_callbacks(
         if wizard.get_system_profile().is_empty() {
             wizard.set_system_profile("default".into());
         }
+        // Leaving step 1 — stop the streaming discovery session so
+        // the daemon stops scanning while the user configures.
+        cancel_wizard_discovery(&wc);
         wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
         wizard.set_schema_valid(false);
         wizard.set_step(2);

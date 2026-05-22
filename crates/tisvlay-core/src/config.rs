@@ -919,6 +919,23 @@ pub struct DiscoveryConfig {
     /// recipes per distro.
     #[serde(default)]
     pub bind_port: Option<u16>,
+
+    /// Per-iteration timeout for the streaming discovery loop used by
+    /// `Manager1.StartDiscovery`. Each iteration sends one M-SEARCH
+    /// burst, waits for responses up to this duration, then starts the
+    /// next iteration. Smaller values are more responsive to a TV
+    /// being powered on mid-session; larger values reduce
+    /// steady-state multicast traffic. `None` uses the default of
+    /// 8000 ms.
+    #[serde(default)]
+    pub poll_interval_ms: Option<u64>,
+}
+
+impl DiscoveryConfig {
+    /// Effective polling interval for streaming discovery iterations.
+    pub fn poll_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.poll_interval_ms.unwrap_or(8000))
+    }
 }
 
 /// System-level configuration (daemon-owned).

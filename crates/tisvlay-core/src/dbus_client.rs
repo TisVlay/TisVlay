@@ -147,6 +147,27 @@ trait TisvlayManager {
         )>,
     >;
 
+    /// Start a streaming discovery session.
+    ///
+    /// Daemon-side: spawns a task that loops M-SEARCH bursts at the
+    /// configured `[discovery] poll_interval_ms` (default 8 s) and
+    /// emits `DiscoveryFound` for each newly-seen TV. Each TV is
+    /// emitted at most once per session (daemon-side dedup).
+    ///
+    /// `timeout_ms = 0` runs until `StopDiscovery` or the 5-minute
+    /// server-side hard cap, whichever first — typical for a pairing
+    /// wizard that stays open while the user walks to the TV.
+    /// Non-zero is a soft deadline; the session ends sooner of stop /
+    /// soft deadline / hard cap.
+    ///
+    /// Returns the session id the caller passes to `StopDiscovery`.
+    fn start_discovery(&self, timeout_ms: u32) -> zbus::Result<String>;
+
+    /// Stop a streaming discovery session.
+    ///
+    /// Idempotent — an unknown session id is not an error.
+    fn stop_discovery(&self, session_id: &str) -> zbus::Result<()>;
+
     /// Get supported vendors.
     /// Returns: [(vendor_id, vendor_name)]
     fn get_supported_vendors(&self) -> zbus::Result<Vec<(String, String)>>;
@@ -1107,6 +1128,27 @@ impl DaemonClient {
                 )
             })
             .collect())
+    }
+
+    /// Start a streaming discovery session.
+    ///
+    /// Pair with [`discovery_found_stream`](Self::discovery_found_stream)
+    /// to drain results. `timeout_ms = 0` runs until
+    /// [`stop_discovery`](Self::stop_discovery) is called (subject to
+    /// the daemon's 5-minute hard cap).
+    pub async fn start_discovery(&self, timeout_ms: u32) -> Result<String> {
+        self.manager
+            .start_discovery(timeout_ms)
+            .await
+            .context("Failed to start discovery session")
+    }
+
+    /// Stop a streaming discovery session. Idempotent.
+    pub async fn stop_discovery(&self, session_id: &str) -> Result<()> {
+        self.manager
+            .stop_discovery(session_id)
+            .await
+            .context("Failed to stop discovery session")
     }
 
     /// Get supported vendors.

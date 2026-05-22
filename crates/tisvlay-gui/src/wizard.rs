@@ -67,6 +67,29 @@ pub(crate) type WizardEntries = Arc<Mutex<Vec<WizardEntry>>>;
 /// quickly" race.
 pub(crate) type WizardGen = Arc<AtomicU64>;
 
+/// Cancel handle for the wizard's streaming discovery task.
+///
+/// The spawn site stores a fresh `oneshot::Sender` here right before
+/// `tokio::spawn(run_wizard_discovery(…))` — overwriting any prior
+/// sender, which drops it and cancels the prior task. The task
+/// `select!`s on the matching `Receiver`, so either an explicit
+/// `send(())` or a `drop(Sender)` wakes it. Cancel handlers (and
+/// `reset_wizard`) call [`cancel_wizard_discovery`] to take + send
+/// the sender explicitly.
+pub(crate) type WizardDiscoveryCancel = Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>;
+
+/// Cancel any in-flight wizard discovery session.
+///
+/// Takes the cancel sender out of the sidecar (so subsequent calls
+/// are no-ops) and `send(())`s it. Send failure (receiver already
+/// dropped) is normal — the task may have exited via stream-end or
+/// gen-mismatch in the same tick.
+pub(crate) fn cancel_wizard_discovery(cancel: &WizardDiscoveryCancel) {
+    if let Some(tx) = cancel.lock().take() {
+        let _ = tx.send(());
+    }
+}
+
 /// Push `entries` into the wizard's `discovered` Slint model.
 /// Caller has already locked + mutated `entries`; this just rebuilds
 /// the visible view from the updated source-of-truth.
@@ -77,11 +100,18 @@ pub(crate) fn publish_wizard_entries(wizard: &PairingWizard<'_>, entries: &[Wiza
 
 /// Clear all wizard state and close the wizard. Also bumps the
 /// generation counter so any in-flight pair / re-pair task's
-/// callbacks become no-ops for this session.
-pub(crate) fn reset_wizard(app: &AppWindow, wizard_gen: &WizardGen) {
+/// callbacks become no-ops for this session, and cancels any
+/// in-flight streaming discovery task so the daemon stops scanning
+/// immediately.
+pub(crate) fn reset_wizard(
+    app: &AppWindow,
+    wizard_gen: &WizardGen,
+    wizard_cancel: &WizardDiscoveryCancel,
+) {
     // Bump first so any callback that fires *during* the reset
     // sequence below also sees the drift.
     wizard_gen.fetch_add(1, Ordering::SeqCst);
+    cancel_wizard_discovery(wizard_cancel);
     let wizard = app.global::<PairingWizard>();
     wizard.set_active(false);
     wizard.set_step(1);
@@ -109,55 +139,124 @@ pub(crate) fn reset_wizard(app: &AppWindow, wizard_gen: &WizardGen) {
     wizard.set_schema_valid(false);
 }
 
-/// Drive a single discovery scan and stream results into the wizard's
-/// `wizard_discovered` model. Subscribes to `Manager1.DiscoveryFound`
-/// before invoking `discover_tvs` so signals emitted during the call
-/// are captured. v1: the daemon emits in a burst right before the
-/// RPC returns, but the subscription pattern is forward-compatible.
+/// Run a streaming discovery session against the daemon.
+///
+/// Subscribes to `Manager1.DiscoveryFound` first, then calls
+/// `Manager1.StartDiscovery(0)` so the daemon loops M-SEARCH bursts
+/// at its configured `poll_interval` (default 8 s) until we stop it.
+/// Each newly-seen TV is appended to `wizard_entries` and the Slint
+/// model is refreshed.
+///
+/// Exits on any of:
+/// - `cancel_rx` resolving (explicit cancel via
+///   [`cancel_wizard_discovery`] or sidecar replacement on a new
+///   session)
+/// - the `wizard_gen` counter drifting from the value captured at
+///   start (defense in depth against late callbacks bleeding into a
+///   reopened wizard)
+/// - the signal stream ending (daemon-side hard cap or daemon
+///   shutdown)
+///
+/// Always calls `Manager1.StopDiscovery` on exit, even if cancel
+/// happened mid-iteration, so the daemon promptly stops scanning.
 pub(crate) async fn run_wizard_discovery(
     daemon: Arc<DaemonClient>,
     wizard_entries: WizardEntries,
+    wizard_gen: WizardGen,
+    mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
     app_weak: slint::Weak<AppWindow>,
 ) {
-    // v1: the daemon currently emits DiscoveryFound signals in a burst
-    // right before discover_tvs returns, so subscribing here adds no
-    // streaming benefit yet — we just take the synchronous RPC return.
-    // When the daemon refactors to per-backend streaming, swap this
-    // for a discovery_found_stream() drainer (the helper exists on
-    // DaemonClient; the wire shape is forward-compatible).
-    match daemon.discover_tvs(5000).await {
-        Ok(tvs) => {
-            let entries: Vec<WizardEntry> = tvs
-                .into_iter()
-                .map(
-                    |(id, name, address, hw_id, vendor, vendor_data)| WizardEntry {
-                        id,
-                        name,
-                        vendor,
-                        address,
-                        hw_model: hw_id.model.unwrap_or_default(),
-                        vendor_data,
-                    },
-                )
-                .collect();
-            // Replace the Rust-owned source-of-truth before Slint sees
-            // anything — the Slint view is derived from it.
-            *wizard_entries.lock() = entries.clone();
-            on_ui(&app_weak, move |app| {
-                let wizard = app.global::<PairingWizard>();
-                publish_wizard_entries(&wizard, &entries);
-                wizard.set_discovery_streaming(false);
-            });
-        }
+    use futures_util::StreamExt;
+
+    let gen_at_start = wizard_gen.load(Ordering::SeqCst);
+
+    // Subscribe BEFORE start_discovery to avoid losing the first burst.
+    let signal_stream = match daemon.discovery_found_stream().await {
+        Ok(s) => s,
         Err(e) => {
-            let msg = format!("{e}");
-            on_ui(&app_weak, move |app| {
-                let wizard = app.global::<PairingWizard>();
-                wizard.set_discovery_streaming(false);
-                wizard.set_discovery_error(SharedString::from(msg));
-            });
+            publish_discovery_error(&app_weak, e);
+            return;
+        }
+    };
+
+    // `timeout_ms = 0` ⇒ until-stop-or-hard-cap semantics. The hard
+    // cap is the daemon's safety net for a crashed GUI.
+    let session_id = match daemon.start_discovery(0).await {
+        Ok(sid) => sid,
+        Err(e) => {
+            publish_discovery_error(&app_weak, e);
+            return;
+        }
+    };
+
+    tokio::pin!(signal_stream);
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut cancel_rx => break,
+            maybe_item = signal_stream.next() => {
+                let Some((id, name, address, hw_id, vendor, vendor_data)) = maybe_item else {
+                    // Stream ended — daemon shutdown or signal-router dropped.
+                    break;
+                };
+                if wizard_gen.load(Ordering::SeqCst) != gen_at_start {
+                    break;
+                }
+                let entry = WizardEntry {
+                    id,
+                    name,
+                    vendor,
+                    address,
+                    hw_model: hw_id.model.unwrap_or_default(),
+                    vendor_data,
+                };
+                // Daemon dedups within a single session; across
+                // overlapping sessions (rare — wizard typically only
+                // has one open) the same TV could arrive again, so
+                // dedup on (vendor, id) here too.
+                let mut entries = wizard_entries.lock();
+                if entries
+                    .iter()
+                    .any(|e| e.vendor == entry.vendor && e.id == entry.id)
+                {
+                    continue;
+                }
+                entries.push(entry);
+                let snapshot = entries.clone();
+                drop(entries);
+                on_ui(&app_weak, move |app| {
+                    let wizard = app.global::<PairingWizard>();
+                    publish_wizard_entries(&wizard, &snapshot);
+                });
+            }
         }
     }
+
+    // Tell the daemon to stop scanning. Best-effort — log on error.
+    if let Err(e) = daemon.stop_discovery(&session_id).await {
+        warn!(session_id = %session_id, error = %e, "stop_discovery failed");
+    }
+
+    // Turn off the spinner unless the wizard has already been reset
+    // (the new session owns the spinner state now).
+    on_ui(&app_weak, move |app| {
+        if wizard_gen.load(Ordering::SeqCst) != gen_at_start {
+            return;
+        }
+        let wizard = app.global::<PairingWizard>();
+        wizard.set_discovery_streaming(false);
+    });
+}
+
+/// Surface a discovery setup error in the wizard's error banner.
+fn publish_discovery_error(app_weak: &slint::Weak<AppWindow>, e: impl std::fmt::Display) {
+    let msg = format!("{e}");
+    on_ui(app_weak, move |app| {
+        let wizard = app.global::<PairingWizard>();
+        wizard.set_discovery_streaming(false);
+        wizard.set_discovery_error(SharedString::from(msg));
+    });
 }
 
 /// Fetch the vendor's pairing-form schema and publish autofilled
