@@ -98,9 +98,7 @@ pub struct ProfileTvRefRaw {
 /// trip. `display_name` is the synthesized form shown in read-only
 /// surfaces: localized "default" for the reserved-default UUID,
 /// suffixed with the default-indicator glyph. See
-/// [`display_profile_name`] for the synthesis rules and
-/// [`docs/plans/profile-default-indicator.md`] for the design
-/// rationale.
+/// [`display_profile_name`] for the synthesis rules.
 #[derive(Debug, Clone)]
 pub struct ProfileRowRaw {
     pub uuid: SharedString,
@@ -457,9 +455,11 @@ where
 ///
 /// The glyph here is **identity-decoupled presentation**: wire
 /// storage stays the bare name; only display strings carry the
-/// indicator. See `docs/plans/profile-default-indicator.md` §
-/// "Wire vs display split" for the reasoning, including why the
-/// indicator is **not** baked into `body.name` on disk.
+/// indicator. Baking the glyph into `body.name` on disk would
+/// break the daemon's reserved-default predicate (`body.name ==
+/// "default"`), surprise CLI / sysadmin consumers reading the
+/// on-disk TOML, and tangle the i18n catalog (gettext keys aren't
+/// emoji-aware). Synthesis at this layer keeps the wire clean.
 pub(crate) fn display_profile_name(uuid: Uuid, name: &str, default_uuid: Uuid) -> String {
     if uuid == default_uuid {
         format!("{}\u{00A0}\u{2713}", gettext(name))
