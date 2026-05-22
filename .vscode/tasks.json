@@ -64,6 +64,12 @@
                 "reveal": "always",
                 "panel": "shared"
             }
+        },
+        {
+            "label": "all: restart",
+            "dependsOn": ["all: stop", "all: start"],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
         }
     ]
 }
