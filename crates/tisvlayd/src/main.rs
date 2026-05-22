@@ -35,6 +35,16 @@ struct Args {
     /// ~/.config/tisvlay/config.toml when --session is used without --config.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
+
+    /// Pin the SSDP source UDP port for firewall-friendly discovery.
+    ///
+    /// Overrides `[discovery] bind_port` in the config file. Useful for
+    /// declaratively-managed deployments (NixOS, container images)
+    /// that want to set the port at the deployment layer without
+    /// making the daemon's writable config read-only.
+    /// See docs/firewall.md.
+    #[arg(long, value_name = "PORT")]
+    bind_port: Option<u16>,
 }
 
 #[tokio::main]
@@ -62,7 +72,7 @@ async fn main() -> Result<()> {
     info!(path = %config_path.display(), "Using config file");
 
     // Load configuration
-    let config = match SystemConfig::load_from(&config_path) {
+    let mut config = match SystemConfig::load_from(&config_path) {
         Ok(config) => {
             info!(tvs = config.tv.len(), "Loaded configuration");
             config
@@ -72,6 +82,16 @@ async fn main() -> Result<()> {
             SystemConfig::default()
         }
     };
+
+    // CLI overrides on top of the loaded config. Bind-port lives here
+    // (rather than as a `settings`-rendered TOML key on a Nix store
+    // path) so deployment-time firewall configuration doesn't force
+    // the config file read-only — the pairing wizard still writes
+    // credentials to the same file.
+    if let Some(port) = args.bind_port {
+        info!(bind_port = port, "CLI --bind-port overrides config");
+        config.discovery.bind_port = Some(port);
+    }
 
     // Create backend registry. Discovery settings (SSDP bind port, …)
     // are read by reference here and don't need to outlive
