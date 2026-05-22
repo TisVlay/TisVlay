@@ -2,6 +2,29 @@
 
 Spin SSDP transport out of `ssdp-client` into a new vendor-neutral `tisvlay-ssdp` crate with a configurable bind port (firewall-friendly), refactor `tisvlay-lg` discovery onto it, and convert the pairing wizard's discovery flow from a 5-second one-shot to a daemon-driven streaming session so users can walk over to a powered-off TV, turn it on, and walk back without racing a timeout.
 
+## Status
+
+**Implementation complete on `feat/gui-tweaks-2`; pending merge + first publish of `tisvlay-ssdp` 0.1.0 to crates.io.**
+
+Planned commits (all landed):
+
+1. ✅ `feat(ssdp): extract tisvlay-ssdp crate; migrate LG discovery off ssdp-client` — new workspace crate (~250 LOC incl. unit tests), LG refactor uses single shared M-SEARCH burst, `ssdp-client` dep dropped from workspace.
+2. ✅ `feat(ssdp): configurable bind port for firewall-friendly discovery` — `[discovery] bind_port` plumbed through `DaemonConfig` → `LgDiscovery` → `tisvlay_ssdp::search`; [docs/firewall.md](../firewall.md) rewritten with the new config recipe and reframed Linux-system-service section. **Field-verified** by the project owner with a tight `--dport`-only NixOS rule.
+3. ✅ `feat(discovery): streaming Manager1.StartDiscovery + wizard integration` — new daemon-side session task with `(vendor, id)` HashSet dedup; wizard switched to streaming with `WizardDiscoveryCancel` oneshot sidecar, cleanup hooked at cancel / step 1→2 / manual-add / on-finish. `poll_interval` default 8 s, hard cap 5 min.
+
+Emergent follow-ons (rode along with the same PR; not in original scope):
+
+4. ✅ `style(gui): stabilize StepDiscover layout to remove first-TV-found jump` — merged the empty / populated branches under a single fixed-min-height region so the wizard's height stays constant as TVs arrive (previously the manual-entry panel was pushed off-screen at min window sizes).
+5. ✅ `style(gui): unify wizard StepDiscover ScanLine across empty/populated` — single ScanLine at the bottom of the region rather than two state-specific ones with different sizes.
+6. ✅ `feat(nix): bindPort + openFirewall via new tisvlayd --bind-port CLI flag` — declarative NixOS knob for the bind port that doesn't trade away config-file writability. The CLI flag is useful outside Nix too (container images, ad-hoc dev runs).
+7. ✅ `style(gui): size StepDiscover list to 2.5 DiscoveryRow heights for scroll hint` — 140 px min-height so a half-clipped third row signals "scroll me" when 3+ TVs are found.
+
+Pre-merge checklist:
+
+- [ ] `nixos-rebuild switch` smoke test with `services.tisvlay = { bindPort = 1901; openFirewall = true; }` — confirm `systemctl cat tisvlayd` shows `--bind-port 1901` and the firewall rule is in place.
+- [ ] Visual eyeball of StepDiscover at 0 / 1 / 2 / 3+ TVs with the wizard at minimum window size to confirm the 2.5-row scroll hint reads as intended.
+- [ ] `cargo publish -p tisvlay-ssdp` from a clean tree (first publish — needs crates.io account verification, doc gen check).
+
 ## Motivation
 
 Two problems compound each other in today's wizard:
@@ -142,15 +165,17 @@ Pre-publish prerequisites for the first commit landing on `main`: `tisvlay-ssdp`
 
 ## Open questions
 
-- Default `poll_interval` — 8s vs 5s vs 10s? Bias toward 8s as the first guess; tune after field-testing the wizard UX.
-- Should `Manager1.StartDiscovery` accept a `vendor_filter: Vec<String>` so a future "look only for Sony TVs" UI path is reachable? Could add later additively without breaking the v1 signature. Defer.
-- Hard server-side session cap — 5 minutes or 10? Pick whatever balances "user goes to make coffee" against "wedged session never cleans up." 5 minutes feels right; revisit if anyone reports timeouts.
+- **Resolved (shipped at 8 s):** default `poll_interval` is `DiscoveryConfig::poll_interval()` returning 8 s when `poll_interval_ms` is unset. Tune via config if field feedback says it feels sluggish or noisy.
+- **Resolved (shipped at 5 min):** hard server-side session cap is `STREAMING_DISCOVERY_HARD_CAP = 5 * 60 s`. Revisit only if a real user reports their wizard session being cut short.
+- **Still deferred:** `Manager1.StartDiscovery` does not accept a `vendor_filter: Vec<String>`. Additive; can be added without breaking the v1 signature when a second SSDP-using vendor arrives and a "search only X" UI path is justified.
+- **Emerged during NixOS work:** the `--bind-port` CLI flag overrides `[discovery] bind_port` from the config file. Future deployment knobs (e.g. `--poll-interval-ms`) could follow the same pattern, but none are wired today — add per-flag on demand to avoid speculative CLI bloat.
 
 ## Migration on merge
 
 Per [docs/plans/README.md](README.md):
 
-- Architecture/decisions (crate layout, why we own SSDP, trait boundary) → fold into [docs/design.md](../design.md) as a "Discovery" subsection.
-- Firewall recipe + "Why this is a Linux-specific problem" reframe → already in [docs/firewall.md](../firewall.md) by design as part of commit 2; no further migration needed.
+- Architecture/decisions (crate layout, why we own SSDP, trait boundary, the `--bind-port`-overrides-config CLI/Nix pattern) → fold into [docs/design.md](../design.md) as a "Discovery" subsection.
+- Firewall recipe + "Why this is a Linux-specific problem" reframe → already in [docs/firewall.md](../firewall.md) by design as part of commit 2; no further migration needed. *Possible add:* a one-line cross-reference to the NixOS module's `bindPort`/`openFirewall` options now that they exist as the declarative wrapper.
 - Deferred follow-up → [docs/ideas/ssdp-notify-passive-listener.md](../ideas/ssdp-notify-passive-listener.md) already filed; cross-link from `docs/design.md`'s Discovery subsection.
+- GUI follow-ons (commits 4, 5, 7) are pure layout polish — no architectural content to migrate. Git history is the archive.
 - Delete this plan file. `grep -rn 'docs/plans/ssdp-extraction-and-streaming-discovery'` to find and re-point any inbound refs.
