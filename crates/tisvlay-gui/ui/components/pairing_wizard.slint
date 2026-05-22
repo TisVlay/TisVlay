@@ -317,58 +317,63 @@ component StepDiscover {
             min-height: 160px;
             vertical-stretch: 1;
 
-            if root.discovered.length > 0: VerticalLayout {
+            // Stack [content, ScanLine] so the ScanLine sits at the
+            // bottom of the region in both empty and populated states —
+            // a stable scan indicator across the empty → found
+            // transition rather than two separate ScanLines with
+            // different sizes and positions.
+            VerticalLayout {
                 width: 100%;
-                ScrollView {
-                    width: 100%;
+
+                if root.discovered.length > 0: VerticalLayout {
                     vertical-stretch: 1;
-                    VerticalLayout {
+                    width: 100%;
+                    ScrollView {
                         width: 100%;
-                        for tv[i] in root.discovered: DiscoveryRow {
-                            tv: tv;
-                            selected: i == root.selected-index;
-                            clicked => { root.selection-changed(i); }
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            width: 100%;
+                            for tv[i] in root.discovered: DiscoveryRow {
+                                tv: tv;
+                                selected: i == root.selected-index;
+                                clicked => { root.selection-changed(i); }
+                            }
                         }
                     }
                 }
+
+                if root.discovered.length == 0: VerticalLayout {
+                    vertical-stretch: 1;
+                    width: 100%;
+                    alignment: center;
+                    spacing: Design.gap-tight;
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: root.streaming ? @tr("Searching your network…") : @tr("No TVs found yet");
+                            color: Theme.text;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: @tr("LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.");
+                            color: Theme.text-dim;
+                            font-size: Design.font-helper;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
                 if root.streaming: HorizontalLayout {
                     padding-left: 12px;
                     padding-right: 12px;
                     padding-top: 6px;
                     padding-bottom: 8px;
                     ScanLine {}
-                }
-            }
-
-            if root.discovered.length == 0: VerticalLayout {
-                width: 100%;
-                alignment: center;
-                spacing: Design.gap-tight;
-                HorizontalLayout {
-                    alignment: center;
-                    Text {
-                        text: root.streaming ? @tr("Searching your network…") : @tr("No TVs found yet");
-                        color: Theme.text;
-                        font-size: 14px;
-                        font-weight: 600;
-                    }
-                }
-                HorizontalLayout {
-                    alignment: center;
-                    Text {
-                        text: @tr("LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.");
-                        color: Theme.text-dim;
-                        font-size: Design.font-helper;
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-                }
-                if root.streaming: HorizontalLayout {
-                    alignment: center;
-                    padding-top: Design.gap-stack;
-                    ScanLine {
-                        width: 240px;
-                    }
                 }
             }
         }
