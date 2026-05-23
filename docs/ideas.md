@@ -31,6 +31,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - ["Open logs" affordance](ideas/open-logs-affordance.md)
 - [Re-enable Slint `accessibility` feature once upstream blockers clear](ideas/re-enable-slint-accessibility.md)
 - [GUI test coverage fan-out (Layer-C end-to-end tests)](ideas/gui-test-coverage-fanout.md)
+- [Theme-icon upgrade for the default-profile indicator](ideas/profile-default-emblem-theme-icon.md)
 
 ## Build & CI
 

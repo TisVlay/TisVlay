@@ -74,23 +74,19 @@ component ProfileListRow inherits Rectangle {
             alignment: center;
             spacing: 2px;
 
-            // Name row + "(default)" badge alongside.
-            HorizontalLayout {
-                spacing: Design.gap-tight;
-                alignment: start;
-                Text {
-                    text: root.entry.name;
-                    color: root.selected ? Theme.row-selected-text : Theme.text;
-                    font-size: Design.font-body;
-                    font-weight: root.selected ? 600 : 500;
-                    overflow: elide;
-                }
-                if root.entry.is-default: Text {
-                    text: @tr("(default)");
-                    color: Theme.text-dim;
-                    font-size: Design.font-mini;
-                    vertical-alignment: center;
-                }
+            // Name row. The default-profile indicator (CHECK MARK
+            // glyph appended at row-build time) lives inside
+            // `display-name`, so no per-Slint-element conditional —
+            // every row reads its label from the same field.
+            Text {
+                text: root.entry.display-name;
+                color: root.selected ? Theme.row-selected-text : Theme.text;
+                font-size: Design.font-body;
+                font-weight: root.selected ? 600 : 500;
+                overflow: elide;
+                accessible-label: root.entry.is-default
+                    ? @tr("{}, default profile", root.entry.name)
+                    : root.entry.name;
             }
 
             // Status row: dot + label. 3-state classification:
@@ -342,10 +338,10 @@ component ProfileList inherits Rectangle {
 // Reset is only rendered for locally-set rows — inheriting fields
 // can't be "reset" because they already inherit.
 //
-// The `*` overlay on `entry.current-value` for enum rows is the visual
-// inherit cue AND the workaround for `ComboBox.selected(v)` no-op when
-// picked == current. Number rows skip the overlay; the gutter + reset
-// glyph carry the inherit signal alone.
+// The inherit overlay on `entry.current-value` for enum rows is the
+// visual inherit cue AND the workaround for `ComboBox.selected(v)`
+// no-op when picked == current. Number rows skip the overlay; the
+// gutter + reset glyph carry the inherit signal alone.
 
 component ProfileFieldRowEnum inherits Rectangle {
     in property <ProfileFieldEntry> entry;
@@ -513,7 +509,15 @@ component ProfileFieldRowNumber inherits Rectangle {
 // =============================================================================
 
 component ProfileDetailHeader inherits Rectangle {
+    /// Bare name as the daemon stores it. Used by the rename-pencil
+    /// `LineEdit` prefill (the daemon validates the name; the
+    /// default-indicator glyph is not a legal name character, so the
+    /// buffer must start from the bare value).
     in property <string> name;
+    /// Localized, indicator-suffixed display form. Used by the
+    /// read-only Text in view mode. Synthesized by
+    /// `state.rs::display_profile_name`.
+    in property <string> display-name;
     in property <ProfileKind> kind;
     in property <[ProfileTvRef]> referenced-by;
     /// True iff at least one referencing TV is currently automated.
@@ -636,11 +640,17 @@ component ProfileDetailHeader inherits Rectangle {
                     horizontal-stretch: 1;
                     alignment: center;
                     if !root.editing-name: Text {
-                        text: root.name;
+                        // `display-name` carries the localized "default"
+                        // form + default-indicator glyph; `name` is the
+                        // bare wire-truth that feeds the rename buffer.
+                        text: root.display-name;
                         color: Theme.text;
                         font-size: Design.font-title-3;
                         font-weight: 700;
                         overflow: elide;
+                        accessible-label: root.can-delete
+                            ? root.name
+                            : @tr("{}, default profile", root.name);
                     }
                     // Wrap the field in a FocusScope so Escape (which
                     // the inner LineEdit lets bubble out — only
@@ -674,11 +684,20 @@ component ProfileDetailHeader inherits Rectangle {
                     }
                 }
 
+                // Rename + Delete share the same enabled predicate:
+                // the reserved-default profile rejects body mutations
+                // that change its name (the daemon's
+                // `UpdateSystemProfile` / `UpdateUserProfile`
+                // validators force `body.name == "default"` for the
+                // default UUID) AND rejects Delete outright. Greying
+                // each button keeps the affordance discoverable
+                // without dispatching a call the daemon will reject.
                 if !root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
                         source: Icons.edit;
                         accessible-label: @tr("Rename profile");
+                        enabled: root.can-delete;
                         clicked => { root.begin-rename(); }
                     }
                 }
@@ -712,9 +731,18 @@ component ProfileDetailHeader inherits Rectangle {
             // Used-by row. Plain Text spans + middot separators
             // matching the TVs-pane descriptor row — chips would
             // run ~5 px taller (border + padding) and push the
-            // header noticeably above the TVs-pane header. TV
-            // names tint to `info-text` and carry a per-name
-            // TouchArea so the click-through to each TV survives.
+            // header noticeably above the TVs-pane header. Each
+            // TV's `LinkText` tint matches the 3-state classifi-
+            // cation the master-list row dot/label uses for the
+            // row-level aggregate: `success-text` when the TV is
+            // currently automated (Active), `info-text` when only
+            // referenced (Assigned). The Unassigned state can't
+            // appear here because `references_of` only returns
+            // referencing TVs by construction. Per-TV
+            // `accessible-label-override` carries the same status
+            // word so screen readers announce "{name}, automated"
+            // alongside the visual tint — WCAG 1.4.1 mitigation
+            // for the color-only state encoding.
             // Always renders so the header height is stable across
             // assigned + unassigned states (matches TVs-pane row 2
             // which falls back to `—` when the descriptor values
@@ -747,6 +775,12 @@ component ProfileDetailHeader inherits Rectangle {
                         }
                         LinkText {
                             text: tv.name;
+                            text-color: tv.automated
+                                ? Theme.success-text
+                                : Theme.info-text;
+                            accessible-label-override: tv.automated
+                                ? @tr("{}, automated", tv.name)
+                                : "";
                             clicked => { Profiles.open-tv(tv.uuid); }
                         }
                     }
@@ -780,7 +814,11 @@ component ProfileDetailHeader inherits Rectangle {
 }
 
 component ProfileDetail inherits Rectangle {
+    /// Bare name (forwarded into the header's rename buffer).
     in property <string> name;
+    /// Localized + indicator-suffixed display form (forwarded into
+    /// the header's read-only Text).
+    in property <string> display-name;
     in property <ProfileKind> kind;
     in property <[ProfileTvRef]> referenced-by;
     in property <bool> active;
@@ -798,6 +836,7 @@ component ProfileDetail inherits Rectangle {
 
         ProfileDetailHeader {
             name: root.name;
+            display-name: root.display-name;
             kind: root.kind;
             referenced-by: root.referenced-by;
             active: root.active;
@@ -1096,6 +1135,7 @@ export component ProfilesPane {
                     width: 100%;
                     height: 100%;
                     name: Profiles.selected-row.name;
+                    display-name: Profiles.selected-row.display-name;
                     kind: Profiles.selected-kind;
                     referenced-by: Profiles.selected-row.referenced-by;
                     active: Profiles.selected-row.active;

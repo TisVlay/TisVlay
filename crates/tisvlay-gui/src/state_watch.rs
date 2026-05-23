@@ -15,8 +15,8 @@ use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe
 use crate::profiles::{self, ProfileEditor};
 use crate::state::{ProfileRowRaw, StateSnapshot, fetch_state};
 use crate::{
-    AppWindow, PairingWizard, ProfileRow, ProfileTvRef, Profiles, Reconcilers, TvViewModel,
-    VendorInfoRow, VendorOption, on_ui,
+    AppWindow, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles, Reconcilers,
+    TvViewModel, VendorInfoRow, VendorOption, on_ui,
 };
 
 /// Boot the state-watch loop. One-shot startup: do the initial state
@@ -469,10 +469,55 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
         .into_iter()
         .map(profile_row_into_slint)
         .collect();
+
+    // Re-resolve `Profiles.selected-row` from the freshly-built
+    // master-list rows. The click handlers in `profiles_pane.slint`
+    // write `selected-row` as a value-copy at click time (for
+    // same-frame detail-pane materialization); without this re-
+    // resolve any field the detail header binds — Used-by chips +
+    // their per-TV automated tint, `active` aggregate,
+    // `referenced_by_summary`, `display-name` after rename — would
+    // stale until the user picked the row again. By looking up
+    // matching `selected-uuid` in the new rows here, every refresh
+    // tick keeps the snapshot in sync. If the selection went away
+    // (profile deleted by another client), the lookup misses and
+    // we push a blank row so the detail-pane gate flips back to
+    // the empty state — mirrors the per-removal handler in
+    // `profiles::clear_selection_in_slint`.
+    let selected_uuid = profiles.get_selected_uuid();
+    if !selected_uuid.is_empty() {
+        let lookup = match profiles.get_selected_kind() {
+            ProfileKind::System => system_rows
+                .iter()
+                .find(|r| r.uuid == selected_uuid)
+                .cloned(),
+            ProfileKind::User => user_rows.iter().find(|r| r.uuid == selected_uuid).cloned(),
+            ProfileKind::None => None,
+        };
+        profiles.set_selected_row(lookup.unwrap_or_else(blank_profile_row));
+    }
+
     sync_vec_model(&profiles.get_system(), system_rows, |m| {
         profiles.set_system(m)
     });
     sync_vec_model(&profiles.get_user(), user_rows, |m| profiles.set_user(m));
+}
+
+/// Empty `ProfileRow` value used when the previously-selected
+/// profile has been removed from the catalog. The detail-pane
+/// gate in `ProfilesPane` reads `selected-row.uuid != ""`, so a
+/// blank-uuid push flips the gate back to "Select a profile".
+/// Mirrored from the inline literal in `profiles::clear_selection_in_slint`.
+fn blank_profile_row() -> ProfileRow {
+    ProfileRow {
+        uuid: SharedString::default(),
+        name: SharedString::default(),
+        display_name: SharedString::default(),
+        is_default: false,
+        referenced_by: ModelRc::new(VecModel::<ProfileTvRef>::default()),
+        referenced_by_summary: SharedString::default(),
+        active: false,
+    }
 }
 
 /// Wrap one Rust-side profile row into the Slint-generated `ProfileRow`
@@ -486,11 +531,13 @@ fn profile_row_into_slint(raw: ProfileRowRaw) -> ProfileRow {
         .map(|r| ProfileTvRef {
             uuid: r.uuid,
             name: r.name,
+            automated: r.automated,
         })
         .collect();
     ProfileRow {
         uuid: raw.uuid,
         name: raw.name,
+        display_name: raw.display_name,
         is_default: raw.is_default,
         referenced_by: ModelRc::new(VecModel::from(refs)),
         referenced_by_summary: raw.referenced_by_summary,

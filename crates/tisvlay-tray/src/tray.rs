@@ -607,7 +607,23 @@ fn build_disconnected_tv_menu(
     items
 }
 
-/// Build the combined profile submenu with user and system profile radio groups.
+/// Build the combined profile submenu with user and system profile
+/// radio groups.
+///
+/// Profile identity rides as UUID on the wire; display rides as the
+/// friendly name. `tv.{user,system}_profile_uuid` is matched against
+/// the catalog's `(uuid, name)` pairs by UUID — that gives both the
+/// radio-group `selected` index AND the friendly name for the submenu
+/// label. Click dispatch sends the UUID, matching what
+/// `Tv1.SystemProfile` and `Session1.SetTvUserProfile` validate
+/// against; sending a name would round-trip to `InvalidArgs`.
+///
+/// Stale-state guard: if the assigned UUID isn't in the catalog
+/// (selection drift between fetches, race with a profile delete),
+/// the submenu label falls back to the literal UUID rather than
+/// silently relabeling — keeps the drift visible. `selected`
+/// defaults to 0 in that case so the radio group renders something
+/// rather than nothing.
 fn build_profile_submenu(
     tv: &CachedTvState,
     cmd_tx: &mpsc::UnboundedSender<TrayCommand>,
@@ -616,39 +632,45 @@ fn build_profile_submenu(
 
     // User profile sub-submenu
     if !tv.available_user_profiles.is_empty() {
-        let current = tv.user_profile.as_deref().unwrap_or("default");
+        let assigned_uuid = tv.user_profile_uuid.as_deref().unwrap_or("");
         let selected = tv
             .available_user_profiles
             .iter()
-            .position(|name| name == current)
+            .position(|(uuid, _)| uuid == assigned_uuid)
             .unwrap_or(0);
+        let current_label = tv
+            .available_user_profiles
+            .iter()
+            .find(|(uuid, _)| uuid == assigned_uuid)
+            .map(|(_, name)| name.as_str())
+            .unwrap_or(assigned_uuid);
 
         let options: Vec<RadioItem> = tv
             .available_user_profiles
             .iter()
-            .map(|name| RadioItem {
+            .map(|(_, name)| RadioItem {
                 label: name.clone(),
                 ..Default::default()
             })
             .collect();
 
         let tx = cmd_tx.clone();
-        let profiles: Vec<String> = tv.available_user_profiles.clone();
+        let profiles: Vec<(String, String)> = tv.available_user_profiles.clone();
         let tv_id = tv.id.clone();
 
         submenu.push(
             SubMenu {
-                label: format!("User: {}", current),
+                label: format!("User: {}", current_label),
                 icon_name: "im-user".into(),
                 submenu: vec![RadioGroup {
                     selected,
                     options,
                     select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
-                        if let Some(profile_name) = profiles.get(idx) {
-                            debug!(tv_id = %tv_id, profile = %profile_name, "Switching user profile");
+                        if let Some((profile_uuid, profile_name)) = profiles.get(idx) {
+                            debug!(tv_id = %tv_id, profile = %profile_name, uuid = %profile_uuid, "Switching user profile");
                             let _ = tx.send(TrayCommand::SetUserProfile(
                                 tv_id.clone(),
-                                profile_name.clone(),
+                                profile_uuid.clone(),
                             ));
                         }
                     }),
@@ -662,39 +684,45 @@ fn build_profile_submenu(
 
     // System profile sub-submenu
     if !tv.available_system_profiles.is_empty() {
-        let current = tv.system_profile.as_str();
+        let assigned_uuid = tv.system_profile_uuid.as_str();
         let selected = tv
             .available_system_profiles
             .iter()
-            .position(|name| name == current)
+            .position(|(uuid, _)| uuid == assigned_uuid)
             .unwrap_or(0);
+        let current_label = tv
+            .available_system_profiles
+            .iter()
+            .find(|(uuid, _)| uuid == assigned_uuid)
+            .map(|(_, name)| name.as_str())
+            .unwrap_or(assigned_uuid);
 
         let options: Vec<RadioItem> = tv
             .available_system_profiles
             .iter()
-            .map(|name| RadioItem {
+            .map(|(_, name)| RadioItem {
                 label: name.clone(),
                 ..Default::default()
             })
             .collect();
 
         let tx = cmd_tx.clone();
-        let profiles: Vec<String> = tv.available_system_profiles.clone();
+        let profiles: Vec<(String, String)> = tv.available_system_profiles.clone();
         let tv_id = tv.id.clone();
 
         submenu.push(
             SubMenu {
-                label: format!("System: {}", current),
+                label: format!("System: {}", current_label),
                 icon_name: "system-users".into(),
                 submenu: vec![RadioGroup {
                     selected,
                     options,
                     select: Box::new(move |_: &mut TisvlayTray, idx: usize| {
-                        if let Some(profile_name) = profiles.get(idx) {
-                            debug!(tv_id = %tv_id, profile = %profile_name, "Switching system profile");
+                        if let Some((profile_uuid, profile_name)) = profiles.get(idx) {
+                            debug!(tv_id = %tv_id, profile = %profile_name, uuid = %profile_uuid, "Switching system profile");
                             let _ = tx.send(TrayCommand::SetSystemProfile(
                                 tv_id.clone(),
-                                profile_name.clone(),
+                                profile_uuid.clone(),
                             ));
                         }
                     }),

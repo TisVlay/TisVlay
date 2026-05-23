@@ -287,6 +287,15 @@ stop-all:
     -pkill -f 'target/debug/tisvlay-session'
     -pkill -f 'target/debug/tisvlay-tray'
     -pkill -f 'target/debug/tisvlay-gui'
+    # The SIGTERM above returns immediately, but the daemon takes
+    # a beat to release its `org.tisvlay.Daemon` bus name. A fresh
+    # `tisvlayd` started by `all: restart` would race against that
+    # release. Block until all four binaries are actually gone so
+    # the VS Code task chain `[all: stop, all: start]` with
+    # `dependsOrder: sequence` does the right thing on its own. 5 s
+    # timeout (`|| true`) so a stuck process can't wedge the recipe
+    # indefinitely.
+    @timeout 5 sh -c 'while pgrep -f "target/debug/(tisvlayd|tisvlay-(session|tray|gui))" > /dev/null; do sleep 0.1; done' || true
     @echo "All stopped"
 
 # Show CLI status (manual smoke test)
