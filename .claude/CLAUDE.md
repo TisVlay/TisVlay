@@ -320,17 +320,25 @@ just package-deb  # build the .deb package
 
 ## Internationalization (i18n)
 
-`tisvlay-gui` is wired for translation from day one via gettext, even
-though only English ships at v1. Architecture:
+Both `tisvlay-gui` and `tisvlay-tray` are wired for translation from
+day one via gettext, even though only English ships at v1. Each crate
+owns its own gettext domain (`tisvlay-gui`, `tisvlay-tray`) and `.pot`
+template; per-locale catalogs live under
+`crates/<crate>/lang/<locale>/LC_MESSAGES/<crate>.po`. Architecture:
 
-- **Slint strings** wrap literals with `@tr("…")` in every `.slint` file.
-  The `slint = { features = ["gettext"] }` feature flag activates Slint's
-  built-in gettext lookup; `slint::init_translations!(…)` in `main.rs`
+- **Slint strings** (GUI only) wrap literals with `@tr("…")` in every
+  `.slint` file. The `slint = { features = ["gettext"] }` feature flag
+  activates Slint's built-in gettext lookup;
+  `slint::init_translations!(…)` in `crates/tisvlay-gui/src/lib.rs`
   registers the `lang/<locale>/LC_MESSAGES/tisvlay-gui.mo` directory.
-- **Rust user-facing strings** (errors that surface to the UI, schema
-  field labels pushed from vendor backends, etc.) wrap literals with
-  `gettextrs::gettext("…")`. They share the same gettext catalog as
-  Slint's `@tr` — one `.mo` per locale serves both layers.
+- **Rust user-facing strings** (GUI errors, schema field labels pushed
+  from vendor backends, tray menu / tooltip / status / startup-error
+  text) wrap literals with `gettextrs::gettext("…")`. In the GUI they
+  share the same gettext catalog as Slint's `@tr` — one `.mo` per
+  locale serves both layers. The tray uses the same gettext-rs API
+  against its own catalog; init lives at the top of
+  `crates/tisvlay-tray/src/main.rs` (explicit `bindtextdomain` +
+  `textdomain` against `CARGO_MANIFEST_DIR/lang`).
 - Vendor backend crates (`tisvlay-lg`, future `tisvlay-samsung`) own
   their own user-facing strings and will eventually ship per-vendor
   `.mo` files.
@@ -338,26 +346,34 @@ though only English ships at v1. Architecture:
 ### Workflow
 
 ```bash
-just i18n-extract   # rebuild crates/tisvlay-gui/lang/tisvlay-gui.pot
-just i18n-update    # merge the refreshed .pot into existing per-locale .po
+just i18n-extract        # rebuild both crates' .pot templates
+just i18n-extract-gui    # GUI only (Rust + Slint passes)
+just i18n-extract-tray   # tray only (Rust pass)
+just i18n-update         # merge refreshed .pot into existing .po files
 ```
 
 Run `i18n-extract` whenever you add or change user-facing strings;
 review the resulting `.pot` diff and commit. Translators add a new
-locale via `msginit -i tisvlay-gui.pot -l fr_FR -o
-crates/tisvlay-gui/lang/fr/LC_MESSAGES/tisvlay-gui.po` and translate
-the `msgstr ""` lines. `cargo build` regenerates `.mo` files at compile
-time; missing `.mo` falls back to literal source strings (English).
+locale via e.g. `msginit -i crates/tisvlay-gui/lang/tisvlay-gui.pot
+-l fr_FR -o crates/tisvlay-gui/lang/fr/LC_MESSAGES/tisvlay-gui.po`
+(or the equivalent under `tisvlay-tray/lang/`) and translate the
+`msgstr ""` lines. `cargo build` regenerates `.mo` files at compile
+time — `slint_build` for the GUI, `crates/tisvlay-tray/build.rs` for
+the tray; missing `.mo` falls back to literal source strings (English).
 
 ### What to translate vs not
 
-- **Translate**: button labels, pane headers, status text, helper
-  copy, error messages.
+- **Translate**: button labels, pane headers, status text, menu items,
+  tooltip copy, helper copy, error messages.
 - **Don't translate**: brand names (`"TisVlay"`, vendor names like
   `"LG WebOS"`), machine identifiers (`"awaiting_tv"`, `"lg"`,
-  `"system-shutdown"`), Unicode glyphs (`"●"`, `"·"`, `"—"`, `"↻"`),
-  technical placeholders (`"192.168.1.100"`, `"AA:BB:CC:DD:EE:FF"`),
-  font-family CSS values, file paths, URLs.
+  `"system-shutdown"`), Unicode glyphs (`"●"`, `"·"`, `"—"`, `"↻"`,
+  `"►"`), technical placeholders (`"192.168.1.100"`,
+  `"AA:BB:CC:DD:EE:FF"`), font-family CSS values, file paths, URLs.
+- **Brand inside composite templates**: when "TisVlay" is bracketed
+  with translatable status (`"TisVlay [daemon offline]"`,
+  `"TisVlay [{0}/{1}]"`), wrap the whole template — translators pass
+  the brand through verbatim.
 
 `gettext` (xgettext, msgfmt, msgmerge, msginit) and
 `slint-tr-extractor` are provided by the Nix dev shell.

@@ -27,6 +27,19 @@ clap = { workspace = true }
 # the GUI's About pane can report the tray's online status, version,
 # and resolved config path symmetrically with the daemon and session.
 zbus = { workspace = true }
+# Localization for the tray's menu / tooltip / status / error strings.
+# Pinned to the same version the GUI uses so a single `.po`/`.pot`
+# workflow covers both crates. `build.rs` next to this Cargo.toml
+# compiles per-locale `.po` files to `.mo` so dev runs out of the
+# source tree pick them up; installed builds fall back to
+# `/usr/share/locale/<lang>/LC_MESSAGES/tisvlay-tray.mo`.
+gettext-rs = "0.7"
 
 [lints]
 workspace = true
+
+# `cargo machete` flags `gettext-rs` as unused because the Rust
+# source imports it via the `gettextrs::` alias (Cargo crate names
+# use `-`, the Rust alias drops it; machete doesn't reconcile).
+[package.metadata.cargo-machete]
+ignored = ["gettext-rs"]
