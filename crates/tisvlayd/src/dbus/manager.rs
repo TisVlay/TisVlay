@@ -130,10 +130,11 @@ async fn enrich_manual_entry_inner(
 
     // (d) Capability-aware family gate. Vendors declare which IP
     //     families they support via `Capabilities::IPV4`/`IPV6`
-    //     (see docs/plans/ipv6-support.md). Inputs whose family the
-    //     vendor hasn't claimed collapse to empty — symmetric with
-    //     the wizard's form-build-time gating, so a v6 address typed
-    //     against a v4-only vendor never gets a no-op probe.
+    //     (see docs/discovery.md § "Per-vendor transport family").
+    //     Inputs whose family the vendor hasn't claimed collapse to
+    //     empty — symmetric with the wizard's form-build-time gating,
+    //     so a v6 address typed against a v4-only vendor never gets a
+    //     no-op probe.
     let caps = registered.backend.capabilities();
     let family_supported = match ip {
         std::net::IpAddr::V4(_) => caps.contains(tisvlay_core::Capabilities::IPV4),
@@ -397,12 +398,12 @@ impl ManagerService {
     /// schema-form autofill engine uniformly with the SSDP path.
     ///
     /// Always returns `Ok`. Empty map means "nothing to autofill" —
-    /// invalid IP, IPv6 input, out-of-subnet, unknown vendor, or
-    /// the ARP chain found nothing. The wizard treats empty as a
-    /// soft outcome (field stays blank with a "MAC not detected"
-    /// helper) rather than a hard failure. IPv4 only in v1; see
-    /// `docs/plans/ipv6-support.md` for the v6
-    /// follow-up scope.
+    /// invalid IP, vendor-unsupported family (per the vendor's
+    /// `Capabilities::IPV4`/`IPV6` declaration), out-of-subnet,
+    /// unknown vendor, or the ARP/NDP chain found nothing. The
+    /// wizard treats empty as a soft outcome (field stays blank
+    /// with a "MAC not detected" helper) rather than a hard
+    /// failure.
     async fn enrich_manual_entry(
         &self,
         vendor: String,

@@ -181,7 +181,10 @@ Note: `power_on()` is not a `TvConnection` method — power-on is handled at the
 
 ### Capabilities
 
-Bitflags in `crates/tisvlay-core/src/capabilities.rs`: `POWER`, `SCREEN`, `VOLUME`, `MUTE`, `INPUT`, `BACKLIGHT`, `WOL`, `DISCOVERY`, `ALL`.
+Bitflags in `crates/tisvlay-core/src/capabilities.rs`. Two axes:
+
+- **Feature bits** — `POWER`, `SCREEN`, `VOLUME`, `MUTE`, `INPUT`, `BACKLIGHT`, `WOL`, `DISCOVERY`. Folded into `ALL` for convenience.
+- **Transport-family bits** — `IPV4`, `IPV6`. Per-vendor declaration of which IP families the vendor's transport has been verified against. Deliberately *not* part of `ALL`, so vendors that use `ALL` for the feature set don't silently auto-claim a transport family they haven't tested. Consumed by the GUI wizard (form-build-time field gating + placeholder selection) and the daemon (`EnrichManualEntry` family gate). Wake-on-LAN availability is *derived* (`WOL && IPV4`-locally-reachable), not stored as a separate bit — stored derivations are how flag sets rot. Architectural rationale + the rejected alternatives are in [docs/discovery.md § Per-vendor transport family](discovery.md#per-vendor-transport-family).
 
 ---
 

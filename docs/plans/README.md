@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [Full IPv6 support](ipv6-support.md) — three-phase PR: Phase 1 lifts the 3 daemon-side IPv4 gates + adds `Capabilities::IPV4|IPV6`; Phase 2 extends `tisvlay-ssdp` to dual-stack + GUI display widening (gated on LG packet-capture validation); Phase 3 NixOS module + docs migration. Per-vendor family declaration resolved to the `Capabilities` bitflag shape per cross-project survey (LuCI / HA / rclone precedent).
+_None at present._
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:

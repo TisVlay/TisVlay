@@ -522,10 +522,10 @@ pub trait TvConnector: Send + Sync {
     /// transport-layer datagram or open a TCP connection that
     /// triggers the kernel's neighbour resolution on the way out.
     ///
-    /// IP family agnostic by signature; today's daemon callers only
-    /// invoke this with IPv4. An IPv6 follow-up (see
-    /// `docs/plans/ipv6-support.md`) widens the
-    /// daemon's input gate without reshaping this trait.
+    /// IP family agnostic by signature — the daemon's family gate
+    /// uses the vendor's `Capabilities::IPV4` / `IPV6` bits to decide
+    /// which family inputs reach the probe, so vendors can declare
+    /// their transport's coverage without reshaping the trait.
     async fn probe_arp_cache(&self, _ip: IpAddr) -> Result<()> {
         Ok(())
     }

@@ -2,7 +2,7 @@
 
 `tisvlay` ships its own SSDP transport rather than depending on third-party crates or delegating to a Linux system service. The discovery story has three RPC entry points (`DiscoverTvs`, `StartDiscovery`/`StopDiscovery`, `EnrichManualEntry`) sharing one vendor-neutral transport crate and one vendor-owned active-probe hook.
 
-This doc covers the architectural decisions worth re-reading. For firewall-rule recipes that pair with the bind-port story see [docs/firewall.md](firewall.md). For deferred follow-up work see [docs/ideas/ssdp-notify-passive-listener.md](ideas/ssdp-notify-passive-listener.md) (passive NOTIFY listener), [docs/plans/ipv6-support.md](../plans/ipv6-support.md) (IPv6 support), and [docs/ideas/pair-time-mac-capture.md](ideas/pair-time-mac-capture.md) (MAC capture at pair-success time).
+This doc covers the architectural decisions worth re-reading. For firewall-rule recipes that pair with the bind-port story see [docs/firewall.md](firewall.md). For deferred follow-up work see [docs/ideas/ssdp-notify-passive-listener.md](ideas/ssdp-notify-passive-listener.md) (passive NOTIFY listener) and [docs/ideas/pair-time-mac-capture.md](ideas/pair-time-mac-capture.md) (MAC capture at pair-success time).
 
 ## Why we own the SSDP transport
 
@@ -33,12 +33,30 @@ Per-session task state lives in `ManagerService::discovery_sessions: Arc<Mutex<H
 
 `Manager1.EnrichManualEntry(vendor, address) → a{ss}` autofills the pairing wizard's manual-entry path the same way SSDP-discovered entries are autofilled. Symmetric in return shape with `DiscoveryFound`'s `vendor_data` column, so the wizard's `autofill_schema` engine handles both paths uniformly. The chain:
 
-1. **IPv4-only correctness gate.** IPv6 (including `::ffff:x.x.x.x`) returns an empty map — today's `arp_lookup` and `probe_arp_cache` only handle v4. The gate widens to IPv4|IPv6 once those grow v6 support; see [docs/plans/ipv6-support.md](../plans/ipv6-support.md).
-2. **Passive netlink read.** Free; hits for users who've previously pinged or browsed the TV (any prior IP traffic primes the ARP cache as a side effect).
-3. **Vendor-supplied active probe** (`TvConnector::probe_arp_cache` — see next subsection). Connector decides the mechanism (LG sends one UDP byte to the SSAP wss port); the kernel resolves ARP as a side effect of `send_to`.
+1. **Per-vendor family gate.** The daemon checks `IpAddr::is_ipv4` / `is_ipv6` against the vendor's `Capabilities::IPV4` / `Capabilities::IPV6` bits (see [§ Per-vendor transport family](#per-vendor-transport-family) below). Inputs whose family the vendor hasn't claimed return an empty map — symmetric with the wizard's form-build-time gating, so a v6 address typed against a v4-only vendor never gets a no-op probe.
+2. **Passive netlink read.** Free; hits for users who've previously pinged or browsed the TV (any prior IP traffic primes the ARP/NDP cache as a side effect). Family-agnostic — `rtnetlink`'s `IpVersion` enum + `RouteMessageBuilder<Ipv6Addr>` cover the v6 path the same way as v4.
+3. **Vendor-supplied active probe** (`TvConnector::probe_arp_cache` — see next subsection). Connector decides the mechanism (LG sends one UDP byte to the SSAP wss port); the kernel resolves ARP/NDP as a side effect of `send_to`. Trait signature is `ip: IpAddr` so family-flips don't reshape the contract.
 4. **Poll netlink with deadline** — 30 ms intervals, 500 ms budget. Outer `tokio::time::timeout` caps the whole chain at 600 ms regardless.
 
-Always returns `Ok(...)`. Empty map means "nothing to autofill" — invalid IP, IPv6, unknown vendor, or the ARP chain missed. The wizard treats empty as a soft outcome (field stays blank with a manual-entry-specific helper) rather than a hard failure. A follow-up at [docs/ideas/pair-time-mac-capture.md](ideas/pair-time-mac-capture.md) covers the belt-and-suspenders path: snoop ARP at successful-pair time, write the MAC back to the saved config, so users who skipped the field at form time still get WoL after first pair.
+Always returns `Ok(...)`. Empty map means "nothing to autofill" — invalid IP, vendor-unsupported family, unknown vendor, or the ARP/NDP chain missed. The wizard treats empty as a soft outcome (field stays blank with a manual-entry-specific helper) rather than a hard failure. A follow-up at [docs/ideas/pair-time-mac-capture.md](ideas/pair-time-mac-capture.md) covers the belt-and-suspenders path: snoop ARP/NDP at successful-pair time, write the MAC back to the saved config, so users who skipped the field at form time still get WoL after first pair.
+
+## Per-vendor transport family
+
+Vendors declare which IP families their transport supports via two bits on the `Capabilities` bitflag: `IPV4` and `IPV6`. Deliberately *not* part of `Capabilities::ALL` so vendors that use `ALL` for the feature set don't silently auto-claim a transport family they haven't verified. LG WebOS today declares both (SSAP WebSocket works identically over v4 and v6 — verified end-to-end, including the rustls cert chain and the SSAP register/subscribe handshake).
+
+Three layers consume these bits:
+
+- **The wizard** reads `capabilities()` at form-build time via `Manager1.GetVendorCapabilities(vendor) -> as` (sibling RPC to `GetSupportedVendors`, kept additive so the `a(ss)` shape of the latter stays stable). The manual-entry IP field's placeholder switches to the RFC 3849 documentation prefix `2001:db8::1` for v6-only vendors; v4-or-dual vendors keep the familiar `192.168.1.100` example.
+- **The daemon** uses them at the `EnrichManualEntry` family gate (above) and would use them to gate any future transport-specific code paths.
+- **WoL availability is *derived*, not stored** — it's `WOL && IPV4`-locally-reachable. WoL is L2-by-design (IEEE magic packet over UDP broadcast); there is no IETF v6 equivalent and consumer NIC firmware effectively never supports "wake on v6 multicast." On a v6-only TV that shares an L2 segment with the daemon, today's v4 broadcast WoL still works because the host has a v4 address on that segment — verified on a SLAAC-ULA-only TV configuration. The cross-VLAN / VPN-default-route topology that would actually require lifted privileges is filed in [docs/ideas/wol-raw-socket.md](ideas/wol-raw-socket.md).
+
+A stored `WAKE_REQUIRES_IPV4` bit was rejected during the design — derived flags are how flag sets rot (HA's recent Samsung implicit-WoL deprecation is the cautionary tale). The same forcing question pushed against putting "this connector is v4-only" on the schema-field validator: form-time field validation can't see protocol-layer constraints without escape hatches (Homebridge's `condition.functionBody` raw-JS pattern is the warning).
+
+When a single vendor eventually ships multiple transport variants (one v6-capable, one not — rclone's `Provider`-on-field shape), the extension point is a `requires_capability: Option<Capability>` on `PairingField`. Documented here so the future addition has a place to land; not implemented until a real second-vendor case demands it.
+
+### SSDP discovery is v4-only
+
+A separate finding from the transport-family work: LG TVs do not join any v6 SSDP multicast group (`ff02::c`, `ff05::c`, `ff0e::c`) — verified by packet capture, see [docs/lg/firmware-quirks.md § IPv6 SSDP non-participation](lg/firmware-quirks.md#ipv6-ssdp-non-participation--tvs-are-silent-on-ff02c). Combined with the survey-time observation that other consumer TV vendors largely mirror LG's stance, this makes the v4-only SSDP transport the right design today. `tisvlay-ssdp::Error::Ipv6BindUnsupported` exists as a deliberate hard reject; the doc comment on the variant points back at the LG quirks finding so a future reader doesn't mistake it for a TODO. Lift the rejection (and thread v6 through the crate) when a vendor that actually answers on `ff02::c` is added.
 
 ## Connector probe hook
 

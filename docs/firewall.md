@@ -198,6 +198,6 @@ LG WebOS TVs also advertise via mDNS/DNS-SD (Chromecast protocol) as `_googlecas
 - Filter results by TXT records to identify LG TVs specifically.
 - Use the [`mdns-sd`](https://crates.io/crates/mdns-sd) Rust crate for programmatic access — pure Rust (no Avahi/Bonjour C runtime dependency), dual-stack v4/v6, ~300K monthly downloads. Picked over `zeroconf` / `astro-dnssd` (Avahi/Bonjour native deps, complicates NixOS packaging), `mdns` (stale, last release 2021), `simple-mdns` / `searchlight` (smaller install base).
 
-mDNS would also be a natural fit for [docs/plans/ipv6-support.md](plans/ipv6-support.md)'s discovery layer once that lands — mDNS's IPv6 multicast (`ff02::fb`) is better-supported by both routers and OS firewalls than SSDP's `ff02::c`.
+mDNS would also be the natural fit for a future v6-capable discovery layer — LG TVs don't join the v6 SSDP multicast group at all ([docs/lg/firmware-quirks.md § IPv6 SSDP non-participation](lg/firmware-quirks.md#ipv6-ssdp-non-participation--tvs-are-silent-on-ff02c) has the capture protocol and the wire evidence), and mDNS's IPv6 multicast (`ff02::fb`) is better-supported by both routers and OS firewalls than SSDP's `ff02::c` regardless. SSAP control over v6 works today; only discovery is the v4-locked path.
 
 **TODO**: Investigate mDNS discovery as an alternative or fallback to SSDP. This would improve out-of-the-box compatibility on systems with strict firewalls.

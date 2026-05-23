@@ -290,9 +290,8 @@ mod tests {
     #[test]
     fn test_transport_capabilities_round_trip() {
         // IPV4 / IPV6 are deliberately *not* in ALL — vendors opt in
-        // explicitly per docs/plans/ipv6-support.md's Alternatives
-        // section. Verify the bits are independent of the feature-bit
-        // ALL mask.
+        // explicitly per the doc comments on each variant. Verify the
+        // bits are independent of the feature-bit ALL mask.
         assert!(!Capabilities::ALL.contains(Capabilities::IPV4));
         assert!(!Capabilities::ALL.contains(Capabilities::IPV6));
 

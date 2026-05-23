@@ -62,6 +62,6 @@ Until one of these fires, classic v4 broadcast WoL is the right scope.
 ## Out of scope (don't conflate)
 
 - **mDNS as discovery fallback** (separately filed under [docs/firewall.md](../firewall.md) "Future Alternative: mDNS/DNS-SD Discovery") — different protocol layer.
-- **IPv6 socket support for TV control** — covered in [docs/plans/ipv6-support.md](../plans/ipv6-support.md). v6 reaches the TV for control / discovery; WoL is its own concern.
+- **IPv6 socket support for TV control** — already shipped per the per-vendor `Capabilities::IPV4`/`IPV6` declaration ([docs/discovery.md § Per-vendor transport family](../discovery.md#per-vendor-transport-family)). v6 reaches the TV for control via SSAP; SSDP discovery stays v4-only (LG doesn't join `ff02::c`); WoL is its own L2-layer concern.
 - **True wake-on-MAC without ANY network address** — would require a packet-driver / vendor-specific magic-token protocol. Different problem entirely.
 - **Sending the v4 magic packet from a dual-stack host with v4 secondary configured** — doesn't need `CAP_NET_RAW` at all; just bind the existing UDP socket to the right interface. If this turns out to be sufficient for the cross-VLAN / VPN cases, the raw-socket work might not be needed at all.

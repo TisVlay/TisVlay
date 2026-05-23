@@ -44,7 +44,7 @@ Both layers ship cleanly side-by-side. Wizard-time gives the trust signal; pair-
 
 - Users report WoL not working after manual-entry pair despite the wizard showing "Auto-detected" (would indicate the wizard captured something stale and pair-time didn't validate).
 - Field reports of empty MAC for users who pair via CLI (bypassing the wizard).
-- Implementation of the IPv6 enrichment follow-up (see [docs/../plans/ipv6-support.md](ipv6-discovery-and-enrichment.md)) — pair-time NDP capture would slot in symmetrically.
+- Field reports of empty MAC for users on v6-only LANs whose vendor declares `Capabilities::IPV6` — today's manual-entry enrichment chain is family-agnostic at the trait level (`probe_arp_cache(ip: IpAddr)`), so pair-time NDP capture would slot in symmetrically alongside ARP. See [docs/discovery.md § Per-vendor transport family](../discovery.md#per-vendor-transport-family).
 
 ## Out of scope (don't conflate)
 
