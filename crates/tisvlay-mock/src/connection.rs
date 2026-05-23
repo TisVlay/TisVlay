@@ -179,7 +179,7 @@ impl TvConnection for MockConnection {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::ALL
+        Capabilities::STOCK
     }
 
     fn hardware_id(&self) -> Option<HardwareId> {

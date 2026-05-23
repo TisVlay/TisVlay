@@ -63,7 +63,7 @@ const BACKLIGHT_STEP: u8 = 1;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tisvlay_core::logging::init(&["tisvlay_tray=info", "zbus=warn", "ksni=warn"])?;
+    tisvlay_core::logging::init(&["tisvlay_tray=info", "zbus=warn", "ksni=warn"], &[])?;
 
     // Localization. `bindtextdomain` registers `tisvlay-tray.mo`
     // lookup under `<dir>/<locale>/LC_MESSAGES/` for the

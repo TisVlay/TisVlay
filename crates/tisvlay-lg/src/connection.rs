@@ -105,6 +105,20 @@ impl rustls::client::danger::ServerCertVerifier for InsecureCertVerifier {
     }
 }
 
+/// Format a `host:port` authority for use in a URL.
+///
+/// IPv6 literals are bracketed per RFC 3986 — `wss://2001:db8::1:3001`
+/// is ambiguous to a URL parser; `wss://[2001:db8::1]:3001` is the
+/// well-formed shape. Hostnames and IPv4 literals pass through
+/// unchanged.
+fn format_url_authority(host: &str, port: u16) -> String {
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 impl Connection {
     /// Connect to a TV during pairing — probes `wss://` first, then
     /// `ws://`. Pairing is the only call site that doesn't yet know
@@ -131,7 +145,7 @@ impl Connection {
 
     /// Connect using secure WebSocket (wss://).
     pub(crate) async fn connect_wss(host: &str, connect_timeout: Duration) -> Result<Self> {
-        let url = format!("wss://{}:{}", host, WSS_PORT);
+        let url = format!("wss://{}", format_url_authority(host, WSS_PORT));
         let mut conn = Self::connect_url_tls(&url, connect_timeout).await?;
         conn.scheme = WebOsScheme::Wss;
         Ok(conn)
@@ -139,7 +153,7 @@ impl Connection {
 
     /// Connect using insecure WebSocket (ws://).
     pub(crate) async fn connect_ws(host: &str, connect_timeout: Duration) -> Result<Self> {
-        let url = format!("ws://{}:{}", host, WS_PORT);
+        let url = format!("ws://{}", format_url_authority(host, WS_PORT));
         let mut conn = Self::connect_url_plain(&url, connect_timeout).await?;
         conn.scheme = WebOsScheme::Ws;
         Ok(conn)

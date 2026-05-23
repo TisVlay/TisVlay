@@ -117,17 +117,43 @@ async fn fetch_and_publish_vendors(
     if let Ok(mut cache) = supported_vendors_cache.write() {
         *cache = vendor_pairs.iter().map(|(id, _)| id.clone()).collect();
     }
+
+    // Per-vendor capability fetch in a second pass — keeps the wire
+    // payload of `GetSupportedVendors` unchanged (still `a(ss)`) and
+    // lets vendors come and go without renegotiating shape. Vendor
+    // counts are O(1) in practice (one to a handful), so the extra
+    // round-trips are negligible against the cost of any user-visible
+    // wizard step. Errors per vendor collapse to "no IP family
+    // support claimed", which means the wizard's affordances stay
+    // conservative — placeholder reverts to v4-only — rather than
+    // silently asserting transport support the daemon didn't
+    // actually confirm.
+    let mut vendors_with_caps: Vec<(String, String, tisvlay_core::Capabilities)> =
+        Vec::with_capacity(vendor_pairs.len());
+    for (id, name) in vendor_pairs {
+        let caps = daemon
+            .get_vendor_capabilities(&id)
+            .await
+            .unwrap_or_else(|e| {
+                debug!(vendor = %id, error = %e, "GetVendorCapabilities failed; treating as empty");
+                tisvlay_core::Capabilities::empty()
+            });
+        vendors_with_caps.push((id, name, caps));
+    }
+
     on_ui(app_weak, move |app| {
         let wizard = app.global::<PairingWizard>();
-        let names: Vec<SharedString> = vendor_pairs
+        let names: Vec<SharedString> = vendors_with_caps
             .iter()
-            .map(|(_, name)| SharedString::from(name.as_str()))
+            .map(|(_, name, _)| SharedString::from(name.as_str()))
             .collect();
-        let vendors: Vec<VendorOption> = vendor_pairs
+        let vendors: Vec<VendorOption> = vendors_with_caps
             .into_iter()
-            .map(|(id, name)| VendorOption {
+            .map(|(id, name, caps)| VendorOption {
                 id: SharedString::from(id),
                 name: SharedString::from(name),
+                supports_ipv4: caps.contains(tisvlay_core::Capabilities::IPV4),
+                supports_ipv6: caps.contains(tisvlay_core::Capabilities::IPV6),
             })
             .collect();
         wizard.set_supported_vendors(ModelRc::new(VecModel::from(vendors)));

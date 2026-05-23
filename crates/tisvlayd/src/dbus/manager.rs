@@ -117,22 +117,33 @@ async fn enrich_manual_entry_inner(
         return HashMap::new();
     }
 
-    // (b) Parse + IPv4-only correctness gate. IPv6 (including
-    //     ::ffff:x.x.x.x) returns empty because today's
-    //     arp_lookup and probe_arp_cache only handle v4. The gate
-    //     widens to IPv4|IPv6 once those grow v6 support — see
-    //     docs/ideas/ipv6-discovery-and-enrichment.md.
+    // (b) Parse the address (any IP family). Malformed input
+    //     collapses to empty.
     let Ok(ip) = address.parse::<std::net::IpAddr>() else {
         return HashMap::new();
     };
-    if !ip.is_ipv4() {
-        return HashMap::new();
-    }
 
     // (c) Vendor lookup. Unknown vendors collapse to empty.
-    let Ok(connector) = registry.get_connector(vendor) else {
+    let Some(registered) = registry.get(vendor) else {
         return HashMap::new();
     };
+
+    // (d) Capability-aware family gate. Vendors declare which IP
+    //     families they support via `Capabilities::IPV4`/`IPV6`
+    //     (see docs/discovery.md § "Per-vendor transport family").
+    //     Inputs whose family the vendor hasn't claimed collapse to
+    //     empty — symmetric with the wizard's form-build-time gating,
+    //     so a v6 address typed against a v4-only vendor never gets a
+    //     no-op probe.
+    let caps = registered.backend.capabilities();
+    let family_supported = match ip {
+        std::net::IpAddr::V4(_) => caps.contains(tisvlay_core::Capabilities::IPV4),
+        std::net::IpAddr::V6(_) => caps.contains(tisvlay_core::Capabilities::IPV6),
+    };
+    if !family_supported {
+        return HashMap::new();
+    }
+    let connector = registered.connector.as_ref();
 
     let span = tracing::info_span!("enrich_manual_entry", %vendor, %ip);
     let _enter = span.enter();
@@ -387,12 +398,12 @@ impl ManagerService {
     /// schema-form autofill engine uniformly with the SSDP path.
     ///
     /// Always returns `Ok`. Empty map means "nothing to autofill" —
-    /// invalid IP, IPv6 input, out-of-subnet, unknown vendor, or
-    /// the ARP chain found nothing. The wizard treats empty as a
-    /// soft outcome (field stays blank with a "MAC not detected"
-    /// helper) rather than a hard failure. IPv4 only in v1; see
-    /// `docs/ideas/ipv6-discovery-and-enrichment.md` for the v6
-    /// follow-up scope.
+    /// invalid IP, vendor-unsupported family (per the vendor's
+    /// `Capabilities::IPV4`/`IPV6` declaration), out-of-subnet,
+    /// unknown vendor, or the ARP/NDP chain found nothing. The
+    /// wizard treats empty as a soft outcome (field stays blank
+    /// with a "MAC not detected" helper) rather than a hard
+    /// failure.
     async fn enrich_manual_entry(
         &self,
         vendor: String,
@@ -415,6 +426,31 @@ impl ManagerService {
             .into_iter()
             .map(|(id, name)| (id.to_string(), name.to_string()))
             .collect()
+    }
+
+    /// Get the `Capabilities` bitflag for one vendor as the same
+    /// kebab-case string list `Capabilities::to_strings()` emits
+    /// ("power", "screen", "ipv4", "ipv6", …). Unknown vendor →
+    /// empty list (not an error — the GUI's wizard treats absent
+    /// caps as "feature unavailable", which is the safe default).
+    ///
+    /// Additive sibling to `GetSupportedVendors` rather than a
+    /// breaking shape change to its tuple — keeps existing clients
+    /// working without a wire negotiation.
+    fn get_vendor_capabilities(&self, vendor: String) -> Vec<String> {
+        debug!(vendor = %vendor, "D-Bus: GetVendorCapabilities");
+        self.registry
+            .get(&vendor)
+            .map(|registered| {
+                registered
+                    .backend
+                    .capabilities()
+                    .to_strings()
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Get the pairing-form schema for a vendor backend.

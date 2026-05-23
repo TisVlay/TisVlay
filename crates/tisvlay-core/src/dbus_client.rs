@@ -185,6 +185,13 @@ trait TisvlayManager {
     /// Returns: [(vendor_id, vendor_name)]
     fn get_supported_vendors(&self) -> zbus::Result<Vec<(String, String)>>;
 
+    /// Get the `Capabilities` bitflag for one vendor as the same
+    /// kebab-case list `Capabilities::to_strings()` emits. Unknown
+    /// vendor → empty list (treated as "feature unavailable" by
+    /// the caller — never an error at the wire layer). Sibling to
+    /// `get_supported_vendors` so existing clients keep working.
+    fn get_vendor_capabilities(&self, vendor: &str) -> zbus::Result<Vec<String>>;
+
     /// Get the pairing-form schema for a vendor.
     ///
     /// Returns a JSON-serialized `Vec<PairingField>` describing the
@@ -1187,6 +1194,21 @@ impl DaemonClient {
             .get_supported_vendors()
             .await
             .context("Failed to get supported vendors")
+    }
+
+    /// Fetch one vendor's `Capabilities` bitflag, parsed back to the
+    /// typed shape. Unknown vendor → `Capabilities::empty()` (the
+    /// wire layer returns an empty list rather than erroring; the
+    /// typed wrapper preserves that semantics so the GUI can treat
+    /// missing caps as "feature unavailable").
+    pub async fn get_vendor_capabilities(&self, vendor: &str) -> Result<crate::Capabilities> {
+        let strings = self
+            .manager
+            .get_vendor_capabilities(vendor)
+            .await
+            .context("Failed to get vendor capabilities")?;
+        let refs: Vec<&str> = strings.iter().map(String::as_str).collect();
+        Ok(crate::Capabilities::from_strings(&refs))
     }
 
     /// Get the pairing-form schema for a vendor.

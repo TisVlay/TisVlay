@@ -55,7 +55,13 @@ impl TvBackend for LgBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::ALL
+        // ALL covers the feature methods; IPV4 / IPV6 declare the
+        // verified transport families. v6 was confirmed on G4
+        // firmware by reaching the SSAP WebSocket endpoint over a
+        // SLAAC ULA — same cert chain, same TLS 1.3 / X25519 /
+        // RSA-PSS as v4, same rustls path. SSAP is JSON over WS so
+        // the IP family is invisible above the socket layer.
+        Capabilities::STOCK | Capabilities::IPV4 | Capabilities::IPV6
     }
 }
 
@@ -90,7 +96,7 @@ impl LgConnection {
         Self {
             client: Some(client),
             config,
-            capabilities: Capabilities::ALL,
+            capabilities: Capabilities::STOCK,
             hardware_id: std::sync::Arc::new(std::sync::RwLock::new(hardware_id)),
         }
     }
@@ -791,13 +797,20 @@ impl TvConnector for LgConnector {
         // payload silently — no TLS handshake side-effect, no
         // inbound port needed, no raw sockets / CAP_NET_RAW.
         //
-        // Bind is `0.0.0.0:0` deliberately: the kernel's routing
-        // table picks the correct outbound NIC + source IP for the
-        // destination, which is the right behavior on typical
-        // multi-NIC hosts. Explicit source-IP binding via netlink
-        // route lookup would only matter for VPN-policy-routing
-        // edge cases — out of scope until a real user hits it.
-        let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        // Bind family matches the destination so the socket has a
+        // routable local address; the kernel's routing table then
+        // picks the correct outbound NIC + source IP. Explicit
+        // source-IP binding via netlink route lookup would only
+        // matter for VPN-policy-routing edge cases — out of scope
+        // until a real user hits it (see
+        // `docs/ideas/wol-raw-socket.md` for the broader topology-
+        // flexibility story).
+        let bind_addr: std::net::SocketAddr = if ip.is_ipv6() {
+            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        } else {
+            (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+        };
+        let socket = tokio::net::UdpSocket::bind(bind_addr).await?;
         let _ = socket
             .send_to(&[0u8], (ip, crate::endpoints::WSS_PORT))
             .await;
@@ -1333,7 +1346,7 @@ mod tests {
         // Exercise each TvConnection method.
         assert_eq!(conn.vendor_id(), "lg");
         assert!(conn.is_connected());
-        assert_eq!(conn.capabilities(), Capabilities::ALL);
+        assert_eq!(conn.capabilities(), Capabilities::STOCK);
 
         conn.screen_off().await.unwrap();
         conn.screen_on().await.unwrap();

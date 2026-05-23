@@ -51,7 +51,15 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    tisvlay_core::logging::init(&["tisvlayd=info", "zbus=warn"])?;
+    // `netlink_packet_route` emits a chatty `log::warn!()` on every
+    // interface enumeration on newer kernels (IFLA_INET6_CONF size
+    // mismatch — harmless kernel/crate version skew). Suppressed at
+    // the log→tracing bridge level via `ignore_crate` rather than
+    // an EnvFilter directive: the bridged tracing event's target is
+    // the literal string "log", not the original module path, so
+    // EnvFilter can't match it. See `logging::init` for the full
+    // rationale + the bridge install-order constraint.
+    tisvlay_core::logging::init(&["tisvlayd=info", "zbus=warn"], &["netlink_packet_route"])?;
 
     info!("tisvlayd starting...");
 

@@ -33,7 +33,10 @@ impl TvBackend for MockBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // The mock supports everything a real TV would.
-        Capabilities::ALL
+        // The mock supports everything a real TV would, plus both
+        // IP families — so tests exercise both the v4 and v6
+        // gating/dispatch paths the daemon and GUI implement on
+        // top of the transport-family bits.
+        Capabilities::STOCK | Capabilities::IPV4 | Capabilities::IPV6
     }
 }

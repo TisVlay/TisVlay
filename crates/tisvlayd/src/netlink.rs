@@ -347,4 +347,16 @@ mod tests {
         let iface = resolve_interface_for_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
         assert_eq!(iface.as_deref(), Some("lo"));
     }
+
+    #[tokio::test]
+    async fn test_resolve_localhost_v6() {
+        // IPv6 loopback (::1) should also route to "lo". Regression
+        // guard for the v6 path through resolve_route — the v6 arm
+        // of the IpAddr match (RouteMessageBuilder::<Ipv6Addr>) is
+        // dead code until the daemon's IPv6 support work lifts the
+        // EnrichManualEntry gate; this test exercises it directly
+        // so a refactor can't quietly break the v6 path.
+        let iface = resolve_interface_for_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)).await;
+        assert_eq!(iface.as_deref(), Some("lo"));
+    }
 }
