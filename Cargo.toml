@@ -57,6 +57,15 @@ bitflags = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "env-filter", "registry"] }
 tracing-journald = "0.3"
+# tracing-log gives us LogTracer::builder().ignore_crate(...) to drop
+# noisy `log::warn!()` calls from transitive deps (e.g.
+# netlink-packet-route's IFLA_INET6_CONF kernel-skew warning) AT THE
+# BRIDGE LEVEL, where the original module-path target is still
+# available — EnvFilter directives on the original path can't match,
+# because the bridged tracing event's target becomes the literal
+# string "log". See logging::init for the install order and
+# tokio-rs/tracing#3059 for the unresolved upstream paper-cut.
+tracing-log = "0.2"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

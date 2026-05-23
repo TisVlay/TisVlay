@@ -223,7 +223,7 @@ struct Args {
 /// thin shim that calls this; integration tests in `tisvlay-harness`
 /// reach the types and submodules behind this library crate directly.
 pub fn run() -> Result<()> {
-    tisvlay_core::logging::init(&["tisvlay_gui=info", "zbus=warn", "slint=warn"])?;
+    tisvlay_core::logging::init(&["tisvlay_gui=info", "zbus=warn", "slint=warn"], &[])?;
 
     // Localization. `init_translations!` registers `<crate>.mo` lookup
     // under `<dir>/<locale>/LC_MESSAGES/` for both Slint's `@tr()`

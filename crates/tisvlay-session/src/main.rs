@@ -43,7 +43,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tisvlay_core::logging::init(&["tisvlay_session=info", "zbus=warn"])?;
+    tisvlay_core::logging::init(&["tisvlay_session=info", "zbus=warn"], &[])?;
 
     let args = Args::parse();
 

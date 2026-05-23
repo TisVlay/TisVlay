@@ -40,6 +40,7 @@ futures-util = { workspace = true, optional = true }
 # Optional: logging init for binaries
 tracing-subscriber = { workspace = true, optional = true }
 tracing-journald = { workspace = true, optional = true }
+tracing-log = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
@@ -52,7 +53,7 @@ tisvlay-test = { workspace = true }
 [features]
 default = []
 dbus = ["dep:zbus", "dep:anyhow", "dep:futures-util"]
-logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:anyhow"]
+logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
 
 [lints]
 workspace = true

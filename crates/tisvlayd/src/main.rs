@@ -51,20 +51,15 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // `netlink_packet_route::link::buffer_tool=error` silences a
-    // chatty WARN that fires every time we enumerate interfaces on
-    // newer kernels: the kernel adds bytes to `IFLA_INET6_CONF` that
-    // the crate doesn't yet know how to decode, so it parses what it
-    // knows and logs a warning about the leftover. Harmless (route
-    // resolution and carrier monitoring still work), but it spams
-    // journald per-call. Drop to `error` so genuine parse errors from
-    // the same module still surface, and `RUST_LOG` overrides stay
-    // intact for debugging.
-    tisvlay_core::logging::init(&[
-        "tisvlayd=info",
-        "zbus=warn",
-        "netlink_packet_route::link::buffer_tool=error",
-    ])?;
+    // `netlink_packet_route` emits a chatty `log::warn!()` on every
+    // interface enumeration on newer kernels (IFLA_INET6_CONF size
+    // mismatch — harmless kernel/crate version skew). Suppressed at
+    // the log→tracing bridge level via `ignore_crate` rather than
+    // an EnvFilter directive: the bridged tracing event's target is
+    // the literal string "log", not the original module path, so
+    // EnvFilter can't match it. See `logging::init` for the full
+    // rationale + the bridge install-order constraint.
+    tisvlay_core::logging::init(&["tisvlayd=info", "zbus=warn"], &["netlink_packet_route"])?;
 
     info!("tisvlayd starting...");
 
