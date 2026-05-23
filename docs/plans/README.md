@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [`tray-localization.md`](tray-localization.md) — bring `tisvlay-tray` to the same gettext-rs i18n standard as `tisvlay-gui`; ~30 strings, per-crate `lang/` tree, shared `just i18n-*` recipes.
+_None._
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
