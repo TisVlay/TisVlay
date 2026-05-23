@@ -81,6 +81,14 @@ pub enum Error {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     /// A bind address that isn't IPv4 was passed in `SearchOptions`.
+    ///
+    /// Deliberate: every currently-supported vendor's SSDP profile is
+    /// v4-only. LG specifically does not join the v6 SSDP multicast
+    /// group `ff02::c` (verified by packet capture — see
+    /// `docs/lg/firmware-quirks.md`'s "IPv6 SSDP non-participation"
+    /// section). SSAP control over v6 works independently; discovery
+    /// just isn't the v6 path. Lift this rejection when a vendor that
+    /// actually answers on `ff02::c` is added.
     #[error("only IPv4 bind addresses are supported")]
     Ipv6BindUnsupported,
     /// A response was received but couldn't be parsed.

@@ -229,3 +229,42 @@ Three things worth knowing:
 1. **`getPowerState` is the only useful endpoint.** Every other plausible power/screen candidate (`power/getPowerStatus`, `power/getStandbyState`, `screen/getScreenState`, `display/getStatus`, `deviceinfo/getInfo`, `notification/getStatus`) returned 404 / 401 on this firmware. The protocol-shaped fix had to work through the endpoint the daemon already subscribes to.
 2. **The `reason` field labels the source.** SSAP `turnOff` sent by the probe was reported back as `"reason":"remoteKey"`, suggesting the LG firmware routes SSAP turnOff through the same internal handler as an IR/BLE remote press. Pushes from a real remote button should look the same on the wire.
 3. **Settled state has no discriminators.** Once the TV reaches a steady substate (`"Active Standby"` here at +3.266 s), `processing` and `onOff` drop out of the payload entirely. The state-field-only fall-through in `parse_power_state_payload` handles this case correctly.
+
+## IPv6 SSDP non-participation — TVs are silent on `ff02::c`
+
+**Symptom.** After enabling Settings → Network → IPv6 on the TV and exposing it on a SLAAC-configured LAN, the daemon's SSDP discovery returns zero TVs even though SSAP control over IPv6 works fine and the TV is reachable on its ULA (`ping6`, neighbor cache, full openssl handshake to `[<tv-ula>]:3001`).
+
+**Finding.** LG TVs (OLED65G4SUB verified; OLED42C3PUA expected equivalent per the matching SSAP firmware family) **do not join any v6 SSDP multicast group**. Not `ff02::c` (link-local), not `ff05::c` (site-local), not `ff0e::c` (global). They neither NOTIFY on the v6 groups nor answer M-SEARCH on them. SSAP over IPv6 is the only v6 control path the TV exposes.
+
+**Capture protocol.** Probe both passively and actively on the interface the TV is reachable on (substitute `$IFACE`):
+
+```bash
+# Passive: watch all v6 SSDP traffic for 1–2 minutes.
+# Power-cycling the TV during this window forces a re-NOTIFY burst
+# from anything that joined the group.
+sudo tcpdump -i "$IFACE" -nn 'ip6 and udp port 1900'
+
+# Active: M-SEARCH all scopes. Use socat (or nix run nixpkgs#socat)
+# rather than nc -6 -u, which is variant-dependent for v6 multicast.
+printf 'M-SEARCH * HTTP/1.1\r\nHOST: [ff02::c]:1900\r\nMAN: "ssdp:discover"\r\nST: ssdp:all\r\nMX: 2\r\n\r\n' \
+    | socat - "UDP6-DATAGRAM:[ff02::c%$IFACE]:1900"
+```
+
+**Captured evidence (representative).** On a test network with two paired LG TVs, the only v6 SSDP traffic seen comes from the LAN's home-gateway UPnP IGD (`MiniUPnPd` is the standard UPnP daemon shipped on most consumer router firmware). Sanitized response shape:
+
+```
+<gateway-link-local>.1900 > <host>.<eph>: HTTP/1.1 200 OK
+  SERVER: <linux-kernel> UPnP/1.1 MiniUPnPd/<version>
+  ST: urn:schemas-upnp-org:device:InternetGatewayDevice:2
+  USN: uuid:<gateway-uuid>
+  LOCATION: http://[<gateway-ula>]:<port>/rootDesc.xml
+```
+
+The router announces the full IGD service catalog (`InternetGatewayDevice`, `WANDevice`, `WANConnectionDevice`, `Layer3Forwarding`, `WANIPConnection`, `WANPPPConnection`, `WANCommonInterfaceConfig`, `WANIPv6FirewallControl`, plus the `upnp:rootdevice` and per-UUID anchors). The `WANIPv6FirewallControl` entry is the most plausible false positive — but it's still the gateway's own IGD profile, nothing to do with LG. Zero responses ever come from either TV's v6 address despite both being v6-reachable on the same L2 segment.
+
+**Implications for the codebase.**
+
+- `tisvlay-ssdp` stays v4-only by design. `Error::Ipv6BindUnsupported` is a deliberate hard reject, not "we haven't gotten around to it" — see the variant's doc comment for the cross-reference back here.
+- The `Capabilities::IPV6` bit on the LG backend means *control* over v6, not *discovery*. The two are independent and have to be evaluated separately for every vendor backend.
+- A future vendor that does join `ff02::c` (e.g., a hypothetical Sony/Samsung backend that follows the UPnP spec more literally) is what would justify lifting `Ipv6BindUnsupported` and threading v6 through `tisvlay-ssdp`. Until then, the v4-only stance is correct.
+- Toggling other TV settings that *sound* related — DLNA, "TV On via Mobile", LG ConnectApp — does not flip this behavior on G4 firmware as of 2026-05. Could change with future firmware; rerun the capture protocol if a new revision claims UPnP-over-v6.
