@@ -13,6 +13,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use clap::Parser;
+// Rust-side counterpart to the gettext catalog the daemon's tray
+// menu builder pulls translated strings from. Lookup catalog is
+// bound by `bindtextdomain` in `main` below; call sites that push
+// user-visible strings into the menu / tooltip / error chain wrap
+// their literals with `gettext("…")` so xgettext finds them in the
+// `.pot` template.
+use gettextrs::gettext;
 use ksni::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -58,6 +65,22 @@ const BACKLIGHT_STEP: u8 = 1;
 async fn main() -> Result<()> {
     tisvlay_core::logging::init(&["tisvlay_tray=info", "zbus=warn", "ksni=warn"])?;
 
+    // Localization. `bindtextdomain` registers `tisvlay-tray.mo`
+    // lookup under `<dir>/<locale>/LC_MESSAGES/` for the
+    // `gettext()` calls scattered through tray.rs and main.rs.
+    // The lookup directory is baked relative to `CARGO_MANIFEST_DIR`
+    // at compile time so dev runs out of the source tree resolve
+    // catalogs against the in-tree `lang/` (compiled by build.rs);
+    // installed builds with no catalog at that path fall back to
+    // the literal source strings. v1 ships English only — every
+    // `gettext("…")` returns the literal in the absence of a
+    // matching catalog. Symmetrical with the GUI's
+    // `slint::init_translations!` setup in `tisvlay_gui::run`.
+    gettextrs::setlocale(gettextrs::LocaleCategory::LcAll, "");
+    gettextrs::bindtextdomain("tisvlay-tray", concat!(env!("CARGO_MANIFEST_DIR"), "/lang"))
+        .context("bindtextdomain failed")?;
+    gettextrs::textdomain("tisvlay-tray").context("textdomain failed")?;
+
     let args = Args::parse();
 
     info!("tisvlay-tray starting...");
@@ -70,7 +93,7 @@ async fn main() -> Result<()> {
         info!("Using system bus");
         DaemonClient::new_system().await
     }
-    .context("Failed to create daemon client")?;
+    .context(gettext("Failed to create daemon client"))?;
 
     let daemon = Arc::new(daemon);
 
@@ -119,10 +142,9 @@ async fn main() -> Result<()> {
     };
 
     // Spawn the tray icon
-    let handle = tray
-        .spawn()
-        .await
-        .context("Failed to spawn tray icon (is a StatusNotifierHost running?)")?;
+    let handle = tray.spawn().await.context(gettext(
+        "Failed to spawn tray icon (is a StatusNotifierHost running?)",
+    ))?;
 
     info!("Tray icon spawned");
 
@@ -133,7 +155,7 @@ async fn main() -> Result<()> {
     // down. No config path yet (phase 2).
     let _dbus_keepalive = dbus::register(None)
         .await
-        .context("Failed to register tray D-Bus interface")?;
+        .context(gettext("Failed to register tray D-Bus interface"))?;
 
     // Per-(tv_id) reconcilers for scroll-driven properties. Shared
     // between the watch_state refresh path and the scroll apply

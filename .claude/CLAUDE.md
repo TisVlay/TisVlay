@@ -320,47 +320,16 @@ just package-deb  # build the .deb package
 
 ## Internationalization (i18n)
 
-`tisvlay-gui` is wired for translation from day one via gettext, even
-though only English ships at v1. Architecture:
+Both `tisvlay-gui` and `tisvlay-tray` are wired for gettext translation; v1 ships English only. Architecture, workflow, "add a new locale" walkthrough, and decision rationale (why gettext over Fluent / i18n-embed / rust-i18n, why a build.rs vs checked-in `.mo`, why `bindtextdomain` over `gettextrs::TextDomain`, the Slint external-translator escape hatch) live in [docs/i18n.md](../docs/i18n.md).
 
-- **Slint strings** wrap literals with `@tr("…")` in every `.slint` file.
-  The `slint = { features = ["gettext"] }` feature flag activates Slint's
-  built-in gettext lookup; `slint::init_translations!(…)` in `main.rs`
-  registers the `lang/<locale>/LC_MESSAGES/tisvlay-gui.mo` directory.
-- **Rust user-facing strings** (errors that surface to the UI, schema
-  field labels pushed from vendor backends, etc.) wrap literals with
-  `gettextrs::gettext("…")`. They share the same gettext catalog as
-  Slint's `@tr` — one `.mo` per locale serves both layers.
-- Vendor backend crates (`tisvlay-lg`, future `tisvlay-samsung`) own
-  their own user-facing strings and will eventually ship per-vendor
-  `.mo` files.
+Quick reference for new strings — what to translate:
 
-### Workflow
+- **Translate**: button labels, pane headers, status text, menu items, tooltip copy, helper copy, error messages.
+- **Don't translate**: brand names (`"TisVlay"`, `"LG WebOS"`), machine identifiers (`"awaiting_tv"`, `"lg"`, `"system-shutdown"`), Unicode glyphs (`"●"`, `"·"`, `"—"`, `"↻"`, `"►"`), technical placeholders (`"192.168.1.100"`, `"AA:BB:CC:DD:EE:FF"`), font-family CSS values, file paths, URLs.
+- **Brand inside composite templates**: wrap the whole template — translators pass `"TisVlay"` through verbatim.
+- **Format strings**: use `gettext("Foo: {0}").replace("{0}", &v.to_string())` — never `format!("Foo: {}", v)`, which `xgettext` can't extract from.
 
-```bash
-just i18n-extract   # rebuild crates/tisvlay-gui/lang/tisvlay-gui.pot
-just i18n-update    # merge the refreshed .pot into existing per-locale .po
-```
-
-Run `i18n-extract` whenever you add or change user-facing strings;
-review the resulting `.pot` diff and commit. Translators add a new
-locale via `msginit -i tisvlay-gui.pot -l fr_FR -o
-crates/tisvlay-gui/lang/fr/LC_MESSAGES/tisvlay-gui.po` and translate
-the `msgstr ""` lines. `cargo build` regenerates `.mo` files at compile
-time; missing `.mo` falls back to literal source strings (English).
-
-### What to translate vs not
-
-- **Translate**: button labels, pane headers, status text, helper
-  copy, error messages.
-- **Don't translate**: brand names (`"TisVlay"`, vendor names like
-  `"LG WebOS"`), machine identifiers (`"awaiting_tv"`, `"lg"`,
-  `"system-shutdown"`), Unicode glyphs (`"●"`, `"·"`, `"—"`, `"↻"`),
-  technical placeholders (`"192.168.1.100"`, `"AA:BB:CC:DD:EE:FF"`),
-  font-family CSS values, file paths, URLs.
-
-`gettext` (xgettext, msgfmt, msgmerge, msginit) and
-`slint-tr-extractor` are provided by the Nix dev shell.
+After adding or changing user-facing strings, run `just i18n-extract` and commit the refreshed `.pot` diff.
 
 ## Linting & CI
 
@@ -445,6 +414,7 @@ just test-snapshot-accept   # accept all pending snapshot changes
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
 - [docs/discovery.md](docs/discovery.md) - SSDP transport ownership, streaming-discovery RPCs, manual-entry MAC enrichment, schema-form trust signal
+- [docs/i18n.md](docs/i18n.md) - Translation architecture, workflow, add-a-locale walkthrough, decision rationale (gettext-rs vs Fluent / i18n-embed)
 - [docs/testing.md](docs/testing.md) - Testing guide: mock backend, harnesses, coverage, observability
 - [docs/lg/firmware-quirks.md](docs/lg/firmware-quirks.md) - LG WebOS firmware quirks (Bug A/B, `processing`/`onOff` discriminators, post-wake settle, `REQUEST_MS`-is-load-bearing)
 - [docs/watchers/network.md](docs/watchers/network.md) - Network monitoring: carrier detection, route resolution, pitfalls

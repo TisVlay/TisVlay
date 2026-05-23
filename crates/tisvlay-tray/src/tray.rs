@@ -4,6 +4,7 @@
 //! (ksni constraint), so they send [`TrayCommand`] messages on a channel for
 //! async processing by the command handler in main.rs.
 
+use gettextrs::gettext;
 use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{MenuItem, ToolTip, Tray};
 use std::sync::Arc;
@@ -174,12 +175,17 @@ impl Tray for TisvlayTray {
     fn title(&self) -> String {
         let connected = self.tvs.iter().filter(|tv| tv.connected).count();
         let total = self.tvs.len();
+        // "TisVlay" is a brand name and per CLAUDE.md i18n conventions
+        // should be left untranslated; translators see it inside the
+        // bracketed templates and pass it through verbatim.
         if !self.daemon_available {
-            "TisVlay [daemon offline]".into()
+            gettext("TisVlay [daemon offline]")
         } else if total == 0 {
             "TisVlay".into()
         } else {
-            format!("TisVlay [{}/{}]", connected, total)
+            gettext("TisVlay [{0}/{1}]")
+                .replace("{0}", &connected.to_string())
+                .replace("{1}", &total.to_string())
         }
     }
 
@@ -220,7 +226,7 @@ impl Tray for TisvlayTray {
             });
 
         let description = if !self.daemon_available {
-            "Daemon not available".into()
+            gettext("Daemon not available")
         } else {
             self.tvs
                 .iter()
@@ -229,19 +235,21 @@ impl Tray for TisvlayTray {
                         |t| effective_scroll_tv == Some(tv.id.as_str()) && self.scroll_target == t;
                     let m = |t| if active(t) { "►" } else { " " };
                     if !tv.connected {
-                        return format!("{}\n  off", tv.name);
+                        return format!("{}\n  {}", tv.name, gettext("off"));
                     }
                     let vol = tv.volume.map(|v| {
                         let muted = if tv.muted == Some(true) {
-                            " (muted)"
+                            gettext(" (muted)")
                         } else {
-                            ""
+                            String::new()
                         };
-                        format!("\n{} volume {v}{muted}", m(ScrollTarget::Volume))
+                        let label = gettext("volume {0}").replace("{0}", &v.to_string());
+                        format!("\n{} {label}{muted}", m(ScrollTarget::Volume))
                     });
-                    let bl = tv
-                        .backlight
-                        .map(|b| format!("\n{} backlight {b}", m(ScrollTarget::Backlight)));
+                    let bl = tv.backlight.map(|b| {
+                        let label = gettext("backlight {0}").replace("{0}", &b.to_string());
+                        format!("\n{} {label}", m(ScrollTarget::Backlight))
+                    });
                     format!(
                         "{}:{}{}",
                         tv.name,
@@ -254,6 +262,7 @@ impl Tray for TisvlayTray {
         };
 
         ToolTip {
+            // Brand name — see comment in `title()`.
             title: "TisVlay".into(),
             description,
             icon_name: "video-display".into(),
@@ -323,7 +332,7 @@ impl Tray for TisvlayTray {
         if !self.daemon_available {
             items.push(
                 StandardItem {
-                    label: "Daemon unavailable".into(),
+                    label: gettext("Daemon unavailable"),
                     enabled: false,
                     ..Default::default()
                 }
@@ -332,7 +341,7 @@ impl Tray for TisvlayTray {
         } else if self.tvs.is_empty() {
             items.push(
                 StandardItem {
-                    label: "No TVs configured".into(),
+                    label: gettext("No TVs configured"),
                     enabled: false,
                     ..Default::default()
                 }
@@ -359,7 +368,7 @@ impl Tray for TisvlayTray {
             let tx = self.cmd_tx.clone();
             let pending = self.open_gui_pending.clone();
             StandardItem {
-                label: "Settings".into(),
+                label: gettext("Settings"),
                 icon_name: "settings-configure".into(),
                 activate: Box::new(move |_tray| {
                     if pending.swap(true, Ordering::Relaxed) {
@@ -376,9 +385,12 @@ impl Tray for TisvlayTray {
             }
             .into()
         });
-        items.push(tv_item("Reload", "view-refresh", &self.cmd_tx, || {
-            TrayCommand::Reload
-        }));
+        items.push(tv_item(
+            gettext("Reload"),
+            "view-refresh",
+            &self.cmd_tx,
+            || TrayCommand::Reload,
+        ));
 
         // Quit is dev-only. In release builds the tray runs as a
         // systemd user service and end users should stop it via
@@ -386,9 +398,12 @@ impl Tray for TisvlayTray {
         #[cfg(debug_assertions)]
         {
             items.push(MenuItem::Separator);
-            items.push(tv_item("Quit", "application-exit", &self.cmd_tx, || {
-                TrayCommand::Quit
-            }));
+            items.push(tv_item(
+                gettext("Quit"),
+                "application-exit",
+                &self.cmd_tx,
+                || TrayCommand::Quit,
+            ));
         }
 
         items
@@ -433,7 +448,7 @@ fn build_connected_tv_menu(
 
     // Power Off
     let id = id.clone();
-    items.push(tv_item("Power Off", "system-shutdown", cmd_tx, {
+    items.push(tv_item(gettext("Power Off"), "system-shutdown", cmd_tx, {
         let id = id.clone();
         move || TrayCommand::PowerOff(id.clone())
     }));
@@ -455,7 +470,7 @@ fn build_connected_tv_menu(
     if let Some(bl) = tv.backlight {
         items.push(
             StandardItem {
-                label: format!("Backlight: {}", bl),
+                label: gettext("Backlight: {0}").replace("{0}", &bl.to_string()),
                 icon_name: "high-brightness".into(),
                 enabled: false,
                 ..Default::default()
@@ -465,7 +480,7 @@ fn build_connected_tv_menu(
     }
 
     items.push(backlight_item(
-        "Backlight Up (+10)",
+        gettext("Backlight Up (+10)"),
         "high-brightness",
         cmd_tx,
         &id,
@@ -475,7 +490,7 @@ fn build_connected_tv_menu(
         },
     ));
     items.push(backlight_item(
-        "Backlight Down (-10)",
+        gettext("Backlight Down (-10)"),
         "low-brightness",
         cmd_tx,
         &id,
@@ -487,28 +502,42 @@ fn build_connected_tv_menu(
 
     // Screen blank/unblank (visual mute — OLED-safe)
     if tv.is_screen_on {
-        items.push(backlight_item("Screen Off", "view-hidden", cmd_tx, &id, {
-            let id = id.clone();
-            move || TrayCommand::ScreenOff(id.clone())
-        }));
+        items.push(backlight_item(
+            gettext("Screen Off"),
+            "view-hidden",
+            cmd_tx,
+            &id,
+            {
+                let id = id.clone();
+                move || TrayCommand::ScreenOff(id.clone())
+            },
+        ));
     } else {
-        items.push(backlight_item("Screen On", "view-visible", cmd_tx, &id, {
-            let id = id.clone();
-            move || TrayCommand::ScreenOn(id.clone())
-        }));
+        items.push(backlight_item(
+            gettext("Screen On"),
+            "view-visible",
+            cmd_tx,
+            &id,
+            {
+                let id = id.clone();
+                move || TrayCommand::ScreenOn(id.clone())
+            },
+        ));
     }
 
     // Volume section
     items.push(MenuItem::Separator);
     if let Some(vol) = tv.volume {
         let muted_str = if tv.muted == Some(true) {
-            " (muted)"
+            gettext(" (muted)")
         } else {
-            ""
+            String::new()
         };
         items.push(
             StandardItem {
-                label: format!("Volume: {}{}", vol, muted_str),
+                label: gettext("Volume: {0}{1}")
+                    .replace("{0}", &vol.to_string())
+                    .replace("{1}", &muted_str),
                 icon_name: "audio-volume-medium".into(),
                 enabled: false,
                 ..Default::default()
@@ -518,7 +547,7 @@ fn build_connected_tv_menu(
     }
 
     items.push(volume_item(
-        "Volume Up (+10)",
+        gettext("Volume Up (+10)"),
         "audio-volume-high",
         cmd_tx,
         &id,
@@ -528,7 +557,7 @@ fn build_connected_tv_menu(
         },
     ));
     items.push(volume_item(
-        "Volume Down (-10)",
+        gettext("Volume Down (-10)"),
         "audio-volume-medium",
         cmd_tx,
         &id,
@@ -540,7 +569,11 @@ fn build_connected_tv_menu(
 
     let is_muted = tv.muted == Some(true);
     items.push(volume_item(
-        if is_muted { "Unmute" } else { "Mute" },
+        if is_muted {
+            gettext("Unmute")
+        } else {
+            gettext("Mute")
+        },
         if is_muted {
             "audio-volume-high"
         } else {
@@ -567,9 +600,9 @@ fn build_managed_toggle(
     let currently_managed = tv.managed;
     StandardItem {
         label: if currently_managed {
-            "Unmanage".into()
+            gettext("Unmanage")
         } else {
-            "Manage".into()
+            gettext("Manage")
         },
         icon_name: if currently_managed {
             "media-playback-pause"
@@ -592,7 +625,7 @@ fn build_disconnected_tv_menu(
 ) -> Vec<MenuItem<TisvlayTray>> {
     let id = tv.id.clone();
     let mut items = vec![tv_item(
-        "Power On (Wake)",
+        gettext("Power On (Wake)"),
         "system-run",
         cmd_tx,
         move || TrayCommand::PowerOn(id.clone()),
@@ -660,7 +693,7 @@ fn build_profile_submenu(
 
         submenu.push(
             SubMenu {
-                label: format!("User: {}", current_label),
+                label: gettext("User: {0}").replace("{0}", current_label),
                 icon_name: "im-user".into(),
                 submenu: vec![RadioGroup {
                     selected,
@@ -712,7 +745,7 @@ fn build_profile_submenu(
 
         submenu.push(
             SubMenu {
-                label: format!("System: {}", current_label),
+                label: gettext("System: {0}").replace("{0}", current_label),
                 icon_name: "system-users".into(),
                 submenu: vec![RadioGroup {
                     selected,
@@ -735,7 +768,7 @@ fn build_profile_submenu(
     }
 
     SubMenu {
-        label: "Profiles".into(),
+        label: gettext("Profiles"),
         icon_name: "system-user-list".into(),
         submenu,
         ..Default::default()
@@ -769,7 +802,7 @@ fn build_input_submenu(
     let tv_id = tv.id.clone();
 
     SubMenu {
-        label: "Input".into(),
+        label: gettext("Input"),
         icon_name: "input-tvremote-symbolic".into(),
         submenu: vec![
             RadioGroup {
