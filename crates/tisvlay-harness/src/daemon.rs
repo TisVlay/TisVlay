@@ -143,6 +143,9 @@ impl TestDaemon {
         // Tests use the default poll interval — the streaming-discovery
         // path is exercised through Layer-C end-to-end fixtures that
         // don't depend on a precise iteration period.
+        // Tests use the default poll interval — the streaming-
+        // discovery and manual-entry paths are exercised through
+        // Layer-C fixtures that don't depend on the exact value.
         let poll_interval = tisvlay_core::DiscoveryConfig::default().poll_interval();
         let manager_service =
             ManagerService::new(manager.clone(), registry_for_service, poll_interval);

@@ -19,7 +19,7 @@ In:
 2. Daemon-side enrichment chain: passive netlink read → vendor-supplied active probe → poll-with-deadline re-read. Best-effort throughout; missing-MAC is a normal outcome, not an error.
 3. Vendor-owned probe mechanism: new `async fn probe_arp_cache(&self, ip: IpAddr) -> Result<()>` on `TvConnector` (default no-op). LG override sends a single UDP byte to port 3001, bound to the kernel-resolved source IP for multi-NIC correctness. Vendor owns *how* the cache gets primed; daemon orchestrates.
 4. New netlink helper: `resolve_route_for_ip(ip) -> Option<RouteResolution>` returning both interface and `prefsrc` (preferred source IP) for the kernel's route to that destination. Reused by `probe_arp_cache` for multi-NIC-safe UDP socket binding; usable by SSDP and future enrichment paths too. Replaces the existing interface-only `resolve_interface_for_ip` helper (or lives alongside, TBD during implementation).
-5. Daemon-side input gate: RFC1918 + link-local IPv4 subnets only. IPv6 inputs (including `::ffff:x.x.x.x`) return empty map. Out-of-subnet IPv4 returns empty. Single guard at the RPC entry point; the connector trait keeps the family-agnostic `IpAddr` signature so an IPv6 follow-up doesn't reshape it.
+5. Daemon-side input gate: IPv4 correctness gate only — today's `arp_lookup` and `probe_arp_cache` only handle v4, so v6 inputs (including `::ffff:x.x.x.x`) return an empty map. The connector trait keeps the family-agnostic `IpAddr` signature so an IPv6 follow-up doesn't reshape it. *No subnet allowlist* — see Alternatives for why the v3 plan's RFC1918-guard was dropped.
 6. Wizard wiring: `on_manual_add` calls the RPC before transitioning to step 2; a distinct `manual-lookup-streaming` Slint property drives a focused loading state (not the discovery spinner); the Continue button is disabled while in flight (UI-side double-call guard); a cancel handle stashed alongside `WizardDiscoveryCancel` drops on `reset_wizard`; the wizard caps its own wait at 1 s so a hung RPC can't freeze the UI.
 7. Schema-form trust signal: when a field is populated via `autofill_schema(…)`, mark the rendered row with a small "auto-detected" badge that clears the moment the user edits. Applies uniformly to SSDP and manual paths (the new enrichment is the right moment to fix this).
 8. Wizard-side helper-text override: when enrichment returns no MAC, replace the field's default helper at render time with *"MAC not detected. Enter it manually to enable Wake-on-LAN (otherwise the TV won't power on from full-off)."* No schema change — see Alternatives.
@@ -28,9 +28,9 @@ In:
 
 Out:
 
-- **IPv6 support.** Filed as [docs/ideas/ipv6-discovery-and-enrichment.md](../ideas/ipv6-discovery-and-enrichment.md). IPv6 touches the whole discovery stack (SSDP multicast scoping, NDP vs ARP, ULA subnet guard) and is bounded follow-up work, not a one-line type change. v1 of this plan rejects IPv6 inputs at the daemon RPC entry point; trait signatures stay family-agnostic so the follow-up doesn't churn the API.
+- **IPv6 support.** Filed as [docs/ideas/ipv6-discovery-and-enrichment.md](../ideas/ipv6-discovery-and-enrichment.md). IPv6 touches the whole discovery stack (SSDP multicast scoping, NDP vs ARP) and is bounded follow-up work, not a one-line type change. v1 of this plan rejects IPv6 inputs at the daemon RPC entry point; trait signatures stay family-agnostic so the follow-up doesn't churn the API.
 - **Pair-time MAC capture.** Snoop ARP at successful-pair time, write the MAC back to the saved config. Pair always opens a real TCP connection, so ARP is guaranteed-warm at pair-success time. Filed as a follow-up because it touches the pair flow (which has its own async-spawn + progress-signal contract) rather than the enrichment layer.
-- **Per-caller rate limit.** Users don't pair multiple TVs per second; scripted abuse is bounded by the subnet guard (probes can only reach private subnets the user can already probe directly). Adding a token bucket would just be a HashMap-leak source for no real security benefit.
+- **Per-caller rate limit.** Users don't pair multiple TVs per second; a scripted abuser on the session bus can already `nc -u <ip> <port>` themselves at any rate. The daemon isn't a privilege-escalation surface here. Adding a token bucket would just be a HashMap-leak source for no real security benefit.
 - **Per-IP request coalesce.** The UI-side Continue-disabled gate prevents the only realistic GUI-driven double-call. A second simultaneous client (CLI, busctl) sending two probes to the same TV emits two UDP datagrams the TV silently discards — benign, not worth a coalesce layer's complexity.
 - **Active SSDP fallback** ("if SSDP didn't work, retry it more aggressively"). Doesn't help — same firewall blocks the response.
 - **mDNS-based MAC discovery.** Adjacent to the existing mDNS-fallback discovery idea in [docs/firewall.md](../firewall.md); out of scope here.
@@ -70,30 +70,29 @@ async fn enrich_manual_entry(
     // (a) Fast no-op for misfired empty callbacks.
     if vendor.is_empty() || address.is_empty() { return HashMap::new(); }
 
-    // (b) Parse + IPv4-only gate.
-    let Ok(IpAddr::V4(ip)) = address.parse::<IpAddr>() else { return HashMap::new(); };
+    // (b) Parse + IPv4-only correctness gate. IPv6 (including
+    //     ::ffff:x.x.x.x) returns empty because today's arp_lookup
+    //     and probe_arp_cache only handle v4. The gate widens once
+    //     those grow v6 support; see
+    //     docs/ideas/ipv6-discovery-and-enrichment.md.
+    let Ok(ip) = address.parse::<IpAddr>() else { return HashMap::new(); };
+    if !ip.is_ipv4() { return HashMap::new(); }
 
-    // (c) Subnet allowlist (RFC1918 + link-local). Public IPs return
-    //     empty without probing — limits the daemon's egress footprint
-    //     to "places the user can already reach themselves."
-    if !is_allowed_ipv4_subnet(ip) { return HashMap::new(); }
-
-    // (d) Vendor lookup. Unknown vendors degrade to empty.
+    // (c) Vendor lookup. Unknown vendors degrade to empty.
     let Some(connector) = registry.connector_for(vendor) else { return HashMap::new(); };
 
     let span = tracing::info_span!("enrich_manual_entry", %vendor, %ip);
     let _enter = span.enter();
     let started = Instant::now();
-    let ip = IpAddr::V4(ip);
 
-    // (e) Passive netlink read (free, succeeds for users who've
+    // (d) Passive netlink read (free, succeeds for users who've
     //     previously pinged/browsed the TV).
     if let Some(mac) = netlink::arp_lookup(ip).await {
         tracing::info!(source = "passive", elapsed_ms = started.elapsed().as_millis() as u64, "MAC resolved");
         return mac_result(mac);
     }
 
-    // (f) Vendor-supplied active probe. Connector chooses the
+    // (e) Vendor-supplied active probe. Connector chooses the
     //     mechanism (UDP byte to SSAP port for LG; future vendor
     //     could do TCP connect, mDNS query, vendor-specific HTTP).
     //     Default impl on TvConnector is a no-op, so unknown /
@@ -101,7 +100,7 @@ async fn enrich_manual_entry(
     //     Err is non-fatal — the netlink re-read might still hit.
     let _ = connector.probe_arp_cache(ip).await;
 
-    // (g) Poll netlink with early-out. Beats a fixed sleep: cache
+    // (f) Poll netlink with early-out. Beats a fixed sleep: cache
     //     typically resolves in tens of ms on a healthy LAN; only
     //     the "TV unreachable" case rides the full budget.
     //     tokio::time::sleep on the loop (rather than interval) so
@@ -268,7 +267,6 @@ Unit cases:
 - Probe-then-hit (arp_lookup returns None initially, Some on second poll iteration).
 - Miss (arp_lookup returns None throughout the budget).
 - Invalid input (empty strings, malformed IP, IPv6, IPv4-mapped IPv6, public IP).
-- Subnet guard config override (custom `[discovery] allow_subnets` accepts a public IP that the default would reject).
 - Unknown vendor (registry returns None — empty map).
 
 D-Bus integration test against `TestDaemon`:
@@ -279,11 +277,11 @@ D-Bus integration test against `TestDaemon`:
 
 One PR, two commits — split unconditionally for review clarity:
 
-1. **`feat(daemon): EnrichManualEntry RPC + connector probe_arp_cache + route resolution`** — daemon-side RPC, `TvConnector::probe_arp_cache` default + LG override, `resolve_route_for_ip` netlink helper, subnet guard, IPv4 gate, allow-subnets config knob, tracing span, netlink-stubbing scaffold, unit tests, D-Bus integration test against `TestDaemon`. Testable in isolation via `busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 EnrichManualEntry ss "lg" "192.168.1.170"`. GUI-free.
+1. **`feat(daemon): EnrichManualEntry RPC + connector probe_arp_cache`** — daemon-side RPC, `TvConnector::probe_arp_cache` default + LG override (`0.0.0.0:0` UDP send to SSAP wss port — kernel routing handles multi-NIC), IPv4 correctness gate, tracing span. Testable in isolation via `busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 EnrichManualEntry ss "lg" "192.168.1.170"`. GUI-free.
 
 2. **`feat(gui): wire manual-add to EnrichManualEntry + trust badge`** — wizard call site, distinct `manual-lookup-streaming` property, Continue-disabled gate, cancel sidecar, `reset_wizard` extension, `AutofilledRow.autofilled` field + `PairingFieldRow.autofilled` Slint property + per-field render badge, manual-path helper override via `manual-entry-mode` property. Daemon-side touch is zero.
 
-LOC estimate (rough): commit 1 ~500 LOC (RPC + chain ~80, subnet guard ~20, route helper ~50, connector trait + LG override ~40, allow_subnets config ~20, tracing ~10, stubbing scaffold ~60, unit tests ~120, integration test ~80, misc ~20); commit 2 ~250 LOC (wizard wiring ~80, trust badge ripple ~80, helper override ~30, Slint property updates ~30, reset_wizard extension ~10, misc ~20). **Total ~750 LOC.** Larger than the v1 plan's ~150-250 estimate suggested; primarily route-helper + test scaffolding + trust-badge ripple.
+LOC estimate (rough): commit 1 ~250 LOC (RPC + chain ~80, connector trait + LG override ~40, tracing ~10, misc ~30, integration test deferred per plan delta below); commit 2 ~250 LOC (wizard wiring ~80, trust badge ripple ~80, helper override ~30, Slint property updates ~30, reset_wizard extension ~10, misc ~20). **Total ~500 LOC.** Plan delta from v3: dropped the subnet allowlist (~80 LOC + 9 tests) and `resolve_route_for_ip` netlink helper (~60 LOC) plus the netlink-stubbing scaffold (~60 LOC) — each independently justified during implementation; see Alternatives for the subnet guard rationale, the commit body for the route helper, and the "Open questions" section for the stubbing call.
 
 Pre-merge:
 
@@ -300,7 +298,9 @@ Pre-merge:
 - **Pair-time MAC capture as primary path.** Compelling: pair always opens a real TCP connection, so ARP is guaranteed-warm at pair-success time. Write the MAC into the saved config from the daemon side. Wizard MAC field stays blank during form-fill. Decided against as the primary path because: (a) the wizard's `autofill` mechanism already exists and the symmetric SSDP/manual story is cleaner, (b) the user benefits from seeing what got auto-detected (trust signal), (c) pair-time capture is still valuable as belt-and-suspenders — filed as follow-up.
 - **`probe_port() -> Option<u16>` instead of `probe_arp_cache(ip)`.** First-draft shape. Rejected: leaks the daemon's chosen priming mechanism (UDP) into the trait. A vendor whose pairing port is TCP-only, or whose UDP port is firewalled, has to lie to the trait or get nothing. `probe_arp_cache` puts the priming decision in the same crate that owns the protocol knowledge, matching the existing `connect` / `wake` shape.
 - **Extend `PairingField` with a `helper_text` field.** First-draft assumption. Rejected — the field already exists as `helper`. Manual-path-specific text is a wizard-side render override, not a schema change.
-- **Per-caller token-bucket rate limit.** Pre-v3 plan included this. Dropped: the realistic abuse model (scripted scanning loop) is bounded by the subnet guard to "places the user can already probe directly." The HashMap eviction work + the D-Bus caller-identity workarounds (zbus 5.x doesn't expose unique-name via `#[zbus(header)]`) are real costs for no real security benefit. Subnet guard alone is sufficient.
+- **Per-caller token-bucket rate limit.** Pre-v3 plan included this. Dropped: a scripted abuser on the session bus can already `nc -u <ip> <port>` themselves at any rate — the daemon isn't a privilege-escalation surface here. The HashMap eviction work + the D-Bus caller-identity workarounds (zbus 5.x doesn't expose unique-name via `#[zbus(header)]`) are real costs for no real security benefit.
+
+- **Subnet allowlist (RFC1918 + link-local + configurable `[discovery] allow_subnets`).** v3 plan included this as defense against the daemon being used as a scriptable port scanner. Dropped in v3.1: with the rate limit gone, the guard's only effect is "saves one UDP datagram per misfired manual-add to a public IP." The realistic abuse scenarios (scripted scanning loop) are bounded by what the local user can already do directly with `nc -u`. AND with IPv6 support coming shortly, the guard would either need to grow IPv6 CIDR parsing + `is_unique_local()` + ULA/link-local-v6 helpers (more work, same zero defensive value) or ship asymmetric (v4-guarded, v6-wide-open — worse than either uniform answer). Removed entirely; just the IPv4-family correctness gate remains.
 - **Per-IP request coalesce** (`Mutex<HashMap<IpAddr, broadcast::Sender<…>>>` keyed per IP). Pre-v3 plan included this. Dropped: the UI-side Continue-disabled gate handles the GUI-driven double-call case. A second simultaneous client (CLI, busctl) sending two probes to the same TV emits two trivial UDP datagrams the TV silently discards — benign, not worth the coalesce-machinery complexity.
 - **`SO_BINDTODEVICE` for outbound-interface binding** instead of source-IP binding. Cleaner conceptually but requires `CAP_NET_RAW`, which the hardened systemd unit forbids. Source-IP binding via route lookup achieves the same outbound-interface selection with zero elevated capabilities.
 - **Raw-socket arping** via libpcap / `CAP_NET_RAW`. Definitive ARP probe, but requires elevating the daemon's privileges — same `CAP_NET_RAW` blocker. UDP probe achieves ~the same hit rate without any privilege escalation.
@@ -310,8 +310,6 @@ Pre-merge:
 - **Always do the active probe** (even after passive lookup succeeds). Wastes the polling budget for users whose ARP cache is already warm. Not worth it — passive-then-conditional-probe is strictly better.
 - **Cache enrichment results in the daemon.** Tempting (avoids re-probing on every manual-add retry), but introduces a stale-cache failure mode (MAC changes after TV's NIC swap) for a problem we don't have. Defer until field reports indicate caching matters.
 - **`_source` debug key in the returned `a{ss}` map** (e.g. `{"mac": "…", "_source": "active"}`). Considered for the wizard's trust-badge tooltip. Dropped: leaks daemon implementation detail into the wire shape, and the underscore-prefix-flag-as-metadata convention is fragile (a future vendor could pick `_foo` and break it). The daemon emits `source` in its `tracing` span for ops; the wizard's badge just keys off "value was autofilled," no source detail needed.
-- **Address parsing via `ipnet` crate for the subnet guard.** Considered. The guard is a small fixed set (RFC1918 + link-local IPv4); `std::net::Ipv4Addr` has `is_private()` and `is_link_local()` methods that cover exactly the v1 scope. No new dep needed for v1. The `[discovery] allow_subnets` config knob (for lab/VPN edge cases) parses single IPs or `a.b.c.d/n` strings; `ipnet` becomes worthwhile only if the knob actually gets used (defer).
-
 ## Open questions
 
 - **Does `resolve_interface_for_ip` survive alongside `resolve_route_for_ip`?** Plan adds the latter; the former exists at [crates/tisvlayd/src/netlink.rs:29](../../crates/tisvlayd/src/netlink.rs#L29). If no caller needs interface-only, replace; if anything still does, keep both. Verify during implementation.
@@ -325,7 +323,6 @@ Per [docs/plans/README.md](README.md):
 - The `--bind-port` / config / RPC mechanics around discovery now have two distinct enrichment entry points (`enrich_with_arp` in the streaming/one-shot path, `enrich_manual_entry` in the wizard manual-add path). When both ship, the architectural note worth folding into [docs/design.md](../design.md)'s future Discovery subsection is: *MAC enrichment is a kernel-ARP-cache read with vendor-controlled active priming, not a separate protocol — and that's a deliberate scope choice over mDNS / vendor-specific HTTP probes.*
 - `TvConnector::probe_arp_cache` becomes part of the public connector contract — document under the trait's API surface in `docs/design.md`'s vendor-backend section. Default no-op means future vendors opt in only when relevant.
 - `resolve_route_for_ip` netlink helper is reusable beyond the manual-entry path (SSDP outbound-interface selection, future enrichment paths) — document under `docs/watchers/network.md` alongside the existing carrier/route resolution.
-- Allowed-subnet config (`[discovery] allow_subnets`) becomes a config knob — document in [docs/configs/daemon.toml](../configs/daemon.toml) alongside `bind_port` and `poll_interval_ms`.
 - Pair-time MAC capture follow-up: file as `docs/ideas/pair-time-mac-capture.md` if not implemented in the same PR.
 - IPv6 deferred work already filed at [docs/ideas/ipv6-discovery-and-enrichment.md](../ideas/ipv6-discovery-and-enrichment.md) — cross-link from `docs/design.md`'s Discovery subsection so future contributors find it.
 - Schema-form trust badge becomes part of the schema-form rendering contract; document briefly in the wizard's section of `docs/design.md` so future field types know to participate.

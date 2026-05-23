@@ -29,6 +29,16 @@ const STREAMING_DISCOVERY_HARD_CAP: Duration = Duration::from_secs(5 * 60);
 /// iteration sends one burst then waits this long for responses.
 const STREAMING_SCAN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Budget for the post-probe poll loop in `EnrichManualEntry`. The
+/// kernel typically resolves a fresh ARP entry in tens of ms on a
+/// healthy LAN; only the "TV unreachable" path rides the full
+/// budget. The polling is the cap, not the typical wall-time.
+const ARP_RESOLVE_BUDGET: Duration = Duration::from_millis(500);
+
+/// Outer wall-time cap on the whole `EnrichManualEntry` chain.
+/// Daemon-side backstop independent of the wizard's own timeout.
+const ENRICH_MANUAL_ENTRY_CAP: Duration = Duration::from_millis(600);
+
 /// D-Bus Manager service.
 ///
 /// Provides TV management operations at `/org/tisvlay/Manager`.
@@ -75,6 +85,105 @@ async fn enrich_with_arp(mut tv: DiscoveredTv) -> DiscoveredTv {
         tv.vendor_data.insert("mac".to_string(), mac.to_string());
     }
     tv
+}
+
+/// Drive the manual-entry enrichment chain: validate input, gate to
+/// IPv4, passive ARP lookup, vendor-controlled active probe on miss,
+/// poll netlink with deadline. Always returns — empty map for any
+/// "nothing to do" outcome (invalid IP, IPv6 input, unknown vendor,
+/// or the ARP chain found nothing).
+///
+/// Free function for testability and so the RPC method body stays
+/// thin. Wrapped in an outer `tokio::time::timeout` so even a
+/// pathological netlink stall can't burst past `ENRICH_MANUAL_ENTRY_CAP`.
+async fn enrich_manual_entry(
+    registry: &BackendRegistry,
+    vendor: &str,
+    address: &str,
+) -> HashMap<String, String> {
+    let chain = enrich_manual_entry_inner(registry, vendor, address);
+    tokio::time::timeout(ENRICH_MANUAL_ENTRY_CAP, chain)
+        .await
+        .unwrap_or_default()
+}
+
+async fn enrich_manual_entry_inner(
+    registry: &BackendRegistry,
+    vendor: &str,
+    address: &str,
+) -> HashMap<String, String> {
+    // (a) Empty-input fast path. Defensive against misfired callbacks.
+    if vendor.is_empty() || address.is_empty() {
+        return HashMap::new();
+    }
+
+    // (b) Parse + IPv4-only correctness gate. IPv6 (including
+    //     ::ffff:x.x.x.x) returns empty because today's
+    //     arp_lookup and probe_arp_cache only handle v4. The gate
+    //     widens to IPv4|IPv6 once those grow v6 support — see
+    //     docs/ideas/ipv6-discovery-and-enrichment.md.
+    let Ok(ip) = address.parse::<std::net::IpAddr>() else {
+        return HashMap::new();
+    };
+    if !ip.is_ipv4() {
+        return HashMap::new();
+    }
+
+    // (c) Vendor lookup. Unknown vendors collapse to empty.
+    let Ok(connector) = registry.get_connector(vendor) else {
+        return HashMap::new();
+    };
+
+    let span = tracing::info_span!("enrich_manual_entry", %vendor, %ip);
+    let _enter = span.enter();
+    let started = Instant::now();
+
+    // (d) Passive netlink read (free; succeeds for users who've
+    //     previously pinged/browsed the TV).
+    if let Some(mac) = crate::netlink::arp_lookup(ip).await {
+        info!(
+            source = "passive",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "MAC resolved"
+        );
+        return mac_result(mac);
+    }
+
+    // (e) Vendor-supplied active probe. Connector decides mechanism
+    //     (UDP byte to SSAP port for LG). Default impl is a no-op;
+    //     probe-less vendors degrade gracefully to passive-only.
+    //     Err is non-fatal — netlink re-read might still hit.
+    if let Err(e) = connector.probe_arp_cache(ip).await {
+        debug!(error = %e, "probe_arp_cache failed; continuing to poll");
+    }
+
+    // (f) Poll netlink with deadline. Beats a fixed sleep: cache
+    //     typically resolves in tens of ms on a healthy LAN; only
+    //     the "TV unreachable" case rides the full budget.
+    let deadline = Instant::now() + ARP_RESOLVE_BUDGET;
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        if let Some(mac) = crate::netlink::arp_lookup(ip).await {
+            info!(
+                source = "active",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "MAC resolved"
+            );
+            return mac_result(mac);
+        }
+    }
+    info!(
+        source = "none",
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "MAC not resolved"
+    );
+    HashMap::new()
+}
+
+fn mac_result(mac: tisvlay_core::MacAddress) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    out.insert("mac".to_string(), mac.to_string());
+    out
 }
 
 #[interface(name = "org.tisvlay.Manager1")]
@@ -266,6 +375,30 @@ impl ManagerService {
             cancel.notify_one();
         }
         Ok(())
+    }
+
+    /// Enrich a user-typed (vendor, IP) pair with auto-detected
+    /// values for the pairing form — currently just `vendor_data["mac"]`
+    /// via a kernel ARP-cache read with vendor-controlled active
+    /// priming as a fallback.
+    ///
+    /// Returns the same `vendor_data`-shaped map that `DiscoveryFound`
+    /// carries, so callers can feed it through their existing
+    /// schema-form autofill engine uniformly with the SSDP path.
+    ///
+    /// Always returns `Ok`. Empty map means "nothing to autofill" —
+    /// invalid IP, IPv6 input, out-of-subnet, unknown vendor, or
+    /// the ARP chain found nothing. The wizard treats empty as a
+    /// soft outcome (field stays blank with a "MAC not detected"
+    /// helper) rather than a hard failure. IPv4 only in v1; see
+    /// `docs/ideas/ipv6-discovery-and-enrichment.md` for the v6
+    /// follow-up scope.
+    async fn enrich_manual_entry(
+        &self,
+        vendor: String,
+        address: String,
+    ) -> Result<HashMap<String, String>, DaemonError> {
+        Ok(enrich_manual_entry(&self.registry, &vendor, &address).await)
     }
 
     // -------------------------------------------------------------------------

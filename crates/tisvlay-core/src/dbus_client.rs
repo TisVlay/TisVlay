@@ -168,6 +168,19 @@ trait TisvlayManager {
     /// Idempotent — an unknown session id is not an error.
     fn stop_discovery(&self, session_id: &str) -> zbus::Result<()>;
 
+    /// Enrich a user-typed (vendor, address) pair for the pairing
+    /// wizard's manual-entry path. Returns the same `vendor_data`-
+    /// shaped map that `DiscoveryFound` carries (currently just
+    /// `"mac"` when ARP resolution succeeds, empty otherwise).
+    /// Always succeeds at the wire layer; empty map means "nothing
+    /// to autofill" — invalid IP, IPv6 input, out-of-subnet,
+    /// unknown vendor, or the ARP chain found nothing.
+    fn enrich_manual_entry(
+        &self,
+        vendor: &str,
+        address: &str,
+    ) -> zbus::Result<std::collections::HashMap<String, String>>;
+
     /// Get supported vendors.
     /// Returns: [(vendor_id, vendor_name)]
     fn get_supported_vendors(&self) -> zbus::Result<Vec<(String, String)>>;
@@ -1149,6 +1162,21 @@ impl DaemonClient {
             .stop_discovery(session_id)
             .await
             .context("Failed to stop discovery session")
+    }
+
+    /// Enrich a user-typed manual-entry (vendor, address) for the
+    /// pairing wizard's MAC autofill story. Returns the same
+    /// `vendor_data`-shaped map that the discovered-TV path
+    /// produces; empty when nothing can be auto-detected.
+    pub async fn enrich_manual_entry(
+        &self,
+        vendor: &str,
+        address: &str,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        self.manager
+            .enrich_manual_entry(vendor, address)
+            .await
+            .context("Failed to enrich manual entry")
     }
 
     /// Get supported vendors.

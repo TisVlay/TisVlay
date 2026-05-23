@@ -33,6 +33,7 @@ use crate::{
     TvState,
 };
 use async_trait::async_trait;
+use std::net::IpAddr;
 
 /// Communication transport used by a backend to connect to a device.
 ///
@@ -508,6 +509,25 @@ pub trait TvConnector: Send + Sync {
             .into_iter()
             .filter(|f| f.visibility == crate::FieldVisibility::UserInput)
             .collect()
+    }
+
+    /// Send a probe to `ip` that primes the kernel ARP/NDP cache as
+    /// a side effect. Best-effort: the daemon uses this only as a
+    /// fallback when passive netlink lookup misses, and treats
+    /// `Err(_)` as non-fatal — it still re-reads the cache afterward
+    /// (another process may have primed the entry concurrently).
+    ///
+    /// Default no-op. Vendors that talk to an IP-addressed device
+    /// (LG, future Sony/Samsung) should override to send a single
+    /// transport-layer datagram or open a TCP connection that
+    /// triggers the kernel's neighbour resolution on the way out.
+    ///
+    /// IP family agnostic by signature; today's daemon callers only
+    /// invoke this with IPv4. An IPv6 follow-up (see
+    /// `docs/ideas/ipv6-discovery-and-enrichment.md`) widens the
+    /// daemon's input gate without reshaping this trait.
+    async fn probe_arp_cache(&self, _ip: IpAddr) -> Result<()> {
+        Ok(())
     }
 }
 

@@ -5,8 +5,7 @@ The current stack — SSDP search ([crates/tisvlay-ssdp/src/lib.rs](../../crates
 ## What v1 does in lieu
 
 - `tisvlay-ssdp::SearchOptions::bind_addr` rejects IPv6 explicitly with `Error::Ipv6BindUnsupported`. SSDP discovery is IPv4-only (`239.255.255.250:1900`).
-- `Manager1.EnrichManualEntry` gates inputs to `IpAddr::V4` at the daemon entry point — IPv6 addresses (including IPv4-mapped `::ffff:x.x.x.x`) return an empty map alongside other "nothing to do" outcomes (unknown vendor, invalid IP, out-of-subnet).
-- Subnet allowlist covers RFC1918 + link-local only — no IPv6 ULA, no IPv6 link-local.
+- `Manager1.EnrichManualEntry` gates inputs to `IpAddr::V4` at the daemon entry point — IPv6 addresses (including IPv4-mapped `::ffff:x.x.x.x`) return an empty map alongside other "nothing to do" outcomes (unknown vendor, invalid IP).
 - `arp_lookup` accepts `IpAddr` in its signature but in practice the IPv4 case is the only one exercised; the IPv6 path is dead code today.
 
 ## What enabling IPv6 entails
@@ -36,13 +35,6 @@ The harder piece. IPv6 SSDP uses `ff02::c` (link-local scope) for M-SEARCH, with
 - Caller-supplied interface (push the interface-selection responsibility outward)
 
 Both are visible API changes — `SearchOptions` grows an `interface: Option<String>` field, or `search` returns a per-interface stream of streams. Pick the API direction when implementing; both have precedent in other UPnP libraries.
-
-### Subnet allowlist expansion
-
-The manual-entry enrichment's subnet guard widens to include:
-
-- `fc00::/7` — IPv6 ULA (the v6 analogue of RFC1918)
-- `fe80::/10` — IPv6 link-local (legitimate for local TVs that don't have a globally-routable address)
 
 The IPv4-mapped-IPv6 case (`::ffff:x.x.x.x`) is worth canonicalizing rather than rejecting at this point — once v6 is supported in earnest, surfacing it as v4 is the friendlier UX.
 

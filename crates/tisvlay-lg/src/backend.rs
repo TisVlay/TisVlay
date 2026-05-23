@@ -783,6 +783,27 @@ impl TvConnector for LgConnector {
             },
         ]
     }
+
+    async fn probe_arp_cache(&self, ip: std::net::IpAddr) -> Result<()> {
+        // Single-byte UDP datagram to the SSAP wss port. The kernel
+        // resolves ARP (or NDP, for v6) before sending; that's the
+        // side effect we want. The TV's UDP stack discards the
+        // payload silently — no TLS handshake side-effect, no
+        // inbound port needed, no raw sockets / CAP_NET_RAW.
+        //
+        // Bind is `0.0.0.0:0` deliberately: the kernel's routing
+        // table picks the correct outbound NIC + source IP for the
+        // destination, which is the right behavior on typical
+        // multi-NIC hosts. Explicit source-IP binding via netlink
+        // route lookup would only matter for VPN-policy-routing
+        // edge cases that aren't in v1 scope — see
+        // docs/plans/manual-entry-mac-autofill.md alternatives.
+        let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        let _ = socket
+            .send_to(&[0u8], (ip, crate::endpoints::WSS_PORT))
+            .await;
+        Ok(())
+    }
 }
 
 /// LG-specific network discovery.
