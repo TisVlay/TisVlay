@@ -117,22 +117,32 @@ async fn enrich_manual_entry_inner(
         return HashMap::new();
     }
 
-    // (b) Parse + IPv4-only correctness gate. IPv6 (including
-    //     ::ffff:x.x.x.x) returns empty because today's
-    //     arp_lookup and probe_arp_cache only handle v4. The gate
-    //     widens to IPv4|IPv6 once those grow v6 support — see
-    //     docs/plans/ipv6-support.md.
+    // (b) Parse the address (any IP family). Malformed input
+    //     collapses to empty.
     let Ok(ip) = address.parse::<std::net::IpAddr>() else {
         return HashMap::new();
     };
-    if !ip.is_ipv4() {
-        return HashMap::new();
-    }
 
     // (c) Vendor lookup. Unknown vendors collapse to empty.
-    let Ok(connector) = registry.get_connector(vendor) else {
+    let Some(registered) = registry.get(vendor) else {
         return HashMap::new();
     };
+
+    // (d) Capability-aware family gate. Vendors declare which IP
+    //     families they support via `Capabilities::IPV4`/`IPV6`
+    //     (see docs/plans/ipv6-support.md). Inputs whose family the
+    //     vendor hasn't claimed collapse to empty — symmetric with
+    //     the wizard's form-build-time gating, so a v6 address typed
+    //     against a v4-only vendor never gets a no-op probe.
+    let caps = registered.backend.capabilities();
+    let family_supported = match ip {
+        std::net::IpAddr::V4(_) => caps.contains(tisvlay_core::Capabilities::IPV4),
+        std::net::IpAddr::V6(_) => caps.contains(tisvlay_core::Capabilities::IPV6),
+    };
+    if !family_supported {
+        return HashMap::new();
+    }
+    let connector = registered.connector.as_ref();
 
     let span = tracing::info_span!("enrich_manual_entry", %vendor, %ip);
     let _enter = span.enter();
