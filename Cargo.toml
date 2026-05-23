@@ -88,14 +88,10 @@ indexmap = "2"
 # NetworkManager's connection-uuid pattern.
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
-# SSDP discovery (vendor-neutral transport lives in `tisvlay-ssdp`
-# below; `ssdp-client` was removed in favor of an in-workspace crate
-# that supports source-port bind for firewall-friendly discovery).
+# SSDP discovery support (the multicast transport itself lives in
+# the in-workspace `tisvlay-ssdp` crate).
 urlencoding = "2"
 url = "2"
-
-# Async stream macro (used by `tisvlay-ssdp` to build the response
-# stream from the receive loop).
 async-stream = "0.3"
 futures-core = "0.3"
 
