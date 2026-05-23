@@ -130,6 +130,27 @@ rustPlatform.buildRustPackage (finalAttrs: {
   '';
   dontPatchELF = true;
 
+  # Scope the build to the shipping binary crates. cargo pulls in
+  # the full dependency closure (tisvlay-core, tisvlay-ssdp,
+  # tisvlay-lg, tisvlay-backends, …) automatically, so this is the
+  # minimal set — and matches the justfile's `package-build` recipe
+  # so distro and Nix derivations build the same artifacts. Without
+  # this scoping, buildRustPackage's default `cargo build` would also
+  # compile dev-only crates (tisvlay-mock / tisvlay-test /
+  # tisvlay-harness) that aren't part of the shipped binaries.
+  cargoBuildFlags = [
+    "-p"
+    "tisvlayd"
+    "-p"
+    "tisvlay-cli"
+    "-p"
+    "tisvlay-session"
+    "-p"
+    "tisvlay-tray"
+    "-p"
+    "tisvlay-gui"
+  ];
+
   useNextest = true;
 
   # Tests need the `mock` feature (and other test-only features) across
