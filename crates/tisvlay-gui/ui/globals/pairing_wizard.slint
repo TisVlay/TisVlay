@@ -19,9 +19,18 @@ export struct WizardDiscoveredTv {
     hw-model: string,
 }
 
+// `supports-ipv4` / `supports-ipv6` mirror the vendor's
+// `Capabilities::IPV4` / `Capabilities::IPV6` bits, fetched via
+// `Manager1.GetVendorCapabilities` at vendor-list-publish time and
+// kept on the option so any vendor-aware UX (placeholder text,
+// validator hints, badges) reads them directly from the
+// currently-selected option rather than round-tripping the daemon
+// on every keystroke.
 export struct VendorOption {
     id: string,
     name: string,
+    supports-ipv4: bool,
+    supports-ipv6: bool,
 }
 
 // One row in the dynamic pairing-form schema. Mirrors

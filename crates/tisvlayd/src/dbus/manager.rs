@@ -427,6 +427,31 @@ impl ManagerService {
             .collect()
     }
 
+    /// Get the `Capabilities` bitflag for one vendor as the same
+    /// kebab-case string list `Capabilities::to_strings()` emits
+    /// ("power", "screen", "ipv4", "ipv6", …). Unknown vendor →
+    /// empty list (not an error — the GUI's wizard treats absent
+    /// caps as "feature unavailable", which is the safe default).
+    ///
+    /// Additive sibling to `GetSupportedVendors` rather than a
+    /// breaking shape change to its tuple — keeps existing clients
+    /// working without a wire negotiation.
+    fn get_vendor_capabilities(&self, vendor: String) -> Vec<String> {
+        debug!(vendor = %vendor, "D-Bus: GetVendorCapabilities");
+        self.registry
+            .get(&vendor)
+            .map(|registered| {
+                registered
+                    .backend
+                    .capabilities()
+                    .to_strings()
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Get the pairing-form schema for a vendor backend.
     ///
     /// Returns a JSON-serialized `Vec<PairingField>` describing the

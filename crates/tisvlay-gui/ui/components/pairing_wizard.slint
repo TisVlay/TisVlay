@@ -471,7 +471,23 @@ component StepDiscover {
                             font-weight: 500;
                         }
                         LineEditField {
-                            placeholder-text: "192.168.1.100";
+                            // Vendor-aware placeholder. The selected
+                            // vendor's `supports-ipv4` / `supports-ipv6`
+                            // flags come from
+                            // `Manager1.GetVendorCapabilities` —
+                            // v6-only vendors get the RFC 3849
+                            // documentation prefix; everything else
+                            // (v4-only and v4+v6) keeps the familiar
+                            // v4 example. The bounds check (`length
+                            // > index`) covers the
+                            // zero-registered-vendor edge so we never
+                            // index an empty model.
+                            placeholder-text:
+                                root.supported-vendors.length > root.manual-vendor-index
+                                && root.supported-vendors[root.manual-vendor-index].supports-ipv6
+                                && !root.supported-vendors[root.manual-vendor-index].supports-ipv4
+                                    ? "2001:db8::1"
+                                    : "192.168.1.100";
                             font-family: "ui-monospace, monospace";
                             text <=> root.manual-ip;
                             edited(v) => { root.manual-ip-edited(v); }
