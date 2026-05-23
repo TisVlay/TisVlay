@@ -61,7 +61,7 @@ impl TvBackend for LgBackend {
         // SLAAC ULA — same cert chain, same TLS 1.3 / X25519 /
         // RSA-PSS as v4, same rustls path. SSAP is JSON over WS so
         // the IP family is invisible above the socket layer.
-        Capabilities::ALL | Capabilities::IPV4 | Capabilities::IPV6
+        Capabilities::STOCK | Capabilities::IPV4 | Capabilities::IPV6
     }
 }
 
@@ -96,7 +96,7 @@ impl LgConnection {
         Self {
             client: Some(client),
             config,
-            capabilities: Capabilities::ALL,
+            capabilities: Capabilities::STOCK,
             hardware_id: std::sync::Arc::new(std::sync::RwLock::new(hardware_id)),
         }
     }
@@ -1346,7 +1346,7 @@ mod tests {
         // Exercise each TvConnection method.
         assert_eq!(conn.vendor_id(), "lg");
         assert!(conn.is_connected());
-        assert_eq!(conn.capabilities(), Capabilities::ALL);
+        assert_eq!(conn.capabilities(), Capabilities::STOCK);
 
         conn.screen_off().await.unwrap();
         conn.screen_on().await.unwrap();

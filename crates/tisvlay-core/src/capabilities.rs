@@ -90,9 +90,9 @@ bitflags! {
         // are *computed*, not stored separately — see Capabilities doc
         // comment for the design rationale.
         //
-        // Deliberately not part of ALL so existing call sites that use
-        // ALL don't silently auto-claim a transport family they haven't
-        // verified. Each vendor opts in explicitly.
+        // Deliberately not part of STOCK so existing call sites that
+        // use STOCK don't silently auto-claim a transport family they
+        // haven't verified. Each vendor opts in explicitly.
 
         /// Transport supports IPv4.
         ///
@@ -114,11 +114,17 @@ bitflags! {
         /// shape: WebSocket yes, SSDP no).
         const IPV6 = 0b0010_0000_0000;
 
-        /// All *feature* capabilities combined. Transport-family bits
+        /// The stock feature set — the conventional baseline a typical
+        /// TV backend is expected to expose. Transport-family bits
         /// (IPV4, IPV6) are deliberately excluded — see their doc
-        /// comments above — so vendors using `ALL` don't silently
+        /// comments above — so vendors using `STOCK` don't silently
         /// claim a transport family they haven't verified.
-        const ALL = Self::POWER.bits()
+        ///
+        /// Treat this as a curated baseline, not a literal enumeration:
+        /// future feature bits (RECORD, EPG, MEDIA_PLAYBACK, …) should
+        /// stay out of STOCK for the same opt-in reason. Vendors that
+        /// genuinely support a newly-added feature OR it in themselves.
+        const STOCK = Self::POWER.bits()
             | Self::SCREEN.bits()
             | Self::VOLUME.bits()
             | Self::MUTE.bits()
@@ -272,8 +278,8 @@ mod tests {
     }
 
     #[test]
-    fn test_capabilities_all() {
-        let caps = Capabilities::ALL;
+    fn test_capabilities_stock() {
+        let caps = Capabilities::STOCK;
         let strings = caps.to_strings();
 
         assert_eq!(strings.len(), 8);
@@ -289,13 +295,13 @@ mod tests {
 
     #[test]
     fn test_transport_capabilities_round_trip() {
-        // IPV4 / IPV6 are deliberately *not* in ALL — vendors opt in
+        // IPV4 / IPV6 are deliberately *not* in STOCK — vendors opt in
         // explicitly per the doc comments on each variant. Verify the
-        // bits are independent of the feature-bit ALL mask.
-        assert!(!Capabilities::ALL.contains(Capabilities::IPV4));
-        assert!(!Capabilities::ALL.contains(Capabilities::IPV6));
+        // bits are independent of the feature-bit STOCK mask.
+        assert!(!Capabilities::STOCK.contains(Capabilities::IPV4));
+        assert!(!Capabilities::STOCK.contains(Capabilities::IPV6));
 
-        let caps = Capabilities::ALL | Capabilities::IPV4 | Capabilities::IPV6;
+        let caps = Capabilities::STOCK | Capabilities::IPV4 | Capabilities::IPV6;
         let strings = caps.to_strings();
         assert!(strings.contains(&"ipv4"));
         assert!(strings.contains(&"ipv6"));

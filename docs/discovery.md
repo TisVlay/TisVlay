@@ -42,7 +42,7 @@ Always returns `Ok(...)`. Empty map means "nothing to autofill" — invalid IP, 
 
 ## Per-vendor transport family
 
-Vendors declare which IP families their transport supports via two bits on the `Capabilities` bitflag: `IPV4` and `IPV6`. Deliberately *not* part of `Capabilities::ALL` so vendors that use `ALL` for the feature set don't silently auto-claim a transport family they haven't verified. LG WebOS today declares both (SSAP WebSocket works identically over v4 and v6 — verified end-to-end, including the rustls cert chain and the SSAP register/subscribe handshake).
+Vendors declare which IP families their transport supports via two bits on the `Capabilities` bitflag: `IPV4` and `IPV6`. Deliberately *not* part of `Capabilities::STOCK` (the conventional baseline feature set), so vendors that use `STOCK` for the feature set don't silently auto-claim a transport family they haven't verified. LG WebOS today declares both (SSAP WebSocket works identically over v4 and v6 — verified end-to-end, including the rustls cert chain and the SSAP register/subscribe handshake).
 
 Three layers consume these bits:
 
