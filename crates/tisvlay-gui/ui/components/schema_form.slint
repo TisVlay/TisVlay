@@ -117,11 +117,40 @@ export component SchemaForm {
 
         for f[i] in root.schema-fields: VerticalLayout {
             spacing: Design.gap-form;
-            if f.field-type != "bool": Text {
-                text: f.required ? f.label + " *" : f.label;
-                color: Theme.text;
-                font-size: Design.font-meta;
-                font-weight: 500;
+            if f.field-type != "bool": HorizontalLayout {
+                spacing: Design.gap-stack;
+                alignment: start;
+                Text {
+                    text: f.required ? f.label + " *" : f.label;
+                    color: Theme.text;
+                    font-size: Design.font-meta;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                }
+                // "Auto-detected" trust badge — appears when the
+                // row's `value` came from autofill (SSDP discovery
+                // or manual-entry MAC enrichment) rather than the
+                // user typing. Cleared on first user edit by the
+                // Rust-side `field-value-edited` handler flipping
+                // `autofilled = false` for the row.
+                if f.autofilled: Rectangle {
+                    background: Theme.success-soft;
+                    border-color: Theme.success;
+                    border-width: Design.border-thin;
+                    border-radius: 4px;
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        padding-top: 2px;
+                        padding-bottom: 2px;
+                        Text {
+                            text: @tr("Auto-detected");
+                            color: Theme.success-text;
+                            font-size: Design.font-mini;
+                            font-weight: 500;
+                        }
+                    }
+                }
             }
             FieldRenderer {
                 field: f;

@@ -216,6 +216,10 @@ component StepDiscover {
     in property <[string]> supported-vendor-names;
     in property <bool> streaming;
     in property <string> error-message;
+    /// True while the manual-entry MAC enrichment RPC is in flight
+    /// (after Continue, before step 2 paints). Gates the Continue
+    /// button so double-clicks can't spawn parallel RPCs.
+    in property <bool> manual-lookup-streaming;
     in-out property <int> selected-index;
     // Index into `supported-vendors`; ComboBox is bound to it via
     // `current-index <=>` so user picks round-trip without a Rust
@@ -477,8 +481,10 @@ component StepDiscover {
                     VerticalLayout {
                         alignment: end;
                         Button {
-                            text: @tr("Continue");
-                            enabled: root.manual-ip != "";
+                            text: root.manual-lookup-streaming
+                                ? @tr("Looking up…")
+                                : @tr("Continue");
+                            enabled: root.manual-ip != "" && !root.manual-lookup-streaming;
                             clicked => { root.manual-add(); }
                         }
                     }
@@ -943,6 +949,7 @@ export component PairingWizardPane inherits Rectangle {
                     supported-vendor-names: PairingWizard.supported-vendor-names;
                     streaming: PairingWizard.discovery-streaming;
                     error-message: PairingWizard.discovery-error;
+                    manual-lookup-streaming: PairingWizard.manual-lookup-streaming;
                     selected-index: PairingWizard.selected-index;
                     manual-vendor-index <=> PairingWizard.manual-vendor-index;
                     manual-ip <=> PairingWizard.manual-ip;

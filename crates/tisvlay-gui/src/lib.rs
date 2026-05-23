@@ -58,9 +58,10 @@ use profiles::{
 use state_watch::initial_fetch_and_watch;
 use toast::show_toast;
 use wizard::{
-    WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen, cancel_wizard_discovery,
-    fetch_and_publish_schema, publish_wizard_entries, reset_wizard, run_wizard_discovery,
-    run_wizard_pair, run_wizard_re_pair,
+    WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen, WizardManualLookupCancel,
+    cancel_wizard_discovery, cancel_wizard_manual_lookup, fetch_and_publish_schema,
+    publish_wizard_entries, reset_wizard, run_wizard_discovery, run_wizard_pair,
+    run_wizard_re_pair,
 };
 
 use schema_form::{
@@ -577,6 +578,14 @@ pub fn run() -> Result<()> {
     // the daemon-side session stops promptly.
     let wizard_cancel: WizardDiscoveryCancel = Arc::new(parking_lot::Mutex::new(None));
 
+    // Cancel handle for the wizard's manual-entry MAC enrichment
+    // task. Same shape as `wizard_cancel` but distinct so the
+    // streaming-discovery and one-shot-probe lifecycles can't
+    // collide. The manual-add handler installs a sender right
+    // before spawning the enrichment task; `reset_wizard` cancels.
+    let wizard_manual_lookup_cancel: WizardManualLookupCancel =
+        Arc::new(parking_lot::Mutex::new(None));
+
     // Profiles-pane editor state. Owns the three-layer body cache +
     // per-kind generation counters for stale-callback protection.
     // Shared between the state-watcher (refresh on
@@ -595,6 +604,7 @@ pub fn run() -> Result<()> {
         wizard_entries.clone(),
         wizard_gen.clone(),
         wizard_cancel.clone(),
+        wizard_manual_lookup_cancel.clone(),
         editor.clone(),
     );
 
@@ -634,6 +644,7 @@ fn register_callbacks(
     wizard_entries: WizardEntries,
     wizard_gen: WizardGen,
     wizard_cancel: WizardDiscoveryCancel,
+    wizard_manual_lookup_cancel: WizardManualLookupCancel,
     editor: ProfileEditor,
 ) {
     // Slint global handles. Bound once for the registration phase;
@@ -1406,6 +1417,7 @@ fn register_callbacks(
     let we = wizard_entries.clone();
     let wg = wizard_gen.clone();
     let wc = wizard_cancel.clone();
+    let wml = wizard_manual_lookup_cancel.clone();
     daemon_global.on_request_pair(move || {
         let d = d.clone();
         let we = we.clone();
@@ -1418,7 +1430,7 @@ fn register_callbacks(
         // session via the wizard_cancel sidecar.
         if let Some(app) = app_weak.upgrade() {
             let wizard = app.global::<PairingWizard>();
-            reset_wizard(&app, &wg, &wc);
+            reset_wizard(&app, &wg, &wc, &wml);
             wizard.set_active(true);
             wizard.set_step(1);
             wizard.set_discovery_streaming(true);
@@ -1446,6 +1458,7 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     let wg = wizard_gen.clone();
     let wc = wizard_cancel.clone();
+    let wml = wizard_manual_lookup_cancel.clone();
     daemon_global.on_request_re_pair(move |tv_id| {
         let d = d.clone();
         let wg = wg.clone();
@@ -1482,7 +1495,7 @@ fn register_callbacks(
         // properties so the live pair UI shows the right labels.
         // The gen bump also invalidates any in-flight pair task
         // from a prior session.
-        reset_wizard(&app, &wg, &wc);
+        reset_wizard(&app, &wg, &wc, &wml);
         let wizard = app.global::<PairingWizard>();
         let vendor_id = tv.vendor.clone();
         let vendor_name = vendor_display_for(&wizard.get_supported_vendors(), &vendor_id);
@@ -1514,6 +1527,7 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     let wg = wizard_gen.clone();
     let wc = wizard_cancel.clone();
+    let wml = wizard_manual_lookup_cancel.clone();
     wizard.on_cancel(move || {
         info!("wizard: cancel fired");
         let Some(app) = app_weak.upgrade() else {
@@ -1525,7 +1539,7 @@ fn register_callbacks(
         // close without waiting on the daemon round-trip. The gen
         // bump inside `reset_wizard` makes any in-flight pair
         // task's late callbacks no-op.
-        reset_wizard(&app, &wg, &wc);
+        reset_wizard(&app, &wg, &wc, &wml);
         if tv_id.is_empty() {
             return;
         }
@@ -1554,6 +1568,7 @@ fn register_callbacks(
     let we = wizard_entries.clone();
     let wg = wizard_gen.clone();
     let wc = wizard_cancel.clone();
+    let wml = wizard_manual_lookup_cancel.clone();
     wizard.on_step_next(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -1607,10 +1622,13 @@ fn register_callbacks(
                     ));
                 }
                 // User picked a TV — stop the streaming discovery
-                // session so the daemon stops scanning while the user
-                // configures. The wizard stays open (no reset_wizard),
-                // so we only cancel the discovery side.
+                // session AND any in-flight manual-entry MAC lookup
+                // (the user took the SSDP path, so we don't want a
+                // stale manual-lookup result landing in step 2).
+                // The wizard stays open (no reset_wizard); we only
+                // cancel the two in-flight tasks.
                 cancel_wizard_discovery(&wc);
+                cancel_wizard_manual_lookup(&wml);
 
                 // Clear stale schema rows from a prior session so the
                 // form starts blank if the fetch is slow.
@@ -1622,7 +1640,10 @@ fn register_callbacks(
                 let app_weak = app.as_weak();
                 let vendor = entry.vendor.clone();
                 tokio::spawn(async move {
-                    fetch_and_publish_schema(d, app_weak, vendor, entry).await;
+                    // SSDP-discovered path — no manual-entry helper
+                    // override needed (autofill came from the live
+                    // SSDP response's vendor_data).
+                    fetch_and_publish_schema(d, app_weak, vendor, entry, false).await;
                 });
             }
             2 => {
@@ -1710,9 +1731,10 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     let wg = wizard_gen.clone();
     let wc = wizard_cancel.clone();
+    let wml = wizard_manual_lookup_cancel.clone();
     wizard.on_finish(move || {
         if let Some(app) = app_weak.upgrade() {
-            reset_wizard(&app, &wg, &wc);
+            reset_wizard(&app, &wg, &wc, &wml);
         }
     });
 
@@ -1790,6 +1812,10 @@ fn register_callbacks(
         row.value = v;
         row.state = SharedString::from(state);
         row.error = SharedString::from(error);
+        // User editing the field clears its "Auto-detected" badge —
+        // the value is now theirs, not the system's. Cosmetic, but
+        // it keeps the trust signal honest.
+        row.autofilled = false;
         if let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() {
             vec_model.set_row_data(i as usize, row);
         }
@@ -1990,13 +2016,19 @@ fn register_callbacks(
     });
 
     // Manual-add: synthesize an entry from the user's typed vendor +
-    // IP, append it to the Rust source-of-truth + Slint model, select
-    // it, and advance to Configure where the schema-driven form takes
-    // over. From step 2 on the flow is identical to the SSDP path.
+    // IP, optionally enrich it with the daemon's `EnrichManualEntry`
+    // RPC (auto-detects the MAC via kernel ARP cache + active probe),
+    // append it to the Rust source-of-truth + Slint model, select it,
+    // and advance to Configure where the schema-driven form takes
+    // over. From step 2 on the flow is identical to the SSDP path —
+    // except the schema fetch is told `manual_entry: true` so the
+    // helper-override logic can substitute the MAC field's helper
+    // text when enrichment came up empty.
     let app_weak = app.as_weak();
     let we = wizard_entries.clone();
     let d = daemon.clone();
     let wc = wizard_cancel.clone();
+    let wml = wizard_manual_lookup_cancel.clone();
     wizard.on_manual_add(move || {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -2017,53 +2049,92 @@ fn register_callbacks(
             return;
         };
         let vendor = option.id.to_string();
+        let vendor_display = option.name.to_string();
         let ip = wizard.get_manual_ip().to_string();
         if ip.is_empty() {
             return;
         }
         info!(vendor = %vendor, ip = %ip, "wizard: manual add");
 
-        let entry = WizardEntry {
-            id: String::new(),
-            name: String::new(),
-            vendor: vendor.clone(),
-            address: ip.clone(),
-            hw_model: String::new(),
-            vendor_data: HashMap::new(),
-        };
-
-        // Append to both the Rust-owned source-of-truth and the
-        // Slint model so the new row participates in selection /
-        // step transitions like a discovered one.
-        let new_index = {
-            let mut entries = we.lock();
-            entries.push(entry.clone());
-            let idx = (entries.len() - 1) as i32;
-            publish_wizard_entries(&wizard, &entries);
-            idx
-        };
-        wizard.set_selected_index(new_index);
-        wizard.set_selected_vendor(option.id);
-        wizard.set_selected_vendor_name(option.name);
-        wizard.set_selected_address(SharedString::from(ip.as_str()));
-        wizard.set_selected_hw_model(SharedString::default());
-        if wizard.get_tv_name().is_empty() {
-            wizard.set_tv_name(SharedString::from(ip.as_str()));
-        }
-        if wizard.get_system_profile().is_empty() {
-            wizard.set_system_profile("default".into());
-        }
+        // Drive the spinner + Continue-disabled gate from this
+        // boolean. Cleared in the spawned task's on_ui closure right
+        // before we transition to step 2.
+        wizard.set_manual_lookup_streaming(true);
         // Leaving step 1 — stop the streaming discovery session so
         // the daemon stops scanning while the user configures.
         cancel_wizard_discovery(&wc);
-        wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
-        wizard.set_schema_valid(false);
-        wizard.set_step(2);
+        // Install a fresh cancel handle so reset_wizard can drop the
+        // enrichment task if the user cancels mid-lookup. Replaces
+        // any prior sender, which drops it and cancels the prior
+        // task (same pattern as run_wizard_discovery).
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        *wml.lock() = Some(cancel_tx);
 
         let d = d.clone();
-        let app_weak = app.as_weak();
+        let we = we.clone();
+        let app_weak_task = app.as_weak();
         tokio::spawn(async move {
-            fetch_and_publish_schema(d, app_weak, vendor, entry).await;
+            // Daemon-side cap is 600 ms; wizard cap of 1 s is the
+            // safety net for a hung RPC. Either firing produces an
+            // empty vendor_data — same outcome as a clean miss, the
+            // user just sees the field blank with the "MAC not
+            // detected" helper.
+            let vendor_data = tokio::select! {
+                _ = cancel_rx => HashMap::new(),
+                res = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    d.enrich_manual_entry(&vendor, &ip),
+                ) => res.ok().and_then(|r| r.ok()).unwrap_or_default(),
+            };
+
+            let entry = WizardEntry {
+                id: String::new(),
+                name: String::new(),
+                vendor: vendor.clone(),
+                address: ip.clone(),
+                hw_model: String::new(),
+                vendor_data,
+            };
+            let entry_for_schema = entry.clone();
+            let vendor_for_schema = vendor.clone();
+            let ip_for_ui = ip.clone();
+            let we_for_ui = we.clone();
+            on_ui(&app_weak_task, move |app| {
+                let wizard = app.global::<PairingWizard>();
+                wizard.set_manual_lookup_streaming(false);
+
+                // Append to both the Rust-owned source-of-truth and
+                // the Slint model so the new row participates in
+                // selection / step transitions like a discovered one.
+                let new_index = {
+                    let mut entries = we_for_ui.lock();
+                    entries.push(entry.clone());
+                    let idx = (entries.len() - 1) as i32;
+                    publish_wizard_entries(&wizard, &entries);
+                    idx
+                };
+                wizard.set_selected_index(new_index);
+                wizard.set_selected_vendor(SharedString::from(vendor.as_str()));
+                wizard.set_selected_vendor_name(SharedString::from(vendor_display.as_str()));
+                wizard.set_selected_address(SharedString::from(ip_for_ui.as_str()));
+                wizard.set_selected_hw_model(SharedString::default());
+                if wizard.get_tv_name().is_empty() {
+                    wizard.set_tv_name(SharedString::from(ip_for_ui.as_str()));
+                }
+                if wizard.get_system_profile().is_empty() {
+                    wizard.set_system_profile("default".into());
+                }
+                wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
+                wizard.set_schema_valid(false);
+                wizard.set_step(2);
+            });
+
+            // Schema fetch runs after the UI transition so the form
+            // starts blank and fills in once the daemon returns.
+            // `manual_entry: true` triggers the MAC helper override
+            // when enrichment came up empty.
+            fetch_and_publish_schema(d, app_weak_task, vendor_for_schema, entry_for_schema, true)
+                .await;
         });
     });
 }

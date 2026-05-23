@@ -59,6 +59,12 @@ export struct PairingFieldRow {
     value: string,
     state: string,
     error: string,
+    /// Set true when the row's `value` was populated by
+    /// `autofill_schema` (SSDP discovery or manual-entry MAC
+    /// enrichment) rather than typed by the user. Drives the
+    /// "auto-detected" badge in `SchemaForm`; flipped to false by
+    /// Rust on the first `field-value-edited` for this row.
+    autofilled: bool,
 }
 
 export global PairingWizard {
@@ -70,6 +76,13 @@ export global PairingWizard {
     in-out property <[WizardDiscoveredTv]> discovered;
     in-out property <bool> discovery-streaming;
     in-out property <string> discovery-error;
+    /// True while a manual-entry MAC enrichment RPC is in flight
+    /// (after the user clicks Add manually, before the wizard
+    /// transitions to step 2). Drives a distinct loading state —
+    /// *not* `discovery-streaming`, which means "Scanning for
+    /// TVs" — and gates the Continue button so double-clicks
+    /// can't fan out parallel RPCs.
+    in-out property <bool> manual-lookup-streaming;
     in-out property <string> pair-phase;
     in-out property <string> pair-message;
     /// TV id of the currently-running pair handshake, used by the
