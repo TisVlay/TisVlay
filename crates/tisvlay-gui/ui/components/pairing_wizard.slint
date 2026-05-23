@@ -184,6 +184,9 @@ component DiscoveryRow inherits Rectangle {
                     color: Theme.text-dim;
                     font-size: Design.font-caption;
                     font-family: "ui-monospace, monospace";
+                    // ~39-char v6 addresses would otherwise push the
+                    // trailing hw-model chip off the row.
+                    overflow: elide;
                 }
                 if root.tv.hw-model != "": Text {
                     text: "·";
@@ -605,12 +608,17 @@ component StepConfigure {
                 }
                 VerticalLayout {
                     alignment: center;
+                    horizontal-stretch: 1;
                     Text {
                         text: root.selected-address
                             + (root.selected-hw-model != "" ? (" · " + root.selected-hw-model) : "");
                         color: Theme.text-dim;
                         font-size: Design.font-helper;
                         font-family: "ui-monospace, monospace";
+                        // Wrap (not elide) so the full v6 address
+                        // stays visible — wizard step 2 is where the
+                        // user confirms what they're pairing.
+                        wrap: word-wrap;
                     }
                 }
             }
@@ -886,6 +894,9 @@ component StepDone {
                     color: Theme.text-dim;
                     font-size: Design.font-caption;
                     font-family: "ui-monospace, monospace";
+                    // v6 addresses would otherwise crowd out the
+                    // trailing Managed/Unmanaged badge.
+                    overflow: elide;
                 }
                 Text {
                     text: "·";
