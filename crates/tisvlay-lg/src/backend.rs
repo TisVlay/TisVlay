@@ -55,13 +55,13 @@ impl TvBackend for LgBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // ALL covers the feature methods; IPV4 declares the verified
-        // transport family. IPV6 is deliberately not declared until
-        // the LG packet-capture validation (Phase 0 of the IPv6
-        // support plan) confirms WebSocket/SSAP works over v6 —
-        // expected to per public RE notes, but unverified on our
-        // hardware as of the Capabilities-bits introduction.
-        Capabilities::ALL | Capabilities::IPV4
+        // ALL covers the feature methods; IPV4 / IPV6 declare the
+        // verified transport families. v6 was confirmed on G4
+        // firmware by reaching the SSAP WebSocket endpoint over a
+        // SLAAC ULA — same cert chain, same TLS 1.3 / X25519 /
+        // RSA-PSS as v4, same rustls path. SSAP is JSON over WS so
+        // the IP family is invisible above the socket layer.
+        Capabilities::ALL | Capabilities::IPV4 | Capabilities::IPV6
     }
 }
 
