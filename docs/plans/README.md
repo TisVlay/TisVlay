@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None._
+- [Full IPv6 support](ipv6-support.md) — sudo plan; lifts the 3 daemon-side IPv4 gates, extends `tisvlay-ssdp` to dual-stack, GUI display widening for v6's longer addresses. Has one open question (per-vendor family-declaration shape) that needs cross-project research before implementation.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:

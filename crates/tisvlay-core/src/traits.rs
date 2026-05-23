@@ -524,7 +524,7 @@ pub trait TvConnector: Send + Sync {
     ///
     /// IP family agnostic by signature; today's daemon callers only
     /// invoke this with IPv4. An IPv6 follow-up (see
-    /// `docs/ideas/ipv6-discovery-and-enrichment.md`) widens the
+    /// `docs/plans/ipv6-support.md`) widens the
     /// daemon's input gate without reshaping this trait.
     async fn probe_arp_cache(&self, _ip: IpAddr) -> Result<()> {
         Ok(())

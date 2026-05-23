@@ -194,8 +194,10 @@ LG WebOS TVs also advertise via mDNS/DNS-SD (Chromecast protocol) as `_googlecas
 - Avahi handles multicast subscription and response handling
 
 **Implementation options:**
-- Use `avahi-browse -r _googlecast._tcp` to discover Chromecast-compatible devices
-- Filter results by TXT records to identify LG TVs specifically
-- Use `zeroconf` or `mdns` Rust crates for programmatic access
+- Use `avahi-browse -r _googlecast._tcp` to discover Chromecast-compatible devices.
+- Filter results by TXT records to identify LG TVs specifically.
+- Use the [`mdns-sd`](https://crates.io/crates/mdns-sd) Rust crate for programmatic access — pure Rust (no Avahi/Bonjour C runtime dependency), dual-stack v4/v6, ~300K monthly downloads. Picked over `zeroconf` / `astro-dnssd` (Avahi/Bonjour native deps, complicates NixOS packaging), `mdns` (stale, last release 2021), `simple-mdns` / `searchlight` (smaller install base).
+
+mDNS would also be a natural fit for [docs/plans/ipv6-support.md](plans/ipv6-support.md)'s discovery layer once that lands — mDNS's IPv6 multicast (`ff02::fb`) is better-supported by both routers and OS firewalls than SSDP's `ff02::c`.
 
 **TODO**: Investigate mDNS discovery as an alternative or fallback to SSDP. This would improve out-of-the-box compatibility on systems with strict firewalls.

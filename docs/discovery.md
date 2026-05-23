@@ -2,7 +2,7 @@
 
 `tisvlay` ships its own SSDP transport rather than depending on third-party crates or delegating to a Linux system service. The discovery story has three RPC entry points (`DiscoverTvs`, `StartDiscovery`/`StopDiscovery`, `EnrichManualEntry`) sharing one vendor-neutral transport crate and one vendor-owned active-probe hook.
 
-This doc covers the architectural decisions worth re-reading. For firewall-rule recipes that pair with the bind-port story see [docs/firewall.md](firewall.md). For deferred follow-up work see [docs/ideas/ssdp-notify-passive-listener.md](ideas/ssdp-notify-passive-listener.md) (passive NOTIFY listener), [docs/ideas/ipv6-discovery-and-enrichment.md](ideas/ipv6-discovery-and-enrichment.md) (IPv6 support), and [docs/ideas/pair-time-mac-capture.md](ideas/pair-time-mac-capture.md) (MAC capture at pair-success time).
+This doc covers the architectural decisions worth re-reading. For firewall-rule recipes that pair with the bind-port story see [docs/firewall.md](firewall.md). For deferred follow-up work see [docs/ideas/ssdp-notify-passive-listener.md](ideas/ssdp-notify-passive-listener.md) (passive NOTIFY listener), [docs/plans/ipv6-support.md](../plans/ipv6-support.md) (IPv6 support), and [docs/ideas/pair-time-mac-capture.md](ideas/pair-time-mac-capture.md) (MAC capture at pair-success time).
 
 ## Why we own the SSDP transport
 
@@ -33,7 +33,7 @@ Per-session task state lives in `ManagerService::discovery_sessions: Arc<Mutex<H
 
 `Manager1.EnrichManualEntry(vendor, address) → a{ss}` autofills the pairing wizard's manual-entry path the same way SSDP-discovered entries are autofilled. Symmetric in return shape with `DiscoveryFound`'s `vendor_data` column, so the wizard's `autofill_schema` engine handles both paths uniformly. The chain:
 
-1. **IPv4-only correctness gate.** IPv6 (including `::ffff:x.x.x.x`) returns an empty map — today's `arp_lookup` and `probe_arp_cache` only handle v4. The gate widens to IPv4|IPv6 once those grow v6 support; see [docs/ideas/ipv6-discovery-and-enrichment.md](ideas/ipv6-discovery-and-enrichment.md).
+1. **IPv4-only correctness gate.** IPv6 (including `::ffff:x.x.x.x`) returns an empty map — today's `arp_lookup` and `probe_arp_cache` only handle v4. The gate widens to IPv4|IPv6 once those grow v6 support; see [docs/plans/ipv6-support.md](../plans/ipv6-support.md).
 2. **Passive netlink read.** Free; hits for users who've previously pinged or browsed the TV (any prior IP traffic primes the ARP cache as a side effect).
 3. **Vendor-supplied active probe** (`TvConnector::probe_arp_cache` — see next subsection). Connector decides the mechanism (LG sends one UDP byte to the SSAP wss port); the kernel resolves ARP as a side effect of `send_to`.
 4. **Poll netlink with deadline** — 30 ms intervals, 500 ms budget. Outer `tokio::time::timeout` caps the whole chain at 600 ms regardless.

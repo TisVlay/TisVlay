@@ -121,7 +121,7 @@ async fn enrich_manual_entry_inner(
     //     ::ffff:x.x.x.x) returns empty because today's
     //     arp_lookup and probe_arp_cache only handle v4. The gate
     //     widens to IPv4|IPv6 once those grow v6 support — see
-    //     docs/ideas/ipv6-discovery-and-enrichment.md.
+    //     docs/plans/ipv6-support.md.
     let Ok(ip) = address.parse::<std::net::IpAddr>() else {
         return HashMap::new();
     };
@@ -391,7 +391,7 @@ impl ManagerService {
     /// the ARP chain found nothing. The wizard treats empty as a
     /// soft outcome (field stays blank with a "MAC not detected"
     /// helper) rather than a hard failure. IPv4 only in v1; see
-    /// `docs/ideas/ipv6-discovery-and-enrichment.md` for the v6
+    /// `docs/plans/ipv6-support.md` for the v6
     /// follow-up scope.
     async fn enrich_manual_entry(
         &self,
