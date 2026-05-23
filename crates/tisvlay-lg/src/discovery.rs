@@ -1,29 +1,47 @@
 //! LG WebOS TV discovery via SSDP.
 //!
-//! Discovers LG WebOS TVs on the local network using SSDP multicast.
+//! Sends M-SEARCH bursts for the LG-specific and standard UPnP targets,
+//! then filters and parses responses with LG-specific heuristics. The
+//! SSDP transport itself lives in the vendor-neutral [`tisvlay_ssdp`]
+//! crate.
 
 use futures_util::StreamExt;
-use ssdp_client::{SearchTarget, URN};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tisvlay_core::{DiscoveredTv, HardwareId, Result};
+use tisvlay_ssdp::{SearchOptions, SsdpResponse};
+
+/// Search targets that LG WebOS TVs respond to.
+///
+/// Different LG models / firmware versions respond to different
+/// subsets: the LG-specific URN catches modern WebOS TVs; the
+/// generic `MediaRenderer:1` catches most; `upnp:rootdevice` is the
+/// fallback that catches whatever's left advertising as a UPnP root.
+/// All three are sent on a single shared socket, so the cost is one
+/// extra UDP datagram per extra target — not a multiplied timeout.
+const LG_TARGETS: &[&str] = &[
+    "urn:lge-com:service:webostv:1",
+    "urn:schemas-upnp-org:device:MediaRenderer:1",
+    "upnp:rootdevice",
+];
 
 /// Discover LG TVs on the network using SSDP.
 ///
-/// Sends an M-SEARCH request to the SSDP multicast address and collects
-/// responses from LG WebOS TVs.
+/// Sends an M-SEARCH burst to the SSDP multicast address and collects
+/// responses from LG WebOS TVs over `timeout`. Not finding any TVs is
+/// not an error — returns an empty list.
 ///
-/// # Arguments
-///
-/// * `timeout` - How long to wait for TV responses
-///
-/// # Returns
-///
-/// A list of discovered TVs. Returns an empty list if no TVs are found
-/// (not finding TVs is not an error).
-pub async fn discover_lg_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
+/// `bind_port`, when `Some`, pins the source UDP port — useful so a
+/// firewall can target it with a narrow rule. `None` lets the OS
+/// pick an ephemeral port (the default).
+pub async fn discover_lg_tvs(
+    timeout: Duration,
+    bind_port: Option<u16>,
+) -> Result<Vec<DiscoveredTv>> {
     tracing::debug!(
         timeout_ms = timeout.as_millis(),
+        ?bind_port,
         "Starting LG SSDP discovery"
     );
 
@@ -31,46 +49,42 @@ pub async fn discover_lg_tvs(timeout: Duration) -> Result<Vec<DiscoveredTv>> {
     // with different UUIDs. We prefer entries with DLNA device names.
     let mut tvs: HashMap<String, DiscoveredTv> = HashMap::new();
 
-    // Try multiple search targets for better compatibility.
-    // Different LG TV models/firmware respond to different targets:
-    // - Some respond only to the LG-specific URN
-    // - Most respond to the generic MediaRenderer URN
-    // - RootDevice catches any remaining UPnP devices
-    let targets: &[SearchTarget] = &[
-        SearchTarget::URN(URN::service("lge-com", "webostv", 1)),
-        SearchTarget::URN(URN::device("schemas-upnp-org", "MediaRenderer", 1)),
-        SearchTarget::RootDevice,
-    ];
+    let opts = SearchOptions {
+        bind_addr: bind_port.map(|p| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), p)),
+        ..SearchOptions::default()
+    };
 
-    // Divide timeout among targets (searched sequentially)
-    let per_target_timeout = timeout / targets.len() as u32;
+    let stream = match tisvlay_ssdp::search(LG_TARGETS, timeout, opts).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "SSDP search setup failed");
+            return Ok(Vec::new());
+        }
+    };
+    tokio::pin!(stream);
 
-    for target in targets {
-        tracing::debug!(?target, "Searching with target");
-
-        match ssdp_client::search(target, per_target_timeout, 2, None).await {
-            Ok(mut responses) => {
-                while let Some(response) = responses.next().await {
-                    if let Ok(resp) = response {
-                        if is_lg_tv(&resp) {
-                            if let Some(tv) = parse_response(&resp) {
-                                tracing::debug!(id = %tv.id, name = %tv.name, address = %tv.address, "Discovered LG TV");
-                                // Deduplicate by address, preferring entries with real DLNA names
-                                // over fallback names like "LG TV (ip)"
-                                let dominated = tvs.get(&tv.address).is_some_and(|existing| {
-                                    has_dlna_name(existing) && !has_dlna_name(&tv)
-                                });
-                                if !dominated {
-                                    tvs.insert(tv.address.clone(), tv);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    while let Some(item) = stream.next().await {
+        let resp = match item {
+            Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, ?target, "SSDP search failed");
+                tracing::debug!(error = %e, "Dropping malformed SSDP response");
+                continue;
             }
+        };
+        if !is_lg_tv(&resp) {
+            continue;
+        }
+        let Some(tv) = parse_response(&resp) else {
+            continue;
+        };
+        tracing::debug!(id = %tv.id, name = %tv.name, address = %tv.address, "Discovered LG TV");
+        // Deduplicate by address, preferring entries with real DLNA names
+        // over fallback names like "LG TV (ip)".
+        let dominated = tvs
+            .get(&tv.address)
+            .is_some_and(|existing| has_dlna_name(existing) && !has_dlna_name(&tv));
+        if !dominated {
+            tvs.insert(tv.address.clone(), tv);
         }
     }
 
@@ -84,7 +98,7 @@ fn has_dlna_name(tv: &DiscoveredTv) -> bool {
 }
 
 /// Check if an SSDP response is from an LG WebOS TV.
-fn is_lg_tv(resp: &ssdp_client::SearchResponse) -> bool {
+fn is_lg_tv(resp: &SsdpResponse) -> bool {
     // LG-specific DLNA header (most reliable)
     resp.extra_header("DLNADeviceName.lge.com").is_some()
         // Server string contains LGE or WebOS
@@ -96,7 +110,7 @@ fn is_lg_tv(resp: &ssdp_client::SearchResponse) -> bool {
 }
 
 /// Parse an SSDP response into a DiscoveredTv.
-fn parse_response(resp: &ssdp_client::SearchResponse) -> Option<DiscoveredTv> {
+fn parse_response(resp: &SsdpResponse) -> Option<DiscoveredTv> {
     let id = extract_uuid_from_usn(resp.usn())?;
     let location = resp.location();
     let ip = parse_ip_from_url(location)?;

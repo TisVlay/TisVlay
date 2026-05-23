@@ -216,6 +216,10 @@ component StepDiscover {
     in property <[string]> supported-vendor-names;
     in property <bool> streaming;
     in property <string> error-message;
+    /// True while the manual-entry MAC enrichment RPC is in flight
+    /// (after Continue, before step 2 paints). Gates the Continue
+    /// button so double-clicks can't spawn parallel RPCs.
+    in property <bool> manual-lookup-streaming;
     in-out property <int> selected-index;
     // Index into `supported-vendors`; ComboBox is bound to it via
     // `current-index <=>` so user picks round-trip without a Rust
@@ -299,72 +303,87 @@ component StepDiscover {
             }
         }
 
-        // Discovered list (or empty state)
-        if root.discovered.length > 0: Rectangle {
-            background: Theme.surface;
-            border-color: Theme.border;
+        // Discovered list / empty-state. A single region with a stable
+        // `min-height` so the layout doesn't shift the moment the first
+        // TV arrives — that shift previously pushed the manual-entry
+        // panel off-screen at minimum window sizes. The branch swap
+        // (empty placeholder ↔ populated list) happens *inside* the
+        // region, so the wizard's overall height stays constant.
+        // `vertical-stretch: 1` is set as forward-compat for a future
+        // refactor that lifts the wizard's outer ScrollView; today the
+        // outer scroll caps StepDiscover at its preferred height, so
+        // stretch is a no-op.
+        if root.error-message == "": Rectangle {
+            background: root.discovered.length > 0 ? Theme.surface : Theme.surface2;
+            border-color: root.discovered.length > 0 ? Theme.border : Theme.border-strong;
             border-width: Design.border-thin;
-            border-radius: 5px;
+            border-radius: Design.radius-card;
+            // 2.5 × DiscoveryRow.height (56px) = 140px. The half-row
+            // peek at the bottom telegraphs "scroll me" the moment a
+            // 3rd TV is found — without that, the list would look
+            // exactly-fit at 2 rows and users might assume there's
+            // nothing more. Keep this in sync if DiscoveryRow.height
+            // moves.
+            min-height: 140px;
+            vertical-stretch: 1;
+
+            // Stack [content, ScanLine] so the ScanLine sits at the
+            // bottom of the region in both empty and populated states —
+            // a stable scan indicator across the empty → found
+            // transition rather than two separate ScanLines with
+            // different sizes and positions.
             VerticalLayout {
                 width: 100%;
-                ScrollView {
+
+                if root.discovered.length > 0: VerticalLayout {
+                    vertical-stretch: 1;
                     width: 100%;
-                    height: 240px;
-                    VerticalLayout {
+                    ScrollView {
                         width: 100%;
-                        for tv[i] in root.discovered: DiscoveryRow {
-                            tv: tv;
-                            selected: i == root.selected-index;
-                            clicked => { root.selection-changed(i); }
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            width: 100%;
+                            for tv[i] in root.discovered: DiscoveryRow {
+                                tv: tv;
+                                selected: i == root.selected-index;
+                                clicked => { root.selection-changed(i); }
+                            }
                         }
                     }
                 }
+
+                if root.discovered.length == 0: VerticalLayout {
+                    vertical-stretch: 1;
+                    width: 100%;
+                    alignment: center;
+                    spacing: Design.gap-tight;
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: root.streaming ? @tr("Searching your network…") : @tr("No TVs found yet");
+                            color: Theme.text;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: @tr("LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.");
+                            color: Theme.text-dim;
+                            font-size: Design.font-helper;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
                 if root.streaming: HorizontalLayout {
                     padding-left: 12px;
                     padding-right: 12px;
                     padding-top: 6px;
                     padding-bottom: 8px;
                     ScanLine {}
-                }
-            }
-        }
-
-        if root.discovered.length == 0 && root.error-message == "": Rectangle {
-            background: Theme.surface2;
-            border-color: Theme.border-strong;
-            border-width: Design.border-thin;
-            border-radius: Design.radius-card;
-            height: 160px;
-            VerticalLayout {
-                width: 100%;
-                height: 100%;
-                alignment: center;
-                spacing: Design.gap-tight;
-                HorizontalLayout {
-                    alignment: center;
-                    Text {
-                        text: root.streaming ? @tr("Searching your network…") : @tr("No TVs found yet");
-                        color: Theme.text;
-                        font-size: 14px;
-                        font-weight: 600;
-                    }
-                }
-                HorizontalLayout {
-                    alignment: center;
-                    Text {
-                        text: @tr("LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it manually below.");
-                        color: Theme.text-dim;
-                        font-size: Design.font-helper;
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-                }
-                if root.streaming: HorizontalLayout {
-                    alignment: center;
-                    padding-top: Design.gap-stack;
-                    ScanLine {
-                        width: 240px;
-                    }
                 }
             }
         }
@@ -462,8 +481,10 @@ component StepDiscover {
                     VerticalLayout {
                         alignment: end;
                         Button {
-                            text: @tr("Continue");
-                            enabled: root.manual-ip != "";
+                            text: root.manual-lookup-streaming
+                                ? @tr("Looking up…")
+                                : @tr("Continue");
+                            enabled: root.manual-ip != "" && !root.manual-lookup-streaming;
                             clicked => { root.manual-add(); }
                         }
                     }
@@ -928,6 +949,7 @@ export component PairingWizardPane inherits Rectangle {
                     supported-vendor-names: PairingWizard.supported-vendor-names;
                     streaming: PairingWizard.discovery-streaming;
                     error-message: PairingWizard.discovery-error;
+                    manual-lookup-streaming: PairingWizard.manual-lookup-streaming;
                     selected-index: PairingWizard.selected-index;
                     manual-vendor-index <=> PairingWizard.manual-vendor-index;
                     manual-ip <=> PairingWizard.manual-ip;

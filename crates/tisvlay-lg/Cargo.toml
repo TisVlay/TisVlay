@@ -37,7 +37,7 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 
 # Optional: SSDP discovery
-ssdp-client = { workspace = true, optional = true }
+tisvlay-ssdp = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 
@@ -47,7 +47,7 @@ insta = { workspace = true }
 
 [features]
 default = []
-discovery = ["dep:ssdp-client", "dep:urlencoding", "dep:url"]
+discovery = ["dep:tisvlay-ssdp", "dep:urlencoding", "dep:url"]
 
 [lints]
 workspace = true

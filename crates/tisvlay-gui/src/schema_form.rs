@@ -40,6 +40,13 @@ pub(crate) struct AutofilledRow {
     pub placeholder: String,
     pub options: Vec<String>,
     pub value: String,
+    /// True when `value` came from a real autofill source (SSDP
+    /// `vendor_data` entry, manual-entry MAC enrichment, or the
+    /// address fallback for `ip`/`address` fields) rather than the
+    /// schema's static `default`. Drives the "Auto-detected" badge
+    /// in `SchemaForm`; flipped to false on user edit by the
+    /// `field-value-edited` handler in `lib.rs`.
+    pub autofilled: bool,
 }
 
 impl AutofilledRow {
@@ -67,6 +74,7 @@ impl AutofilledRow {
             value: SharedString::from(self.value),
             state: SharedString::from(state),
             error: SharedString::from(error),
+            autofilled: self.autofilled,
         }
     }
 }
@@ -170,11 +178,18 @@ pub(crate) fn autofill_schema(
         .iter()
         .map(|f| {
             let mut value = f.default.clone();
+            // Track whether the value came from a real autofill
+            // source (not the schema's static default). The trust
+            // badge in `SchemaForm` rides on this so the user can
+            // tell what the system populated vs what they typed.
+            let mut autofilled = false;
             if let Some(key) = f.autofill.strip_prefix("discovery.") {
                 if let Some(v) = vendor_data.get(key) {
                     value = v.clone();
+                    autofilled = !value.is_empty();
                 } else if (key == "ip" || key == "address") && !address.is_empty() {
                     value = address.to_string();
+                    autofilled = true;
                 }
             }
             // Conventional fallback: a field literally named "ip" /
@@ -184,6 +199,7 @@ pub(crate) fn autofill_schema(
             // what we just received from the device.
             if value.is_empty() && (f.name == "ip" || f.name == "address") {
                 value = address.to_string();
+                autofilled = !value.is_empty();
             }
             AutofilledRow {
                 name: f.name.clone(),
@@ -194,6 +210,7 @@ pub(crate) fn autofill_schema(
                 placeholder: f.placeholder.clone(),
                 options: f.options.clone(),
                 value,
+                autofilled,
             }
         })
         .collect()
@@ -242,6 +259,10 @@ pub(crate) fn prefill_schema_from_config(
                 placeholder: f.placeholder.clone(),
                 options: f.options.clone(),
                 value,
+                // Prefilled-from-stored-config values are not
+                // "auto-detected" in the wizard sense — they're what
+                // the user already saved. No badge.
+                autofilled: false,
             }
         })
         .collect()
@@ -314,6 +335,7 @@ mod tests {
             value: SharedString::from(value),
             state: SharedString::from(state),
             error: SharedString::default(),
+            autofilled: false,
         }
     }
 

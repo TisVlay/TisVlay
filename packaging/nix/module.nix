@@ -116,6 +116,46 @@ in
       '';
     };
 
+    bindPort = lib.mkOption {
+      type = lib.types.nullOr lib.types.port;
+      default = null;
+      example = 1901;
+      description = ''
+        Pin tisvlayd's SSDP source UDP port for firewall-friendly TV
+        discovery — pairs with `openFirewall` below to drop a tight
+        `--dport` accept rule in place of the
+        broad `allow-any-UDP-from-subnet` fallback most distros
+        otherwise need. When unset (`null`, the default), the
+        kernel hands out an ephemeral port per scan and a firewall
+        rule needs to be correspondingly wide.
+
+        Plumbed via tisvlayd's `--bind-port` CLI flag, which
+        overrides the `[discovery].bind_port` setting in the
+        daemon's writable config file. Using the CLI flag (rather
+        than baking the value into `settings`) keeps the config
+        file writable so the pairing wizard can still persist
+        credentials.
+
+        See `docs/firewall.md` for the network-level rationale.
+      '';
+    };
+
+    openFirewall = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        When `true`, add `bindPort` to
+        `networking.firewall.allowedUDPPorts` so the kernel accepts
+        the SSDP responses tisvlayd's scans elicit. Requires
+        `bindPort` to be set — opening a known port is the whole
+        point.
+
+        Defaults to `false`. Opening a port is a deliberate
+        decision and the module shouldn't widen the host's attack
+        surface unconditionally.
+      '';
+    };
+
     settings = lib.mkOption {
       type = lib.types.nullOr tomlFormat.type;
       default = null;
@@ -155,6 +195,19 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = !cfg.openFirewall || cfg.bindPort != null;
+        message = ''
+          services.tisvlay.openFirewall = true requires
+          services.tisvlay.bindPort to be set — there's no port to
+          open otherwise. Either set bindPort to a specific UDP port
+          (e.g. 1901) or leave openFirewall = false and configure
+          the firewall manually.
+        '';
+      }
+    ];
+
     # Dedicated system user and group for tisvlayd. uid/gid stay
     # unset by default — NixOS allocates from the system range and
     # pins the assignment via /var/lib/nixos/uid-map.
@@ -184,6 +237,15 @@ in
     # .service via postInstall + substituteInPlace.
     environment.systemPackages = [ cfg.package ];
 
+    # Firewall: gated by both openFirewall (opt-in) and bindPort
+    # being set (assertion above already enforces this combination).
+    # Opens just the one UDP port tisvlayd is configured to bind —
+    # narrower than the per-subnet UDP allow-list distros otherwise
+    # need for SSDP responses. See docs/firewall.md.
+    networking.firewall.allowedUDPPorts = lib.optionals (cfg.openFirewall && cfg.bindPort != null) [
+      cfg.bindPort
+    ];
+
     # System daemon: manages TV connections, exposes D-Bus API.
     # Config lives in /var/lib/tisvlay/config.toml (StateDirectory), writable
     # by the daemon so the pairing wizard can persist credentials.
@@ -204,6 +266,10 @@ in
           ++ lib.optionals (configFile != null) [
             "--config"
             "${configFile}"
+          ]
+          ++ lib.optionals (cfg.bindPort != null) [
+            "--bind-port"
+            (toString cfg.bindPort)
           ]
           ++ cfg.extraArgs
         );

@@ -1,3 +1,16 @@
+# Discovery settings. Uncomment any field below to override.
+# - `bind_port`: pin the SSDP source UDP port so a firewall can accept
+#   a single `--dport` rule instead of allowing the unbounded
+#   ephemeral range. Defaults to OS-assigned ephemeral port — fine on
+#   systems without a strict firewall. See docs/firewall.md.
+# - `poll_interval_ms`: per-iteration period for the streaming
+#   discovery loop (Manager1.StartDiscovery) — smaller is more
+#   responsive to a TV being powered on mid-session, larger reduces
+#   steady-state multicast traffic. Default 8000 ms.
+[discovery]
+bind_port = 1901
+poll_interval_ms = 8000
+
 [system.profiles.00000000-0000-0000-0000-000000005159]
 name = "default"
 on_startup = "power_on"

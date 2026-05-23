@@ -38,7 +38,7 @@ fn mock_config() -> toml::Value {
 
 #[tokio::test]
 async fn mock_backend_registered() {
-    let registry = create_registry();
+    let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
     let backend = registry
         .get("mock")
         .expect("mock backend should be registered when the `mock` feature is enabled");
@@ -48,7 +48,7 @@ async fn mock_backend_registered() {
 
 #[tokio::test]
 async fn mock_connector_transport_and_ip_semantics() {
-    let registry = create_registry();
+    let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
     let connector = registry.get_connector("mock").unwrap();
 
     // Transport must be Network so carrier/route events apply.
@@ -60,7 +60,7 @@ async fn mock_connector_transport_and_ip_semantics() {
 
 #[tokio::test]
 async fn mock_connect_and_mutate_state() {
-    let registry = create_registry();
+    let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
     let connector = registry.get_connector("mock").unwrap();
     let config = mock_config();
 
@@ -88,7 +88,7 @@ async fn mock_connect_and_mutate_state() {
 
 #[tokio::test]
 async fn mock_subscribe_pushes_state_on_every_change() {
-    let registry = create_registry();
+    let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
     let connector = registry.get_connector("mock").unwrap();
     let mut conn = connector.connect(&mock_config()).await.unwrap();
 
@@ -120,7 +120,7 @@ async fn mock_subscribe_pushes_state_on_every_change() {
 
 #[tokio::test]
 async fn mock_switch_input_rejects_unknown_id() {
-    let registry = create_registry();
+    let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
     let connector = registry.get_connector("mock").unwrap();
     let mut conn = connector.connect(&mock_config()).await.unwrap();
 
@@ -136,7 +136,7 @@ async fn mock_switch_input_rejects_unknown_id() {
 
 #[tokio::test]
 async fn mock_power_off_closes_connection() {
-    let registry = create_registry();
+    let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
     let connector = registry.get_connector("mock").unwrap();
     let mut conn = connector.connect(&mock_config()).await.unwrap();
 

@@ -783,32 +783,57 @@ impl TvConnector for LgConnector {
             },
         ]
     }
+
+    async fn probe_arp_cache(&self, ip: std::net::IpAddr) -> Result<()> {
+        // Single-byte UDP datagram to the SSAP wss port. The kernel
+        // resolves ARP (or NDP, for v6) before sending; that's the
+        // side effect we want. The TV's UDP stack discards the
+        // payload silently — no TLS handshake side-effect, no
+        // inbound port needed, no raw sockets / CAP_NET_RAW.
+        //
+        // Bind is `0.0.0.0:0` deliberately: the kernel's routing
+        // table picks the correct outbound NIC + source IP for the
+        // destination, which is the right behavior on typical
+        // multi-NIC hosts. Explicit source-IP binding via netlink
+        // route lookup would only matter for VPN-policy-routing
+        // edge cases — out of scope until a real user hits it.
+        let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        let _ = socket
+            .send_to(&[0u8], (ip, crate::endpoints::WSS_PORT))
+            .await;
+        Ok(())
+    }
 }
 
 /// LG-specific network discovery.
 #[cfg(feature = "discovery")]
-#[derive(Debug)]
-pub struct LgDiscovery;
-
-#[cfg(feature = "discovery")]
-impl LgDiscovery {
-    /// Create a new LG discovery instance.
-    pub fn new() -> Self {
-        Self
-    }
+#[derive(Debug, Default)]
+pub struct LgDiscovery {
+    /// Source UDP port for the SSDP M-SEARCH socket. `None` lets the
+    /// OS pick an ephemeral port; setting a value pins the source
+    /// port for a tractable firewall rule (see `docs/firewall.md`).
+    bind_port: Option<u16>,
 }
 
 #[cfg(feature = "discovery")]
-impl Default for LgDiscovery {
-    fn default() -> Self {
-        Self::new()
+impl LgDiscovery {
+    /// Create a new LG discovery instance with default options
+    /// (ephemeral bind port).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Pin the SSDP source UDP port. Builder.
+    pub fn with_bind_port(mut self, port: u16) -> Self {
+        self.bind_port = Some(port);
+        self
     }
 }
 
 #[cfg(feature = "discovery")]
 impl TvDiscovery for LgDiscovery {
     async fn discover(&self, timeout: std::time::Duration) -> Result<Vec<DiscoveredTv>> {
-        crate::discovery::discover_lg_tvs(timeout).await
+        crate::discovery::discover_lg_tvs(timeout, self.bind_port).await
     }
 }
 

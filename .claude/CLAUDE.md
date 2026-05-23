@@ -151,6 +151,7 @@ tisvlay/
 │
 ├── docs/
 │   ├── design.md                 # Full architecture design
+│   ├── discovery.md              # SSDP transport, streaming RPCs, manual-entry MAC enrichment
 │   ├── plan.md                   # GUI roadmap + ship status
 │   ├── ideas.md                  # Deferred work + research notes
 │   ├── concerns.md               # Design concerns / technical debt
@@ -443,6 +444,7 @@ just test-snapshot-accept   # accept all pending snapshot changes
 ## Reference Documentation
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
+- [docs/discovery.md](docs/discovery.md) - SSDP transport ownership, streaming-discovery RPCs, manual-entry MAC enrichment, schema-form trust signal
 - [docs/testing.md](docs/testing.md) - Testing guide: mock backend, harnesses, coverage, observability
 - [docs/lg/firmware-quirks.md](docs/lg/firmware-quirks.md) - LG WebOS firmware quirks (Bug A/B, `processing`/`onOff` discriminators, post-wake settle, `REQUEST_MS`-is-load-bearing)
 - [docs/watchers/network.md](docs/watchers/network.md) - Network monitoring: carrier detection, route resolution, pitfalls

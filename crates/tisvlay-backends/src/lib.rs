@@ -348,14 +348,27 @@ impl Default for BackendRegistry {
 ///
 /// Factored out so both `create_registry()` and `create_test_registry()`
 /// register LG the same way — there's only one way to register LG and
-/// no reason to duplicate the wiring.
-fn register_lg(registry: &mut BackendRegistry) {
+/// no reason to duplicate the wiring. `discovery` carries the daemon's
+/// discovery settings (bind port, …); the test registry passes a
+/// default config since tests don't exercise the firewall path.
+#[cfg_attr(
+    not(feature = "discovery"),
+    expect(
+        unused_variables,
+        reason = "discovery config is only consulted when the discovery feature is enabled"
+    )
+)]
+fn register_lg(registry: &mut BackendRegistry, discovery: &tisvlay_core::DiscoveryConfig) {
     let lg_connector = Arc::new(tisvlay_lg::LgConnector::new());
 
     #[cfg(feature = "discovery")]
     let lg_discover_fn: Option<Arc<DiscoverFn>> = {
         use tisvlay_core::TvDiscovery;
-        let discovery = Arc::new(tisvlay_lg::LgDiscovery::new());
+        let mut lg_discovery = tisvlay_lg::LgDiscovery::new();
+        if let Some(port) = discovery.bind_port {
+            lg_discovery = lg_discovery.with_bind_port(port);
+        }
+        let discovery = Arc::new(lg_discovery);
         Some(Arc::new(move |timeout| {
             let discovery = Arc::clone(&discovery);
             Box::pin(async move { discovery.discover(timeout).await })
@@ -396,10 +409,13 @@ fn register_mock_production(registry: &mut BackendRegistry) {
 ///
 /// This is the main entry point for creating a backend registry in
 /// production code. All vendor backends are registered here.
-pub fn create_registry() -> BackendRegistry {
+/// `discovery` carries daemon-level discovery settings (currently
+/// just the SSDP bind port) that the LG backend (and any future
+/// vendor that does SSDP) plumbs through.
+pub fn create_registry(discovery: &tisvlay_core::DiscoveryConfig) -> BackendRegistry {
     let mut registry = BackendRegistry::new();
 
-    register_lg(&mut registry);
+    register_lg(&mut registry, discovery);
 
     #[cfg(feature = "mock")]
     register_mock_production(&mut registry);
@@ -432,7 +448,7 @@ pub fn create_test_registry() -> (BackendRegistry, tisvlay_mock::MockHandle) {
 
     let mut registry = BackendRegistry::new();
 
-    register_lg(&mut registry);
+    register_lg(&mut registry, &tisvlay_core::DiscoveryConfig::default());
 
     let (connector, discovery, handle) = tisvlay_mock::new_test_parts();
     let connector = Arc::new(connector);
@@ -456,21 +472,21 @@ mod tests {
 
     #[test]
     fn test_registry_creation() {
-        let registry = create_registry();
+        let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
         assert!(registry.get("lg").is_some());
         assert!(registry.get("samsung").is_none());
     }
 
     #[test]
     fn test_supported_vendors() {
-        let registry = create_registry();
+        let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
         let vendors = registry.supported_vendors();
         assert!(vendors.iter().any(|(id, _)| *id == "lg"));
     }
 
     #[test]
     fn test_lg_backend_registered() {
-        let registry = create_registry();
+        let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
         let lg = registry.get("lg").expect("LG backend should be registered");
         assert_eq!(lg.backend.vendor_id(), "lg");
         assert_eq!(lg.backend.vendor_name(), "LG WebOS");
