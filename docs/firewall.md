@@ -36,6 +36,27 @@ sudo iptables -I INPUT -p udp --dport 1901 -j ACCEPT
 networking.firewall.allowedUDPPorts = [ 1901 ];
 ```
 
+NixOS users who manage tisvlayd via the project's NixOS module
+([`packaging/nix/module.nix`](../packaging/nix/module.nix)) can do
+both the bind-port pinning and the firewall rule in one
+declaration — no separate `[discovery]` config edit needed:
+
+```nix
+services.tisvlay = {
+  enable = true;
+  bindPort = 1901;
+  openFirewall = true;
+};
+```
+
+`bindPort` adds `--bind-port 1901` to `tisvlayd`'s `ExecStart` (the
+CLI flag overrides `[discovery] bind_port` from the config file, so
+the daemon's writable config stays usable for the pairing wizard).
+`openFirewall = true` then adds the port to
+`networking.firewall.allowedUDPPorts`. The module asserts the two
+together — `openFirewall` without `bindPort` set is rejected at
+evaluation time.
+
 ```bash
 # ufw (Ubuntu/Debian)
 sudo ufw allow 1901/udp
@@ -50,8 +71,6 @@ Without `bind_port`, the OS hands out an ephemeral port per scan, so no `--dport
 ## Solutions by Distribution
 
 These accept any UDP from the local subnet — the fallback for users who have not pinned `bind_port` above. If you pinned a port, use the single-port rules instead.
-
-### NixOS
 
 ### NixOS
 

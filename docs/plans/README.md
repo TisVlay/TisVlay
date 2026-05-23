@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [SSDP extraction + streaming discovery](ssdp-extraction-and-streaming-discovery.md) — spin out `tisvlay-ssdp`, refactor LG discovery, configurable bind port, convert pairing wizard from one-shot to streaming session.
+_None._
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:

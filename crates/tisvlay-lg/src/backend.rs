@@ -796,8 +796,7 @@ impl TvConnector for LgConnector {
         // destination, which is the right behavior on typical
         // multi-NIC hosts. Explicit source-IP binding via netlink
         // route lookup would only matter for VPN-policy-routing
-        // edge cases that aren't in v1 scope — see
-        // docs/plans/manual-entry-mac-autofill.md alternatives.
+        // edge cases — out of scope until a real user hits it.
         let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
         let _ = socket
             .send_to(&[0u8], (ip, crate::endpoints::WSS_PORT))

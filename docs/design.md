@@ -242,7 +242,9 @@ Methods:
 - `AddTv(name: s, vendor: s, config_json: s, managed: b) → (os)` — reserve a TV id and start pairing. **Returns immediately** after sync validation (unknown-vendor / `ConfigInvalidVendorConfig` surface as RPC errors); the handshake itself runs in a daemon-side spawned task. Outcome is reported via `Manager1.PairingProgress` filtered on the returned `tv_uuid` to a terminal phase (`complete` or `failed`). `complete` only fires after the per-TV `Tv1.*` interfaces are registered, so clients observing it can immediately call into the new TV without racing the registration. `config_json` carries vendor-specific connection params as JSON (e.g. `{"ip": "192.168.1.100", "mac": "AA:BB:CC:DD:EE:FF"}` for LG); `managed` controls automation participation. Per-TV lifecycle (`Remove`, `RePair`, `GetConfig`, `UpdateConfig`) lives on `Tv1` after pair.
 - `ReloadConfig()` — reload config from disk
 - `CancelPair(tv_id: s)` — cancel an in-flight pairing handshake. Works for both `AddTv` and `Tv1.RePair` via the daemon-side `pairing_sessions` registry. Returns `NotPairing` (typed) if the tv_id isn't currently pairing — matches the BlueZ `Adapter.RemoveDevice`-on-unknown-device convention.
-- `DiscoverTvs(timeout_ms: u) → a(sssss)` — SSDP discovery, returns `(id, name, address, hardware_id, vendor)` tuples. Only available when compiled with the `discovery` feature.
+- `DiscoverTvs(timeout_ms: u) → a(sssss)` — SSDP discovery, returns `(id, name, address, hardware_id, vendor)` tuples. Bounded one-shot scan; used by `tisvlay list` and scripted callers that want a single return value.
+- `StartDiscovery(timeout_ms: u) → s` / `StopDiscovery(session_id: s)` — streaming discovery for interactive flows (the pairing wizard). Spawns a daemon-side task that loops M-SEARCH bursts at the configured `[discovery] poll_interval_ms` and emits the existing `DiscoveryFound` signal incrementally. See [docs/discovery.md § Streaming discovery](discovery.md#streaming-discovery-manager1startdiscovery).
+- `EnrichManualEntry(vendor: s, address: s) → a{ss}` — autofill helper for the wizard's manual-entry path: returns the same `vendor_data`-shaped map that `DiscoveryFound` carries. Always succeeds; empty map means "nothing to autofill" (invalid IP, IPv6 input, unknown vendor, ARP chain found nothing). See [docs/discovery.md § Manual-entry MAC enrichment](discovery.md#manual-entry-mac-enrichment).
 
 System-profile catalog (see [Profile catalog](#profile-catalog) for the full architecture):
 - `ListSystemProfiles() → a{sa{sv}}` — map from `uuid` to body dict (typed `SystemProfileBody`)
@@ -413,6 +415,12 @@ Each feature interface is implemented on per-TV objects. Controllable state is e
 - **org.tisvlay.Tv1.Volume** — `SetVolume(y)`, `SetMuted(b)` methods; `Volume` (ro, 0-100), `Muted` (ro) properties
 - **org.tisvlay.Tv1.Input** — `SwitchInput(input_id: s)` method; `CurrentInput` (ro), `AvailableInputs` (ro, invalidates) properties
 - **org.tisvlay.Tv1.Backlight** — `SetBacklight(y)` method; `Backlight` (ro, 0-100) property
+
+---
+
+## Discovery
+
+The discovery subsystem (SSDP transport ownership, streaming-discovery RPC lifecycle, manual-entry MAC enrichment, connector probe hook, schema-form trust signal, deployment-knob CLI pattern) lives in its own doc: [docs/discovery.md](discovery.md). Firewall-rule recipes that pair with the `bind_port` story are in [docs/firewall.md](firewall.md).
 
 ---
 

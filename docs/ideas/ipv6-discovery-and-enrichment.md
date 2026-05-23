@@ -1,6 +1,6 @@
 # IPv6 discovery and enrichment
 
-The current stack — SSDP search ([crates/tisvlay-ssdp/src/lib.rs](../../crates/tisvlay-ssdp/src/lib.rs)), `arp_lookup` ([crates/tisvlayd/src/netlink.rs](../../crates/tisvlayd/src/netlink.rs)), and the in-flight manual-entry MAC autofill (see [docs/plans/manual-entry-mac-autofill.md](../plans/manual-entry-mac-autofill.md)) — is IPv4-only by deliberate scope. `tisvlay-ssdp::search` returns `Error::Ipv6BindUnsupported` if given a v6 bind address; the manual-entry enrichment RPC will reject IPv6 inputs with an empty map. IPv6 support is a coherent piece of follow-up work that touches the whole discovery + enrichment surface.
+The current stack — SSDP search ([crates/tisvlay-ssdp/src/lib.rs](../../crates/tisvlay-ssdp/src/lib.rs)), `arp_lookup` ([crates/tisvlayd/src/netlink.rs](../../crates/tisvlayd/src/netlink.rs)), and the manual-entry MAC autofill RPC (see [docs/discovery.md](../discovery.md)) — is IPv4-only by deliberate scope. `tisvlay-ssdp::search` returns `Error::Ipv6BindUnsupported` if given a v6 bind address; `Manager1.EnrichManualEntry` rejects IPv6 inputs with an empty map. IPv6 support is a coherent piece of follow-up work that touches the whole discovery + enrichment surface.
 
 ## What v1 does in lieu
 

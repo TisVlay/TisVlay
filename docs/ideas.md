@@ -11,6 +11,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Probe library extraction (when GUI lands)](ideas/probe-library-extraction.md)
 - [SSDP `NOTIFY` passive listener](ideas/ssdp-notify-passive-listener.md)
 - [IPv6 discovery and enrichment](ideas/ipv6-discovery-and-enrichment.md)
+- [Pair-time MAC capture](ideas/pair-time-mac-capture.md)
 - [Polkit gating for multi-user shared workstations](ideas/polkit-multi-user.md)
 - [`a{sv}` wire-format migration for vendor-config surfaces](ideas/asv-wire-format-migration.md)
 - [Typed `Failed { reason }` payload across daemon error vocabulary](ideas/typed-failed-reason-payload.md)

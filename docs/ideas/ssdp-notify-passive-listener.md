@@ -1,6 +1,6 @@
 # SSDP `NOTIFY` passive listener
 
-After the streaming-discovery PR (see [docs/plans/ssdp-extraction-and-streaming-discovery.md](../plans/ssdp-extraction-and-streaming-discovery.md), or its post-merge home in `docs/design.md`), the daemon will detect newly-powered-on TVs via a polled `M-SEARCH` loop. Polling at 5-10s feels responsive in practice, but SSDP offers a second message flow we can exploit to drop steady-state network traffic to zero from our side and tighten boot-detection latency to ~1 second.
+The streaming discovery story documented in [docs/discovery.md](../discovery.md) has the daemon detect newly-powered-on TVs via a polled `M-SEARCH` loop. Polling at 5-10s feels responsive in practice, but SSDP offers a second message flow we can exploit to drop steady-state network traffic to zero from our side and tighten boot-detection latency to ~1 second.
 
 ## What this would add
 
