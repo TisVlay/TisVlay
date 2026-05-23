@@ -659,7 +659,7 @@ component TvDetail inherits Rectangle {
                         label: @tr("System");
                         // helper: "Drives daemon lifecycle (boot/shutdown/sleep).";
                         HorizontalLayout {
-                            spacing: Design.gap-form;
+                            spacing: Design.gap-row;
                             ComboBox {
                                 model: root.system-profiles;
                                 current-value: root.tv.system-profile == "" ? "default" : root.tv.system-profile;
@@ -688,7 +688,7 @@ component TvDetail inherits Rectangle {
                         label: @tr("User");
                         // helper: "Drives session events (lock/unlock/idle).";
                         HorizontalLayout {
-                            spacing: Design.gap-form;
+                            spacing: Design.gap-row;
                             ComboBox {
                                 model: root.user-profiles;
                                 current-value: root.tv.user-profile == "" ? "default" : root.tv.user-profile;

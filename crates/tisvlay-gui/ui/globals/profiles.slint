@@ -23,11 +23,15 @@ export enum ProfileKind {
 }
 
 /// One TV that references a profile. Carries the UUID for
-/// click-through navigation (`Profiles.open-tv(uuid)`) and the
-/// friendly name for chip rendering.
+/// click-through navigation (`Profiles.open-tv(uuid)`), the
+/// friendly name for the Used-by-row LinkText, and the per-TV
+/// `automated` state — drives the LinkText's `text-color` tint
+/// (success/info) so the Used-by row reads the same 3-state
+/// classification the master-list row aggregate uses.
 export struct ProfileTvRef {
     uuid: string,
     name: string,
+    automated: bool,
 }
 
 /// One inheritable field rendered as a row in the detail editor.
@@ -44,11 +48,12 @@ export struct ProfileTvRef {
 /// trigger a full Slint reload in a later commit that produced no
 /// visual change.
 ///
-/// `current-value` carries a trailing `*` (e.g. `"power_on*"`) when
-/// an enum field is inheriting — both signals the state visually and
-/// ensures picking the same-as-resolved value still fires
-/// `selected(v)` (no ComboBox no-op). Number rows skip the `*`
-/// overlay; gutter accent + reset glyph carry the inherit signal.
+/// `current-value` carries a trailing inherit overlay (the resolved
+/// token plus a presentation-only marker) when an enum field is
+/// inheriting — both signals the state visually and ensures picking
+/// the same-as-resolved value still fires `selected(v)` (no ComboBox
+/// no-op). Number rows skip the overlay; gutter accent + reset glyph
+/// carry the inherit signal.
 export struct ProfileFieldEntry {
     field-name: string,
     label: string,
@@ -56,7 +61,7 @@ export struct ProfileFieldEntry {
     /// ComboBox model for `kind == "enum"`.
     options: [string],
     /// ComboBox displayed text for `kind == "enum"` (with possible
-    /// `*` suffix while inheriting — see above).
+    /// inherit-overlay suffix while inheriting — see above).
     current-value: string,
     /// SpinBox value + bounds + step + unit for `kind == "number"`.
     /// Rust clamps `number-value` to `[min-value, max-value]` at
@@ -77,13 +82,24 @@ export struct ProfileRow {
     /// Hyphenated UUID string — the daemon-side identity. Used as
     /// the selection key and on the wire for catalog calls.
     uuid: string,
-    /// Friendly name from the profile body's `name` field. Rename is
-    /// a full-body update; this row carries the latest snapshot value.
+    /// Bare profile name from the body's `name` field. Used by the
+    /// rename-pencil input prefill (the bare value the daemon will
+    /// validate against). Read-only display surfaces should bind
+    /// `display-name` instead — that's the form with the localized
+    /// "default" word and the default-indicator glyph applied.
     name: string,
+    /// Read-only display form of the name. For the reserved-default
+    /// profile this is `format!("{}\u{00A0}\u{2713}", gettext("default"))`
+    /// — localized "default" with a trailing CHECK MARK. For every
+    /// other profile this matches `name` verbatim. Synthesized in
+    /// `state.rs::display_profile_name`. Bind this in master-list
+    /// rows, the detail-header read-only Text, and TVs-pane profile-
+    /// selector ComboBox models / current-values.
+    display-name: string,
     /// True for the reserved default profile
     /// (`DEFAULT_SYSTEM_PROFILE_UUID` /
-    /// `DEFAULT_USER_PROFILE_UUID`). Drives the `(default)` badge
-    /// and disables the Delete button in the detail header.
+    /// `DEFAULT_USER_PROFILE_UUID`). Gates the Delete-button enabled
+    /// state in the detail header.
     is-default: bool,
     /// TVs referencing this profile, resolved client-side from the
     /// in-memory TV list via the shared `references_of` helper.

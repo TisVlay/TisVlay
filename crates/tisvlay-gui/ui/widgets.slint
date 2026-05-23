@@ -95,11 +95,41 @@ export component Chip inherits Rectangle {
 // component pins a Rectangle to its inner Text's preferred size so
 // the TouchArea has a fitted hit area — useful for "Used by [name]"
 // rows and any future inline-link contexts.
+//
+// Hover / pressed states:
+//
+//   - Default: text in `text-color` (a muted tint by default —
+//     `Theme.info-text`); no underline; default cursor.
+//   - Hover:   text shifts to `hover-color` (full foreground by
+//     default — `Theme.text`); a 1 px underline appears, pinned
+//     absolutely at the baseline so the widget height stays
+//     stable; default cursor.
+//   - Pressed: text dims via `.with-alpha(0.7)` so a click visibly
+//     registers.
+//
+// Cursor stays the default arrow rather than `pointer` — the
+// `pointer` (finger) cursor is reserved for external navigation
+// (open in browser / follow URL) per KDE HIG + the project's
+// "pointer = external link only" convention. In-app navigation
+// (`Profiles.open-tv(uuid)` and similar) signals interactivity
+// through the hover underline + color shift instead.
 
 export component LinkText inherits Rectangle {
     in property <string> text;
+    /// Base color rendered in the resting state.
     in property <brush> text-color: Theme.info-text;
+    /// Color the text shifts to under the pointer. Defaults to the
+    /// full-contrast foreground so the muted base tint pulls toward
+    /// the focal-element color on hover. Callers passing a non-
+    /// default `text-color` (e.g. a status tint) may want to set
+    /// `hover-color` in parallel for visual consistency.
+    in property <brush> hover-color: Theme.text;
     in property <length> font-size: Design.font-helper;
+    /// Optional override for the announced label. Useful when the
+    /// link carries auxiliary state that screen readers should hear
+    /// (e.g. `@tr("{}, automated", tv.name)` for a status-tinted
+    /// span). Empty string falls back to `root.text`.
+    in property <string> accessible-label-override;
     callback clicked();
 
     horizontal-stretch: 0;
@@ -108,16 +138,28 @@ export component LinkText inherits Rectangle {
     height: inner.preferred-height;
 
     accessible-role: button;
-    accessible-label: root.text;
+    accessible-label: root.accessible-label-override == ""
+        ? root.text
+        : root.accessible-label-override;
     accessible-action-default => { root.clicked(); }
 
     inner := Text {
         text: root.text;
-        color: root.text-color;
+        color: touch.pressed
+            ? root.text-color.with-alpha(0.7)
+            : touch.has-hover ? root.hover-color : root.text-color;
         font-size: root.font-size;
     }
-    TouchArea {
-        mouse-cursor: pointer;
+    // Hover-only underline, pinned at the baseline so the widget's
+    // overall height stays the same in resting + hovered states.
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: inner.preferred-width;
+        height: 1px;
+        background: touch.has-hover ? inner.color : transparent;
+    }
+    touch := TouchArea {
         clicked => { root.clicked(); }
     }
 }

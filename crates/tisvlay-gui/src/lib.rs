@@ -80,7 +80,10 @@ use clap::Parser;
 // xgettext both find the same source-of-truth in the .pot file.
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tisvlay_core::{Coalescer, DaemonClient, ReconcilerMap, SessionClient, TrayClient};
+use tisvlay_core::{
+    Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient, ReconcilerMap,
+    SessionClient, TrayClient,
+};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -1219,7 +1222,11 @@ fn register_callbacks(
         // `Tv1.SystemProfile` setter wants a UUID. Translate via a
         // fresh catalog fetch (profile catalogs are small; an on-click
         // round-trip is cheaper than threading a shared name->UUID
-        // cache through every callback).
+        // cache through every callback). The match predicate goes
+        // through `display_profile_name` so the reserved-default
+        // entry (which the ComboBox renders with a localized
+        // "default" word + indicator glyph suffix) still resolves —
+        // matching against bare `body.name` would miss it.
         let d = d.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
@@ -1236,7 +1243,10 @@ fn register_callbacks(
             };
             let Some(uuid) = bodies
                 .iter()
-                .find(|(_, b)| b.name == picked_name)
+                .find(|(u, b)| {
+                    crate::state::display_profile_name(**u, &b.name, DEFAULT_SYSTEM_PROFILE_UUID)
+                        == picked_name
+                })
                 .map(|(u, _)| *u)
             else {
                 warn!(tv_id = %tv_id, name = %picked_name, "set_system_profile: name not in catalog");
@@ -1291,7 +1301,10 @@ fn register_callbacks(
             };
             let Some(uuid) = bodies
                 .iter()
-                .find(|(_, b)| b.name == picked_name)
+                .find(|(u, b)| {
+                    crate::state::display_profile_name(**u, &b.name, DEFAULT_USER_PROFILE_UUID)
+                        == picked_name
+                })
                 .map(|(u, _)| *u)
             else {
                 warn!(tv_id = %tv_id, name = %picked_name, "set_user_profile: name not in catalog");
@@ -1556,7 +1569,19 @@ fn register_callbacks(
                 wizard.set_selected_address(SharedString::from(entry.address.as_str()));
                 wizard.set_selected_hw_model(SharedString::from(entry.hw_model.as_str()));
                 if wizard.get_system_profile().is_empty() {
-                    wizard.set_system_profile("default".into());
+                    // Pre-select the reserved-default profile in the
+                    // wizard's picker. Must match the display form
+                    // used in `Profiles.system-profiles` (localized
+                    // "default" + indicator glyph) so std `ComboBox`'s
+                    // string-match `current-value` resolves to the
+                    // right model row.
+                    wizard.set_system_profile(SharedString::from(
+                        crate::state::display_profile_name(
+                            DEFAULT_SYSTEM_PROFILE_UUID,
+                            "default",
+                            DEFAULT_SYSTEM_PROFILE_UUID,
+                        ),
+                    ));
                 }
                 // Clear stale schema rows from a prior session so the
                 // form starts blank if the fetch is slow.

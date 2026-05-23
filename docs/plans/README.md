@@ -15,4 +15,15 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None._ Recently retired: `profile-crud-v3.md` migrated into [docs/design.md](../design.md)'s "Profile catalog" subsection on merge of the v3 profile-management work.
+_None._
+
+When a plan is in flight, list it here with a one-line summary
+of the work it covers:
+
+> - [`example-feature.md`](example-feature.md) — short
+>   description of what's landing and why a multi-commit PR
+>   benefits from an upfront design doc.
+
+Remove the entry when the plan retires and its file deletes
+(per Convention above). Git history is the archive — no need
+to maintain a retired-plans list here.
