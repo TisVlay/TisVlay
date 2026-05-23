@@ -55,7 +55,13 @@ impl TvBackend for LgBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::ALL
+        // ALL covers the feature methods; IPV4 declares the verified
+        // transport family. IPV6 is deliberately not declared until
+        // the LG packet-capture validation (Phase 0 of the IPv6
+        // support plan) confirms WebSocket/SSAP works over v6 —
+        // expected to per public RE notes, but unverified on our
+        // hardware as of the Capabilities-bits introduction.
+        Capabilities::ALL | Capabilities::IPV4
     }
 }
 

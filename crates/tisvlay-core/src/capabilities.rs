@@ -79,7 +79,45 @@ bitflags! {
         /// (via SSDP, mDNS, or vendor-specific protocols).
         const DISCOVERY = 0b1000_0000;
 
-        /// All capabilities combined.
+        // ----- Transport-family capabilities (orthogonal to features) -----
+        //
+        // Vendors declare which IP families their transport supports.
+        // Consumed by the daemon and GUI to gate user input + UX
+        // affordances before any RPC round-trip: the wizard reads
+        // capabilities() at form-build time and omits or annotates
+        // address fields the vendor can't handle. Derived behaviors
+        // (e.g. WoL availability when the only configured address is v6)
+        // are *computed*, not stored separately — see Capabilities doc
+        // comment for the design rationale.
+        //
+        // Deliberately not part of ALL so existing call sites that use
+        // ALL don't silently auto-claim a transport family they haven't
+        // verified. Each vendor opts in explicitly.
+
+        /// Transport supports IPv4.
+        ///
+        /// Vendors over an IP-based transport (WebSocket, raw TCP, HTTP)
+        /// that have been verified to work over IPv4 should include this
+        /// bit. The daemon uses it to accept v4 addresses in the
+        /// pairing form and gate Wake-on-LAN (which is v4-only at the
+        /// IEEE protocol level — see `docs/ideas/wol-raw-socket.md`).
+        const IPV4 = 0b0001_0000_0000;
+
+        /// Transport supports IPv6.
+        ///
+        /// Vendors that have been verified to work over IPv6 sockets
+        /// (TCP/WebSocket on v6 destinations, NDP-aware probing) should
+        /// include this bit. Adding it lets the wizard accept v6
+        /// addresses in the manual-entry path and reach the TV over v6
+        /// for control. SSDP discovery is a separate concern — vendors
+        /// can support v6 control without v6 discovery (LG's expected
+        /// shape: WebSocket yes, SSDP no).
+        const IPV6 = 0b0010_0000_0000;
+
+        /// All *feature* capabilities combined. Transport-family bits
+        /// (IPV4, IPV6) are deliberately excluded — see their doc
+        /// comments above — so vendors using `ALL` don't silently
+        /// claim a transport family they haven't verified.
         const ALL = Self::POWER.bits()
             | Self::SCREEN.bits()
             | Self::VOLUME.bits()
@@ -132,6 +170,12 @@ impl Capabilities {
         if self.contains(Self::DISCOVERY) {
             caps.push("discovery");
         }
+        if self.contains(Self::IPV4) {
+            caps.push("ipv4");
+        }
+        if self.contains(Self::IPV6) {
+            caps.push("ipv6");
+        }
         caps
     }
 
@@ -153,6 +197,8 @@ impl Capabilities {
                 "backlight" => caps |= Self::BACKLIGHT,
                 "wol" => caps |= Self::WOL,
                 "discovery" => caps |= Self::DISCOVERY,
+                "ipv4" => caps |= Self::IPV4,
+                "ipv6" => caps |= Self::IPV6,
                 _ => {} // Ignore unknown capabilities
             }
         }
@@ -239,6 +285,23 @@ mod tests {
         assert!(strings.contains(&"backlight"));
         assert!(strings.contains(&"wol"));
         assert!(strings.contains(&"discovery"));
+    }
+
+    #[test]
+    fn test_transport_capabilities_round_trip() {
+        // IPV4 / IPV6 are deliberately *not* in ALL — vendors opt in
+        // explicitly per docs/plans/ipv6-support.md's Alternatives
+        // section. Verify the bits are independent of the feature-bit
+        // ALL mask.
+        assert!(!Capabilities::ALL.contains(Capabilities::IPV4));
+        assert!(!Capabilities::ALL.contains(Capabilities::IPV6));
+
+        let caps = Capabilities::ALL | Capabilities::IPV4 | Capabilities::IPV6;
+        let strings = caps.to_strings();
+        assert!(strings.contains(&"ipv4"));
+        assert!(strings.contains(&"ipv6"));
+        let restored = Capabilities::from_strings(&strings);
+        assert_eq!(caps, restored);
     }
 
     #[test]
