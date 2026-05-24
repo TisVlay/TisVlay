@@ -104,7 +104,7 @@ Stable snake_case keys (these are wire identifiers in the `a{sb}` map):
 |---|---|---|---|---|
 | `tv_connection` | TV `connected` transitions true ↔ false | **on** | `Low` (connect), `Normal` (disconnect) | `refresh_state` diff |
 | `tv_pairing` | terminal pairing phase `complete` / `failed` | **on** | `Normal` / `Critical` | `Manager1.PairingProgress` (already watched by `StateWatcher`) |
-| `tv_wake` | `Tv1.Power.PowerCycleProgress` reaches `connected` / `failed` after a `wol_sent` | **on** | `Low` / `Critical` | per-TV property change |
+| `tv_wake` | `Tv1.Power.PowerCycleProgress` reaches `connected` / `failed` after a `wol_sent` | **on** | `Low` / `Critical` | per-TV `Tv1.Power.PowerCycleProgress` stream (see "Per-TV power-cycle subscription" below) |
 | `automation_fired` | session action ran on a TV | **off** | `Low` | new `Session1.AutomationFired` signal |
 | `daemon_offline` | `StateEvent::DaemonDisappeared` | **on** | `Critical`, hint `resident` (sticky) | existing tray arm |
 
@@ -112,7 +112,9 @@ The `automation_fired` default-off matches the user's earlier "noisiest one off"
 
 ## File changes
 
-### `tisvlay-core` (new `src/tray_config.rs`)
+### `tisvlay-tray` (new `src/config.rs`)
+
+`TrayConfig` stays tray-side rather than going into `tisvlay-core`. `UserConfig` lives in `tisvlay-core` because it has two distinct in-process consumers (`tisvlay-session` writes, `tisvlayd` reads). `TrayConfig` has exactly one writer (tray) and one external consumer (GUI, via the `a{sv}` wire shape on `TrayClient`) — the struct never crosses a crate boundary, only the wire body does. Keeping it in the tray crate avoids coupling core to a tray-only schema.
 
 ```text
 pub struct TrayConfig {
@@ -174,14 +176,25 @@ Extend the existing `TisvlayTrayProxy` (currently a no-method stub used only for
 ```text
 pub enum StateEvent {
     /* existing */
-    TrayAppeared,                      // already present
-    TrayDisappeared,                   // already present
-    TrayNotificationSettingsChanged,   // new
-    SessionAutomationFired { tv_id: String, event: String, action: String },  // new
+    TrayAppeared,                      // already present (bus-name lifecycle)
+    TrayDisappeared,                   // already present (bus-name lifecycle)
+    TrayNotificationSettingsChanged,   // new (payload-less; subscribers re-fetch via TrayClient)
+    SessionAutomationFired {           // new
+        tv_id: String,
+        event_kind: String,            // stable snake_case from SessionEvent::Display
+        action_kind: String,           // stable snake_case from SessionAction::Display (NOT Debug)
+    },
 }
 ```
 
-`StateWatcher` already subscribes to `Tray` bus-name lifecycle; the new arm subscribes to `Tray1.NotificationSettingsChanged` and `Session1.AutomationFired`. Existing tray + GUI `match` blocks add catch-all arms (today the tray's `TrayAppeared`/`TrayDisappeared` arms already no-op for self-events).
+`StateWatcher` today only watches `Tray` *bus-name* lifecycle (`tray_watch` at `dbus_client.rs:2800`); there is **no `tray_signal_stream`** parallel to `session_signal_stream`. Both new signals require explicit plumbing, not a one-line subscription:
+
+1. **`Tray1.NotificationSettingsChanged`** — new `tray_signal_stream` filter following the shape of `session_signal_stream` at `dbus_client.rs:2820-2860` (match rule on member name, new `TraySignal::NotificationSettingsChanged` enum, new `next()` branch around `dbus_client.rs:2955`). The const path/interface need exporting from `dbus_paths.rs` (`TRAY_SERVICE` exists; `TRAY_INTERFACE`/`TRAY_PATH` need adding).
+2. **`Session1.AutomationFired`** — extends the existing `session_signal_stream`: new `SessionSignal::AutomationFired { tv_id, event_kind, action_kind }` variant, new match arm in the filter block at `dbus_client.rs:2834`, new `next()` branch.
+
+`StateEvent` convention today is payload-less (subscribers re-query state). `TrayNotificationSettingsChanged` follows that convention — the GUI re-fetches via `TrayClient::list_notification_settings`. `SessionAutomationFired` is the deliberate exception: it represents an *ephemeral event*, not a state change — there is nothing to re-query (the session service doesn't persist "last automation fired"), so the payload travels in-band. The three fields are kept as stable snake_case identifiers (callable by `gettext("automation.event.{event_kind}")`-style key lookup, not interpolated into translated strings) so future enum extensions don't break wire compat.
+
+Existing tray + GUI `match` blocks add new arms; today the tray's `TrayAppeared`/`TrayDisappeared` arms already no-op for self-events.
 
 ### `tisvlay-tray/src/dbus.rs` (extend `Tray1`)
 
@@ -234,7 +247,12 @@ App name `"TisVlay"`, icon name `"video-display"` (matches the tray's active-sta
 
 ### `tisvlay-session` (one new signal)
 
-`Session1.AutomationFired(tv_id: s, event: s, action: s)`. Fired from `event_handler` in `lib.rs:289` after `execute_action_for_tv` returns `Ok(())`, inside the per-TV `for (tv_id, action)` loop. `event` is the `SessionEvent` Display (`session_locked`, `session_unlocked`, …); `action` is the `SessionAction` Debug. Purely additive — existing subscribers ignore it.
+`Session1.AutomationFired(tv_id: s, event_kind: s, action_kind: s)`. Fired from `event_handler` in `lib.rs:289` after `execute_action_for_tv` returns `Ok(())`, inside the per-TV `for (tv_id, action)` loop. Both `event_kind` and `action_kind` are **stable snake_case identifiers** intended as gettext lookup keys (`automation.event.session_locked`, `automation.action.screen_off`), **not** translated strings and **not** Debug-formatted values.
+
+- `event_kind` is the existing `SessionEvent::Display` impl (already snake_case: `session_locked`, `session_unlocked`, `idle_timeout`, …).
+- `action_kind` requires either a new `SessionAction::Display` impl returning snake_case (`screen_off`, `screen_on`, `power_off`, `power_on`, `none`) or a dedicated `fn kind(&self) -> &'static str`. The existing `Debug` impl is unstable across refactors and renders poorly in toast bodies (`"PowerOff { force: false }"`); the new helper is a one-screen patch and lives next to the enum in `tisvlay-core`.
+
+Purely additive on the wire — existing subscribers ignore it.
 
 ### `tisvlay-gui`
 
@@ -255,7 +273,9 @@ Pane gains a "When the tray is unavailable, settings are read-only" empty state 
 
 ## Concurrency / lifecycle notes
 
-- **Diff race**: `refresh_state` must clone `tray.tvs` *before* the new `fetch_all_state` await, otherwise two fast-firing refreshes can interleave and the diff sees its own new state as "old". The clone is cheap (one `Vec<CachedTvState>`).
+- **Per-TV power-cycle subscription (for `tv_wake`).** `CachedTvState` doesn't carry `power_cycle_phase` — diffing it against the new state wouldn't reveal `wol_sent → connected` vs `wol_sent → failed` transitions, only the post-cycle `connected` flip. The `notify-rust` path needs the per-TV `Tv1.Power.PowerCycleProgress` signal stream directly. The proxy + `power_cycle_progress_stream` helper already exists at `crates/tisvlay-core/src/dbus_client.rs:1375`, but the tray needs subscription lifecycle: `subscribe(uuid)` on each `InterfacesAdded` for that TV (or on `DaemonAppeared` + the initial `list_tvs`), `drop(uuid)` on `InterfacesRemoved` / `DaemonDisappeared`. A `HashMap<String, JoinHandle<()>>` keyed by TV UUID, owned by the watcher task, handles this. Each per-TV task reads the stream, emits to the same `Notifier` (gated by `tv_wake`), and exits on stream end.
+
+- **Diff baseline must be the prior `tray.tvs` inside `handle.update`'s closure, not a pre-await snapshot.** `RefreshTrigger` (`crates/tisvlay-core/src/refresh_trigger.rs:62-116`) already prevents concurrent re-entry via an `in_flight: AtomicBool` — a second `fire()` sets `dirty` and returns. The actual race that the diff must guard against is `StateEvent::DaemonDisappeared` at `main.rs:383-390`, which clears `tray.tvs` *outside* the trigger path. Without care, the next refresh after a daemon flap would see "all TVs reappeared" and emit a `tv_connection` notification storm. Fix: compute the diff *inside* the `handle.update(|t| { let events = diff_for_notifications(&t.tvs, &new_tvs); t.tvs = new_tvs; events })` closure where the old `t.tvs` is the authoritative baseline, then dispatch the returned events to `Notifier` after the closure returns.
 - **Lock discipline**: the config snapshot for `Notifier::notify` is read under a `tokio::sync::RwLock` read guard that drops immediately. Saving (write guard) happens inside `Tray1::UpdateNotificationSettings`, with the lock held across the `save_to` IO — same pattern as `set_tv_user_profile`.
 - **Notification server availability**: `notify-rust`'s `Notification::show()` is async-blocking on the session bus call. If `org.freedesktop.Notifications` isn't yet owned (very early login), the call errors. The `Notifier` caches the last failure timestamp; subsequent calls within ~5s drop silently rather than re-erroring. After 5s a fresh attempt is made.
 - **Burst protection**: A single state transition can in principle fire multiple notifications (a TV disconnecting cascades into a power-cycle-failed). The diff helper is deduplicating by `(tv_id, category)` per refresh — at most one notification per TV per category per refresh tick.
@@ -289,6 +309,28 @@ GUI `NOTIFICATIONS` group lands as a sub-commit of (1) once the wire surface is 
 - **`replaces_id` / `category` hints?** `notify-rust` supports the freedesktop `category` hint (`"device"`, …) and ID-based replacement. Worth setting `category("device")` so DEs that group/filter by category route TisVlay notifications sensibly; replacement-by-id is deferred (would dedup back-to-back wake retries, but adds state-tracking complexity).
 - **Critical-urgency stickiness for `daemon_offline`**: most DEs honor `Urgency::Critical` as a persistent (non-timeout) toast. Worth setting; users who silence other categories will likely still want this one to remain on-screen until acknowledged.
 - **Settings-pane availability when tray is offline**: should the toggles be disabled or hidden when `Tray.available == false`? Plan currently says disabled with an empty-state — confirm before laying out the Slint scaffold.
+
+## Pending review decisions
+
+The following items came out of the agent-review pass on this plan. None are blockers for the plan's architectural shape, but each should be resolved before or during the relevant commit.
+
+### ⚠️ Tightening (single-reviewer, solid)
+
+- **Switch `NotificationSettings` to typed dict-derive (`a{sv}` via `NotificationSettingsBody`)** rather than `a{sb}`. Every other config wire body in the workspace (`UserProfileBody`, `SystemProfileBody`) uses dict-derive; an `a{sb}` map decodes arbitrary unknown keys at the wire layer and loses forward-compat for future non-bool fields (rate limits, per-TV scoping). Decision point: commit 1.
+- **Drop `SetNotificationSetting(s, b)`**; keep only the atomic `UpdateNotificationSettings`. `Session1` has only `Update*` mutators — single mutator means a single rollback path. `busctl` ergonomics for one-key edits are preserved by passing a single-entry map. Decision point: commit 1.
+- **Signal payload shape**: emit changed-keys (`as`) rather than the full new state, **OR** drop the custom signal entirely and rely on auto-emitted `org.freedesktop.DBus.Properties.PropertiesChanged`. Current "suppress auto + custom-emit full state" is half-decided; the project's convention elsewhere is signal-as-cache-invalidator + client re-fetches. Decision point: commit 1.
+- **`Notifier::notify` lock-discipline foot-gun**: current signature taking `&self` with an `Arc<RwLock<TrayConfig>>` inside encourages the wrong implementation (lock held across the `notify-rust` D-Bus call). Either (a) make `notify` take `enabled: bool` so the caller reads the flag and drops the guard explicitly, or (b) have `Notifier` cache an `AtomicU8` bitset of enabled categories refreshed on `NotificationSettingsChanged`. Option (b) is also cheaper at the call site (no lock on the hot path at all). Decision point: commit 2.
+- **`AutomationFired` correlation ID** (`serial: t` monotonic): cheap on the session side, lets receivers `replaces_id` back-to-back lock/unlock storms (KDE screensaver bounces). Probably defer to v2 unless we hit the bounce-storm problem in field testing. Decision point: commit 3.
+
+### 💡 UX judgment calls (need product decision)
+
+- **Urgency mapping rethink**: reviewer argues current Critical-heavy mapping will annoy. Suggested: `tv_connection` Low for both, `tv_pairing` Normal for both, `tv_wake` Low / Normal, reserve `Critical` *only* for `daemon_offline`. Rationale: pairing and wake are usually user-initiated foreground operations — the user already knows they triggered them.
+- **Defaults rethink**: if the urgency tightening above lands, current defaults are fine. Otherwise reviewer recommends conservative defaults: only `daemon_offline` + `tv_pairing` on by default, others off with a "want more?" nudge in the settings pane.
+- **`failures_only: bool` sub-toggle per category**: addresses the likely top user request ("tell me when wake fails but stay quiet on success") at lower UX cost than splitting `tv_pairing` / `tv_wake` into success/failure categories. Worth considering for v1.
+- **"Send test notification" button on the settings pane**: ~one-line cost, big discoverability win. Without it, users can't distinguish "category disabled" from "DE notification stack broken." Recommend in.
+- **`config_reloaded` category (default off)**: for power users hand-editing the TOML, surfaces a "Reload applied: 2 profiles, 1 TV updated" toast as a feedback signal. Cheap, opt-in by default — adds one category, no architectural change.
+- **Notification body copy patterns**: reviewer sketched concrete summary/body strings per category — see review notes (not duplicated here to avoid drift). Lock in the copy in commit 2 (`Notifier` module) so it's reviewed alongside the emit-site code.
+- **Settings-pane offline copy**: prefer "Tray service is not running — start it to change these settings" over "settings are read-only" (clearer about cause).
 
 ## References
 
