@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tisvlay_core::{SystemConfig, UserConfig, absolutize};
+use tisvlay_core::{SystemConfig, absolutize};
 use tracing::{info, warn};
 
 use tisvlayd::dbus::{
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     // racing or guessing.
     let config_path = absolutize(args.config.unwrap_or_else(|| {
         if args.session {
-            UserConfig::config_path()
+            SystemConfig::user_config_path()
                 .unwrap_or_else(|_| PathBuf::from("/var/lib/tisvlay/config.toml"))
         } else {
             PathBuf::from("/var/lib/tisvlay/config.toml")

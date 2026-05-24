@@ -37,7 +37,7 @@
 //! client_key = "abc123"
 //! ```
 //!
-//! ## User Config (`~/.config/tisvlay/config.toml`)
+//! ## User Config (`~/.config/tisvlay/session.toml`)
 //!
 //! Owned by each user's `tisvlay-session`. Contains profile definitions
 //! and per-TV profile assignments. Optional — if absent, the session service
@@ -1016,6 +1016,23 @@ impl SystemConfig {
         PathBuf::from("/var/lib/tisvlay/config.toml")
     }
 
+    /// Get the daemon's user-mode config file path (`tisvlayd --session`).
+    ///
+    /// Returns `~/.config/tisvlay/config.toml` via XDG. Used when the
+    /// daemon runs on the session bus for development without `--config`.
+    /// Distinct from [`UserConfig::config_path`] (which resolves the
+    /// *session service's* file) — daemon and session service own
+    /// different files in the user domain.
+    pub fn user_config_path() -> Result<PathBuf> {
+        let dirs = directories::ProjectDirs::from("", "", "tisvlay").ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not determine config directory",
+            ))
+        })?;
+        Ok(dirs.config_dir().join("config.toml"))
+    }
+
     /// Validate that all TV UUIDs are unique. Per-TV format
     /// validity is handled by serde during deserialization (the
     /// `Uuid` type rejects malformed values), so this only catches
@@ -1163,7 +1180,10 @@ impl UserConfig {
 
     /// Get the user config file path.
     ///
-    /// Uses XDG directories: `~/.config/tisvlay/config.toml`
+    /// Uses XDG directories: `~/.config/tisvlay/session.toml`. Per the
+    /// per-peer file naming convention, the session service owns
+    /// `session.toml` in the user domain (the daemon's user-mode file
+    /// is `config.toml`, the tray's is `tray.toml`).
     pub fn config_path() -> Result<PathBuf> {
         let dirs = directories::ProjectDirs::from("", "", "tisvlay").ok_or_else(|| {
             Error::Io(std::io::Error::new(
@@ -1171,7 +1191,7 @@ impl UserConfig {
                 "Could not determine config directory",
             ))
         })?;
-        Ok(dirs.config_dir().join("config.toml"))
+        Ok(dirs.config_dir().join("session.toml"))
     }
 
     /// Resolve the effective profile for a TV.

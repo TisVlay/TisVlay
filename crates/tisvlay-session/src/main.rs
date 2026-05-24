@@ -5,7 +5,7 @@
 //!
 //! Configuration is split between system and user levels:
 //! - System config (daemon-owned): TV definitions, credentials, system default profile
-//! - User config (`~/.config/tisvlay/config.toml`): profile definitions, per-TV assignments
+//! - User config (`~/.config/tisvlay/session.toml`): profile definitions, per-TV assignments
 //!
 //! The session service queries the daemon for the TV list and system default profile,
 //! then merges with the user config to produce resolved profiles for each TV.
@@ -35,7 +35,7 @@ struct Args {
 
     /// Path to the user configuration file.
     ///
-    /// Defaults to ~/.config/tisvlay/config.toml (XDG) when not specified.
+    /// Defaults to ~/.config/tisvlay/session.toml (XDG) when not specified.
     /// If the file doesn't exist, the system default profile is used.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,

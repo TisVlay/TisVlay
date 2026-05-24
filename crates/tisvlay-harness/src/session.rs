@@ -58,7 +58,7 @@ impl TestSession {
     ///
     /// User config path is `None`, which means `SessionState::load` and
     /// the Session D-Bus interface fall back to XDG defaults
-    /// (`~/.config/tisvlay/config.toml`). For tests that exercise
+    /// (`~/.config/tisvlay/session.toml`). For tests that exercise
     /// profile mutation without polluting the developer's real user
     /// config, use [`TestSession::with_user_config_path`].
     pub async fn new(tv_id: &str) -> anyhow::Result<Self> {
@@ -68,7 +68,7 @@ impl TestSession {
     /// Like [`TestSession::new`] but pins the user config to a
     /// specific path — typically a file inside a `tempfile::TempDir`
     /// the test owns. Avoids reading or writing
-    /// `~/.config/tisvlay/config.toml` for tests that call
+    /// `~/.config/tisvlay/session.toml` for tests that call
     /// `SetTvUserProfile` or `ReloadConfig`.
     pub async fn with_user_config_path(
         tv_id: &str,

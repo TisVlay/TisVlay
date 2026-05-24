@@ -317,7 +317,7 @@ Manager1 didn't face the assignment-vs-body naming collision because per-TV syst
 
 ### Profile catalog
 
-The system-profile and user-profile catalogs share an architecture: a property-bag wire surface, immutable UUID identity, three-layer client cache, atomic full-body replace, and a body-mutation/topology signal trio per bus. The two halves are symmetric but live on different buses (Manager1 = system bus = `/var/lib/tisvlay/config.toml`; Session1 = session bus = `~/.config/tisvlay/config.toml`).
+The system-profile and user-profile catalogs share an architecture: a property-bag wire surface, immutable UUID identity, three-layer client cache, atomic full-body replace, and a body-mutation/topology signal trio per bus. The two halves are symmetric but live on different buses (Manager1 = system bus = `/var/lib/tisvlay/config.toml`; Session1 = session bus = `~/.config/tisvlay/session.toml`).
 
 **Why property-bag, not typed-property-per-object.** Configuration over D-Bus is property-bag-shaped — `NetworkManager.Settings.Connection`, `systemd-homed.Home`, `org.freedesktop.PowerProfiles` all use `a{sv}` bodies, not per-field typed properties. BlueZ-style typed properties fit *operational* state (a device's current connection state, a battery's current charge); they don't fit configuration. The v2 attempt at typed-property-per-object ballooned to +12 646 LoC because every field needed its own wire property + state-forwarder fan-out + `PropertiesChanged` plumbing; v3's property-bag shape collapses that to one dict-derive struct per kind.
 
@@ -432,7 +432,7 @@ The discovery subsystem (SSDP transport ownership, streaming-discovery RPC lifec
 Config is split between **system config** (daemon-owned) and **user config** (session-owned):
 
 - **System config**: `/var/lib/tisvlay/config.toml` — TV definitions (with per-TV system profile assignment), credentials, system profiles (daemon lifecycle events), and admin baseline user profiles. Root-owned; only `tisvlayd` reads and writes this file.
-- **User config**: `~/.config/tisvlay/config.toml` — user profile definitions and per-TV user profile assignments. User-owned; `tisvlay-session` reads this. Optional: if absent, the admin baseline `user.profiles.default` from system config is inherited via D-Bus.
+- **User config**: `~/.config/tisvlay/session.toml` — user profile definitions and per-TV user profile assignments. User-owned; `tisvlay-session` reads this. Optional: if absent, the admin baseline `user.profiles.default` from system config is inherited via D-Bus.
 
 Both accept `--config <PATH>` to override their respective path. `tisvlayd` defaults to `/var/lib/tisvlay/config.toml`; `--session` dev mode defaults to the XDG user path.
 
@@ -518,7 +518,7 @@ client_key = "abc123..."
 ### User Config Example
 
 ```toml
-# ~/.config/tisvlay/config.toml  (session-owned, optional)
+# ~/.config/tisvlay/session.toml  (session-owned, optional)
 
 # User's own profiles. Keyed by UUID; `name` is a body field.
 [user.profiles.00000000-0000-0000-0000-00000000515a]
@@ -541,7 +541,25 @@ profile.user = "a1b2c3d4-0000-0000-0000-00000000f000"  # "gaming"
 # guest-room inherits user.profiles.default (no override)
 ```
 
-Both system and user configs use the same `[[tv]]` array-of-tables syntax. When using a single-file config, both parsers can read the same `[[tv]]` entries — each ignores fields it doesn't own (serde skips unknown fields by default).
+### Per-peer config-file naming convention
+
+Each peer owns its own file in the default conventional layout — single writer per file, no cross-process coordination needed:
+
+| Peer | User-domain file | System-domain file |
+|---|---|---|
+| `tisvlayd` | `~/.config/tisvlay/config.toml` (with `--session`) | `/var/lib/tisvlay/config.toml` |
+| `tisvlay-session` | `~/.config/tisvlay/session.toml` | n/a |
+| `tisvlay-tray` | `~/.config/tisvlay/tray.toml` | n/a |
+
+### Where types live in the workspace
+
+`tisvlay-core` holds types that need to be shared across crates: **wire vocabulary** (anything crossing a D-Bus boundary, e.g. `UserProfileBody`, `SystemProfileBody`, `NotificationSettingsBody`) and types with **cross-crate schema references** (`SystemConfig` and `UserConfig` both contain `[[tv]]` so the two parsers can read the same TOML file — that's why they're co-located in core). On-disk container types with no cross-crate dependency stay with their owner (`TrayConfig` lives in `tisvlay-tray/src/config.rs`).
+
+### Single-file config (read-only / declarative deployments)
+
+Both `SystemConfig` and `UserConfig` use the same `[[tv]]` array-of-tables syntax. **Under the read-only constraint** (Nix store, ostree, etcd-pushed configs, etc. — nobody writes the file), all peers can be pointed at a single shared file via the existing `--config <path>` flags. Each parser ignores fields it doesn't own (serde skips unknowns by default), so a unified file just looks like an extra-large config to each peer.
+
+This property holds **only** when nobody writes. The save side is not symmetric: each peer's `save_to` serializes its own struct via `toml::to_string_pretty(self)`, which silently drops fields the writer doesn't model. In a writable shared-file deployment, the first save from any peer would clobber the others' sections. The read-only/declarative pattern is the supported single-file mode; conventional read-write deployments use the per-peer files above.
 
 Fields unspecified in a user profile inherit from the admin baseline `user.profiles.default` (system config), not hard-coded defaults. A user who only sets `idle_timeout_seconds = 600` in `[user.profiles.default]` gets all other settings from the system admin's defaults.
 

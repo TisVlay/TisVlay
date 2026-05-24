@@ -344,7 +344,7 @@ in
     };
 
     # User session monitor: reacts to session lock/unlock and idle events.
-    # Loads user config from ~/.config/tisvlay/config.toml (optional).
+    # Loads user config from ~/.config/tisvlay/session.toml (optional).
     # Queries the daemon via D-Bus for TV list and system default profile.
     systemd.user.services.tisvlay-session = {
       description = "tisvlay session event monitor";
