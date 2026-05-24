@@ -77,8 +77,15 @@ pub(crate) async fn initial_fetch_and_watch(
         app.set_daemon_available(initial_daemon_available);
         app.set_session_available(initial_session_available);
         app.set_tray_available(initial_tray_available);
-        app.global::<Tray>()
-            .set_notifications(initial_tray_notifications);
+        let tray_global = app.global::<Tray>();
+        tray_global.set_notifications(initial_tray_notifications);
+        // Settings pane binds switch `enabled` + the offline banner
+        // to `Tray.available`, which is a global property distinct
+        // from `AppWindow.tray-available` (used by the About-pane
+        // footer). Mirror writes to both so the settings pane
+        // re-enables when the tray comes online — same pattern as
+        // `Profiles.session-available` below.
+        tray_global.set_available(initial_tray_available);
         // Profiles-pane User section needs its own copy of the
         // session-bus availability flag so the "Session service
         // unavailable" hint and the disabled "+" button can bind
@@ -340,6 +347,7 @@ async fn watch_state(
                     *tray.write().await = Some(client);
                     on_ui(&app_weak, move |app| {
                         app.set_tray_available(true);
+                        app.global::<Tray>().set_available(true);
                     });
                     refresh_tray_notifications(&tray, &app_weak).await;
                     trigger_refresh();
@@ -349,6 +357,7 @@ async fn watch_state(
                 *tray.write().await = None;
                 on_ui(&app_weak, move |app| {
                     app.set_tray_available(false);
+                    app.global::<Tray>().set_available(false);
                 });
                 trigger_refresh();
             }
