@@ -5,8 +5,11 @@
 //! `DaemonClient` — no vendor crate dependencies.
 
 mod config;
+mod config_reload_debounce;
 mod dbus;
 mod notifier;
+mod pairing;
+mod power_cycle;
 mod state;
 mod tray;
 
@@ -26,7 +29,9 @@ use ksni::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use state::fetch_all_state;
+use notifier::{NotificationCategory, Notifier};
+use notify_rust::Urgency;
+use state::{diff_connection_events, fetch_all_state};
 use tisvlay_core::{
     Coalescer, DaemonClient, ReconcilerMap, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
 };
@@ -197,8 +202,16 @@ async fn main() -> Result<()> {
     let watch_session = session.clone();
     let watch_handle = handle.clone();
     let watch_reconcilers = reconcilers.clone();
+    let watch_notifier = notifier.clone();
     tokio::spawn(async move {
-        watch_state(watch_daemon, watch_session, watch_handle, watch_reconcilers).await;
+        watch_state(
+            watch_daemon,
+            watch_session,
+            watch_handle,
+            watch_reconcilers,
+            watch_notifier,
+        )
+        .await;
     });
 
     // Per-(tv_id) sum-merge coalescers for scroll-wheel deltas. Folds
@@ -257,6 +270,7 @@ async fn main() -> Result<()> {
     let cmd_session = session.clone();
     let cmd_handle = handle.clone();
     let cmd_reconcilers = reconcilers.clone();
+    let cmd_notifier = notifier.clone();
     let cmd_task = tokio::spawn(async move {
         process_commands(
             cmd_rx,
@@ -267,6 +281,7 @@ async fn main() -> Result<()> {
             backlight_scroll,
             cmd_reconcilers,
             open_gui_pending,
+            cmd_notifier,
         )
         .await;
     });
@@ -312,6 +327,7 @@ async fn refresh_state(
     session: &tokio::sync::RwLock<Option<SessionClient>>,
     handle: &ksni::Handle<TisvlayTray>,
     reconcilers: &Reconcilers,
+    notifier: &Notifier,
 ) {
     let session_ref = session.read().await;
     let session_client = session_ref.as_ref();
@@ -327,12 +343,40 @@ async fn refresh_state(
                 }
             }
             debug!(count = tvs.len(), "Refresh: state updated");
-            handle
+            // Diff inside the `handle.update` closure where the prior
+            // `t.tvs` is the authoritative baseline. The
+            // `DaemonDisappeared` arm clears `t.tvs` outside the
+            // trigger path; without diffing here, the next refresh
+            // would see "all TVs reappeared" and storm
+            // `tv_connection` notifications. See the plan's
+            // Concurrency / lifecycle notes for the full reasoning.
+            let events = handle
                 .update(|t| {
+                    let events = diff_connection_events(&t.tvs, &tvs);
                     t.tvs = tvs;
                     t.daemon_available = true;
+                    events
                 })
-                .await;
+                .await
+                .unwrap_or_default();
+            for event in events {
+                let (summary, body, urgency) = if event.became_connected {
+                    (
+                        gettext("Connected to {0}").replace("{0}", &event.tv_name),
+                        String::new(),
+                        Urgency::Low,
+                    )
+                } else {
+                    (
+                        gettext("Disconnected from {0}").replace("{0}", &event.tv_name),
+                        gettext("Reconnecting in the background."),
+                        Urgency::Low,
+                    )
+                };
+                notifier
+                    .notify(NotificationCategory::TvConnection, &summary, &body, urgency)
+                    .await;
+            }
         }
         Err(e) => {
             debug!(error = %e, "Refresh: state fetch failed");
@@ -359,6 +403,7 @@ async fn watch_state(
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
     reconcilers: Reconcilers,
+    notifier: Notifier,
 ) {
     let mut watcher = match StateWatcher::new(&daemon, Default::default()).await {
         Ok(w) => w,
@@ -367,6 +412,32 @@ async fn watch_state(
             return;
         }
     };
+
+    // Spawn per-TV `Tv1.Power.PowerCycleProgress` listeners — one
+    // task per TV reading the stream for `wol_sent → connected` vs
+    // `wol_sent → failed` transitions. Subscribed on every refresh
+    // (idempotent: existing subscriptions are kept, gone TVs get
+    // their tasks aborted). See `manage_power_cycle_subscriptions`
+    // for the per-TV lifecycle.
+    let power_cycle_state = power_cycle::PowerCycleManager::new();
+    {
+        let daemon = daemon.clone();
+        let manager = power_cycle_state.clone();
+        let notifier = notifier.clone();
+        tokio::spawn(async move {
+            manager.sync_from_daemon(daemon, &notifier).await;
+        });
+    }
+    // Pairing-progress watcher — one persistent task reading the
+    // bus-wide `Manager1.PairingProgress` signal, emitting only on
+    // terminal `complete` / `failed` phases.
+    {
+        let daemon = daemon.clone();
+        let notifier = notifier.clone();
+        tokio::spawn(async move {
+            pairing::watch_pairing_outcomes(daemon, notifier).await;
+        });
+    }
 
     // `watcher.next() → refresh.await` inline halts signal_stream
     // draining and wedges the connection under flood. See
@@ -377,14 +448,38 @@ async fn watch_state(
         let session = session.clone();
         let handle = handle.clone();
         let reconcilers = reconcilers.clone();
+        let notifier = notifier.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
             let handle = handle.clone();
             let reconcilers = reconcilers.clone();
-            async move { refresh_state(&daemon, &session, &handle, &reconcilers).await }
+            let notifier = notifier.clone();
+            async move { refresh_state(&daemon, &session, &handle, &reconcilers, &notifier).await }
         });
     };
+    // Debounce window for `config_reloaded` — multi-row reloads
+    // (e.g. a hand-edit that adds two profiles and reassigns one
+    // TV) arrive as a burst of System/User/TvUser*ProfileChanged
+    // events. Coalesce them into a single notification, fired ~500ms
+    // after the last one in the window.
+    let config_reload_debounce =
+        config_reload_debounce::Debouncer::new(std::time::Duration::from_millis(500), {
+            let notifier = notifier.clone();
+            move || {
+                let notifier = notifier.clone();
+                tokio::spawn(async move {
+                    notifier
+                        .notify(
+                            NotificationCategory::ConfigReloaded,
+                            &gettext("Configuration reloaded"),
+                            &gettext("Profile or TV-assignment changes were applied."),
+                            Urgency::Low,
+                        )
+                        .await;
+                });
+            }
+        });
 
     loop {
         if handle.is_closed() {
@@ -396,19 +491,46 @@ async fn watch_state(
         };
 
         match event {
-            StateEvent::DaemonStateChanged(_)
-            | StateEvent::DaemonAppeared
-            | StateEvent::TvUserProfileChanged
+            StateEvent::DaemonStateChanged(_) | StateEvent::FallbackPoll => {
+                trigger_refresh();
+            }
+            StateEvent::DaemonAppeared => {
+                // Re-sync per-TV power-cycle subscriptions — the
+                // previous batch (if any) was bound to a connection
+                // that no longer exists.
+                let daemon = daemon.clone();
+                let manager = power_cycle_state.clone();
+                let notifier = notifier.clone();
+                tokio::spawn(async move {
+                    manager.sync_from_daemon(daemon, &notifier).await;
+                });
+                trigger_refresh();
+            }
+            StateEvent::TvUserProfileChanged
             | StateEvent::SystemProfileChanged(_)
             | StateEvent::SystemProfileAdded(_)
             | StateEvent::SystemProfileRemoved(_)
             | StateEvent::UserProfileChanged(_)
             | StateEvent::UserProfileAdded(_)
-            | StateEvent::UserProfileRemoved(_)
-            | StateEvent::FallbackPoll => {
+            | StateEvent::UserProfileRemoved(_) => {
+                config_reload_debounce.bump();
                 trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
+                let notifier = notifier.clone();
+                tokio::spawn(async move {
+                    notifier
+                        .notify(
+                            NotificationCategory::DaemonOffline,
+                            &gettext("TisVlay daemon stopped"),
+                            &gettext("TV controls are unavailable until the daemon restarts."),
+                            Urgency::Critical,
+                        )
+                        .await;
+                });
+                // Drop all per-TV power-cycle subscriptions — they
+                // were bound to the now-departed daemon connection.
+                power_cycle_state.clear();
                 handle
                     .update(|tray: &mut TisvlayTray| {
                         tray.daemon_available = false;
@@ -417,11 +539,11 @@ async fn watch_state(
                     .await;
             }
             StateEvent::SessionAppeared => {
-                if let Ok(client) = SessionClient::new().await {
-                    if client.is_available().await {
-                        *session.write().await = Some(client);
-                        trigger_refresh();
-                    }
+                if let Ok(client) = SessionClient::new().await
+                    && client.is_available().await
+                {
+                    *session.write().await = Some(client);
+                    trigger_refresh();
                 }
             }
             StateEvent::SessionDisappeared => {
@@ -452,6 +574,7 @@ async fn process_commands(
     backlight_scroll: Coalescer<String, i32>,
     reconcilers: Reconcilers,
     open_gui_pending: Arc<AtomicBool>,
+    notifier: Notifier,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         debug!(cmd = ?cmd, "Processing tray command");
@@ -490,7 +613,7 @@ async fn process_commands(
                     }
                 }
                 drop(session_ref);
-                refresh_state(&daemon, &session, &handle, &reconcilers).await;
+                refresh_state(&daemon, &session, &handle, &reconcilers, &notifier).await;
             }
             TrayCommand::PowerOn(id) => {
                 if let Err(e) = daemon.power_on(&id).await {
@@ -572,16 +695,12 @@ async fn process_commands(
             }
         }
 
-        // Refresh state after command so menu reflects the change
-        let session_ref = session.read().await;
-        if let Ok(tvs) = fetch_all_state(&daemon, session_ref.as_ref()).await {
-            handle
-                .update(|t| {
-                    t.tvs = tvs;
-                    t.daemon_available = true;
-                })
-                .await;
-        }
+        // Refresh state after command so menu reflects the change.
+        // Routed through `refresh_state` (not an inline fetch) so the
+        // diff path fires `tv_connection` notifications when a
+        // user-initiated `PowerOn` brings a TV up — same path the
+        // signal-driven refreshes take.
+        refresh_state(&daemon, &session, &handle, &reconcilers, &notifier).await;
     }
 }
 

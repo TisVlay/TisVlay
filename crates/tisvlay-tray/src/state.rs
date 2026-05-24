@@ -156,6 +156,48 @@ pub(crate) async fn fetch_all_state(
     Ok(states)
 }
 
+/// A single connect/disconnect transition the diff helper detected
+/// between the prior and current `CachedTvState` snapshots. The tray's
+/// `Notifier` consumes these into `tv_connection` notifications.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConnectionEvent {
+    pub(crate) tv_name: String,
+    pub(crate) became_connected: bool,
+}
+
+/// Detect TV `connected` flips between two refresh snapshots.
+///
+/// Only TVs present in `new` produce events — a TV that disappears
+/// entirely (removed from config) doesn't fire a notification; that's
+/// a configuration change, not a connection change. The reverse case
+/// (a brand-new TV) similarly doesn't fire on first-sighting — the
+/// "initial sync" walk treats it as a baseline rather than a
+/// transition, since the user knows they just added it.
+///
+/// Dedup is implicit: each TV's per-refresh transition is at most one
+/// event. Cascade scenarios (e.g. a TV disconnecting alongside a
+/// power-cycle-failed) get one connection event from this helper and
+/// one wake event from the per-TV `Tv1.Power.PowerCycleProgress`
+/// stream — no double-fire.
+pub(crate) fn diff_connection_events(
+    old: &[CachedTvState],
+    new: &[CachedTvState],
+) -> Vec<ConnectionEvent> {
+    let mut events = Vec::new();
+    for new_tv in new {
+        let Some(old_tv) = old.iter().find(|t| t.id == new_tv.id) else {
+            continue;
+        };
+        if old_tv.connected != new_tv.connected {
+            events.push(ConnectionEvent {
+                tv_name: new_tv.name.clone(),
+                became_connected: new_tv.connected,
+            });
+        }
+    }
+    events
+}
+
 /// Sort a profile catalog so the reserved-default UUID appears first,
 /// then alphabetically by friendly name. Mirrors the GUI's
 /// `state.rs::profile_name_list` order so both clients render the
@@ -259,6 +301,45 @@ mod tests {
             vec![("uuid-usr-2", "gaming"), ("uuid-usr-1", "default")],
         );
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn diff_connection_events_detects_transitions() {
+        let mut a = make_tv_state(vec![], vec![]);
+        a.id = "tv-1".into();
+        a.name = "Living Room".into();
+        a.connected = false;
+        let mut b = a.clone();
+        b.connected = true;
+
+        // Same state → no events
+        assert!(diff_connection_events(&[a.clone()], &[a.clone()]).is_empty());
+
+        // false → true: one became_connected event
+        let events = diff_connection_events(&[a.clone()], &[b.clone()]);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].became_connected);
+        assert_eq!(events[0].tv_name, "Living Room");
+
+        // true → false: one disconnect event
+        let events = diff_connection_events(&[b.clone()], &[a.clone()]);
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].became_connected);
+    }
+
+    #[test]
+    fn diff_connection_events_skips_new_and_removed_tvs() {
+        let mut tv_a = make_tv_state(vec![], vec![]);
+        tv_a.id = "tv-a".into();
+        tv_a.connected = true;
+        let mut tv_b = make_tv_state(vec![], vec![]);
+        tv_b.id = "tv-b".into();
+        tv_b.connected = true;
+
+        // New TV (in new but not in old) — no event
+        assert!(diff_connection_events(&[], &[tv_b.clone()]).is_empty());
+        // Removed TV (in old but not in new) — no event
+        assert!(diff_connection_events(&[tv_a.clone()], &[]).is_empty());
     }
 
     #[test]

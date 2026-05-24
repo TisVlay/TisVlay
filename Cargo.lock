@@ -5883,6 +5883,7 @@ dependencies = [
  "anyhow",
  "clap",
  "directories",
+ "futures-util",
  "gettext-rs",
  "ksni",
  "notify-rust",

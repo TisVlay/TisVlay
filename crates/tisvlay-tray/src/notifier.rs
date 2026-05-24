@@ -5,30 +5,41 @@
 //! view with a single atomic store, and emit-site checks are a
 //! lock-free `Acquire` load + bit test (no `RwLock` on the hot path).
 //!
-//! This commit ships the bitset gate + `notify_test` (powering
-//! `Tray1.SendTestNotification`). The state-transition callers that
-//! produce real category notifications land in the next commit; the
-//! `notify` entry point is the seam they'll hook into.
+//! On the emit side, a `last_failure_at` mutex stamps the time of
+//! every failed `show_async`. Subsequent calls inside the
+//! `FAILURE_BACKOFF` window short-circuit silently, protecting
+//! against flap-storms at early login when the freedesktop
+//! notification daemon hasn't claimed `org.freedesktop.Notifications`
+//! yet.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 
 use notify_rust::{Notification, Urgency};
 use tracing::{debug, warn};
+
+/// Drop notifications for this long after a failed `show_async` before
+/// trying again. Notifications during the dead window short-circuit
+/// without touching the bus — protects against a flap-storm at early
+/// login when the freedesktop notification daemon isn't ready yet.
+const FAILURE_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Per-category bit positions. Field order mirrors
 /// [`crate::config::NotificationSettings`] exactly — keep them in
 /// sync if either side grows a new category.
 ///
-/// Variants are unused this commit — callers land in the
-/// state-transition wiring commit (Notifier::notify is the seam).
-#[allow(dead_code)]
+/// `AutomationFired` is unused this commit (its session-side signal
+/// source lands next); the variant stays declared so the bitset bit
+/// positions don't shift when callers wire up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum NotificationCategory {
     TvConnection = 0,
     TvPairing = 1,
     TvWake = 2,
+    #[allow(dead_code)]
     AutomationFired = 3,
     ConfigReloaded = 4,
     DaemonOffline = 5,
@@ -56,17 +67,24 @@ pub(crate) struct Notifier {
     /// `TrayConfig` by the D-Bus update handler. Hot-path reads only
     /// touch this atomic.
     enabled_bits: Arc<AtomicU8>,
+    /// Timestamp of the last failed `show_async` call. Subsequent
+    /// notifications within [`FAILURE_BACKOFF`] short-circuit
+    /// silently. `std::sync::Mutex` (not `tokio::sync::Mutex`) since
+    /// the critical section is one `Instant` swap with no `await`.
+    last_failure_at: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Notifier {
     pub(crate) fn new(enabled_bits: Arc<AtomicU8>) -> Self {
-        Self { enabled_bits }
+        Self {
+            enabled_bits,
+            last_failure_at: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// Emit a category-gated notification. No-op if the category's
-    /// bit isn't set in [`Self::enabled_bits`]. State-transition
-    /// callers land in the next commit; this entry point is the seam.
-    #[allow(dead_code)] // Wired up by callers in the next commit.
+    /// bit isn't set in [`Self::enabled_bits`] or if we're inside
+    /// the failure-backoff window.
     pub(crate) async fn notify(
         &self,
         category: NotificationCategory,
@@ -79,24 +97,42 @@ impl Notifier {
             debug!(?category, "notification suppressed (category disabled)");
             return;
         }
-        Self::emit(summary, body, urgency).await;
+        if self.in_backoff() {
+            debug!(?category, "notification suppressed (failure backoff)");
+            return;
+        }
+        self.emit(summary, body, urgency).await;
     }
 
-    /// Fire a single test notification, bypassing the category gate.
-    /// Backs `Tray1.SendTestNotification` — the GUI's "Send test
-    /// notification" button is the primary caller and the user
-    /// invoking it has explicitly opted in regardless of which
-    /// category bits are set.
+    /// Fire a single test notification, bypassing the category gate
+    /// (but still respecting the failure backoff — a user clicking
+    /// the test button doesn't override a known-broken stack).
+    /// Backs `Tray1.SendTestNotification`.
     pub(crate) async fn notify_test(&self, summary: &str, body: &str) {
-        Self::emit(summary, body, Urgency::Normal).await;
+        if self.in_backoff() {
+            debug!("test notification suppressed (failure backoff)");
+            return;
+        }
+        self.emit(summary, body, Urgency::Normal).await;
     }
 
-    /// Common emit path. `notify-rust`'s `show_async` opens (or
-    /// reuses) the session-bus connection to
-    /// `org.freedesktop.Notifications` per call; failures log and
-    /// drop. A capability cache + backoff lives one commit ahead;
-    /// for now a single failed call is one warn line.
-    async fn emit(summary: &str, body: &str, urgency: Urgency) {
+    /// True if we last failed within [`FAILURE_BACKOFF`]. The mutex
+    /// is contention-free in practice — every other caller holds it
+    /// for a few nanoseconds at most.
+    fn in_backoff(&self) -> bool {
+        let guard = self.last_failure_at.lock().expect("mutex poisoned");
+        match *guard {
+            Some(t) => t.elapsed() < FAILURE_BACKOFF,
+            None => false,
+        }
+    }
+
+    /// Common emit path. On `Err`, stamp the failure timestamp so the
+    /// next [`FAILURE_BACKOFF`] window of notifications short-circuits
+    /// instead of all stalling on a known-broken notification daemon.
+    /// On `Ok`, clear any stale marker so a single transient blip
+    /// doesn't suppress real emits.
+    async fn emit(&self, summary: &str, body: &str, urgency: Urgency) {
         let result = Notification::new()
             .appname(APP_NAME)
             .summary(summary)
@@ -105,9 +141,16 @@ impl Notifier {
             .urgency(urgency)
             .show_async()
             .await;
+        let mut guard = self.last_failure_at.lock().expect("mutex poisoned");
         match result {
-            Ok(_handle) => debug!(summary = %summary, "Notification emitted"),
-            Err(e) => warn!(error = %e, summary = %summary, "Failed to show notification"),
+            Ok(_handle) => {
+                debug!(summary = %summary, "Notification emitted");
+                *guard = None;
+            }
+            Err(e) => {
+                warn!(error = %e, summary = %summary, "Failed to show notification");
+                *guard = Some(Instant::now());
+            }
         }
     }
 }
