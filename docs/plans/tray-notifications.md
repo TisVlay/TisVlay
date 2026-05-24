@@ -1,5 +1,7 @@
 # Tray desktop notifications
 
+**Status:** core wire surface + emission paths landed across four commits (see [Commit shape](#commit-shape) below — all ✅). Follow-up bugs accumulating in [Known bugs / follow-ups](#known-bugs--follow-ups); plan stays active until they're cleared.
+
 Add user-configurable desktop notifications to TisVlay so that background events on the daemon side surface on the desktop. Owner is `tisvlay-tray`. Settings are mutable both via D-Bus (GUI / `busctl`) and via editing `~/.config/tisvlay/tray.toml` directly; both paths surface the change via `org.freedesktop.DBus.Properties.PropertiesChanged` for `NotificationSettings` so subscribers stay in sync.
 
 ## Goals
@@ -37,7 +39,7 @@ Session-rename in `tisvlay-core::UserConfig`: `UserConfig::config_path` resolves
 
 Types with no cross-crate dependency stay with their owner. `TrayConfig` and `NotificationSettings` (the typed in-memory struct) live in `tisvlay-tray/src/config.rs` — there's no schema overlap with the daemon or session, and the only cross-crate need is the wire body, which is already in core. The GUI seeds its initial-state fallback via `NotificationSettingsBody::defaults()` (in core); the tray derives its own `NotificationSettings::default()` from the same body — single source of truth.
 
-Migrate this subsection into `docs/design.md` near the existing line 544 discussion of `[[tv]]` cross-references when the PR merges.
+✅ Migrated to [`docs/design.md`](../design.md) (sections at lines 544 / 554 / 558: "Per-peer config-file naming convention", "Where types live in the workspace", "Single-file config (read-only / declarative deployments)").
 
 ## Why the tray owns this (not the session service)
 
@@ -368,16 +370,25 @@ Notification format strings use the `gettext("Disconnected: {0}").replace("{0}",
 
 ## Commit shape
 
-Three commits, ordered so each commit is independently runnable + `busctl`-pokeable:
+All four commits landed; each was independently runnable + `busctl`-pokeable:
 
-1. **`refactor(core): rename ~/.config/tisvlay/config.toml → session.toml`** — `UserConfig::config_path` returns the new path; test fixtures updated in the same commit. design.md line 544 updated to document the read-only-unified-config property precisely. Tiny commit; lands first so subsequent commits don't carry the rename + tray plumbing in one diff.
-2. **`feat(tray,core,gui): TrayConfig + notification settings D-Bus surface`** — `tisvlay-tray::config`, `TrayClient` in `tisvlay-core`, extended `Tray1` interface (`NotificationSettings` property + `UpdateNotificationSettings` + `ReloadConfig` + `SendTestNotification`), tray loads config on startup, `StateWatcher` extension for `Tray1` `PropertiesChanged`. GUI `NOTIFICATIONS` group + test-notification button lands here too so the wire surface is exercised end-to-end (no orphan plumbing). No emission yet; settings pane can toggle bools and `SendTestNotification` round-trips through `Notifier` as a stub that always emits.
-3. **`feat(tray): emit desktop notifications on state transitions`** — full `Notifier` module (bitset gate + 5s backoff), `refresh_state` diff helper inside `handle.update` closure, `DaemonDisappeared` hook, per-TV `Tv1.Power.PowerCycleProgress` subscription lifecycle, `config_reloaded` debounced watcher. Covers five of six categories — everything that doesn't require a daemon-side signal addition.
-4. **`feat(session,core,tray): AutomationFired signal + notification`** — session-side signal emit at `event_handler`, `SessionAction::Display` (snake_case `kind`) helper in core, `StateWatcher::SessionSignal::AutomationFired` plumbing, tray listener. Smallest of the four; cleanly skippable if we decide to defer.
+1. ✅ **`refactor(core): rename ~/.config/tisvlay/config.toml → session.toml`** — `UserConfig::config_path` returns the new path; test fixtures updated in the same commit. design.md line 544 region rewritten to document per-peer naming + the read-only-unified-config property. No backwards-compat shim (pre-1.0).
+2. ✅ **`feat(tray,core,gui): TrayConfig + notification settings D-Bus surface`** — `tisvlay-tray::config`, `TrayClient` in `tisvlay-core`, extended `Tray1` interface (`NotificationSettings` property + `UpdateNotificationSettings` + `ReloadConfig` + `SendTestNotification`), tray loads config on startup, `StateWatcher` extension for `Tray1` `PropertiesChanged`. GUI `NOTIFICATIONS` group + test-notification button landed here so the wire surface was exercised end-to-end (no orphan plumbing).
+3. ✅ **`feat(tray): emit desktop notifications on state transitions`** — full `Notifier` module (bitset gate + 5s backoff), `refresh_state` diff helper inside `handle.update` closure, `DaemonDisappeared` hook, per-TV `Tv1.Power.PowerCycleProgress` subscription lifecycle, `config_reloaded` debounced watcher. Five of six categories.
+4. ✅ **`feat(session,core,tray): AutomationFired signal + notification`** — session-side signal emit at `event_handler`, `SessionAction::Display` (snake_case `kind`) helper in core, `StateWatcher::SessionSignal::AutomationFired` plumbing, tray listener. Sixth category.
 
-## Open questions
+## Known bugs / follow-ups
 
-_(None at the moment — all design questions from the agent review pass have been folded in. Reopen if implementation surfaces a new ambiguity.)_
+Tracked here so they retire alongside the plan rather than scattering into ad-hoc issues. Each bug should land as its own commit once diagnosed.
+
+### Fixed
+
+- ✅ **Settings pane stuck in offline state with stack steady-state online.** The offline banner + switch `enabled` bindings refer to `Tray.available` (Slint global) but Rust was only writing `AppWindow.tray-available` (used by the About-pane footer indicator). The global stayed at its `false` default, so the settings pane never re-enabled when the tray came up. Fix: mirror writes to both, matching the existing `Profiles.session-available` ↔ `AppWindow.session-available` pattern. Three sites in `state_watch.rs` (initial seeding, `TrayAppeared`, `TrayDisappeared`).
+
+### Open
+
+- 🐛 **GUI setting changes visually revert to stale cache when leaving + re-entering the settings pane.** After toggling a switch and navigating away, the pane shows old values on return instead of the new ones the user just set. Likely the Slint `Tray.notifications` global isn't being kept in sync across the round-trip — either (a) the optimistic local update isn't happening (`set-notification` only fires the D-Bus call without pre-emptively updating the global) and the `PropertiesChanged` re-fetch arrives slower than the user's pane navigation; (b) the global is being overwritten by a fallback path; or (c) the `state_watch::refresh_tray_notifications` fetch isn't running on whatever event re-shows the pane. Investigate `state_watch.rs` flow first — confirm `PropertiesChanged` lands and re-fetches the body; then check whether the Slint Switch's `checked` binding holds the new value or rolls back. If (a), add an optimistic local update inside `Tray.set-notification`'s Rust handler before the D-Bus dispatch.
+- 🐛 **Tray reload menu item doesn't fire `config_reloaded` notification even when the category is enabled.** Clicking the tray menu's "Reload" item calls `daemon.reload_config()` + `session.reload_config()` and refreshes state, but no notification fires. Expected: the `config_reload_debounce.bump()` in `watch_state` should fire after the `*ProfileChanged` events arrive from the reloads. Investigate whether (a) the daemon's `ReloadConfig` doesn't emit `SystemProfileChanged` signals for unchanged profiles (debouncer never bumps), (b) the session's `ReloadConfig` similarly, or (c) the `TrayCommand::Reload` path in `process_commands` doesn't route through `watch_state`'s arm because it calls `refresh_state` directly without going through `StateWatcher`. Possibly add a direct `notifier.notify(ConfigReloaded, ...)` call from the `TrayCommand::Reload` arm — but verify first whether a user-initiated reload via the menu should fire the notification at all (vs. only hand-edit + RPC `ReloadConfig` from external tools). Plan's intent was the latter; revisit the trigger contract.
 
 ## References
 
