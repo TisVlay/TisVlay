@@ -31,7 +31,13 @@ Files become self-describing within `~/.config/tisvlay/` (no more ambiguous "whi
 
 Session-rename in `tisvlay-core::UserConfig`: `UserConfig::config_path` resolves to `~/.config/tisvlay/session.toml`. No fallback read of the legacy `config.toml`, no deprecation warning, no auto-migration — pre-1.0 project, no backwards-compat requirements (release notes mention the rename for humans; nothing in the code accommodates it).
 
-`UserConfig` stays in `tisvlay-core` for now. The container-vs-body split (move on-disk container to `tisvlay-session/src/config.rs`, leave `UserProfileConfig` wire-vocab type in core) is a candidate for a future "trim core" pass but is orthogonal to this work.
+### Workspace convention: where config types live
+
+`tisvlay-core` holds types that need to be shared across crates — either **wire vocabulary** (anything that crosses a D-Bus boundary, e.g. `UserProfileBody`, `SystemProfileBody`, `NotificationSettingsBody` + its `defaults()` constructor) or types with **cross-crate schema references** (`UserConfig` and daemon `Config` both contain `[[tv]]` so they can be read from the same TOML file — that single-file aspiration *is* the reason they're co-located in core).
+
+Types with no cross-crate dependency stay with their owner. `TrayConfig` and `NotificationSettings` (the typed in-memory struct) live in `tisvlay-tray/src/config.rs` — there's no schema overlap with the daemon or session, and the only cross-crate need is the wire body, which is already in core. The GUI seeds its initial-state fallback via `NotificationSettingsBody::defaults()` (in core); the tray derives its own `NotificationSettings::default()` from the same body — single source of truth.
+
+Migrate this subsection into `docs/design.md` near the existing line 544 discussion of `[[tv]]` cross-references when the PR merges.
 
 ## Why the tray owns this (not the session service)
 
@@ -333,7 +339,9 @@ Purely additive on the wire — existing subscribers ignore it.
 
   Test-notification button label: *"Send test notification"*; helper: *"Verify your desktop's notification stack is working."* Fires a single `Normal`-urgency notification via the tray (new `Tray1.SendTestNotification` method — bypasses category gating but otherwise routes through `Notifier`).
 
-Pane shows "Tray service is not running — start it to change these settings." empty state when `Tray.available == false` — mirrors `TvList`'s "Daemon offline" branch.
+**Offline-state UX**: when `Tray.available == false`, switches stay **visible + disabled** (Switch.enabled binds to `Tray.available`); their `checked` values continue to reflect the last-fetched body from `Tray.notifications`. A banner above the group renders the empty-state copy *"Tray service is not running — start it to change these settings."* This separates the runtime constraint (banner) from settings state (switch position) — each visual element does one job.
+
+Initial seeding: on Slint global construction, `Tray.notifications` is initialized from `NotificationSettingsBody::defaults()` (sourced from `tisvlay-core` — single source of truth). When the first `TrayClient::notification_settings()` fetch lands, real values replace defaults. If the tray is offline at GUI launch, the user sees default switch positions until the tray comes up — an honest "if-the-tray-were-running-with-defaults" fallback rather than a misleading all-off snap.
 
 ## Concurrency / lifecycle notes
 
@@ -369,7 +377,7 @@ Three commits, ordered so each commit is independently runnable + `busctl`-pokea
 
 ## Open questions
 
-- **Settings-pane availability when tray is offline**: confirmed wording is *"Tray service is not running — start it to change these settings."* but should the switches *also* be disabled vs hidden entirely while the pane shows this empty state? Plan currently says disabled inline with the empty-state copy — confirm before the Slint scaffold lands.
+_(None at the moment — all design questions from the agent review pass have been folded in. Reopen if implementation surfaces a new ambiguity.)_
 
 ## References
 
