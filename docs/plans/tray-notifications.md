@@ -15,6 +15,24 @@ Add user-configurable desktop notifications to TisVlay so that background events
 - Notification grouping, history pruning, replace-by-tag logic, or sound cues.
 - Settings GUI surface beyond a single `NOTIFICATIONS` group in the existing `settings_pane.slint`.
 
+## Config file naming (also lands in this PR)
+
+This PR formalizes a per-peer config-file naming convention in `~/.config/tisvlay/`:
+
+| Peer | User-domain file (default) | System-domain file (default) |
+|---|---|---|
+| `tisvlayd` | `~/.config/tisvlay/config.toml` (dev / `--user` mode) | `/var/lib/tisvlay/config.toml` |
+| `tisvlay-session` | `~/.config/tisvlay/session.toml` (**renamed from `config.toml`**) | n/a |
+| `tisvlay-tray` | `~/.config/tisvlay/tray.toml` (new) | n/a |
+
+Files become self-describing within `~/.config/tisvlay/` (no more ambiguous "which `config.toml`?" when two peers share the dir). Each file has a single writer (the named peer), so conventional read-write deployments don't need any cross-process coordination.
+
+**Read-only / declarative deployments** (Nix store, ostree, etcd-pushed configs, …) can still point every peer at one shared file via the existing `--config <path>` flags. `serde`'s `skip-unknowns` default already makes this safe under the read-only constraint: each peer parses out its own fields and silently ignores the rest. No writes occur — the deployment substrate (read-only mount) enforces the constraint. This is the single-file aspiration design.md line 544 calls out, made precise: the property holds **iff nobody writes**.
+
+Session-rename in `tisvlay-core::UserConfig`: `UserConfig::config_path` resolves to `~/.config/tisvlay/session.toml`. No fallback read of the legacy `config.toml`, no deprecation warning, no auto-migration — pre-1.0 project, no backwards-compat requirements (release notes mention the rename for humans; nothing in the code accommodates it).
+
+`UserConfig` stays in `tisvlay-core` for now. The container-vs-body split (move on-disk container to `tisvlay-session/src/config.rs`, leave `UserProfileConfig` wire-vocab type in core) is a candidate for a future "trim core" pass but is orthogonal to this work.
+
 ## Why the tray owns this (not the session service)
 
 The tray already has every moving piece this needs:
@@ -114,6 +132,10 @@ Urgency rationale: `Critical` is reserved for the single event that genuinely ne
 `automation_fired` default-off matches the earlier "noisiest one off" answer — it can fire many times per day on a managed TV. `config_reloaded` is a power-user feedback signal (was your hand-edit picked up?) so default-off keeps it invisible to normies.
 
 ## File changes
+
+### `tisvlay-core/src/config.rs` (session-file rename)
+
+`UserConfig::config_path` returns `~/.config/tisvlay/session.toml`. Existing test fixtures that hard-coded `config.toml` paths get updated to `session.toml` in the same commit. No fallback path, no deprecation shim.
 
 ### `tisvlay-tray` (new `src/config.rs`)
 
@@ -340,9 +362,10 @@ Notification format strings use the `gettext("Disconnected: {0}").replace("{0}",
 
 Three commits, ordered so each commit is independently runnable + `busctl`-pokeable:
 
-1. **`feat(tray,core,gui): TrayConfig + notification settings D-Bus surface`** — `tisvlay-tray::config`, `TrayClient` in `tisvlay-core`, extended `Tray1` interface (`NotificationSettings` property + `UpdateNotificationSettings` + `ReloadConfig` + `SendTestNotification`), tray loads config on startup, `StateWatcher` extension for `Tray1` `PropertiesChanged`. GUI `NOTIFICATIONS` group + test-notification button lands here too so the wire surface is exercised end-to-end (no orphan plumbing). No emission yet; settings pane can toggle bools and `SendTestNotification` round-trips through `Notifier` as a stub that always emits.
-2. **`feat(tray): emit desktop notifications on state transitions`** — full `Notifier` module (bitset gate + 5s backoff), `refresh_state` diff helper inside `handle.update` closure, `DaemonDisappeared` hook, per-TV `Tv1.Power.PowerCycleProgress` subscription lifecycle, `config_reloaded` debounced watcher. Covers five of six categories — everything that doesn't require a daemon-side signal addition.
-3. **`feat(session,core,tray): AutomationFired signal + notification`** — session-side signal emit at `event_handler`, `SessionAction::Display` (snake_case `kind`) helper in core, `StateWatcher::SessionSignal::AutomationFired` plumbing, tray listener. Smallest of the three; cleanly skippable if we decide to defer.
+1. **`refactor(core): rename ~/.config/tisvlay/config.toml → session.toml`** — `UserConfig::config_path` returns the new path; test fixtures updated in the same commit. design.md line 544 updated to document the read-only-unified-config property precisely. Tiny commit; lands first so subsequent commits don't carry the rename + tray plumbing in one diff.
+2. **`feat(tray,core,gui): TrayConfig + notification settings D-Bus surface`** — `tisvlay-tray::config`, `TrayClient` in `tisvlay-core`, extended `Tray1` interface (`NotificationSettings` property + `UpdateNotificationSettings` + `ReloadConfig` + `SendTestNotification`), tray loads config on startup, `StateWatcher` extension for `Tray1` `PropertiesChanged`. GUI `NOTIFICATIONS` group + test-notification button lands here too so the wire surface is exercised end-to-end (no orphan plumbing). No emission yet; settings pane can toggle bools and `SendTestNotification` round-trips through `Notifier` as a stub that always emits.
+3. **`feat(tray): emit desktop notifications on state transitions`** — full `Notifier` module (bitset gate + 5s backoff), `refresh_state` diff helper inside `handle.update` closure, `DaemonDisappeared` hook, per-TV `Tv1.Power.PowerCycleProgress` subscription lifecycle, `config_reloaded` debounced watcher. Covers five of six categories — everything that doesn't require a daemon-side signal addition.
+4. **`feat(session,core,tray): AutomationFired signal + notification`** — session-side signal emit at `event_handler`, `SessionAction::Display` (snake_case `kind`) helper in core, `StateWatcher::SessionSignal::AutomationFired` plumbing, tray listener. Smallest of the four; cleanly skippable if we decide to defer.
 
 ## Open questions
 
