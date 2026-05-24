@@ -28,14 +28,21 @@ pub enum SessionEvent {
 }
 
 impl std::fmt::Display for SessionEvent {
+    /// Stable snake_case identifier — matches the wire form
+    /// `Session1.AutomationFired` emits as its `event_kind` field
+    /// and the keys clients use for `gettext` lookup
+    /// (`automation.event.<kind>`). Logging callers (`info!(event =
+    /// %event, …)`) pick up the new form, which is also the
+    /// conventional tracing-field style.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SessionLocked => write!(f, "SessionLocked"),
-            Self::SessionUnlocked => write!(f, "SessionUnlocked"),
-            Self::GreeterWake => write!(f, "GreeterWake"),
-            Self::IdleTimeout => write!(f, "IdleTimeout"),
-            Self::IdleResume => write!(f, "IdleResume"),
-        }
+        let s = match self {
+            Self::SessionLocked => "session_locked",
+            Self::SessionUnlocked => "session_unlocked",
+            Self::GreeterWake => "greeter_wake",
+            Self::IdleTimeout => "idle_timeout",
+            Self::IdleResume => "idle_resume",
+        };
+        f.write_str(s)
     }
 }
 

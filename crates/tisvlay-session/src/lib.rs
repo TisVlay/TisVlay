@@ -286,10 +286,18 @@ pub async fn execute_action_for_tv(
 /// differently to the same event (e.g., gaming TV ignores session lock).
 ///
 /// Tracks the last action sent to each TV to avoid redundant commands.
+/// `session_conn` is the connection on which `Session1` is
+/// registered, used to emit `AutomationFired` after each successful
+/// per-TV action. `None` is tolerated — production startup falls
+/// back to `None` if `register_session_dbus` failed (profile
+/// switching already degrades to a warn-only path in that case),
+/// and we skip the emit. Tests can pass `None` too if they don't
+/// care about the signal.
 pub async fn event_handler(
     mut event_rx: mpsc::UnboundedReceiver<session_monitor::SessionEvent>,
     state: Arc<RwLock<SessionState>>,
     daemon: Arc<DaemonClient>,
+    session_conn: Option<Arc<zbus::Connection>>,
 ) {
     info!("Event handler started");
 
@@ -344,6 +352,9 @@ pub async fn event_handler(
                 warn!(tv_id = %tv_id, error = %e, "Action failed");
             } else {
                 success_count += 1;
+                if let Some(ref conn) = session_conn {
+                    emit_automation_fired(conn, &tv_id, &event, action).await;
+                }
             }
         }
 
@@ -353,6 +364,44 @@ pub async fn event_handler(
     }
 
     info!("Event handler stopped");
+}
+
+/// Fire `Session1.AutomationFired(tv_id, event_kind, action_kind)`
+/// on the session bus. Emission failures log and drop — the
+/// per-TV action already succeeded, the notification is a
+/// nice-to-have. Routed via the object server's typed signal
+/// emitter so the wire shape stays in sync with the
+/// `#[zbus(signal)]` declaration on `SessionService`.
+async fn emit_automation_fired(
+    conn: &zbus::Connection,
+    tv_id: &str,
+    event: &session_monitor::SessionEvent,
+    action: SessionAction,
+) {
+    use crate::session_dbus::{SESSION_PATH, SessionService};
+    let event_kind = event.to_string();
+    let action_kind = action.to_string();
+    let iface_ref = match conn
+        .object_server()
+        .interface::<_, SessionService>(SESSION_PATH)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "AutomationFired: object_server interface lookup failed");
+            return;
+        }
+    };
+    if let Err(e) = SessionService::automation_fired(
+        iface_ref.signal_emitter(),
+        tv_id,
+        &event_kind,
+        &action_kind,
+    )
+    .await
+    {
+        warn!(error = %e, tv_id = %tv_id, "Failed to emit AutomationFired");
+    }
 }
 
 // =============================================================================

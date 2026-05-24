@@ -436,6 +436,30 @@ impl SessionService {
     #[zbus(signal)]
     pub async fn user_profile_removed(emitter: &SignalEmitter<'_>, uuid: &str) -> zbus::Result<()>;
 
+    /// Fired by `event_handler` after a session action executed
+    /// successfully on a TV (e.g. session-lock → screen-off on the
+    /// living-room TV). Drives the tray's `automation_fired`
+    /// notification.
+    ///
+    /// Both `event_kind` and `action_kind` are **stable snake_case
+    /// identifiers** intended as gettext lookup keys
+    /// (`automation.event.session_locked`,
+    /// `automation.action.screen_off`) — NOT translated strings.
+    /// They come from [`tisvlay_session::session_monitor::SessionEvent::fmt`]
+    /// and [`tisvlay_core::SessionAction::fmt`] respectively.
+    ///
+    /// Deliberate exception to the project's payload-less
+    /// `StateEvent` convention: this is an ephemeral *event*, not a
+    /// state change — there's nothing to re-query, so the payload
+    /// travels in-band.
+    #[zbus(signal)]
+    pub async fn automation_fired(
+        emitter: &SignalEmitter<'_>,
+        tv_id: &str,
+        event_kind: &str,
+        action_kind: &str,
+    ) -> zbus::Result<()>;
+
     /// Reload user configuration from disk.
     ///
     /// Also re-queries the daemon for the TV list and system default profile.
