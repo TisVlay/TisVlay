@@ -50,19 +50,47 @@ impl Debouncer {
         // sleep for `window` and re-check whether more bumps
         // arrived. Loop until the counter is stable across a full
         // window, then fire.
+        //
+        // Drain-permit gotcha: every `bump()` calls `notify_one()`,
+        // which buffers one permit on `Notify`. Bumps that arrive
+        // DURING the inner sleep+check loop extend the window via
+        // the counter compare, but ALSO leave a buffered permit on
+        // `Notify`. Without draining, the outer `notified().await`
+        // returns immediately on the next iteration, causing a
+        // spurious second fire one `window` later for bumps already
+        // handled in this fire cycle. Manifests in practice as a
+        // duplicate notification ~500ms after the legitimate one
+        // (visible in journal even when Plasma's
+        // `ExcessNotificationGeneration` rate-limit swallows it).
+        // Fix: after firing, snapshot the counter and try to drain
+        // any pending permit only if no new bumps have arrived in
+        // the meantime.
         let worker_state = state.clone();
         tokio::spawn(async move {
             loop {
                 worker_state.notify.notified().await;
+                let fired_at;
                 loop {
                     let before = *worker_state.counter.lock().expect("mutex poisoned");
                     tokio::time::sleep(worker_state.window).await;
                     let after = *worker_state.counter.lock().expect("mutex poisoned");
                     if after == before {
+                        fired_at = after;
                         break;
                     }
                 }
                 on_fire();
+                // Drain any buffered permit from bumps already
+                // accounted for in this fire cycle. Skip the drain
+                // if the counter has advanced since `fired_at` —
+                // a genuinely-new bump (arrived after we decided to
+                // fire) deserves its own future fire.
+                if *worker_state.counter.lock().expect("mutex poisoned") == fired_at {
+                    let mut drain = std::pin::pin!(worker_state.notify.notified());
+                    drain.as_mut().enable();
+                    // `drain` dropped at end of scope; any pending
+                    // permit was consumed by `enable()`.
+                }
             }
         });
         Self { state }

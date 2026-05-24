@@ -2021,6 +2021,14 @@ trait TisvlaySession {
     #[zbus(signal)]
     fn user_profile_removed(&self, uuid: String) -> zbus::Result<()>;
 
+    /// Fired unconditionally at the end of every successful
+    /// `ReloadConfig` (including no-op reloads). Mirrors
+    /// `Manager1.ConfigReloaded` so subscribers can react to a
+    /// user-initiated reload regardless of whether any per-profile
+    /// signal fired.
+    #[zbus(signal)]
+    fn config_reloaded(&self) -> zbus::Result<()>;
+
     /// Reload user configuration from disk.
     fn reload_config(&self) -> zbus::Result<()>;
 }
@@ -2595,6 +2603,14 @@ pub enum StateEvent {
     /// The tray service disappeared from D-Bus.
     TrayDisappeared,
 
+    /// `Session1.ConfigReloaded` — fired on every successful
+    /// `Session1.ReloadConfig`, including no-op reloads where the
+    /// on-disk file matched in-memory state. Mirror of
+    /// [`TvStateChange::ConfigReloaded`] for the daemon side; lets
+    /// the tray notify on user-initiated reloads regardless of
+    /// whether any profile actually changed.
+    SessionConfigReloaded,
+
     /// `Tray1.NotificationSettings` property changed (via D-Bus
     /// `UpdateNotificationSettings` or `ReloadConfig`). Payload-less;
     /// subscribers re-fetch via `TrayClient::notification_settings`.
@@ -2713,6 +2729,9 @@ enum SessionSignal {
         event_kind: String,
         action_kind: String,
     },
+    /// `Session1.ConfigReloaded` — unconditional per-reload signal,
+    /// mirror of `Manager1.ConfigReloaded`.
+    ConfigReloaded,
 }
 
 /// Type alias for the `Box<dyn Stream<Item = T> + Send>` shape used by
@@ -3034,6 +3053,7 @@ impl StateWatcher {
                                         action_kind,
                                     })
                                 }
+                                "ConfigReloaded" => Some(SessionSignal::ConfigReloaded),
                                 _ => None,
                             }
                         });
@@ -3176,6 +3196,10 @@ impl StateWatcher {
                             event_kind,
                             action_kind,
                         })
+                    }
+                    SessionSignal::ConfigReloaded => {
+                        debug!("Session ConfigReloaded signal received");
+                        Some(StateEvent::SessionConfigReloaded)
                     }
                 }
             }

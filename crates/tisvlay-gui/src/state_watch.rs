@@ -373,6 +373,12 @@ async fn watch_state(
                 // GUI doesn't render automation history, so nothing
                 // to do.
             }
+            StateEvent::SessionConfigReloaded => {
+                // Tray emits the `config_reloaded` notification on
+                // this signal; the GUI's existing per-profile arms
+                // already drive any GUI-visible re-render needed,
+                // so this event is a no-op here.
+            }
         }
     }
 }

@@ -436,6 +436,17 @@ impl SessionService {
     #[zbus(signal)]
     pub async fn user_profile_removed(emitter: &SignalEmitter<'_>, uuid: &str) -> zbus::Result<()>;
 
+    /// Fired unconditionally at the end of every successful
+    /// `Session1.ReloadConfig` — including no-op reloads where the
+    /// on-disk file matches what's already in memory. Mirrors the
+    /// daemon's `Manager1.ConfigReloaded` shape so the tray (and any
+    /// other subscriber) can give the user feedback on a
+    /// user-initiated reload regardless of whether any per-profile
+    /// signal had something to say. Payload-less; per-profile
+    /// signals still convey what *changed*.
+    #[zbus(signal)]
+    pub async fn config_reloaded(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
     /// Fired by `event_handler` after a session action executed
     /// successfully on a TV (e.g. session-lock → screen-off on the
     /// living-room TV). Drives the tray's `automation_fired`
@@ -530,6 +541,14 @@ impl SessionService {
             if let Err(e) = Self::user_profile_removed(&emitter, uuid).await {
                 warn!(uuid = %uuid, error = %e, "ReloadConfig: failed to emit UserProfileRemoved");
             }
+        }
+
+        // Unconditional top-level emit — mirrors Manager1.ConfigReloaded.
+        // Per-profile signals above convey *what* changed; this one
+        // confirms a reload *happened* (regardless of diff), so the
+        // tray can give the user feedback on no-op reloads too.
+        if let Err(e) = Self::config_reloaded(&emitter).await {
+            warn!(error = %e, "ReloadConfig: failed to emit Session1.ConfigReloaded");
         }
 
         Ok(())

@@ -109,7 +109,15 @@ impl TrayService {
     /// 5. On IO failure: restore snapshot, return `IoError`.
     /// 6. On success: publish the new bitset to `enabled_bits`
     ///    (Release ordering) so the next `Notifier::notify` sees it.
-    /// 7. Drop write lock; zbus auto-emits `PropertiesChanged`.
+    /// 7. Drop write lock; emit `PropertiesChanged` explicitly so
+    ///    GUI subscribers re-fetch the body.
+    ///
+    /// zbus only auto-emits `PropertiesChanged` for property writes
+    /// that come in via the standard `org.freedesktop.DBus.Properties.Set`
+    /// interface. This is a custom method that happens to mutate the
+    /// `NotificationSettings` property's backing storage, so zbus
+    /// can't know to fire the signal — emit manually, same nudge
+    /// `ReloadConfig` uses.
     ///
     /// Mirrors the canonical session-side `update_user_profile` shape
     /// from `tisvlay-session/src/lib.rs` — `session_dbus::set_tv_user_profile`
@@ -117,6 +125,7 @@ impl TrayService {
     /// library helper, not that D-Bus handler.
     async fn update_notification_settings(
         &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         updates: NotificationSettingsBody,
     ) -> Result<(), TrayError> {
         info!(?updates, "D-Bus: UpdateNotificationSettings");
@@ -134,6 +143,14 @@ impl TrayService {
 
         let new_bits = config.notifications.enabled_bitset();
         self.enabled_bits.store(new_bits, Ordering::Release);
+        drop(config);
+
+        if let Err(e) = Self::notification_settings_changed(self, &emitter).await {
+            warn!(
+                error = %e,
+                "Failed to emit PropertiesChanged after UpdateNotificationSettings"
+            );
+        }
         Ok(())
     }
 
@@ -159,9 +176,9 @@ impl TrayService {
         self.enabled_bits.store(new_bits, Ordering::Release);
         drop(config);
 
-        // zbus auto-emits `PropertiesChanged` for D-Bus-driven
-        // property writes only; an in-memory mutation like this
-        // needs an explicit nudge so subscribers see the change.
+        // Same explicit emit as UpdateNotificationSettings — see that
+        // method's docstring for the "zbus auto-emit is `Properties.Set`-
+        // only" rationale.
         if let Err(e) = Self::notification_settings_changed(self, &emitter).await {
             warn!(error = %e, "Failed to emit PropertiesChanged after ReloadConfig");
         }
