@@ -598,6 +598,72 @@ impl From<&UserProfileBody> for UserProfileConfig {
 }
 
 // =============================================================================
+// NotificationSettingsBody — wire body for `Tray1.NotificationSettings`
+// =============================================================================
+
+/// Wire-format body for the tray's desktop-notification settings.
+///
+/// Each field is `Option<bool>` so that `Tray1.UpdateNotificationSettings`
+/// can be a partial update: only the keys the caller wants to change
+/// need to be set. The property getter (`Tray1.NotificationSettings`)
+/// returns every field as `Some` (an absent field on the read side
+/// would mean "this version of the tray doesn't know about this
+/// category" — forward-compat across version skew).
+///
+/// The on-disk twin (`tisvlay_tray::config::NotificationSettings`) lives
+/// in the tray crate; this body type is core's wire vocabulary so the
+/// GUI client and the tray server both speak it. Per the workspace
+/// convention in `docs/design.md`, wire bodies live in core; on-disk
+/// containers stay with their owner.
+#[cfg(feature = "dbus")]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    zbus::zvariant::Type,
+    zbus::zvariant::SerializeDict,
+    zbus::zvariant::DeserializeDict,
+    zbus::zvariant::Value,
+    zbus::zvariant::OwnedValue,
+)]
+#[zvariant(signature = "a{sv}", deny_unknown_fields)]
+pub struct NotificationSettingsBody {
+    pub tv_connection: Option<bool>,
+    pub tv_pairing: Option<bool>,
+    pub tv_wake: Option<bool>,
+    pub automation_fired: Option<bool>,
+    pub config_reloaded: Option<bool>,
+    pub daemon_offline: Option<bool>,
+}
+
+#[cfg(feature = "dbus")]
+impl NotificationSettingsBody {
+    /// Factory defaults — every category populated with its documented
+    /// default-on value. Single source of truth shared by:
+    /// - the tray, which uses this to seed a fresh `TrayConfig` when
+    ///   `tray.toml` doesn't exist yet;
+    /// - the GUI, which uses this to seed the Slint `Tray.notifications`
+    ///   global before any successful fetch lands (so a GUI launched
+    ///   while the tray is offline still shows sensible defaults).
+    ///
+    /// Distinct from the derived `Default` impl (all-`None`), which
+    /// represents the partial-update neutral for
+    /// `Tray1.UpdateNotificationSettings`.
+    pub fn defaults() -> Self {
+        Self {
+            tv_connection: Some(true),
+            tv_pairing: Some(true),
+            tv_wake: Some(true),
+            automation_fired: Some(false),
+            config_reloaded: Some(false),
+            daemon_offline: Some(true),
+        }
+    }
+}
+
+// =============================================================================
 // Config sections
 // =============================================================================
 

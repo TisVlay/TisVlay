@@ -83,8 +83,8 @@ use clap::Parser;
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
-    Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient, ReconcilerMap,
-    SessionClient, TrayClient,
+    Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
+    NotificationSettingsBody, ReconcilerMap, SessionClient, TrayClient,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -600,6 +600,7 @@ pub fn run() -> Result<()> {
         &app,
         daemon.clone(),
         session.clone(),
+        tray.clone(),
         reconcilers.clone(),
         wizard_entries.clone(),
         wizard_gen.clone(),
@@ -640,6 +641,7 @@ fn register_callbacks(
     app: &AppWindow,
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
     wizard_entries: WizardEntries,
     wizard_gen: WizardGen,
@@ -2137,4 +2139,71 @@ fn register_callbacks(
                 .await;
         });
     });
+
+    // -----------------------------------------------------------------
+    // Tray global — notification settings + test notification.
+    //
+    // Each per-switch toggle gets wrapped into a one-field
+    // `NotificationSettingsBody` so the user can change one category
+    // without re-stating the others (`UpdateNotificationSettings`
+    // applies only `Some(_)` fields). The wire-side category name
+    // is the snake_case string from the Slint global.
+    //
+    // Tray-offline → warn + no-op. The settings pane already
+    // disables the switches when `Tray.available == false`; this
+    // guard is the defense for a race where the switch was clicked
+    // just before the tray disappeared.
+    // -----------------------------------------------------------------
+    let tray_global = app.global::<Tray>();
+    let t = tray.clone();
+    tray_global.on_set_notification(move |category, enabled| {
+        let t = t.clone();
+        let category = category.to_string();
+        tokio::spawn(async move {
+            let guard = t.read().await;
+            let Some(client) = guard.as_ref() else {
+                warn!(category = %category, "set-notification: tray service unavailable");
+                return;
+            };
+            let body = build_notification_update(&category, enabled);
+            if let Err(e) = client.update_notification_settings(body).await {
+                warn!(category = %category, enabled, error = %e, "UpdateNotificationSettings failed");
+            }
+        });
+    });
+
+    let t = tray.clone();
+    tray_global.on_send_test_notification(move || {
+        let t = t.clone();
+        tokio::spawn(async move {
+            let guard = t.read().await;
+            let Some(client) = guard.as_ref() else {
+                warn!("send-test-notification: tray service unavailable");
+                return;
+            };
+            if let Err(e) = client.send_test_notification().await {
+                warn!(error = %e, "SendTestNotification failed");
+            }
+        });
+    });
+}
+
+/// Wrap a single (category, enabled) pair into a partial
+/// `NotificationSettingsBody`. Unknown category names produce a
+/// fully-`None` body (a no-op `UpdateNotificationSettings` call),
+/// not a panic — the wire identifiers are settings-pane–controlled,
+/// so an unrecognized string here would indicate a missed Slint /
+/// Rust sync we'd want to log rather than crash on.
+fn build_notification_update(category: &str, enabled: bool) -> NotificationSettingsBody {
+    let mut body = NotificationSettingsBody::default();
+    match category {
+        "tv_connection" => body.tv_connection = Some(enabled),
+        "tv_pairing" => body.tv_pairing = Some(enabled),
+        "tv_wake" => body.tv_wake = Some(enabled),
+        "automation_fired" => body.automation_fired = Some(enabled),
+        "config_reloaded" => body.config_reloaded = Some(enabled),
+        "daemon_offline" => body.daemon_offline = Some(enabled),
+        other => warn!(category = %other, "Unknown notification category from Slint"),
+    }
+    body
 }

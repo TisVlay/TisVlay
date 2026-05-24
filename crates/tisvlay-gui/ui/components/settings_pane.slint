@@ -1,14 +1,60 @@
 // Settings pane.
 //
-// Currently empty — the only setting we used to expose
-// (light/dark/system) was removed in favor of always following the
-// desktop's color-scheme via `Palette.color-scheme` (driven live by
-// xdg-desktop-portal). Keeping the pane shell so the sidebar entry
-// has a target; future settings (e.g. "show tray notifications",
-// "default startup pane") can land here without re-plumbing.
+// Houses cross-pane settings — currently the NOTIFICATIONS group
+// (`org.tisvlay.Tray1` backing) plus a "Send test notification"
+// button so users can verify their DE's notification stack
+// independently of category gating. When the tray service isn't
+// running, switches stay visible-but-disabled (last-fetched values
+// surfaced as defaults via `NotificationSettingsBody::defaults()`);
+// an inline banner above the group explains the runtime constraint.
 
+import { Button, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { Tray } from "../globals/tray.slint";
+import { Group, InlineError } from "../widgets.slint";
+
+// Local FormRow — label + switch + optional helper text below.
+// Inlined rather than reusing tvs_pane's FormRow to avoid a
+// cross-pane import dependency for what is a small layout.
+component NotificationRow {
+    in property <string> label;
+    in property <string> helper;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    HorizontalLayout {
+        spacing: Design.gap-row;
+        alignment: stretch;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-form;
+            alignment: center;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+            }
+            if root.helper != "": Text {
+                text: root.helper;
+                color: Theme.text-faint;
+                font-size: Design.font-mini;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Switch {
+                checked: root.checked;
+                enabled: root.enabled;
+                toggled => { root.toggled(self.checked); }
+            }
+        }
+    }
+}
 
 export component SettingsPane inherits Rectangle {
     background: Theme.surface-alt;
@@ -20,7 +66,7 @@ export component SettingsPane inherits Rectangle {
         padding-right: Design.pad-pane;
         padding-top: Design.pad-pane-top;
         padding-bottom: Design.pad-pane;
-        spacing: 18px;
+        spacing: Design.gap-pane;
         alignment: start;
 
         Text {
@@ -30,11 +76,102 @@ export component SettingsPane inherits Rectangle {
             font-weight: 700;
         }
 
-        Text {
-            text: @tr("No user-facing settings yet. Appearance follows your desktop's color-scheme automatically.");
-            color: Theme.text-dim;
-            font-size: Design.font-body;
-            wrap: word-wrap;
+        // Inline banner when the tray service is offline. Switches
+        // below stay visible-but-disabled with last-known values so
+        // the user can still see what's configured.
+        if !Tray.available: InlineError {
+            tone: "warn";
+            title: @tr("Tray service is not running");
+            message: @tr("Start it to change these settings.");
+            dismissable: false;
+        }
+
+        // -- NOTIFICATIONS group --
+        //
+        // Six categories, single switch each, dispatching through
+        // `Tray.set-notification(category, enabled)` to the Rust
+        // handler that wraps each call in a one-key
+        // `NotificationSettingsBody` for `Tray1.UpdateNotificationSettings`.
+        Group {
+            title: @tr("NOTIFY ME ABOUT");
+
+            NotificationRow {
+                label: @tr("TV connection");
+                helper: @tr("Notify when a TV connects or disconnects.");
+                checked: Tray.notifications.tv-connection;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("tv_connection", v); }
+            }
+            NotificationRow {
+                label: @tr("Pairing outcome");
+                helper: @tr("Notify when pairing or re-pairing completes or fails.");
+                checked: Tray.notifications.tv-pairing;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("tv_pairing", v); }
+            }
+            NotificationRow {
+                label: @tr("Wake outcome");
+                helper: @tr("Notify when a Wake-on-LAN attempt succeeds or fails.");
+                checked: Tray.notifications.tv-wake;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("tv_wake", v); }
+            }
+            NotificationRow {
+                label: @tr("Automation");
+                helper: @tr("Notify when a session action (lock, unlock, idle) fires on a TV.");
+                checked: Tray.notifications.automation-fired;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("automation_fired", v); }
+            }
+            NotificationRow {
+                label: @tr("Config reloaded");
+                helper: @tr("Notify when the daemon or session config reloads from disk.");
+                checked: Tray.notifications.config-reloaded;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("config_reloaded", v); }
+            }
+            NotificationRow {
+                label: @tr("Daemon offline");
+                helper: @tr("Notify when the connection to the daemon is lost.");
+                checked: Tray.notifications.daemon-offline;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("daemon_offline", v); }
+            }
+        }
+
+        // -- Stack verification --
+        //
+        // Bypasses every category gate so users can confirm their
+        // DE's notification daemon is reachable. Routes through the
+        // same Notifier as real notifications, with `Normal`
+        // urgency and a fixed copy ("Test notification" / "TisVlay
+        // can reach your desktop's notification service.").
+        Group {
+            title: @tr("STACK VERIFICATION");
+
+            HorizontalLayout {
+                spacing: Design.gap-row;
+                alignment: stretch;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: @tr("Send a one-off notification to verify your desktop's notification stack is working.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-meta;
+                        wrap: word-wrap;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: @tr("Send test notification");
+                        enabled: Tray.available;
+                        clicked => { Tray.send-test-notification(); }
+                    }
+                }
+            }
         }
 
         Rectangle { vertical-stretch: 1; }

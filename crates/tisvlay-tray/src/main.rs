@@ -4,12 +4,14 @@
 //! via the tisvlayd D-Bus daemon. Communicates exclusively through
 //! `DaemonClient` — no vendor crate dependencies.
 
+mod config;
 mod dbus;
+mod notifier;
 mod state;
 mod tray;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -148,14 +150,40 @@ async fn main() -> Result<()> {
 
     info!("Tray icon spawned");
 
-    // Register `org.tisvlay.Tray` on the user bus so the GUI's
-    // About pane and external tools can probe our version + config
-    // path. Hold the connection in a `_dbus_keepalive` binding for
-    // the lifetime of `main`; dropping it tears the registration
-    // down. No config path yet (phase 2).
-    let _dbus_keepalive = dbus::register(None)
-        .await
-        .context(gettext("Failed to register tray D-Bus interface"))?;
+    // Load the tray's on-disk config (`~/.config/tisvlay/tray.toml`).
+    // Missing file → defaults from
+    // `NotificationSettingsBody::defaults()` via
+    // `NotificationSettings::default()`. Failures fall back to
+    // defaults rather than refusing to start — notifications are a
+    // recoverable feature; the tray's menu still works without them.
+    let tray_config_path =
+        config::TrayConfig::config_path().context(gettext("Failed to resolve tray config path"))?;
+    let tray_config = match config::TrayConfig::load_from(&tray_config_path) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            info!(path = %tray_config_path.display(), "No tray config file; using defaults");
+            config::TrayConfig::default()
+        }
+        Err(e) => {
+            warn!(error = %e, path = %tray_config_path.display(), "Failed to load tray config; using defaults");
+            config::TrayConfig::default()
+        }
+    };
+    let enabled_bits = Arc::new(AtomicU8::new(tray_config.notifications.enabled_bitset()));
+    let tray_config = Arc::new(tokio::sync::RwLock::new(tray_config));
+    let notifier = notifier::Notifier::new(enabled_bits.clone());
+
+    // Register `org.tisvlay.Tray` on the user bus. Held in a
+    // `_dbus_keepalive` binding for the lifetime of `main`; dropping
+    // it tears the registration down.
+    let _dbus_keepalive = dbus::register(
+        tray_config.clone(),
+        enabled_bits.clone(),
+        tray_config_path,
+        notifier.clone(),
+    )
+    .await
+    .context(gettext("Failed to register tray D-Bus interface"))?;
 
     // Per-(tv_id) reconcilers for scroll-driven properties. Shared
     // between the watch_state refresh path and the scroll apply
@@ -402,8 +430,13 @@ async fn watch_state(
             }
             // Tray's own service appearing/disappearing isn't
             // actionable here — that's the tray itself, not a peer
-            // we depend on for state.
-            StateEvent::TrayAppeared | StateEvent::TrayDisappeared => {}
+            // we depend on for state. Same for the tray's own
+            // notification-settings property: the D-Bus handler
+            // already updated our shared `enabled_bits` atomic
+            // before the signal even left this process.
+            StateEvent::TrayAppeared
+            | StateEvent::TrayDisappeared
+            | StateEvent::TrayNotificationSettingsChanged => {}
         }
     }
 }
