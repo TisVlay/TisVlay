@@ -42,9 +42,6 @@ pub(crate) struct NotificationSettings {
     /// Session action executed on a TV (lock, unlock, idle).
     /// Default OFF — can fire many times per day.
     pub(crate) automation_fired: bool,
-    /// Daemon or session config reloaded from disk. Default OFF —
-    /// power-user feedback signal for hand-edits, opt-in.
-    pub(crate) config_reloaded: bool,
     /// Daemon disappeared from D-Bus. Default on; the one event that
     /// genuinely needs user acknowledgment.
     pub(crate) daemon_offline: bool,
@@ -67,11 +64,14 @@ impl Default for NotificationSettings {
 /// [`NotificationSettings`] in declaration order. The
 /// `NotificationCategory` enum on the tray's emit side uses the same
 /// numbering; the bitset is the source of truth.
+///
+/// Bit position 4 is intentionally reserved as a gap. New fields take
+/// bit 6+ so a persisted bitset on disk can't silently re-mean an
+/// unused position.
 const BIT_TV_CONNECTION: u8 = 1 << 0;
 const BIT_TV_PAIRING: u8 = 1 << 1;
 const BIT_TV_WAKE: u8 = 1 << 2;
 const BIT_AUTOMATION_FIRED: u8 = 1 << 3;
-const BIT_CONFIG_RELOADED: u8 = 1 << 4;
 const BIT_DAEMON_OFFLINE: u8 = 1 << 5;
 
 impl NotificationSettings {
@@ -93,9 +93,6 @@ impl NotificationSettings {
         if self.automation_fired {
             bits |= BIT_AUTOMATION_FIRED;
         }
-        if self.config_reloaded {
-            bits |= BIT_CONFIG_RELOADED;
-        }
         if self.daemon_offline {
             bits |= BIT_DAEMON_OFFLINE;
         }
@@ -112,7 +109,6 @@ impl NotificationSettings {
             tv_pairing: Some(self.tv_pairing),
             tv_wake: Some(self.tv_wake),
             automation_fired: Some(self.automation_fired),
-            config_reloaded: Some(self.config_reloaded),
             daemon_offline: Some(self.daemon_offline),
         }
     }
@@ -127,7 +123,6 @@ impl NotificationSettings {
             tv_pairing: body.tv_pairing?,
             tv_wake: body.tv_wake?,
             automation_fired: body.automation_fired?,
-            config_reloaded: body.config_reloaded?,
             daemon_offline: body.daemon_offline?,
         })
     }
@@ -148,9 +143,6 @@ impl NotificationSettings {
         }
         if let Some(v) = body.automation_fired {
             self.automation_fired = v;
-        }
-        if let Some(v) = body.config_reloaded {
-            self.config_reloaded = v;
         }
         if let Some(v) = body.daemon_offline {
             self.daemon_offline = v;
@@ -207,7 +199,6 @@ mod tests {
         assert_eq!(s.tv_pairing, body.tv_pairing.unwrap());
         assert_eq!(s.tv_wake, body.tv_wake.unwrap());
         assert_eq!(s.automation_fired, body.automation_fired.unwrap());
-        assert_eq!(s.config_reloaded, body.config_reloaded.unwrap());
         assert_eq!(s.daemon_offline, body.daemon_offline.unwrap());
     }
 
@@ -218,7 +209,6 @@ mod tests {
             tv_pairing: false,
             tv_wake: true,
             automation_fired: true,
-            config_reloaded: false,
             daemon_offline: false,
         };
         let body = original.to_body();
@@ -263,7 +253,6 @@ mod tests {
             tv_pairing: false,
             tv_wake: false,
             automation_fired: false,
-            config_reloaded: false,
             daemon_offline: false,
         };
         assert_eq!(all_off.enabled_bitset(), 0);
@@ -291,7 +280,6 @@ mod tests {
                 tv_pairing: true,
                 tv_wake: false,
                 automation_fired: true,
-                config_reloaded: true,
                 daemon_offline: true,
             },
         };

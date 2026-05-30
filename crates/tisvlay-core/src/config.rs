@@ -654,7 +654,6 @@ pub struct NotificationSettingsBody {
     pub tv_pairing: Option<bool>,
     pub tv_wake: Option<bool>,
     pub automation_fired: Option<bool>,
-    pub config_reloaded: Option<bool>,
     pub daemon_offline: Option<bool>,
 }
 
@@ -677,7 +676,6 @@ impl NotificationSettingsBody {
             tv_pairing: Some(true),
             tv_wake: Some(true),
             automation_fired: Some(false),
-            config_reloaded: Some(false),
             daemon_offline: Some(true),
         }
     }
@@ -1266,10 +1264,9 @@ impl UserConfig {
 
     /// Get the user config file path.
     ///
-    /// Uses XDG directories: `~/.config/tisvlay/session.toml`. Per the
-    /// per-peer file naming convention, the session service owns
-    /// `session.toml` in the user domain (the daemon's user-mode file
-    /// is `config.toml`, the tray's is `tray.toml`).
+    /// Uses XDG directories: `~/.config/tisvlay/session.toml`. Each
+    /// peer service owns its own file in the user domain per the
+    /// per-peer file naming convention.
     pub fn config_path() -> Result<PathBuf> {
         let dirs = directories::ProjectDirs::from("", "", "tisvlay").ok_or_else(|| {
             Error::Io(std::io::Error::new(

@@ -203,7 +203,7 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 │   │             ListSystemProfiles, GetSystemProfile, UpdateSystemProfile,
 │   │             CreateSystemProfile, DuplicateSystemProfile, DeleteSystemProfile,
 │   │             GetResolvedSystemProfileDefaults, GetEffectiveSystemProfile
-│   └── Signals:  ConfigReloaded, PairingProgress, DiscoveryFound,
+│   └── Signals:  PairingProgress, DiscoveryFound,
 │                 SystemProfileChanged, SystemProfileAdded, SystemProfileRemoved
 └── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
     │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
@@ -231,7 +231,7 @@ org.tisvlay.Session  (session bus)
 | Client | Calls | Subscribes to |
 |--------|-------|---------------|
 | **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (properties + commands), Session1 (user profiles) | — |
-| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `ConfigReloaded`, `SystemProfileAdded`/`Changed`/`Removed`; Session1: `TvUserProfileChanged`, `UserProfileAdded`/`Changed`/`Removed`; DBus: `NameOwnerChanged` (service discovery) |
+| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `SystemProfileAdded`/`Changed`/`Removed`; Session1: `TvUserProfileChanged`, `UserProfileAdded`/`Changed`/`Removed`; DBus: `NameOwnerChanged` (service discovery) |
 | **tisvlay-gui** | Manager1 (system-profile CRUD, config), Tv1.* (properties + commands), Session1 (user-profile CRUD + assignment) | Same as tray plus the body-mutation signals (`SystemProfileChanged(uuid)`, `UserProfileChanged(uuid)`) drive the editor's per-row refresh. The GUI subscribes to both buses directly — no cross-bus signal re-fire on the session daemon, since the only client that needs cross-bus body-change notifications is the GUI and it already does. |
 | **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions via writable properties) | — |
 
@@ -262,7 +262,7 @@ System-profile catalog (see [Profile catalog](#profile-catalog) for the full arc
 The legacy `ListSystemProfilesJson() → a(ss)` slot stays on the wire (back-compat for tray + CLI consumers that haven't migrated to the v3 surface). The Rust wrapper signature is unchanged; only the wire-method name moved via `#[zbus(name = ...)]`.
 
 Signals:
-- `ConfigReloaded`, `PairingProgress`, `DiscoveryFound` (lifecycle).
+- `PairingProgress`, `DiscoveryFound` (lifecycle).
 - `SystemProfileChanged(uuid: s)` — body mutation (including rename). Fires once after persistence under the same write lock as the body commit, so a client receiving the signal can immediately `GetSystemProfile(uuid)` and get the body.
 - `SystemProfileAdded(uuid: s)` — fires once after persistence for both `Create` and `Duplicate`.
 - `SystemProfileRemoved(uuid: s)` — fires after `Delete` persists.
@@ -395,7 +395,7 @@ Three signals per kind per bus, each carrying just a UUID:
 
 Both `Create` + `Duplicate` commit body + emit `Added` under the same write lock, so a client receiving `Added` can immediately fetch the body without waiting for a separate `Changed`. `Update` re-resolves every TV's cached `system_profile` / `user_profile` after success so default-body edits propagate to inheriting TVs without an explicit reload.
 
-`ReloadConfig` emits the same per-UUID signals: the daemon snapshots the prior in-memory catalog under the write lock via `std::mem::take`, applies the new on-disk config, computes a three-way diff (added / removed / changed by body-content `PartialEq`), and emits the matching signals after the lock is dropped. Architectural lesson: a config-file edit should be observationally identical to an external client mutation — same signals, same client cache invalidation. The earlier coarse `ConfigReloaded` signal alone was not enough; the editor's per-UUID cache stayed stale until the user clicked away and back.
+`ReloadConfig` emits the same per-UUID signals: the daemon snapshots the prior in-memory catalog under the write lock via `std::mem::take`, applies the new on-disk config, computes a three-way diff (added / removed / changed by body-content `PartialEq`), and emits the matching signals after the lock is dropped. Architectural lesson: a config-file edit should be observationally identical to an external client mutation — same signals, same client cache invalidation. A coarse top-level "config reloaded" event is not enough; the editor's per-UUID cache would stay stale until the user clicked away and back.
 
 ### org.tisvlay.Tv1 (Base Interface)
 

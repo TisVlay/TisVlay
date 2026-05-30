@@ -2201,7 +2201,6 @@ fn build_notification_update(category: &str, enabled: bool) -> NotificationSetti
         "tv_pairing" => body.tv_pairing = Some(enabled),
         "tv_wake" => body.tv_wake = Some(enabled),
         "automation_fired" => body.automation_fired = Some(enabled),
-        "config_reloaded" => body.config_reloaded = Some(enabled),
         "daemon_offline" => body.daemon_offline = Some(enabled),
         other => warn!(category = %other, "Unknown notification category from Slint"),
     }

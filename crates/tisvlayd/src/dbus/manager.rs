@@ -820,12 +820,6 @@ impl ManagerService {
         tv_path: ObjectPath<'_>,
     ) -> zbus::Result<()>;
 
-    /// Signal emitted when configuration is reloaded.
-    ///
-    /// Subscribers should refresh profile lists and TV properties.
-    #[zbus(signal)]
-    pub async fn config_reloaded(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
-
     /// A system profile's body was mutated (any field, including
     /// `name` — rename folds into `UpdateSystemProfile`).
     ///

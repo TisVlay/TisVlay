@@ -98,7 +98,7 @@ The handoff ships its design as React/JSX prototypes; treat them as visual refer
 - `GetUserProfileDefault() -> json: s` — admin baseline user profile.
 - `ListSystemProfiles() -> Vec<(name, json)>`
 - `ListUserProfiles() -> Vec<(name, json)>` — admin baseline list.
-- Signals: `ConfigReloaded`, `PairingProgress(tv_id, phase, message)`, `DiscoveryFound(...)`.
+- Signals: `PairingProgress(tv_id, phase, message)`, `DiscoveryFound(...)`.
 
 Per-TV (`Tv1.*`):
 - Read-only properties: `Uuid`, `Vendor`, `Connected`, `Capabilities`, `HardwareId`, `VendorConfig`, `VendorInfo`, `AutomateWhen`, `Automated`, plus the live state mirrors (`Power.PowerState`, `Power.SupportsWake`, `Volume.Volume`, `Volume.Muted`, `Backlight.Backlight`, `Screen.IsScreenOn`, `Input.CurrentInput`, `Input.AvailableInputs`, `Desktop.Connector`).
@@ -185,7 +185,7 @@ Modal flow, four steps:
 
 Initial load: `ObjectManager.GetManagedObjects` for the full TV tree (single round-trip), `Manager1.ListSystemProfiles`, `Session1.ListUserProfiles`, `Session1.GetEffectiveUserProfile` per TV.
 
-Live updates: a tokio task subscribes to `org.freedesktop.DBus.Properties.PropertiesChanged` signals and the per-pane signals (`TvAdded`/`TvRemoved`/`ConfigReloaded`/`PairingProgress`/`DiscoveryFound`/`PowerCycleProgress`/`ConfigReloadStatus`/`UserProfileChanged`/`UserProfileListChanged`/`SystemProfileChanged`).
+Live updates: a tokio task subscribes to `org.freedesktop.DBus.Properties.PropertiesChanged` signals and the per-pane signals (`TvAdded`/`TvRemoved`/`PairingProgress`/`DiscoveryFound`/`PowerCycleProgress`/`ConfigReloadStatus`/`UserProfileChanged`/`UserProfileListChanged`/`SystemProfileChanged`).
 
 Slint side: the GUI holds Slint `Model<T>`s for the TV list, profile list, and per-TV detail. Mutations from the tokio side land via `slint::invoke_from_event_loop` so all UI mutations execute on the Slint event-loop thread. This is the canonical pattern; the slint skill confirms it.
 

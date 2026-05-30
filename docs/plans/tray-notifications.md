@@ -132,12 +132,13 @@ Stable snake_case keys (these are the field names in `NotificationSettingsBody`)
 | `tv_pairing` | terminal pairing phase `complete` / `failed` | **on** | `Normal` (both) | `Manager1.PairingProgress` (already watched by `StateWatcher`) |
 | `tv_wake` | `Tv1.Power.PowerCycleProgress` reaches `connected` / `failed` after a `wol_sent` | **on** | `Low` (success) / `Normal` (failure) | per-TV `Tv1.Power.PowerCycleProgress` stream (see "Per-TV power-cycle subscription" below) |
 | `automation_fired` | session action ran on a TV | **off** | `Low` | new `Session1.AutomationFired` signal |
-| `config_reloaded` | hand-edit + `ReloadConfig` produces a non-trivial diff | **off** | `Low` | `StateEvent::SystemProfileChanged` / `UserProfileChanged` / `TvUserProfileChanged` / `TrayNotificationSettingsChanged` (already in `StateWatcher` after this plan lands) |
 | `daemon_offline` | `StateEvent::DaemonDisappeared` | **on** | `Critical`, hint `resident` (sticky) | existing tray arm |
+
+> **Retired category — `config_reloaded`.** A `config_reloaded` toast was planned and shipped through commits `351a52e` / `3af0952`, then removed: almost every `ReloadConfig` is self-initiated (tray menu's Reload item, or the user editing the config file), so the toast was telling the user something they already knew. The implementation surface was also disproportionate — a permit-drain debouncer, dual Manager1/Session1 signal coordination, a fully-wired notification-category bit. Net signal-to-noise didn't justify the maintenance tax for a default-off feature. Bit position 4 in `NotificationCategory` / `NotificationSettings` is intentionally left as a gap so any persisted notification-categories bitmask in user config doesn't silently re-mean the bit; future categories take bit 6+.
 
 Urgency rationale: `Critical` is reserved for the single event that genuinely needs user acknowledgment (`daemon_offline`). Pairing and wake are usually user-initiated foreground operations — `Normal` for failures gives them banner visibility without escalating to a sticky toast. `tv_connection` stays `Low` for both directions because the daemon auto-reconnects; sustained-disconnect detection (>30s) is a v2 idea that would need debouncing in the diff helper.
 
-`automation_fired` default-off matches the earlier "noisiest one off" answer — it can fire many times per day on a managed TV. `config_reloaded` is a power-user feedback signal (was your hand-edit picked up?) so default-off keeps it invisible to normies.
+`automation_fired` default-off matches the earlier "noisiest one off" answer — it can fire many times per day on a managed TV.
 
 ## File changes
 
@@ -159,11 +160,10 @@ pub struct NotificationSettings {
     pub tv_pairing: bool,
     pub tv_wake: bool,
     pub automation_fired: bool,
-    pub config_reloaded: bool,
     pub daemon_offline: bool,
 }
 
-impl Default for NotificationSettings { /* all true except automation_fired + config_reloaded */ }
+impl Default for NotificationSettings { /* all true except automation_fired */ }
 
 impl TrayConfig {
     pub fn config_path() -> Result<PathBuf>;        // ~/.config/tisvlay/tray.toml
@@ -190,7 +190,6 @@ pub struct NotificationSettingsBody {
     pub tv_pairing: Option<bool>,
     pub tv_wake: Option<bool>,
     pub automation_fired: Option<bool>,
-    pub config_reloaded: Option<bool>,
     pub daemon_offline: Option<bool>,
 }
 ```
@@ -293,7 +292,7 @@ pub(crate) enum NotificationCategory {
     TvPairing         = 1,
     TvWake            = 2,
     AutomationFired   = 3,
-    ConfigReloaded    = 4,
+    // Bit 4 reserved (formerly ConfigReloaded — retired)
     DaemonOffline     = 5,
 }
 ```
@@ -312,7 +311,6 @@ App name `"TisVlay"`, icon name `"video-display"` (matches the tray's active-sta
 - In the `StateEvent::DaemonDisappeared` arm, additionally call `notifier.notify(DaemonOffline, …)`.
 - New per-TV tokio tasks subscribed to `Tv1.Power.PowerCycleProgress` → `notifier.notify(TvWake, …)` on `connected` / `failed` terminal phases. Subscribed on each TV's `InterfacesAdded` (or initial `list_tvs` after `DaemonAppeared`), dropped on `InterfacesRemoved` / `DaemonDisappeared`. See "Per-TV power-cycle subscription" in Concurrency notes for the lifecycle map.
 - New tokio task subscribed to `Session1.AutomationFired` → `notifier.notify(AutomationFired, …)`. The session-service `is_available()` probe pattern from `main.rs:100-110` handles "session not yet up" cleanly.
-- New tokio task watching `StateEvent::{System,User,TvUser}ProfileChanged` / `…Added` / `…Removed` → `notifier.notify(ConfigReloaded, …)` with a debounce window (~500ms) so a `ReloadConfig` that touches multiple profile rows surfaces as one notification, not five.
 
 ### `tisvlay-session` (one new signal)
 
@@ -374,7 +372,7 @@ All four commits landed; each was independently runnable + `busctl`-pokeable:
 
 1. ✅ **`refactor(core): rename ~/.config/tisvlay/config.toml → session.toml`** — `UserConfig::config_path` returns the new path; test fixtures updated in the same commit. design.md line 544 region rewritten to document per-peer naming + the read-only-unified-config property. No backwards-compat shim (pre-1.0).
 2. ✅ **`feat(tray,core,gui): TrayConfig + notification settings D-Bus surface`** — `tisvlay-tray::config`, `TrayClient` in `tisvlay-core`, extended `Tray1` interface (`NotificationSettings` property + `UpdateNotificationSettings` + `ReloadConfig` + `SendTestNotification`), tray loads config on startup, `StateWatcher` extension for `Tray1` `PropertiesChanged`. GUI `NOTIFICATIONS` group + test-notification button landed here so the wire surface was exercised end-to-end (no orphan plumbing).
-3. ✅ **`feat(tray): emit desktop notifications on state transitions`** — full `Notifier` module (bitset gate + 5s backoff), `refresh_state` diff helper inside `handle.update` closure, `DaemonDisappeared` hook, per-TV `Tv1.Power.PowerCycleProgress` subscription lifecycle, `config_reloaded` debounced watcher. Five of six categories.
+3. ✅ **`feat(tray): emit desktop notifications on state transitions`** — full `Notifier` module (bitset gate + 5s backoff), `refresh_state` diff helper inside `handle.update` closure, `DaemonDisappeared` hook, per-TV `Tv1.Power.PowerCycleProgress` subscription lifecycle. (Originally included a `config_reloaded` debounced watcher too; that category was retired in a later commit — see the retired-category note above the file-changes table.)
 4. ✅ **`feat(session,core,tray): AutomationFired signal + notification`** — session-side signal emit at `event_handler`, `SessionAction::Display` (snake_case `kind`) helper in core, `StateWatcher::SessionSignal::AutomationFired` plumbing, tray listener. Sixth category.
 
 ## Known bugs / follow-ups
@@ -388,7 +386,9 @@ Tracked here so they retire alongside the plan rather than scattering into ad-ho
 ### Open
 
 - 🐛 **GUI setting changes visually revert to stale cache when leaving + re-entering the settings pane.** After toggling a switch and navigating away, the pane shows old values on return instead of the new ones the user just set. Likely the Slint `Tray.notifications` global isn't being kept in sync across the round-trip — either (a) the optimistic local update isn't happening (`set-notification` only fires the D-Bus call without pre-emptively updating the global) and the `PropertiesChanged` re-fetch arrives slower than the user's pane navigation; (b) the global is being overwritten by a fallback path; or (c) the `state_watch::refresh_tray_notifications` fetch isn't running on whatever event re-shows the pane. Investigate `state_watch.rs` flow first — confirm `PropertiesChanged` lands and re-fetches the body; then check whether the Slint Switch's `checked` binding holds the new value or rolls back. If (a), add an optimistic local update inside `Tray.set-notification`'s Rust handler before the D-Bus dispatch.
-- 🐛 **Tray reload menu item doesn't fire `config_reloaded` notification even when the category is enabled.** Clicking the tray menu's "Reload" item calls `daemon.reload_config()` + `session.reload_config()` and refreshes state, but no notification fires. Expected: the `config_reload_debounce.bump()` in `watch_state` should fire after the `*ProfileChanged` events arrive from the reloads. Investigate whether (a) the daemon's `ReloadConfig` doesn't emit `SystemProfileChanged` signals for unchanged profiles (debouncer never bumps), (b) the session's `ReloadConfig` similarly, or (c) the `TrayCommand::Reload` path in `process_commands` doesn't route through `watch_state`'s arm because it calls `refresh_state` directly without going through `StateWatcher`. Possibly add a direct `notifier.notify(ConfigReloaded, ...)` call from the `TrayCommand::Reload` arm — but verify first whether a user-initiated reload via the menu should fire the notification at all (vs. only hand-edit + RPC `ReloadConfig` from external tools). Plan's intent was the latter; revisit the trigger contract.
+### Resolved by retirement
+
+- 🪦 **`config_reloaded` notification triggers** — the dual-signal coordination, debouncer permit-drain, and Tray-Reload-menu trigger questions all retired together when the `config_reloaded` notification category was removed. The category was low-signal (almost every reload is self-initiated) and the implementation surface was disproportionate. See the retired-category note above the file-changes table.
 
 ## References
 

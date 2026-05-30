@@ -6,7 +6,6 @@
 
 mod automation;
 mod config;
-mod config_reload_debounce;
 mod dbus;
 mod notifier;
 mod pairing;
@@ -34,8 +33,7 @@ use notifier::{NotificationCategory, Notifier};
 use notify_rust::Urgency;
 use state::{diff_connection_events, fetch_all_state};
 use tisvlay_core::{
-    Coalescer, DaemonClient, ReconcilerMap, RefreshTrigger, SessionClient, StateEvent,
-    StateWatcher, TvStateChange,
+    Coalescer, DaemonClient, ReconcilerMap, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
 };
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
@@ -199,38 +197,12 @@ async fn main() -> Result<()> {
     // during TV ramps. See `Reconcilers` docstring above.
     let reconcilers = Reconcilers::default();
 
-    // Debounce window for `config_reloaded` notifications. Both
-    // `watch_state` (StateEvent-driven, for external profile
-    // mutations) and `process_commands` (the `TrayCommand::Reload`
-    // menu path) bump this debouncer; the trailing-edge fire
-    // coalesces any bumps within a 500ms window into one
-    // notification. Constructed here in `main` so both task scopes
-    // share the same instance.
-    let config_reload_debounce =
-        config_reload_debounce::Debouncer::new(std::time::Duration::from_millis(500), {
-            let notifier = notifier.clone();
-            move || {
-                let notifier = notifier.clone();
-                tokio::spawn(async move {
-                    notifier
-                        .notify(
-                            NotificationCategory::ConfigReloaded,
-                            &gettext("Configuration reloaded"),
-                            &gettext("Daemon and session config reread from disk."),
-                            Urgency::Low,
-                        )
-                        .await;
-                });
-            }
-        });
-
     // Spawn signal watcher (replaces polling)
     let watch_daemon = daemon.clone();
     let watch_session = session.clone();
     let watch_handle = handle.clone();
     let watch_reconcilers = reconcilers.clone();
     let watch_notifier = notifier.clone();
-    let watch_debounce = config_reload_debounce.clone();
     tokio::spawn(async move {
         watch_state(
             watch_daemon,
@@ -238,7 +210,6 @@ async fn main() -> Result<()> {
             watch_handle,
             watch_reconcilers,
             watch_notifier,
-            watch_debounce,
         )
         .await;
     });
@@ -300,7 +271,6 @@ async fn main() -> Result<()> {
     let cmd_handle = handle.clone();
     let cmd_reconcilers = reconcilers.clone();
     let cmd_notifier = notifier.clone();
-    let cmd_debounce = config_reload_debounce.clone();
     let cmd_task = tokio::spawn(async move {
         process_commands(
             cmd_rx,
@@ -312,7 +282,6 @@ async fn main() -> Result<()> {
             cmd_reconcilers,
             open_gui_pending,
             cmd_notifier,
-            cmd_debounce,
         )
         .await;
     });
@@ -435,7 +404,6 @@ async fn watch_state(
     handle: ksni::Handle<TisvlayTray>,
     reconcilers: Reconcilers,
     notifier: Notifier,
-    config_reload_debounce: config_reload_debounce::Debouncer,
 ) {
     let mut watcher = match StateWatcher::new(&daemon, Default::default()).await {
         Ok(w) => w,
@@ -500,18 +468,6 @@ async fn watch_state(
         };
 
         match event {
-            StateEvent::DaemonStateChanged(TvStateChange::ConfigReloaded) => {
-                // Manager1.ConfigReloaded fires on every
-                // Manager1.ReloadConfig regardless of whether the
-                // reload changed anything — bump the debouncer so
-                // any caller (tray menu, busctl, systemd reload
-                // integration, …) gets a notification on the
-                // user-initiated reload, not just the diff-fortunate
-                // ones. The trailing-edge debouncer coalesces with
-                // the menu-path bump in TrayCommand::Reload.
-                config_reload_debounce.bump();
-                trigger_refresh();
-            }
             StateEvent::DaemonStateChanged(_) | StateEvent::FallbackPoll => {
                 trigger_refresh();
             }
@@ -533,15 +489,7 @@ async fn watch_state(
             | StateEvent::SystemProfileRemoved(_)
             | StateEvent::UserProfileChanged(_)
             | StateEvent::UserProfileAdded(_)
-            | StateEvent::UserProfileRemoved(_)
-            | StateEvent::SessionConfigReloaded => {
-                // Session1.ConfigReloaded is the unconditional
-                // mirror of Manager1.ConfigReloaded — bumps the
-                // debouncer so external callers of Session1.ReloadConfig
-                // get a notification even on no-op reloads.
-                // Real-change reloads also bump from the per-profile
-                // arms above; the trailing-edge debouncer coalesces.
-                config_reload_debounce.bump();
+            | StateEvent::UserProfileRemoved(_) => {
                 trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
@@ -624,7 +572,6 @@ async fn process_commands(
     reconcilers: Reconcilers,
     open_gui_pending: Arc<AtomicBool>,
     notifier: Notifier,
-    config_reload_debounce: config_reload_debounce::Debouncer,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         debug!(cmd = ?cmd, "Processing tray command");
@@ -663,15 +610,6 @@ async fn process_commands(
                     }
                 }
                 drop(session_ref);
-                // Bump the debouncer so the `config_reloaded`
-                // notification fires for the user-initiated reload
-                // — even when neither service reports any changed
-                // profile (the existing StateEvent-driven bumps only
-                // fire on profile mutations, so a no-op reload would
-                // otherwise pass silently). Real-change reloads
-                // bump again from the StateEvent arms; the trailing-
-                // edge debouncer coalesces both into one notification.
-                config_reload_debounce.bump();
                 refresh_state(&daemon, &session, &handle, &reconcilers, &notifier).await;
             }
             TrayCommand::PowerOn(id) => {

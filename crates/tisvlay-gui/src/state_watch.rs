@@ -373,12 +373,6 @@ async fn watch_state(
                 // GUI doesn't render automation history, so nothing
                 // to do.
             }
-            StateEvent::SessionConfigReloaded => {
-                // Tray emits the `config_reloaded` notification on
-                // this signal; the GUI's existing per-profile arms
-                // already drive any GUI-visible re-render needed,
-                // so this event is a no-op here.
-            }
         }
     }
 }
@@ -431,10 +425,6 @@ fn body_to_slint(body: &NotificationSettingsBody) -> TrayNotificationSettings {
         automation_fired: body
             .automation_fired
             .or(defaults.automation_fired)
-            .unwrap_or(false),
-        config_reloaded: body
-            .config_reloaded
-            .or(defaults.config_reloaded)
             .unwrap_or(false),
         daemon_offline: body
             .daemon_offline

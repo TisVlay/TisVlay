@@ -124,13 +124,6 @@ export component SettingsPane inherits Rectangle {
                 toggled(v) => { Tray.set-notification("automation_fired", v); }
             }
             NotificationRow {
-                label: @tr("Config reloaded");
-                helper: @tr("Notify when the daemon or session config reloads from disk.");
-                checked: Tray.notifications.config-reloaded;
-                enabled: Tray.available;
-                toggled(v) => { Tray.set-notification("config_reloaded", v); }
-            }
-            NotificationRow {
                 label: @tr("Daemon offline");
                 helper: @tr("Notify when the connection to the daemon is lost.");
                 checked: Tray.notifications.daemon-offline;

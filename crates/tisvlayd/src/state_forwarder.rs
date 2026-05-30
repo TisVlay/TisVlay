@@ -191,13 +191,7 @@ pub async fn state_change_forwarder(
                 }
             }
             StateChangeEvent::ConfigReloaded => {
-                debug!("Emitting ConfigReloaded signal on Manager1");
-
-                if let Ok(emitter) = SignalEmitter::new(&connection, MANAGER_PATH) {
-                    if let Err(e) = ManagerService::config_reloaded(&emitter).await {
-                        warn!(error = %e, "Failed to emit ConfigReloaded signal");
-                    }
-                }
+                debug!("ConfigReloaded: refreshing per-TV cached properties + desktop mapping");
 
                 // Per-TV config-derived properties (managed, system
                 // profile, primary input, automate_when) may have
