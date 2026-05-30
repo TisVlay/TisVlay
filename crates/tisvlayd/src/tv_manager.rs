@@ -219,6 +219,24 @@ pub enum StateChangeEvent {
         phase: String,
         message: String,
     },
+    /// A system-profile lifecycle hook executed successfully on a TV.
+    ///
+    /// The forwarder emits `Manager1.AutomationFired(tv_id,
+    /// event_kind, action_kind, "system", profile_uuid)`. Drives the
+    /// tray's `automation_fired` notification on the system-tier
+    /// side; sibling to the session service's
+    /// `Session1.AutomationFired` for user-tier rules.
+    ///
+    /// `event_kind` is a stable snake_case identifier from
+    /// [`SystemEvent::fmt`] (`on_startup`, `on_sleep`, …);
+    /// `action_kind` from [`tisvlay_core::SessionAction::fmt`]
+    /// (`screen_off`, `power_on`, …).
+    AutomationFired {
+        tv_id: String,
+        event_kind: String,
+        action_kind: String,
+        profile_uuid: Uuid,
+    },
 }
 
 /// Basic TV information for D-Bus properties.
@@ -499,6 +517,26 @@ pub enum SystemEvent {
     NoSession,
     Sleep,
     Wake,
+}
+
+impl std::fmt::Display for SystemEvent {
+    /// Stable snake_case identifier used as the `event_kind` payload
+    /// field on `Manager1.AutomationFired`. Matches the per-TV
+    /// system-profile hook field names (`on_startup`, `on_shutdown`,
+    /// …) so consumers can correlate the fired event with the rule
+    /// that selected it. These identifiers are gettext-lookup keys
+    /// in the tray's `automation::event_label`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            SystemEvent::Startup => "on_startup",
+            SystemEvent::Shutdown => "on_shutdown",
+            SystemEvent::Reboot => "on_reboot",
+            SystemEvent::NoSession => "on_no_session",
+            SystemEvent::Sleep => "on_sleep",
+            SystemEvent::Wake => "on_wake",
+        };
+        f.write_str(s)
+    }
 }
 
 /// Apply a key-value TV option to a `TvConfig`.
@@ -804,24 +842,28 @@ impl TvManager {
             .ok_or_else(|| TvManagerError::TvNotFound(tv_id.to_string()))
     }
 
-    /// Get the system action for a specific TV and event.
+    /// Get the system action for a specific TV and event, plus the
+    /// UUID of the system profile that resolution selected.
     ///
-    /// Reads the TV's resolved system profile to determine the action.
-    /// Returns `SessionAction::None` if the TV is not found.
-    async fn get_system_action(&self, tv_id: &str, event: SystemEvent) -> SessionAction {
+    /// Returns `(SessionAction::None, Uuid::nil())` if the TV is not
+    /// found. The UUID is carried out alongside the action so the
+    /// `AutomationFired` signal-emit path can name the profile in
+    /// its payload without re-acquiring the per-TV lock.
+    async fn get_system_action(&self, tv_id: &str, event: SystemEvent) -> (SessionAction, Uuid) {
         let tv_arc = match self.get_tv(tv_id).await {
             Ok(arc) => arc,
-            Err(_) => return SessionAction::None,
+            Err(_) => return (SessionAction::None, Uuid::nil()),
         };
         let tv = tv_arc.lock().await;
-        match event {
+        let action = match event {
             SystemEvent::Startup => tv.system_profile.on_startup,
             SystemEvent::Shutdown => tv.system_profile.on_shutdown,
             SystemEvent::Reboot => tv.system_profile.on_reboot,
             SystemEvent::NoSession => tv.system_profile.on_no_session,
             SystemEvent::Sleep => tv.system_profile.on_sleep,
             SystemEvent::Wake => tv.system_profile.on_wake,
-        }
+        };
+        (action, tv.config.profile.system)
     }
 
     /// List TV IDs where automation should fire (managed + input-aware gate).
@@ -841,7 +883,7 @@ impl TvManager {
     pub async fn execute_system_event(&self, event: SystemEvent, context: &str) {
         let tv_ids = self.list_automated_tv_ids().await;
         for tv_id in &tv_ids {
-            let action = self.get_system_action(tv_id, event).await;
+            let (action, profile_uuid) = self.get_system_action(tv_id, event).await;
             if action == SessionAction::None {
                 continue;
             }
@@ -857,6 +899,12 @@ impl TvManager {
             match result {
                 Ok(()) => {
                     debug!(tv_id = %tv_id, action = ?action, context = context, "Action executed");
+                    self.emit_state_change(StateChangeEvent::AutomationFired {
+                        tv_id: tv_id.clone(),
+                        event_kind: event.to_string(),
+                        action_kind: action.to_string(),
+                        profile_uuid,
+                    });
                 }
                 Err(e) => {
                     warn!(tv_id = %tv_id, action = ?action, context = context, error = %e,
@@ -943,7 +991,8 @@ impl TvManager {
 
             // First pass: handle PowerOn TVs (WoL + connect flow).
             for tv_id in &tv_ids {
-                let action = manager.get_system_action(tv_id, SystemEvent::Startup).await;
+                let (action, profile_uuid) =
+                    manager.get_system_action(tv_id, SystemEvent::Startup).await;
                 if action != SessionAction::PowerOn {
                     continue;
                 }
@@ -1004,11 +1053,19 @@ impl TvManager {
                         }
                     }
                 }
+
+                manager.emit_state_change(StateChangeEvent::AutomationFired {
+                    tv_id: tv_id.clone(),
+                    event_kind: SystemEvent::Startup.to_string(),
+                    action_kind: SessionAction::PowerOn.to_string(),
+                    profile_uuid,
+                });
             }
 
             // Second pass: handle non-PowerOn actions (ScreenOn, ScreenOff, PowerOff).
             for tv_id in &tv_ids {
-                let action = manager.get_system_action(tv_id, SystemEvent::Startup).await;
+                let (action, profile_uuid) =
+                    manager.get_system_action(tv_id, SystemEvent::Startup).await;
                 match action {
                     SessionAction::None | SessionAction::PowerOn => continue, // already handled or skip
                     _ => {}
@@ -1024,6 +1081,12 @@ impl TvManager {
                 match result {
                     Ok(()) => {
                         debug!(tv_id = %tv_id, action = ?action, "Startup action executed");
+                        manager.emit_state_change(StateChangeEvent::AutomationFired {
+                            tv_id: tv_id.clone(),
+                            event_kind: SystemEvent::Startup.to_string(),
+                            action_kind: action.to_string(),
+                            profile_uuid,
+                        });
                     }
                     Err(e) => {
                         warn!(tv_id = %tv_id, action = ?action, error = %e,

@@ -2728,12 +2728,29 @@ enum SessionSignal {
 /// readable.
 type BoxedStream<T> = std::pin::Pin<Box<dyn Stream<Item = T> + Send>>;
 
+/// Parsed payload of a `Manager1.AutomationFired` signal — fields
+/// match the wire arguments 1:1, ready to feed into
+/// [`StateEvent::AutomationFired`].
+#[derive(Debug, Clone)]
+struct ManagerAutomationPayload {
+    tv_id: String,
+    event_kind: String,
+    action_kind: String,
+    profile_kind: String,
+    profile_uuid: String,
+}
+
 pub struct StateWatcher {
     /// Stream of daemon PropertiesChanged / ObjectManager signals.
     signal_stream: Option<BoxedStream<TvStateChange>>,
     /// Stream of `Manager1.SystemProfile{Changed,Added,Removed}` signals
     /// — each carries the parsed UUID from the wire argument.
     system_profile_signal_stream: Option<BoxedStream<(SystemProfileSignal, Uuid)>>,
+    /// Stream of `Manager1.AutomationFired` signals — payload is the
+    /// pre-parsed five-string tuple ready to feed `StateEvent::AutomationFired`.
+    /// `profile_kind` on this stream is always `"system"` (the wire
+    /// field carries it; we trust the bus source as a sanity check).
+    manager_automation_stream: Option<BoxedStream<ManagerAutomationPayload>>,
     /// Stream of daemon service appear/disappear events.
     daemon_watch: Option<BoxedStream<ServiceEvent>>,
     /// Stream of session service appear/disappear events.
@@ -2829,12 +2846,14 @@ impl StateWatcher {
         let raw_stream = zbus::MessageStream::from(conn.clone());
 
         // The TV-state filter consumes message *clones* and returns
-        // `None` for `Manager1.SystemProfile*` signals; the body-mutation
-        // path below filters the same shared stream for those, so
-        // splitting the dispatch by interface keeps both branches
-        // typed cleanly without dropping any signal.
+        // `None` for `Manager1.SystemProfile*` / `AutomationFired`
+        // signals; the body-mutation path and the automation path
+        // below filter the same shared stream for those, so splitting
+        // the dispatch by interface+member keeps every branch typed
+        // cleanly without dropping any signal.
         let tv_prefix_for_state = tv_prefix.clone();
         let raw_for_state = raw_stream.clone();
+        let raw_for_automation = raw_stream.clone();
         let signal_stream: BoxedStream<TvStateChange> =
             Box::pin(raw_for_state.filter_map(move |msg_result| {
                 let tv_prefix = tv_prefix_for_state.clone();
@@ -2895,6 +2914,43 @@ impl StateWatcher {
                 let uuid = Uuid::parse_str(&uuid_str).ok()?;
                 trace!(uuid = %uuid, kind = ?kind, "Manager1 system-profile signal");
                 Some((kind, uuid))
+            }));
+
+        // --- Manager1.AutomationFired ---
+        //
+        // Parallel to the session-side `Session1.AutomationFired`
+        // parser at the session_signal_stream. The wire payload is
+        // five strings — pre-parsed into a small typed payload here
+        // so the next() branch only does the StateEvent construction.
+        let manager_automation_stream: BoxedStream<ManagerAutomationPayload> =
+            Box::pin(raw_for_automation.filter_map(|msg_result| async move {
+                let msg = msg_result.ok()?;
+                let header = msg.header();
+                let iface = header.interface()?.to_string();
+                let member = header.member()?.to_string();
+                if iface != "org.tisvlay.Manager1" || member != "AutomationFired" {
+                    return None;
+                }
+                let (tv_id, event_kind, action_kind, profile_kind, profile_uuid): (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                ) = msg.body().deserialize().ok()?;
+                trace!(
+                    tv_id = %tv_id,
+                    event = %event_kind,
+                    action = %action_kind,
+                    "Manager1 AutomationFired signal"
+                );
+                Some(ManagerAutomationPayload {
+                    tv_id,
+                    event_kind,
+                    action_kind,
+                    profile_kind,
+                    profile_uuid,
+                })
             }));
 
         // --- Daemon name watch ---
@@ -3070,6 +3126,7 @@ impl StateWatcher {
         Ok(Self {
             signal_stream: Some(signal_stream),
             system_profile_signal_stream: Some(system_profile_signal_stream),
+            manager_automation_stream: Some(manager_automation_stream),
             daemon_watch,
             session_watch,
             session_signal_stream,
@@ -3222,6 +3279,37 @@ impl StateWatcher {
                         debug!(uuid = %uuid, "Manager1 SystemProfileRemoved signal received");
                         StateEvent::SystemProfileRemoved(uuid)
                     }
+                })
+            }
+
+            // Branch 4c: Manager1.AutomationFired (system-profile-driven)
+            Some(payload) = async {
+                match self.manager_automation_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let ManagerAutomationPayload {
+                    tv_id,
+                    event_kind,
+                    action_kind,
+                    profile_kind,
+                    profile_uuid,
+                } = payload;
+                debug!(
+                    tv_id = %tv_id,
+                    event = %event_kind,
+                    action = %action_kind,
+                    profile_kind = %profile_kind,
+                    profile_uuid = %profile_uuid,
+                    "Manager AutomationFired signal received"
+                );
+                Some(StateEvent::AutomationFired {
+                    profile_kind,
+                    tv_id,
+                    event_kind,
+                    action_kind,
+                    profile_uuid,
                 })
             }
 
