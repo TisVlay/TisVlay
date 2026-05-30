@@ -203,7 +203,7 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 │   │             ListSystemProfiles, GetSystemProfile, UpdateSystemProfile,
 │   │             CreateSystemProfile, DuplicateSystemProfile, DeleteSystemProfile,
 │   │             GetResolvedSystemProfileDefaults, GetEffectiveSystemProfile
-│   └── Signals:  PairingProgress, DiscoveryFound, AutomationFired,
+│   └── Signals:  PairingProgress, DiscoveryFound,
 │                 SystemProfileChanged, SystemProfileAdded, SystemProfileRemoved
 └── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
     │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
@@ -222,7 +222,7 @@ org.tisvlay.Session  (session bus)
     │             ListUserProfiles, GetUserProfile, UpdateUserProfile,
     │             CreateUserProfile, DuplicateUserProfile, DeleteUserProfile,
     │             GetResolvedUserProfileDefaults, GetEffectiveUserProfile
-    └── Signals:  TvUserProfileChanged, AutomationFired,
+    └── Signals:  TvUserProfileChanged,
                   UserProfileChanged, UserProfileAdded, UserProfileRemoved
 ```
 
@@ -231,7 +231,7 @@ org.tisvlay.Session  (session bus)
 | Client | Calls | Subscribes to |
 |--------|-------|---------------|
 | **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (properties + commands), Session1 (user profiles) | — |
-| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `SystemProfileAdded`/`Changed`/`Removed`, `AutomationFired`; Session1: `TvUserProfileChanged`, `UserProfileAdded`/`Changed`/`Removed`, `AutomationFired`; DBus: `NameOwnerChanged` (service discovery) |
+| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `SystemProfileAdded`/`Changed`/`Removed`; Session1: `TvUserProfileChanged`, `UserProfileAdded`/`Changed`/`Removed`; DBus: `NameOwnerChanged` (service discovery) |
 | **tisvlay-gui** | Manager1 (system-profile CRUD, config), Tv1.* (properties + commands), Session1 (user-profile CRUD + assignment) | Same as tray plus the body-mutation signals (`SystemProfileChanged(uuid)`, `UserProfileChanged(uuid)`) drive the editor's per-row refresh. The GUI subscribes to both buses directly — no cross-bus signal re-fire on the session daemon, since the only client that needs cross-bus body-change notifications is the GUI and it already does. |
 | **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions via writable properties) | — |
 

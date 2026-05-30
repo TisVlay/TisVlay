@@ -95,10 +95,7 @@ pub enum SessionAction {
 }
 
 impl std::fmt::Display for SessionAction {
-    /// Stable snake_case identifier — matches the wire form
-    /// `Session1.AutomationFired` emits as its `action_kind` field
-    /// and the keys clients use for `gettext` lookup
-    /// (`automation.action.<kind>`). Identical to the
+    /// Stable snake_case identifier — identical to the
     /// `serde(rename_all = "snake_case")` form so a fresh
     /// `SessionAction::deserialize` of any of these strings
     /// round-trips cleanly.
@@ -653,7 +650,6 @@ pub struct NotificationSettingsBody {
     pub tv_connection: Option<bool>,
     pub tv_pairing: Option<bool>,
     pub tv_wake: Option<bool>,
-    pub automation_fired: Option<bool>,
     pub daemon_offline: Option<bool>,
 }
 
@@ -675,7 +671,6 @@ impl NotificationSettingsBody {
             tv_connection: Some(true),
             tv_pairing: Some(true),
             tv_wake: Some(true),
-            automation_fired: Some(false),
             daemon_offline: Some(true),
         }
     }

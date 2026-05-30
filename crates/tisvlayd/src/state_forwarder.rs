@@ -190,33 +190,6 @@ pub async fn state_change_forwarder(
                     warn!(error = %e, tv_id = %tv_id, "Failed to emit PairingProgress");
                 }
             }
-            StateChangeEvent::AutomationFired {
-                ref tv_id,
-                ref event_kind,
-                ref action_kind,
-                profile_uuid,
-            } => {
-                debug!(
-                    tv_id = %tv_id,
-                    event = %event_kind,
-                    action = %action_kind,
-                    "Forwarding AutomationFired to Manager1"
-                );
-                let profile_uuid_str = profile_uuid.to_string();
-                if let Ok(emitter) = SignalEmitter::new(&connection, MANAGER_PATH)
-                    && let Err(e) = ManagerService::automation_fired(
-                        &emitter,
-                        tv_id,
-                        event_kind,
-                        action_kind,
-                        "system",
-                        &profile_uuid_str,
-                    )
-                    .await
-                {
-                    warn!(error = %e, tv_id = %tv_id, "Failed to emit AutomationFired");
-                }
-            }
             StateChangeEvent::ConfigReloaded => {
                 debug!("ConfigReloaded: refreshing per-TV cached properties + desktop mapping");
 

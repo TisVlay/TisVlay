@@ -4,7 +4,6 @@
 //! via the tisvlayd D-Bus daemon. Communicates exclusively through
 //! `DaemonClient` — no vendor crate dependencies.
 
-mod automation;
 mod config;
 mod dbus;
 mod notifier;
@@ -525,42 +524,6 @@ async fn watch_state(
             StateEvent::SessionDisappeared => {
                 *session.write().await = None;
                 trigger_refresh();
-            }
-            StateEvent::AutomationFired {
-                profile_kind,
-                tv_id,
-                event_kind,
-                action_kind,
-                profile_uuid,
-            } => {
-                let daemon = daemon.clone();
-                let session = session.clone();
-                let notifier = notifier.clone();
-                tokio::spawn(async move {
-                    let tv_name = automation::resolve_tv_name(&daemon, &tv_id).await;
-                    let profile_name = automation::resolve_profile_name(
-                        &daemon,
-                        &session,
-                        &profile_kind,
-                        &profile_uuid,
-                    )
-                    .await;
-                    let (summary, body) = automation::format_copy(
-                        &tv_name,
-                        &event_kind,
-                        &action_kind,
-                        &profile_kind,
-                        &profile_name,
-                    );
-                    notifier
-                        .notify(
-                            NotificationCategory::AutomationFired,
-                            &summary,
-                            &body,
-                            Urgency::Low,
-                        )
-                        .await;
-                });
             }
             // Tray's own service appearing/disappearing isn't
             // actionable here — that's the tray itself, not a peer

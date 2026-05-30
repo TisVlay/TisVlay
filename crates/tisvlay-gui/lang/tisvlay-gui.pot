@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-05-22 20:45-0500\n"
+"POT-Creation-Date: 2026-05-30 09:25-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -101,156 +101,156 @@ msgstr ""
 msgid "diagnostic info"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:737
+#: crates/tisvlay-gui/src/lib.rs:739
 #, rust-format
 msgid "Create profile failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:792
+#: crates/tisvlay-gui/src/lib.rs:794
 #, rust-format
 msgid "Duplicate profile failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:851
+#: crates/tisvlay-gui/src/lib.rs:853
 #, rust-format
 msgid "Delete profile failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:970 crates/tisvlay-gui/src/lib.rs:997
+#: crates/tisvlay-gui/src/lib.rs:972 crates/tisvlay-gui/src/lib.rs:999
 #, rust-format
 msgid "Save change failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1022
+#: crates/tisvlay-gui/src/lib.rs:1024
 #, rust-format
 msgid "Reset field failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1046
+#: crates/tisvlay-gui/src/lib.rs:1048
 #, rust-format
 msgid "Reset all failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1071
+#: crates/tisvlay-gui/src/lib.rs:1073
 #, rust-format
 msgid "Rename failed: {0}"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1098
+#: crates/tisvlay-gui/src/lib.rs:1100
 msgid "Couldn't change volume"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1116
+#: crates/tisvlay-gui/src/lib.rs:1118
 msgid "Couldn't change backlight"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1137
+#: crates/tisvlay-gui/src/lib.rs:1139
 msgid "Couldn't change mute"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1165
+#: crates/tisvlay-gui/src/lib.rs:1167
 msgid "Couldn't turn screen on"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1167
+#: crates/tisvlay-gui/src/lib.rs:1169
 msgid "Couldn't turn screen off"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1186
+#: crates/tisvlay-gui/src/lib.rs:1188
 msgid "Couldn't switch input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1205
+#: crates/tisvlay-gui/src/lib.rs:1207
 msgid "Power on failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1220
+#: crates/tisvlay-gui/src/lib.rs:1222
 msgid "Power off failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1235
+#: crates/tisvlay-gui/src/lib.rs:1237
 msgid "Couldn't update managed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1262 crates/tisvlay-gui/src/lib.rs:1277
-#: crates/tisvlay-gui/src/lib.rs:1262 crates/tisvlay-gui/src/lib.rs:1277
+#: crates/tisvlay-gui/src/lib.rs:1264 crates/tisvlay-gui/src/lib.rs:1279
+#: crates/tisvlay-gui/src/lib.rs:1264 crates/tisvlay-gui/src/lib.rs:1279
 msgid "Couldn't change system profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1278 crates/tisvlay-gui/src/lib.rs:1336
+#: crates/tisvlay-gui/src/lib.rs:1280 crates/tisvlay-gui/src/lib.rs:1338
 msgid "Selected profile is no longer in the catalog."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1307
+#: crates/tisvlay-gui/src/lib.rs:1309
 msgid "Session service unavailable"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1309
+#: crates/tisvlay-gui/src/lib.rs:1311
 msgid "User-profile assignments require the per-user tisvlay-session service."
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1320 crates/tisvlay-gui/src/lib.rs:1335
-#: crates/tisvlay-gui/src/lib.rs:1320 crates/tisvlay-gui/src/lib.rs:1335
+#: crates/tisvlay-gui/src/lib.rs:1322 crates/tisvlay-gui/src/lib.rs:1337
+#: crates/tisvlay-gui/src/lib.rs:1322 crates/tisvlay-gui/src/lib.rs:1337
 msgid "Couldn't change user profile"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1359
+#: crates/tisvlay-gui/src/lib.rs:1361
 msgid "Couldn't change primary input"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1374
+#: crates/tisvlay-gui/src/lib.rs:1376
 msgid "Couldn't remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1393
+#: crates/tisvlay-gui/src/lib.rs:1395
 msgid "Reload config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1403
+#: crates/tisvlay-gui/src/lib.rs:1405
 msgid "Reload session config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:183
+#: crates/tisvlay-gui/ui/main.slint:184
 msgctxt "AppWindow"
 msgid "TVs"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:190
+#: crates/tisvlay-gui/ui/main.slint:191
 msgctxt "AppWindow"
 msgid "Profiles"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:197 crates/tisvlay-gui/ui/main.slint:298
+#: crates/tisvlay-gui/ui/main.slint:198 crates/tisvlay-gui/ui/main.slint:299
 msgctxt "AppWindow"
 msgid "Session"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:204
+#: crates/tisvlay-gui/ui/main.slint:205
 msgctxt "AppWindow"
 msgid "Settings"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:211
+#: crates/tisvlay-gui/ui/main.slint:212
 msgctxt "AppWindow"
 msgid "About"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:234
+#: crates/tisvlay-gui/ui/main.slint:235
 msgctxt "AppWindow"
 msgid "Reload daemon config"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:262
+#: crates/tisvlay-gui/ui/main.slint:263
 msgctxt "AppWindow"
 msgid "Reload"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:292
+#: crates/tisvlay-gui/ui/main.slint:293
 msgctxt "AppWindow"
 msgid "Daemon"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/main.slint:304
+#: crates/tisvlay-gui/ui/main.slint:305
 msgctxt "AppWindow"
 msgid "Tray"
 msgstr ""
@@ -275,16 +275,81 @@ msgctxt "NameInputDialog"
 msgid "Cancel"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:27
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:73
 msgctxt "SettingsPane"
 msgid "Settings"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:34
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:84
+msgctxt "SettingsPane"
+msgid "Tray service is not running"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:85
+msgctxt "SettingsPane"
+msgid "Start it to change these settings."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:96
+msgctxt "SettingsPane"
+msgid "NOTIFY ME ABOUT"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:99
+msgctxt "SettingsPane"
+msgid "TV connection"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:100
+msgctxt "SettingsPane"
+msgid "Notify when a TV connects or disconnects."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:106
+msgctxt "SettingsPane"
+msgid "Pairing outcome"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:107
+msgctxt "SettingsPane"
+msgid "Notify when pairing or re-pairing completes or fails."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:113
+msgctxt "SettingsPane"
+msgid "Wake outcome"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:114
+msgctxt "SettingsPane"
+msgid "Notify when a Wake-on-LAN attempt succeeds or fails."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:120
+msgctxt "SettingsPane"
+msgid "Daemon offline"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:121
+msgctxt "SettingsPane"
+msgid "Notify when the connection to the daemon is lost."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:136
+msgctxt "SettingsPane"
+msgid "STACK VERIFICATION"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:146
 msgctxt "SettingsPane"
 msgid ""
-"No user-facing settings yet. Appearance follows your desktop's color-scheme "
-"automatically."
+"Send a one-off notification to verify your desktop's notification stack is "
+"working."
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:155
+msgctxt "SettingsPane"
+msgid "Send test notification"
 msgstr ""
 
 #: crates/tisvlay-gui/ui/components/tvs_pane.slint:223
@@ -312,293 +377,293 @@ msgctxt "TvList"
 msgid "No TVs configured"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:502
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:506
 msgctxt "TvDetailHeader"
 msgid "Connected"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:502
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:506
 msgctxt "TvDetailHeader"
 msgid "Disconnected"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:510
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:514
 msgctxt "TvDetailHeader"
 msgid "Unmanaged"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:511
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:515
 msgctxt "TvDetailHeader"
 msgid "Automated"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:511
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:515
 msgctxt "TvDetailHeader"
 msgid "Managed"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:571
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:575
 msgctxt "TvDetail"
 msgid "STATUS"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:593
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:597
 msgctxt "TvDetail"
 msgid "Power off"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:593
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:597
 msgctxt "TvDetail"
 msgid "Power on"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:610
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:614
 msgctxt "TvDetail"
 msgid "Sending wake-up…"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:611
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:615
 msgctxt "TvDetail"
 msgid "Reconnecting…"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:612
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:616
 msgctxt "TvDetail"
 msgid "Connecting…"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:613
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:617
 msgctxt "TvDetail"
 msgid "Connected"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:614
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:618
 msgctxt "TvDetail"
 msgid "Wake failed"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:616
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:620
 msgctxt "TvDetail"
 msgid "Power state: {}"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:618
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:622
 msgctxt "TvDetail"
 msgid ""
 "Wake-on-LAN unavailable — no MAC configured. Pair the TV again or edit the "
 "config to add one."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:619
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:623
 msgctxt "TvDetail"
 msgid "Reconnect, or wake from standby with WoL."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:631
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:635
 msgctxt "TvDetail"
 msgid "Managed"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:649
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:653
 msgctxt "TvDetail"
 msgid "PROFILES"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:659
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:663
 msgctxt "TvDetail"
 msgid "System"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:674
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:678
 msgctxt "TvDetail"
 msgid "Edit system profile"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:688
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:692
 msgctxt "TvDetail"
 msgid "User"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:703
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:707
 msgctxt "TvDetail"
 msgid "Edit user profile"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:719
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:723
 msgctxt "TvDetail"
 msgid "PICTURE"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:722
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:726
 msgctxt "TvDetail"
 msgid "Backlight"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:732
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:736
 msgctxt "TvDetail"
 msgid "Screen"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:750
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:754
 msgctxt "TvDetail"
 msgid "AUDIO"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:753
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:757
 msgctxt "TvDetail"
 msgid "Volume"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:763
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:767
 msgctxt "TvDetail"
 msgid "Mute"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:774
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:778
 msgctxt "TvDetail"
 msgid "INPUT"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:777
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:781
 msgctxt "TvDetail"
 msgid "Current"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:788
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:792
 msgctxt "TvDetail"
 msgid "Primary"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:825
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:829
 msgctxt "TvDetail"
 msgid "CONFIG"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:836
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:840
 msgctxt "TvDetail"
 msgid "Edit"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:842
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:846
 msgctxt "TvDetail"
 msgid "Cancel"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:849
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:853
 msgctxt "TvDetail"
 msgid "Save"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:871
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:875
 msgctxt "TvDetail"
 msgid "Couldn't save TV config"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:888
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:892
 msgctxt "TvDetail"
 msgid "Friendly name"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:894
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:898
 msgctxt "TvDetail"
 msgid "e.g. Living Room G4"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:910
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:914
 msgctxt "TvDetail"
 msgid "Name"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:929
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:933
 msgctxt "TvDetail"
 msgid "INFO"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:937
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:941
 msgctxt "TvDetail"
 msgid "TV ID"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:938
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:942
 msgctxt "TvDetail"
 msgid "Make"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:939
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:943
 msgctxt "TvDetail"
 msgid "Model"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:940
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:944
 msgctxt "TvDetail"
 msgid "Serial"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:941
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:945
 msgctxt "TvDetail"
 msgid "Connector"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:958
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:962
 msgctxt "TvDetail"
 msgid "DANGER ZONE"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:967
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:971
 msgctxt "TvDetail"
 msgid ""
 "Refreshes vendor credentials by running the pairing handshake again. Top-"
 "level settings (name, profile, primary input) are preserved."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:976
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:980
 msgctxt "TvDetail"
 msgid "Re-pair"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:989
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:993
 msgctxt "TvDetail"
 msgid "Removes this TV from the daemon's configuration. Pairing must be redone."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:998
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1002
 msgctxt "TvDetail"
 msgid "Remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1021
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1025
 msgctxt "TvDetailEmpty"
 msgid "Select a TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1030
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1034
 msgctxt "TvDetailEmpty"
 msgid "Pick a TV from the list, or pair a new one with the + button."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1148
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1152
 msgctxt "TvsPane"
 msgid "Remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1149
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1153
 msgctxt "TvsPane"
 msgid ""
 "Remove '{}' from the daemon's configuration? Pairing must be redone if you "
 "re-add it."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1150
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1154
 msgctxt "TvsPane"
 msgid "Remove"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1164
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1168
 msgctxt "TvsPane"
 msgid "Re-pair TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1165
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1169
 msgctxt "TvsPane"
 msgid ""
 "Re-pair '{}'? This will briefly disconnect the TV and prompt you to confirm "
@@ -606,7 +671,7 @@ msgid ""
 "preserved."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1166
+#: crates/tisvlay-gui/ui/components/tvs_pane.slint:1170
 msgctxt "TvsPane"
 msgid "Re-pair"
 msgstr ""
@@ -636,132 +701,132 @@ msgctxt "Stepper"
 msgid "Done"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:240
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:243
 msgctxt "StepDiscover"
 msgid "Find your TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:246
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:249
 msgctxt "StepDiscover"
 msgid "Searching the local network for compatible TVs."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:263
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:266
 msgctxt "StepDiscover"
 msgid "Discovery failed"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:296
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:299
 msgctxt "StepDiscover"
 msgid "Scanning via SSDP — found {}, listening for more…"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:298
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:301
 msgctxt "StepDiscover"
 msgid "No TVs found. Make sure your TV is on the same network."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:299
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:302
 msgctxt "StepDiscover"
 msgid "Found {} TV"
 msgid_plural "Found {} TVs"
 msgstr[0] ""
 msgstr[1] ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:363
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:366
 msgctxt "StepDiscover"
 msgid "Searching your network…"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:363
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:366
 msgctxt "StepDiscover"
 msgid "No TVs found yet"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:372
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:375
 msgctxt "StepDiscover"
 msgid ""
 "LG TVs only broadcast SSDP when on. Make sure the TV is awake, or add it "
 "manually below."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:406
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:409
 msgctxt "StepDiscover"
 msgid "Don't see your TV? Add it manually"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:425
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:428
 msgctxt "StepDiscover"
 msgid "Vendor"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:468
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:471
 msgctxt "StepDiscover"
 msgid "IP"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:485
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:504
 msgctxt "StepDiscover"
 msgid "Looking up…"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:486
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:505
 msgctxt "StepDiscover"
 msgid "Continue"
 msgstr ""
 
 #. enough here to identify the TV.
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:497
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:516
 msgctxt "StepDiscover"
 msgid "You'll fill the rest (MAC, etc.) in the next step."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:538
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:557
 msgctxt "StepConfigure"
 msgid "Configure this TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:544
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:563
 msgctxt "StepConfigure"
 msgid "Set how TisVlay should refer to and automate this device."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:554
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:573
 msgctxt "StepConfigure"
 msgid "Friendly name"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:560
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:579
 msgctxt "StepConfigure"
 msgid "e.g. Living Room G4"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:565
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:584
 msgctxt "StepConfigure"
 msgid "Shown in the TVs pane, tray menu, and CLI."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:575
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:594
 msgctxt "StepConfigure"
 msgid "Vendor"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:617
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:641
 msgctxt "StepConfigure"
 msgid "Initial system profile"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:629
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:653
 msgctxt "StepConfigure"
 msgid "Drives boot/shutdown/sleep behavior. You can change this later."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:647
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:671
 msgctxt "StepConfigure"
 msgid "Managed by TisVlay"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:652
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:676
 msgctxt "StepConfigure"
 msgid ""
 "The daemon will power-cycle this TV in response to desktop session events "
@@ -769,111 +834,111 @@ msgid ""
 "automation."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:721
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:745
 msgctxt "StepPair"
 msgid "Paired successfully"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:722
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:746
 msgctxt "StepPair"
 msgid "Pairing failed"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:723
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:747
 msgctxt "StepPair"
 msgid "Confirm the prompt on your TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:724
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:748
 msgctxt "StepPair"
 msgid "Awaiting input on the TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:725
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:749
 msgctxt "StepPair"
 msgid "Connecting to the TV…"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:740
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:764
 msgctxt "StepPair"
 msgid "Client key stored. TisVlay can now control this TV."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:742
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:766
 msgctxt "StepPair"
 msgid "The prompt was rejected, or the request timed out."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:743
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:767
 msgctxt "StepPair"
 msgid ""
 "Use the magic remote (or the directional pad) to choose Accept on the TV."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:764
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:788
 msgctxt "StepPair"
 msgid "Retry pairing"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:769
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:793
 msgctxt "StepPair"
 msgid "Back to discovery"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:827
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:851
 msgctxt "StepDone"
 msgid "{} is ready."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:827
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:851
 msgctxt "StepDone"
 msgid "TV"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:836
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:860
 msgctxt "StepDone"
 msgid ""
 "The new TV will appear selected in the TVs pane. Boot, sleep, and session "
 "events follow the default profile until you change it."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:849
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:873
 msgctxt "StepDone"
 msgid "Vendor: "
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:880
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:907
 msgctxt "StepDone"
 msgid "Managed"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:880
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:907
 msgctxt "StepDone"
 msgid "Unmanaged"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:925
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:952
 msgctxt "PairingWizardPane"
 msgid "Pair"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:926
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:926
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:953
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:953
 msgctxt "PairingWizardPane"
 msgid "Next"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:927
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:954
 msgctxt "PairingWizardPane"
 msgid "Close"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1011
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1038
 msgctxt "PairingWizardPane"
 msgid "Cancel"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1016
+#: crates/tisvlay-gui/ui/components/pairing_wizard.slint:1043
 msgctxt "PairingWizardPane"
 msgid "Back"
 msgstr ""

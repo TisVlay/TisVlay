@@ -820,39 +820,6 @@ impl ManagerService {
         tv_path: ObjectPath<'_>,
     ) -> zbus::Result<()>;
 
-    /// Fired after a system-profile lifecycle hook executes
-    /// successfully on a TV (e.g. logind suspend → `on_sleep` →
-    /// screen-off on the living-room TV; daemon boot → `on_startup`).
-    /// Drives the tray's `automation_fired` notification.
-    ///
-    /// `event_kind` and `action_kind` are **stable snake_case
-    /// identifiers** intended as gettext lookup keys
-    /// (`automation.event.on_startup`,
-    /// `automation.action.screen_off`) — NOT translated strings.
-    /// They come from [`crate::tv_manager::SystemEvent::fmt`] and
-    /// [`tisvlay_core::SessionAction::fmt`] respectively.
-    ///
-    /// `profile_kind` is the literal string `"system"` for this
-    /// signal (the session service's `Session1.AutomationFired`
-    /// sibling carries `"user"`). `profile_uuid` is the UUID of the
-    /// system profile whose rule resolved to the fired action — lets
-    /// the tray name the profile in the notification body without a
-    /// re-resolve.
-    ///
-    /// Deliberate exception to the project's payload-less
-    /// `StateEvent` convention: this is an ephemeral *event*, not a
-    /// state change — there's nothing to re-query, so the payload
-    /// travels in-band.
-    #[zbus(signal)]
-    pub async fn automation_fired(
-        emitter: &SignalEmitter<'_>,
-        tv_id: &str,
-        event_kind: &str,
-        action_kind: &str,
-        profile_kind: &str,
-        profile_uuid: &str,
-    ) -> zbus::Result<()>;
-
     /// A system profile's body was mutated (any field, including
     /// `name` — rename folds into `UpdateSystemProfile`).
     ///

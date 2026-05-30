@@ -131,14 +131,13 @@ Stable snake_case keys (these are the field names in `NotificationSettingsBody`)
 | `tv_connection` | TV `connected` transitions true ↔ false | **on** | `Low` (both) | `refresh_state` diff |
 | `tv_pairing` | terminal pairing phase `complete` / `failed` | **on** | `Normal` (both) | `Manager1.PairingProgress` (already watched by `StateWatcher`) |
 | `tv_wake` | `Tv1.Power.PowerCycleProgress` reaches `connected` / `failed` after a `wol_sent` | **on** | `Low` (success) / `Normal` (failure) | per-TV `Tv1.Power.PowerCycleProgress` stream (see "Per-TV power-cycle subscription" below) |
-| `automation_fired` | profile-driven action ran on a TV (user-profile session events, or system-profile lifecycle hooks) | **off** | `Low` | `Session1.AutomationFired` (user-profile-side) + `Manager1.AutomationFired` (system-profile-side) — both fold into the same notification category, distinguished only in the body line ("user profile: X" vs "system profile: Y") |
 | `daemon_offline` | `StateEvent::DaemonDisappeared` | **on** | `Critical`, hint `resident` (sticky) | existing tray arm |
 
 > **Retired category — `config_reloaded`.** A `config_reloaded` toast was planned and shipped through commits `351a52e` / `3af0952`, then removed: almost every `ReloadConfig` is self-initiated (tray menu's Reload item, or the user editing the config file), so the toast was telling the user something they already knew. The implementation surface was also disproportionate — a permit-drain debouncer, dual Manager1/Session1 signal coordination, a fully-wired notification-category bit. Net signal-to-noise didn't justify the maintenance tax for a default-off feature.
 
-Urgency rationale: `Critical` is reserved for the single event that genuinely needs user acknowledgment (`daemon_offline`). Pairing and wake are usually user-initiated foreground operations — `Normal` for failures gives them banner visibility without escalating to a sticky toast. `tv_connection` stays `Low` for both directions because the daemon auto-reconnects; sustained-disconnect detection (>30s) is a v2 idea that would need debouncing in the diff helper.
+> **Retired category — `automation_fired`.** Shipped through commits `d67787d` (Session1 setup), `1c0b02d` (profile-context extension), `99c05dd` (Manager1 sibling for system-profile lifecycle hooks), then removed in a single revert commit. End-to-end visibility-window analysis: system-tier events (`on_startup`, `on_shutdown`, `on_sleep`, `on_wake`, `on_reboot`, `on_no_session`) fire when no human is at the desk — pre-session, during teardown, screen darkening, racing the lockscreen on resume. User-tier events (`session_locked`, `session_unlocked`, `idle_timeout`, `idle_resume`, `greeter_wake`) that do land on a visible session describe TV actions that `tv_connection` (always) and `tv_wake` (when WolSent preceded Connected) already surface — duplicative. The implementation surface was substantial: `Session1.AutomationFired` + `Manager1.AutomationFired` wire signals, unified `StateEvent::AutomationFired` variant + `manager_automation_stream` parser, dedicated tray `automation.rs` module (TV-name + profile-name resolution + gettext template), persisted `automation_fired` config field, GUI settings checkbox, notification-category bit. Signal-to-noise didn't justify the maintenance tax for a default-off category; the actual automation execution paths (`event_handler`, `execute_system_event`, `on_startup`) all stay intact, just no signal emission.
 
-`automation_fired` default-off matches the earlier "noisiest one off" answer — it can fire many times per day on a managed TV.
+Urgency rationale: `Critical` is reserved for the single event that genuinely needs user acknowledgment (`daemon_offline`). Pairing and wake are usually user-initiated foreground operations — `Normal` for failures gives them banner visibility without escalating to a sticky toast. `tv_connection` stays `Low` for both directions because the daemon auto-reconnects; sustained-disconnect detection (>30s) is a v2 idea that would need debouncing in the diff helper.
 
 ## File changes
 
@@ -310,15 +309,6 @@ App name `"TisVlay"`, icon name `"video-display"` (matches the tray's active-sta
 - In the `StateEvent::DaemonDisappeared` arm, additionally call `notifier.notify(DaemonOffline, …)`.
 - New per-TV tokio tasks subscribed to `Tv1.Power.PowerCycleProgress` → `notifier.notify(TvWake, …)` on `connected` / `failed` terminal phases. Subscribed on each TV's `InterfacesAdded` (or initial `list_tvs` after `DaemonAppeared`), dropped on `InterfacesRemoved` / `DaemonDisappeared`. See "Per-TV power-cycle subscription" in Concurrency notes for the lifecycle map.
 - New tokio task subscribed to `Session1.AutomationFired` → `notifier.notify(AutomationFired, …)`. The session-service `is_available()` probe pattern from `main.rs:100-110` handles "session not yet up" cleanly.
-
-### `tisvlay-session` (one new signal)
-
-`Session1.AutomationFired(tv_id: s, event_kind: s, action_kind: s, profile_kind: s, profile_uuid: s)` and the parallel `Manager1.AutomationFired(...)` carrying the same five-string payload. Fired from `event_handler` in the session lib's per-TV `for (tv_id, action, profile_uuid)` loop after `execute_action_for_tv` returns `Ok(())`, and from `execute_system_event` / `on_startup` in the daemon's `tv_manager.rs` after each per-TV system-profile action succeeds. `event_kind` and `action_kind` are **stable snake_case identifiers** intended as gettext lookup keys (`automation.event.session_locked` / `automation.event.on_startup`, `automation.action.screen_off`), **not** translated strings and **not** Debug-formatted values. `profile_kind` is the literal `"user"` (Session1) or `"system"` (Manager1); `profile_uuid` names the profile whose rule resolved to the fired action — used to surface the profile name in the notification body.
-
-- `event_kind` is the existing `SessionEvent::Display` impl (already snake_case: `session_locked`, `session_unlocked`, `idle_timeout`, …).
-- `action_kind` requires either a new `SessionAction::Display` impl returning snake_case (`screen_off`, `screen_on`, `power_off`, `power_on`, `none`) or a dedicated `fn kind(&self) -> &'static str`. The existing `Debug` impl is unstable across refactors and renders poorly in toast bodies (`"PowerOff { force: false }"`); the new helper is a one-screen patch and lives next to the enum in `tisvlay-core`.
-
-Purely additive on the wire — existing subscribers ignore it.
 
 ### `tisvlay-gui`
 

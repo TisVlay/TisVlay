@@ -114,9 +114,8 @@ impl TestSession {
 
         let handler_state = state.clone();
         let handler_daemon = daemon_client.clone();
-        let handler_conn = Some(Arc::new(session_dbus_conn.clone()));
         let handler_task = tokio::spawn(async move {
-            event_handler(event_rx, handler_state, handler_daemon, handler_conn).await;
+            event_handler(event_rx, handler_state, handler_daemon).await;
         });
 
         // Mirror the production orphan-pruner so tests exercise the

@@ -39,9 +39,6 @@ pub(crate) struct NotificationSettings {
     /// `wol_sent` → `connected` / `failed` for a TV's power cycle.
     /// Default on.
     pub(crate) tv_wake: bool,
-    /// Session action executed on a TV (lock, unlock, idle).
-    /// Default OFF — can fire many times per day.
-    pub(crate) automation_fired: bool,
     /// Daemon disappeared from D-Bus. Default on; the one event that
     /// genuinely needs user acknowledgment.
     pub(crate) daemon_offline: bool,
@@ -67,8 +64,7 @@ impl Default for NotificationSettings {
 const BIT_TV_CONNECTION: u8 = 1 << 0;
 const BIT_TV_PAIRING: u8 = 1 << 1;
 const BIT_TV_WAKE: u8 = 1 << 2;
-const BIT_AUTOMATION_FIRED: u8 = 1 << 3;
-const BIT_DAEMON_OFFLINE: u8 = 1 << 4;
+const BIT_DAEMON_OFFLINE: u8 = 1 << 3;
 
 impl NotificationSettings {
     /// Pack the enabled categories into a `u8` bitset for the
@@ -86,9 +82,6 @@ impl NotificationSettings {
         if self.tv_wake {
             bits |= BIT_TV_WAKE;
         }
-        if self.automation_fired {
-            bits |= BIT_AUTOMATION_FIRED;
-        }
         if self.daemon_offline {
             bits |= BIT_DAEMON_OFFLINE;
         }
@@ -104,7 +97,6 @@ impl NotificationSettings {
             tv_connection: Some(self.tv_connection),
             tv_pairing: Some(self.tv_pairing),
             tv_wake: Some(self.tv_wake),
-            automation_fired: Some(self.automation_fired),
             daemon_offline: Some(self.daemon_offline),
         }
     }
@@ -118,7 +110,6 @@ impl NotificationSettings {
             tv_connection: body.tv_connection?,
             tv_pairing: body.tv_pairing?,
             tv_wake: body.tv_wake?,
-            automation_fired: body.automation_fired?,
             daemon_offline: body.daemon_offline?,
         })
     }
@@ -136,9 +127,6 @@ impl NotificationSettings {
         }
         if let Some(v) = body.tv_wake {
             self.tv_wake = v;
-        }
-        if let Some(v) = body.automation_fired {
-            self.automation_fired = v;
         }
         if let Some(v) = body.daemon_offline {
             self.daemon_offline = v;
@@ -194,7 +182,6 @@ mod tests {
         assert_eq!(s.tv_connection, body.tv_connection.unwrap());
         assert_eq!(s.tv_pairing, body.tv_pairing.unwrap());
         assert_eq!(s.tv_wake, body.tv_wake.unwrap());
-        assert_eq!(s.automation_fired, body.automation_fired.unwrap());
         assert_eq!(s.daemon_offline, body.daemon_offline.unwrap());
     }
 
@@ -204,7 +191,6 @@ mod tests {
             tv_connection: true,
             tv_pairing: false,
             tv_wake: true,
-            automation_fired: true,
             daemon_offline: false,
         };
         let body = original.to_body();
@@ -239,7 +225,7 @@ mod tests {
         assert!(!s.tv_connection);
         // Everything else still matches defaults.
         assert_eq!(s.tv_pairing, before.tv_pairing);
-        assert_eq!(s.automation_fired, before.automation_fired);
+        assert_eq!(s.daemon_offline, before.daemon_offline);
     }
 
     #[test]
@@ -248,7 +234,6 @@ mod tests {
             tv_connection: false,
             tv_pairing: false,
             tv_wake: false,
-            automation_fired: false,
             daemon_offline: false,
         };
         assert_eq!(all_off.enabled_bitset(), 0);
@@ -263,7 +248,7 @@ mod tests {
             daemon_offline: true,
             ..all_off
         };
-        assert_eq!(only_last.enabled_bitset(), 1 << 4);
+        assert_eq!(only_last.enabled_bitset(), 1 << 3);
     }
 
     #[test]
@@ -275,7 +260,6 @@ mod tests {
                 tv_connection: false,
                 tv_pairing: true,
                 tv_wake: false,
-                automation_fired: true,
                 daemon_offline: true,
             },
         };

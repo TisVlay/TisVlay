@@ -117,13 +117,6 @@ export component SettingsPane inherits Rectangle {
                 toggled(v) => { Tray.set-notification("tv_wake", v); }
             }
             NotificationRow {
-                label: @tr("Automation");
-                helper: @tr("Notify when a session action (lock, unlock, idle) fires on a TV.");
-                checked: Tray.notifications.automation-fired;
-                enabled: Tray.available;
-                toggled(v) => { Tray.set-notification("automation_fired", v); }
-            }
-            NotificationRow {
                 label: @tr("Daemon offline");
                 helper: @tr("Notify when the connection to the daemon is lost.");
                 checked: Tray.notifications.daemon-offline;

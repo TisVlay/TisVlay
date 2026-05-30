@@ -35,8 +35,7 @@ pub(crate) enum NotificationCategory {
     TvConnection = 0,
     TvPairing = 1,
     TvWake = 2,
-    AutomationFired = 3,
-    DaemonOffline = 4,
+    DaemonOffline = 3,
 }
 
 impl NotificationCategory {

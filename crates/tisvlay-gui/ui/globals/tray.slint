@@ -15,7 +15,6 @@ export struct TrayNotificationSettings {
     tv-connection: bool,
     tv-pairing: bool,
     tv-wake: bool,
-    automation-fired: bool,
     daemon-offline: bool,
 }
 
@@ -35,8 +34,7 @@ export global Tray {
     /// pair into a one-key `NotificationSettingsBody` and calls
     /// `TrayClient::update_notification_settings`. The `category`
     /// string is the snake_case wire identifier
-    /// (`tv_connection`, `tv_pairing`, `tv_wake`,
-    /// `automation_fired`, `daemon_offline`).
+    /// (`tv_connection`, `tv_pairing`, `tv_wake`, `daemon_offline`).
     callback set-notification(string, bool);
 
     /// Fire one test notification. Rust calls

@@ -368,11 +368,6 @@ async fn watch_state(
                 // their new bindings on the next render.
                 refresh_tray_notifications(&tray, &app_weak).await;
             }
-            StateEvent::AutomationFired { .. } => {
-                // Tray surfaces this as a desktop notification; the
-                // GUI doesn't render automation history, so nothing
-                // to do.
-            }
         }
     }
 }
@@ -422,10 +417,6 @@ fn body_to_slint(body: &NotificationSettingsBody) -> TrayNotificationSettings {
             .unwrap_or(true),
         tv_pairing: body.tv_pairing.or(defaults.tv_pairing).unwrap_or(true),
         tv_wake: body.tv_wake.or(defaults.tv_wake).unwrap_or(true),
-        automation_fired: body
-            .automation_fired
-            .or(defaults.automation_fired)
-            .unwrap_or(false),
         daemon_offline: body
             .daemon_offline
             .or(defaults.daemon_offline)

@@ -206,18 +206,11 @@ async fn main() -> Result<()> {
         debug!("Idle monitoring disabled (no TVs have idle_timeout_seconds set)");
     }
 
-    // Spawn event handler — passes the session-bus connection (when
-    // available) so `AutomationFired` can be emitted after each
-    // successful per-TV action. `None` fallback keeps the handler
-    // working when the D-Bus registration failed (notification just
-    // doesn't fire; action dispatch is unaffected).
+    // Spawn event handler
     let handler_state = state.clone();
     let handler_daemon = daemon.clone();
-    let handler_conn = _session_dbus_connection
-        .as_ref()
-        .map(|c| Arc::new(c.clone()));
     let handler_task = tokio::spawn(async move {
-        tisvlay_session::event_handler(event_rx, handler_state, handler_daemon, handler_conn).await;
+        tisvlay_session::event_handler(event_rx, handler_state, handler_daemon).await;
     });
 
     // Spawn the orphan-pruner: when the daemon unregisters a TV's
