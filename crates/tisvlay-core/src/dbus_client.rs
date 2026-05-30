@@ -2598,26 +2598,33 @@ pub enum StateEvent {
     /// subscribers re-fetch via `TrayClient::notification_settings`.
     TrayNotificationSettingsChanged,
 
-    /// `Session1.AutomationFired(tv_id, event_kind, action_kind)`:
-    /// a session-driven action ran successfully on a TV
-    /// (e.g. session-lock → screen-off on the living-room TV).
-    /// Drives the tray's `automation_fired` notification.
+    /// `Manager1.AutomationFired` or `Session1.AutomationFired`: an
+    /// action ran successfully on a TV under one of the profile-driven
+    /// automation paths (system-profile lifecycle hooks like
+    /// `on_startup`, or user-profile session-event hooks like
+    /// `on_session_lock`). Drives the tray's `automation_fired`
+    /// notification.
+    ///
+    /// `profile_kind` is `"system"` (signal arrived on `Manager1`) or
+    /// `"user"` (arrived on `Session1`); `profile_uuid` is the UUID
+    /// of the profile whose rule resolved to the fired action — used
+    /// to name the profile in the notification body.
+    ///
+    /// `event_kind` and `action_kind` are stable snake_case identifiers
+    /// intended as gettext lookup keys
+    /// (`automation.event.session_locked` / `automation.event.on_startup`,
+    /// `automation.action.screen_off`), not translated strings.
     ///
     /// Deliberate exception to the project's payload-less event
-    /// convention: this is an *ephemeral event*, not a state
-    /// change — there's nothing to re-query because the session
-    /// service doesn't persist "last automation fired", so the
-    /// payload travels in-band.
-    ///
-    /// Both `event_kind` and `action_kind` are stable snake_case
-    /// identifiers from [`session_monitor::SessionEvent::fmt`] and
-    /// [`SessionAction::fmt`] respectively — intended as gettext
-    /// lookup keys (`automation.event.session_locked`,
-    /// `automation.action.screen_off`), not translated strings.
-    SessionAutomationFired {
+    /// convention: this is an *ephemeral event*, not a state change
+    /// — there's nothing to re-query because no service persists
+    /// "last automation fired", so the payload travels in-band.
+    AutomationFired {
+        profile_kind: String,
         tv_id: String,
         event_kind: String,
         action_kind: String,
+        profile_uuid: String,
     },
 
     /// The fallback poll timer fired.
@@ -2702,14 +2709,16 @@ enum SessionSignal {
     Changed(Uuid),
     Added(Uuid),
     Removed(Uuid),
-    /// `Session1.AutomationFired(tv_id, event_kind, action_kind)`.
-    /// Three stable snake_case strings — see
-    /// [`StateEvent::SessionAutomationFired`] for the full payload
-    /// shape and gettext-key contract.
+    /// `Session1.AutomationFired(tv_id, event_kind, action_kind,
+    /// profile_kind, profile_uuid)`. Five stable snake_case strings —
+    /// see [`StateEvent::AutomationFired`] for the full payload shape
+    /// and gettext-key contract.
     AutomationFired {
         tv_id: String,
         event_kind: String,
         action_kind: String,
+        profile_kind: String,
+        profile_uuid: String,
     },
 }
 
@@ -3020,12 +3029,25 @@ impl StateWatcher {
                                     })
                                 }
                                 "AutomationFired" => {
-                                    let (tv_id, event_kind, action_kind): (String, String, String) =
-                                        msg.body().deserialize().ok()?;
+                                    let (
+                                        tv_id,
+                                        event_kind,
+                                        action_kind,
+                                        profile_kind,
+                                        profile_uuid,
+                                    ): (
+                                        String,
+                                        String,
+                                        String,
+                                        String,
+                                        String,
+                                    ) = msg.body().deserialize().ok()?;
                                     Some(SessionSignal::AutomationFired {
                                         tv_id,
                                         event_kind,
                                         action_kind,
+                                        profile_kind,
+                                        profile_uuid,
                                     })
                                 }
                                 _ => None,
@@ -3158,17 +3180,23 @@ impl StateWatcher {
                         tv_id,
                         event_kind,
                         action_kind,
+                        profile_kind,
+                        profile_uuid,
                     } => {
                         debug!(
                             tv_id = %tv_id,
                             event = %event_kind,
                             action = %action_kind,
+                            profile_kind = %profile_kind,
+                            profile_uuid = %profile_uuid,
                             "Session AutomationFired signal received"
                         );
-                        Some(StateEvent::SessionAutomationFired {
+                        Some(StateEvent::AutomationFired {
+                            profile_kind,
                             tv_id,
                             event_kind,
                             action_kind,
+                            profile_uuid,
                         })
                     }
                 }

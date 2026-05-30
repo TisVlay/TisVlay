@@ -217,11 +217,14 @@ impl SessionService {
         // Update assignment
         s.user_config.set_tv_user_profile(tv_id, parsed_uuid);
 
-        // Re-resolve the user profile for this TV
+        // Re-resolve the user profile for this TV (carry the UUID
+        // alongside so AutomationFired emits can name it).
         let resolved = s
             .user_config
             .resolve_user_profile(tv_id, &s.admin_user_default);
-        s.profiles.insert(tv_id.to_string(), resolved);
+        let resolved_uuid = s.user_config.get_tv_user_profile(tv_id);
+        s.profiles
+            .insert(tv_id.to_string(), (resolved, resolved_uuid));
 
         // Save user config to disk
         let save_result = match &self.config_path {
@@ -253,10 +256,14 @@ impl SessionService {
         debug!(tv_id = %tv_id, "D-Bus: GetEffectiveUserProfileJson");
         let s = self.state.read().await;
 
-        let resolved = s.profiles.get(tv_id).cloned().unwrap_or_else(|| {
-            s.user_config
-                .resolve_user_profile(tv_id, &s.admin_user_default)
-        });
+        let resolved = s
+            .profiles
+            .get(tv_id)
+            .map(|(p, _uuid)| p.clone())
+            .unwrap_or_else(|| {
+                s.user_config
+                    .resolve_user_profile(tv_id, &s.admin_user_default)
+            });
 
         // Serialize ResolvedUserProfile as a UserProfileConfig-like JSON for consumers
         let json = serde_json::json!({
@@ -441,12 +448,18 @@ impl SessionService {
     /// living-room TV). Drives the tray's `automation_fired`
     /// notification.
     ///
-    /// Both `event_kind` and `action_kind` are **stable snake_case
+    /// `event_kind` and `action_kind` are **stable snake_case
     /// identifiers** intended as gettext lookup keys
     /// (`automation.event.session_locked`,
     /// `automation.action.screen_off`) — NOT translated strings.
     /// They come from [`tisvlay_session::session_monitor::SessionEvent::fmt`]
     /// and [`tisvlay_core::SessionAction::fmt`] respectively.
+    ///
+    /// `profile_kind` is the literal string `"user"` for this signal
+    /// (the daemon's `Manager1.AutomationFired` sibling carries
+    /// `"system"`). `profile_uuid` is the UUID of the profile whose
+    /// rule resolved to the fired action — lets the tray name the
+    /// profile in the notification body without a re-resolve.
     ///
     /// Deliberate exception to the project's payload-less
     /// `StateEvent` convention: this is an ephemeral *event*, not a
@@ -458,6 +471,8 @@ impl SessionService {
         tv_id: &str,
         event_kind: &str,
         action_kind: &str,
+        profile_kind: &str,
+        profile_uuid: &str,
     ) -> zbus::Result<()>;
 
     /// Reload user configuration from disk.

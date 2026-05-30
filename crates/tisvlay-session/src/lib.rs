@@ -34,8 +34,12 @@ use uuid::Uuid;
 /// Session state: resolved profiles per TV, kept in sync with config reloads.
 #[derive(Debug)]
 pub struct SessionState {
-    /// Resolved user profiles per TV ID.
-    pub profiles: HashMap<String, ResolvedUserProfile>,
+    /// Resolved user profile + its source UUID, per TV ID. The UUID is
+    /// the profile this TV's actions resolve through (either the
+    /// per-TV assignment or `DEFAULT_USER_PROFILE_UUID` on fall-back)
+    /// — carried alongside the resolved body so `AutomationFired`
+    /// signals can name the profile without a re-resolve.
+    pub profiles: HashMap<String, (ResolvedUserProfile, Uuid)>,
     /// User config (used by Session D-Bus interface for profile management).
     pub user_config: UserConfig,
     /// Admin baseline for user profiles (from the daemon).
@@ -146,13 +150,14 @@ impl SessionState {
             let tv_id = &tv_info.uuid;
 
             let resolved = user_config.resolve_user_profile(tv_id, &admin_user_default);
+            let profile_uuid = user_config.get_tv_user_profile(tv_id);
             debug!(
                 tv_id = %tv_id,
-                profile = %user_config.get_tv_user_profile(tv_id),
+                profile = %profile_uuid,
                 idle_timeout = resolved.idle_timeout_seconds,
                 "Resolved user profile"
             );
-            profiles.insert(tv_id.clone(), resolved);
+            profiles.insert(tv_id.clone(), (resolved, profile_uuid));
         }
 
         info!(tvs = tv_ids.len(), "Session state loaded");
@@ -179,7 +184,7 @@ impl SessionState {
     pub fn effective_idle_timeout(&self) -> u64 {
         self.profiles
             .values()
-            .map(|p| p.idle_timeout_seconds)
+            .map(|(p, _)| p.idle_timeout_seconds)
             .filter(|&t| t > 0)
             .min()
             .unwrap_or(0)
@@ -325,23 +330,26 @@ pub async fn event_handler(
             }
         };
 
-        // Get TV actions from resolved profiles, filtered to currently managed TVs
-        let tv_actions: Vec<(String, SessionAction)> = {
+        // Get TV actions from resolved profiles, filtered to currently
+        // managed TVs. The tuple also carries the profile UUID the
+        // action resolves through, so `AutomationFired` emits can name
+        // the profile in their payload without a re-fetch.
+        let tv_actions: Vec<(String, SessionAction, Uuid)> = {
             let s = state.read().await;
             s.tv_ids
                 .iter()
                 .filter(|tv_id| automated_ids.contains(*tv_id))
                 .filter_map(|tv_id| {
-                    let profile = s.profiles.get(tv_id)?;
+                    let (profile, profile_uuid) = s.profiles.get(tv_id)?;
                     let action = get_action_for_event(&event, profile);
-                    Some((tv_id.clone(), action))
+                    Some((tv_id.clone(), action, *profile_uuid))
                 })
                 .collect()
         };
 
         // Execute action for each TV
         let mut success_count = 0;
-        for (tv_id, action) in tv_actions {
+        for (tv_id, action, profile_uuid) in tv_actions {
             if action == SessionAction::None {
                 debug!(tv_id = %tv_id, "Action is None, skipping");
                 continue;
@@ -353,7 +361,7 @@ pub async fn event_handler(
             } else {
                 success_count += 1;
                 if let Some(ref conn) = session_conn {
-                    emit_automation_fired(conn, &tv_id, &event, action).await;
+                    emit_automation_fired(conn, &tv_id, &event, action, profile_uuid).await;
                 }
             }
         }
@@ -366,21 +374,23 @@ pub async fn event_handler(
     info!("Event handler stopped");
 }
 
-/// Fire `Session1.AutomationFired(tv_id, event_kind, action_kind)`
-/// on the session bus. Emission failures log and drop — the
-/// per-TV action already succeeded, the notification is a
-/// nice-to-have. Routed via the object server's typed signal
-/// emitter so the wire shape stays in sync with the
+/// Fire `Session1.AutomationFired(tv_id, event_kind, action_kind,
+/// profile_kind, profile_uuid)` on the session bus. Emission failures
+/// log and drop — the per-TV action already succeeded, the
+/// notification is a nice-to-have. Routed via the object server's
+/// typed signal emitter so the wire shape stays in sync with the
 /// `#[zbus(signal)]` declaration on `SessionService`.
 async fn emit_automation_fired(
     conn: &zbus::Connection,
     tv_id: &str,
     event: &session_monitor::SessionEvent,
     action: SessionAction,
+    profile_uuid: Uuid,
 ) {
     use crate::session_dbus::{SESSION_PATH, SessionService};
     let event_kind = event.to_string();
     let action_kind = action.to_string();
+    let profile_uuid_str = profile_uuid.to_string();
     let iface_ref = match conn
         .object_server()
         .interface::<_, SessionService>(SESSION_PATH)
@@ -397,6 +407,8 @@ async fn emit_automation_fired(
         tv_id,
         &event_kind,
         &action_kind,
+        "user",
+        &profile_uuid_str,
     )
     .await
     {
@@ -818,7 +830,8 @@ pub async fn update_user_profile(
     let tv_ids: Vec<String> = s.tv_ids.clone();
     for tv_id in &tv_ids {
         let resolved = user_config_snapshot.resolve_user_profile(tv_id, &admin_default);
-        s.profiles.insert(tv_id.clone(), resolved);
+        let profile_uuid = user_config_snapshot.get_tv_user_profile(tv_id);
+        s.profiles.insert(tv_id.clone(), (resolved, profile_uuid));
     }
 
     info!(profile_uuid = %uuid, name = %trimmed, "User profile updated");

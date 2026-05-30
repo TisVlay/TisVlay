@@ -526,17 +526,32 @@ async fn watch_state(
                 *session.write().await = None;
                 trigger_refresh();
             }
-            StateEvent::SessionAutomationFired {
+            StateEvent::AutomationFired {
+                profile_kind,
                 tv_id,
                 event_kind,
                 action_kind,
+                profile_uuid,
             } => {
                 let daemon = daemon.clone();
+                let session = session.clone();
                 let notifier = notifier.clone();
                 tokio::spawn(async move {
                     let tv_name = automation::resolve_tv_name(&daemon, &tv_id).await;
-                    let (summary, body) =
-                        automation::format_copy(&tv_name, &event_kind, &action_kind);
+                    let profile_name = automation::resolve_profile_name(
+                        &daemon,
+                        &session,
+                        &profile_kind,
+                        &profile_uuid,
+                    )
+                    .await;
+                    let (summary, body) = automation::format_copy(
+                        &tv_name,
+                        &event_kind,
+                        &action_kind,
+                        &profile_kind,
+                        &profile_name,
+                    );
                     notifier
                         .notify(
                             NotificationCategory::AutomationFired,

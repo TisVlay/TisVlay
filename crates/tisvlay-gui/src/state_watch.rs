@@ -368,7 +368,7 @@ async fn watch_state(
                 // their new bindings on the next render.
                 refresh_tray_notifications(&tray, &app_weak).await;
             }
-            StateEvent::SessionAutomationFired { .. } => {
+            StateEvent::AutomationFired { .. } => {
                 // Tray surfaces this as a desktop notification; the
                 // GUI doesn't render automation history, so nothing
                 // to do.
