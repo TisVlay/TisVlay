@@ -2382,16 +2382,6 @@ impl TrayClient {
         Ok(Self { proxy })
     }
 
-    /// Create a client from an existing D-Bus connection. Mirror of
-    /// [`SessionClient::from_connection`] — used by tests pointing at
-    /// a private `dbus-daemon`.
-    pub async fn from_connection(connection: zbus::Connection) -> Result<Self> {
-        let proxy = TisvlayTrayProxy::new(&connection)
-            .await
-            .context("Failed to create tray proxy")?;
-        Ok(Self { proxy })
-    }
-
     /// Check if the tray service is registered on the user bus.
     /// Probes the `Version` const property (cheapest non-failing
     /// call) and treats any error as offline.
@@ -2438,28 +2428,12 @@ impl TrayClient {
             .context("Failed to update tray notification settings")
     }
 
-    /// Re-read `tray.toml` from disk; the tray emits
-    /// `PropertiesChanged` if anything changed.
-    pub async fn reload_config(&self) -> Result<()> {
-        self.proxy
-            .reload_config()
-            .await
-            .context("Failed to reload tray configuration")
-    }
-
     /// Fire a single test notification (bypasses the category gate).
     pub async fn send_test_notification(&self) -> Result<()> {
         self.proxy
             .send_test_notification()
             .await
             .context("Failed to send test notification")
-    }
-
-    /// Access the underlying D-Bus connection. Useful for tests and
-    /// for setting up a `PropertiesChanged` subscription via the
-    /// standard `org.freedesktop.DBus.Properties` proxy.
-    pub fn connection(&self) -> &zbus::Connection {
-        self.proxy.inner().connection()
     }
 }
 
