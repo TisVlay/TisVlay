@@ -64,15 +64,11 @@ impl Default for NotificationSettings {
 /// [`NotificationSettings`] in declaration order. The
 /// `NotificationCategory` enum on the tray's emit side uses the same
 /// numbering; the bitset is the source of truth.
-///
-/// Bit position 4 is intentionally reserved as a gap. New fields take
-/// bit 6+ so a persisted bitset on disk can't silently re-mean an
-/// unused position.
 const BIT_TV_CONNECTION: u8 = 1 << 0;
 const BIT_TV_PAIRING: u8 = 1 << 1;
 const BIT_TV_WAKE: u8 = 1 << 2;
 const BIT_AUTOMATION_FIRED: u8 = 1 << 3;
-const BIT_DAEMON_OFFLINE: u8 = 1 << 5;
+const BIT_DAEMON_OFFLINE: u8 = 1 << 4;
 
 impl NotificationSettings {
     /// Pack the enabled categories into a `u8` bitset for the
@@ -267,7 +263,7 @@ mod tests {
             daemon_offline: true,
             ..all_off
         };
-        assert_eq!(only_last.enabled_bitset(), 1 << 5);
+        assert_eq!(only_last.enabled_bitset(), 1 << 4);
     }
 
     #[test]

@@ -134,7 +134,7 @@ Stable snake_case keys (these are the field names in `NotificationSettingsBody`)
 | `automation_fired` | session action ran on a TV | **off** | `Low` | new `Session1.AutomationFired` signal |
 | `daemon_offline` | `StateEvent::DaemonDisappeared` | **on** | `Critical`, hint `resident` (sticky) | existing tray arm |
 
-> **Retired category — `config_reloaded`.** A `config_reloaded` toast was planned and shipped through commits `351a52e` / `3af0952`, then removed: almost every `ReloadConfig` is self-initiated (tray menu's Reload item, or the user editing the config file), so the toast was telling the user something they already knew. The implementation surface was also disproportionate — a permit-drain debouncer, dual Manager1/Session1 signal coordination, a fully-wired notification-category bit. Net signal-to-noise didn't justify the maintenance tax for a default-off feature. Bit position 4 in `NotificationCategory` / `NotificationSettings` is intentionally left as a gap so any persisted notification-categories bitmask in user config doesn't silently re-mean the bit; future categories take bit 6+.
+> **Retired category — `config_reloaded`.** A `config_reloaded` toast was planned and shipped through commits `351a52e` / `3af0952`, then removed: almost every `ReloadConfig` is self-initiated (tray menu's Reload item, or the user editing the config file), so the toast was telling the user something they already knew. The implementation surface was also disproportionate — a permit-drain debouncer, dual Manager1/Session1 signal coordination, a fully-wired notification-category bit. Net signal-to-noise didn't justify the maintenance tax for a default-off feature.
 
 Urgency rationale: `Critical` is reserved for the single event that genuinely needs user acknowledgment (`daemon_offline`). Pairing and wake are usually user-initiated foreground operations — `Normal` for failures gives them banner visibility without escalating to a sticky toast. `tv_connection` stays `Low` for both directions because the daemon auto-reconnects; sustained-disconnect detection (>30s) is a v2 idea that would need debouncing in the diff helper.
 
@@ -292,8 +292,7 @@ pub(crate) enum NotificationCategory {
     TvPairing         = 1,
     TvWake            = 2,
     AutomationFired   = 3,
-    // Bit 4 reserved (formerly ConfigReloaded — retired)
-    DaemonOffline     = 5,
+    DaemonOffline     = 4,
 }
 ```
 

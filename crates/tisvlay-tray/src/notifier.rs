@@ -29,10 +29,6 @@ const FAILURE_BACKOFF: Duration = Duration::from_secs(5);
 /// Per-category bit positions. Field order mirrors
 /// [`crate::config::NotificationSettings`] exactly — keep them in
 /// sync if either side grows a new category.
-///
-/// Bit position 4 is intentionally reserved as a gap. New categories
-/// take bit 6+ so any persisted notification-categories bitmask in
-/// user config can't silently re-mean an unused position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum NotificationCategory {
@@ -40,7 +36,7 @@ pub(crate) enum NotificationCategory {
     TvPairing = 1,
     TvWake = 2,
     AutomationFired = 3,
-    DaemonOffline = 5,
+    DaemonOffline = 4,
 }
 
 impl NotificationCategory {
