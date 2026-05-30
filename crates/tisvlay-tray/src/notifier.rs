@@ -5,12 +5,15 @@
 //! view with a single atomic store, and emit-site checks are a
 //! lock-free `Acquire` load + bit test (no `RwLock` on the hot path).
 //!
-//! On the emit side, a `last_failure_at` mutex stamps the time of
-//! every failed `show_async`. Subsequent calls inside the
-//! `FAILURE_BACKOFF` window short-circuit silently, protecting
-//! against flap-storms at early login when the freedesktop
-//! notification daemon hasn't claimed `org.freedesktop.Notifications`
-//! yet.
+//! [`Notifier::notify`] does the category gate + backoff check
+//! synchronously and then spawns the `show_async` bus round-trip
+//! detached, so callers never block on the notification daemon — a
+//! wedged or absent `org.freedesktop.Notifications` owner can stall a
+//! single `show_async` for the full D-Bus timeout. A `last_failure_at`
+//! mutex stamps the time of every failed emit; subsequent `notify`
+//! calls inside the `FAILURE_BACKOFF` window short-circuit silently,
+//! protecting against flap-storms at early login when the notification
+//! daemon hasn't claimed its name yet.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -18,6 +21,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use notify_rust::{Notification, Urgency};
+use tisvlay_core::NotificationCategory;
 use tracing::{debug, warn};
 
 /// Drop notifications for this long after a failed `show_async` before
@@ -25,24 +29,6 @@ use tracing::{debug, warn};
 /// without touching the bus — protects against a flap-storm at early
 /// login when the freedesktop notification daemon isn't ready yet.
 const FAILURE_BACKOFF: Duration = Duration::from_secs(5);
-
-/// Per-category bit positions. Field order mirrors
-/// [`crate::config::NotificationSettings`] exactly — keep them in
-/// sync if either side grows a new category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum NotificationCategory {
-    TvConnection = 0,
-    TvPairing = 1,
-    TvWake = 2,
-    DaemonOffline = 3,
-}
-
-impl NotificationCategory {
-    fn bit(self) -> u8 {
-        1u8 << (self as u8)
-    }
-}
 
 /// Static appname for the freedesktop spec — DEs typically group
 /// notification history under this label. Same string the tray's
@@ -76,9 +62,18 @@ impl Notifier {
     }
 
     /// Emit a category-gated notification. No-op if the category's
-    /// bit isn't set in [`Self::enabled_bits`] or if we're inside
-    /// the failure-backoff window.
-    pub(crate) async fn notify(
+    /// bit isn't set in [`Self::enabled_bits`] or if we're inside the
+    /// failure-backoff window.
+    ///
+    /// The category gate + backoff check run synchronously (a lock-free
+    /// atomic load plus a sub-microsecond mutex peek), then the actual
+    /// `show_async` bus round-trip is spawned detached. Callers — the
+    /// refresh-event loop, the per-TV power-cycle watcher, the pairing
+    /// watcher — never block on the notification daemon: a wedged or
+    /// absent `org.freedesktop.Notifications` owner can stall a single
+    /// `show_async` for the full D-Bus timeout (~25 s), and that delay
+    /// must not back up state processing.
+    pub(crate) fn notify(
         &self,
         category: NotificationCategory,
         summary: &str,
@@ -94,19 +89,16 @@ impl Notifier {
             debug!(?category, "notification suppressed (failure backoff)");
             return;
         }
-        self.emit(summary, body, urgency).await;
+        self.spawn_emit(summary.to_string(), body.to_string(), urgency);
     }
 
-    /// Fire a single test notification, bypassing the category gate
-    /// (but still respecting the failure backoff — a user clicking
-    /// the test button doesn't override a known-broken stack).
-    /// Backs `Tray1.SendTestNotification`.
-    pub(crate) async fn notify_test(&self, summary: &str, body: &str) {
-        if self.in_backoff() {
-            debug!("test notification suppressed (failure backoff)");
-            return;
-        }
-        self.emit(summary, body, Urgency::Normal).await;
+    /// Fire a single test notification, bypassing both the category
+    /// gate *and* the failure backoff. Backs `Tray1.SendTestNotification`,
+    /// whose entire purpose is verifying the user's notification stack
+    /// on demand — honoring the backoff here would let a transient blip
+    /// silently swallow the diagnostic the user explicitly asked for.
+    pub(crate) fn notify_test(&self, summary: &str, body: &str) {
+        self.spawn_emit(summary.to_string(), body.to_string(), Urgency::Normal);
     }
 
     /// True if we last failed within [`FAILURE_BACKOFF`]. The mutex
@@ -118,6 +110,17 @@ impl Notifier {
             Some(t) => t.elapsed() < FAILURE_BACKOFF,
             None => false,
         }
+    }
+
+    /// Spawn the bus round-trip detached so the caller returns
+    /// immediately. The failure-timestamp bookkeeping lives on the
+    /// spawned task; the next `notify` call reads it through
+    /// [`Self::in_backoff`].
+    fn spawn_emit(&self, summary: String, body: String, urgency: Urgency) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            this.emit(&summary, &body, urgency).await;
+        });
     }
 
     /// Common emit path. On `Err`, stamp the failure timestamp so the

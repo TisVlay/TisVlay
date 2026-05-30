@@ -24,12 +24,12 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use gettextrs::gettext;
 use notify_rust::Urgency;
-use tisvlay_core::{DaemonClient, PowerCyclePhase};
+use tisvlay_core::{DaemonClient, NotificationCategory, PowerCyclePhase};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::notifier::{NotificationCategory, Notifier};
+use crate::notifier::Notifier;
 
 #[derive(Clone)]
 pub(crate) struct PowerCycleManager {
@@ -97,20 +97,29 @@ impl PowerCycleManager {
     /// each stream is bound to the daemon's connection and would
     /// never yield again anyway, but aborting cleans up the task
     /// slot eagerly.
-    pub(crate) fn clear(&self) {
-        // Block-on the lock by spawning a task; clear is fire-and-forget
-        // and the lock is held briefly. Doing this inline would require
-        // an async context the caller may not have (e.g. invoked from a
-        // sync `match` arm).
-        let tasks = self.tasks.clone();
-        tokio::spawn(async move {
-            let mut guard = tasks.lock().await;
-            for (_uuid, handle) in guard.drain() {
-                handle.abort();
-            }
-        });
+    ///
+    /// Awaited (not fire-and-forget) so the drain completes before the
+    /// caller proceeds. The `watch_state` event loop is single-threaded
+    /// over events: awaiting here guarantees the map is empty before the
+    /// loop picks up a subsequent `DaemonAppeared` and re-syncs. A
+    /// fire-and-forget abort could race that re-sync — the re-sync grabs
+    /// the lock first, sees the stale handles, keeps them, and then the
+    /// abort task drains them, leaving every TV with no subscription.
+    pub(crate) async fn clear(&self) {
+        let mut guard = self.tasks.lock().await;
+        for (_uuid, handle) in guard.drain() {
+            handle.abort();
+        }
     }
 }
+
+/// How long after a `WolSent` a terminal phase still counts as that
+/// wake's outcome. Generous enough to cover a slow LG wake (the
+/// firmware-quirks doc notes waits up to ~30 s), bounded so an
+/// abandoned cycle — `WolSent` with no terminal phase ever — doesn't
+/// leave the watcher primed to misattribute the *next* cycle's
+/// `Connected`/`Failed` as a wake result.
+const WOL_WAKE_WINDOW: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// Per-TV stream reader. Stays alive for the TV's entire registration
 /// lifetime; exits when the stream closes (daemon disconnected) or
@@ -146,39 +155,43 @@ async fn watch_one_tv(tv_id: String, daemon: Arc<DaemonClient>, notifier: Notifi
         .and_then(|tvs| tvs.into_iter().find(|t| t.uuid == tv_id).map(|t| t.name))
         .unwrap_or_else(|| tv_id.clone());
 
-    let mut wol_in_flight = false;
+    // Timestamp of the last `WolSent`, or `None` once consumed/expired.
+    // A terminal phase only counts as a wake outcome if it lands within
+    // `WOL_WAKE_WINDOW` of the `WolSent` — an abandoned cycle (no
+    // terminal phase) lets the stamp go stale instead of priming the
+    // next cycle's terminal phase to misfire.
+    let mut wol_sent_at: Option<std::time::Instant> = None;
     while let Some(phase) = stream.next().await {
+        // A `WolSent` older than the window is treated as abandoned:
+        // its outcome is no longer "in flight," so a subsequent
+        // terminal phase is a normal reconnect, not this wake's result.
+        let wol_in_flight = wol_sent_at.is_some_and(|t| t.elapsed() < WOL_WAKE_WINDOW);
         match phase {
             PowerCyclePhase::WolSent => {
-                wol_in_flight = true;
+                wol_sent_at = Some(std::time::Instant::now());
             }
             PowerCyclePhase::Connected if wol_in_flight => {
-                wol_in_flight = false;
+                wol_sent_at = None;
                 let summary = gettext("{0} is awake").replace("{0}", &tv_name);
-                notifier
-                    .notify(NotificationCategory::TvWake, &summary, "", Urgency::Low)
-                    .await;
+                notifier.notify(NotificationCategory::TvWake, &summary, "", Urgency::Low);
             }
             PowerCyclePhase::Failed if wol_in_flight => {
-                wol_in_flight = false;
+                wol_sent_at = None;
                 let summary = gettext("Couldn't wake {0}").replace("{0}", &tv_name);
                 let body = gettext("Check the TV's power and Wake-on-LAN setting.");
-                notifier
-                    .notify(
-                        NotificationCategory::TvWake,
-                        &summary,
-                        &body,
-                        Urgency::Normal,
-                    )
-                    .await;
+                notifier.notify(
+                    NotificationCategory::TvWake,
+                    &summary,
+                    &body,
+                    Urgency::Normal,
+                );
             }
             // Non-terminal phases mid-cycle, or terminal phases
-            // without a preceding WolSent — covered elsewhere or
-            // not interesting. Reset `wol_in_flight` on terminal
-            // either way so a subsequent reconnect doesn't
-            // misattribute itself.
+            // without a live preceding WolSent — covered elsewhere or
+            // not interesting. Clear the stamp on terminal either way
+            // so a subsequent reconnect doesn't misattribute itself.
             PowerCyclePhase::Connected | PowerCyclePhase::Failed => {
-                wol_in_flight = false;
+                wol_sent_at = None;
             }
             _ => {}
         }

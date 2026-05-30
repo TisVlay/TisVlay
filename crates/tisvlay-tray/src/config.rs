@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tisvlay_core::NotificationSettingsBody;
+use tisvlay_core::{NotificationCategory, NotificationSettingsBody};
 
 /// On-disk container. Future tray-only sections (e.g. window state
 /// persistence) slot in beside `notifications` without touching the
@@ -26,10 +26,12 @@ pub(crate) struct TrayConfig {
     pub(crate) notifications: NotificationSettings,
 }
 
-/// Per-category enable bits for desktop notifications. Field order is
-/// load-bearing: [`NotificationSettings::enabled_bitset`] packs into a
-/// `u8` using the declaration order, and the same order is the bit
-/// position in the [`NotificationCategory`] enum the notifier consumes.
+/// Per-category enable flags for desktop notifications, persisted as
+/// named bools in `tray.toml` (hand-editable; that's the whole point
+/// of `Tray1.ReloadConfig`). The runtime `u8` bitset and the
+/// category↔field mapping both flow through
+/// [`tisvlay_core::NotificationCategory`] — the single source of
+/// truth — so this struct only declares the storage.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct NotificationSettings {
     /// TV `connected` transitions true ↔ false. Default on.
@@ -57,35 +59,39 @@ impl Default for NotificationSettings {
     }
 }
 
-/// Each bit position corresponds to one field in
-/// [`NotificationSettings`] in declaration order. The
-/// `NotificationCategory` enum on the tray's emit side uses the same
-/// numbering; the bitset is the source of truth.
-const BIT_TV_CONNECTION: u8 = 1 << 0;
-const BIT_TV_PAIRING: u8 = 1 << 1;
-const BIT_TV_WAKE: u8 = 1 << 2;
-const BIT_DAEMON_OFFLINE: u8 = 1 << 3;
-
 impl NotificationSettings {
+    /// Read one category's flag. The inverse of [`Self::set`]; both
+    /// route through the same `match` so the storage stays in lockstep
+    /// with [`NotificationCategory`].
+    fn get(&self, category: NotificationCategory) -> bool {
+        match category {
+            NotificationCategory::TvConnection => self.tv_connection,
+            NotificationCategory::TvPairing => self.tv_pairing,
+            NotificationCategory::TvWake => self.tv_wake,
+            NotificationCategory::DaemonOffline => self.daemon_offline,
+        }
+    }
+
+    /// Set one category's flag.
+    fn set(&mut self, category: NotificationCategory, value: bool) {
+        match category {
+            NotificationCategory::TvConnection => self.tv_connection = value,
+            NotificationCategory::TvPairing => self.tv_pairing = value,
+            NotificationCategory::TvWake => self.tv_wake = value,
+            NotificationCategory::DaemonOffline => self.daemon_offline = value,
+        }
+    }
+
     /// Pack the enabled categories into a `u8` bitset for the
     /// `Notifier` hot path. A single `Ordering::Acquire` load + bit
     /// test on the emit path means no `RwLock` traffic per
-    /// notification.
+    /// notification. Bit positions come from
+    /// [`NotificationCategory::bit`].
     pub(crate) fn enabled_bitset(&self) -> u8 {
-        let mut bits = 0u8;
-        if self.tv_connection {
-            bits |= BIT_TV_CONNECTION;
-        }
-        if self.tv_pairing {
-            bits |= BIT_TV_PAIRING;
-        }
-        if self.tv_wake {
-            bits |= BIT_TV_WAKE;
-        }
-        if self.daemon_offline {
-            bits |= BIT_DAEMON_OFFLINE;
-        }
-        bits
+        NotificationCategory::ALL
+            .into_iter()
+            .filter(|&c| self.get(c))
+            .fold(0u8, |bits, c| bits | c.bit())
     }
 
     /// Wire-body snapshot for the `Tray1.NotificationSettings`
@@ -93,43 +99,39 @@ impl NotificationSettings {
     /// clients can distinguish "category not present" (future
     /// version skew) from "this client's view is partial."
     pub(crate) fn to_body(self) -> NotificationSettingsBody {
-        NotificationSettingsBody {
-            tv_connection: Some(self.tv_connection),
-            tv_pairing: Some(self.tv_pairing),
-            tv_wake: Some(self.tv_wake),
-            daemon_offline: Some(self.daemon_offline),
+        let mut body = NotificationSettingsBody::default();
+        for cat in NotificationCategory::ALL {
+            cat.set(&mut body, self.get(cat));
         }
+        body
     }
 
     /// Build settings from a fully-populated body (every field
-    /// `Some`). Returns `None` if any field is absent — callers who
+    /// `Some`). Returns `None` if any category is absent — callers who
     /// hold a partial body should use [`Self::apply`] against a
     /// pre-existing baseline instead.
     pub(crate) fn from_body(body: &NotificationSettingsBody) -> Option<Self> {
-        Some(Self {
-            tv_connection: body.tv_connection?,
-            tv_pairing: body.tv_pairing?,
-            tv_wake: body.tv_wake?,
-            daemon_offline: body.daemon_offline?,
-        })
+        let mut settings = Self {
+            tv_connection: false,
+            tv_pairing: false,
+            tv_wake: false,
+            daemon_offline: false,
+        };
+        for cat in NotificationCategory::ALL {
+            settings.set(cat, cat.get(body)?);
+        }
+        Some(settings)
     }
 
-    /// Partial-update from a wire body — only `Some(_)` fields are
+    /// Partial-update from a wire body — only `Some(_)` categories are
     /// applied; `None` leaves the existing value intact. Used by
     /// `Tray1.UpdateNotificationSettings` so callers can flip one
     /// switch without re-stating every other.
     pub(crate) fn apply(&mut self, body: &NotificationSettingsBody) {
-        if let Some(v) = body.tv_connection {
-            self.tv_connection = v;
-        }
-        if let Some(v) = body.tv_pairing {
-            self.tv_pairing = v;
-        }
-        if let Some(v) = body.tv_wake {
-            self.tv_wake = v;
-        }
-        if let Some(v) = body.daemon_offline {
-            self.daemon_offline = v;
+        for cat in NotificationCategory::ALL {
+            if let Some(v) = cat.get(body) {
+                self.set(cat, v);
+            }
         }
     }
 }

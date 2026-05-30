@@ -84,7 +84,7 @@ use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
     Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
-    NotificationSettingsBody, ReconcilerMap, SessionClient, TrayClient,
+    NotificationCategory, NotificationSettingsBody, ReconcilerMap, SessionClient, TrayClient,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -2196,12 +2196,9 @@ fn register_callbacks(
 /// Rust sync we'd want to log rather than crash on.
 fn build_notification_update(category: &str, enabled: bool) -> NotificationSettingsBody {
     let mut body = NotificationSettingsBody::default();
-    match category {
-        "tv_connection" => body.tv_connection = Some(enabled),
-        "tv_pairing" => body.tv_pairing = Some(enabled),
-        "tv_wake" => body.tv_wake = Some(enabled),
-        "daemon_offline" => body.daemon_offline = Some(enabled),
-        other => warn!(category = %other, "Unknown notification category from Slint"),
+    match NotificationCategory::from_key(category) {
+        Some(cat) => cat.set(&mut body, enabled),
+        None => warn!(category = %category, "Unknown notification category from Slint"),
     }
     body
 }

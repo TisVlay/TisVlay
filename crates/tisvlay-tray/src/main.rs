@@ -28,11 +28,12 @@ use ksni::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use notifier::{NotificationCategory, Notifier};
+use notifier::Notifier;
 use notify_rust::Urgency;
 use state::{diff_connection_events, fetch_all_state};
 use tisvlay_core::{
-    Coalescer, DaemonClient, ReconcilerMap, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
+    Coalescer, DaemonClient, NotificationCategory, ReconcilerMap, RefreshTrigger, SessionClient,
+    StateEvent, StateWatcher,
 };
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
@@ -179,15 +180,25 @@ async fn main() -> Result<()> {
 
     // Register `org.tisvlay.Tray` on the user bus. Held in a
     // `_dbus_keepalive` binding for the lifetime of `main`; dropping
-    // it tears the registration down.
-    let _dbus_keepalive = dbus::register(
+    // it tears the registration down. `None` means another
+    // tisvlay-tray already owns the name — exit before spawning a
+    // duplicate icon rather than running a second service whose
+    // notification settings the GUI would never see.
+    let _dbus_keepalive = match dbus::register(
         tray_config.clone(),
         enabled_bits.clone(),
         tray_config_path,
         notifier.clone(),
     )
     .await
-    .context(gettext("Failed to register tray D-Bus interface"))?;
+    .context(gettext("Failed to register tray D-Bus interface"))?
+    {
+        Some(connection) => connection,
+        None => {
+            info!("tisvlay-tray already running; exiting");
+            return Ok(());
+        }
+    };
 
     // Per-(tv_id) reconcilers for scroll-driven properties. Shared
     // between the watch_state refresh path and the scroll apply
@@ -372,19 +383,25 @@ async fn refresh_state(
                         Urgency::Low,
                     )
                 };
-                notifier
-                    .notify(NotificationCategory::TvConnection, &summary, &body, urgency)
-                    .await;
+                notifier.notify(NotificationCategory::TvConnection, &summary, &body, urgency);
             }
         }
         Err(e) => {
             debug!(error = %e, "Refresh: state fetch failed");
+            // A transient fetch failure (daemon busy, one-off timeout)
+            // is "state unknown," not "every TV disconnected." Only
+            // flag the daemon unavailable — which makes the menu show
+            // the offline banner and skip per-TV rendering entirely,
+            // so the cached `connected` flags are never read here.
+            // Leave `t.tvs` untouched so the next successful refresh
+            // diffs against the real prior state instead of fabricating
+            // a false→true "Connected" storm for TVs that never
+            // dropped. A genuine daemon exit arrives separately as
+            // `StateEvent::DaemonDisappeared`, which clears `t.tvs` and
+            // fires the single `DaemonOffline` notification.
             handle
                 .update(|t| {
                     t.daemon_available = false;
-                    for tv in &mut t.tvs {
-                        tv.connected = false;
-                    }
                 })
                 .await;
         }
@@ -492,20 +509,17 @@ async fn watch_state(
                 trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
-                let notifier = notifier.clone();
-                tokio::spawn(async move {
-                    notifier
-                        .notify(
-                            NotificationCategory::DaemonOffline,
-                            &gettext("TisVlay daemon stopped"),
-                            &gettext("TV controls are unavailable until the daemon restarts."),
-                            Urgency::Critical,
-                        )
-                        .await;
-                });
+                notifier.notify(
+                    NotificationCategory::DaemonOffline,
+                    &gettext("TisVlay daemon stopped"),
+                    &gettext("TV controls are unavailable until the daemon restarts."),
+                    Urgency::Critical,
+                );
                 // Drop all per-TV power-cycle subscriptions — they
                 // were bound to the now-departed daemon connection.
-                power_cycle_state.clear();
+                // Awaited so the abort completes before the loop can
+                // pick up a subsequent `DaemonAppeared` re-sync.
+                power_cycle_state.clear().await;
                 handle
                     .update(|tray: &mut TisvlayTray| {
                         tray.daemon_available = false;

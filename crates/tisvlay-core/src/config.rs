@@ -667,11 +667,108 @@ impl NotificationSettingsBody {
     /// represents the partial-update neutral for
     /// `Tray1.UpdateNotificationSettings`.
     pub fn defaults() -> Self {
-        Self {
-            tv_connection: Some(true),
-            tv_pairing: Some(true),
-            tv_wake: Some(true),
-            daemon_offline: Some(true),
+        let mut body = Self::default();
+        for cat in NotificationCategory::ALL {
+            cat.set(&mut body, cat.default_enabled());
+        }
+        body
+    }
+}
+
+/// The desktop-notification categories.
+///
+/// **Single source of truth** for the category vocabulary shared
+/// across three surfaces: the tray's emit gate + on-disk `TrayConfig`,
+/// the GUI's settings pane, and the `Tray1` D-Bus wire body. Lives in
+/// core (not the tray) because the GUI consumes it too and only core
+/// is on both their dependency paths — same rationale as
+/// [`NotificationSettingsBody`].
+///
+/// The `#[repr(u8)]` discriminant *is* the bit position in the
+/// runtime `u8` enable-bitset ([`bit`](Self::bit)); [`ALL`](Self::ALL)
+/// lists every variant in that order. The [`key`](Self::key) /
+/// [`get`](Self::get) / [`set`](Self::set) accessors are exhaustive
+/// `match`es, so adding a variant without handling it everywhere is a
+/// compile error — there is no second hand-maintained bit-position
+/// table to drift against.
+#[cfg(feature = "dbus")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum NotificationCategory {
+    /// TV `connected` transitions true ↔ false.
+    TvConnection = 0,
+    /// Pairing terminal phase `complete` / `failed`.
+    TvPairing = 1,
+    /// `wol_sent` → `connected` / `failed` for a TV power cycle.
+    TvWake = 2,
+    /// Daemon disappeared from D-Bus.
+    DaemonOffline = 3,
+}
+
+#[cfg(feature = "dbus")]
+impl NotificationCategory {
+    /// Every category, in canonical (discriminant / bit-position)
+    /// order. Iterate this to walk all categories without open-coding
+    /// the field list at each call site.
+    pub const ALL: [Self; 4] = [
+        Self::TvConnection,
+        Self::TvPairing,
+        Self::TvWake,
+        Self::DaemonOffline,
+    ];
+
+    /// Bit position in the runtime `u8` enable-bitset, derived from the
+    /// `#[repr(u8)]` discriminant — the one and only bit-position
+    /// source.
+    pub const fn bit(self) -> u8 {
+        1u8 << (self as u8)
+    }
+
+    /// Stable snake_case wire identifier: the `Tray1` settings-pane
+    /// string key *and* the matching [`NotificationSettingsBody`]
+    /// field name. Used by [`from_key`](Self::from_key).
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::TvConnection => "tv_connection",
+            Self::TvPairing => "tv_pairing",
+            Self::TvWake => "tv_wake",
+            Self::DaemonOffline => "daemon_offline",
+        }
+    }
+
+    /// Parse a wire key back to a category. `None` for unrecognized
+    /// keys (version skew / typo) so callers can warn-and-ignore.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.key() == key)
+    }
+
+    /// Read this category's value out of a wire body.
+    pub fn get(self, body: &NotificationSettingsBody) -> Option<bool> {
+        match self {
+            Self::TvConnection => body.tv_connection,
+            Self::TvPairing => body.tv_pairing,
+            Self::TvWake => body.tv_wake,
+            Self::DaemonOffline => body.daemon_offline,
+        }
+    }
+
+    /// Set this category's value in a wire body.
+    pub fn set(self, body: &mut NotificationSettingsBody, value: bool) {
+        match self {
+            Self::TvConnection => body.tv_connection = Some(value),
+            Self::TvPairing => body.tv_pairing = Some(value),
+            Self::TvWake => body.tv_wake = Some(value),
+            Self::DaemonOffline => body.daemon_offline = Some(value),
+        }
+    }
+
+    /// Whether this category defaults on in a fresh config. Drives
+    /// [`NotificationSettingsBody::defaults`].
+    pub const fn default_enabled(self) -> bool {
+        // Every category is on by default today; kept as a per-variant
+        // match so a future opt-out category is a deliberate edit here.
+        match self {
+            Self::TvConnection | Self::TvPairing | Self::TvWake | Self::DaemonOffline => true,
         }
     }
 }

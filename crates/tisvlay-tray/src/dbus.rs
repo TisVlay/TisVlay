@@ -24,7 +24,9 @@ use anyhow::{Context, Result};
 use tisvlay_core::NotificationSettingsBody;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
+use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::interface;
+use zbus::names::WellKnownName;
 use zbus::object_server::SignalEmitter;
 
 use crate::config::TrayConfig;
@@ -196,41 +198,67 @@ impl TrayService {
         // ships when the GUI button is the source. Future tray-i18n
         // pass can re-route through `gettext` once `tisvlay-tray`'s
         // catalog gains the keys.
-        self.notifier
-            .notify_test(
-                "Test notification",
-                "TisVlay can reach your desktop's notification service.",
-            )
-            .await;
+        self.notifier.notify_test(
+            "Test notification",
+            "TisVlay can reach your desktop's notification service.",
+        );
         Ok(())
     }
 }
 
 /// Connect to the user bus, register `Tray1` at the canonical path,
-/// and request the well-known name. Returns the live `Connection`
-/// so the caller can keep it alive for the lifetime of the process
-/// — dropping it tears the registration down.
+/// and claim the well-known name with `DO_NOT_QUEUE` semantics.
+///
+/// Returns `Ok(Some(connection))` when this process won the name —
+/// the caller holds the connection for the process lifetime (dropping
+/// it tears the registration down). Returns `Ok(None)` when another
+/// `tisvlay-tray` already owns `org.tisvlay.Tray`: the caller should
+/// exit before spawning a second tray icon. Without the `DoNotQueue`
+/// guard, a second instance would silently *queue* for the name and
+/// serve its own `TrayService` with an independent `enabled_bits` /
+/// config — so GUI writes to whichever instance is primary would be
+/// invisible to the other.
+///
+/// The interface is served *before* the name is requested so a method
+/// call delivered the instant the name is claimed hits a ready
+/// handler (same ordering rationale as the GUI's `try_claim_and_serve`).
 pub(crate) async fn register(
     config: Arc<RwLock<TrayConfig>>,
     enabled_bits: Arc<AtomicU8>,
     config_path: PathBuf,
     notifier: Notifier,
-) -> Result<zbus::Connection> {
+) -> Result<Option<zbus::Connection>> {
     let service = TrayService::new(config, enabled_bits, config_path, notifier);
-    let connection = zbus::connection::Builder::session()
-        .context("Failed to connect to user D-Bus")?
-        .name(TRAY_BUS_NAME)
-        .context("Failed to claim D-Bus name")?
-        .serve_at(TRAY_OBJECT_PATH, service)
-        .context("Failed to serve Tray1 interface")?
-        .build()
+    let connection = zbus::Connection::session()
         .await
-        .context("Failed to register tray D-Bus connection")?;
+        .context("Failed to connect to user D-Bus")?;
+    connection
+        .object_server()
+        .at(TRAY_OBJECT_PATH, service)
+        .await
+        .context("Failed to serve Tray1 interface")?;
 
-    info!(
-        bus_name = TRAY_BUS_NAME,
-        path = TRAY_OBJECT_PATH,
-        "Tray D-Bus interface registered"
-    );
-    Ok(connection)
+    let name = WellKnownName::try_from(TRAY_BUS_NAME).expect("static bus name is well-formed");
+    let reply = connection
+        .request_name_with_flags(name, RequestNameFlags::DoNotQueue.into())
+        .await
+        .context("Failed to request org.tisvlay.Tray")?;
+
+    match reply {
+        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => {
+            info!(
+                bus_name = TRAY_BUS_NAME,
+                path = TRAY_OBJECT_PATH,
+                "Tray D-Bus interface registered"
+            );
+            Ok(Some(connection))
+        }
+        RequestNameReply::Exists | RequestNameReply::InQueue => {
+            info!(
+                bus_name = TRAY_BUS_NAME,
+                "Another tisvlay-tray instance owns the bus name; exiting"
+            );
+            Ok(None)
+        }
+    }
 }

@@ -12,10 +12,10 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use gettextrs::gettext;
 use notify_rust::Urgency;
-use tisvlay_core::DaemonClient;
+use tisvlay_core::{DaemonClient, NotificationCategory};
 use tracing::{debug, info, warn};
 
-use crate::notifier::{NotificationCategory, Notifier};
+use crate::notifier::Notifier;
 
 /// Reconnect backoff. The signal is daemon-emitted; if the daemon
 /// goes away the stream ends and we loop, sleeping briefly before
@@ -42,14 +42,12 @@ pub(crate) async fn watch_pairing_outcomes(daemon: Arc<DaemonClient>, notifier: 
                 "complete" => {
                     let tv_name = resolve_tv_name(&daemon, &tv_id).await;
                     let summary = gettext("Paired with {0}").replace("{0}", &tv_name);
-                    notifier
-                        .notify(
-                            NotificationCategory::TvPairing,
-                            &summary,
-                            &gettext("The TV is ready to use."),
-                            Urgency::Normal,
-                        )
-                        .await;
+                    notifier.notify(
+                        NotificationCategory::TvPairing,
+                        &summary,
+                        &gettext("The TV is ready to use."),
+                        Urgency::Normal,
+                    );
                 }
                 "failed" => {
                     let tv_name = resolve_tv_name(&daemon, &tv_id).await;
@@ -59,14 +57,12 @@ pub(crate) async fn watch_pairing_outcomes(daemon: Arc<DaemonClient>, notifier: 
                     // strings. Pass it through verbatim; full
                     // localization tracks the source-side gettext
                     // catalogs.
-                    notifier
-                        .notify(
-                            NotificationCategory::TvPairing,
-                            &summary,
-                            &message,
-                            Urgency::Normal,
-                        )
-                        .await;
+                    notifier.notify(
+                        NotificationCategory::TvPairing,
+                        &summary,
+                        &message,
+                        Urgency::Normal,
+                    );
                 }
                 _ => {}
             }

@@ -97,7 +97,9 @@ pub use config::{
     UserProfileConfig, UserSection, UserTvConfig, UserTvProfileAssignment, absolutize,
 };
 #[cfg(feature = "dbus")]
-pub use config::{NotificationSettingsBody, SystemProfileBody, UserProfileBody};
+pub use config::{
+    NotificationCategory, NotificationSettingsBody, SystemProfileBody, UserProfileBody,
+};
 
 // Profile-reference computation (used by daemon + clients)
 pub use profile_refs::{TvAssignment, references_of, user_references_of};
