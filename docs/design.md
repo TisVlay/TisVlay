@@ -339,6 +339,8 @@ Settings are mutable both via D-Bus (`UpdateNotificationSettings`) and via hand-
 
 `NotificationCategory` (in `tisvlay-core`) is the single source of truth for the category vocabulary: its `#[repr(u8)]` discriminant *is* the bit position, `ALL` lists every variant, and `key` / `from_key` / `get` / `set` are exhaustive matches, so adding a category is a compile error until every site handles it. On-disk `tray.toml` stays hand-editable named bools.
 
+The on-disk `NotificationSettings` (named `bool`s) and the wire `NotificationSettingsBody` (`Option<bool>`) are kept as **two distinct types on purpose** — not accidental duplication. The `Option` tri-state is load-bearing: it lets `UpdateNotificationSettings` be a partial patch ("change only `tv_wake`"), while the on-disk form wants concrete bools for a hand-editable file. Collapsing them would force one representation to carry semantics it doesn't want. (Reviewers periodically propose merging them; this is the standing answer.)
+
 **Correctness lessons** (each was a bug fixed during this work — kept here so the next maintainer doesn't reintroduce them):
 
 - **The client proxy is uncached (`CacheProperties::No`).** `NotificationSettings` is a mutable `#[zbus(property)]` consumed by an independent `PropertiesChanged` consumer (`StateWatcher` → GUI refresh). zbus's default property cache is updated by zbus's *own* internal `PropertiesChanged` task, which races the GUI's consumer of the same signal — a stale cached read then clobbers the settings pane. An uncached `Get` is always the live value. General rule: a mutable property consumed via an independent `PropertiesChanged` signal must be read uncached.
