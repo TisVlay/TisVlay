@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
-    DaemonClient, RefreshTrigger, SessionClient, StateEvent, StateWatcher, TrayClient,
+    DaemonClient, NotificationSettingsBody, RefreshTrigger, SessionClient, StateEvent,
+    StateWatcher, TrayClient,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
@@ -15,8 +16,8 @@ use crate::about::{PeerInfo, SupportedVendorsCache, make_about_components, probe
 use crate::profiles::{self, ProfileEditor};
 use crate::state::{ProfileRowRaw, StateSnapshot, fetch_state};
 use crate::{
-    AppWindow, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles, Reconcilers,
-    TvViewModel, VendorInfoRow, VendorOption, on_ui,
+    AppWindow, PairingWizard, ProfileKind, ProfileRow, ProfileTvRef, Profiles, Reconcilers, Tray,
+    TrayNotificationSettings, TvViewModel, VendorInfoRow, VendorOption, on_ui,
 };
 
 /// Boot the state-watch loop. One-shot startup: do the initial state
@@ -63,6 +64,12 @@ pub(crate) async fn initial_fetch_and_watch(
     fetch_and_publish_vendors(&daemon, &app_weak, &supported_vendors_cache).await;
 
     let initial_daemon_available = initial_snapshot.is_some();
+    // Seed `Tray.notifications` with documented defaults from core
+    // before any successful fetch. Gives the settings pane sensible
+    // switch positions even if the GUI starts while the tray is
+    // offline; gets overwritten with real values once
+    // `refresh_tray_notifications` lands a fetch.
+    let initial_tray_notifications = body_to_slint(&NotificationSettingsBody::defaults());
     on_ui(&app_weak, move |app| {
         if let Some(snapshot) = initial_snapshot {
             push_snapshot(&app, snapshot);
@@ -70,6 +77,15 @@ pub(crate) async fn initial_fetch_and_watch(
         app.set_daemon_available(initial_daemon_available);
         app.set_session_available(initial_session_available);
         app.set_tray_available(initial_tray_available);
+        let tray_global = app.global::<Tray>();
+        tray_global.set_notifications(initial_tray_notifications);
+        // Settings pane binds switch `enabled` + the offline banner
+        // to `Tray.available`, which is a global property distinct
+        // from `AppWindow.tray-available` (used by the About-pane
+        // footer). Mirror writes to both so the settings pane
+        // re-enables when the tray comes online — same pattern as
+        // `Profiles.session-available` below.
+        tray_global.set_available(initial_tray_available);
         // Profiles-pane User section needs its own copy of the
         // session-bus availability flag so the "Session service
         // unavailable" hint and the disabled "+" button can bind
@@ -77,6 +93,10 @@ pub(crate) async fn initial_fetch_and_watch(
         app.global::<Profiles>()
             .set_session_available(initial_session_available);
     });
+
+    if initial_tray_available {
+        refresh_tray_notifications(&tray, &app_weak).await;
+    }
 
     refresh_about_components(&daemon, &session, &tray, &app_weak).await;
     watch_state(
@@ -327,7 +347,9 @@ async fn watch_state(
                     *tray.write().await = Some(client);
                     on_ui(&app_weak, move |app| {
                         app.set_tray_available(true);
+                        app.global::<Tray>().set_available(true);
                     });
+                    refresh_tray_notifications(&tray, &app_weak).await;
                     trigger_refresh();
                 }
             }
@@ -335,10 +357,64 @@ async fn watch_state(
                 *tray.write().await = None;
                 on_ui(&app_weak, move |app| {
                     app.set_tray_available(false);
+                    app.global::<Tray>().set_available(false);
                 });
                 trigger_refresh();
             }
+            StateEvent::TrayNotificationSettingsChanged => {
+                // Property-change signal from the tray's
+                // `Tray1.NotificationSettings` — re-fetch the body
+                // and update the Slint global. Switch values get
+                // their new bindings on the next render.
+                refresh_tray_notifications(&tray, &app_weak).await;
+            }
         }
+    }
+}
+
+/// Pull the current notification body from the tray and push into the
+/// `Tray.notifications` Slint global. Used on `TrayAppeared` (initial
+/// sync after the tray comes up) and on `TrayNotificationSettingsChanged`
+/// (every subsequent mutation, whether via D-Bus or a hand-edit +
+/// `ReloadConfig`). Tray-offline → no-op (the global keeps its
+/// last-fetched values for the visible-but-disabled UX).
+pub(crate) async fn refresh_tray_notifications(
+    tray: &RwLock<Option<TrayClient>>,
+    app_weak: &slint::Weak<AppWindow>,
+) {
+    let body = {
+        let guard = tray.read().await;
+        match guard.as_ref() {
+            Some(client) => match client.notification_settings().await {
+                Ok(body) => body,
+                Err(e) => {
+                    debug!(error = %e, "Tray notification_settings fetch failed");
+                    return;
+                }
+            },
+            None => return,
+        }
+    };
+    let settings = body_to_slint(&body);
+    on_ui(app_weak, move |app| {
+        app.global::<Tray>().set_notifications(settings);
+    });
+}
+
+/// Lower a `NotificationSettingsBody` (every field `Option<bool>`)
+/// into the Slint `TrayNotificationSettings` struct (every field
+/// `bool`). The tray's property getter fills every field, so the
+/// `unwrap_or(true)` only guards the theoretical partial body from a
+/// future version-skewed tray — falling back to the documented
+/// default-on. (`TrayNotificationSettings` is Slint-generated, so the
+/// field list can't route through `NotificationCategory::ALL` the way
+/// the tray-side conversions do.)
+fn body_to_slint(body: &NotificationSettingsBody) -> TrayNotificationSettings {
+    TrayNotificationSettings {
+        tv_connection: body.tv_connection.unwrap_or(true),
+        tv_pairing: body.tv_pairing.unwrap_or(true),
+        tv_wake: body.tv_wake.unwrap_or(true),
+        daemon_offline: body.daemon_offline.unwrap_or(true),
     }
 }
 

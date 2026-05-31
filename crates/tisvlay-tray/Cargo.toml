@@ -34,6 +34,22 @@ zbus = { workspace = true }
 # source tree pick them up; installed builds fall back to
 # `/usr/share/locale/<lang>/LC_MESSAGES/tisvlay-tray.mo`.
 gettext-rs = "0.7"
+# Desktop notifications via the freedesktop `org.freedesktop.Notifications`
+# bus name. `default-features = false` + `z-with-tokio` selects the zbus
+# backend on tokio (matching our existing tokio runtime) and skips the
+# `dbus`-crate path notify-rust would otherwise bring in by default.
+notify-rust = { version = "4", default-features = false, features = ["z-with-tokio"] }
+# Stream consumption for per-TV `Tv1.Power.PowerCycleProgress` and the
+# bus-wide `Manager1.PairingProgress` subscriptions in the notifier
+# emission path.
+futures-util = { workspace = true }
+# `tisvlay-tray::config::TrayConfig` needs:
+serde = { workspace = true }
+toml = { workspace = true }
+directories = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,10 +6,9 @@
 //! `DeleteSystemProfile` call.
 //!
 //! Without these signals, GUI clients that cache profile bodies on
-//! the per-UUID change-stream contract stay stale: the `ConfigReloaded`
-//! signal refreshes the master list, but the editor pane keeps
-//! showing fields from the pre-reload body until the next per-UUID
-//! event arrives.
+//! the per-UUID change-stream contract stay stale: the editor pane
+//! keeps showing fields from the pre-reload body until the next
+//! per-UUID event arrives.
 
 #![cfg(feature = "mock")]
 

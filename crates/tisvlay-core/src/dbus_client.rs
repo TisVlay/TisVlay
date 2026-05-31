@@ -41,7 +41,7 @@ use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use crate::dbus_paths::{DAEMON_SERVICE, MANAGER_PATH, OBJECT_MANAGER_PATH, TV_BASE_PATH, tv_path};
-use crate::{SystemProfileBody, UserProfileBody};
+use crate::{NotificationSettingsBody, SystemProfileBody, UserProfileBody};
 
 // =============================================================================
 // Bus Selection
@@ -539,8 +539,6 @@ pub enum TvStateChange {
     PropertiesChanged { tv_id: String },
     /// TV list structure changed (add/remove) -- requires full refresh.
     TvListChanged,
-    /// Daemon configuration was reloaded -- profile lists and TV properties may differ.
-    ConfigReloaded,
 }
 
 // =============================================================================
@@ -2317,11 +2315,14 @@ impl SessionClient {
 // Tray Interface Proxy + Client
 // =============================================================================
 //
-// Minimal self-introspection surface mirrored from `Manager1` /
-// `Session1` so the GUI's About pane can report tray status the
-// same way it reports the daemon and session. Tray exposes only
-// `Version` + `ConfigPath` (no methods); future tray-side
-// functionality (notifications, etc.) lands here as additions.
+// Mirrored from `Manager1` / `Session1` shape: const properties for
+// version + config_path, a typed dict-derive body property for the
+// mutable settings, single atomic Update method, ReloadConfig for
+// hand-edit reconciliation, SendTestNotification for GUI-driven
+// stack verification. No custom signals — `NotificationSettings`
+// auto-emits `org.freedesktop.DBus.Properties.PropertiesChanged` on
+// every D-Bus-driven write, and `ReloadConfig` emits it manually for
+// disk-edit propagation.
 
 #[proxy(
     interface = "org.tisvlay.Tray1",
@@ -2333,10 +2334,32 @@ trait TisvlayTray {
     #[zbus(property(emits_changed_signal = "false"))]
     fn version(&self) -> zbus::Result<String>;
 
-    /// Resolved path of the tray's config file (empty until phase 2
-    /// of the tray-notifications work lands a config schema).
+    /// Resolved path of the tray's config file (`~/.config/tisvlay/tray.toml`).
     #[zbus(property(emits_changed_signal = "false"))]
     fn config_path(&self) -> zbus::Result<String>;
+
+    /// Current desktop-notification settings. Auto-emits
+    /// `PropertiesChanged` on every write — the GUI's `StateWatcher`
+    /// subscribes to that signal to keep its Slint global in sync.
+    #[zbus(property)]
+    fn notification_settings(&self) -> zbus::Result<NotificationSettingsBody>;
+
+    /// Atomic multi-key update. Only `Some(_)` fields in the body are
+    /// applied; `None` leaves the existing value intact. Unknown
+    /// fields are rejected by the dict-derive's `deny_unknown_fields`.
+    fn update_notification_settings(&self, updates: NotificationSettingsBody) -> zbus::Result<()>;
+
+    /// Re-read `tray.toml` from disk and reconcile in-memory state.
+    /// If any category changed, emits `PropertiesChanged` for
+    /// `NotificationSettings` (zbus's auto-emit only fires on D-Bus
+    /// property writes, not in-memory mutations).
+    fn reload_config(&self) -> zbus::Result<()>;
+
+    /// Emit a single `Normal`-urgency test notification. Bypasses the
+    /// category gate so the GUI's "Send test notification" button can
+    /// verify the freedesktop notification stack even when every
+    /// category is off.
+    fn send_test_notification(&self) -> zbus::Result<()>;
 }
 
 #[derive(Clone, Debug)]
@@ -2353,7 +2376,20 @@ impl TrayClient {
         let connection = zbus::Connection::session()
             .await
             .context("Failed to connect to session D-Bus")?;
-        let proxy = TisvlayTrayProxy::new(&connection)
+        // `CacheProperties::No` so every read of `NotificationSettings`
+        // does a fresh `Get` against the tray's live value. With the
+        // cached default, `notification_settings()` reads the proxy's
+        // local cache, which is updated by zbus's own internal
+        // `PropertiesChanged` handler task. The GUI consumes the *same*
+        // signal independently via `StateWatcher` →
+        // `TrayNotificationSettingsChanged` → `refresh_tray_notifications`,
+        // and the two are unordered: the refresh can read the cache
+        // before zbus's task has applied the new value, returning a
+        // stale body that clobbers the settings pane. An uncached Get
+        // is always the tray's current value, eliminating the race.
+        let proxy = TisvlayTrayProxy::builder(&connection)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
             .await
             .context("Failed to create tray proxy")?;
         Ok(Self { proxy })
@@ -2380,6 +2416,48 @@ impl TrayClient {
             .config_path()
             .await
             .context("Failed to read tray config path")
+    }
+
+    /// Fetch the current notification settings (full body, every field
+    /// `Some` on the wire).
+    pub async fn notification_settings(&self) -> Result<NotificationSettingsBody> {
+        self.proxy
+            .notification_settings()
+            .await
+            .context("Failed to read tray notification settings")
+    }
+
+    /// Atomic partial-update of notification settings. The GUI's
+    /// per-switch dispatch wraps a single field into a body with only
+    /// that field `Some`; multi-field callers fill in everything they
+    /// want to change.
+    pub async fn update_notification_settings(
+        &self,
+        updates: NotificationSettingsBody,
+    ) -> Result<()> {
+        self.proxy
+            .update_notification_settings(updates)
+            .await
+            .context("Failed to update tray notification settings")
+    }
+
+    /// Fire a single test notification (bypasses the category gate).
+    pub async fn send_test_notification(&self) -> Result<()> {
+        self.proxy
+            .send_test_notification()
+            .await
+            .context("Failed to send test notification")
+    }
+
+    /// Re-read `tray.toml` from disk; the tray emits `PropertiesChanged`
+    /// for `NotificationSettings` if the on-disk body changed. Backs the
+    /// GUI's Reload button so a hand-edit to `tray.toml` is picked up the
+    /// same way the daemon and session services reload theirs.
+    pub async fn reload_config(&self) -> Result<()> {
+        self.proxy
+            .reload_config()
+            .await
+            .context("Failed to reload tray configuration")
     }
 }
 
@@ -2513,6 +2591,11 @@ pub enum StateEvent {
     /// The tray service disappeared from D-Bus.
     TrayDisappeared,
 
+    /// `Tray1.NotificationSettings` property changed (via D-Bus
+    /// `UpdateNotificationSettings` or `ReloadConfig`). Payload-less;
+    /// subscribers re-fetch via `TrayClient::notification_settings`.
+    TrayNotificationSettingsChanged,
+
     /// The fallback poll timer fired.
     FallbackPoll,
 }
@@ -2604,7 +2687,7 @@ enum SessionSignal {
 type BoxedStream<T> = std::pin::Pin<Box<dyn Stream<Item = T> + Send>>;
 
 pub struct StateWatcher {
-    /// Stream of daemon PropertiesChanged / ObjectManager / ConfigReloaded signals.
+    /// Stream of daemon PropertiesChanged / ObjectManager signals.
     signal_stream: Option<BoxedStream<TvStateChange>>,
     /// Stream of `Manager1.SystemProfile{Changed,Added,Removed}` signals
     /// — each carries the parsed UUID from the wire argument.
@@ -2620,6 +2703,11 @@ pub struct StateWatcher {
     session_signal_stream: Option<BoxedStream<SessionSignal>>,
     /// Stream of tray service appear/disappear events.
     tray_watch: Option<BoxedStream<ServiceEvent>>,
+    /// Stream of `Tray1.NotificationSettings` `PropertiesChanged`
+    /// events — filtered from the session bus by interface +
+    /// changed-property-name. Payload-less downstream (subscribers
+    /// re-fetch via `TrayClient::notification_settings`).
+    tray_properties_stream: Option<BoxedStream<()>>,
     /// Configuration.
     config: StateWatcherConfig,
 }
@@ -2699,10 +2787,10 @@ impl StateWatcher {
         let raw_stream = zbus::MessageStream::from(conn.clone());
 
         // The TV-state filter consumes message *clones* and returns
-        // `None` for `Manager1.SystemProfile*` signals; the body-mutation
-        // path below filters the same shared stream for those, so
-        // splitting the dispatch by interface keeps both branches
-        // typed cleanly without dropping any signal.
+        // `None` for `Manager1.SystemProfile*` signals; the
+        // body-mutation path below filters the same shared stream for
+        // those, so splitting the dispatch by interface+member keeps
+        // both branches typed cleanly without dropping any signal.
         let tv_prefix_for_state = tv_prefix.clone();
         let raw_for_state = raw_stream.clone();
         let signal_stream: BoxedStream<TvStateChange> =
@@ -2729,10 +2817,6 @@ impl StateWatcher {
                         ("org.tisvlay.Manager1", "TvAdded" | "TvRemoved") => {
                             trace!(member = %member, "Manager1 TV list signal");
                             Some(TvStateChange::TvListChanged)
-                        }
-                        ("org.tisvlay.Manager1", "ConfigReloaded") => {
-                            trace!("Manager1 ConfigReloaded signal");
-                            Some(TvStateChange::ConfigReloaded)
                         }
                         _ => None,
                     }
@@ -2807,6 +2891,64 @@ impl StateWatcher {
                 None => None,
             };
 
+        // --- Tray1.PropertiesChanged subscription ---
+        //
+        // Listens to the standard `org.freedesktop.DBus.Properties`
+        // signal scoped to the tray's object path; filters to events
+        // that touch the `NotificationSettings` property (either in
+        // the changed-dict or the invalidated-array). Auto-emitted by
+        // zbus on `Tray1.UpdateNotificationSettings`; manually emitted
+        // by `Tray1.ReloadConfig` after a disk-edit diff.
+        //
+        // Per project convention, the downstream `StateEvent` is
+        // payload-less — subscribers re-fetch via `TrayClient::
+        // notification_settings` to get the canonical new body.
+        let tray_properties_stream: Option<BoxedStream<()>> = match session_conn {
+            Some(sconn) => {
+                let rule = format!(
+                    "type='signal',sender='{}',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='{}'",
+                    crate::dbus_paths::TRAY_SERVICE,
+                    crate::dbus_paths::TRAY_PATH,
+                );
+                match subscribe_signals(sconn, &rule).await {
+                    Ok(raw) => {
+                        let filtered = raw.filter_map(|msg_result| async move {
+                            let msg = msg_result.ok()?;
+                            // PropertiesChanged signature: (s, a{sv}, as)
+                            // — (interface_name, changed_properties,
+                            // invalidated_properties). We only care
+                            // about the interface filter + whether
+                            // `NotificationSettings` is in the changed
+                            // dict or the invalidated array.
+                            let (iface, changed, invalidated): (
+                                String,
+                                HashMap<String, OwnedValue>,
+                                Vec<String>,
+                            ) = msg.body().deserialize().ok()?;
+                            if iface != crate::dbus_paths::TRAY_INTERFACE {
+                                return None;
+                            }
+                            if changed.contains_key("NotificationSettings")
+                                || invalidated.iter().any(|p| p == "NotificationSettings")
+                            {
+                                trace!("Tray1 NotificationSettings PropertiesChanged");
+                                Some(())
+                            } else {
+                                None
+                            }
+                        });
+                        debug!("Subscribed to Tray1 PropertiesChanged");
+                        Some(Box::pin(filtered))
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to subscribe to Tray1 PropertiesChanged");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
         // --- Session1 signals: assignment + body triad ---
         //
         // `TvUserProfileChanged` carries `(tv_id, profile_uuid)` — the
@@ -2868,6 +3010,7 @@ impl StateWatcher {
             session_watch,
             session_signal_stream,
             tray_watch,
+            tray_properties_stream,
             config,
         })
     }
@@ -3012,6 +3155,17 @@ impl StateWatcher {
                         Some(StateEvent::TrayDisappeared)
                     }
                 }
+            }
+
+            // Branch 5b: Tray1 NotificationSettings PropertiesChanged
+            Some(()) = async {
+                match self.tray_properties_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                debug!("Tray1 NotificationSettings PropertiesChanged received");
+                Some(StateEvent::TrayNotificationSettingsChanged)
             }
 
             // Branch 6: fallback poll

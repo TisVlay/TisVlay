@@ -203,7 +203,7 @@ org.tisvlay.Daemon  (system bus; session bus in dev)
 │   │             ListSystemProfiles, GetSystemProfile, UpdateSystemProfile,
 │   │             CreateSystemProfile, DuplicateSystemProfile, DeleteSystemProfile,
 │   │             GetResolvedSystemProfileDefaults, GetEffectiveSystemProfile
-│   └── Signals:  ConfigReloaded, PairingProgress, DiscoveryFound,
+│   └── Signals:  PairingProgress, DiscoveryFound,
 │                 SystemProfileChanged, SystemProfileAdded, SystemProfileRemoved
 └── /org/tisvlay/Tv/{uuid_underscored}   org.tisvlay.Tv1, Tv1.Power, Tv1.Screen,
     │                                    Tv1.Volume, Tv1.Backlight, Tv1.Input
@@ -224,6 +224,13 @@ org.tisvlay.Session  (session bus)
     │             GetResolvedUserProfileDefaults, GetEffectiveUserProfile
     └── Signals:  TvUserProfileChanged,
                   UserProfileChanged, UserProfileAdded, UserProfileRemoved
+
+org.tisvlay.Tray  (session bus)
+└── /org/tisvlay/Tray               org.tisvlay.Tray1
+    ├── Properties (ro):  Version, ConfigPath
+    ├── Properties (rw):  NotificationSettings (a{sv})
+    ├── Methods:  UpdateNotificationSettings, ReloadConfig, SendTestNotification
+    └── Signals:  (standard PropertiesChanged only)
 ```
 
 ### Clients and signal flow
@@ -231,7 +238,7 @@ org.tisvlay.Session  (session bus)
 | Client | Calls | Subscribes to |
 |--------|-------|---------------|
 | **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (properties + commands), Session1 (user profiles) | — |
-| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `ConfigReloaded`, `SystemProfileAdded`/`Changed`/`Removed`; Session1: `TvUserProfileChanged`, `UserProfileAdded`/`Changed`/`Removed`; DBus: `NameOwnerChanged` (service discovery) |
+| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles); owns Tray1 | `PropertiesChanged` on Tv paths; per-TV `Tv1.Power.PowerCycleProgress`; `Manager1.PairingProgress`; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `SystemProfileAdded`/`Changed`/`Removed`; Session1: `TvUserProfileChanged`, `UserProfileAdded`/`Changed`/`Removed`; DBus: `NameOwnerChanged` (service discovery) |
 | **tisvlay-gui** | Manager1 (system-profile CRUD, config), Tv1.* (properties + commands), Session1 (user-profile CRUD + assignment) | Same as tray plus the body-mutation signals (`SystemProfileChanged(uuid)`, `UserProfileChanged(uuid)`) drive the editor's per-row refresh. The GUI subscribes to both buses directly — no cross-bus signal re-fire on the session daemon, since the only client that needs cross-bus body-change notifications is the GUI and it already does. |
 | **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions via writable properties) | — |
 
@@ -262,7 +269,7 @@ System-profile catalog (see [Profile catalog](#profile-catalog) for the full arc
 The legacy `ListSystemProfilesJson() → a(ss)` slot stays on the wire (back-compat for tray + CLI consumers that haven't migrated to the v3 surface). The Rust wrapper signature is unchanged; only the wire-method name moved via `#[zbus(name = ...)]`.
 
 Signals:
-- `ConfigReloaded`, `PairingProgress`, `DiscoveryFound` (lifecycle).
+- `PairingProgress`, `DiscoveryFound` (lifecycle).
 - `SystemProfileChanged(uuid: s)` — body mutation (including rename). Fires once after persistence under the same write lock as the body commit, so a client receiving the signal can immediately `GetSystemProfile(uuid)` and get the body.
 - `SystemProfileAdded(uuid: s)` — fires once after persistence for both `Create` and `Duplicate`.
 - `SystemProfileRemoved(uuid: s)` — fires after `Delete` persists.
@@ -315,9 +322,36 @@ Signals:
 
 Manager1 didn't face the assignment-vs-body naming collision because per-TV system-profile assignment writes through the standard `Tv1.SystemProfile` property surface (firing `PropertiesChanged`), not a custom signal.
 
+### org.tisvlay.Tray1 (desktop notifications)
+
+The tray owns desktop notifications — not the session service. The tray already has every moving piece: a `StateWatcher` subscription seeing every relevant transition, the gettext catalog + icon-name plumbing, and a graphical-session lifecycle (the right surface for talking to `org.freedesktop.Notifications`, itself a graphical-session bus name). The session service is the wrong home because it owns `UserConfig` as a single writer with rollback semantics; a separate `tray.toml` keeps the two single-writer invariants independent.
+
+Settings are mutable both via D-Bus (`UpdateNotificationSettings`) and via hand-editing `~/.config/tisvlay/tray.toml` + `ReloadConfig`; both paths surface as `org.freedesktop.DBus.Properties.PropertiesChanged` for `NotificationSettings` so the GUI stays in sync. The mutation flow mirrors the `Session1` user-profile shape: validate → snapshot → mutate → persist → roll back on IO failure → publish. `NotificationSettingsBody` (the `a{sv}` wire dict) lives in `tisvlay-core` so the GUI client and tray server speak the same vocabulary; `SendTestNotification` bypasses the category gate so users can verify their DE's notification stack regardless of which categories are on.
+
+**Categories** (one switch each, all default-on, persisted in `tray.toml`):
+
+| Key | Trigger | Urgency | Source |
+|---|---|---|---|
+| `tv_connection` | TV `connected` true ↔ false | Low | `refresh_state` diff |
+| `tv_pairing` | terminal pairing phase `complete` / `failed` | Normal | `Manager1.PairingProgress` |
+| `tv_wake` | `wol_sent → connected` / `failed` for a power cycle | Low (ok) / Normal (fail) | per-TV `Tv1.Power.PowerCycleProgress` |
+| `daemon_offline` | `StateEvent::DaemonDisappeared` | Critical (resident) | existing tray arm |
+
+`NotificationCategory` (in `tisvlay-core`) is the single source of truth for the category vocabulary: its `#[repr(u8)]` discriminant *is* the bit position, `ALL` lists every variant, and `key` / `from_key` / `get` / `set` are exhaustive matches, so adding a category is a compile error until every site handles it. On-disk `tray.toml` stays hand-editable named bools.
+
+**Correctness lessons** (each was a bug fixed during this work — kept here so the next maintainer doesn't reintroduce them):
+
+- **The client proxy is uncached (`CacheProperties::No`).** `NotificationSettings` is a mutable `#[zbus(property)]` consumed by an independent `PropertiesChanged` consumer (`StateWatcher` → GUI refresh). zbus's default property cache is updated by zbus's *own* internal `PropertiesChanged` task, which races the GUI's consumer of the same signal — a stale cached read then clobbers the settings pane. An uncached `Get` is always the live value. General rule: a mutable property consumed via an independent `PropertiesChanged` signal must be read uncached.
+- **Notification emits are serialized through one background worker** (`mpsc` queue). The emit-site does the category gate synchronously (a lock-free `AtomicU8` bit test) and hands off; the worker runs `show_async` round-trips one at a time, recording the failure timestamp *before* it pulls the next request. This is what makes the failure backoff actually suppress a flap-storm at early login (when `org.freedesktop.Notifications` isn't claimed yet and each `show_async` stalls for the full ~25 s D-Bus timeout): the storm collapses to one stalled round-trip plus suppressed retries, not N concurrent stalls. Spawning each emit detached defeats the backoff — every concurrent caller passes the gate before any records a failure.
+- **The `refresh_state` connection-diff lives *inside* the `handle.update()` closure**, where the prior cached `tvs` is the authoritative baseline. `DaemonDisappeared` clears the cache outside the trigger path; diffing after the closure would see "all TVs reappeared" and storm `tv_connection` toasts on a daemon flap. The transient-fetch-error arm likewise leaves the cache intact (only flips `daemon_available`), so a one-off timeout isn't read as a mass disconnect.
+- **The tray claims `org.tisvlay.Tray` with `DoNotQueue`** and exits if another instance owns it — otherwise a second instance silently queues and serves a second `TrayService` with an independent settings cache the GUI would never see.
+- **Power-cycle wake attribution uses a per-cycle flag, not a wall clock.** Each per-TV `PowerCycleProgress` stream carries phases from only one in-flight cycle; a `waking` flag (set by `WolSent`, reset at each `DirectConnect`) attributes the terminal phase exactly, with no timeout window to misfire on a slow wake or an unrelated reconnect.
+
+Two categories were tried and removed before merge — both shared the smell *"default-off and duplicative with existing state-change notifications."* `config_reloaded` (almost every reload is self-initiated, so the toast told the user what they just did) and `automation_fired` (system-tier events fire when no human is at the desk; user-tier events overlap with `tv_connection` / `tv_wake`). Both retirements dropped their external D-Bus signals; the underlying work (the daemon's internal per-UUID cache refresh on reload, and all automation *execution*) stayed intact. The lesson: a new notification category should clear the "is it visible, and is it non-duplicative?" bar before shipping.
+
 ### Profile catalog
 
-The system-profile and user-profile catalogs share an architecture: a property-bag wire surface, immutable UUID identity, three-layer client cache, atomic full-body replace, and a body-mutation/topology signal trio per bus. The two halves are symmetric but live on different buses (Manager1 = system bus = `/var/lib/tisvlay/config.toml`; Session1 = session bus = `~/.config/tisvlay/config.toml`).
+The system-profile and user-profile catalogs share an architecture: a property-bag wire surface, immutable UUID identity, three-layer client cache, atomic full-body replace, and a body-mutation/topology signal trio per bus. The two halves are symmetric but live on different buses (Manager1 = system bus = `/var/lib/tisvlay/config.toml`; Session1 = session bus = `~/.config/tisvlay/session.toml`).
 
 **Why property-bag, not typed-property-per-object.** Configuration over D-Bus is property-bag-shaped — `NetworkManager.Settings.Connection`, `systemd-homed.Home`, `org.freedesktop.PowerProfiles` all use `a{sv}` bodies, not per-field typed properties. BlueZ-style typed properties fit *operational* state (a device's current connection state, a battery's current charge); they don't fit configuration. The v2 attempt at typed-property-per-object ballooned to +12 646 LoC because every field needed its own wire property + state-forwarder fan-out + `PropertiesChanged` plumbing; v3's property-bag shape collapses that to one dict-derive struct per kind.
 
@@ -395,7 +429,7 @@ Three signals per kind per bus, each carrying just a UUID:
 
 Both `Create` + `Duplicate` commit body + emit `Added` under the same write lock, so a client receiving `Added` can immediately fetch the body without waiting for a separate `Changed`. `Update` re-resolves every TV's cached `system_profile` / `user_profile` after success so default-body edits propagate to inheriting TVs without an explicit reload.
 
-`ReloadConfig` emits the same per-UUID signals: the daemon snapshots the prior in-memory catalog under the write lock via `std::mem::take`, applies the new on-disk config, computes a three-way diff (added / removed / changed by body-content `PartialEq`), and emits the matching signals after the lock is dropped. Architectural lesson: a config-file edit should be observationally identical to an external client mutation — same signals, same client cache invalidation. The earlier coarse `ConfigReloaded` signal alone was not enough; the editor's per-UUID cache stayed stale until the user clicked away and back.
+`ReloadConfig` emits the same per-UUID signals: the daemon snapshots the prior in-memory catalog under the write lock via `std::mem::take`, applies the new on-disk config, computes a three-way diff (added / removed / changed by body-content `PartialEq`), and emits the matching signals after the lock is dropped. Architectural lesson: a config-file edit should be observationally identical to an external client mutation — same signals, same client cache invalidation. A coarse top-level "config reloaded" event is not enough; the editor's per-UUID cache would stay stale until the user clicked away and back.
 
 ### org.tisvlay.Tv1 (Base Interface)
 
@@ -432,7 +466,7 @@ The discovery subsystem (SSDP transport ownership, streaming-discovery RPC lifec
 Config is split between **system config** (daemon-owned) and **user config** (session-owned):
 
 - **System config**: `/var/lib/tisvlay/config.toml` — TV definitions (with per-TV system profile assignment), credentials, system profiles (daemon lifecycle events), and admin baseline user profiles. Root-owned; only `tisvlayd` reads and writes this file.
-- **User config**: `~/.config/tisvlay/config.toml` — user profile definitions and per-TV user profile assignments. User-owned; `tisvlay-session` reads this. Optional: if absent, the admin baseline `user.profiles.default` from system config is inherited via D-Bus.
+- **User config**: `~/.config/tisvlay/session.toml` — user profile definitions and per-TV user profile assignments. User-owned; `tisvlay-session` reads this. Optional: if absent, the admin baseline `user.profiles.default` from system config is inherited via D-Bus.
 
 Both accept `--config <PATH>` to override their respective path. `tisvlayd` defaults to `/var/lib/tisvlay/config.toml`; `--session` dev mode defaults to the XDG user path.
 
@@ -518,7 +552,7 @@ client_key = "abc123..."
 ### User Config Example
 
 ```toml
-# ~/.config/tisvlay/config.toml  (session-owned, optional)
+# ~/.config/tisvlay/session.toml  (session-owned, optional)
 
 # User's own profiles. Keyed by UUID; `name` is a body field.
 [user.profiles.00000000-0000-0000-0000-00000000515a]
@@ -541,7 +575,25 @@ profile.user = "a1b2c3d4-0000-0000-0000-00000000f000"  # "gaming"
 # guest-room inherits user.profiles.default (no override)
 ```
 
-Both system and user configs use the same `[[tv]]` array-of-tables syntax. When using a single-file config, both parsers can read the same `[[tv]]` entries — each ignores fields it doesn't own (serde skips unknown fields by default).
+### Per-peer config-file naming convention
+
+Each peer owns its own file in the default conventional layout — single writer per file, no cross-process coordination needed:
+
+| Peer | User-domain file | System-domain file |
+|---|---|---|
+| `tisvlayd` | `~/.config/tisvlay/config.toml` (with `--session`) | `/var/lib/tisvlay/config.toml` |
+| `tisvlay-session` | `~/.config/tisvlay/session.toml` | n/a |
+| `tisvlay-tray` | `~/.config/tisvlay/tray.toml` | n/a |
+
+### Where types live in the workspace
+
+`tisvlay-core` holds types that need to be shared across crates: **wire vocabulary** (anything crossing a D-Bus boundary, e.g. `UserProfileBody`, `SystemProfileBody`, `NotificationSettingsBody`) and types with **cross-crate schema references** (`SystemConfig` and `UserConfig` both contain `[[tv]]` so the two parsers can read the same TOML file — that's why they're co-located in core). On-disk container types with no cross-crate dependency stay with their owner (`TrayConfig` lives in `tisvlay-tray/src/config.rs`).
+
+### Single-file config (read-only / declarative deployments)
+
+Both `SystemConfig` and `UserConfig` use the same `[[tv]]` array-of-tables syntax. **Under the read-only constraint** (Nix store, ostree, etcd-pushed configs, etc. — nobody writes the file), all peers can be pointed at a single shared file via the existing `--config <path>` flags. Each parser ignores fields it doesn't own (serde skips unknowns by default), so a unified file just looks like an extra-large config to each peer.
+
+This property holds **only** when nobody writes. The save side is not symmetric: each peer's `save_to` serializes its own struct via `toml::to_string_pretty(self)`, which silently drops fields the writer doesn't model. In a writable shared-file deployment, the first save from any peer would clobber the others' sections. The read-only/declarative pattern is the supported single-file mode; conventional read-write deployments use the per-peer files above.
 
 Fields unspecified in a user profile inherit from the admin baseline `user.profiles.default` (system config), not hard-coded defaults. A user who only sets `idle_timeout_seconds = 600` in `[user.profiles.default]` gets all other settings from the system admin's defaults.
 

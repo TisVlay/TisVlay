@@ -115,7 +115,7 @@ impl SessionService {
     }
 
     /// Resolved on-disk path of the user's config file. Falls back to
-    /// the canonical XDG default (`~/.config/tisvlay/config.toml`)
+    /// the canonical XDG default (`~/.config/tisvlay/session.toml`)
     /// when `--config` wasn't passed; empty string only when path
     /// resolution fails entirely (no XDG dirs).
     #[zbus(property(emits_changed_signal = "const"))]

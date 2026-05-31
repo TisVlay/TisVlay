@@ -37,7 +37,7 @@
 //! client_key = "abc123"
 //! ```
 //!
-//! ## User Config (`~/.config/tisvlay/config.toml`)
+//! ## User Config (`~/.config/tisvlay/session.toml`)
 //!
 //! Owned by each user's `tisvlay-session`. Contains profile definitions
 //! and per-TV profile assignments. Optional — if absent, the session service
@@ -598,6 +598,171 @@ impl From<&UserProfileBody> for UserProfileConfig {
 }
 
 // =============================================================================
+// NotificationSettingsBody — wire body for `Tray1.NotificationSettings`
+// =============================================================================
+
+/// Wire-format body for the tray's desktop-notification settings.
+///
+/// Each field is `Option<bool>` so that `Tray1.UpdateNotificationSettings`
+/// can be a partial update: only the keys the caller wants to change
+/// need to be set. The property getter (`Tray1.NotificationSettings`)
+/// returns every field as `Some` (an absent field on the read side
+/// would mean "this version of the tray doesn't know about this
+/// category" — forward-compat across version skew).
+///
+/// The on-disk twin (`tisvlay_tray::config::NotificationSettings`) lives
+/// in the tray crate; this body type is core's wire vocabulary so the
+/// GUI client and the tray server both speak it. Per the workspace
+/// convention in `docs/design.md`, wire bodies live in core; on-disk
+/// containers stay with their owner.
+#[cfg(feature = "dbus")]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    zbus::zvariant::Type,
+    zbus::zvariant::SerializeDict,
+    zbus::zvariant::DeserializeDict,
+    zbus::zvariant::Value,
+    zbus::zvariant::OwnedValue,
+)]
+#[zvariant(signature = "a{sv}", deny_unknown_fields)]
+pub struct NotificationSettingsBody {
+    pub tv_connection: Option<bool>,
+    pub tv_pairing: Option<bool>,
+    pub tv_wake: Option<bool>,
+    pub daemon_offline: Option<bool>,
+}
+
+#[cfg(feature = "dbus")]
+impl NotificationSettingsBody {
+    /// Factory defaults — every category populated with its documented
+    /// default-on value. Single source of truth shared by:
+    /// - the tray, which uses this to seed a fresh `TrayConfig` when
+    ///   `tray.toml` doesn't exist yet;
+    /// - the GUI, which uses this to seed the Slint `Tray.notifications`
+    ///   global before any successful fetch lands (so a GUI launched
+    ///   while the tray is offline still shows sensible defaults).
+    ///
+    /// Distinct from the derived `Default` impl (all-`None`), which
+    /// represents the partial-update neutral for
+    /// `Tray1.UpdateNotificationSettings`.
+    pub fn defaults() -> Self {
+        let mut body = Self::default();
+        for cat in NotificationCategory::ALL {
+            cat.set(&mut body, cat.default_enabled());
+        }
+        body
+    }
+}
+
+/// The desktop-notification categories.
+///
+/// **Single source of truth** for the category vocabulary shared
+/// across three surfaces: the tray's emit gate + on-disk `TrayConfig`,
+/// the GUI's settings pane, and the `Tray1` D-Bus wire body. Lives in
+/// core (not the tray) because the GUI consumes it too and only core
+/// is on both their dependency paths — same rationale as
+/// [`NotificationSettingsBody`].
+///
+/// The `#[repr(u8)]` discriminant *is* the bit position in the
+/// runtime `u8` enable-bitset ([`bit`](Self::bit)); [`ALL`](Self::ALL)
+/// lists every variant in that order. The `key` /
+/// [`get`](Self::get) / [`set`](Self::set) accessors are exhaustive
+/// `match`es, so adding a variant without handling it everywhere is a
+/// compile error — there is no second hand-maintained bit-position
+/// table to drift against.
+#[cfg(feature = "dbus")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum NotificationCategory {
+    /// TV `connected` transitions true ↔ false.
+    TvConnection = 0,
+    /// Pairing terminal phase `complete` / `failed`.
+    TvPairing = 1,
+    /// `wol_sent` → `connected` / `failed` for a TV power cycle.
+    TvWake = 2,
+    /// Daemon disappeared from D-Bus.
+    DaemonOffline = 3,
+}
+
+#[cfg(feature = "dbus")]
+impl NotificationCategory {
+    /// Every category, in canonical (discriminant / bit-position)
+    /// order. Iterate this to walk all categories without open-coding
+    /// the field list at each call site.
+    pub const ALL: [Self; 4] = [
+        Self::TvConnection,
+        Self::TvPairing,
+        Self::TvWake,
+        Self::DaemonOffline,
+    ];
+
+    /// Bit position in the runtime `u8` enable-bitset, derived from the
+    /// `#[repr(u8)]` discriminant — the one and only bit-position
+    /// source.
+    pub const fn bit(self) -> u8 {
+        1u8 << (self as u8)
+    }
+
+    /// Stable snake_case wire identifier: the `Tray1` settings-pane
+    /// string key *and* the matching [`NotificationSettingsBody`]
+    /// field name. Internal — the canonical source for
+    /// [`from_key`](Self::from_key); external callers parse a key into a
+    /// category, never stringify one.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::TvConnection => "tv_connection",
+            Self::TvPairing => "tv_pairing",
+            Self::TvWake => "tv_wake",
+            Self::DaemonOffline => "daemon_offline",
+        }
+    }
+
+    /// Parse a wire key back to a category. `None` for unrecognized
+    /// keys (version skew / typo) so callers can warn-and-ignore.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.key() == key)
+    }
+
+    /// Read this category's value out of a wire body.
+    pub fn get(self, body: &NotificationSettingsBody) -> Option<bool> {
+        match self {
+            Self::TvConnection => body.tv_connection,
+            Self::TvPairing => body.tv_pairing,
+            Self::TvWake => body.tv_wake,
+            Self::DaemonOffline => body.daemon_offline,
+        }
+    }
+
+    /// Set this category's value in a wire body.
+    pub fn set(self, body: &mut NotificationSettingsBody, value: bool) {
+        match self {
+            Self::TvConnection => body.tv_connection = Some(value),
+            Self::TvPairing => body.tv_pairing = Some(value),
+            Self::TvWake => body.tv_wake = Some(value),
+            Self::DaemonOffline => body.daemon_offline = Some(value),
+        }
+    }
+
+    /// Whether this category defaults on in a fresh config. Drives
+    /// [`NotificationSettingsBody::defaults`]. One arm per variant so a
+    /// new category is a missing-arm compile error that forces a
+    /// deliberate on/off decision rather than inheriting a blanket
+    /// default.
+    pub const fn default_enabled(self) -> bool {
+        match self {
+            Self::TvConnection => true,
+            Self::TvPairing => true,
+            Self::TvWake => true,
+            Self::DaemonOffline => true,
+        }
+    }
+}
+
+// =============================================================================
 // Config sections
 // =============================================================================
 
@@ -1016,6 +1181,23 @@ impl SystemConfig {
         PathBuf::from("/var/lib/tisvlay/config.toml")
     }
 
+    /// Get the daemon's user-mode config file path (`tisvlayd --session`).
+    ///
+    /// Returns `~/.config/tisvlay/config.toml` via XDG. Used when the
+    /// daemon runs on the session bus for development without `--config`.
+    /// Distinct from [`UserConfig::config_path`] (which resolves the
+    /// *session service's* file) — daemon and session service own
+    /// different files in the user domain.
+    pub fn user_config_path() -> Result<PathBuf> {
+        let dirs = directories::ProjectDirs::from("", "", "tisvlay").ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not determine config directory",
+            ))
+        })?;
+        Ok(dirs.config_dir().join("config.toml"))
+    }
+
     /// Validate that all TV UUIDs are unique. Per-TV format
     /// validity is handled by serde during deserialization (the
     /// `Uuid` type rejects malformed values), so this only catches
@@ -1163,7 +1345,9 @@ impl UserConfig {
 
     /// Get the user config file path.
     ///
-    /// Uses XDG directories: `~/.config/tisvlay/config.toml`
+    /// Uses XDG directories: `~/.config/tisvlay/session.toml`. Each
+    /// peer service owns its own file in the user domain per the
+    /// per-peer file naming convention.
     pub fn config_path() -> Result<PathBuf> {
         let dirs = directories::ProjectDirs::from("", "", "tisvlay").ok_or_else(|| {
             Error::Io(std::io::Error::new(
@@ -1171,7 +1355,7 @@ impl UserConfig {
                 "Could not determine config directory",
             ))
         })?;
-        Ok(dirs.config_dir().join("config.toml"))
+        Ok(dirs.config_dir().join("session.toml"))
     }
 
     /// Resolve the effective profile for a TV.

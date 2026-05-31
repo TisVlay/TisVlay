@@ -40,7 +40,7 @@ tisvlay volume 25
 The session service automatically controls your TV based on desktop events:
 
 ```toml
-# ~/.config/tisvlay/config.toml
+# ~/.config/tisvlay/session.toml
 [session]
 on_session_lock = "screen_off"
 on_session_unlock = "screen_on"

@@ -296,7 +296,9 @@ session-start:
 # Start the tray.
 [group('dev')]
 tray-start:
-    RUST_LOG="{{ _tray_log }}" cargo run --bin tisvlay-tray -- {{ _user_flag }}
+    RUST_LOG="{{ _tray_log }}" \
+        cargo run --bin tisvlay-tray -- {{ _user_flag }} \
+            --config docs/configs/tray.toml
 
 # Start the GUI (paired with `daemon-start`).
 [group('dev')]

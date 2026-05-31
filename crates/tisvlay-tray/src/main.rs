@@ -4,12 +4,17 @@
 //! via the tisvlayd D-Bus daemon. Communicates exclusively through
 //! `DaemonClient` — no vendor crate dependencies.
 
+mod config;
 mod dbus;
+mod notifier;
+mod pairing;
+mod power_cycle;
 mod state;
 mod tray;
 
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -24,9 +29,12 @@ use ksni::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use state::fetch_all_state;
+use notifier::Notifier;
+use notify_rust::Urgency;
+use state::{diff_connection_events, fetch_all_state};
 use tisvlay_core::{
-    Coalescer, DaemonClient, ReconcilerMap, RefreshTrigger, SessionClient, StateEvent, StateWatcher,
+    Coalescer, DaemonClient, NotificationCategory, ReconcilerMap, RefreshTrigger, SessionClient,
+    StateEvent, StateWatcher, absolutize,
 };
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
@@ -56,6 +64,13 @@ struct Args {
     /// Use session bus instead of system D-Bus (e.g. with `tisvlayd --session`)
     #[arg(long)]
     user: bool,
+
+    /// Path to the tray configuration file.
+    ///
+    /// Defaults to ~/.config/tisvlay/tray.toml (XDG) when not specified.
+    /// If the file doesn't exist, documented per-category defaults are used.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
 }
 
 const VOLUME_STEP: u8 = 1;
@@ -148,14 +163,57 @@ async fn main() -> Result<()> {
 
     info!("Tray icon spawned");
 
-    // Register `org.tisvlay.Tray` on the user bus so the GUI's
-    // About pane and external tools can probe our version + config
-    // path. Hold the connection in a `_dbus_keepalive` binding for
-    // the lifetime of `main`; dropping it tears the registration
-    // down. No config path yet (phase 2).
-    let _dbus_keepalive = dbus::register(None)
-        .await
-        .context(gettext("Failed to register tray D-Bus interface"))?;
+    // Load the tray's on-disk config (`~/.config/tisvlay/tray.toml`).
+    // Missing file → defaults from
+    // `NotificationSettingsBody::defaults()` via
+    // `NotificationSettings::default()`. Failures fall back to
+    // defaults rather than refusing to start — notifications are a
+    // recoverable feature; the tray's menu still works without them.
+    // Honor an explicit `--config` (absolutized against CWD so a
+    // relative dev path like `docs/configs/tray.toml` resolves), else
+    // fall back to the XDG default. Mirrors the daemon/session
+    // `--config` convention.
+    let tray_config_path = match args.config {
+        Some(path) => absolutize(path),
+        None => config::TrayConfig::config_path()
+            .context(gettext("Failed to resolve tray config path"))?,
+    };
+    let tray_config = match config::TrayConfig::load_from(&tray_config_path) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            info!(path = %tray_config_path.display(), "No tray config file; using defaults");
+            config::TrayConfig::default()
+        }
+        Err(e) => {
+            warn!(error = %e, path = %tray_config_path.display(), "Failed to load tray config; using defaults");
+            config::TrayConfig::default()
+        }
+    };
+    let enabled_bits = Arc::new(AtomicU8::new(tray_config.notifications.enabled_bitset()));
+    let tray_config = Arc::new(tokio::sync::RwLock::new(tray_config));
+    let notifier = notifier::Notifier::new(enabled_bits.clone());
+
+    // Register `org.tisvlay.Tray` on the user bus. Held in a
+    // `_dbus_keepalive` binding for the lifetime of `main`; dropping
+    // it tears the registration down. `None` means another
+    // tisvlay-tray already owns the name — exit before spawning a
+    // duplicate icon rather than running a second service whose
+    // notification settings the GUI would never see.
+    let _dbus_keepalive = match dbus::register(
+        tray_config.clone(),
+        enabled_bits.clone(),
+        tray_config_path,
+        notifier.clone(),
+    )
+    .await
+    .context(gettext("Failed to register tray D-Bus interface"))?
+    {
+        Some(connection) => connection,
+        None => {
+            info!("tisvlay-tray already running; exiting");
+            return Ok(());
+        }
+    };
 
     // Per-(tv_id) reconcilers for scroll-driven properties. Shared
     // between the watch_state refresh path and the scroll apply
@@ -169,8 +227,16 @@ async fn main() -> Result<()> {
     let watch_session = session.clone();
     let watch_handle = handle.clone();
     let watch_reconcilers = reconcilers.clone();
+    let watch_notifier = notifier.clone();
     tokio::spawn(async move {
-        watch_state(watch_daemon, watch_session, watch_handle, watch_reconcilers).await;
+        watch_state(
+            watch_daemon,
+            watch_session,
+            watch_handle,
+            watch_reconcilers,
+            watch_notifier,
+        )
+        .await;
     });
 
     // Per-(tv_id) sum-merge coalescers for scroll-wheel deltas. Folds
@@ -229,6 +295,7 @@ async fn main() -> Result<()> {
     let cmd_session = session.clone();
     let cmd_handle = handle.clone();
     let cmd_reconcilers = reconcilers.clone();
+    let cmd_notifier = notifier.clone();
     let cmd_task = tokio::spawn(async move {
         process_commands(
             cmd_rx,
@@ -239,6 +306,7 @@ async fn main() -> Result<()> {
             backlight_scroll,
             cmd_reconcilers,
             open_gui_pending,
+            cmd_notifier,
         )
         .await;
     });
@@ -284,6 +352,7 @@ async fn refresh_state(
     session: &tokio::sync::RwLock<Option<SessionClient>>,
     handle: &ksni::Handle<TisvlayTray>,
     reconcilers: &Reconcilers,
+    notifier: &Notifier,
 ) {
     let session_ref = session.read().await;
     let session_client = session_ref.as_ref();
@@ -299,21 +368,56 @@ async fn refresh_state(
                 }
             }
             debug!(count = tvs.len(), "Refresh: state updated");
-            handle
+            // Diff inside the `handle.update` closure where the prior
+            // `t.tvs` is the authoritative baseline. The
+            // `DaemonDisappeared` arm clears `t.tvs` outside the
+            // trigger path; without diffing here, the next refresh
+            // would see "all TVs reappeared" and storm
+            // `tv_connection` notifications. See the Tray1
+            // notifications section in docs/design.md for the full
+            // reasoning.
+            let events = handle
                 .update(|t| {
+                    let events = diff_connection_events(&t.tvs, &tvs);
                     t.tvs = tvs;
                     t.daemon_available = true;
+                    events
                 })
-                .await;
+                .await
+                .unwrap_or_default();
+            for event in events {
+                let (summary, body, urgency) = if event.became_connected {
+                    (
+                        gettext("Connected to {0}").replace("{0}", &event.tv_name),
+                        String::new(),
+                        Urgency::Low,
+                    )
+                } else {
+                    (
+                        gettext("Disconnected from {0}").replace("{0}", &event.tv_name),
+                        gettext("Reconnecting in the background."),
+                        Urgency::Low,
+                    )
+                };
+                notifier.notify(NotificationCategory::TvConnection, summary, body, urgency);
+            }
         }
         Err(e) => {
             debug!(error = %e, "Refresh: state fetch failed");
+            // A transient fetch failure (daemon busy, one-off timeout)
+            // is "state unknown," not "every TV disconnected." Only
+            // flag the daemon unavailable — which makes the menu show
+            // the offline banner and skip per-TV rendering entirely,
+            // so the cached `connected` flags are never read here.
+            // Leave `t.tvs` untouched so the next successful refresh
+            // diffs against the real prior state instead of fabricating
+            // a false→true "Connected" storm for TVs that never
+            // dropped. A genuine daemon exit arrives separately as
+            // `StateEvent::DaemonDisappeared`, which clears `t.tvs` and
+            // fires the single `DaemonOffline` notification.
             handle
                 .update(|t| {
                     t.daemon_available = false;
-                    for tv in &mut t.tvs {
-                        tv.connected = false;
-                    }
                 })
                 .await;
         }
@@ -331,6 +435,7 @@ async fn watch_state(
     session: Arc<tokio::sync::RwLock<Option<SessionClient>>>,
     handle: ksni::Handle<TisvlayTray>,
     reconcilers: Reconcilers,
+    notifier: Notifier,
 ) {
     let mut watcher = match StateWatcher::new(&daemon, Default::default()).await {
         Ok(w) => w,
@@ -339,6 +444,32 @@ async fn watch_state(
             return;
         }
     };
+
+    // Spawn per-TV `Tv1.Power.PowerCycleProgress` listeners — one
+    // task per TV reading the stream for `wol_sent → connected` vs
+    // `wol_sent → failed` transitions. Subscribed on every refresh
+    // (idempotent: existing subscriptions are kept, gone TVs get
+    // their tasks aborted). See `PowerCycleManager::sync_from_daemon`
+    // for the per-TV lifecycle.
+    let power_cycle_state = power_cycle::PowerCycleManager::new();
+    {
+        let daemon = daemon.clone();
+        let manager = power_cycle_state.clone();
+        let notifier = notifier.clone();
+        tokio::spawn(async move {
+            manager.sync_from_daemon(daemon, &notifier).await;
+        });
+    }
+    // Pairing-progress watcher — one persistent task reading the
+    // bus-wide `Manager1.PairingProgress` signal, emitting only on
+    // terminal `complete` / `failed` phases.
+    {
+        let daemon = daemon.clone();
+        let notifier = notifier.clone();
+        tokio::spawn(async move {
+            pairing::watch_pairing_outcomes(daemon, notifier).await;
+        });
+    }
 
     // `watcher.next() → refresh.await` inline halts signal_stream
     // draining and wedges the connection under flood. See
@@ -349,15 +480,16 @@ async fn watch_state(
         let session = session.clone();
         let handle = handle.clone();
         let reconcilers = reconcilers.clone();
+        let notifier = notifier.clone();
         trigger.fire(move || {
             let daemon = daemon.clone();
             let session = session.clone();
             let handle = handle.clone();
             let reconcilers = reconcilers.clone();
-            async move { refresh_state(&daemon, &session, &handle, &reconcilers).await }
+            let notifier = notifier.clone();
+            async move { refresh_state(&daemon, &session, &handle, &reconcilers, &notifier).await }
         });
     };
-
     loop {
         if handle.is_closed() {
             break;
@@ -368,19 +500,42 @@ async fn watch_state(
         };
 
         match event {
-            StateEvent::DaemonStateChanged(_)
-            | StateEvent::DaemonAppeared
-            | StateEvent::TvUserProfileChanged
+            StateEvent::DaemonStateChanged(_) | StateEvent::FallbackPoll => {
+                trigger_refresh();
+            }
+            StateEvent::DaemonAppeared => {
+                // Re-sync per-TV power-cycle subscriptions — the
+                // previous batch (if any) was bound to a connection
+                // that no longer exists.
+                let daemon = daemon.clone();
+                let manager = power_cycle_state.clone();
+                let notifier = notifier.clone();
+                tokio::spawn(async move {
+                    manager.sync_from_daemon(daemon, &notifier).await;
+                });
+                trigger_refresh();
+            }
+            StateEvent::TvUserProfileChanged
             | StateEvent::SystemProfileChanged(_)
             | StateEvent::SystemProfileAdded(_)
             | StateEvent::SystemProfileRemoved(_)
             | StateEvent::UserProfileChanged(_)
             | StateEvent::UserProfileAdded(_)
-            | StateEvent::UserProfileRemoved(_)
-            | StateEvent::FallbackPoll => {
+            | StateEvent::UserProfileRemoved(_) => {
                 trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
+                notifier.notify(
+                    NotificationCategory::DaemonOffline,
+                    gettext("TisVlay daemon stopped"),
+                    gettext("TV controls are unavailable until the daemon restarts."),
+                    Urgency::Critical,
+                );
+                // Drop all per-TV power-cycle subscriptions — they
+                // were bound to the now-departed daemon connection.
+                // Awaited so the abort completes before the loop can
+                // pick up a subsequent `DaemonAppeared` re-sync.
+                power_cycle_state.clear().await;
                 handle
                     .update(|tray: &mut TisvlayTray| {
                         tray.daemon_available = false;
@@ -389,11 +544,11 @@ async fn watch_state(
                     .await;
             }
             StateEvent::SessionAppeared => {
-                if let Ok(client) = SessionClient::new().await {
-                    if client.is_available().await {
-                        *session.write().await = Some(client);
-                        trigger_refresh();
-                    }
+                if let Ok(client) = SessionClient::new().await
+                    && client.is_available().await
+                {
+                    *session.write().await = Some(client);
+                    trigger_refresh();
                 }
             }
             StateEvent::SessionDisappeared => {
@@ -402,8 +557,13 @@ async fn watch_state(
             }
             // Tray's own service appearing/disappearing isn't
             // actionable here — that's the tray itself, not a peer
-            // we depend on for state.
-            StateEvent::TrayAppeared | StateEvent::TrayDisappeared => {}
+            // we depend on for state. Same for the tray's own
+            // notification-settings property: the D-Bus handler
+            // already updated our shared `enabled_bits` atomic
+            // before the signal even left this process.
+            StateEvent::TrayAppeared
+            | StateEvent::TrayDisappeared
+            | StateEvent::TrayNotificationSettingsChanged => {}
         }
     }
 }
@@ -419,6 +579,7 @@ async fn process_commands(
     backlight_scroll: Coalescer<String, i32>,
     reconcilers: Reconcilers,
     open_gui_pending: Arc<AtomicBool>,
+    notifier: Notifier,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         debug!(cmd = ?cmd, "Processing tray command");
@@ -457,7 +618,7 @@ async fn process_commands(
                     }
                 }
                 drop(session_ref);
-                refresh_state(&daemon, &session, &handle, &reconcilers).await;
+                refresh_state(&daemon, &session, &handle, &reconcilers, &notifier).await;
             }
             TrayCommand::PowerOn(id) => {
                 if let Err(e) = daemon.power_on(&id).await {
@@ -539,16 +700,12 @@ async fn process_commands(
             }
         }
 
-        // Refresh state after command so menu reflects the change
-        let session_ref = session.read().await;
-        if let Ok(tvs) = fetch_all_state(&daemon, session_ref.as_ref()).await {
-            handle
-                .update(|t| {
-                    t.tvs = tvs;
-                    t.daemon_available = true;
-                })
-                .await;
-        }
+        // Refresh state after command so menu reflects the change.
+        // Routed through `refresh_state` (not an inline fetch) so the
+        // diff path fires `tv_connection` notifications when a
+        // user-initiated `PowerOn` brings a TV up — same path the
+        // signal-driven refreshes take.
+        refresh_state(&daemon, &session, &handle, &reconcilers, &notifier).await;
     }
 }
 

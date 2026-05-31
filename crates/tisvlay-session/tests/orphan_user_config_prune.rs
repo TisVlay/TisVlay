@@ -35,7 +35,7 @@ async fn settle() {
 async fn removing_tv_prunes_orphan_user_config_entry() {
     // Pre-seed a user config with an assignment for the TV we're
     // about to register and remove. Pinned to a tempfile so we
-    // don't pollute the dev's real ~/.config/tisvlay/config.toml.
+    // don't pollute the dev's real ~/.config/tisvlay/session.toml.
     let tmpdir = tempfile::tempdir().unwrap();
     let config_path: PathBuf = tmpdir.path().join("session.toml");
     let tv_uuid = test_tv_uuid("orphan_prune").to_string();

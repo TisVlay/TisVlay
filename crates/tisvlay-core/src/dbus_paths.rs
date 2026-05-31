@@ -27,6 +27,12 @@ pub const SESSION_PATH: &str = "/org/tisvlay/Session";
 /// D-Bus service name for the tray binary's self-introspection surface.
 pub const TRAY_SERVICE: &str = "org.tisvlay.Tray";
 
+/// D-Bus interface name for the tray's `Tray1` surface.
+pub const TRAY_INTERFACE: &str = "org.tisvlay.Tray1";
+
+/// D-Bus object path for the tray service.
+pub const TRAY_PATH: &str = "/org/tisvlay/Tray";
+
 /// D-Bus service name for the GUI binary's self-introspection surface.
 pub const GUI_SERVICE: &str = "org.tisvlay.Gui";
 

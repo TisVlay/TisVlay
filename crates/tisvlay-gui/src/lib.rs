@@ -83,8 +83,8 @@ use clap::Parser;
 use gettextrs::gettext;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
-    Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient, ReconcilerMap,
-    SessionClient, TrayClient,
+    Coalescer, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
+    NotificationCategory, NotificationSettingsBody, ReconcilerMap, SessionClient, TrayClient,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -600,6 +600,7 @@ pub fn run() -> Result<()> {
         &app,
         daemon.clone(),
         session.clone(),
+        tray.clone(),
         reconcilers.clone(),
         wizard_entries.clone(),
         wizard_gen.clone(),
@@ -640,6 +641,7 @@ fn register_callbacks(
     app: &AppWindow,
     daemon: Arc<DaemonClient>,
     session: Arc<RwLock<Option<SessionClient>>>,
+    tray: Arc<RwLock<Option<TrayClient>>>,
     reconcilers: Reconcilers,
     wizard_entries: WizardEntries,
     wizard_gen: WizardGen,
@@ -1378,10 +1380,12 @@ fn register_callbacks(
 
     let d = daemon.clone();
     let s = session.clone();
+    let tr = tray.clone();
     let app_weak = app.as_weak();
     daemon_global.on_reload_config(move || {
         let d = d.clone();
         let s = s.clone();
+        let tr = tr.clone();
         let app_weak = app_weak.clone();
         tokio::spawn(async move {
             // Reload affects both TVs and profiles — dual-route the
@@ -1404,6 +1408,19 @@ fn register_callbacks(
                 push_tvs_error(&app_weak, title.clone(), msg.clone());
                 push_profiles_error(&app_weak, title, msg);
             }
+            drop(session_ref);
+            // Tell the tray to re-read `tray.toml` too, then pull the
+            // body immediately rather than waiting only on the tray's
+            // `PropertiesChanged` echo — keeps the settings pane in sync
+            // with a hand-edited config on the same click.
+            let tray_ref = tr.read().await;
+            if let Some(client) = tray_ref.as_ref()
+                && let Err(e) = client.reload_config().await
+            {
+                warn!(error = %format!("{e}"), "tray reload_config failed");
+            }
+            drop(tray_ref);
+            state_watch::refresh_tray_notifications(&tr, &app_weak).await;
         });
     });
 
@@ -2137,4 +2154,116 @@ fn register_callbacks(
                 .await;
         });
     });
+
+    // -----------------------------------------------------------------
+    // Tray global — notification settings + test notification.
+    //
+    // Each per-switch toggle gets wrapped into a one-field
+    // `NotificationSettingsBody` so the user can change one category
+    // without re-stating the others (`UpdateNotificationSettings`
+    // applies only `Some(_)` fields). The wire-side category name
+    // is the snake_case string from the Slint global.
+    //
+    // Tray-offline → warn + no-op. The settings pane already
+    // disables the switches when `Tray.available == false`; this
+    // guard is the defense for a race where the switch was clicked
+    // just before the tray disappeared.
+    // -----------------------------------------------------------------
+    let tray_global = app.global::<Tray>();
+    let t = tray.clone();
+    tray_global.on_set_notification(move |category, enabled| {
+        // Fire-and-forget the D-Bus write. The tray emits
+        // `PropertiesChanged`, which `StateWatcher` turns into a
+        // `TrayNotificationSettingsChanged` refresh that pushes the
+        // canonical body back into `Tray.notifications`. That refresh
+        // reads the tray's live value (the proxy is built
+        // `CacheProperties::No`), so the settings pane reflects the new
+        // state even after a pane rebuild — no optimistic local write
+        // needed.
+        let t = t.clone();
+        let category = category.to_string();
+        tokio::spawn(async move {
+            let guard = t.read().await;
+            let Some(client) = guard.as_ref() else {
+                warn!(category = %category, "set-notification: tray service unavailable");
+                return;
+            };
+            let body = build_notification_update(&category, enabled);
+            if let Err(e) = client.update_notification_settings(body).await {
+                warn!(category = %category, enabled, error = %e, "UpdateNotificationSettings failed");
+            }
+        });
+    });
+
+    let t = tray.clone();
+    tray_global.on_send_test_notification(move || {
+        let t = t.clone();
+        tokio::spawn(async move {
+            let guard = t.read().await;
+            let Some(client) = guard.as_ref() else {
+                warn!("send-test-notification: tray service unavailable");
+                return;
+            };
+            if let Err(e) = client.send_test_notification().await {
+                warn!(error = %e, "SendTestNotification failed");
+            }
+        });
+    });
+}
+
+/// Wrap a single (category, enabled) pair into a partial
+/// `NotificationSettingsBody`. Unknown category names produce a
+/// fully-`None` body (a no-op `UpdateNotificationSettings` call),
+/// not a panic — the wire identifiers are settings-pane–controlled,
+/// so an unrecognized string here would indicate a missed Slint /
+/// Rust sync we'd want to log rather than crash on.
+fn build_notification_update(category: &str, enabled: bool) -> NotificationSettingsBody {
+    let mut body = NotificationSettingsBody::default();
+    match NotificationCategory::from_key(category) {
+        Some(cat) => cat.set(&mut body, enabled),
+        None => warn!(category = %category, "Unknown notification category from Slint"),
+    }
+    body
+}
+
+#[cfg(test)]
+mod notification_key_tests {
+    use super::NotificationCategory;
+
+    /// The settings pane's `Daemon.set-notification("<key>", …)` string
+    /// literals are a stringly-typed contract with
+    /// [`NotificationCategory::from_key`]: a typo on either side makes a
+    /// switch a silent no-op (the GUI handler warn-logs and applies an
+    /// all-`None` body). Guard the boundary by parsing the literals out
+    /// of the Slint source at test time and asserting they map onto
+    /// exactly the category set — every category has a row, every row
+    /// names a real category.
+    #[test]
+    fn slint_notification_keys_match_core() {
+        const SLINT: &str = include_str!("../ui/components/settings_pane.slint");
+        const MARKER: &str = "set-notification(\"";
+
+        let mut covered = Vec::new();
+        for (idx, _) in SLINT.match_indices(MARKER) {
+            let rest = &SLINT[idx + MARKER.len()..];
+            let key = rest.split('"').next().expect("opening quote has a close");
+            let cat = NotificationCategory::from_key(key)
+                .unwrap_or_else(|| panic!("Slint key {key:?} has no NotificationCategory"));
+            covered.push(cat);
+        }
+
+        // Every category appears exactly once; no extras, none missing.
+        for cat in NotificationCategory::ALL {
+            let count = covered.iter().filter(|&&c| c == cat).count();
+            assert_eq!(
+                count, 1,
+                "category {cat:?} should have exactly one Slint row"
+            );
+        }
+        assert_eq!(
+            covered.len(),
+            NotificationCategory::ALL.len(),
+            "settings pane has a notification row with no matching category"
+        );
+    }
 }
