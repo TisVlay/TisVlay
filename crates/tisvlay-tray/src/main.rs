@@ -398,7 +398,7 @@ async fn refresh_state(
                         Urgency::Low,
                     )
                 };
-                notifier.notify(NotificationCategory::TvConnection, &summary, &body, urgency);
+                notifier.notify(NotificationCategory::TvConnection, summary, body, urgency);
             }
         }
         Err(e) => {
@@ -526,8 +526,8 @@ async fn watch_state(
             StateEvent::DaemonDisappeared => {
                 notifier.notify(
                     NotificationCategory::DaemonOffline,
-                    &gettext("TisVlay daemon stopped"),
-                    &gettext("TV controls are unavailable until the daemon restarts."),
+                    gettext("TisVlay daemon stopped"),
+                    gettext("TV controls are unavailable until the daemon restarts."),
                     Urgency::Critical,
                 );
                 // Drop all per-TV power-cycle subscriptions — they

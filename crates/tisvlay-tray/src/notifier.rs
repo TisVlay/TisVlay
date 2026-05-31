@@ -83,8 +83,8 @@ impl Notifier {
     pub(crate) fn notify(
         &self,
         category: NotificationCategory,
-        summary: &str,
-        body: &str,
+        summary: String,
+        body: String,
         urgency: Urgency,
     ) {
         let bits = self.enabled_bits.load(Ordering::Acquire);
@@ -102,14 +102,14 @@ impl Notifier {
     /// silently swallow the diagnostic the user explicitly asked for.
     /// The worker still serializes it behind any in-flight emit, so a
     /// burst of test clicks can't pile up concurrent bus round-trips.
-    pub(crate) fn notify_test(&self, summary: &str, body: &str) {
+    pub(crate) fn notify_test(&self, summary: String, body: String) {
         self.queue(summary, body, Urgency::Normal, true);
     }
 
-    fn queue(&self, summary: &str, body: &str, urgency: Urgency, bypass_backoff: bool) {
+    fn queue(&self, summary: String, body: String, urgency: Urgency, bypass_backoff: bool) {
         let req = EmitRequest {
-            summary: summary.to_string(),
-            body: body.to_string(),
+            summary,
+            body,
             urgency,
             bypass_backoff,
         };

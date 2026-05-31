@@ -199,8 +199,8 @@ impl TrayService {
         // pass can re-route through `gettext` once `tisvlay-tray`'s
         // catalog gains the keys.
         self.notifier.notify_test(
-            "Test notification",
-            "TisVlay can reach your desktop's notification service.",
+            "Test notification".to_string(),
+            "TisVlay can reach your desktop's notification service.".to_string(),
         );
         Ok(())
     }

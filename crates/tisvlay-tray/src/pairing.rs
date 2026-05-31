@@ -44,8 +44,8 @@ pub(crate) async fn watch_pairing_outcomes(daemon: Arc<DaemonClient>, notifier: 
                     let summary = gettext("Paired with {0}").replace("{0}", &tv_name);
                     notifier.notify(
                         NotificationCategory::TvPairing,
-                        &summary,
-                        &gettext("The TV is ready to use."),
+                        summary,
+                        gettext("The TV is ready to use."),
                         Urgency::Normal,
                     );
                 }
@@ -59,8 +59,8 @@ pub(crate) async fn watch_pairing_outcomes(daemon: Arc<DaemonClient>, notifier: 
                     // catalogs.
                     notifier.notify(
                         NotificationCategory::TvPairing,
-                        &summary,
-                        &message,
+                        summary,
+                        message,
                         Urgency::Normal,
                     );
                 }

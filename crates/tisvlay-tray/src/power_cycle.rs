@@ -187,18 +187,18 @@ async fn watch_one_tv(
             PowerCyclePhase::Connected if waking => {
                 waking = false;
                 let summary = gettext("{0} is awake").replace("{0}", &tv_name);
-                notifier.notify(NotificationCategory::TvWake, &summary, "", Urgency::Low);
+                notifier.notify(
+                    NotificationCategory::TvWake,
+                    summary,
+                    String::new(),
+                    Urgency::Low,
+                );
             }
             PowerCyclePhase::Failed if waking => {
                 waking = false;
                 let summary = gettext("Couldn't wake {0}").replace("{0}", &tv_name);
                 let body = gettext("Check the TV's power and Wake-on-LAN setting.");
-                notifier.notify(
-                    NotificationCategory::TvWake,
-                    &summary,
-                    &body,
-                    Urgency::Normal,
-                );
+                notifier.notify(NotificationCategory::TvWake, summary, body, Urgency::Normal);
             }
             // Terminal without a preceding WolSent — a direct reconnect,
             // already covered by the `tv_connection` diff.

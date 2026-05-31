@@ -748,12 +748,16 @@ impl NotificationCategory {
     }
 
     /// Whether this category defaults on in a fresh config. Drives
-    /// [`NotificationSettingsBody::defaults`].
+    /// [`NotificationSettingsBody::defaults`]. One arm per variant so a
+    /// new category is a missing-arm compile error that forces a
+    /// deliberate on/off decision rather than inheriting a blanket
+    /// default.
     pub const fn default_enabled(self) -> bool {
-        // Every category is on by default today; kept as a per-variant
-        // match so a future opt-out category is a deliberate edit here.
         match self {
-            Self::TvConnection | Self::TvPairing | Self::TvWake | Self::DaemonOffline => true,
+            Self::TvConnection => true,
+            Self::TvPairing => true,
+            Self::TvWake => true,
+            Self::DaemonOffline => true,
         }
     }
 }
