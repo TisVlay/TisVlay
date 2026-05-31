@@ -1108,6 +1108,26 @@ impl DaemonClient {
         Ok(tvs)
     }
 
+    /// Resolve a TV's display name from its UUID, falling back to the
+    /// UUID itself when the lookup fails or the TV isn't in the list
+    /// yet (e.g. a fresh-pair race where a terminal pairing phase emits
+    /// just before the `Tv1` interface registers). The single home for
+    /// the name-or-UUID fallback so every consumer that renders a TV
+    /// identifier in user-facing text behaves the same way.
+    pub async fn resolve_tv_name(&self, tv_id: &str) -> String {
+        match self.list_tvs().await {
+            Ok(tvs) => tvs
+                .into_iter()
+                .find(|t| t.uuid == tv_id)
+                .map(|t| t.name)
+                .unwrap_or_else(|| tv_id.to_string()),
+            Err(e) => {
+                warn!(tv_id = %tv_id, error = %e, "TV-name lookup failed");
+                tv_id.to_string()
+            }
+        }
+    }
+
     /// Discover TVs on the network.
     ///
     /// Returns `(id, name, address, hardware_id, vendor, vendor_data)`

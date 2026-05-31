@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use gettextrs::gettext;
 use notify_rust::Urgency;
 use tisvlay_core::{DaemonClient, NotificationCategory};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::notifier::Notifier;
 
@@ -40,7 +40,7 @@ pub(crate) async fn watch_pairing_outcomes(daemon: Arc<DaemonClient>, notifier: 
         while let Some((tv_id, phase, message)) = stream.next().await {
             match phase.as_str() {
                 "complete" => {
-                    let tv_name = resolve_tv_name(&daemon, &tv_id).await;
+                    let tv_name = daemon.resolve_tv_name(&tv_id).await;
                     let summary = gettext("Paired with {0}").replace("{0}", &tv_name);
                     notifier.notify(
                         NotificationCategory::TvPairing,
@@ -50,7 +50,7 @@ pub(crate) async fn watch_pairing_outcomes(daemon: Arc<DaemonClient>, notifier: 
                     );
                 }
                 "failed" => {
-                    let tv_name = resolve_tv_name(&daemon, &tv_id).await;
+                    let tv_name = daemon.resolve_tv_name(&tv_id).await;
                     let summary = gettext("Pairing failed for {0}").replace("{0}", &tv_name);
                     // `message` is daemon-emitted in English today —
                     // see docs/i18n.md's note on cross-process
@@ -69,23 +69,5 @@ pub(crate) async fn watch_pairing_outcomes(daemon: Arc<DaemonClient>, notifier: 
         }
         debug!("pairing-progress stream ended; resubscribing");
         tokio::time::sleep(RESUBSCRIBE_DELAY).await;
-    }
-}
-
-/// Look up the TV's friendly name from the daemon. Falls back to the
-/// UUID when the lookup fails or the TV isn't in the list yet (timing
-/// race during a fresh pair where the TV interface is registered
-/// just before the terminal phase emits).
-async fn resolve_tv_name(daemon: &DaemonClient, tv_id: &str) -> String {
-    match daemon.list_tvs().await {
-        Ok(tvs) => tvs
-            .into_iter()
-            .find(|t| t.uuid == tv_id)
-            .map(|t| t.name)
-            .unwrap_or_else(|| tv_id.to_string()),
-        Err(e) => {
-            warn!(tv_id = %tv_id, error = %e, "pairing-name lookup failed");
-            tv_id.to_string()
-        }
     }
 }
