@@ -378,7 +378,7 @@ async fn watch_state(
 /// (every subsequent mutation, whether via D-Bus or a hand-edit +
 /// `ReloadConfig`). Tray-offline → no-op (the global keeps its
 /// last-fetched values for the visible-but-disabled UX).
-async fn refresh_tray_notifications(
+pub(crate) async fn refresh_tray_notifications(
     tray: &RwLock<Option<TrayClient>>,
     app_weak: &slint::Weak<AppWindow>,
 ) {
@@ -408,7 +408,7 @@ async fn refresh_tray_notifications(
 /// `NotificationSettingsBody::defaults()` are the safe fallback for
 /// the theoretical case where a future tray returns a partial body
 /// (forward-compat with version skew).
-fn body_to_slint(body: &NotificationSettingsBody) -> TrayNotificationSettings {
+pub(crate) fn body_to_slint(body: &NotificationSettingsBody) -> TrayNotificationSettings {
     let defaults = NotificationSettingsBody::defaults();
     TrayNotificationSettings {
         tv_connection: body
@@ -421,6 +421,20 @@ fn body_to_slint(body: &NotificationSettingsBody) -> TrayNotificationSettings {
             .daemon_offline
             .or(defaults.daemon_offline)
             .unwrap_or(true),
+    }
+}
+
+/// Inverse of [`body_to_slint`]: lift the Slint struct (every field
+/// `bool`) back into a fully-populated `NotificationSettingsBody`
+/// (every field `Some`). Used by the settings-pane toggle handler to
+/// apply an optimistic single-category edit to the current global
+/// snapshot before the D-Bus round-trip lands.
+pub(crate) fn slint_to_body(settings: &TrayNotificationSettings) -> NotificationSettingsBody {
+    NotificationSettingsBody {
+        tv_connection: Some(settings.tv_connection),
+        tv_pairing: Some(settings.tv_pairing),
+        tv_wake: Some(settings.tv_wake),
+        daemon_offline: Some(settings.daemon_offline),
     }
 }
 

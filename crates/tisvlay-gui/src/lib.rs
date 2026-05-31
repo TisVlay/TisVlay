@@ -2156,18 +2156,55 @@ fn register_callbacks(
     // -----------------------------------------------------------------
     let tray_global = app.global::<Tray>();
     let t = tray.clone();
+    let aw = app.as_weak();
     tray_global.on_set_notification(move |category, enabled| {
-        let t = t.clone();
         let category = category.to_string();
+
+        // Optimistic update. This callback runs on the UI thread, so
+        // drive `Tray.notifications` to the intended value *now*. The
+        // settings pane is conditionally instantiated (`if active-pane
+        // == settings`), so navigating away and back tears it down and
+        // rebuilds it — the rebuilt switch reads its `checked` straight
+        // from this global. Without the optimistic write the global
+        // still holds the pre-toggle value until the async D-Bus
+        // round-trip + `PropertiesChanged` refresh lands, so a quick
+        // nav-away/back shows the switch snapping back to its old
+        // state. The refresh confirms this value; the error paths below
+        // revert it to ground truth.
+        if let Some(cat) = NotificationCategory::from_key(&category) {
+            if let Some(app) = aw.upgrade() {
+                let g = app.global::<Tray>();
+                let mut body = state_watch::slint_to_body(&g.get_notifications());
+                cat.set(&mut body, enabled);
+                g.set_notifications(state_watch::body_to_slint(&body));
+            }
+        } else {
+            warn!(category = %category, "Unknown notification category from Slint");
+        }
+
+        let t = t.clone();
+        let aw = aw.clone();
         tokio::spawn(async move {
-            let guard = t.read().await;
-            let Some(client) = guard.as_ref() else {
-                warn!(category = %category, "set-notification: tray service unavailable");
-                return;
-            };
             let body = build_notification_update(&category, enabled);
-            if let Err(e) = client.update_notification_settings(body).await {
-                warn!(category = %category, enabled, error = %e, "UpdateNotificationSettings failed");
+            let result = {
+                let guard = t.read().await;
+                match guard.as_ref() {
+                    Some(client) => Some(client.update_notification_settings(body).await),
+                    None => None,
+                }
+            };
+            match result {
+                Some(Ok(())) => {}
+                Some(Err(e)) => {
+                    warn!(category = %category, enabled, error = %e, "UpdateNotificationSettings failed");
+                    // Roll the optimistic value back to what the tray
+                    // actually holds.
+                    state_watch::refresh_tray_notifications(&t, &aw).await;
+                }
+                None => {
+                    warn!(category = %category, "set-notification: tray service unavailable");
+                    state_watch::refresh_tray_notifications(&t, &aw).await;
+                }
             }
         });
     });
