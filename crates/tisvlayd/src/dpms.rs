@@ -1,8 +1,8 @@
 //! Host display-connector DPMS watcher.
 //!
 //! Polls the legacy sysfs `dpms` attribute of each EDID-matched display
-//! connector and fires per-TV [`SystemEvent::DisplayBlank`] /
-//! [`SystemEvent::DisplayWake`] on On <-> blanked transitions, so a
+//! connector and fires per-TV [`SystemEvent::DpmsOff`] /
+//! [`SystemEvent::DpmsOn`] on On <-> blanked transitions, so a
 //! managed TV can mirror the power state of the host display it shares a
 //! connector with. The connector match itself is owned by
 //! [`crate::desktop_probe`] / [`crate::state_forwarder`]; this module
@@ -93,8 +93,8 @@ impl EdgeDetector {
     fn observe(&mut self, connector: &str, now: DpmsState) -> Option<SystemEvent> {
         match self.last.insert(connector.to_string(), now) {
             Some(prev) if prev != now => Some(match now {
-                DpmsState::Blanked => SystemEvent::DisplayBlank,
-                DpmsState::On => SystemEvent::DisplayWake,
+                DpmsState::Blanked => SystemEvent::DpmsOff,
+                DpmsState::On => SystemEvent::DpmsOn,
             }),
             _ => None,
         }
@@ -160,7 +160,7 @@ async fn poll_once(
         let tv_id = tv_id.clone();
         tokio::spawn(async move {
             manager
-                .execute_system_event_for_tv(&tv_id, event, "display")
+                .execute_system_event_for_tv(&tv_id, event, "dpms")
                 .await;
         });
     }
@@ -253,12 +253,12 @@ mod tests {
         // On → Blanked.
         assert!(matches!(
             edges.observe("HDMI-A-1", DpmsState::Blanked),
-            Some(SystemEvent::DisplayBlank)
+            Some(SystemEvent::DpmsOff)
         ));
         // Blanked → On.
         assert!(matches!(
             edges.observe("HDMI-A-1", DpmsState::On),
-            Some(SystemEvent::DisplayWake)
+            Some(SystemEvent::DpmsOn)
         ));
     }
 

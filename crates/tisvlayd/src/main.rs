@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
 
     // Spawn the DPMS connector watcher: polls each EDID-matched host
     // display's sysfs power attribute and mirrors blank/wake onto the TV
-    // per its system profile's on_display_blank / on_display_wake.
+    // per its system profile's on_dpms_off / on_dpms_on.
     dpms::spawn_dpms_monitor(shared_manager.clone());
 
     // Wait for shutdown or reload signal

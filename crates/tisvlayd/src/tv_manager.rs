@@ -499,8 +499,8 @@ pub enum SystemEvent {
     NoSession,
     Sleep,
     Wake,
-    DisplayBlank,
-    DisplayWake,
+    DpmsOff,
+    DpmsOn,
 }
 
 /// Apply a key-value TV option to a `TvConfig`.
@@ -823,8 +823,8 @@ impl TvManager {
             SystemEvent::NoSession => tv.system_profile.on_no_session,
             SystemEvent::Sleep => tv.system_profile.on_sleep,
             SystemEvent::Wake => tv.system_profile.on_wake,
-            SystemEvent::DisplayBlank => tv.system_profile.on_display_blank,
-            SystemEvent::DisplayWake => tv.system_profile.on_display_wake,
+            SystemEvent::DpmsOff => tv.system_profile.on_dpms_off,
+            SystemEvent::DpmsOn => tv.system_profile.on_dpms_on,
         }
     }
 
@@ -1201,8 +1201,8 @@ impl TvManager {
             on_no_session: Some(resolved.on_no_session),
             on_sleep: Some(resolved.on_sleep),
             on_wake: Some(resolved.on_wake),
-            on_display_blank: Some(resolved.on_display_blank),
-            on_display_wake: Some(resolved.on_display_wake),
+            on_dpms_off: Some(resolved.on_dpms_off),
+            on_dpms_on: Some(resolved.on_dpms_on),
             automate_when: Some(resolved.automate_when),
         })
     }

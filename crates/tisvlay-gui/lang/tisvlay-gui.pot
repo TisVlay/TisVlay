@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-05-31 17:20-0500\n"
+"POT-Creation-Date: 2026-05-31 18:21-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -61,11 +61,11 @@ msgid "On wake"
 msgstr ""
 
 #: crates/tisvlay-gui/src/profiles.rs:236
-msgid "On display blank"
+msgid "On DPMS off"
 msgstr ""
 
 #: crates/tisvlay-gui/src/profiles.rs:237
-msgid "On display wake"
+msgid "On DPMS on"
 msgstr ""
 
 #: crates/tisvlay-gui/src/profiles.rs:238

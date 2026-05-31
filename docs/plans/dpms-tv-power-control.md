@@ -4,14 +4,14 @@
 
 The user's TVs hang off an Nvidia GPU with no HDMI-CEC, so the desktop can't tell the TV "the screen blanked, blank too" the way a CEC-capable setup would. Today `tisvlay-session` approximates this with a session-bus path (ScreenSaver D-Bus + Wayland idle → `Tv1.Power`/`Tv1.Screen`). A prior attempt (PR #34) tried a much broader DE-integration (KWin brightness sync, PipeWire volume sync, an out-of-tree kernel module) and was scrapped as too large.
 
-This time the goal is a **narrow, targeted** addition: one new event/action pair on the **system profile** so a TV reacts to the host display connector's **DPMS** power state (panel blanks → blank the TV; panel wakes → wake the TV), driven entirely **inside `tisvlayd`** with no new per-DE session code. The wire fields are named `on_display_blank`/`on_display_wake` (plain-English, matching the `on_sleep`/`on_wake` siblings); "DPMS" appears only in the watcher module/docs that explain how the signal is sourced.
+This time the goal is a **narrow, targeted** addition: one new event/action pair on the **system profile** so a TV reacts to the host display connector's **DPMS** power state (panel blanks → blank the TV; panel wakes → wake the TV), driven entirely **inside `tisvlayd`** with no new per-DE session code. The wire fields are named `on_dpms_off`/`on_dpms_on` — the ecosystem-consensus DPMS state vocabulary (`xset`/`kscreen-doctor`/wlr-protocol all use on/off), pinning the signal source.
 
 **Prior-art finding (web research):** no Linux open-source project does "DPMS → networked TV power" today. The established bridge pattern is an idle manager (swayidle / xss-lock / hypridle) or a CEC bridge (`cec-dpms`) running a script. A daemon-side watcher that reads the EDID-matched connector's `/sys/class/drm/<conn>/dpms` directly — reusing tisvlay's existing connector matching — is novel and fits the "system profile, no per-DE" framing.
 
 **Decisions made with the user:**
-- Wire/config field names: `on_display_blank` / `on_display_wake`. GUI labels: "On display blank" / "On display wake".
+- Wire/config field names: `on_dpms_off` / `on_dpms_on`. GUI labels: "On DPMS off" / "On DPMS on".
 - Resolved defaults for both = `SessionAction::None` (strictly opt-in; the rationale — avoiding double-dispatch against the existing user-profile idle/lock path — lives in `docs/design.md` + the PR, not a code comment).
-- The DPMS path **composes with** the existing `screen_on`/`screen_off` escalation. `screen_on` on an off-ish TV escalates to `power_on` (WoL), so `on_display_wake = ScreenOn` wakes an off-but-live TV for free. Safety comes from two narrow gates, not from suppressing escalation (see Design).
+- The DPMS path **composes with** the existing `screen_on`/`screen_off` escalation. `screen_on` on an off-ish TV escalates to `power_on` (WoL), so `on_dpms_on = ScreenOn` wakes an off-but-live TV for free. Safety comes from two narrow gates, not from suppressing escalation (see Design).
 - If the Wayland sysfs-dpms spike had failed: stop and reassess. It **passed** (below).
 
 ---
@@ -45,12 +45,12 @@ Field order in code is `on_startup, on_shutdown, on_reboot, on_no_session, on_sl
 
 ### A. Core config — `crates/tisvlay-core/src/config.rs`
 
-Add `on_display_blank` / `on_display_wake: Option<SessionAction>` (with `#[serde(default, skip_serializing_if = "Option::is_none")]`) at every site:
+Add `on_dpms_off` / `on_dpms_on: Option<SessionAction>` (with `#[serde(default, skip_serializing_if = "Option::is_none")]`) at every site:
 
 1. `struct SystemProfileConfig`.
 2. `struct ResolvedSystemProfile` (non-`Option`).
 3. `impl Default for ResolvedSystemProfile` — both `SessionAction::None` (no rationale comment; it lives in design.md).
-4. `full_default()` — `Some(d.on_display_blank)` / `Some(d.on_display_wake)`.
+4. `full_default()` — `Some(d.on_dpms_off)` / `Some(d.on_dpms_on)`.
 5. `merge_with_base()` — `self.x.or(base.x)`.
 6. `resolve()` — `self.x.unwrap_or(d.x)`.
 7. `SystemProfileBody` (`#[cfg(feature = "dbus")]`) + `from_config()` + `From<&SystemProfileBody>`.
@@ -59,7 +59,7 @@ Doc comment on the new fields: one line, behavioral ("Action when the matched ho
 
 ### B. Daemon dispatch — `crates/tisvlayd/src/tv_manager.rs`
 
-1. `enum SystemEvent` — add `DisplayBlank`, `DisplayWake`. Update the enum's doc line to name the watcher as a third source (source-agnostic wording).
+1. `enum SystemEvent` — add `DpmsOff`, `DpmsOn`. Update the enum's doc line to name the watcher as a third source (source-agnostic wording).
 2. `get_system_action()` match — add the two arms (compiler-enforced; exhaustive match).
 3. Add `pub async fn execute_system_event_for_tv(&self, tv_id, event, context)`; reimplement `execute_system_event` as a loop over `list_automated_tv_ids()` calling it. Extract `is_tv_automated(tv_id)` from the existing gate (`tv_manager.rs:828-838`). In the per-TV method, also skip when `reconnecting` (gate 2 above).
 4. The resolved-view body constructor in **`get_effective_system_profile`** (`tv_manager.rs:1164`, builds a `SystemProfileBody` from a `ResolvedSystemProfile`) — add both fields.
@@ -72,7 +72,7 @@ Naming mirrors `netlink.rs` (`spawn_link_monitor` / `watch_link_carrier`) and th
 - `DpmsState { On, Blanked }` — `On` vs everything else (Off/Standby/Suspend collapse to `Blanked`).
 - `parse_dpms(&str) -> DpmsState`.
 - `resolve_dpms_path(root, connector) -> Option<PathBuf>` — bare connector (`HDMI-A-1`) → `cardN-HDMI-A-1` via suffix match with a `-` boundary guard (do not re-document the full `cardN-` scheme; it lives in `desktop_probe.rs`). Read both `status` and `dpms` from the resolved dir; treat `status != "connected"` as "not watchable" (gate 1).
-- `EdgeDetector` — per-connector last-state; first observation returns `None` (no boot-time spurious edge); `On→Blanked` → `DisplayBlank`, `Blanked→On` → `DisplayWake`; `retain(active)` drops vanished connectors.
+- `EdgeDetector` — per-connector last-state; first observation returns `None` (no boot-time spurious edge); `On→Blanked` → `DpmsOff`, `Blanked→On` → `DpmsOn`; `retain(active)` drops vanished connectors.
 - `poll_once(manager, root, edges)` — iterate `manager.list_tv_ids()` → `get_desktop_mapping(tv_id)`; skip empty connector or `status != connected`; on an edge, `tokio::spawn` the scoped `execute_system_event_for_tv(tv_id, event, "display")` (off-tick) after updating `EdgeDetector` state.
 - `spawn_dpms_monitor(manager: Arc<TvManager>)` → `watch_dpms(manager, Path::new("/sys/class/drm"), POLL_INTERVAL)` loop. `POLL_INTERVAL = Duration::from_secs(1)`, `MissedTickBehavior::Skip`. Unreadable `/sys/class/drm` → no connectors resolved, harmless no-op loop (matches `enumerate_at`).
 
@@ -83,7 +83,7 @@ Wire the spawn in `crates/tisvlayd/src/main.rs` near the other monitors, passing
 The GUI reuses core's `SystemProfileBody`; the profile pane is fully data-driven (`profiles_pane.slint` iterates `Profiles.editor-fields`) — **no `.slint` change**.
 
 1. `SYSTEM_FIELDS` — two `FieldSpec` enum entries copying `on_wake` (`SESSION_ACTION_OPTIONS`, `EnumClass::SessionAction`), after `on_wake`.
-2. `field_label()` — `gettext("On display blank")` / `gettext("On display wake")` (has a fall-through arm, so add explicitly).
+2. `field_label()` — `gettext("On DPMS off")` / `gettext("On DPMS on")` (has a fall-through arm, so add explicitly).
 3. `read_system_field()` — read both via `session_action_token`.
 4. `set_system_field()` (~line 1110) — patch both via `session_action_patch`.
 
@@ -95,8 +95,8 @@ The GUI reuses core's `SystemProfileBody`; the profile pane is fully data-driven
 
 ### F. Docs, i18n, meta
 
-- `docs/configs/daemon.toml` — add `on_display_blank` / `on_display_wake` to the reserved-default profile with an effect-describing comment (not `(default: none)`).
-- `docs/design.md` — add the fields to both the `SystemProfileBody` Rust listing and the TOML schema block (same position as code); add `on_display_blank`/`on_display_wake` rows to the power-management decisions table (~629) carrying the `None`/opt-in/overlap rationale.
+- `docs/configs/daemon.toml` — add `on_dpms_off` / `on_dpms_on` to the reserved-default profile with an effect-describing comment (not `(default: none)`).
+- `docs/design.md` — add the fields to both the `SystemProfileBody` Rust listing and the TOML schema block (same position as code); add `on_dpms_off`/`on_dpms_on` rows to the power-management decisions table (~629) carrying the `None`/opt-in/overlap rationale.
 - `docs/ideas/event-driven-power-management.md` — reword the "Don't ship sysfs-DPMS polling as the primary path" item to scope the prohibition to the *fast lockscreen-snap-back primary path*; this is an *opt-in, system-profile, secondary* path that doesn't touch that requirement.
 - `.claude/CLAUDE.md` — add `dpms.rs` to the project-structure tree; note in "What's Next" that the DPMS system-profile slice shipped; add a "Known Quirks" entry for the Wayland sysfs-dpms finding (legacy `dpms` attr tracks KWin Wayland blanking).
 - `just i18n-extract` to refresh the `.pot` (hygiene; not a CI gate). CLI needs no change.
@@ -111,13 +111,13 @@ Step 0 (done) → A (core types) → B (daemon SystemEvent + per-TV dispatch + `
 ## Verification (end-to-end)
 
 1. `nix develop -c just check` — pipe once to a file and grep (per workflow prefs).
-2. Real daemon: set a TV's `on_display_blank`/`on_display_wake` (GUI Profiles pane or `busctl` system-profile write), blank/wake the panel via a **real idle timeout**, confirm the TV blanks/wakes within ~1 s. Cross-check `busctl --user monitor org.tisvlay.Daemon`.
+2. Real daemon: set a TV's `on_dpms_off`/`on_dpms_on` (GUI Profiles pane or `busctl` system-profile write), blank/wake the panel via a **real idle timeout**, confirm the TV blanks/wakes within ~1 s. Cross-check `busctl --user monitor org.tisvlay.Daemon`.
 3. Confirm a network-only TV (no matched connector) and a disconnected connector are untouched; confirm the existing session idle/lock blanking still works (idempotent overlap, no regression).
 4. `prek run -a` before handoff.
 
 ## Risks / call-outs
 
 - **Real-idle-timeout sysfs flip** — spike used the explicit command; confirm idle-policy blanking also flips `dpms` (verification step 2).
-- **Escalation semantic** — a remote-turned-off TV can be re-woken by a panel blank→wake cycle when `on_display_wake` is set (opt-in; documented).
+- **Escalation semantic** — a remote-turned-off TV can be re-woken by a panel blank→wake cycle when `on_dpms_on` is set (opt-in; documented).
 - **First-obs swallows a pre-first-tick blank** — a blank that happens before the connector first appears in the mapping is missed until the next wake edge; acceptable for v1, doc line.
 - **Multi-GPU `cardN` ambiguity** — same connector base name on two cards could mis-resolve; systemic to the matcher too, low likelihood on target, note-and-defer.
