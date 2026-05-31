@@ -15,6 +15,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Polkit gating for multi-user shared workstations](ideas/polkit-multi-user.md)
 - [`a{sv}` wire-format migration for vendor-config surfaces](ideas/asv-wire-format-migration.md)
 - [Typed `Failed { reason }` payload across daemon error vocabulary](ideas/typed-failed-reason-payload.md)
+- [Notification-subsystem follow-up cleanups](ideas/notification-subsystem-followups.md)
 
 ## Operational
 
