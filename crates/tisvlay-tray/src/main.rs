@@ -12,6 +12,7 @@ mod power_cycle;
 mod state;
 mod tray;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
@@ -33,7 +34,7 @@ use notify_rust::Urgency;
 use state::{diff_connection_events, fetch_all_state};
 use tisvlay_core::{
     Coalescer, DaemonClient, NotificationCategory, ReconcilerMap, RefreshTrigger, SessionClient,
-    StateEvent, StateWatcher,
+    StateEvent, StateWatcher, absolutize,
 };
 use tray::{ScrollTarget, TisvlayTray, TrayCommand};
 
@@ -63,6 +64,13 @@ struct Args {
     /// Use session bus instead of system D-Bus (e.g. with `tisvlayd --session`)
     #[arg(long)]
     user: bool,
+
+    /// Path to the tray configuration file.
+    ///
+    /// Defaults to ~/.config/tisvlay/tray.toml (XDG) when not specified.
+    /// If the file doesn't exist, documented per-category defaults are used.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
 }
 
 const VOLUME_STEP: u8 = 1;
@@ -161,8 +169,15 @@ async fn main() -> Result<()> {
     // `NotificationSettings::default()`. Failures fall back to
     // defaults rather than refusing to start — notifications are a
     // recoverable feature; the tray's menu still works without them.
-    let tray_config_path =
-        config::TrayConfig::config_path().context(gettext("Failed to resolve tray config path"))?;
+    // Honor an explicit `--config` (absolutized against CWD so a
+    // relative dev path like `docs/configs/tray.toml` resolves), else
+    // fall back to the XDG default. Mirrors the daemon/session
+    // `--config` convention.
+    let tray_config_path = match args.config {
+        Some(path) => absolutize(path),
+        None => config::TrayConfig::config_path()
+            .context(gettext("Failed to resolve tray config path"))?,
+    };
     let tray_config = match config::TrayConfig::load_from(&tray_config_path) {
         Ok(Some(c)) => c,
         Ok(None) => {
