@@ -1380,10 +1380,12 @@ fn register_callbacks(
 
     let d = daemon.clone();
     let s = session.clone();
+    let tr = tray.clone();
     let app_weak = app.as_weak();
     daemon_global.on_reload_config(move || {
         let d = d.clone();
         let s = s.clone();
+        let tr = tr.clone();
         let app_weak = app_weak.clone();
         tokio::spawn(async move {
             // Reload affects both TVs and profiles — dual-route the
@@ -1406,6 +1408,19 @@ fn register_callbacks(
                 push_tvs_error(&app_weak, title.clone(), msg.clone());
                 push_profiles_error(&app_weak, title, msg);
             }
+            drop(session_ref);
+            // Tell the tray to re-read `tray.toml` too, then pull the
+            // body immediately rather than waiting only on the tray's
+            // `PropertiesChanged` echo — keeps the settings pane in sync
+            // with a hand-edited config on the same click.
+            let tray_ref = tr.read().await;
+            if let Some(client) = tray_ref.as_ref()
+                && let Err(e) = client.reload_config().await
+            {
+                warn!(error = %format!("{e}"), "tray reload_config failed");
+            }
+            drop(tray_ref);
+            state_watch::refresh_tray_notifications(&tr, &app_weak).await;
         });
     });
 

@@ -2435,6 +2435,17 @@ impl TrayClient {
             .await
             .context("Failed to send test notification")
     }
+
+    /// Re-read `tray.toml` from disk; the tray emits `PropertiesChanged`
+    /// for `NotificationSettings` if the on-disk body changed. Backs the
+    /// GUI's Reload button so a hand-edit to `tray.toml` is picked up the
+    /// same way the daemon and session services reload theirs.
+    pub async fn reload_config(&self) -> Result<()> {
+        self.proxy
+            .reload_config()
+            .await
+            .context("Failed to reload tray configuration")
+    }
 }
 
 // =============================================================================
