@@ -15,7 +15,10 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None at present._
+- [`dpms-tv-power-control.md`](dpms-tv-power-control.md) — daemon-side
+  DPMS connector watcher feeding a new `on_dpms_blank`/`on_dpms_wake`
+  system-profile event/action pair, so a TV blanks/wakes with its
+  EDID-matched host display. Gated on a Wayland sysfs-dpms spike.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
