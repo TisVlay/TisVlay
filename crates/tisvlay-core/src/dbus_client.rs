@@ -2376,7 +2376,20 @@ impl TrayClient {
         let connection = zbus::Connection::session()
             .await
             .context("Failed to connect to session D-Bus")?;
-        let proxy = TisvlayTrayProxy::new(&connection)
+        // `CacheProperties::No` so every read of `NotificationSettings`
+        // does a fresh `Get` against the tray's live value. With the
+        // cached default, `notification_settings()` reads the proxy's
+        // local cache, which is updated by zbus's own internal
+        // `PropertiesChanged` handler task. The GUI consumes the *same*
+        // signal independently via `StateWatcher` →
+        // `TrayNotificationSettingsChanged` → `refresh_tray_notifications`,
+        // and the two are unordered: the refresh can read the cache
+        // before zbus's task has applied the new value, returning a
+        // stale body that clobbers the settings pane. An uncached Get
+        // is always the tray's current value, eliminating the race.
+        let proxy = TisvlayTrayProxy::builder(&connection)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
             .await
             .context("Failed to create tray proxy")?;
         Ok(Self { proxy })
