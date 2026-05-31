@@ -94,23 +94,6 @@ pub enum SessionAction {
     PowerOn,
 }
 
-impl std::fmt::Display for SessionAction {
-    /// Stable snake_case identifier — identical to the
-    /// `serde(rename_all = "snake_case")` form so a fresh
-    /// `SessionAction::deserialize` of any of these strings
-    /// round-trips cleanly.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Self::None => "none",
-            Self::ScreenOff => "screen_off",
-            Self::ScreenOn => "screen_on",
-            Self::PowerOff => "power_off",
-            Self::PowerOn => "power_on",
-        };
-        f.write_str(s)
-    }
-}
-
 // =============================================================================
 // AutomateWhen — input-aware automation gating
 // =============================================================================

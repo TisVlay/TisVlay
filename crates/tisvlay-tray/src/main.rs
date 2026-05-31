@@ -448,7 +448,7 @@ async fn watch_state(
     // task per TV reading the stream for `wol_sent → connected` vs
     // `wol_sent → failed` transitions. Subscribed on every refresh
     // (idempotent: existing subscriptions are kept, gone TVs get
-    // their tasks aborted). See `manage_power_cycle_subscriptions`
+    // their tasks aborted). See `PowerCycleManager::sync_from_daemon`
     // for the per-TV lifecycle.
     let power_cycle_state = power_cycle::PowerCycleManager::new();
     {

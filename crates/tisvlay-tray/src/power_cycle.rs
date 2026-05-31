@@ -200,9 +200,10 @@ async fn watch_one_tv(
                     Urgency::Normal,
                 );
             }
-            // Terminal without a preceding WolSent (direct reconnect,
-            // covered by `tv_connection`), or mid-cycle `Connecting`.
+            // Terminal without a preceding WolSent — a direct reconnect,
+            // already covered by the `tv_connection` diff.
             PowerCyclePhase::Connected | PowerCyclePhase::Failed => waking = false,
+            // Mid-cycle progress; nothing to notify on.
             PowerCyclePhase::Connecting => {}
         }
     }

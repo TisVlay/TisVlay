@@ -403,24 +403,18 @@ pub(crate) async fn refresh_tray_notifications(
 
 /// Lower a `NotificationSettingsBody` (every field `Option<bool>`)
 /// into the Slint `TrayNotificationSettings` struct (every field
-/// `bool`). The tray's property getter populates every field
-/// (`to_body` fills them); defaults from
-/// `NotificationSettingsBody::defaults()` are the safe fallback for
-/// the theoretical case where a future tray returns a partial body
-/// (forward-compat with version skew).
+/// `bool`). The tray's property getter fills every field, so the
+/// `unwrap_or(true)` only guards the theoretical partial body from a
+/// future version-skewed tray — falling back to the documented
+/// default-on. (`TrayNotificationSettings` is Slint-generated, so the
+/// field list can't route through `NotificationCategory::ALL` the way
+/// the tray-side conversions do.)
 fn body_to_slint(body: &NotificationSettingsBody) -> TrayNotificationSettings {
-    let defaults = NotificationSettingsBody::defaults();
     TrayNotificationSettings {
-        tv_connection: body
-            .tv_connection
-            .or(defaults.tv_connection)
-            .unwrap_or(true),
-        tv_pairing: body.tv_pairing.or(defaults.tv_pairing).unwrap_or(true),
-        tv_wake: body.tv_wake.or(defaults.tv_wake).unwrap_or(true),
-        daemon_offline: body
-            .daemon_offline
-            .or(defaults.daemon_offline)
-            .unwrap_or(true),
+        tv_connection: body.tv_connection.unwrap_or(true),
+        tv_pairing: body.tv_pairing.unwrap_or(true),
+        tv_wake: body.tv_wake.unwrap_or(true),
+        daemon_offline: body.daemon_offline.unwrap_or(true),
     }
 }
 
