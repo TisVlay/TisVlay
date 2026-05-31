@@ -60,37 +60,16 @@ impl Default for NotificationSettings {
 }
 
 impl NotificationSettings {
-    /// Read one category's flag. The inverse of [`Self::set`]; both
-    /// route through the same `match` so the storage stays in lockstep
-    /// with [`NotificationCategory`].
-    fn get(&self, category: NotificationCategory) -> bool {
-        match category {
-            NotificationCategory::TvConnection => self.tv_connection,
-            NotificationCategory::TvPairing => self.tv_pairing,
-            NotificationCategory::TvWake => self.tv_wake,
-            NotificationCategory::DaemonOffline => self.daemon_offline,
-        }
-    }
-
-    /// Set one category's flag.
-    fn set(&mut self, category: NotificationCategory, value: bool) {
-        match category {
-            NotificationCategory::TvConnection => self.tv_connection = value,
-            NotificationCategory::TvPairing => self.tv_pairing = value,
-            NotificationCategory::TvWake => self.tv_wake = value,
-            NotificationCategory::DaemonOffline => self.daemon_offline = value,
-        }
-    }
-
     /// Pack the enabled categories into a `u8` bitset for the
     /// `Notifier` hot path. A single `Ordering::Acquire` load + bit
     /// test on the emit path means no `RwLock` traffic per
     /// notification. Bit positions come from
     /// [`NotificationCategory::bit`].
     pub(crate) fn enabled_bitset(&self) -> u8 {
+        let body = self.to_body();
         NotificationCategory::ALL
             .into_iter()
-            .filter(|&c| self.get(c))
+            .filter(|c| c.get(&body) == Some(true))
             .fold(0u8, |bits, c| bits | c.bit())
     }
 
@@ -98,29 +77,33 @@ impl NotificationSettings {
     /// property getter. Every field is `Some` on the read side so
     /// clients can distinguish "category not present" (future
     /// version skew) from "this client's view is partial."
+    ///
+    /// This and [`Self::from_body`] are the *only* two places the
+    /// category↔field correspondence is open-coded; the bitset and
+    /// partial-apply paths route the wire body through
+    /// [`NotificationCategory`]'s accessors rather than duplicating a
+    /// third struct-field mapping.
     pub(crate) fn to_body(self) -> NotificationSettingsBody {
-        let mut body = NotificationSettingsBody::default();
-        for cat in NotificationCategory::ALL {
-            cat.set(&mut body, self.get(cat));
+        NotificationSettingsBody {
+            tv_connection: Some(self.tv_connection),
+            tv_pairing: Some(self.tv_pairing),
+            tv_wake: Some(self.tv_wake),
+            daemon_offline: Some(self.daemon_offline),
         }
-        body
     }
 
     /// Build settings from a fully-populated body (every field
     /// `Some`). Returns `None` if any category is absent — callers who
     /// hold a partial body should use [`Self::apply`] against a
-    /// pre-existing baseline instead.
+    /// pre-existing baseline instead. The `?` short-circuits on the
+    /// first absent field, so there's no half-populated intermediate.
     pub(crate) fn from_body(body: &NotificationSettingsBody) -> Option<Self> {
-        let mut settings = Self {
-            tv_connection: false,
-            tv_pairing: false,
-            tv_wake: false,
-            daemon_offline: false,
-        };
-        for cat in NotificationCategory::ALL {
-            settings.set(cat, cat.get(body)?);
-        }
-        Some(settings)
+        Some(Self {
+            tv_connection: body.tv_connection?,
+            tv_pairing: body.tv_pairing?,
+            tv_wake: body.tv_wake?,
+            daemon_offline: body.daemon_offline?,
+        })
     }
 
     /// Partial-update from a wire body — only `Some(_)` categories are
@@ -128,11 +111,17 @@ impl NotificationSettings {
     /// `Tray1.UpdateNotificationSettings` so callers can flip one
     /// switch without re-stating every other.
     pub(crate) fn apply(&mut self, body: &NotificationSettingsBody) {
+        // Overlay the partial body onto a full snapshot, then rebuild —
+        // the merge uses core's wire-body accessors so this stays free
+        // of a per-field struct match.
+        let mut merged = self.to_body();
         for cat in NotificationCategory::ALL {
             if let Some(v) = cat.get(body) {
-                self.set(cat, v);
+                cat.set(&mut merged, v);
             }
         }
+        *self = Self::from_body(&merged)
+            .expect("to_body fills every field, so merged is fully populated");
     }
 }
 

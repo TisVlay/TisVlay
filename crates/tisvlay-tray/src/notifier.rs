@@ -5,23 +5,26 @@
 //! view with a single atomic store, and emit-site checks are a
 //! lock-free `Acquire` load + bit test (no `RwLock` on the hot path).
 //!
-//! [`Notifier::notify`] does the category gate + backoff check
-//! synchronously and then spawns the `show_async` bus round-trip
-//! detached, so callers never block on the notification daemon — a
-//! wedged or absent `org.freedesktop.Notifications` owner can stall a
-//! single `show_async` for the full D-Bus timeout. A `last_failure_at`
-//! mutex stamps the time of every failed emit; subsequent `notify`
-//! calls inside the `FAILURE_BACKOFF` window short-circuit silently,
-//! protecting against flap-storms at early login when the notification
-//! daemon hasn't claimed its name yet.
+//! Emits are funneled through a single background worker over an
+//! unbounded channel. [`Notifier::notify`] does the category gate
+//! synchronously (a lock-free atomic load) and hands the request off
+//! without ever touching the bus; the worker runs the `show_async`
+//! round-trips one at a time. Serializing them is what makes the
+//! failure backoff effective — the worker stamps a failure *before* it
+//! pulls the next request, so a flap-storm at early login (when the
+//! freedesktop notification daemon hasn't claimed its name yet and each
+//! `show_async` stalls for the full D-Bus timeout) collapses to one
+//! stalled round-trip followed by suppressed retries, not N concurrent
+//! stalls. It also caps in-flight bus work at one emit regardless of how
+//! fast callers enqueue.
 
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use notify_rust::{Notification, Urgency};
 use tisvlay_core::NotificationCategory;
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 /// Drop notifications for this long after a failed `show_async` before
@@ -40,39 +43,43 @@ const APP_NAME: &str = "TisVlay";
 /// entry.
 const ICON_NAME: &str = "video-display";
 
+/// One queued emit. `bypass_backoff` is set by [`Notifier::notify_test`]
+/// so the user-requested diagnostic fires even on a known-wedged
+/// notification daemon.
+struct EmitRequest {
+    summary: String,
+    body: String,
+    urgency: Urgency,
+    bypass_backoff: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct Notifier {
     /// Per-category enable bits, kept in sync with the on-disk
     /// `TrayConfig` by the D-Bus update handler. Hot-path reads only
     /// touch this atomic.
     enabled_bits: Arc<AtomicU8>,
-    /// Timestamp of the last failed `show_async` call. Subsequent
-    /// notifications within [`FAILURE_BACKOFF`] short-circuit
-    /// silently. `std::sync::Mutex` (not `tokio::sync::Mutex`) since
-    /// the critical section is one `Instant` swap with no `await`.
-    last_failure_at: Arc<Mutex<Option<Instant>>>,
+    /// Hands emit requests to the single background worker. Cloning a
+    /// `Notifier` clones the sender; the worker lives until every
+    /// sender drops (process shutdown).
+    tx: mpsc::UnboundedSender<EmitRequest>,
 }
 
 impl Notifier {
+    /// Spawn the background emit worker and return a handle to feed it.
+    /// Must be called from within a Tokio runtime (the tray's
+    /// `#[tokio::main]`).
     pub(crate) fn new(enabled_bits: Arc<AtomicU8>) -> Self {
-        Self {
-            enabled_bits,
-            last_failure_at: Arc::new(Mutex::new(None)),
-        }
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(emit_worker(rx));
+        Self { enabled_bits, tx }
     }
 
-    /// Emit a category-gated notification. No-op if the category's
-    /// bit isn't set in [`Self::enabled_bits`] or if we're inside the
-    /// failure-backoff window.
-    ///
-    /// The category gate + backoff check run synchronously (a lock-free
-    /// atomic load plus a sub-microsecond mutex peek), then the actual
-    /// `show_async` bus round-trip is spawned detached. Callers — the
-    /// refresh-event loop, the per-TV power-cycle watcher, the pairing
-    /// watcher — never block on the notification daemon: a wedged or
-    /// absent `org.freedesktop.Notifications` owner can stall a single
-    /// `show_async` for the full D-Bus timeout (~25 s), and that delay
-    /// must not back up state processing.
+    /// Emit a category-gated notification. No-op if the category's bit
+    /// isn't set in [`Self::enabled_bits`]. The category gate runs
+    /// synchronously (a lock-free atomic load); the actual bus
+    /// round-trip — and the failure-backoff check — happen on the
+    /// worker. Callers never block on the notification daemon.
     pub(crate) fn notify(
         &self,
         category: NotificationCategory,
@@ -85,11 +92,7 @@ impl Notifier {
             debug!(?category, "notification suppressed (category disabled)");
             return;
         }
-        if self.in_backoff() {
-            debug!(?category, "notification suppressed (failure backoff)");
-            return;
-        }
-        self.spawn_emit(summary.to_string(), body.to_string(), urgency);
+        self.queue(summary, body, urgency, false);
     }
 
     /// Fire a single test notification, bypassing both the category
@@ -97,56 +100,56 @@ impl Notifier {
     /// whose entire purpose is verifying the user's notification stack
     /// on demand — honoring the backoff here would let a transient blip
     /// silently swallow the diagnostic the user explicitly asked for.
+    /// The worker still serializes it behind any in-flight emit, so a
+    /// burst of test clicks can't pile up concurrent bus round-trips.
     pub(crate) fn notify_test(&self, summary: &str, body: &str) {
-        self.spawn_emit(summary.to_string(), body.to_string(), Urgency::Normal);
+        self.queue(summary, body, Urgency::Normal, true);
     }
 
-    /// True if we last failed within [`FAILURE_BACKOFF`]. The mutex
-    /// is contention-free in practice — every other caller holds it
-    /// for a few nanoseconds at most.
-    fn in_backoff(&self) -> bool {
-        let guard = self.last_failure_at.lock().expect("mutex poisoned");
-        match *guard {
-            Some(t) => t.elapsed() < FAILURE_BACKOFF,
-            None => false,
+    fn queue(&self, summary: &str, body: &str, urgency: Urgency, bypass_backoff: bool) {
+        let req = EmitRequest {
+            summary: summary.to_string(),
+            body: body.to_string(),
+            urgency,
+            bypass_backoff,
+        };
+        // `send` only fails if the receiver dropped, i.e. the worker
+        // exited — which happens only at shutdown. Drop silently then.
+        if self.tx.send(req).is_err() {
+            debug!("notification dropped; emit worker gone");
         }
     }
+}
 
-    /// Spawn the bus round-trip detached so the caller returns
-    /// immediately. The failure-timestamp bookkeeping lives on the
-    /// spawned task; the next `notify` call reads it through
-    /// [`Self::in_backoff`].
-    fn spawn_emit(&self, summary: String, body: String, urgency: Urgency) {
-        let this = self.clone();
-        tokio::spawn(async move {
-            this.emit(&summary, &body, urgency).await;
-        });
-    }
-
-    /// Common emit path. On `Err`, stamp the failure timestamp so the
-    /// next [`FAILURE_BACKOFF`] window of notifications short-circuits
-    /// instead of all stalling on a known-broken notification daemon.
-    /// On `Ok`, clear any stale marker so a single transient blip
-    /// doesn't suppress real emits.
-    async fn emit(&self, summary: &str, body: &str, urgency: Urgency) {
+/// Single consumer of the emit queue. Owns the failure timestamp so it
+/// never needs a lock, and stamps it before pulling the next request —
+/// the property the [module docs](self) rely on for the backoff to
+/// actually suppress a burst.
+async fn emit_worker(mut rx: mpsc::UnboundedReceiver<EmitRequest>) {
+    let mut last_failure_at: Option<Instant> = None;
+    while let Some(req) = rx.recv().await {
+        if !req.bypass_backoff && last_failure_at.is_some_and(|t| t.elapsed() < FAILURE_BACKOFF) {
+            debug!(summary = %req.summary, "notification suppressed (failure backoff)");
+            continue;
+        }
         let result = Notification::new()
             .appname(APP_NAME)
-            .summary(summary)
-            .body(body)
+            .summary(&req.summary)
+            .body(&req.body)
             .icon(ICON_NAME)
-            .urgency(urgency)
+            .urgency(req.urgency)
             .show_async()
             .await;
-        let mut guard = self.last_failure_at.lock().expect("mutex poisoned");
         match result {
             Ok(_handle) => {
-                debug!(summary = %summary, "Notification emitted");
-                *guard = None;
+                debug!(summary = %req.summary, "Notification emitted");
+                last_failure_at = None;
             }
             Err(e) => {
-                warn!(error = %e, summary = %summary, "Failed to show notification");
-                *guard = Some(Instant::now());
+                warn!(error = %e, summary = %req.summary, "Failed to show notification");
+                last_failure_at = Some(Instant::now());
             }
         }
     }
+    debug!("emit worker stopped");
 }

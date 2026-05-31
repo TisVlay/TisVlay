@@ -686,7 +686,7 @@ impl NotificationSettingsBody {
 ///
 /// The `#[repr(u8)]` discriminant *is* the bit position in the
 /// runtime `u8` enable-bitset ([`bit`](Self::bit)); [`ALL`](Self::ALL)
-/// lists every variant in that order. The [`key`](Self::key) /
+/// lists every variant in that order. The `key` /
 /// [`get`](Self::get) / [`set`](Self::set) accessors are exhaustive
 /// `match`es, so adding a variant without handling it everywhere is a
 /// compile error — there is no second hand-maintained bit-position
@@ -726,8 +726,10 @@ impl NotificationCategory {
 
     /// Stable snake_case wire identifier: the `Tray1` settings-pane
     /// string key *and* the matching [`NotificationSettingsBody`]
-    /// field name. Used by [`from_key`](Self::from_key).
-    pub const fn key(self) -> &'static str {
+    /// field name. Internal — the canonical source for
+    /// [`from_key`](Self::from_key); external callers parse a key into a
+    /// category, never stringify one.
+    const fn key(self) -> &'static str {
         match self {
             Self::TvConnection => "tv_connection",
             Self::TvPairing => "tv_pairing",

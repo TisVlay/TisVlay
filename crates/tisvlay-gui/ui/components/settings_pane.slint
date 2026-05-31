@@ -88,10 +88,13 @@ export component SettingsPane inherits Rectangle {
 
         // -- NOTIFICATIONS group --
         //
-        // Six categories, single switch each, dispatching through
+        // One switch per notification category, dispatching through
         // `Tray.set-notification(category, enabled)` to the Rust
         // handler that wraps each call in a one-key
         // `NotificationSettingsBody` for `Tray1.UpdateNotificationSettings`.
+        // The category string keys must match `NotificationCategory::key()`
+        // in tisvlay-core; the `slint_notification_keys_match_core` test in
+        // src/lib.rs guards that contract.
         Group {
             title: @tr("NOTIFY ME ABOUT");
 

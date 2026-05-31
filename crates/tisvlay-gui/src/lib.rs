@@ -2202,3 +2202,45 @@ fn build_notification_update(category: &str, enabled: bool) -> NotificationSetti
     }
     body
 }
+
+#[cfg(test)]
+mod notification_key_tests {
+    use super::NotificationCategory;
+
+    /// The settings pane's `Daemon.set-notification("<key>", …)` string
+    /// literals are a stringly-typed contract with
+    /// [`NotificationCategory::from_key`]: a typo on either side makes a
+    /// switch a silent no-op (the GUI handler warn-logs and applies an
+    /// all-`None` body). Guard the boundary by parsing the literals out
+    /// of the Slint source at test time and asserting they map onto
+    /// exactly the category set — every category has a row, every row
+    /// names a real category.
+    #[test]
+    fn slint_notification_keys_match_core() {
+        const SLINT: &str = include_str!("../ui/components/settings_pane.slint");
+        const MARKER: &str = "set-notification(\"";
+
+        let mut covered = Vec::new();
+        for (idx, _) in SLINT.match_indices(MARKER) {
+            let rest = &SLINT[idx + MARKER.len()..];
+            let key = rest.split('"').next().expect("opening quote has a close");
+            let cat = NotificationCategory::from_key(key)
+                .unwrap_or_else(|| panic!("Slint key {key:?} has no NotificationCategory"));
+            covered.push(cat);
+        }
+
+        // Every category appears exactly once; no extras, none missing.
+        for cat in NotificationCategory::ALL {
+            let count = covered.iter().filter(|&&c| c == cat).count();
+            assert_eq!(
+                count, 1,
+                "category {cat:?} should have exactly one Slint row"
+            );
+        }
+        assert_eq!(
+            covered.len(),
+            NotificationCategory::ALL.len(),
+            "settings pane has a notification row with no matching category"
+        );
+    }
+}

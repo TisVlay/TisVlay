@@ -18,8 +18,9 @@
 //! bound to the now-departed daemon connection and will never emit
 //! again.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::StreamExt;
 use gettextrs::gettext;
@@ -38,12 +39,22 @@ pub(crate) struct PowerCycleManager {
     /// for the diff; sync mutex held across await would deadlock the
     /// runtime's worker.
     tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    /// Bumped by [`clear`](Self::clear). A [`sync_from_daemon`](Self::sync_from_daemon)
+    /// captures it before its (awaiting) `list_tvs` and re-checks it
+    /// after acquiring the lock; if it drifted, a `clear` ran in the
+    /// gap, so the sync discards its now-stale result instead of
+    /// repopulating the just-drained map. Without this an in-flight
+    /// sync spawned by an earlier `DaemonAppeared` could land its
+    /// subscriptions — bound to the departed connection — after the
+    /// `DaemonDisappeared` clear, permanently orphaning them.
+    generation: Arc<AtomicU64>,
 }
 
 impl PowerCycleManager {
     pub(crate) fn new() -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -52,10 +63,13 @@ impl PowerCycleManager {
     /// no-op (existing tasks stay alive, no new spawns).
     ///
     /// Skipped if `daemon.list_tvs` fails (daemon transiently
-    /// unavailable). Next refresh re-attempts.
+    /// unavailable). Next refresh re-attempts. Also skipped if a
+    /// [`clear`](Self::clear) ran while `list_tvs` was in flight — see
+    /// the `generation` field.
     pub(crate) async fn sync_from_daemon(&self, daemon: Arc<DaemonClient>, notifier: &Notifier) {
-        let live_uuids: HashSet<String> = match daemon.list_tvs().await {
-            Ok(tvs) => tvs.into_iter().map(|t| t.uuid).collect(),
+        let start_gen = self.generation.load(Ordering::Acquire);
+        let live: HashMap<String, String> = match daemon.list_tvs().await {
+            Ok(tvs) => tvs.into_iter().map(|t| (t.uuid, t.name)).collect(),
             Err(e) => {
                 debug!(error = %e, "power-cycle sync: list_tvs failed");
                 return;
@@ -64,9 +78,17 @@ impl PowerCycleManager {
 
         let mut tasks = self.tasks.lock().await;
 
+        // A `clear` (DaemonDisappeared) ran while we were awaiting
+        // `list_tvs`. Our snapshot is bound to a connection that's
+        // gone — drop it rather than repopulate the drained map.
+        if self.generation.load(Ordering::Acquire) != start_gen {
+            debug!("power-cycle sync: superseded by clear; discarding");
+            return;
+        }
+
         // Drop subscriptions for TVs that left the list.
         tasks.retain(|tv_id, handle| {
-            if live_uuids.contains(tv_id) {
+            if live.contains_key(tv_id) {
                 true
             } else {
                 debug!(tv_id = %tv_id, "Dropping power-cycle subscription for removed TV");
@@ -78,16 +100,18 @@ impl PowerCycleManager {
         // Spawn for newly-arrived TVs. Per-task `Arc::clone` shares
         // the daemon connection rather than cloning the inner
         // `DaemonClient` (which would defeat the purpose of holding
-        // it in an Arc).
-        for tv_id in &live_uuids {
+        // it in an Arc). The friendly name resolved here is handed to
+        // the task so it needn't re-fetch the whole TV list itself.
+        for (tv_id, tv_name) in &live {
             if tasks.contains_key(tv_id) {
                 continue;
             }
             let tv_id_str = tv_id.clone();
+            let tv_name = tv_name.clone();
             let daemon = Arc::clone(&daemon);
             let notifier = notifier.clone();
             let handle = tokio::spawn(async move {
-                watch_one_tv(tv_id_str, daemon, notifier).await;
+                watch_one_tv(tv_id_str, tv_name, daemon, notifier).await;
             });
             tasks.insert(tv_id.clone(), handle);
         }
@@ -98,14 +122,13 @@ impl PowerCycleManager {
     /// never yield again anyway, but aborting cleans up the task
     /// slot eagerly.
     ///
-    /// Awaited (not fire-and-forget) so the drain completes before the
-    /// caller proceeds. The `watch_state` event loop is single-threaded
-    /// over events: awaiting here guarantees the map is empty before the
-    /// loop picks up a subsequent `DaemonAppeared` and re-syncs. A
-    /// fire-and-forget abort could race that re-sync — the re-sync grabs
-    /// the lock first, sees the stale handles, keeps them, and then the
-    /// abort task drains them, leaving every TV with no subscription.
+    /// Bumps `generation` before draining so any `sync_from_daemon`
+    /// whose `list_tvs` is still in flight discards its stale result
+    /// instead of repopulating the map after this drain. Awaited (not
+    /// fire-and-forget) so the drain completes before the caller
+    /// proceeds to a subsequent `DaemonAppeared` re-sync.
     pub(crate) async fn clear(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
         let mut guard = self.tasks.lock().await;
         for (_uuid, handle) in guard.drain() {
             handle.abort();
@@ -113,24 +136,29 @@ impl PowerCycleManager {
     }
 }
 
-/// How long after a `WolSent` a terminal phase still counts as that
-/// wake's outcome. Generous enough to cover a slow LG wake (the
-/// firmware-quirks doc notes waits up to ~30 s), bounded so an
-/// abandoned cycle — `WolSent` with no terminal phase ever — doesn't
-/// leave the watcher primed to misattribute the *next* cycle's
-/// `Connected`/`Failed` as a wake result.
-const WOL_WAKE_WINDOW: std::time::Duration = std::time::Duration::from_secs(90);
-
 /// Per-TV stream reader. Stays alive for the TV's entire registration
 /// lifetime; exits when the stream closes (daemon disconnected) or
 /// when the spawning manager aborts it (TV removed / daemon went away).
 ///
-/// State machine: track whether we've seen a `WolSent` phase recently;
-/// the *next* terminal phase (`Connected` or `Failed`) is what we
-/// notify on. A `Connected` without a preceding `WolSent` is a normal
-/// reconnect (covered by the `tv_connection` diff), not a wake
-/// outcome — don't double-notify.
-async fn watch_one_tv(tv_id: String, daemon: Arc<DaemonClient>, notifier: Notifier) {
+/// State machine: every power cycle on this stream starts with a
+/// `DirectConnect` and only the WoL path additionally emits `WolSent`
+/// (see `tisvlayd::tv_manager::power_cycle`). A terminal `Connected` /
+/// `Failed` is therefore a *wake* outcome — worth a `tv_wake`
+/// notification — exactly when a `WolSent` preceded it in the current
+/// cycle. We track that with a per-cycle flag reset on each
+/// `DirectConnect`: a `Connected` without a preceding `WolSent` is a
+/// normal direct reconnect (already covered by the `tv_connection`
+/// diff), not a wake. Because this stream only ever carries phases from
+/// a single in-progress `power_cycle` call — organic reconnects don't
+/// emit here — there is no wall-clock window to guess at and no way for
+/// an unrelated reconnect to be misattributed: the next cycle's
+/// `DirectConnect` clears any stale flag before its terminal phase.
+async fn watch_one_tv(
+    tv_id: String,
+    tv_name: String,
+    daemon: Arc<DaemonClient>,
+    notifier: Notifier,
+) {
     let stream = match daemon.power_cycle_progress_stream(&tv_id).await {
         Ok(s) => s,
         Err(e) => {
@@ -145,38 +173,24 @@ async fn watch_one_tv(tv_id: String, daemon: Arc<DaemonClient>, notifier: Notifi
     let mut stream = Box::pin(stream);
     info!(tv_id = %tv_id, "Watching power-cycle progress");
 
-    // Resolve a friendly name once at startup. If we miss it (e.g.
-    // the TV was removed between list_tvs and this lookup) we fall
-    // back to the UUID; the notification copy still reads sensibly.
-    let tv_name = daemon
-        .list_tvs()
-        .await
-        .ok()
-        .and_then(|tvs| tvs.into_iter().find(|t| t.uuid == tv_id).map(|t| t.name))
-        .unwrap_or_else(|| tv_id.clone());
-
-    // Timestamp of the last `WolSent`, or `None` once consumed/expired.
-    // A terminal phase only counts as a wake outcome if it lands within
-    // `WOL_WAKE_WINDOW` of the `WolSent` — an abandoned cycle (no
-    // terminal phase) lets the stamp go stale instead of priming the
-    // next cycle's terminal phase to misfire.
-    let mut wol_sent_at: Option<std::time::Instant> = None;
+    // Whether the cycle currently in progress took the WoL path. Set by
+    // `WolSent`, cleared at each cycle boundary (`DirectConnect`) and
+    // when a terminal phase consumes it.
+    let mut waking = false;
     while let Some(phase) = stream.next().await {
-        // A `WolSent` older than the window is treated as abandoned:
-        // its outcome is no longer "in flight," so a subsequent
-        // terminal phase is a normal reconnect, not this wake's result.
-        let wol_in_flight = wol_sent_at.is_some_and(|t| t.elapsed() < WOL_WAKE_WINDOW);
         match phase {
-            PowerCyclePhase::WolSent => {
-                wol_sent_at = Some(std::time::Instant::now());
-            }
-            PowerCyclePhase::Connected if wol_in_flight => {
-                wol_sent_at = None;
+            // Cycle boundary: a fresh cycle starts here. Clear any flag
+            // left over from a cycle that was aborted before its
+            // terminal phase.
+            PowerCyclePhase::DirectConnect => waking = false,
+            PowerCyclePhase::WolSent => waking = true,
+            PowerCyclePhase::Connected if waking => {
+                waking = false;
                 let summary = gettext("{0} is awake").replace("{0}", &tv_name);
                 notifier.notify(NotificationCategory::TvWake, &summary, "", Urgency::Low);
             }
-            PowerCyclePhase::Failed if wol_in_flight => {
-                wol_sent_at = None;
+            PowerCyclePhase::Failed if waking => {
+                waking = false;
                 let summary = gettext("Couldn't wake {0}").replace("{0}", &tv_name);
                 let body = gettext("Check the TV's power and Wake-on-LAN setting.");
                 notifier.notify(
@@ -186,14 +200,10 @@ async fn watch_one_tv(tv_id: String, daemon: Arc<DaemonClient>, notifier: Notifi
                     Urgency::Normal,
                 );
             }
-            // Non-terminal phases mid-cycle, or terminal phases
-            // without a live preceding WolSent — covered elsewhere or
-            // not interesting. Clear the stamp on terminal either way
-            // so a subsequent reconnect doesn't misattribute itself.
-            PowerCyclePhase::Connected | PowerCyclePhase::Failed => {
-                wol_sent_at = None;
-            }
-            _ => {}
+            // Terminal without a preceding WolSent (direct reconnect,
+            // covered by `tv_connection`), or mid-cycle `Connecting`.
+            PowerCyclePhase::Connected | PowerCyclePhase::Failed => waking = false,
+            PowerCyclePhase::Connecting => {}
         }
     }
     debug!(tv_id = %tv_id, "Power-cycle stream ended");
