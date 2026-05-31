@@ -373,8 +373,9 @@ async fn refresh_state(
             // `DaemonDisappeared` arm clears `t.tvs` outside the
             // trigger path; without diffing here, the next refresh
             // would see "all TVs reappeared" and storm
-            // `tv_connection` notifications. See the plan's
-            // Concurrency / lifecycle notes for the full reasoning.
+            // `tv_connection` notifications. See the Tray1
+            // notifications section in docs/design.md for the full
+            // reasoning.
             let events = handle
                 .update(|t| {
                     let events = diff_connection_events(&t.tvs, &tvs);

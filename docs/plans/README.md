@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [`tray-notifications.md`](tray-notifications.md) — adds user-configurable desktop notifications to `tisvlay-tray`, with `Tray1` D-Bus mutators and a `NOTIFICATIONS` group in the GUI's Settings pane.
+_None at present._
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:

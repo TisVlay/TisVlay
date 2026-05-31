@@ -1,8 +1,9 @@
 # Notification-subsystem follow-up cleanups
 
 Deferred cleanups surfaced by the post-merge review of the
-user-configurable desktop-notifications work (the `tray-notifications`
-plan). None are bugs — the feature shipped correct and QA-verified.
+user-configurable desktop-notifications work (the `org.tisvlay.Tray1`
+notifications subsystem — see `docs/design.md`). None are bugs — the
+feature shipped correct and QA-verified.
 These are reuse/idiom/altitude items that were out of that PR's scope
 or contested enough to defer a deliberate decision. Grouped here
 because they all touch the same subsystem; pick them off independently.

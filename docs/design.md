@@ -224,6 +224,13 @@ org.tisvlay.Session  (session bus)
     │             GetResolvedUserProfileDefaults, GetEffectiveUserProfile
     └── Signals:  TvUserProfileChanged,
                   UserProfileChanged, UserProfileAdded, UserProfileRemoved
+
+org.tisvlay.Tray  (session bus)
+└── /org/tisvlay/Tray               org.tisvlay.Tray1
+    ├── Properties (ro):  Version, ConfigPath
+    ├── Properties (rw):  NotificationSettings (a{sv})
+    ├── Methods:  UpdateNotificationSettings, ReloadConfig, SendTestNotification
+    └── Signals:  (standard PropertiesChanged only)
 ```
 
 ### Clients and signal flow
@@ -231,7 +238,7 @@ org.tisvlay.Session  (session bus)
 | Client | Calls | Subscribes to |
 |--------|-------|---------------|
 | **tisvlay CLI** | Manager1 (profiles, config), Tv1.* (properties + commands), Session1 (user profiles) | — |
-| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles) | `PropertiesChanged` on Tv paths; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `SystemProfileAdded`/`Changed`/`Removed`; Session1: `TvUserProfileChanged`, `UserProfileAdded`/`Changed`/`Removed`; DBus: `NameOwnerChanged` (service discovery) |
+| **tisvlay-tray** | Manager1 (profiles), Tv1.* (properties + commands), Session1 (user profiles); owns Tray1 | `PropertiesChanged` on Tv paths; per-TV `Tv1.Power.PowerCycleProgress`; `Manager1.PairingProgress`; `InterfacesAdded`/`InterfacesRemoved` (ObjectManager); Manager1: `SystemProfileAdded`/`Changed`/`Removed`; Session1: `TvUserProfileChanged`, `UserProfileAdded`/`Changed`/`Removed`; DBus: `NameOwnerChanged` (service discovery) |
 | **tisvlay-gui** | Manager1 (system-profile CRUD, config), Tv1.* (properties + commands), Session1 (user-profile CRUD + assignment) | Same as tray plus the body-mutation signals (`SystemProfileChanged(uuid)`, `UserProfileChanged(uuid)`) drive the editor's per-row refresh. The GUI subscribes to both buses directly — no cross-bus signal re-fire on the session daemon, since the only client that needs cross-bus body-change notifications is the GUI and it already does. |
 | **tisvlay-session** | Manager1 (admin defaults), Tv1.* (session actions via writable properties) | — |
 
@@ -314,6 +321,33 @@ Signals:
 `Session1.ReloadConfig` mirrors `Manager1.ReloadConfig`'s diff-and-emit shape: a config-file edit fires the same per-profile signals an external client would, so the GUI's editor cache invalidates through the single code path.
 
 Manager1 didn't face the assignment-vs-body naming collision because per-TV system-profile assignment writes through the standard `Tv1.SystemProfile` property surface (firing `PropertiesChanged`), not a custom signal.
+
+### org.tisvlay.Tray1 (desktop notifications)
+
+The tray owns desktop notifications — not the session service. The tray already has every moving piece: a `StateWatcher` subscription seeing every relevant transition, the gettext catalog + icon-name plumbing, and a graphical-session lifecycle (the right surface for talking to `org.freedesktop.Notifications`, itself a graphical-session bus name). The session service is the wrong home because it owns `UserConfig` as a single writer with rollback semantics; a separate `tray.toml` keeps the two single-writer invariants independent.
+
+Settings are mutable both via D-Bus (`UpdateNotificationSettings`) and via hand-editing `~/.config/tisvlay/tray.toml` + `ReloadConfig`; both paths surface as `org.freedesktop.DBus.Properties.PropertiesChanged` for `NotificationSettings` so the GUI stays in sync. The mutation flow mirrors the `Session1` user-profile shape: validate → snapshot → mutate → persist → roll back on IO failure → publish. `NotificationSettingsBody` (the `a{sv}` wire dict) lives in `tisvlay-core` so the GUI client and tray server speak the same vocabulary; `SendTestNotification` bypasses the category gate so users can verify their DE's notification stack regardless of which categories are on.
+
+**Categories** (one switch each, all default-on, persisted in `tray.toml`):
+
+| Key | Trigger | Urgency | Source |
+|---|---|---|---|
+| `tv_connection` | TV `connected` true ↔ false | Low | `refresh_state` diff |
+| `tv_pairing` | terminal pairing phase `complete` / `failed` | Normal | `Manager1.PairingProgress` |
+| `tv_wake` | `wol_sent → connected` / `failed` for a power cycle | Low (ok) / Normal (fail) | per-TV `Tv1.Power.PowerCycleProgress` |
+| `daemon_offline` | `StateEvent::DaemonDisappeared` | Critical (resident) | existing tray arm |
+
+`NotificationCategory` (in `tisvlay-core`) is the single source of truth for the category vocabulary: its `#[repr(u8)]` discriminant *is* the bit position, `ALL` lists every variant, and `key` / `from_key` / `get` / `set` are exhaustive matches, so adding a category is a compile error until every site handles it. On-disk `tray.toml` stays hand-editable named bools.
+
+**Correctness lessons** (each was a bug fixed during this work — kept here so the next maintainer doesn't reintroduce them):
+
+- **The client proxy is uncached (`CacheProperties::No`).** `NotificationSettings` is a mutable `#[zbus(property)]` consumed by an independent `PropertiesChanged` consumer (`StateWatcher` → GUI refresh). zbus's default property cache is updated by zbus's *own* internal `PropertiesChanged` task, which races the GUI's consumer of the same signal — a stale cached read then clobbers the settings pane. An uncached `Get` is always the live value. General rule: a mutable property consumed via an independent `PropertiesChanged` signal must be read uncached.
+- **Notification emits are serialized through one background worker** (`mpsc` queue). The emit-site does the category gate synchronously (a lock-free `AtomicU8` bit test) and hands off; the worker runs `show_async` round-trips one at a time, recording the failure timestamp *before* it pulls the next request. This is what makes the failure backoff actually suppress a flap-storm at early login (when `org.freedesktop.Notifications` isn't claimed yet and each `show_async` stalls for the full ~25 s D-Bus timeout): the storm collapses to one stalled round-trip plus suppressed retries, not N concurrent stalls. Spawning each emit detached defeats the backoff — every concurrent caller passes the gate before any records a failure.
+- **The `refresh_state` connection-diff lives *inside* the `handle.update()` closure**, where the prior cached `tvs` is the authoritative baseline. `DaemonDisappeared` clears the cache outside the trigger path; diffing after the closure would see "all TVs reappeared" and storm `tv_connection` toasts on a daemon flap. The transient-fetch-error arm likewise leaves the cache intact (only flips `daemon_available`), so a one-off timeout isn't read as a mass disconnect.
+- **The tray claims `org.tisvlay.Tray` with `DoNotQueue`** and exits if another instance owns it — otherwise a second instance silently queues and serves a second `TrayService` with an independent settings cache the GUI would never see.
+- **Power-cycle wake attribution uses a per-cycle flag, not a wall clock.** Each per-TV `PowerCycleProgress` stream carries phases from only one in-flight cycle; a `waking` flag (set by `WolSent`, reset at each `DirectConnect`) attributes the terminal phase exactly, with no timeout window to misfire on a slow wake or an unrelated reconnect.
+
+Two categories were tried and removed before merge — both shared the smell *"default-off and duplicative with existing state-change notifications."* `config_reloaded` (almost every reload is self-initiated, so the toast told the user what they just did) and `automation_fired` (system-tier events fire when no human is at the desk; user-tier events overlap with `tv_connection` / `tv_wake`). Both retirements dropped their external D-Bus signals; the underlying work (the daemon's internal per-UUID cache refresh on reload, and all automation *execution*) stayed intact. The lesson: a new notification category should clear the "is it visible, and is it non-duplicative?" bar before shipping.
 
 ### Profile catalog
 
