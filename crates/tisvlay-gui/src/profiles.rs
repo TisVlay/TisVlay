@@ -148,6 +148,20 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
+        wire: "on_display_blank",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
+        wire: "on_display_wake",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
         wire: "automate_when",
         kind: FieldKind::Enum {
             options: AUTOMATE_WHEN_OPTIONS,
@@ -219,6 +233,8 @@ fn field_label(wire: &str) -> String {
         "on_no_session" => gettext("On no session"),
         "on_sleep" => gettext("On sleep"),
         "on_wake" => gettext("On wake"),
+        "on_display_blank" => gettext("On display blank"),
+        "on_display_wake" => gettext("On display wake"),
         "automate_when" => gettext("Automate when"),
         "on_session_lock" => gettext("On session lock"),
         "on_session_unlock" => gettext("On session unlock"),
@@ -391,6 +407,8 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
         "on_no_session" => body.on_no_session.map(session_action_token),
         "on_sleep" => body.on_sleep.map(session_action_token),
         "on_wake" => body.on_wake.map(session_action_token),
+        "on_display_blank" => body.on_display_blank.map(session_action_token),
+        "on_display_wake" => body.on_display_wake.map(session_action_token),
         "automate_when" => body.automate_when.map(automate_when_token),
         _ => None,
     }
@@ -1114,6 +1132,10 @@ fn set_system_field(
         "on_no_session" => body.on_no_session = session_action_patch(patch, "on_no_session")?,
         "on_sleep" => body.on_sleep = session_action_patch(patch, "on_sleep")?,
         "on_wake" => body.on_wake = session_action_patch(patch, "on_wake")?,
+        "on_display_blank" => {
+            body.on_display_blank = session_action_patch(patch, "on_display_blank")?
+        }
+        "on_display_wake" => body.on_display_wake = session_action_patch(patch, "on_display_wake")?,
         "automate_when" => body.automate_when = automate_when_patch(patch, "automate_when")?,
         other => anyhow::bail!("Unknown system-profile field: {other}"),
     }
@@ -1509,6 +1531,8 @@ mod tests {
             on_no_session: Some(SessionAction::None),
             on_sleep: Some(SessionAction::PowerOff),
             on_wake: Some(SessionAction::PowerOn),
+            on_display_blank: Some(SessionAction::None),
+            on_display_wake: Some(SessionAction::None),
             automate_when: Some(AutomateWhen::Always),
         }
     }
@@ -1714,6 +1738,8 @@ mod tests {
             "on_no_session",
             "on_sleep",
             "on_wake",
+            "on_display_blank",
+            "on_display_wake",
             "automate_when",
         ];
         for wire in expected {
@@ -1856,6 +1882,8 @@ mod tests {
             "on_no_session",
             "on_sleep",
             "on_wake",
+            "on_display_blank",
+            "on_display_wake",
         ] {
             set_system_field(
                 &mut body,
@@ -1870,6 +1898,8 @@ mod tests {
         assert_eq!(body.on_no_session, Some(SessionAction::PowerOn));
         assert_eq!(body.on_sleep, Some(SessionAction::PowerOn));
         assert_eq!(body.on_wake, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_display_blank, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_display_wake, Some(SessionAction::PowerOn));
     }
 
     #[test]

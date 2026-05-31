@@ -19,6 +19,8 @@ on_reboot = "none"
 on_no_session = "none"
 on_sleep = "power_off"
 on_wake = "power_on"
+on_display_blank = "none"        # action when the matched host display blanks (DPMS off)
+on_display_wake = "none"         # action when the matched host display wakes (DPMS on)
 automate_when = "always"
 
 [user.profiles.00000000-0000-0000-0000-00000000515a]

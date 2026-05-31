@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-05-30 09:25-0500\n"
+"POT-Creation-Date: 2026-05-31 17:20-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -36,55 +36,63 @@ msgstr ""
 msgid "Paired successfully."
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:216
+#: crates/tisvlay-gui/src/profiles.rs:230
 msgid "On startup"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:217
+#: crates/tisvlay-gui/src/profiles.rs:231
 msgid "On shutdown"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:218
+#: crates/tisvlay-gui/src/profiles.rs:232
 msgid "On reboot"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:219
+#: crates/tisvlay-gui/src/profiles.rs:233
 msgid "On no session"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:220
+#: crates/tisvlay-gui/src/profiles.rs:234
 msgid "On sleep"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:221
+#: crates/tisvlay-gui/src/profiles.rs:235
 msgid "On wake"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:222
+#: crates/tisvlay-gui/src/profiles.rs:236
+msgid "On display blank"
+msgstr ""
+
+#: crates/tisvlay-gui/src/profiles.rs:237
+msgid "On display wake"
+msgstr ""
+
+#: crates/tisvlay-gui/src/profiles.rs:238
 msgid "Automate when"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:223
+#: crates/tisvlay-gui/src/profiles.rs:239
 msgid "On session lock"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:224
+#: crates/tisvlay-gui/src/profiles.rs:240
 msgid "On session unlock"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:225
+#: crates/tisvlay-gui/src/profiles.rs:241
 msgid "On greeter wake"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:226
+#: crates/tisvlay-gui/src/profiles.rs:242
 msgid "On idle timeout"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:227
+#: crates/tisvlay-gui/src/profiles.rs:243
 msgid "On idle resume"
 msgstr ""
 
-#: crates/tisvlay-gui/src/profiles.rs:228
+#: crates/tisvlay-gui/src/profiles.rs:244
 msgid "Idle timeout"
 msgstr ""
 
@@ -202,11 +210,11 @@ msgstr ""
 msgid "Couldn't remove TV"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1395
+#: crates/tisvlay-gui/src/lib.rs:1397
 msgid "Reload config failed"
 msgstr ""
 
-#: crates/tisvlay-gui/src/lib.rs:1405
+#: crates/tisvlay-gui/src/lib.rs:1407
 msgid "Reload session config failed"
 msgstr ""
 
@@ -290,64 +298,64 @@ msgctxt "SettingsPane"
 msgid "Start it to change these settings."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:96
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:99
 msgctxt "SettingsPane"
 msgid "NOTIFY ME ABOUT"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:99
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:102
 msgctxt "SettingsPane"
 msgid "TV connection"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:100
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:103
 msgctxt "SettingsPane"
 msgid "Notify when a TV connects or disconnects."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:106
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:109
 msgctxt "SettingsPane"
 msgid "Pairing outcome"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:107
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:110
 msgctxt "SettingsPane"
 msgid "Notify when pairing or re-pairing completes or fails."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:113
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:116
 msgctxt "SettingsPane"
 msgid "Wake outcome"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:114
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:117
 msgctxt "SettingsPane"
 msgid "Notify when a Wake-on-LAN attempt succeeds or fails."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:120
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:123
 msgctxt "SettingsPane"
 msgid "Daemon offline"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:121
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:124
 msgctxt "SettingsPane"
 msgid "Notify when the connection to the daemon is lost."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:136
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:139
 msgctxt "SettingsPane"
 msgid "STACK VERIFICATION"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:146
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:149
 msgctxt "SettingsPane"
 msgid ""
 "Send a one-off notification to verify your desktop's notification stack is "
 "working."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:155
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:158
 msgctxt "SettingsPane"
 msgid "Send test notification"
 msgstr ""

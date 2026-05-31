@@ -372,6 +372,8 @@ pub struct SystemProfileBody {
     pub on_no_session: Option<SessionAction>,
     pub on_sleep:      Option<SessionAction>,
     pub on_wake:       Option<SessionAction>,
+    pub on_display_blank: Option<SessionAction>,
+    pub on_display_wake:  Option<SessionAction>,
     pub automate_when: Option<AutomateWhen>,
 }
 
@@ -503,6 +505,8 @@ on_reboot = "none"               # action on reboot/kexec (default: none)
 on_no_session = "none"           # action when all user sessions end (login screen)
 on_sleep = "power_off"           # action on system suspend/hibernate (default: power_off)
 on_wake = "power_on"             # action on system resume from sleep (default: power_on)
+on_display_blank = "none"        # action when the matched host display blanks / DPMS off (default: none)
+on_display_wake = "none"         # action when the matched host display wakes / DPMS on (default: none)
 automate_when = "always"         # always | on_primary | off_primary (default: always)
 
 [system.profiles.a1b2c3d4-0000-0000-0000-00000000a000]
@@ -631,6 +635,8 @@ stateDiagram-v2
 | All sessions end | None | `on_no_session` (system profile) | Login screen / after logout |
 | System shutdown | Power off | `on_shutdown` (system profile) | poweroff or halt |
 | System reboot | None | `on_reboot` (system profile) | reboot or kexec; TV stays on for BIOS/TTY |
+| Host display blank | None | `on_display_blank` (system profile) | DPMS-off on the EDID-matched connector; opt-in (default none) to avoid double-dispatch with the user-profile idle/lock path |
+| Host display wake | None | `on_display_wake` (system profile) | DPMS-on; opt-in. `screen_on` escalates to power-on/WoL for an off-but-live TV |
 
 All lifecycle events accept any `SessionAction` value: `power_on`, `power_off`, `screen_on`, `screen_off`, or `none`. Different TVs can respond differently to the same event via per-TV profile assignments (e.g., gaming TV ignores session lock via user profile; guest TV only blanks on shutdown via system profile).
 

@@ -16,7 +16,7 @@ use tisvlayd::dbus::{
 use tisvlayd::registry::create_registry;
 use tisvlayd::state_forwarder::state_change_forwarder;
 use tisvlayd::tv_manager::TvManager;
-use tisvlayd::{logind, netlink};
+use tisvlayd::{dpms, logind, netlink};
 
 /// TV Control Daemon
 #[derive(Parser, Debug)]
@@ -175,6 +175,11 @@ async fn main() -> Result<()> {
     // Spawn kernel netlink monitor for per-interface carrier detection and route changes.
     // Fires within milliseconds of cable pull, NM disconnect, or route failover.
     netlink::spawn_link_monitor(shared_manager.state_change_sender());
+
+    // Spawn the DPMS connector watcher: polls each EDID-matched host
+    // display's sysfs power attribute and mirrors blank/wake onto the TV
+    // per its system profile's on_display_blank / on_display_wake.
+    dpms::spawn_dpms_monitor(shared_manager.clone());
 
     // Wait for shutdown or reload signal
     let shutdown_manager = shared_manager.clone();

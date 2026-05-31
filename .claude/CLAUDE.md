@@ -19,7 +19,7 @@ The TVs and Profiles panes of `tisvlay-gui` are feature-complete (master/detail 
 
 - **Session pane + polish** — user-bus connection indicator, session-service status, default user-profile selector, error toasts, keyboard nav, window-state persistence. M5 in [docs/plan.md](../docs/plan.md).
 - **GUI packaging** — NixOS module `enableGui` flag, nfpm desktop entry, XDG `.desktop` file. M6 in [docs/plan.md](../docs/plan.md).
-- **Event-driven power-management redesign** — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md).
+- **Event-driven power-management redesign** — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md). A narrow first slice shipped: the daemon-side DPMS connector watcher (`tisvlayd/src/dpms.rs`) driving the opt-in `on_display_blank`/`on_display_wake` system-profile actions.
 - **Plus other deferred ideas**: polkit gating for multi-user workstations, CLI shorthand for `Tv1.UpdateConfig`, `a{sv}` wire-format migration for vendor configs, atomic config writes, typed `Failed { reason }` payload, "Open logs" affordance. All filed in [docs/ideas.md](../docs/ideas.md).
 
 ## Current Project Structure
@@ -98,6 +98,7 @@ tisvlay/
 │   │       ├── logind.rs         # logind monitoring (shutdown inhibitor, session tracking)
 │   │       ├── netlink.rs        # Kernel netlink: route resolution + carrier/route monitoring
 │   │       ├── desktop_probe.rs  # DRM connector enumeration + EDID-based TV ↔ connector matching
+│   │       ├── dpms.rs           # DPMS connector watcher → on_display_blank/on_display_wake system events
 │   │       ├── json_toml.rs      # Lossless JSON ↔ TOML conversion for vendor-config payloads
 │   │       ├── registry.rs       # Re-exports from tisvlay-backends
 │   │       └── tv_manager.rs     # TV connection pool, profile dispatch, disk serialization
@@ -201,6 +202,7 @@ tisvlay/
 - `Transport` enum on `TvConnector`: Network, Serial, Usb, Cec. Daemon scopes carrier/route events to network-dependent backends only
 - `TvConnector::survives_source_ip_change()`: backends declare whether their protocol survives client IP changes (WebSocket: false, future QUIC: true). Daemon uses this on NIC failover to decide whether to reconnect
 - Per-TV `reconnecting` flag prevents carrier/route events from racing with in-flight WoL retry loops
+- KWin on Wayland writes its DPMS-off through to the legacy sysfs `dpms` connector attribute (`/sys/class/drm/<card>-<conn>/dpms`), so `tisvlayd/src/dpms.rs` can poll it without a per-DE compositor protocol. The `dpms` watcher gates on `status == connected` (a powered-off TV that drops its EDID link reads `disconnected` and is skipped) and defers dispatch while a TV is `reconnecting`. `on_display_blank`/`on_display_wake` are `none` by default — opt-in so they don't double-dispatch against the session idle/lock path
 - zbus 5.x's `ObjectServer::at` returns `Ok(false)` (not `Err`) when an interface is already registered at the path. `register_tv_interfaces` uses `.await?` on each of its seven `at()` calls and discards the bool, so a re-register against a stale path *silently fails to refresh state* — the pre-existing interface keeps serving with its old field values. The defensive `unregister_tv_interfaces` before every `register_tv_interfaces` call site (`apply_reload_diff`, `Manager1.AddTv`) is what makes fresh state actually take effect. Foundation contract is locked down by `crates/tisvlayd/tests/register_tv_interfaces_collision.rs`. Future zbus upgrades that change `at()`'s return type are a watch item.
 - Per-TV `Mutex<ManagedTv>` is the de-facto drain layer between `Tv1.Remove` (and `apply_reload_diff`'s removed half) and concurrent in-flight `Tv1.*` calls. zbus has no drain primitive; the observable correctness rests on the Mutex-held-across-await pattern in `with_connection` and similar helpers. Three sub-cases (call hasn't reached `get_tv` → `TvNotFound`; call holds Arc awaiting inner Mutex → `NotConnected` after removal closes; call holds Mutex during work → removal blocks until in-flight completes) documented at `tv_manager::remove_tv`. Locked down by `crates/tisvlayd/tests/in_flight_call_during_remove.rs` (invariant-based, not per-case).
 - `pair_tv` generates the new TV's UUID upfront (before `start_pairing`) so `Manager1.PairingProgress` signals can carry a stable identifier from the very first phase update — clients watching progress get correlation before any persistent state lands. Same UUID lets `Manager1.CancelPair(tv_id)` reach the in-flight session via the `pairing_sessions` map for both AddTv and re-pair flows.

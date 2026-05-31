@@ -489,9 +489,9 @@ enum AwaitOutcome {
 
 /// System lifecycle event type.
 ///
-/// Used by `logind` and the daemon startup path to dispatch per-TV
-/// actions from each TV's resolved system profile.
-#[derive(Debug, Clone, Copy)]
+/// Dispatched per-TV from each TV's resolved system profile by the
+/// `logind` monitor, the daemon startup path, and the DPMS watcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemEvent {
     Startup,
     Shutdown,
@@ -499,6 +499,8 @@ pub enum SystemEvent {
     NoSession,
     Sleep,
     Wake,
+    DisplayBlank,
+    DisplayWake,
 }
 
 /// Apply a key-value TV option to a `TvConfig`.
@@ -821,6 +823,8 @@ impl TvManager {
             SystemEvent::NoSession => tv.system_profile.on_no_session,
             SystemEvent::Sleep => tv.system_profile.on_sleep,
             SystemEvent::Wake => tv.system_profile.on_wake,
+            SystemEvent::DisplayBlank => tv.system_profile.on_display_blank,
+            SystemEvent::DisplayWake => tv.system_profile.on_display_wake,
         }
     }
 
@@ -837,31 +841,59 @@ impl TvManager {
         result
     }
 
+    /// Whether a single TV passes the automation gate (managed + input-aware).
+    async fn is_tv_automated(&self, tv_id: &str) -> bool {
+        let tvs = self.tvs.read().await;
+        match tvs.get(tv_id) {
+            Some((managed, tv_arc)) => tv_arc.lock().await.is_automated(*managed),
+            None => false,
+        }
+    }
+
     /// Execute a system event on all automated TVs using each TV's resolved system profile.
     pub async fn execute_system_event(&self, event: SystemEvent, context: &str) {
         let tv_ids = self.list_automated_tv_ids().await;
         for tv_id in &tv_ids {
-            let action = self.get_system_action(tv_id, event).await;
-            if action == SessionAction::None {
-                continue;
+            self.execute_system_event_for_tv(tv_id, event, context)
+                .await;
+        }
+    }
+
+    /// Execute a system event for one specific TV.
+    ///
+    /// The DPMS watcher calls this directly: it knows exactly which TV's
+    /// connector changed, so dispatch is scoped rather than fanned out
+    /// across every automated TV. No-op when the TV fails the automation
+    /// gate or its resolved action is `None`.
+    pub async fn execute_system_event_for_tv(
+        &self,
+        tv_id: &str,
+        event: SystemEvent,
+        context: &str,
+    ) {
+        if !self.is_tv_automated(tv_id).await {
+            return;
+        }
+        let action = self.get_system_action(tv_id, event).await;
+        if action == SessionAction::None {
+            return;
+        }
+
+        let result: Result<(), TvManagerError> = match action {
+            SessionAction::ScreenOff => self.screen_off(tv_id).await,
+            SessionAction::ScreenOn => self.screen_on(tv_id).await,
+            SessionAction::PowerOff => self.power_off(tv_id).await,
+            SessionAction::PowerOn => self.power_on(tv_id).await,
+            SessionAction::None => Ok(()),
+        };
+
+        match result {
+            Ok(()) => {
+                debug!(tv_id = %tv_id, action = ?action, context = context, "Action executed");
             }
-
-            let result: Result<(), TvManagerError> = match action {
-                SessionAction::ScreenOff => self.screen_off(tv_id).await,
-                SessionAction::ScreenOn => self.screen_on(tv_id).await,
-                SessionAction::PowerOff => self.power_off(tv_id).await,
-                SessionAction::PowerOn => self.power_on(tv_id).await,
-                SessionAction::None => Ok(()),
-            };
-
-            match result {
-                Ok(()) => {
-                    debug!(tv_id = %tv_id, action = ?action, context = context, "Action executed");
-                }
-                Err(e) => {
-                    warn!(tv_id = %tv_id, action = ?action, context = context, error = %e,
-                        "Failed to execute action");
-                }
+            Err(e) => {
+                warn!(tv_id = %tv_id, action = ?action, context = context, error = %e,
+                    "Failed to execute action");
             }
         }
     }
@@ -1169,6 +1201,8 @@ impl TvManager {
             on_no_session: Some(resolved.on_no_session),
             on_sleep: Some(resolved.on_sleep),
             on_wake: Some(resolved.on_wake),
+            on_display_blank: Some(resolved.on_display_blank),
+            on_display_wake: Some(resolved.on_display_wake),
             automate_when: Some(resolved.automate_when),
         })
     }
@@ -1588,6 +1622,18 @@ impl TvManager {
                 let tv = tv_arc.lock().await;
                 tv.is_connected()
             }
+            Err(_) => false,
+        }
+    }
+
+    /// Whether a reconnect / wake-on-LAN is already in flight for this TV.
+    ///
+    /// The DPMS watcher consults this before dispatching a display-wake
+    /// action so a poll edge can't kick off a second `power_on` while one
+    /// is mid-flight (`power_on` does not self-serialize).
+    pub async fn is_reconnecting(&self, tv_id: &str) -> bool {
+        match self.get_tv(tv_id).await {
+            Ok(tv_arc) => tv_arc.lock().await.reconnecting,
             Err(_) => false,
         }
     }
