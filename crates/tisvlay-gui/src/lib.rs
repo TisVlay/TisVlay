@@ -1389,24 +1389,31 @@ fn register_callbacks(
         let app_weak = app_weak.clone();
         tokio::spawn(async move {
             // Reload affects both TVs and profiles — dual-route the
-            // banner so the user sees it on whichever pane they're
-            // on. Per-pane dismiss clears each slot independently.
-            if let Err(e) = d.reload_config().await {
-                let msg = format!("{e}");
-                warn!(error = %msg, "daemon reload_config failed");
-                let title = gettext("Reload config failed");
+            // banner so the user sees it on whichever pane they're on.
+            // Per-pane dismiss clears each slot independently. The
+            // daemon and session arms report failures identically, so
+            // share the warn + dual-banner push.
+            let report_reload_err = |label: &str, title: String, msg: String| {
+                warn!(error = %msg, "{label}");
                 push_tvs_error(&app_weak, title.clone(), msg.clone());
                 push_profiles_error(&app_weak, title, msg);
+            };
+            if let Err(e) = d.reload_config().await {
+                report_reload_err(
+                    "daemon reload_config failed",
+                    gettext("Reload config failed"),
+                    format!("{e}"),
+                );
             }
             let session_ref = s.read().await;
             if let Some(client) = session_ref.as_ref()
                 && let Err(e) = client.reload_config().await
             {
-                let msg = format!("{e}");
-                warn!(error = %msg, "session reload_config failed");
-                let title = gettext("Reload session config failed");
-                push_tvs_error(&app_weak, title.clone(), msg.clone());
-                push_profiles_error(&app_weak, title, msg);
+                report_reload_err(
+                    "session reload_config failed",
+                    gettext("Reload session config failed"),
+                    format!("{e}"),
+                );
             }
             drop(session_ref);
             // Tell the tray to re-read `tray.toml` too, then pull the
