@@ -151,6 +151,91 @@ impl std::fmt::Display for AutomateWhen {
 }
 
 // =============================================================================
+// Profile plumbing macro
+// =============================================================================
+
+/// Generate the mechanical per-field plumbing shared by both profile
+/// types from a single inheritable-field list:
+///
+/// - `$config::full_default()` / `merge_with_base()` / `resolve()` — the
+///   `Option<T>` inheritance chain (`Some(default)` / `or` / `unwrap_or`).
+/// - `$body::from_config()` and `From<&$body> for $config` — the
+///   lossless wire round-trip (feature-gated, like the body type).
+/// - `pub const $fields: &[&str]` — the field names in declaration
+///   order, the single source of truth the GUI field tables are
+///   validated against (see `tisvlay-gui`'s `*_field_table_*` tests).
+///
+/// `name` is handled explicitly (it's identity-adjacent metadata, not an
+/// inheritable field) so it never appears in the list. The `Resolved`
+/// and `Body` structs, and `Resolved`'s `Default`, stay hand-written —
+/// adding a field still requires touching those, so the field set can't
+/// silently diverge from the resolved defaults or the wire shape.
+macro_rules! profile_plumbing {
+    (
+        config: $config:ident,
+        resolved: $resolved:ident,
+        body: $body:ident,
+        fields_const: $fields:ident,
+        fields: [$($field:ident),+ $(,)?],
+    ) => {
+        /// Inheritable field names, in declaration order.
+        pub const $fields: &[&str] = &[$(stringify!($field)),+];
+
+        impl $config {
+            /// Create a profile with every field set to the built-in
+            /// default. The `name` is left empty for the caller to set.
+            pub fn full_default() -> Self {
+                let d = $resolved::default();
+                Self {
+                    name: String::new(),
+                    $($field: Some(d.$field),)+
+                }
+            }
+
+            /// Merge with a base: `None` fields fall through to `base`,
+            /// `Some` fields win. `name` is preserved from `self`.
+            pub fn merge_with_base(&self, base: &$config) -> $config {
+                $config {
+                    name: self.name.clone(),
+                    $($field: self.$field.or(base.$field),)+
+                }
+            }
+
+            /// Resolve to concrete values, filling `None` fields from
+            /// [`$resolved::default()`].
+            pub fn resolve(&self) -> $resolved {
+                let d = $resolved::default();
+                $resolved {
+                    $($field: self.$field.unwrap_or(d.$field),)+
+                }
+            }
+        }
+
+        #[cfg(feature = "dbus")]
+        impl $body {
+            /// Construct a wire body from a config, cloning `name` across.
+            pub fn from_config(config: &$config) -> Self {
+                Self {
+                    name: config.name.clone(),
+                    $($field: config.$field,)+
+                }
+            }
+        }
+
+        #[cfg(feature = "dbus")]
+        impl From<&$body> for $config {
+            /// Round-trip: the body's `name` lands on the config's `name`.
+            fn from(body: &$body) -> Self {
+                $config {
+                    name: body.name.clone(),
+                    $($field: body.$field,)+
+                }
+            }
+        }
+    };
+}
+
+// =============================================================================
 // SystemProfileConfig (with Option<T> fields for merge support)
 // =============================================================================
 
@@ -206,67 +291,22 @@ pub struct SystemProfileConfig {
     pub automate_when: Option<AutomateWhen>,
 }
 
-impl SystemProfileConfig {
-    /// Create a profile with all fields set to the built-in sensible defaults.
-    ///
-    /// Use this when saving a system config to make profiles self-documenting.
-    /// The `name` field is left empty — callers set it when materializing
-    /// the reserved default or naming a new profile.
-    pub fn full_default() -> Self {
-        let d = ResolvedSystemProfile::default();
-        Self {
-            name: String::new(),
-            on_startup: Some(d.on_startup),
-            on_shutdown: Some(d.on_shutdown),
-            on_reboot: Some(d.on_reboot),
-            on_no_session: Some(d.on_no_session),
-            on_sleep: Some(d.on_sleep),
-            on_wake: Some(d.on_wake),
-            on_dpms_off: Some(d.on_dpms_off),
-            on_dpms_on: Some(d.on_dpms_on),
-            automate_when: Some(d.automate_when),
-        }
-    }
-
-    /// Merge this profile with a base profile.
-    ///
-    /// Fields that are `None` in `self` are filled from `base`.
-    /// Fields that are `Some` in `self` take precedence. The `name`
-    /// field is preserved from `self` — names are identity-adjacent
-    /// metadata, not inheritable behavior.
-    pub fn merge_with_base(&self, base: &SystemProfileConfig) -> SystemProfileConfig {
-        SystemProfileConfig {
-            name: self.name.clone(),
-            on_startup: self.on_startup.or(base.on_startup),
-            on_shutdown: self.on_shutdown.or(base.on_shutdown),
-            on_reboot: self.on_reboot.or(base.on_reboot),
-            on_no_session: self.on_no_session.or(base.on_no_session),
-            on_sleep: self.on_sleep.or(base.on_sleep),
-            on_wake: self.on_wake.or(base.on_wake),
-            on_dpms_off: self.on_dpms_off.or(base.on_dpms_off),
-            on_dpms_on: self.on_dpms_on.or(base.on_dpms_on),
-            automate_when: self.automate_when.or(base.automate_when),
-        }
-    }
-
-    /// Resolve this profile to concrete values.
-    ///
-    /// Any `None` fields are filled with hard-coded defaults from
-    /// [`ResolvedSystemProfile::default()`].
-    pub fn resolve(&self) -> ResolvedSystemProfile {
-        let d = ResolvedSystemProfile::default();
-        ResolvedSystemProfile {
-            on_startup: self.on_startup.unwrap_or(d.on_startup),
-            on_shutdown: self.on_shutdown.unwrap_or(d.on_shutdown),
-            on_reboot: self.on_reboot.unwrap_or(d.on_reboot),
-            on_no_session: self.on_no_session.unwrap_or(d.on_no_session),
-            on_sleep: self.on_sleep.unwrap_or(d.on_sleep),
-            on_wake: self.on_wake.unwrap_or(d.on_wake),
-            on_dpms_off: self.on_dpms_off.unwrap_or(d.on_dpms_off),
-            on_dpms_on: self.on_dpms_on.unwrap_or(d.on_dpms_on),
-            automate_when: self.automate_when.unwrap_or(d.automate_when),
-        }
-    }
+profile_plumbing! {
+    config: SystemProfileConfig,
+    resolved: ResolvedSystemProfile,
+    body: SystemProfileBody,
+    fields_const: SYSTEM_PROFILE_FIELDS,
+    fields: [
+        on_startup,
+        on_shutdown,
+        on_reboot,
+        on_no_session,
+        on_sleep,
+        on_wake,
+        on_dpms_off,
+        on_dpms_on,
+        automate_when,
+    ],
 }
 
 // =============================================================================
@@ -360,58 +400,19 @@ pub struct UserProfileConfig {
     pub on_idle_resume: Option<SessionAction>,
 }
 
-impl UserProfileConfig {
-    /// Create a profile with all fields set to the built-in sensible defaults.
-    ///
-    /// Use this when saving a system config to make profiles self-documenting,
-    /// or as the system default profile. The `name` field is left empty —
-    /// callers set it when materializing the reserved default or naming
-    /// a new profile.
-    pub fn full_default() -> Self {
-        let d = ResolvedUserProfile::default();
-        Self {
-            name: String::new(),
-            on_session_lock: Some(d.on_session_lock),
-            on_session_unlock: Some(d.on_session_unlock),
-            on_greeter_wake: Some(d.on_greeter_wake),
-            idle_timeout_seconds: Some(d.idle_timeout_seconds),
-            on_idle_timeout: Some(d.on_idle_timeout),
-            on_idle_resume: Some(d.on_idle_resume),
-        }
-    }
-
-    /// Merge this profile with a base profile.
-    ///
-    /// Fields that are `None` in `self` are filled from `base`.
-    /// Fields that are `Some` in `self` take precedence. The `name`
-    /// field is preserved from `self`.
-    pub fn merge_with_base(&self, base: &UserProfileConfig) -> UserProfileConfig {
-        UserProfileConfig {
-            name: self.name.clone(),
-            on_session_lock: self.on_session_lock.or(base.on_session_lock),
-            on_session_unlock: self.on_session_unlock.or(base.on_session_unlock),
-            on_greeter_wake: self.on_greeter_wake.or(base.on_greeter_wake),
-            idle_timeout_seconds: self.idle_timeout_seconds.or(base.idle_timeout_seconds),
-            on_idle_timeout: self.on_idle_timeout.or(base.on_idle_timeout),
-            on_idle_resume: self.on_idle_resume.or(base.on_idle_resume),
-        }
-    }
-
-    /// Resolve this profile to concrete values.
-    ///
-    /// Any `None` fields are filled with hard-coded defaults from
-    /// [`ResolvedUserProfile::default()`].
-    pub fn resolve(&self) -> ResolvedUserProfile {
-        let d = ResolvedUserProfile::default();
-        ResolvedUserProfile {
-            on_session_lock: self.on_session_lock.unwrap_or(d.on_session_lock),
-            on_session_unlock: self.on_session_unlock.unwrap_or(d.on_session_unlock),
-            on_greeter_wake: self.on_greeter_wake.unwrap_or(d.on_greeter_wake),
-            idle_timeout_seconds: self.idle_timeout_seconds.unwrap_or(d.idle_timeout_seconds),
-            on_idle_timeout: self.on_idle_timeout.unwrap_or(d.on_idle_timeout),
-            on_idle_resume: self.on_idle_resume.unwrap_or(d.on_idle_resume),
-        }
-    }
+profile_plumbing! {
+    config: UserProfileConfig,
+    resolved: ResolvedUserProfile,
+    body: UserProfileBody,
+    fields_const: USER_PROFILE_FIELDS,
+    fields: [
+        on_session_lock,
+        on_session_unlock,
+        on_greeter_wake,
+        idle_timeout_seconds,
+        on_idle_timeout,
+        on_idle_resume,
+    ],
 }
 
 // =============================================================================
@@ -522,47 +523,6 @@ pub struct SystemProfileBody {
     pub automate_when: Option<AutomateWhen>,
 }
 
-#[cfg(feature = "dbus")]
-impl SystemProfileBody {
-    /// Construct a body from a `SystemProfileConfig`. The config now
-    /// carries the display name itself, so the body just clones it
-    /// across — no separate name argument.
-    pub fn from_config(config: &SystemProfileConfig) -> Self {
-        Self {
-            name: config.name.clone(),
-            on_startup: config.on_startup,
-            on_shutdown: config.on_shutdown,
-            on_reboot: config.on_reboot,
-            on_no_session: config.on_no_session,
-            on_sleep: config.on_sleep,
-            on_wake: config.on_wake,
-            on_dpms_off: config.on_dpms_off,
-            on_dpms_on: config.on_dpms_on,
-            automate_when: config.automate_when,
-        }
-    }
-}
-
-#[cfg(feature = "dbus")]
-impl From<&SystemProfileBody> for SystemProfileConfig {
-    /// Round-trip: the body's `name` lands on the config's `name` so
-    /// the on-disk shape preserves the display label.
-    fn from(body: &SystemProfileBody) -> Self {
-        SystemProfileConfig {
-            name: body.name.clone(),
-            on_startup: body.on_startup,
-            on_shutdown: body.on_shutdown,
-            on_reboot: body.on_reboot,
-            on_no_session: body.on_no_session,
-            on_sleep: body.on_sleep,
-            on_wake: body.on_wake,
-            on_dpms_off: body.on_dpms_off,
-            on_dpms_on: body.on_dpms_on,
-            automate_when: body.automate_when,
-        }
-    }
-}
-
 // =============================================================================
 // UserProfileBody — mirror of SystemProfileBody on the session bus
 // =============================================================================
@@ -589,38 +549,6 @@ pub struct UserProfileBody {
     pub on_idle_timeout: Option<SessionAction>,
     pub on_idle_resume: Option<SessionAction>,
     pub idle_timeout_seconds: Option<u64>,
-}
-
-#[cfg(feature = "dbus")]
-impl UserProfileBody {
-    /// Construct a body from a `UserProfileConfig`. The config now
-    /// carries the display name itself.
-    pub fn from_config(config: &UserProfileConfig) -> Self {
-        Self {
-            name: config.name.clone(),
-            on_session_lock: config.on_session_lock,
-            on_session_unlock: config.on_session_unlock,
-            on_greeter_wake: config.on_greeter_wake,
-            on_idle_timeout: config.on_idle_timeout,
-            on_idle_resume: config.on_idle_resume,
-            idle_timeout_seconds: config.idle_timeout_seconds,
-        }
-    }
-}
-
-#[cfg(feature = "dbus")]
-impl From<&UserProfileBody> for UserProfileConfig {
-    fn from(body: &UserProfileBody) -> Self {
-        UserProfileConfig {
-            name: body.name.clone(),
-            on_session_lock: body.on_session_lock,
-            on_session_unlock: body.on_session_unlock,
-            on_greeter_wake: body.on_greeter_wake,
-            on_idle_timeout: body.on_idle_timeout,
-            on_idle_resume: body.on_idle_resume,
-            idle_timeout_seconds: body.idle_timeout_seconds,
-        }
-    }
 }
 
 // =============================================================================
