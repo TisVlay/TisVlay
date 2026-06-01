@@ -1724,48 +1724,32 @@ mod tests {
     }
 
     #[test]
-    fn system_field_table_covers_every_body_field() {
-        // Every snake-case key on `SystemProfileBody` other than
-        // `name` should be in `SYSTEM_FIELDS`. Wire keys without a
-        // matching `read_system_field` arm would silently render as
-        // empty rows.
-        let expected = [
-            "on_startup",
-            "on_shutdown",
-            "on_reboot",
-            "on_no_session",
-            "on_sleep",
-            "on_wake",
-            "on_dpms_off",
-            "on_dpms_on",
-            "automate_when",
-        ];
-        for wire in expected {
-            assert!(
-                SYSTEM_FIELDS.iter().any(|f| f.wire == wire),
-                "missing system field {wire}"
-            );
-        }
-        assert_eq!(SYSTEM_FIELDS.len(), expected.len());
+    fn system_field_table_matches_core_schema() {
+        // The GUI field table must cover exactly the inheritable fields
+        // the core profile declares. `tisvlay_core::SYSTEM_PROFILE_FIELDS`
+        // is the single source of truth (generated alongside the profile
+        // merge/resolve plumbing); a field added to the core profile but
+        // not here would silently render as an empty row.
+        let core: std::collections::BTreeSet<&str> = tisvlay_core::SYSTEM_PROFILE_FIELDS
+            .iter()
+            .copied()
+            .collect();
+        let gui: std::collections::BTreeSet<&str> = SYSTEM_FIELDS.iter().map(|f| f.wire).collect();
+        assert_eq!(
+            gui, core,
+            "GUI SYSTEM_FIELDS diverged from core SYSTEM_PROFILE_FIELDS"
+        );
     }
 
     #[test]
-    fn user_field_table_covers_every_body_field() {
-        let expected = [
-            "on_session_lock",
-            "on_session_unlock",
-            "on_greeter_wake",
-            "on_idle_timeout",
-            "on_idle_resume",
-            "idle_timeout_seconds",
-        ];
-        for wire in expected {
-            assert!(
-                USER_FIELDS.iter().any(|f| f.wire == wire),
-                "missing user field {wire}"
-            );
-        }
-        assert_eq!(USER_FIELDS.len(), expected.len());
+    fn user_field_table_matches_core_schema() {
+        let core: std::collections::BTreeSet<&str> =
+            tisvlay_core::USER_PROFILE_FIELDS.iter().copied().collect();
+        let gui: std::collections::BTreeSet<&str> = USER_FIELDS.iter().map(|f| f.wire).collect();
+        assert_eq!(
+            gui, core,
+            "GUI USER_FIELDS diverged from core USER_PROFILE_FIELDS"
+        );
     }
 
     #[test]
