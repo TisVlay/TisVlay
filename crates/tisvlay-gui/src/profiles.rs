@@ -2112,6 +2112,8 @@ mod tests {
         assert_eq!(body.on_no_session, None);
         assert_eq!(body.on_sleep, None);
         assert_eq!(body.on_wake, None);
+        assert_eq!(body.on_dpms_off, None);
+        assert_eq!(body.on_dpms_on, None);
         assert_eq!(body.automate_when, None);
     }
 

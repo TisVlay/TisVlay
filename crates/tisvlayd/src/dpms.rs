@@ -49,20 +49,27 @@ fn parse_dpms(raw: &str) -> DpmsState {
 /// Resolve the sysfs connector directory for a bare connector name.
 ///
 /// The desktop mapping stores the bare connector (`HDMI-A-1`); the sysfs
-/// directory carries the card prefix (`card0-HDMI-A-1`). Reuses the same
-/// `split_once('-')` derivation as the probe and matches on equality, so
-/// `HDMI-A-1` never resolves to `card0-HDMI-A-12`.
-fn resolve_dpms_path(root: &Path, connector: &str) -> Option<PathBuf> {
-    for entry in std::fs::read_dir(root).ok()?.flatten() {
+/// directory carries the card prefix (`card0-HDMI-A-1`). Scanned once per
+/// poll (not once per TV) so the directory walk doesn't repeat for every
+/// managed TV. Reuses the same `split_once('-')` connector derivation as
+/// the probe; keyed on the exact bare name, so `HDMI-A-1` and
+/// `HDMI-A-12` stay distinct. First match wins (the multi-GPU `cardN-`
+/// collision is a documented edge).
+fn scan_connector_dirs(root: &Path) -> HashMap<String, PathBuf> {
+    let mut dirs = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return dirs;
+    };
+    for entry in entries.flatten() {
         let path = entry.path();
         let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if dir_name.split_once('-').map(|(_, rest)| rest) == Some(connector) {
-            return Some(path);
+        if let Some((_, connector)) = dir_name.split_once('-') {
+            dirs.entry(connector.to_string()).or_insert(path);
         }
     }
-    None
+    dirs
 }
 
 /// Read a connector's DPMS state, or `None` when the directory is
@@ -118,6 +125,7 @@ async fn poll_once(
     edges: &mut EdgeDetector,
 ) -> HashSet<String> {
     let mut active = HashSet::new();
+    let connector_dirs = scan_connector_dirs(root);
 
     for tv_id in manager.list_tv_ids().await {
         let Some(mapping) = manager.get_desktop_mapping(&tv_id).await else {
@@ -126,10 +134,10 @@ async fn poll_once(
         if mapping.connector.is_empty() {
             continue;
         }
-        let Some(dir) = resolve_dpms_path(root, &mapping.connector) else {
+        let Some(dir) = connector_dirs.get(&mapping.connector) else {
             continue;
         };
-        let Some(state) = read_dpms_state(&dir) else {
+        let Some(state) = read_dpms_state(dir) else {
             continue;
         };
 
@@ -217,16 +225,17 @@ mod tests {
     }
 
     #[test]
-    fn resolve_dpms_path_matches_on_connector_boundary() {
+    fn scan_connector_dirs_keys_on_exact_bare_connector() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_connector(root, "HDMI-A-1", "connected", "On");
         write_connector(root, "HDMI-A-12", "connected", "On");
 
-        // Exact bare-connector match, not a prefix of the longer name.
-        let resolved = resolve_dpms_path(root, "HDMI-A-1").unwrap();
-        assert!(resolved.ends_with("card1-HDMI-A-1"));
-        assert!(resolve_dpms_path(root, "DP-1").is_none());
+        let dirs = scan_connector_dirs(root);
+        // Exact bare-connector keys, not a prefix of the longer name.
+        assert!(dirs.get("HDMI-A-1").unwrap().ends_with("card1-HDMI-A-1"));
+        assert!(dirs.get("HDMI-A-12").unwrap().ends_with("card1-HDMI-A-12"));
+        assert!(!dirs.contains_key("DP-1"));
     }
 
     #[test]
@@ -236,11 +245,13 @@ mod tests {
         write_connector(root, "HDMI-A-1", "connected", "On");
         write_connector(root, "HDMI-A-2", "disconnected", "On");
 
-        let dir1 = resolve_dpms_path(root, "HDMI-A-1").unwrap();
-        let dir2 = resolve_dpms_path(root, "HDMI-A-2").unwrap();
-        assert_eq!(read_dpms_state(&dir1), Some(DpmsState::On));
+        let dirs = scan_connector_dirs(root);
+        assert_eq!(
+            read_dpms_state(dirs.get("HDMI-A-1").unwrap()),
+            Some(DpmsState::On)
+        );
         // A disconnected connector's dpms value is meaningless → None.
-        assert_eq!(read_dpms_state(&dir2), None);
+        assert_eq!(read_dpms_state(dirs.get("HDMI-A-2").unwrap()), None);
     }
 
     #[test]
