@@ -25,10 +25,10 @@ use std::time::Duration;
 /// here.
 const DIRECT_CONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 use tisvlay_core::{
-    Capabilities, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, FieldVisibility, PowerState,
-    ResolvedSystemProfile, SessionAction, SystemConfig, SystemProfileBody, SystemProfileConfig,
-    SystemSection, TvAssignment, TvConfig, TvConnection, TvState, UserProfileConfig, UserSection,
-    references_of,
+    ActionExecutor, Capabilities, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID,
+    FieldVisibility, PowerState, ResolvedSystemProfile, SessionAction, SystemConfig,
+    SystemProfileBody, SystemProfileConfig, SystemSection, TvAssignment, TvConfig, TvConnection,
+    TvState, UserProfileConfig, UserSection, references_of,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -879,13 +879,7 @@ impl TvManager {
             return;
         }
 
-        let result: Result<(), TvManagerError> = match action {
-            SessionAction::ScreenOff => self.screen_off(tv_id).await,
-            SessionAction::ScreenOn => self.screen_on(tv_id).await,
-            SessionAction::PowerOff => self.power_off(tv_id).await,
-            SessionAction::PowerOn => self.power_on(tv_id).await,
-            SessionAction::None => Ok(()),
-        };
+        let result = self.apply_action(action, tv_id).await;
 
         match result {
             Ok(()) => {
@@ -1046,12 +1040,9 @@ impl TvManager {
                     _ => {}
                 }
 
-                let result: Result<(), TvManagerError> = match action {
-                    SessionAction::ScreenOff => manager.screen_off(tv_id).await,
-                    SessionAction::ScreenOn => manager.screen_on(tv_id).await,
-                    SessionAction::PowerOff => manager.power_off(tv_id).await,
-                    _ => Ok(()),
-                };
+                // None / PowerOn are filtered above; apply_action handles
+                // the remaining ScreenOff / ScreenOn / PowerOff.
+                let result = manager.apply_action(action, tv_id).await;
 
                 match result {
                     Ok(()) => {
@@ -3876,6 +3867,26 @@ impl TvManager {
         self.emit_state_change(StateChangeEvent::ConfigReloaded);
 
         Ok(diff)
+    }
+}
+
+/// Dispatch resolved [`SessionAction`]s via the backend, sharing the
+/// action→primitive mapping with the session service (see
+/// [`ActionExecutor`]).
+#[async_trait::async_trait]
+impl ActionExecutor for TvManager {
+    type Error = TvManagerError;
+    async fn screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        self.screen_on(tv_id).await
+    }
+    async fn screen_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        self.screen_off(tv_id).await
+    }
+    async fn power_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        self.power_on(tv_id).await
+    }
+    async fn power_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        self.power_off(tv_id).await
     }
 }
 

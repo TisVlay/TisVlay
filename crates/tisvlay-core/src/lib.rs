@@ -43,6 +43,7 @@
 //! ```
 
 // Core modules (always available)
+mod action;
 mod capabilities;
 mod coalescer;
 mod config;
@@ -71,6 +72,7 @@ pub mod logging;
 // =============================================================================
 
 // Traits
+pub use action::ActionExecutor;
 pub use traits::{RetryConfig, Transport, TvBackend, TvConnection, TvConnector, TvDiscovery};
 
 // Capabilities
