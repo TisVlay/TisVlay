@@ -15,7 +15,10 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None at present._
+- [`mdbook-docs-site.md`](mdbook-docs-site.md) — user-facing
+  documentation site built with mdBook and published on Read the Docs;
+  CLI reference auto-generated from clap, content seeded from the
+  `origin/docs` branch README.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
