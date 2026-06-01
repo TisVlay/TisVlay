@@ -678,6 +678,18 @@ Cached state is `ManagedTv::last_known_power_state` (raw [`PowerState`](../crate
 
 **D-Bus surface.** Unchanged from pre-reliability work: `Tv1.Power.PowerOn` / `PowerOff`, `Tv1.Screen.SetScreen(b)`. Reliability is implementation-side; clients (tray, GUI, CLI, session service) get reliable dispatch implicitly without negotiating tiers.
 
+### Host display DPMS watcher
+
+[`tisvlayd/src/dpms.rs`](../crates/tisvlayd/src/dpms.rs) drives the `on_dpms_off` / `on_dpms_on` system-profile actions (the last two rows of the [Event → Action Mapping](#event--action-mapping)). It mirrors a host display's power state onto the TV that shares its connector — the narrow, daemon-only, opt-in first slice of the [Event-Driven Power Management](#event-driven-power-management) redesign. No prior Linux project bridges DPMS to a *networked* TV (the established pattern is an idle daemon or CEC bridge running a script); this reuses tisvlay's existing EDID→connector matching instead.
+
+**Polling, not events.** No event-driven primitive exists for the connector DPMS state — udev DRM uevents fire on hotplug, not DPMS property changes — so the watcher polls each EDID-matched connector's legacy sysfs attribute `/sys/class/drm/<card>-<conn>/dpms` at 1 Hz (`MissedTickBehavior::Skip`). ~1 s wake latency is imperceptible against the TV's own screen-on ramp; the sub-100 ms lockscreen-snap-back budget belongs to the session path, not this one. The `dpms` directory is scanned once per tick (not once per TV).
+
+**State model — On / Blanked only.** VESA defines four states (On / Standby / Suspend / Off), but Standby/Suspend are dead on modern Linux: KDE removed the intermediate modes driver-side (`kscreen-doctor --dpms` exposes only `on`/`off`), wlroots/Mutter emit only On/Off, and modern LCD/OLED collapse all off-states into one. `parse_dpms` maps any non-`On` value to `Blanked`, so the watcher is robust to a stray `Standby`. Per-state events would be config surface that never fires; the "light blank vs deep off" tiering is instead served by `on_dpms_off` (display off) + `on_sleep` (system suspend via logind). Field names follow the ecosystem-consensus `on`/`off` vocabulary (`xset`, `kscreen-doctor`, `swaymsg`, `wlopm`, the wlr/KDE protocols, and the sysfs values).
+
+**Dispatch & gates.** Per-connector edge detection (first observation primes without firing); `On→Blanked` fires `DpmsOff`, `Blanked→On` fires `DpmsOn`, scoped to the one TV whose connector changed (`execute_system_event_for_tv`). Dispatch is spawned off the poll tick so a slow `screen_on` (which may escalate to a WoL power-cycle) can't stall polling of other connectors. Two safety gates: only connectors whose sysfs `status == connected` are watched (a powered-off TV that drops its EDID link reads `disconnected` and is skipped), and dispatch is deferred while a TV is `reconnecting` (so a poll edge can't stack a second `power_on`). It composes with the reliable `screen_on`/`screen_off` escalation above: `on_dpms_on = screen_on` on an off-but-live TV escalates to `power_on`/WoL, so "wake the TV with my display" works without a dedicated action — at the cost that a remote-turned-off TV can be re-woken by a panel off→on cycle when this is enabled (opt-in; default `none`).
+
+**Verified platform fact.** KWin on Wayland writes its DPMS-off through to the legacy sysfs attribute (`On → Off → On`), so the daemon-only approach needs no compositor protocol. Known edges: confirm the attribute flips on a *real idle-timeout* blank (the spike used the explicit `kscreen-doctor` command, which shares KWin's DPMS path); a blank that lands before the connector first appears in the mapping is swallowed until the next wake; and a multi-GPU host exposing the same bare connector name on two cards resolves to one arbitrarily (first match wins).
+
 ---
 
 ## CLI Interface
@@ -927,6 +939,8 @@ Forward-looking work that hasn't shipped yet. No fixed sequencing — entries la
 ### Event-Driven Power Management
 
 Today's `tisvlay-session` listener path drives `Tv1.Power.SetIsScreenOn` / `PowerOff` from session-bus events (screensaver, Wayland idle, logind, idle timer). A follow-up merge replaces this with per-DE adapters (KWin idle/DPMS, wlroots output management, X11 XScreenSaver, logind fallback) that emit a unified `ScreenBlank` / `ScreenWake` / `Sleep` / `Wake` event surface the daemon dispatches to `Tv1.Power.*`. Hard requirements (sub-100 ms lockscreen-snap-back, blank-vs-off distinction, multi-TV per-EDID-connector, detached-TV idle-timer fallback) and the "what NOT to do" gotchas are captured in [docs/ideas.md](ideas.md).
+
+A narrow, daemon-only first slice has **shipped**: the [Host display DPMS watcher](#host-display-dpms-watcher) (`on_dpms_off` / `on_dpms_on`). It is opt-in and reads the connector DPMS state directly via sysfs polling, deliberately scoped to *not* touch the fast lockscreen path — see [docs/ideas/event-driven-power-management.md](ideas/event-driven-power-management.md) for how the prohibition on sysfs-DPMS polling is scoped to the primary path only.
 
 ---
 
