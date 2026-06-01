@@ -46,28 +46,16 @@ fn parse_dpms(raw: &str) -> DpmsState {
     }
 }
 
-/// Resolve the sysfs connector directory for a bare connector name.
+/// Map each bare connector name (`HDMI-A-1`) to its sysfs directory.
 ///
-/// The desktop mapping stores the bare connector (`HDMI-A-1`); the sysfs
-/// directory carries the card prefix (`card0-HDMI-A-1`). Scanned once per
-/// poll (not once per TV) so the directory walk doesn't repeat for every
-/// managed TV. Reuses the same `split_once('-')` connector derivation as
-/// the probe; keyed on the exact bare name, so `HDMI-A-1` and
-/// `HDMI-A-12` stay distinct. First match wins (the multi-GPU `cardN-`
-/// collision is a documented edge).
+/// Scanned once per poll (not once per TV) so the directory walk doesn't
+/// repeat for every managed TV. Keyed on the exact bare name, so
+/// `HDMI-A-1` and `HDMI-A-12` stay distinct; first match wins (the
+/// multi-GPU `cardN-` collision is a documented edge).
 fn scan_connector_dirs(root: &Path) -> HashMap<String, PathBuf> {
     let mut dirs = HashMap::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return dirs;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if let Some((_, connector)) = dir_name.split_once('-') {
-            dirs.entry(connector.to_string()).or_insert(path);
-        }
+    for connector in crate::drm::enumerate_connectors(root) {
+        dirs.entry(connector.name).or_insert(connector.dir);
     }
     dirs
 }
@@ -78,12 +66,10 @@ fn scan_connector_dirs(root: &Path) -> HashMap<String, PathBuf> {
 /// keeps a stale mapping (TV powered off, link dropped) from generating
 /// phantom edges.
 fn read_dpms_state(dir: &Path) -> Option<DpmsState> {
-    let status = std::fs::read_to_string(dir.join("status")).ok()?;
-    if status.trim() != "connected" {
+    if !crate::drm::is_connected(dir) {
         return None;
     }
-    let dpms = std::fs::read_to_string(dir.join("dpms")).ok()?;
-    Some(parse_dpms(&dpms))
+    Some(parse_dpms(&crate::drm::read_attr(dir, "dpms")?))
 }
 
 /// Per-connector transition detector.
