@@ -24,6 +24,7 @@
 
 pub mod dbus;
 pub mod desktop_probe;
+pub mod dpms;
 pub(crate) mod json_toml;
 pub mod logind;
 pub mod netlink;

@@ -41,7 +41,7 @@ The session crate either gets folded into `tisvlayd` (its session-bus connection
 
 ### What NOT to do
 
-- **Don't ship sysfs-DPMS polling as the primary path.** DPMS doesn't distinguish blank from off in modern compositors — KDE/X11 collapse to On/Off in practice. Mapping DPMS_OFF to `Tv1.Power.PowerOff` loses the fast-blank UX (panel toggle, ~100 ms) and replaces it with a TV cold-boot (5-10 s). Mapping DPMS_OFF to `IsScreenOn(false)` works correctness-wise, but the wake-from-lockscreen latency is capped by the polling rate (~1 s at 1 Hz vs ~100 ms today).
+- **Don't ship sysfs-DPMS polling as the *primary* (lockscreen-snap-back) path.** DPMS doesn't distinguish blank from off in modern compositors — KDE/X11 collapse to On/Off in practice. Mapping DPMS_OFF to `Tv1.Power.PowerOff` loses the fast-blank UX (panel toggle, ~100 ms) and replaces it with a TV cold-boot (5-10 s). Mapping DPMS_OFF to `IsScreenOn(false)` works correctness-wise, but the wake-from-lockscreen latency is capped by the polling rate (~1 s at 1 Hz vs ~100 ms today). This prohibition is about the *primary* low-latency path. A *secondary, opt-in* sysfs-DPMS poller does ship — see `on_dpms_off`/`on_dpms_on` (system profile), driven by `tisvlayd/src/dpms.rs`. It's `none` by default, scoped to the EDID-matched connector, and explicitly accepts the ~1 s latency; it complements, not replaces, the session lock/idle path.
 - **Don't unify "blank" and "off" semantics.** Two distinct LG SSAP code paths with different physics. Pick per-event.
 - **Don't drop the per-DE adapter pattern in favor of "one universal observer".** Each DE exposes session state differently and there's no Linux-wide standard event.
 

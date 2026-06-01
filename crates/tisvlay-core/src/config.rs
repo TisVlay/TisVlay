@@ -193,6 +193,14 @@ pub struct SystemProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_wake: Option<SessionAction>,
 
+    /// Action when the matched host display connector blanks (DPMS off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_dpms_off: Option<SessionAction>,
+
+    /// Action when the matched host display connector wakes (DPMS on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_dpms_on: Option<SessionAction>,
+
     /// When to apply automation relative to the TV's current input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automate_when: Option<AutomateWhen>,
@@ -214,6 +222,8 @@ impl SystemProfileConfig {
             on_no_session: Some(d.on_no_session),
             on_sleep: Some(d.on_sleep),
             on_wake: Some(d.on_wake),
+            on_dpms_off: Some(d.on_dpms_off),
+            on_dpms_on: Some(d.on_dpms_on),
             automate_when: Some(d.automate_when),
         }
     }
@@ -233,6 +243,8 @@ impl SystemProfileConfig {
             on_no_session: self.on_no_session.or(base.on_no_session),
             on_sleep: self.on_sleep.or(base.on_sleep),
             on_wake: self.on_wake.or(base.on_wake),
+            on_dpms_off: self.on_dpms_off.or(base.on_dpms_off),
+            on_dpms_on: self.on_dpms_on.or(base.on_dpms_on),
             automate_when: self.automate_when.or(base.automate_when),
         }
     }
@@ -250,6 +262,8 @@ impl SystemProfileConfig {
             on_no_session: self.on_no_session.unwrap_or(d.on_no_session),
             on_sleep: self.on_sleep.unwrap_or(d.on_sleep),
             on_wake: self.on_wake.unwrap_or(d.on_wake),
+            on_dpms_off: self.on_dpms_off.unwrap_or(d.on_dpms_off),
+            on_dpms_on: self.on_dpms_on.unwrap_or(d.on_dpms_on),
             automate_when: self.automate_when.unwrap_or(d.automate_when),
         }
     }
@@ -278,6 +292,10 @@ pub struct ResolvedSystemProfile {
     pub on_sleep: SessionAction,
     /// Action on system wake/resume.
     pub on_wake: SessionAction,
+    /// Action when the matched host display connector blanks (DPMS off).
+    pub on_dpms_off: SessionAction,
+    /// Action when the matched host display connector wakes (DPMS on).
+    pub on_dpms_on: SessionAction,
     /// When to apply automation relative to the TV's current input.
     pub automate_when: AutomateWhen,
 }
@@ -291,6 +309,8 @@ impl Default for ResolvedSystemProfile {
             on_no_session: SessionAction::None,
             on_sleep: SessionAction::PowerOff,
             on_wake: SessionAction::PowerOn,
+            on_dpms_off: SessionAction::None,
+            on_dpms_on: SessionAction::None,
             automate_when: AutomateWhen::Always,
         }
     }
@@ -497,6 +517,8 @@ pub struct SystemProfileBody {
     pub on_no_session: Option<SessionAction>,
     pub on_sleep: Option<SessionAction>,
     pub on_wake: Option<SessionAction>,
+    pub on_dpms_off: Option<SessionAction>,
+    pub on_dpms_on: Option<SessionAction>,
     pub automate_when: Option<AutomateWhen>,
 }
 
@@ -514,6 +536,8 @@ impl SystemProfileBody {
             on_no_session: config.on_no_session,
             on_sleep: config.on_sleep,
             on_wake: config.on_wake,
+            on_dpms_off: config.on_dpms_off,
+            on_dpms_on: config.on_dpms_on,
             automate_when: config.automate_when,
         }
     }
@@ -532,6 +556,8 @@ impl From<&SystemProfileBody> for SystemProfileConfig {
             on_no_session: body.on_no_session,
             on_sleep: body.on_sleep,
             on_wake: body.on_wake,
+            on_dpms_off: body.on_dpms_off,
+            on_dpms_on: body.on_dpms_on,
             automate_when: body.automate_when,
         }
     }
@@ -1870,6 +1896,9 @@ ip = "192.168.1.101"
         assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
         assert_eq!(resolved.on_reboot, SessionAction::None);
         assert_eq!(resolved.on_no_session, SessionAction::None);
+        // DPMS actions are opt-in: no default behavior.
+        assert_eq!(resolved.on_dpms_off, SessionAction::None);
+        assert_eq!(resolved.on_dpms_on, SessionAction::None);
     }
 
     #[test]
@@ -1884,17 +1913,21 @@ ip = "192.168.1.101"
         let base = SystemProfileConfig {
             on_startup: Some(SessionAction::PowerOn),
             on_shutdown: Some(SessionAction::PowerOff),
+            on_dpms_off: Some(SessionAction::ScreenOff),
             ..SystemProfileConfig::default()
         };
 
         let override_profile = SystemProfileConfig {
             on_shutdown: Some(SessionAction::ScreenOff),
+            on_dpms_on: Some(SessionAction::ScreenOn),
             ..SystemProfileConfig::default()
         };
 
         let merged = override_profile.merge_with_base(&base);
         assert_eq!(merged.on_startup, Some(SessionAction::PowerOn)); // from base
         assert_eq!(merged.on_shutdown, Some(SessionAction::ScreenOff)); // overridden
+        assert_eq!(merged.on_dpms_off, Some(SessionAction::ScreenOff)); // from base
+        assert_eq!(merged.on_dpms_on, Some(SessionAction::ScreenOn)); // overridden
     }
 
     #[test]
@@ -2279,6 +2312,8 @@ profile.user = "{gaming_uuid}"
 name = "custom"
 on_sleep = "none"
 on_wake = "screen_on"
+on_dpms_off = "screen_off"
+on_dpms_on = "screen_on"
 
 [user.profiles."{custom_user_uuid}"]
 name = "custom"
@@ -2310,6 +2345,8 @@ mac = "AA:BB:CC:DD:EE:FF"
             .unwrap_or_else(SystemProfileConfig::full_default);
         assert_eq!(sys_profile.on_sleep, Some(SessionAction::None));
         assert_eq!(sys_profile.on_wake, Some(SessionAction::ScreenOn));
+        assert_eq!(sys_profile.on_dpms_off, Some(SessionAction::ScreenOff));
+        assert_eq!(sys_profile.on_dpms_on, Some(SessionAction::ScreenOn));
 
         // Check user profile fields
         let profile = config
@@ -2707,6 +2744,8 @@ ip = "192.168.1.1"
             on_no_session: Some(SessionAction::None),
             on_sleep: Some(SessionAction::PowerOff),
             on_wake: Some(SessionAction::PowerOn),
+            on_dpms_off: Some(SessionAction::ScreenOff),
+            on_dpms_on: Some(SessionAction::ScreenOn),
             automate_when: Some(AutomateWhen::Always),
         };
 
@@ -2714,6 +2753,8 @@ ip = "192.168.1.1"
 
         assert_eq!(decoded.name, body.name);
         assert_eq!(decoded.on_startup, body.on_startup);
+        assert_eq!(decoded.on_dpms_off, body.on_dpms_off);
+        assert_eq!(decoded.on_dpms_on, body.on_dpms_on);
         assert_eq!(decoded.automate_when, body.automate_when);
     }
 
@@ -2764,12 +2805,16 @@ ip = "192.168.1.1"
             on_no_session: None,
             on_sleep: Some(SessionAction::PowerOff),
             on_wake: None,
+            on_dpms_off: Some(SessionAction::ScreenOff),
+            on_dpms_on: None,
             automate_when: Some(AutomateWhen::OnPrimary),
         };
         let body = SystemProfileBody::from_config(&cfg);
         assert_eq!(body.name, "office");
         assert_eq!(body.on_startup, cfg.on_startup);
         assert_eq!(body.on_shutdown, cfg.on_shutdown);
+        assert_eq!(body.on_dpms_off, cfg.on_dpms_off);
+        assert_eq!(body.on_dpms_on, cfg.on_dpms_on);
         assert_eq!(body.automate_when, cfg.automate_when);
 
         // Reverse: full round-trip including name.
@@ -2777,6 +2822,8 @@ ip = "192.168.1.1"
         assert_eq!(back.name, "office");
         assert_eq!(back.on_startup, cfg.on_startup);
         assert_eq!(back.on_shutdown, cfg.on_shutdown);
+        assert_eq!(back.on_dpms_off, cfg.on_dpms_off);
+        assert_eq!(back.on_dpms_on, cfg.on_dpms_on);
         assert_eq!(back.automate_when, cfg.automate_when);
     }
 
