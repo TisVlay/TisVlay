@@ -23,9 +23,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{
-    DEFAULT_PROFILE_NAME, DEFAULT_USER_PROFILE_UUID, DaemonClient, ResolvedUserProfile,
-    SessionAction, TvAssignment, UserConfig, UserProfileBody, UserProfileConfig,
-    user_references_of,
+    ActionExecutor, DEFAULT_PROFILE_NAME, DEFAULT_USER_PROFILE_UUID, DaemonClient,
+    ResolvedUserProfile, SessionAction, TvAssignment, UserConfig, UserProfileBody,
+    UserProfileConfig, user_references_of,
 };
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -270,13 +270,7 @@ pub async fn execute_action_for_tv(
     tv_id: &str,
     action: SessionAction,
 ) -> anyhow::Result<()> {
-    match action {
-        SessionAction::ScreenOff => daemon.screen_off(tv_id).await,
-        SessionAction::ScreenOn => daemon.screen_on(tv_id).await,
-        SessionAction::PowerOff => daemon.power_off(tv_id).await,
-        SessionAction::PowerOn => daemon.power_on(tv_id).await,
-        SessionAction::None => Ok(()),
-    }
+    daemon.apply_action(action, tv_id).await
 }
 
 /// Handle session events by executing configured actions.

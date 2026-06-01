@@ -1923,6 +1923,25 @@ impl DaemonClient {
     }
 }
 
+/// Dispatch resolved [`SessionAction`]s over D-Bus, sharing the
+/// action→primitive mapping with the daemon (see [`ActionExecutor`]).
+#[async_trait::async_trait]
+impl crate::ActionExecutor for DaemonClient {
+    type Error = anyhow::Error;
+    async fn screen_on(&self, tv_id: &str) -> Result<()> {
+        self.screen_on(tv_id).await
+    }
+    async fn screen_off(&self, tv_id: &str) -> Result<()> {
+        self.screen_off(tv_id).await
+    }
+    async fn power_on(&self, tv_id: &str) -> Result<()> {
+        self.power_on(tv_id).await
+    }
+    async fn power_off(&self, tv_id: &str) -> Result<()> {
+        self.power_off(tv_id).await
+    }
+}
+
 // =============================================================================
 // Session Service Client (for tray/GUI to query user profiles)
 // =============================================================================
