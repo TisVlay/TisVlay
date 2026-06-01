@@ -12,6 +12,10 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+name = "tisvlay_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tisvlay"
 path = "src/main.rs"
@@ -32,6 +36,9 @@ tisvlay-backends = { workspace = true, features = ["mock"] }
 tokio = { workspace = true, features = ["test-util"] }
 insta = { workspace = true }
 insta-cmd = { workspace = true }
+# Renders the clap command tree to Markdown for the mdBook CLI reference
+# (used only by examples/gen-cli-docs.rs; never linked into the binary).
+clap-markdown = "0.1"
 
 [lints]
 workspace = true
