@@ -29,6 +29,32 @@ tisvlay is a small set of cooperating programs:
 
 The CLI and the desktop services all talk to `tisvlayd` over D-Bus; the daemon holds the persistent configuration and the live TV connections.
 
+```mermaid
+graph LR
+    subgraph User session
+        Session["tisvlay-session<br/><i>desktop events</i>"]
+        Tray["tisvlay-tray<br/><i>system tray</i>"]
+        Gui["tisvlay-gui<br/><i>settings</i>"]
+        Cli["tisvlay<br/><i>CLI</i>"]
+    end
+
+    subgraph System
+        Daemon["tisvlayd<br/><i>system daemon</i>"]
+    end
+
+    subgraph Network
+        TV1["LG TV"]
+        TV2["… TV"]
+    end
+
+    Session -->|D-Bus| Daemon
+    Tray -->|D-Bus| Daemon
+    Gui -->|D-Bus| Daemon
+    Cli -->|D-Bus| Daemon
+    Daemon -.->|WebSocket / WoL| TV1
+    Daemon -.->|vendor protocol| TV2
+```
+
 ## Where to go next
 
 - New here? Start with [Installation](./getting-started/installation.md), then [Quick Start](./getting-started/quick-start.md).

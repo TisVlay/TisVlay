@@ -207,14 +207,17 @@ i18n-update: i18n-extract
 # Generated CLI-reference include partial.
 cli_doc := "docs/book/src/guide/cli-generated.md"
 
-# Build the docs site into docs/book/book/ (gitignored).
+# Build the docs site into docs/book/book/ (gitignored). Installs the
+# mdbook-mermaid JS assets first (gitignored, regenerated each build).
 [group('docs')]
 docs-build:
+    mdbook-mermaid install docs/book
     mdbook build docs/book
 
 # Serve the docs site with live reload at http://localhost:3000.
 [group('docs')]
 docs-serve:
+    mdbook-mermaid install docs/book
     mdbook serve docs/book --open
 
 # Regenerate the CLI-reference partial from the clap definitions.

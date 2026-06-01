@@ -13,4 +13,7 @@ build:
     rust: latest
   commands:
     - cargo install mdbook --version 0.5.2 --locked
+    - cargo install mdbook-mermaid --version 0.17.0 --locked
+    # Regenerate the gitignored mermaid JS assets (idempotent on book.toml).
+    - mdbook-mermaid install docs/book
     - mdbook build docs/book --dest-dir $READTHEDOCS_OUTPUT/html
