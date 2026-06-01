@@ -1,0 +1,16 @@
+# Read the Docs build for the user-facing mdBook site (docs/book/).
+# The developer docs under docs/*.md are NOT part of this build.
+#
+# The CLI-reference partial (docs/book/src/guide/cli-generated.md) is
+# committed and refreshed via `just docs-cli`; this build is a plain
+# `mdbook build` and never runs cargo to regenerate it. mdbook is pinned
+# to the version the Nix dev shell ships so local and RTD builds match.
+version: 2
+
+build:
+  os: ubuntu-lts-latest
+  tools:
+    rust: latest
+  commands:
+    - cargo install mdbook --version 0.5.2 --locked
+    - mdbook build docs/book --dest-dir $READTHEDOCS_OUTPUT/html

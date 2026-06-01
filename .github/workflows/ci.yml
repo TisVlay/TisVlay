@@ -106,3 +106,39 @@ jobs:
           fail-on-error: false
           list-suites: failed
           list-tests: failed
+
+  # User-facing docs site (docs/book → Read the Docs). Kept off the
+  # tuned `ci` job's cache/critical path: it only compiles tisvlay-cli
+  # (for the CLI-reference freshness gate) plus mdbook.
+  docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Toolchain
+        run: rustup show
+
+      - name: Setup
+        uses: taiki-e/install-action@v2
+        with:
+          tool: |
+            mdbook
+            just
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # Regenerate the CLI-reference partial from the clap tree and fail
+      # if it differs from what's committed — Read the Docs serves the
+      # committed copy via a plain `mdbook build`, so a stale partial
+      # would silently ship outdated CLI docs.
+      - name: CLI reference freshness
+        run: just docs-cli-check
+
+      - name: Build book
+        run: just docs-build

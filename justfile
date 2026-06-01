@@ -196,6 +196,38 @@ i18n-update: i18n-extract
         done; \
     done
 
+# --- Documentation site (mdBook → Read the Docs) ------------------------
+#
+# User-facing docs live in docs/book/ (book.toml + src/), separate from
+# the developer-facing docs/*.md. The CLI-reference partial
+# (src/guide/cli-generated.md) is generated from the clap definitions
+# and committed; Read the Docs builds a plain `mdbook build`, so it never
+# runs cargo — CI gates the partial's freshness instead.
+
+# Generated CLI-reference include partial.
+cli_doc := "docs/book/src/guide/cli-generated.md"
+
+# Build the docs site into docs/book/book/ (gitignored).
+[group('docs')]
+docs-build:
+    mdbook build docs/book
+
+# Serve the docs site with live reload at http://localhost:3000.
+[group('docs')]
+docs-serve:
+    mdbook serve docs/book --open
+
+# Regenerate the CLI-reference partial from the clap definitions.
+[group('docs')]
+docs-cli:
+    cargo run -q -p tisvlay-cli --example gen-cli-docs > {{ cli_doc }}
+    @echo "Wrote {{ cli_doc }} — review and commit."
+
+# Fail if the committed CLI-reference partial is stale (CI drift gate).
+[group('docs')]
+docs-cli-check: docs-cli
+    git diff --exit-code -- {{ cli_doc }}
+
 # --- Coverage -----------------------------------------------------------
 
 # Baseline line-coverage percentage. Bump on PRs that improve coverage.

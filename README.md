@@ -2,6 +2,8 @@
 
 TV Display control for Linux
 
+📖 **[User documentation](https://tisvlay.readthedocs.io)** — install, pairing, CLI reference, configuration, and troubleshooting (built from [`docs/book/`](docs/book/)).
+
 ## Features
 
 - **Power Management**: Turn TV on (Wake-on-LAN) and off
@@ -26,7 +28,7 @@ TV Display control for Linux
 cargo build --release
 
 # Pair with your TV (shows prompt on TV screen)
-tisvlay pair 192.168.1.100 --name "Living Room" --mac AA:BB:CC:DD:EE:FF
+tisvlay pair 192.168.1.100 --vendor lg --name "Living Room" --wake-id AA:BB:CC:DD:EE:FF
 
 # Control the TV
 tisvlay power on
@@ -49,10 +51,12 @@ on_sleep = "power_off"
 on_wake = "power_on"
 ```
 
-## Documentation
+## Developer documentation
 
-- [CLAUDE.md](CLAUDE.md) - Detailed architecture and implementation notes
+User-facing docs live at the [user documentation](https://tisvlay.readthedocs.io) site above. For internals:
+
 - [docs/design.md](docs/design.md) - Full system design
+- [.claude/CLAUDE.md](.claude/CLAUDE.md) - Detailed architecture and implementation notes
 - [docs/firewall.md](docs/firewall.md) - SSDP discovery firewall configuration
 
 ## Requirements

@@ -72,6 +72,10 @@
               just
               just-lsp
               linuxConsoleTools
+              # mdBook builds the user-facing docs site (docs/book →
+              # Read the Docs). See justfile's `docs-*` recipes and
+              # docs/plans/mdbook-docs-site.md.
+              mdbook
               lldb
               llvmPackages_21.bintools-unwrapped
               # nfpm (Go binary) is the packager that cargo-nfpm shells
