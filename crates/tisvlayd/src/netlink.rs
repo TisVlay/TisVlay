@@ -192,7 +192,7 @@ async fn neighbour_lookup(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<MacA
                 NeighbourAttribute::Destination(NeighbourAddress::Inet6(v6)) => {
                     dest = Some(IpAddr::V6(*v6));
                 }
-                NeighbourAttribute::LinkLocalAddress(bytes) if bytes.len() == 6 => {
+                NeighbourAttribute::LinkLayerAddress(bytes) if bytes.len() == 6 => {
                     let mut m = [0u8; 6];
                     m.copy_from_slice(bytes);
                     lladdr = Some(m);
