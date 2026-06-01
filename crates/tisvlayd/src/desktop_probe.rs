@@ -53,36 +53,23 @@ impl ProbedDisplay {
 
     /// Testable variant that accepts the sysfs root.
     pub fn enumerate_at(root: &Path) -> Vec<Self> {
-        let Ok(entries) = fs::read_dir(root) else {
-            debug!(root = %root.display(), "DRM sysfs not readable");
-            return Vec::new();
-        };
-
         let mut out = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            // Connector directories look like `card0-HDMI-A-1`. The
-            // bare `card*` and `renderD*` entries are the render nodes
-            // and don't have connectors.
-            let Some(connector) = dir_name.split_once('-').map(|(_, rest)| rest) else {
-                continue;
-            };
-
-            match Self::parse_connector(&path, connector) {
+        for connector in crate::drm::enumerate_connectors(root) {
+            match Self::parse_connector(&connector.dir, &connector.name) {
                 Ok(Some(display)) => out.push(display),
-                Ok(None) => trace!(connector, "connector skipped (disconnected or no EDID)"),
-                Err(e) => debug!(connector, error = %e, "failed to probe connector"),
+                Ok(None) => {
+                    trace!(connector = %connector.name, "connector skipped (disconnected or no EDID)")
+                }
+                Err(e) => {
+                    debug!(connector = %connector.name, error = %e, "failed to probe connector")
+                }
             }
         }
         out
     }
 
     fn parse_connector(dir: &Path, connector: &str) -> std::io::Result<Option<Self>> {
-        let status = fs::read_to_string(dir.join("status"))?;
-        if status.trim() != "connected" {
+        if !crate::drm::is_connected(dir) {
             return Ok(None);
         }
         let edid = fs::read(dir.join("edid"))?;
