@@ -246,8 +246,8 @@ pub fn input_to_source_code(input: &str) -> Option<&'static str> {
 /// labels. `connected` is reported `false` — ESC/VP21 has no per-input
 /// connection probe, so the list advertises capability, not live link
 /// status.
-pub fn known_inputs() -> Vec<(&'static str, &'static str)> {
-    vec![
+pub fn known_inputs() -> &'static [(&'static str, &'static str)] {
+    &[
         ("HDMI_1", "HDMI 1"),
         ("HDMI_2", "HDMI 2"),
         ("PC", "PC"),
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn known_inputs_cover_the_normalized_set() {
-        let ids: Vec<&str> = known_inputs().into_iter().map(|(id, _)| id).collect();
+        let ids: Vec<&str> = known_inputs().iter().map(|&(id, _)| id).collect();
         assert_eq!(ids, ["HDMI_1", "HDMI_2", "PC", "VIDEO", "USB", "LAN"]);
     }
 }

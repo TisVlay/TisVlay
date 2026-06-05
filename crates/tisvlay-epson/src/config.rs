@@ -67,16 +67,6 @@ impl EpsonVendorConfig {
         }
     }
 
-    /// Create a config with IP and MAC for Wake-on-LAN.
-    pub fn with_mac(ip: impl Into<String>, mac: impl Into<String>) -> Self {
-        Self {
-            ip: ip.into(),
-            mac: Some(mac.into()),
-            model: None,
-            port: DEFAULT_PORT,
-        }
-    }
-
     /// Parse an [`EpsonVendorConfig`] from a generic `toml::Value`.
     pub fn from_toml(value: &toml::Value) -> Result<Self> {
         value
@@ -195,7 +185,8 @@ mod tests {
 
     #[test]
     fn to_toml_round_trips() {
-        let config = EpsonVendorConfig::with_mac("10.0.0.1", "AA:BB:CC:DD:EE:FF");
+        let mut config = EpsonVendorConfig::new("10.0.0.1");
+        config.mac = Some("AA:BB:CC:DD:EE:FF".into());
         let value = config.to_toml().unwrap();
         let parsed = EpsonVendorConfig::from_toml(&value).unwrap();
         assert_eq!(config, parsed);

@@ -231,8 +231,8 @@ impl EpsonClient {
     /// status).
     pub fn list_inputs(&self) -> Vec<InputInfo> {
         escvp21::known_inputs()
-            .into_iter()
-            .map(|(id, label)| InputInfo {
+            .iter()
+            .map(|&(id, label)| InputInfo {
                 id: id.to_string(),
                 label: label.to_string(),
                 connected: false,
