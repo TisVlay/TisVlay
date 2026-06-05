@@ -612,15 +612,23 @@ Key design: `TvConfig` uses `#[serde(flatten)]` to capture vendor-specific field
 ```mermaid
 stateDiagram-v2
     [*] --> STANDBY
-    STANDBY --> ON : WoL / PowerOn
+    STANDBY --> ON : WoL / PowerOn (instant backends)
+    STANDBY --> WARMINGUP : PowerOn (projector-class)
+    WARMINGUP --> ON : warmup settles
     ON --> BLANKED : ScreenOff
     BLANKED --> ON : ScreenOn
-    ON --> STANDBY : PowerOff
+    ON --> STANDBY : PowerOff (instant)
+    ON --> COOLINGDOWN : PowerOff (projector-class)
     BLANKED --> STANDBY : PowerOff
+    COOLINGDOWN --> STANDBY : cooldown settles
 
     note right of BLANKED : OLED-safe\nInstant resume
     note right of STANDBY : Network may be inactive\nRequires WoL to wake
+    note right of WARMINGUP : Transient — is_on=true,\nis_screen_on=false
+    note right of COOLINGDOWN : Transient — is_on=false,\nis_screen_on=false
 ```
+
+**Transient power substates.** `PowerState::WarmingUp` / `CoolingDown` model the multi-second laser/lamp warmup and cooldown of projector-class backends; instant-power TVs skip them and go `STANDBY → ON` directly. `WarmingUp` is `is_on=true, is_screen_on=false` (powering up, no usable image yet); `CoolingDown` is `is_on=false, is_screen_on=false` (powering down). The daemon gives each its own `Tv1.Power.PowerState` wire string (`warming_up` / `cooling_down`) so GUIs can show staged feedback, and both sit in the [`needs_wake_preflight`](#reliable-screen-state-actions) set — a screen action waits for the transition to settle rather than racing it. They complement the [`PowerCyclePhase`](../crates/tisvlay-core/src/state.rs) progress signal, which narrates a *daemon-driven* power-on; these substates are the steady state a *passively* warming/cooling device sits in (e.g. powered on by its own remote).
 
 ### Event → Action Mapping
 
@@ -670,6 +678,7 @@ Cached state is `ManagedTv::last_known_power_state` (raw [`PowerState`](../crate
 - `Standby` / `Suspend` — TV is deeply off; in-band `screen_on` would stall on the half-asleep WS.
 - `ActiveStandby` — transient substate after a remote-press power-off; LG firmware ACKs `screen_*` but won't actually transition.
 - `Unknown` — no subscription push received yet; safest to assume off.
+- `WarmingUp` / `CoolingDown` — projector-class transients; a screen action waits for the warmup/cooldown to settle rather than racing it.
 - (`ScreenOff` deliberately **excluded** — it's the target state for `screen_off`, and `screen_on` from `ScreenOff` is exactly the lockscreen-wake fast path the `with_retry` "knock" mechanism is tuned for.)
 
 **Per-backend tuning.** Verify-delay and max-attempts come from `TvBackend::verify_retry_config() -> RetryConfig`, defaulted to `{ verify_delay: 300ms, max_attempts: 2 }` (LG-tuned). Future USB-CEC / RS-232 backends are expected to override for their different latency characteristics.
