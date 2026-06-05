@@ -48,6 +48,10 @@ pub struct MockConnection {
     /// Delay between ramp steps. 0 → `yield_now` (instant); >0 →
     /// `tokio::time::sleep` so tests can interleave commands mid-ramp.
     backlight_ramp_step_delay: std::time::Duration,
+    /// When `true`, [`TvConnection::subscribe_state`] returns
+    /// `NotSupported`, modeling a poll-only backend. Sourced from
+    /// [`MockVendorConfig::disable_subscription`].
+    disable_subscription: bool,
 }
 
 impl MockConnection {
@@ -110,6 +114,7 @@ impl MockConnection {
             backlight_ramp_step_delay: std::time::Duration::from_millis(
                 config.backlight_ramp_step_delay_ms,
             ),
+            disable_subscription: config.disable_subscription,
         }
     }
 
@@ -369,6 +374,14 @@ impl TvConnection for MockConnection {
     // ------------------------------------------------------------------
 
     async fn subscribe_state(&mut self) -> Result<mpsc::UnboundedReceiver<TvState>> {
+        // Poll-only mode: refuse the subscription so the daemon falls
+        // back to its periodic `get_state` poll + active-verify paths.
+        if self.disable_subscription {
+            return Err(Error::not_supported(
+                "subscribe_state",
+                Capabilities::empty(),
+            ));
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         // Send an initial snapshot so subscribers see the current state
         // immediately — LG does the same after SSAP subscribe.

@@ -650,3 +650,251 @@ async fn screen_off_accepts_active_standby_when_wake_refuses() {
     );
     assert!(!tv.is_screen_on, "panel is dark in ActiveStandby");
 }
+
+// ---------- Poll-only backends (no subscribe_state push) ----------
+
+/// FIX 1 end-to-end: a poll-only backend (no `subscribe_state` push)
+/// has its live state reach D-Bus clients via the daemon's periodic
+/// state poll.
+///
+/// The mock's `disable_subscription` knob makes `subscribe_state`
+/// return `NotSupported`, so no push fires when state changes. After
+/// `inject_power_state(WarmingUp)` mutates the live state, the cached
+/// `Tv1.Power.PowerState` property stays stale until a poll pass runs —
+/// then it reflects the injected `warming_up`. A push backend would
+/// surface this without the poll; a poll-only one depends on it.
+#[tokio::test]
+async fn poll_only_state_reaches_dbus_via_poll() {
+    use tisvlay_core::PowerState;
+
+    let daemon = TestDaemon::with_one_poll_only_mock_tv("poll_warm")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("poll_warm").to_string();
+    let addr = "mock://poll_warm";
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    // Seed the cached property from the live state (mock starts
+    // "active"). For a poll-only TV nothing pushes the connect
+    // snapshot, so the cache is driven by the poll pass.
+    daemon.manager().poll_state_once().await;
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs (seed)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "active",
+        "poll pass should seed the cached property from the connect-time live state",
+    );
+
+    // Mutate the live state. For a poll-only mock this updates the
+    // in-memory state but fires NO subscription push.
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::WarmingUp);
+    settle().await;
+
+    // Pin that nothing pushed: without a poll the cache is still stale.
+    let tvs = client.list_tvs().await.expect("list_tvs (stale)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "active",
+        "poll-only backend must not push; cached property stays stale until the next poll",
+    );
+
+    // One poll pass picks up the injected state and forwards it to
+    // D-Bus exactly like a pushed update would.
+    daemon.manager().poll_state_once().await;
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs (polled)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "warming_up",
+        "poll pass must forward the poll-only backend's live state to the cached D-Bus property",
+    );
+    assert!(!tv.is_screen_on, "no usable image while warming up");
+}
+
+/// FIX 1b: a poll-only backend's `screen_on` does NOT spuriously
+/// escalate to `power_on`. The verify loop awaits `power_state_tx`,
+/// which a poll-only backend never fires, so without the active
+/// `refresh_power_state` the await always times out and the command
+/// escalates even though it succeeded.
+///
+/// The TV starts in `ScreenOff` (NOT in the wake-preflight set, so the
+/// verify loop runs). The mock's default `screen_on` flips state to
+/// `Active`. With the fix, the active refresh sees `Active` on the
+/// first attempt and returns — `conn.screen_on()` is called exactly
+/// once. Without the fix, both verify attempts time out (count == 2)
+/// before escalating to `power_on`.
+#[tokio::test]
+async fn poll_only_screen_on_does_not_spuriously_escalate() {
+    use tisvlay_core::PowerState;
+
+    let daemon = TestDaemon::with_one_poll_only_mock_tv("poll_scr_on")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("poll_scr_on").to_string();
+    let addr = "mock://poll_scr_on";
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    // True ScreenOff so the dispatcher enters the verify-retry loop
+    // (not the pre-flight wake path).
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::ScreenOff);
+    settle().await;
+
+    daemon.manager().screen_on(&uuid).await.expect("screen_on");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The active-verify path observes `Active` after the first
+    // `conn.screen_on()`, so the loop returns on attempt #1 without
+    // escalating. A spurious-escalation regression would show up as a
+    // count > 1 (every verify attempt times out before power_on).
+    let calls = daemon.handle().screen_on_call_count(addr);
+    assert_eq!(
+        calls, 1,
+        "poll-only screen_on must verify on the first attempt via active refresh, not time out and escalate",
+    );
+
+    // A poll-only backend's D-Bus property catches up on the next poll
+    // pass (the reliable-dispatch refresh updates the internal cache,
+    // not the D-Bus property). Drive one pass, then assert the surface.
+    daemon.manager().poll_state_once().await;
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "active",
+        "panel should be on after screen_on"
+    );
+    assert!(tv.is_screen_on);
+}
+
+/// FIX 2: a poll-only projector reporting `CoolingDown` (deliberately
+/// powering off) is NOT re-powered by `screen_off`. Escalating to
+/// `power_on` would cancel the user's power-off and re-light the lamp.
+///
+/// With the fix, `screen_off` returns `Ok` immediately without sending
+/// any `screen_off` command or escalating, so the projector stays in
+/// `cooling_down`. Without the fix, `needs_wake_preflight(CoolingDown)`
+/// is true → `power_on` replaces the connection with a fresh one that
+/// comes up `active`.
+#[tokio::test]
+async fn poll_only_screen_off_does_not_repower_cooling_down() {
+    use tisvlay_core::PowerState;
+
+    let daemon = TestDaemon::with_one_poll_only_mock_tv("poll_cool")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("poll_cool").to_string();
+    let addr = "mock://poll_cool";
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::CoolingDown);
+    daemon.manager().poll_state_once().await;
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs (pre)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(tv.power_state, "cooling_down", "starts cooling down");
+
+    daemon
+        .manager()
+        .screen_off(&uuid)
+        .await
+        .expect("screen_off");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // No screen_off command was sent — the CoolingDown short-circuit
+    // returns before the verify loop.
+    assert_eq!(
+        daemon.handle().screen_off_call_count(addr),
+        0,
+        "CoolingDown short-circuit must return before sending any screen_off command",
+    );
+
+    // The original connection is intact (not replaced by a power_on
+    // re-light): a poll still reads the cooling-down live state.
+    daemon.manager().poll_state_once().await;
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs (post)");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "cooling_down",
+        "screen_off on a cooling-down projector must not power it back on",
+    );
+}
+
+/// FIX 3: a poll-only projector reporting `WarmingUp` is waited out to
+/// a usable state rather than escalated to `power_on` (which would be
+/// redundant and report success with a blank screen).
+///
+/// The TV starts `WarmingUp`; a background task flips it to `Active`
+/// (simulating the lamp finishing warm-up). With the fix, `screen_on`
+/// polls until `Active`, then runs the verify loop — `conn.screen_on()`
+/// is called exactly once. Without the fix,
+/// `needs_wake_preflight(WarmingUp)` escalates straight to `power_on`,
+/// which never calls `conn.screen_on()` (count == 0).
+#[tokio::test]
+async fn poll_only_screen_on_waits_out_warming_up() {
+    use tisvlay_core::PowerState;
+
+    let daemon = TestDaemon::with_one_poll_only_mock_tv("poll_warmup")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("poll_warmup").to_string();
+    let addr = "mock://poll_warmup";
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::WarmingUp);
+    settle().await;
+
+    // Simulate the lamp finishing warm-up shortly after screen_on
+    // starts polling. `inject_power_state_silent` mutates the live
+    // state the warm-up loop's `get_power_state` reads.
+    let handle = daemon.handle().clone();
+    let flip = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handle.inject_power_state_silent("mock://poll_warmup", PowerState::Active);
+    });
+
+    daemon.manager().screen_on(&uuid).await.expect("screen_on");
+    flip.await.expect("flip task");
+
+    // The warm-up wait exited once the projector reached Active, then
+    // the verify loop sent exactly one `screen_on` and verified. A
+    // missing-FIX-3 regression escalates to power_on (count == 0).
+    assert_eq!(
+        daemon.handle().screen_on_call_count(addr),
+        1,
+        "screen_on must wait out WarmingUp then verify once, not escalate straight to power_on",
+    );
+
+    // D-Bus property catches up on the next poll pass (see the
+    // poll-only screen_on test for the rationale).
+    daemon.manager().poll_state_once().await;
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "active",
+        "projector is usable after warm-up"
+    );
+    assert!(tv.is_screen_on);
+}
