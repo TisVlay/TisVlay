@@ -15,7 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None at present._
+- [`epson-backend.md`](epson-backend.md) — Epson projector vendor backend, a reusable backend-developer guide, and the warmup/cooldown power-state interface audit; multi-PR work that benefits from an upfront design doc.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
