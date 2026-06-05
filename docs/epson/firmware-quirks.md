@@ -36,6 +36,16 @@ For the ESC/VP21 wire protocol and the command vocabulary, see [protocol.md](pro
 
 **Regression coverage.** `wake_without_mac_is_noop_ok` and `supports_wake_gated_on_mac` pin the gating; `power_on_reports_warming_then_active` pins the warmup-poll progression against a scripted `FakeEpsonServer`. **To confirm on hardware:** measure WoL-to-reachable and reachable-to-`Active` latencies on a cold projector and tune `WAKE_CONNECT_MAX_ATTEMPTS` / `WARMUP_POLL_TIMEOUT` and `verify_retry_config` from the measured timings.
 
+## Open: a projector never matches its DRM connector, so the DPMS watcher silently never fires for it
+
+**Symptom (anticipated).** The opt-in `on_dpms_off` / `on_dpms_on` system-profile actions — the shipped daemon-side DPMS slice, driven by the sysfs `dpms` connector watcher — never fire for an Epson projector on HDMI, even with the actions configured and the desktop blanking the output. The projector's screen-off/on automation tied to monitor DPMS silently no-ops.
+
+**Root cause (open).** `EpsonConnection` reports no `HardwareId` (it inherits the trait default `None`; the backend reads no EDID-equivalent identity off ESC/VP21 today), but the daemon matches managed TVs to DRM connectors *strictly* by EDID `HardwareId` (`tisvlayd/src/desktop_probe.rs`). With no `HardwareId` to match, the projector never binds to a connector, so the per-connector `dpms` watcher (`tisvlayd/src/dpms.rs`) has nothing to attribute its transitions to. This is unobservable without projector hardware on a real HDMI link — the EDID a projector presents (and whether its serial is stable/readable) is the unknown.
+
+**Fix (open — to confirm on hardware).** Populate a `HardwareId` on the Epson backend that the daemon can match against the connector's EDID — candidate sources are the ESC/VP21 `SNO?` serial query and/or the projector's EDID Epson PNP vendor id (`EPS`). The open hardware question is whether the device-reported `SNO?` serial corresponds to the serial encoded in the EDID the projector presents over HDMI; if they diverge, the match has to key off the EDID-side identity (vendor id + EDID serial) rather than the ESC/VP21 serial. No code today — the backend leaves `HardwareId` at `None` until this is validated.
+
+**Regression coverage.** N/A until a `HardwareId` is populated. **To confirm on hardware:** read the projector's EDID over the HDMI link (vendor id, product, serial) and the ESC/VP21 `SNO?` response, and check whether they agree closely enough for the daemon's EDID-based connector match to bind the projector — then wire the matching identity into `EpsonConnection`.
+
 ## Open: does the v2.00+ Web API offer any capability edge worth a second transport?
 
 **Symptom (anticipated).** None functional — this is a "should we add a second transport" question, not a bug.

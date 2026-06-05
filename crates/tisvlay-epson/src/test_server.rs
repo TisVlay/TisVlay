@@ -44,6 +44,13 @@ pub(crate) struct FakeState {
     cooldown_remaining: usize,
     /// Cooling code returned while `cooldown_remaining > 0`.
     cooldown_code: String,
+    /// A warmup progression armed to start on the *next* `PWR ON`
+    /// (`(count, code)`), rather than immediately. Lets a test script a
+    /// cooldown that completes to standby and a warmup that only kicks
+    /// in once the client re-powers — the cooling → standby → warming →
+    /// on path a quick power-off then power-on walks. Cleared as it
+    /// fires.
+    pending_warmup: Option<(usize, String)>,
     /// When set, every reply is written in two TCP segments split at
     /// this byte offset (with a flush between) to exercise the client's
     /// read-until-terminator accumulation against a segmented reply.
@@ -61,6 +68,7 @@ impl Default for FakeState {
             warmup_code: "02".into(),
             cooldown_remaining: 0,
             cooldown_code: "03".into(),
+            pending_warmup: None,
             split_reply_at: None,
         }
     }
@@ -134,6 +142,16 @@ impl FakeEpsonHandle {
         state.cooldown_remaining = count;
         state.cooldown_code = code.into();
         state.warmup_remaining = 0;
+    }
+
+    /// Arm a warmup progression to begin on the *next* `PWR ON` (rather
+    /// than immediately): once that `PWR ON` arrives, the following
+    /// `count` `PWR?` reads answer with `code`, then the projector
+    /// reports on (`"01"`). Composes with a scripted cooldown to model
+    /// cooling → standby → warming → on for a quick power-off then
+    /// power-on.
+    pub(crate) fn script_warmup_after_power_on(&self, count: usize, code: impl Into<String>) {
+        self.state.lock().pending_warmup = Some((count, code.into()));
     }
 
     /// Drop the active connection so the next client command must
@@ -312,12 +330,15 @@ impl FakeEpsonServer {
         let mut s = state.lock();
         match cmd {
             "PWR ON" => {
-                // If a warmup was scripted, leave the progression in
-                // place; otherwise snap to on.
-                if s.warmup_remaining == 0 {
+                s.cooldown_remaining = 0;
+                if let Some((count, code)) = s.pending_warmup.take() {
+                    // A warmup armed for this `PWR ON` starts now.
+                    s.warmup_remaining = count;
+                    s.warmup_code = code;
+                } else if s.warmup_remaining == 0 {
+                    // No warmup scripted or pending — snap to on.
                     s.power_code = "01".into();
                 }
-                s.cooldown_remaining = 0;
             }
             "PWR OFF" => {
                 if s.cooldown_remaining == 0 {

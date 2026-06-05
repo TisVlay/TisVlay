@@ -45,6 +45,13 @@ const WARMUP_POLL_TIMEOUT: Duration = Duration::from_secs(60);
 /// Interval between warmup `PWR?` polls.
 const WARMUP_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Maximum time to wait for a still-cooling projector to leave cooldown
+/// before sending `PWR ON`. A projector powered off moments ago is in a
+/// cooldown lockout where `PWR ON` is rejected; the LS12000 cools in a
+/// comparable window to its warmup, so ~30 s covers a quick power-off
+/// then power-on without making the common (already-standby) path wait.
+const COOLDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Factory for creating Epson projector connections.
 #[derive(Debug, Default)]
 pub struct EpsonConnector;
@@ -166,6 +173,14 @@ impl TvConnector for EpsonConnector {
             })
         })?;
 
+        // A projector re-powered shortly after a power-off is still in
+        // its cooldown lockout, where `PWR ON` is rejected. Wait for it
+        // to leave cooldown before driving it on, so a quick
+        // power-off → power-on doesn't spuriously fail the warmup poll.
+        // No-op on the common path (an already-standby or already-on
+        // projector isn't cooling).
+        wait_out_cooldown(&mut client, &config.ip).await?;
+
         // Drive the projector on and poll through warmup to Active so
         // downstream action chains (on_startup = power_on → switch_input)
         // don't fire while the laser is still warming and no usable image
@@ -256,13 +271,51 @@ impl TvConnector for EpsonConnector {
     }
 }
 
-/// Poll `PWR?` until the projector reports [`PowerState::Active`],
-/// tolerating the [`PowerState::WarmingUp`] transient.
+/// Wait for a still-cooling projector to leave cooldown before a
+/// `PWR ON`.
 ///
-/// Returns an error if the projector is still not active when
-/// [`WARMUP_POLL_TIMEOUT`] elapses, or if it reports a state that
-/// can't progress to active (standby / cooling) — those indicate the
-/// `PWR ON` didn't take.
+/// A `PWR ON` issued during the post-power-off cooldown lockout is
+/// rejected, so when the freshly-connected projector reports
+/// [`PowerState::CoolingDown`] this polls `PWR?` until it reaches a
+/// non-cooling state (`Standby` once cooldown completes, or anything
+/// else), bounded by [`COOLDOWN_WAIT_TIMEOUT`]. Any other connect-time
+/// reading (`Active` / `ScreenOff` / `WarmingUp` / `Standby` /
+/// `Unknown`) returns immediately — the projector isn't cooling, so
+/// `PWR ON` will be accepted (or is already redundant).
+///
+/// A timeout here is not fatal: the caller proceeds to `PWR ON` +
+/// [`poll_until_active`] regardless, which surfaces a genuine
+/// won't-power-on as its own error.
+async fn wait_out_cooldown(client: &mut EpsonClient, ip: &str) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + COOLDOWN_WAIT_TIMEOUT;
+    loop {
+        if client.get_power_state().await? != PowerState::CoolingDown {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            debug!(
+                %ip,
+                "projector still cooling down after the cooldown-wait timeout; \
+                 sending PWR ON anyway",
+            );
+            return Ok(());
+        }
+        debug!(%ip, "projector cooling down; waiting before PWR ON");
+        tokio::time::sleep(WARMUP_POLL_INTERVAL).await;
+    }
+}
+
+/// Poll `PWR?` until the projector reports [`PowerState::Active`],
+/// tolerating the [`PowerState::WarmingUp`] and [`PowerState::CoolingDown`]
+/// transients.
+///
+/// `CoolingDown` is treated as transient (keep polling) rather than a
+/// hard error: the cooldown-wait in `wake_and_connect` already drains a
+/// pre-existing cooldown before `PWR ON`, but a `PWR ON` racing the tail
+/// of a cooldown can still read one stale cooling code, and it's bounded
+/// by [`WARMUP_POLL_TIMEOUT`] either way. `Standby` stays the hard-error
+/// case — once `PWR ON` has been sent, a steady standby reading means it
+/// didn't take.
 async fn poll_until_active(client: &mut EpsonClient, ip: &str) -> Result<()> {
     let deadline = tokio::time::Instant::now() + WARMUP_POLL_TIMEOUT;
     loop {
@@ -272,15 +325,15 @@ async fn poll_until_active(client: &mut EpsonClient, ip: &str) -> Result<()> {
                 // image being blanked is a separate, recoverable concern.
                 return Ok(());
             }
-            PowerState::WarmingUp | PowerState::Unknown => {
-                // Still warming (or a transient indistinct reading) —
-                // keep polling.
+            PowerState::WarmingUp | PowerState::CoolingDown | PowerState::Unknown => {
+                // Still warming, draining a cooldown tail, or a transient
+                // indistinct reading — keep polling.
             }
-            other @ (PowerState::Standby | PowerState::CoolingDown) => {
+            PowerState::Standby => {
                 return Err(Error::backend(
                     crate::VENDOR_ID,
                     format!(
-                        "projector at {ip} reported {other:?} during warmup; PWR ON did not take"
+                        "projector at {ip} reported Standby during warmup; PWR ON did not take"
                     ),
                 ));
             }
@@ -416,6 +469,32 @@ mod tests {
             .await
             .expect("pairing should resolve within the connect timeout");
         assert!(result.is_err(), "unreachable projector → pairing fails");
+    }
+
+    // A quick power-off → power-on lands on a still-cooling projector.
+    // `wake_and_connect` must wait out the cooldown before `PWR ON`
+    // (which the firmware rejects mid-cooldown) and ride the subsequent
+    // warmup to Active — not hard-error on the cooling reading. Script
+    // the full cooling → standby → warming → on progression and assert
+    // it succeeds.
+    #[tokio::test]
+    async fn wake_and_connect_rides_out_cooldown_then_warmup() {
+        let server = crate::test_server::FakeEpsonServer::start().await;
+        // Two cooling reads, then standby; the `PWR ON` that follows
+        // arms a two-read warmup, then on. No MAC → wake() is a no-op,
+        // so the connect loop reaches the live server on the first try.
+        server.set_power_code("03");
+        server.script_cooldown(2, "03");
+        server.script_warmup_after_power_on(2, "02");
+
+        let connector = EpsonConnector::new();
+        let config = config_value(&server.host(), None, server.port());
+
+        let conn = connector
+            .wake_and_connect(&config)
+            .await
+            .expect("wake_and_connect must ride out cooldown + warmup without erroring");
+        assert!(conn.is_connected());
     }
 
     // The wake-and-connect loop is bounded by an overall wall-clock
