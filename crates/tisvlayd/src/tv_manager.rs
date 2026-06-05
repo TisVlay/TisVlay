@@ -782,10 +782,16 @@ impl TvManager {
     /// and returns `true`. If the backend doesn't support subscriptions, returns
     /// `false` without spawning anything.
     ///
-    /// The returned bool is stored on [`ManagedTv::has_push_subscription`] at
-    /// every call site so the daemon can tell push backends (poll skipped,
-    /// passive verify) apart from poll-only backends (the [`state_poll_loop`]
-    /// refreshes their state; `screen_on` / `screen_off` actively verify).
+    /// The returned bool is stored on [`ManagedTv::has_push_subscription`]
+    /// (via [`Self::refresh_subscription`]) so the daemon can tell push
+    /// backends (poll skipped, passive verify) apart from poll-only backends
+    /// (the [`state_poll_loop`] refreshes their state; `screen_on` /
+    /// `screen_off` actively verify).
+    ///
+    /// The spawned forwarder reads back from `self.tvs` to apply
+    /// `last_known_input` updates, so subscribing *before* the TV is inserted
+    /// into the map is safe: its `if let Some(...)` guard skips the update for
+    /// a not-yet-present entry and keeps forwarding the state event.
     async fn try_subscribe_state(&self, tv_id: &str, connection: &mut dyn TvConnection) -> bool {
         match connection.subscribe_state().await {
             Ok(state_rx) => {
@@ -807,6 +813,17 @@ impl TvManager {
                 false
             }
         }
+    }
+
+    /// Subscribe to backend state pushes (if supported) and store the
+    /// result on the TV. A thin wrapper over [`Self::try_subscribe_state`]
+    /// for the call sites that install a fresh connection.
+    async fn refresh_subscription(&self, tv_id: &str, tv: &mut ManagedTv) {
+        tv.has_push_subscription = if let Some(conn) = tv.connection.as_mut() {
+            self.try_subscribe_state(tv_id, conn.as_mut()).await
+        } else {
+            false
+        };
     }
 
     /// Get a clone of the state change sender for external event sources.
@@ -1185,14 +1202,7 @@ impl TvManager {
                         let mut tv = tv_arc.lock().await;
                         tv.connection = Some(connection);
                         tv.powered_off = false;
-                        // Capture the subscription result while `tv.connection`
-                        // is borrowed, then store it once the borrow ends.
-                        let has_push = if let Some(conn) = tv.connection.as_mut() {
-                            manager.try_subscribe_state(tv_id, conn.as_mut()).await
-                        } else {
-                            false
-                        };
-                        tv.has_push_subscription = has_push;
+                        manager.refresh_subscription(tv_id, &mut tv).await;
                     }
                 }
                 manager.emit_connection_changed(tv_id, true);
@@ -1927,12 +1937,7 @@ impl TvManager {
                 Ok(connection) => {
                     info!(tv_id = %tv_id, "Connected to TV");
                     tv.connection = Some(connection);
-                    let has_push = if let Some(conn) = tv.connection.as_mut() {
-                        self.try_subscribe_state(tv_id, conn.as_mut()).await
-                    } else {
-                        false
-                    };
-                    tv.has_push_subscription = has_push;
+                    self.refresh_subscription(tv_id, &mut tv).await;
                 }
                 Err(e) => {
                     return Err(TvManagerError::ConnectionFailed {
@@ -2109,12 +2114,7 @@ impl TvManager {
             }
 
             // Subscribe to backend state updates if supported
-            let has_push = if let Some(conn) = tv.connection.as_mut() {
-                self.try_subscribe_state(tv_id, conn.as_mut()).await
-            } else {
-                false
-            };
-            tv.has_push_subscription = has_push;
+            self.refresh_subscription(tv_id, &mut tv).await;
         }
 
         let connection = tv
@@ -2283,12 +2283,7 @@ impl TvManager {
             let mut tv = tv_arc.lock().await;
             tv.reconnecting = false;
             tv.connection = Some(connection);
-            let has_push = if let Some(conn) = tv.connection.as_mut() {
-                self.try_subscribe_state(tv_id, conn.as_mut()).await
-            } else {
-                false
-            };
-            tv.has_push_subscription = has_push;
+            self.refresh_subscription(tv_id, &mut tv).await;
         }
 
         self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connected);
@@ -3019,19 +3014,7 @@ impl TvManager {
         };
         let mut managed_tv = ManagedTv::new(tv_config.clone(), system_profile);
         managed_tv.connection = Some(conn);
-        let has_push = if let Some(conn) = managed_tv.connection.as_mut() {
-            // Spawns a forwarder task that reads from `self.tvs`
-            // for `last_known_input` updates. State pushes that
-            // arrive before the insert below land in a sub-ms race
-            // window; the forwarder's existing `if let Some(...)`
-            // guard handles the miss gracefully (skips the
-            // last_known_input update, continues forwarding the
-            // SubscriptionUpdate event).
-            self.try_subscribe_state(tv_id, conn.as_mut()).await
-        } else {
-            false
-        };
-        managed_tv.has_push_subscription = has_push;
+        self.refresh_subscription(tv_id, &mut managed_tv).await;
         {
             let mut tvs = self.tvs.write().await;
             tvs.insert(
