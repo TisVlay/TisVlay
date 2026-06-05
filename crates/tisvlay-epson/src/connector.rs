@@ -21,6 +21,14 @@ use crate::connection::EpsonConnection;
 /// Maximum number of connect attempts after sending WoL.
 const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 60;
 
+/// Overall wall-clock budget for the wake-and-connect retry loop. The
+/// attempt cap alone is not a time bound — each attempt can hang up to
+/// the per-attempt connect timeout (10 s), so 60 attempts could span
+/// ~10 min on a handshake stall. This deadline caps the total at ~90 s
+/// (comfortably past a cold-NIC recovery) regardless of how long
+/// individual attempts take.
+const WAKE_CONNECT_TOTAL_BUDGET: Duration = Duration::from_secs(90);
+
 /// Delay between connect retries during wake-and-connect. The
 /// projector's NIC may still be coming up after deep standby, so the
 /// loop spans tens of seconds.
@@ -119,6 +127,7 @@ impl TvConnector for EpsonConnector {
         // the desktop network is still recovering.
         self.wake(vendor_config).await?;
 
+        let deadline = tokio::time::Instant::now() + WAKE_CONNECT_TOTAL_BUDGET;
         let mut client = None;
         let mut last_err = None;
         for attempt in 1..=WAKE_CONNECT_MAX_ATTEMPTS {
@@ -136,6 +145,13 @@ impl TvConnector for EpsonConnector {
                 Err(e) => {
                     debug!(ip = %config.ip, attempt, error = %e, "projector not ready yet");
                     last_err = Some(e);
+                    // Stop once the overall budget is spent — a hung
+                    // handshake on each attempt could otherwise stretch
+                    // the attempt cap into minutes.
+                    if tokio::time::Instant::now() >= deadline {
+                        debug!(ip = %config.ip, attempt, "wake-connect budget exhausted");
+                        break;
+                    }
                     tokio::time::sleep(WAKE_CONNECT_RETRY_INTERVAL).await;
                 }
             }
@@ -223,6 +239,20 @@ impl TvConnector for EpsonConnector {
 
     fn config_schema(&self) -> Vec<tisvlay_core::PairingField> {
         config::config_schema()
+    }
+
+    async fn probe_arp_cache(&self, ip: std::net::IpAddr) -> Result<()> {
+        // Best-effort neighbour-table priming for the pairing wizard's
+        // `discovery.mac` autofill: a TCP connect to the ESC/VP21 port
+        // makes the kernel resolve ARP (or NDP) before the SYN goes
+        // out, leaving a fresh entry the daemon can then read. The
+        // connect outcome is irrelevant — a refused or timed-out attempt
+        // primes the table just as well — so this always returns Ok and
+        // never blocks the caller for long.
+        let addr = std::net::SocketAddr::new(ip, config::DEFAULT_PORT);
+        let _ = tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(addr))
+            .await;
+        Ok(())
     }
 }
 
@@ -386,5 +416,39 @@ mod tests {
             .await
             .expect("pairing should resolve within the connect timeout");
         assert!(result.is_err(), "unreachable projector → pairing fails");
+    }
+
+    // The wake-and-connect loop is bounded by an overall wall-clock
+    // budget, not just the attempt cap — otherwise a per-attempt
+    // handshake hang could stretch 60 attempts × the 10 s connect
+    // timeout into ~10 min. Pin that the budget is meaningfully tighter
+    // than that naive worst case so the deadline actually constrains
+    // the loop.
+    #[test]
+    fn wake_connect_budget_is_tighter_than_attempt_cap_worst_case() {
+        // Per-attempt connect timeout is 10 s (transport's CONNECT_TIMEOUT).
+        let naive_worst_case = WAKE_CONNECT_MAX_ATTEMPTS * 10;
+        assert!(
+            WAKE_CONNECT_TOTAL_BUDGET.as_secs() < naive_worst_case as u64,
+            "the total budget must bound the loop below the attempt-cap worst case",
+        );
+        // And it leaves headroom past a cold-NIC recovery (tens of secs).
+        assert!(WAKE_CONNECT_TOTAL_BUDGET >= Duration::from_secs(60));
+    }
+
+    // `probe_arp_cache` primes the kernel neighbour table for the
+    // wizard's `discovery.mac` autofill. It's best-effort: an
+    // unreachable target still returns Ok (the connect attempt itself
+    // is the priming side effect, outcome irrelevant).
+    #[tokio::test]
+    async fn probe_arp_cache_is_ok_for_unreachable_ip() {
+        let connector = EpsonConnector::new();
+        // Loopback port-1 refuses fast; the connect resolves quickly
+        // and the probe swallows the result.
+        let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        connector
+            .probe_arp_cache(ip)
+            .await
+            .expect("probe is best-effort and returns Ok regardless of reachability");
     }
 }

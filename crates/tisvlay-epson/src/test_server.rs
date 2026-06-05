@@ -14,6 +14,7 @@
 
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -43,6 +44,10 @@ pub(crate) struct FakeState {
     cooldown_remaining: usize,
     /// Cooling code returned while `cooldown_remaining > 0`.
     cooldown_code: String,
+    /// When set, every reply is written in two TCP segments split at
+    /// this byte offset (with a flush between) to exercise the client's
+    /// read-until-terminator accumulation against a segmented reply.
+    split_reply_at: Option<usize>,
 }
 
 impl Default for FakeState {
@@ -56,6 +61,7 @@ impl Default for FakeState {
             warmup_code: "02".into(),
             cooldown_remaining: 0,
             cooldown_code: "03".into(),
+            split_reply_at: None,
         }
     }
 }
@@ -71,6 +77,10 @@ pub(crate) struct FakeEpsonHandle {
     addr: std::net::SocketAddr,
     state: Arc<Mutex<FakeState>>,
     cmd_tx: mpsc::UnboundedSender<ServerCommand>,
+    /// When set, the server drops the connection after reading the next
+    /// command but before replying — a socket failure mid-exchange, as
+    /// distinct from a quiescent FIN between commands.
+    abort_next_command: Arc<AtomicBool>,
     _server_task: tokio::task::JoinHandle<()>,
 }
 
@@ -131,6 +141,20 @@ impl FakeEpsonHandle {
     pub(crate) fn drop_connection(&self) {
         let _ = self.cmd_tx.send(ServerCommand::DropConnection);
     }
+
+    /// Write every reply in two TCP segments split at `at` bytes (flush
+    /// between) so the client's read-until-terminator loop is exercised
+    /// against a segmented reply.
+    pub(crate) fn split_replies(&self, at: usize) {
+        self.state.lock().split_reply_at = Some(at);
+    }
+
+    /// Make the server drop the connection on the next command instead
+    /// of answering it — a mid-command socket failure. Cleared after it
+    /// fires, so the post-reconnect retry succeeds.
+    pub(crate) fn abort_next_command(&self) {
+        self.abort_next_command.store(true, Ordering::SeqCst);
+    }
 }
 
 /// The fake ESC/VP21 server.
@@ -146,15 +170,19 @@ impl FakeEpsonServer {
 
         let state = Arc::new(Mutex::new(FakeState::default()));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let abort_next_command = Arc::new(AtomicBool::new(false));
         let server_state = Arc::clone(&state);
+        let server_abort = Arc::clone(&abort_next_command);
 
-        let server_task =
-            tokio::spawn(async move { Self::accept_loop(listener, server_state, cmd_rx).await });
+        let server_task = tokio::spawn(async move {
+            Self::accept_loop(listener, server_state, cmd_rx, server_abort).await
+        });
 
         FakeEpsonHandle {
             addr,
             state,
             cmd_tx,
+            abort_next_command,
             _server_task: server_task,
         }
     }
@@ -163,6 +191,7 @@ impl FakeEpsonServer {
         listener: TcpListener,
         state: Arc<Mutex<FakeState>>,
         mut cmd_rx: mpsc::UnboundedReceiver<ServerCommand>,
+        abort_next_command: Arc<AtomicBool>,
     ) {
         loop {
             let (mut stream, _) = match listener.accept().await {
@@ -195,8 +224,25 @@ impl FakeEpsonServer {
                                 if byte[0] == b'\r' {
                                     let cmd = String::from_utf8_lossy(&buf).to_string();
                                     buf.clear();
-                                    let resp = Self::answer(&cmd, &state);
-                                    if stream.write_all(resp.as_bytes()).await.is_err() {
+                                    // Mid-command abort: drop the
+                                    // connection (FIN) after reading the
+                                    // command but before replying, so the
+                                    // client's in-flight read fails — a
+                                    // socket failure during a command,
+                                    // not a quiescent FIN between them.
+                                    // The flag is cleared so the
+                                    // post-reconnect retry is answered.
+                                    if abort_next_command.swap(false, Ordering::SeqCst) {
+                                        break 'conn;
+                                    }
+                                    let (resp, split_at) = {
+                                        let split = state.lock().split_reply_at;
+                                        (Self::answer(&cmd, &state), split)
+                                    };
+                                    if Self::write_reply(&mut stream, resp.as_bytes(), split_at)
+                                        .await
+                                        .is_err()
+                                    {
                                         break 'conn;
                                     }
                                 } else {
@@ -215,6 +261,27 @@ impl FakeEpsonServer {
         }
     }
 
+    /// Write a reply, optionally split into two flushed TCP segments to
+    /// exercise the client's read-until-terminator accumulation.
+    async fn write_reply(
+        stream: &mut tokio::net::TcpStream,
+        resp: &[u8],
+        split_at: Option<usize>,
+    ) -> std::io::Result<()> {
+        match split_at {
+            Some(at) if at > 0 && at < resp.len() => {
+                stream.write_all(&resp[..at]).await?;
+                stream.flush().await?;
+                // A short pause makes the two segments land as separate
+                // reads on the client rather than coalescing.
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                stream.write_all(&resp[at..]).await?;
+                stream.flush().await
+            }
+            _ => stream.write_all(resp).await,
+        }
+    }
+
     /// Build the reply frame for a single command body.
     ///
     /// Queries (`NAME?`) answer with `NAME=VALUE\r:`; sets answer with a
@@ -225,6 +292,12 @@ impl FakeEpsonServer {
         // Queries.
         if let Some(name) = cmd.strip_suffix('?') {
             let mut s = state.lock();
+            // A real projector in standby rejects source / brightness /
+            // mute queries — only `PWR?` answers. Model that so the
+            // client's power-gated, best-effort `get_state` is exercised.
+            if matches!(name, "MUTE" | "SOURCE" | "LUMLEVEL") && Self::in_standby(&s) {
+                return "ERR\r:".to_string();
+            }
             let value = match name {
                 "PWR" => Self::power_value(&mut s),
                 "MUTE" => if s.mute { "ON" } else { "OFF" }.to_string(),
@@ -265,6 +338,16 @@ impl FakeEpsonServer {
             _ => return "ERR\r:".to_string(),
         }
         ":".to_string()
+    }
+
+    /// Whether the projector's steady power code is a standby code
+    /// (`00` / `04`) and no warmup/cooldown transition is in flight —
+    /// the condition under which a real projector rejects source /
+    /// brightness / mute queries.
+    fn in_standby(state: &FakeState) -> bool {
+        state.warmup_remaining == 0
+            && state.cooldown_remaining == 0
+            && matches!(state.power_code.trim(), "00" | "04")
     }
 
     /// Resolve the `PWR?` value, advancing any scripted warmup/cooldown

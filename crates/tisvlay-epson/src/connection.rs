@@ -44,10 +44,16 @@ impl TvConnection for EpsonConnection {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // Mirrors EpsonBackend::capabilities (minus the transport-family
-        // bits, which aren't per-connection): the feature surface the
-        // projector actually exposes.
-        Capabilities::POWER | Capabilities::SCREEN | Capabilities::INPUT | Capabilities::BACKLIGHT
+        // The feature surface the projector exposes, including WOL (a
+        // feature bit, part of STOCK). Only the IPV4 / IPV6
+        // transport-family bits stay backend-level — they're not
+        // per-connection — matching LG's connection, which returns
+        // STOCK (WoL included) without the IP-family bits.
+        Capabilities::POWER
+            | Capabilities::SCREEN
+            | Capabilities::INPUT
+            | Capabilities::BACKLIGHT
+            | Capabilities::WOL
     }
 
     // ------------------------------------------------------------------
@@ -213,6 +219,35 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // The connection's live capabilities drive the D-Bus
+    // `Tv1.Capabilities` property, so WOL must be present (a feature
+    // bit) while the IP-family transport bits stay backend-only.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn connection_capabilities_include_wol() {
+        let server = FakeEpsonServer::start().await;
+        let conn = connect(&server).await;
+        let caps = conn.capabilities();
+
+        assert_eq!(
+            caps,
+            Capabilities::POWER
+                | Capabilities::SCREEN
+                | Capabilities::INPUT
+                | Capabilities::BACKLIGHT
+                | Capabilities::WOL,
+        );
+        assert!(caps.contains(Capabilities::WOL), "wol must be advertised");
+        // Transport-family bits are backend-level, not per-connection.
+        assert!(!caps.contains(Capabilities::IPV4));
+        assert!(!caps.contains(Capabilities::IPV6));
+        // No volume/mute on a speakerless projector.
+        assert!(!caps.contains(Capabilities::VOLUME));
+        assert!(!caps.contains(Capabilities::MUTE));
+    }
+
+    // -----------------------------------------------------------------------
     // Backlight via LUMLEVEL.
     // -----------------------------------------------------------------------
 
@@ -273,6 +308,54 @@ mod tests {
         assert!(conn.is_connected());
     }
 
+    // A socket failure *during* a command (the server drops after
+    // reading the command but before replying) surfaces as a
+    // structured connection-class error and is recovered by the same
+    // reconnect-and-retry path — distinct from the graceful between-
+    // commands FIN above.
+    #[tokio::test]
+    async fn reconnects_after_mid_command_socket_failure() {
+        let server = FakeEpsonServer::start().await;
+        server.set_power_code("01");
+        let mut conn = connect(&server).await;
+
+        // First command succeeds on the live socket.
+        assert_eq!(conn.get_power_state().await.unwrap(), PowerState::Active);
+
+        // The next command is aborted mid-exchange; the client must
+        // reconnect transparently and return the value on retry.
+        server.abort_next_command();
+        assert_eq!(conn.get_power_state().await.unwrap(), PowerState::Active);
+        assert!(conn.is_connected());
+    }
+
+    // -----------------------------------------------------------------------
+    // get_state never sinks the snapshot on a sub-query failure: a
+    // projector in standby rejects SOURCE? / LUMLEVEL? / MUTE?, but the
+    // power state still comes back.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_state_in_standby_returns_power_only() {
+        let server = FakeEpsonServer::start().await;
+        // Standby: the fake answers ERR for source/brightness/mute.
+        server.set_power_code("04");
+        let mut conn = connect(&server).await;
+
+        let state = conn
+            .get_state()
+            .await
+            .expect("standby snapshot must not error");
+        assert_eq!(state.power_state, PowerState::Standby);
+        assert!(!state.is_on);
+        // The gated sub-queries weren't issued, so the fields are empty
+        // rather than the snapshot being dropped.
+        assert_eq!(state.current_input, None);
+        assert_eq!(state.backlight, None);
+        // The advertised input list is still populated (it's static).
+        assert_eq!(state.inputs.len(), 6);
+    }
+
     // -----------------------------------------------------------------------
     // Intent-based warmup/cooldown disambiguation.
     //
@@ -316,5 +399,61 @@ mod tests {
                 "indistinct busy + PoweringOff intent → CoolingDown",
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // power_off drops the transport on every outcome — including when
+    // the projector never cleanly acks because it's powering down. The
+    // socket-drop case represents the broader "any non-ERR outcome"
+    // contract: a command timeout resolves through the same
+    // `Err(_) => Ok(())` arm.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn power_off_drops_transport_even_without_clean_ack() {
+        let server = FakeEpsonServer::start().await;
+        server.set_power_code("01");
+        let mut conn = connect(&server).await;
+        assert!(conn.is_connected());
+
+        // The projector drops the socket mid-`PWR OFF` instead of
+        // acking — the realistic powering-down path.
+        server.abort_next_command();
+        // Still reported as success (the projector is going down), and
+        // the transport is released regardless.
+        conn.power_off()
+            .await
+            .expect("power_off treats a dropped ack as success");
+        assert!(
+            !conn.is_connected(),
+            "the transport must be dropped on every power_off outcome",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // A latched PowerIntent is cleared once a definitively-steady code
+    // is read, so a much-later indistinct-busy reading isn't colored by
+    // a stale direction.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn steady_reading_clears_stale_intent() {
+        let server = FakeEpsonServer::start().await;
+        server.set_power_code("01");
+        let mut conn = connect(&server).await;
+
+        // power_on latches PoweringOn.
+        conn.client.power_on().await.unwrap();
+        // A steady On reading clears the intent.
+        assert_eq!(conn.get_power_state().await.unwrap(), PowerState::Active);
+
+        // A later indistinct-busy reading must now read as Unknown (no
+        // direction), not WarmingUp from the stale intent.
+        server.set_power_code("99");
+        assert_eq!(
+            conn.get_power_state().await.unwrap(),
+            PowerState::Unknown,
+            "intent was cleared by the steady On reading, so a busy code is directionless",
+        );
     }
 }

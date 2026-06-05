@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tisvlay_core::{Error, Result};
 
 /// Default ESC/VP21 TCP port.
-const DEFAULT_PORT: u16 = 3629;
+pub(crate) const DEFAULT_PORT: u16 = 3629;
 
 fn default_port() -> u16 {
     DEFAULT_PORT

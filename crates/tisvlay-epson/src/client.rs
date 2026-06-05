@@ -11,7 +11,7 @@
 
 use tisvlay_core::{Error, InputInfo, PowerState, Result, TvState};
 
-use crate::escvp21::{self, PowerIntent, Reply};
+use crate::escvp21::{self, PowerCode, PowerIntent, Reply};
 use crate::transport::EpsonTransport;
 
 /// Client for controlling an Epson projector over ESC/VP21.
@@ -114,8 +114,17 @@ impl EpsonClient {
 
     /// Query the raw `PWR?` power state, resolved against the last
     /// power-intent (but *without* the A/V-mute compounding).
+    ///
+    /// A definitively-steady reading ([`PowerCode::On`] /
+    /// [`PowerCode::Standby`]) clears the latched [`PowerIntent`]: the
+    /// transition the intent was disambiguating has completed, so a
+    /// much-later indistinct-busy reading must not be colored by a
+    /// stale direction. Transitional / unknown codes keep the intent.
     async fn raw_power_state(&mut self) -> Result<PowerState> {
         let code = escvp21::parse_power_code(&self.query(escvp21::cmd::POWER).await?);
+        if matches!(code, PowerCode::On | PowerCode::Standby) {
+            self.intent = PowerIntent::None;
+        }
         Ok(escvp21::power_state_from(code, self.intent))
     }
 
@@ -139,21 +148,29 @@ impl EpsonClient {
     /// and close the socket.
     ///
     /// The projector tears down its TCP socket as it enters standby,
-    /// so the client drops the transport after issuing the command —
-    /// a subsequent operation reconnects.
+    /// so the client drops the transport unconditionally — on every
+    /// outcome — and a subsequent operation reconnects. Because the
+    /// projector often won't cleanly ack as it powers down, both a
+    /// connection-class error *and* a command timeout count as success;
+    /// only a definite `ERR` reply is a real failure (the command was
+    /// understood and rejected).
     pub async fn power_off(&mut self) -> Result<()> {
         self.intent = PowerIntent::PoweringOff;
-        // Best-effort: the projector may close the socket before
-        // acknowledging. Treat a connection-class error as success.
-        if let Err(e) = self.set(escvp21::cmd::POWER_OFF).await {
-            if is_connection_error(&e) {
-                tracing::debug!(host = %self.host, "socket closed during power_off (expected)");
-            } else {
-                return Err(e);
+        let result = match self.command(escvp21::cmd::POWER_OFF).await {
+            Ok(Reply::Ack) | Ok(Reply::Value(_)) => Ok(()),
+            Ok(Reply::Error) => Err(Error::backend(
+                crate::VENDOR_ID,
+                format!("set `{}` returned ERR", escvp21::cmd::POWER_OFF),
+            )),
+            // A dropped socket or an ack we never receive as the
+            // projector powers down is the expected path, not a failure.
+            Err(e) => {
+                tracing::debug!(host = %self.host, error = %e, "no clean PWR OFF ack (expected as projector powers down)");
+                Ok(())
             }
-        }
+        };
         self.transport = None;
-        Ok(())
+        result
     }
 
     /// Send `PWR ON` and record the warming intent. Does not wait for
@@ -252,12 +269,22 @@ impl EpsonClient {
     /// Uses [`TvState::update_power`] so the derived `is_on` /
     /// `is_screen_on` booleans stay consistent with the raw
     /// [`PowerState`].
+    ///
+    /// The power state is the load-bearing field and always populates;
+    /// the snapshot never fails on a sub-query. `SOURCE?` / `LUMLEVEL?`
+    /// are only issued when the projector is up
+    /// ([`PowerState::Active`] / [`PowerState::ScreenOff`]) — a
+    /// standby or warming projector returns `ERR` for those — and even
+    /// then are best-effort: a per-field error leaves the field `None`
+    /// without sinking the rest of the snapshot.
     pub async fn get_state(&mut self) -> Result<TvState> {
         let power = self.get_power_state().await?;
         let mut state = TvState::new();
         state.update_power(power);
-        state.current_input = self.current_input().await?;
-        state.backlight = Some(self.get_backlight().await?);
+        if matches!(power, PowerState::Active | PowerState::ScreenOff) {
+            state.current_input = self.current_input().await.unwrap_or(None);
+            state.backlight = self.get_backlight().await.ok();
+        }
         state.inputs = self.list_inputs();
         Ok(state)
     }
@@ -273,17 +300,15 @@ impl EpsonClient {
 
 /// Whether an error indicates the socket has gone stale and a
 /// reconnect should be attempted.
+///
+/// The transport surfaces a stale-socket failure as a structured
+/// variant: a write/flush/read I/O error becomes [`Error::Io`], and a
+/// peer FIN becomes [`Error::ConnectionClosed`]. A command *timeout*
+/// is deliberately excluded — it stays its own non-reconnecting error
+/// (a slow-but-live projector shouldn't trigger a reconnect churn).
 fn is_connection_error(e: &Error) -> bool {
-    match e {
-        Error::ConnectionClosed | Error::Connection(_) | Error::Io(_) => true,
-        // The transport wraps socket I/O failures as backend errors;
-        // treat those as connection-class so a standby-closed socket
-        // triggers a reconnect.
-        Error::Backend { message, .. } => {
-            message.contains("command write")
-                || message.contains("command flush")
-                || message.contains("command read")
-        }
-        _ => false,
-    }
+    matches!(
+        e,
+        Error::ConnectionClosed | Error::Connection(_) | Error::Io(_)
+    )
 }
