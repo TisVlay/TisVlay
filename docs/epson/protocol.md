@@ -114,8 +114,18 @@ The control vocabulary above is ESC/VP21 regardless of transport; what differs i
 | Web Control / Web API | 80/443 | Future transport. Arrived on the LS12000 in firmware **v2.00**; present and maintained through **v3.04 (2026-04-22)**. Version-gated. | No confirmed capability edge over TCP 3629. | `EPSONREMOTE` (Basic Control) / `EPSONWEB` realms; no password by default. |
 | PJLink | 4352 | Future transport. Works on the LS12000. | Power + input only ("turning it on/off works, but that's it"). | PJLink password; no password by default. The PJLink and Web Control passwords are *separate* realms. |
 
-TCP 3629 is the v1 choice because it is both the most firmware-robust (no v2.00+ dependency) and the richest working path. The Web API and PJLink are documented here as clean future additions behind the command/transport boundary in [`transport.rs`](../../crates/tisvlay-epson/src/transport.rs) — that module keeps the high-level command sequencing free of socket details so promoting it to a multi-transport seam is a localized change. A future PJLink transport is notable for two reasons it could *sharpen* the model: its power query reports directionally-distinct warmup/cooldown natively (replacing the intent inference), and it exposes lamp/laser-hours.
+TCP 3629 is the v1 choice because it is both the most firmware-robust (no v2.00+ dependency) and the richest working path. The Web API and PJLink are documented here as clean future additions behind the command/transport boundary in [`transport.rs`](../../crates/tisvlay-epson/src/transport.rs) — that module keeps the high-level command sequencing free of socket details so promoting it to a multi-transport seam is a localized change. A future PJLink transport is notable for two reasons it could *sharpen* the model: its power query reports directionally-distinct warmup/cooldown natively (replacing the intent inference), and it exposes lamp/laser-hours. The [`pjlink`](https://lib.rs/crates/pjlink) Rust crate is the candidate dependency if that transport is built.
 
 ## Discovery
 
 Discovery is deferred entirely to a hardware-validation follow-up; the backend does not declare `Capabilities::DISCOVERY` in v1. When revisited, the LS12000's *documented* discovery mechanisms are **PJLink**, **AMX Device Discovery**, and **Control4 SDDP** — **not** mDNS/SSDP — so the v4-only `tisvlay-ssdp` transport does not apply. See [docs/discovery.md](../discovery.md) § Trait boundary.
+
+## References & prior art
+
+ESC/VP21-over-TCP is well-trodden; these implementations informed this backend and are worth consulting when extending it:
+
+- [openHAB Epson Projector binding](https://www.openhab.org/addons/bindings/epsonprojector/) — the most mature FOSS ESC/VP21 implementation (Java), covering both TCP and serial and auto-discovering via AMX Device Discovery / Control4 SDDP. Independently corroborates the transport and discovery findings above.
+- [amosyuen/ha-epson-projector-link](https://github.com/amosyuen/ha-epson-projector-link) — a Home Assistant integration over TCP + ESC/VP21 for modern Epson home-cinema projectors; the closest peer to this backend's approach.
+- [pszafer/epson_projector](https://github.com/pszafer/epson_projector) — the Python library (CGI / TCP / serial) the command vocabulary here was first derived from; its `projector_tcp.py` is the `ESC/VP.net` handshake reference.
+- [mjaakkol/escvp21emulator](https://github.com/mjaakkol/escvp21emulator) — a Rust ESC/VP21 *emulator* (serial). An independent implementation that corroborates the reply framing (`VALUE\r:`) and the distinct power codes (`00` / `01` / `02` / `03`) modeled above; a useful manual reference, though serial-only (no `ESC/VP.net` TCP handshake, so not a drop-in peer for this backend's TCP transport).
+- [`pjlink`](https://lib.rs/crates/pjlink) — a Rust PJLink client crate; the candidate dependency for the deferred PJLink transport.

@@ -18,7 +18,7 @@ Option 3 is the natural first step; option 2 becomes right when a second project
 
 ## Trade-offs
 
-- A future **PJLink transport** ([protocol.md § Transport landscape](../epson/protocol.md#transport-landscape-dated)) would expose lamp-hours natively as part of its standard query set — adding that transport would make this idea nearly free on the read side, so it may be worth waiting for PJLink rather than building a bespoke ESC/VP21 lamp-hours path now.
+- A future **PJLink transport** ([protocol.md § Transport landscape](../epson/protocol.md#transport-landscape-dated)) would expose lamp-hours natively as part of its standard query set — adding that transport would make this idea nearly free on the read side, so it may be worth waiting for PJLink rather than building a bespoke ESC/VP21 lamp-hours path now. The [`pjlink`](https://lib.rs/crates/pjlink) Rust crate is the candidate dependency for that transport.
 - Whatever the surface, the *units* and query availability are unverified on the LS12000 (see [firmware-quirks.md](../epson/firmware-quirks.md)); the diagnostic can't be designed concretely until a probe confirms the response shape.
 
 ## Trigger condition

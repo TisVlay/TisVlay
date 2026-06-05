@@ -14,6 +14,8 @@ For the ESC/VP21 wire protocol and the command vocabulary, see [protocol.md](pro
 
 **Regression coverage.** The codec table tests pin both branches (`power_state_distinct_codes_win`, `power_state_indistinct_busy_uses_intent` in `escvp21.rs`), and the connection-level `intent_disambiguates_warmup_vs_cooldown` integration test drives the indistinct-busy path end-to-end against `FakeEpsonServer`. **To confirm on hardware:** probe `PWR?` during a real warmup and a real cooldown and record the codes; if they are distinct, the intent fallback becomes belt-and-suspenders rather than load-bearing.
 
+**External corroboration.** An independent Rust ESC/VP21 emulator ([`mjaakkol/escvp21emulator`](https://github.com/mjaakkol/escvp21emulator)) models the codes as directionally distinct — its tests assert `PWR ON`→`02`→`01` and `PWR OFF`→`03`→`00`. A second implementation treating `02`/`03` as directional raises confidence that distinct codes are the norm, but it is one author's model, not the LS12000's firmware, so this question stays open until probed on the bench.
+
 ## Open: the `LUMLEVEL` range and units
 
 **Symptom (anticipated).** The backlight slider maps to a 0–100 percentage, but `LUMLEVEL` may use a different scale (e.g. 0–255, or a discrete step set), so a read-back may not match what was set and the slider may not span the projector's real range.
