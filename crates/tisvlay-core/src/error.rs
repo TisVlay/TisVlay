@@ -172,14 +172,6 @@ impl Error {
         }
     }
 
-    /// Check if this error indicates the TV is not connected.
-    pub fn is_not_connected(&self) -> bool {
-        matches!(
-            self,
-            Self::ConnectionClosed | Self::Connection(_) | Self::NotRegistered
-        )
-    }
-
     /// Check if this error indicates a timeout.
     pub fn is_timeout(&self) -> bool {
         matches!(self, Self::RequestTimeout | Self::PairingTimeout)
@@ -223,13 +215,6 @@ mod tests {
 
         assert!(err.to_string().contains("lg"));
         assert!(err.to_string().contains("WebSocket handshake"));
-    }
-
-    #[test]
-    fn test_is_not_connected() {
-        assert!(Error::ConnectionClosed.is_not_connected());
-        assert!(Error::NotRegistered.is_not_connected());
-        assert!(!Error::RequestTimeout.is_not_connected());
     }
 
     #[test]
