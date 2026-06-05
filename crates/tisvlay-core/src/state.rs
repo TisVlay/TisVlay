@@ -141,6 +141,17 @@ pub enum PowerState {
     ScreenSaver,
     /// TV is in screen off mode (OLED blank).
     ScreenOff,
+    /// Projector-class transient: the light source is warming up after
+    /// a power-on and no usable image is projected yet. Counts as
+    /// powering on (`is_on = true`) but not yet usable
+    /// (`is_screen_on = false`). Instant-power backends (LG) never
+    /// report this.
+    WarmingUp,
+    /// Projector-class transient: the light source is cooling down
+    /// after a power-off. Counts as powering off (`is_on = false`,
+    /// `is_screen_on = false`). Instant-power backends never report
+    /// this.
+    CoolingDown,
     /// Unknown state.
     #[default]
     Unknown,
@@ -156,6 +167,8 @@ impl PowerState {
             "active standby" | "activestandby" => Self::ActiveStandby,
             "screen saver" | "screensaver" => Self::ScreenSaver,
             "screen off" | "screenoff" => Self::ScreenOff,
+            "warming up" | "warmingup" | "warming_up" => Self::WarmingUp,
+            "cooling down" | "coolingdown" | "cooling_down" => Self::CoolingDown,
             _ => Self::Unknown,
         }
     }
@@ -164,7 +177,11 @@ impl PowerState {
     pub fn is_on(self) -> bool {
         matches!(
             self,
-            Self::Active | Self::ActiveStandby | Self::ScreenSaver | Self::ScreenOff
+            Self::Active
+                | Self::ActiveStandby
+                | Self::ScreenSaver
+                | Self::ScreenOff
+                | Self::WarmingUp
         )
     }
 }
@@ -320,6 +337,8 @@ mod tests {
             (PowerState::ActiveStandby, true, false),
             (PowerState::ScreenSaver, true, true),
             (PowerState::ScreenOff, true, false),
+            (PowerState::WarmingUp, true, false),
+            (PowerState::CoolingDown, false, false),
             (PowerState::Standby, false, false),
             (PowerState::Suspend, false, false),
             (PowerState::Unknown, false, false),

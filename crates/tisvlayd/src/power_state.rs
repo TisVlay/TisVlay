@@ -37,6 +37,18 @@ pub(crate) const SCREEN_OFF: &str = "screen_off";
 /// success on this value.
 pub(crate) const ACTIVE: &str = "active";
 
+/// D-Bus property reading while a projector-class light source is
+/// warming up after a power-on — `is_on=true` but no usable image
+/// yet. A distinct string (rather than collapsing to `"standby"`/
+/// `"active"`) lets GUIs show staged "Warming up…" feedback.
+/// Instant-power backends never emit it.
+pub(crate) const WARMING_UP: &str = "warming_up";
+
+/// D-Bus property reading while a projector-class light source is
+/// cooling down after a power-off — `is_on=false`, transitioning to
+/// standby. Instant-power backends never emit it.
+pub(crate) const COOLING_DOWN: &str = "cooling_down";
+
 /// Map a raw [`PowerState`] to the D-Bus `Tv1.Power.PowerState`
 /// property string.
 ///
@@ -49,25 +61,20 @@ pub(crate) fn derive_power_state(state: PowerState) -> &'static str {
     match state {
         PowerState::Active | PowerState::ScreenSaver => ACTIVE,
         PowerState::ScreenOff => SCREEN_OFF,
+        PowerState::WarmingUp => WARMING_UP,
+        PowerState::CoolingDown => COOLING_DOWN,
         PowerState::Standby
         | PowerState::Suspend
         | PowerState::ActiveStandby
         | PowerState::Unknown => STANDBY,
-        // `PowerState` is `#[non_exhaustive]`; future vendor
-        // backends may add substates we don't know about yet.
-        // The safe daemon-side default is `STANDBY` so the
-        // reliable-dispatch pre-flight (via `needs_wake_preflight`)
-        // wakes the TV on the unknown substate rather than
-        // assuming it's reachable.
-        //
-        // This wildcard is **temporarily conservative**: when a real
-        // new variant lands (e.g. Samsung's `NetworkStandby`,
-        // Sony's variants), evaluate whether it semantically
-        // belongs in `ACTIVE` (NIC alive, daemon can reach it
-        // without a wake) or stays in `STANDBY` (truly off / panel
-        // dark / wake-preflight needed) and add its own arm.
-        // Power-aware GUI clients lose the distinction while it
-        // collapses through this wildcard.
+        // `PowerState` is `#[non_exhaustive]`; a future vendor backend
+        // may add a substate this map doesn't cover. The safe default
+        // is `STANDBY` so the reliable-dispatch pre-flight (via
+        // `needs_wake_preflight`) wakes the TV rather than assuming
+        // it's reachable. When a real new variant lands, evaluate
+        // whether it belongs in `ACTIVE` (NIC alive, reachable without
+        // a wake) or `STANDBY` and give it its own arm — power-aware
+        // GUI clients lose the distinction while it collapses here.
         _ => STANDBY,
     }
 }
@@ -88,8 +95,10 @@ pub(crate) fn derive_power_state(state: PowerState) -> &'static str {
 /// Current wake-needy variants: `Standby` / `Suspend` (truly off,
 /// NIC may be down), `ActiveStandby` (transitional after a
 /// remote-press power-off, NIC alive but panel dark, can sit for
-/// tens of seconds before reaching `Standby`), `Unknown` (no
-/// push received yet).
+/// tens of seconds before reaching `Standby`), `WarmingUp` /
+/// `CoolingDown` (projector-class transients — a screen action
+/// should wait for the device to settle rather than race it), and
+/// `Unknown` (no push received yet).
 pub(crate) fn needs_wake_preflight(state: PowerState) -> bool {
     !matches!(
         state,
@@ -106,6 +115,8 @@ mod tests {
         assert_eq!(derive_power_state(PowerState::Active), ACTIVE);
         assert_eq!(derive_power_state(PowerState::ScreenSaver), ACTIVE);
         assert_eq!(derive_power_state(PowerState::ScreenOff), SCREEN_OFF);
+        assert_eq!(derive_power_state(PowerState::WarmingUp), WARMING_UP);
+        assert_eq!(derive_power_state(PowerState::CoolingDown), COOLING_DOWN);
         assert_eq!(derive_power_state(PowerState::Standby), STANDBY);
         assert_eq!(derive_power_state(PowerState::Suspend), STANDBY);
         assert_eq!(derive_power_state(PowerState::ActiveStandby), STANDBY);
@@ -119,6 +130,8 @@ mod tests {
     fn constants_match_match_arms() {
         assert_eq!(ACTIVE, "active");
         assert_eq!(SCREEN_OFF, "screen_off");
+        assert_eq!(WARMING_UP, "warming_up");
+        assert_eq!(COOLING_DOWN, "cooling_down");
         assert_eq!(STANDBY, "standby");
     }
 
@@ -132,6 +145,8 @@ mod tests {
         assert!(!needs_wake_preflight(PowerState::Active));
         assert!(!needs_wake_preflight(PowerState::ScreenSaver));
         assert!(!needs_wake_preflight(PowerState::ScreenOff));
+        assert!(needs_wake_preflight(PowerState::WarmingUp));
+        assert!(needs_wake_preflight(PowerState::CoolingDown));
         assert!(needs_wake_preflight(PowerState::Standby));
         assert!(needs_wake_preflight(PowerState::Suspend));
         assert!(needs_wake_preflight(PowerState::ActiveStandby));

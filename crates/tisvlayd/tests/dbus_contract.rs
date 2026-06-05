@@ -338,6 +338,53 @@ async fn screen_off_escalates_via_power_on_when_standby() {
     assert!(!tv.is_screen_on, "panel should be off after screen_off");
 }
 
+/// Projector-class transient power states surface as their own
+/// `Tv1.Power.PowerState` wire strings (`warming_up` / `cooling_down`),
+/// so GUIs can show staged warmup/cooldown feedback instead of a bare
+/// standby↔active flip. Both keep `is_screen_on=false` (no usable image
+/// mid-transition). Exercised through the mock so the D-Bus contract is
+/// locked before any projector backend lands.
+#[tokio::test]
+async fn warmup_cooldown_surface_distinct_power_states() {
+    use tisvlay_core::PowerState;
+
+    let daemon = TestDaemon::with_one_mock_tv("warm_cool")
+        .await
+        .expect("daemon");
+    let client = client().await;
+    let uuid = test_tv_uuid("warm_cool").to_string();
+    let addr = "mock://warm_cool";
+
+    daemon.manager().reconnect(&uuid).await.expect("reconnect");
+    settle().await;
+
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::WarmingUp);
+    settle().await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "warming_up",
+        "WarmingUp must surface as the distinct 'warming_up' wire string, not collapse to standby/active",
+    );
+    assert!(!tv.is_screen_on, "no usable image while warming up");
+
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::CoolingDown);
+    settle().await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == uuid).expect("tv present");
+    assert_eq!(
+        tv.power_state, "cooling_down",
+        "CoolingDown must surface as the distinct 'cooling_down' wire string",
+    );
+    assert!(!tv.is_screen_on, "no usable image while cooling down");
+}
+
 /// `screen_off` runs the verify-retry loop when cached state is
 /// already `"active"` and the mock's `screen_off` is no-op'd —
 /// models firmware that ACKs the off command but doesn't blank.
