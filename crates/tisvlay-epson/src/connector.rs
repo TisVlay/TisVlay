@@ -61,16 +61,6 @@ impl EpsonConnector {
     pub fn new() -> Self {
         Self
     }
-
-    /// Send a single WoL magic packet if a MAC is configured.
-    fn send_wol(config: &EpsonVendorConfig) -> Result<()> {
-        if let Some(mac) = &config.mac {
-            let mac_addr = MacAddress::parse(mac)?;
-            tisvlay_core::wol::wake(&mac_addr)?;
-            debug!(ip = %config.ip, %mac, "WoL packet sent");
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -101,29 +91,20 @@ impl TvConnector for EpsonConnector {
 
     async fn wake(&self, vendor_config: &toml::Value) -> Result<()> {
         let config = EpsonVendorConfig::from_toml(vendor_config)?;
-        if config.mac.is_none() {
+        let Some(mac) = &config.mac else {
             // No MAC → nothing to send. Network `PWR ON` (for a
             // Communication-On standby) is driven by the connection's
             // power path, not here.
             return Ok(());
-        }
+        };
 
         // Retry the magic packet while the local NIC recovers — the
         // first attempt can fail with "network unreachable" right after
         // system resume.
-        let mut last_err = None;
-        for attempt in 1..=WAKE_SEND_MAX_ATTEMPTS {
-            match Self::send_wol(&config) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    warn!(ip = %config.ip, attempt, error = %e, "WoL send failed, retrying");
-                    last_err = Some(e);
-                    let delay = if attempt <= 2 { 2000 } else { 3000 };
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(|| Error::WakeOnLan("WoL failed after retries".into())))
+        let mac_addr = MacAddress::parse(mac)?;
+        tisvlay_core::wol::wake_with_retry(&mac_addr, WAKE_SEND_MAX_ATTEMPTS).await?;
+        debug!(ip = %config.ip, %mac, "WoL packet sent");
+        Ok(())
     }
 
     async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
@@ -138,9 +119,14 @@ impl TvConnector for EpsonConnector {
         let mut client = None;
         let mut last_err = None;
         for attempt in 1..=WAKE_CONNECT_MAX_ATTEMPTS {
-            if attempt > 1 && config.mac.is_some() {
-                if let Err(e) = Self::send_wol(&config) {
-                    warn!(ip = %config.ip, attempt, error = %e, "WoL resend failed");
+            // Resend the magic packet before retrying — earlier packets
+            // may have been lost while the desktop network was still
+            // recovering after system resume.
+            if attempt > 1 {
+                if let Some(mac) = &config.mac {
+                    if let Ok(mac_addr) = MacAddress::parse(mac) {
+                        tisvlay_core::wol::wake_best_effort(&mac_addr);
+                    }
                 }
             }
             match EpsonClient::connect(config.ip.clone(), config.port).await {
