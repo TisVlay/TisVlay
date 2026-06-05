@@ -39,5 +39,5 @@ pub mod tv_manager;
 pub mod __internals {
     pub use crate::dbus::{BusKind, ManagerService, build_dbus_connection};
     pub use crate::state_forwarder::state_change_forwarder;
-    pub use crate::tv_manager::TvManager;
+    pub use crate::tv_manager::{TvManager, state_poll_loop};
 }

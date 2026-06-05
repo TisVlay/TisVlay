@@ -172,6 +172,14 @@ async fn main() -> Result<()> {
         shared_manager.clone(),
     ));
 
+    // Spawn the poll-only state refresh loop. Push backends (LG) are
+    // skipped inside the loop; this keeps poll-only backends (e.g. a
+    // projector with no subscription channel) reporting fresh live
+    // state to D-Bus clients.
+    tokio::spawn(tisvlayd::tv_manager::state_poll_loop(
+        shared_manager.clone(),
+    ));
+
     // Spawn kernel netlink monitor for per-interface carrier detection and route changes.
     // Fires within milliseconds of cable pull, NM disconnect, or route failover.
     netlink::spawn_link_monitor(shared_manager.state_change_sender());
