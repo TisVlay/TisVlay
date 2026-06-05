@@ -5740,6 +5740,7 @@ name = "tisvlay-backends"
 version = "0.1.0"
 dependencies = [
  "tisvlay-core",
+ "tisvlay-epson",
  "tisvlay-lg",
  "tisvlay-mock",
  "tokio",
@@ -5791,6 +5792,19 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zbus",
+]
+
+[[package]]
+name = "tisvlay-epson"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "parking_lot",
+ "serde",
+ "tisvlay-core",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]

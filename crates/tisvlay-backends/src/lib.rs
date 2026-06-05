@@ -385,6 +385,21 @@ fn register_lg(registry: &mut BackendRegistry, discovery: &tisvlay_core::Discove
     );
 }
 
+/// Register the Epson projector backend on an existing registry.
+///
+/// Mirrors [`register_lg`] but passes `discover_fn = None`: Epson
+/// discovery is deferred to a hardware-validation follow-up, so the
+/// backend advertises no `Capabilities::DISCOVERY` and has nothing to
+/// scan. Factored out so `create_registry` and `create_test_registry`
+/// register Epson the same way.
+fn register_epson(registry: &mut BackendRegistry) {
+    registry.register(
+        Arc::new(tisvlay_epson::EpsonBackend::new()),
+        Arc::new(tisvlay_epson::EpsonConnector::new()),
+        None,
+    );
+}
+
 /// Register the mock backend (for production use) on an existing
 /// registry. The mock's state is private and inaccessible, so
 /// discovery returns an empty list.
@@ -416,6 +431,7 @@ pub fn create_registry(discovery: &tisvlay_core::DiscoveryConfig) -> BackendRegi
     let mut registry = BackendRegistry::new();
 
     register_lg(&mut registry, discovery);
+    register_epson(&mut registry);
 
     #[cfg(feature = "mock")]
     register_mock_production(&mut registry);
@@ -449,6 +465,7 @@ pub fn create_test_registry() -> (BackendRegistry, tisvlay_mock::MockHandle) {
     let mut registry = BackendRegistry::new();
 
     register_lg(&mut registry, &tisvlay_core::DiscoveryConfig::default());
+    register_epson(&mut registry);
 
     let (connector, discovery, handle) = tisvlay_mock::new_test_parts();
     let connector = Arc::new(connector);
@@ -474,6 +491,7 @@ mod tests {
     fn test_registry_creation() {
         let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
         assert!(registry.get("lg").is_some());
+        assert!(registry.get("epson").is_some());
         assert!(registry.get("samsung").is_none());
     }
 
@@ -482,6 +500,7 @@ mod tests {
         let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
         let vendors = registry.supported_vendors();
         assert!(vendors.iter().any(|(id, _)| *id == "lg"));
+        assert!(vendors.iter().any(|(id, _)| *id == "epson"));
     }
 
     #[test]
@@ -492,5 +511,31 @@ mod tests {
         assert_eq!(lg.backend.vendor_name(), "LG WebOS");
         assert!(lg.backend.capabilities().contains(Capabilities::POWER));
         assert!(lg.backend.capabilities().contains(Capabilities::SCREEN));
+    }
+
+    #[test]
+    fn test_epson_backend_registered() {
+        let registry = create_registry(&tisvlay_core::DiscoveryConfig::default());
+        let epson = registry
+            .get("epson")
+            .expect("Epson backend should be registered");
+        assert_eq!(epson.backend.vendor_id(), "epson");
+        assert_eq!(epson.backend.vendor_name(), "Epson Projector");
+        assert!(epson.backend.capabilities().contains(Capabilities::POWER));
+        assert!(epson.backend.capabilities().contains(Capabilities::SCREEN));
+        assert!(
+            epson
+                .backend
+                .capabilities()
+                .contains(Capabilities::BACKLIGHT)
+        );
+        // Projector is speakerless and has no discovery in v1.
+        assert!(!epson.backend.capabilities().contains(Capabilities::VOLUME));
+        assert!(
+            !epson
+                .backend
+                .capabilities()
+                .contains(Capabilities::DISCOVERY)
+        );
     }
 }

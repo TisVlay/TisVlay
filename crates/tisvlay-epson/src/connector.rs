@@ -1,0 +1,390 @@
+//! `EpsonConnector` — factory and lifecycle owner for the Epson
+//! backend.
+//!
+//! Builds [`EpsonConnection`] handles from a vendor config, owns the
+//! wake path (WoL magic packet plus the warmup poll to
+//! [`PowerState::Active`]), and drives the trivial no-auth pairing
+//! flow (a connectivity check — ESC/VP21 over TCP is unauthenticated).
+
+use async_trait::async_trait;
+use std::time::Duration;
+use tisvlay_core::{
+    Credentials, Error, MacAddress, PairingCommand, PairingError, PairingSession, PairingState,
+    PowerState, Result, Transport, TvConnection, TvConnector,
+};
+use tracing::{debug, info, warn};
+
+use crate::client::EpsonClient;
+use crate::config::{self, EpsonVendorConfig};
+use crate::connection::EpsonConnection;
+
+/// Maximum number of connect attempts after sending WoL.
+const WAKE_CONNECT_MAX_ATTEMPTS: u32 = 60;
+
+/// Delay between connect retries during wake-and-connect. The
+/// projector's NIC may still be coming up after deep standby, so the
+/// loop spans tens of seconds.
+const WAKE_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Maximum number of WoL send retries while the local network recovers
+/// (e.g. after system resume).
+const WAKE_SEND_MAX_ATTEMPTS: u32 = 8;
+
+/// Maximum time to poll `PWR?` through warmup before giving up. The
+/// LS12000 warms in ~30–40 s; 60 s leaves headroom for a cold start.
+const WARMUP_POLL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Interval between warmup `PWR?` polls.
+const WARMUP_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Factory for creating Epson projector connections.
+#[derive(Debug, Default)]
+pub struct EpsonConnector;
+
+impl EpsonConnector {
+    /// Create a new Epson connector.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Send a single WoL magic packet if a MAC is configured.
+    fn send_wol(config: &EpsonVendorConfig) -> Result<()> {
+        if let Some(mac) = &config.mac {
+            let mac_addr = MacAddress::parse(mac)?;
+            tisvlay_core::wol::wake(&mac_addr)?;
+            debug!(ip = %config.ip, %mac, "WoL packet sent");
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TvConnector for EpsonConnector {
+    fn transport(&self) -> Transport {
+        Transport::Network
+    }
+
+    fn survives_source_ip_change(&self) -> bool {
+        // The ESC/VP21 session is a persistent TCP socket bound to a
+        // 4-tuple — a source-IP change on NIC failover breaks it, so
+        // the daemon must reconnect (matches LG's WebSocket).
+        false
+    }
+
+    async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
+        let config = EpsonVendorConfig::from_toml(vendor_config)?;
+        debug!(ip = %config.ip, port = config.port, "connecting to Epson projector");
+        let client = EpsonClient::connect(config.ip.clone(), config.port).await?;
+        Ok(Box::new(EpsonConnection::new(client)))
+    }
+
+    fn supports_wake(&self, vendor_config: &toml::Value) -> bool {
+        EpsonVendorConfig::from_toml(vendor_config)
+            .map(|c| c.mac.is_some())
+            .unwrap_or(false)
+    }
+
+    async fn wake(&self, vendor_config: &toml::Value) -> Result<()> {
+        let config = EpsonVendorConfig::from_toml(vendor_config)?;
+        if config.mac.is_none() {
+            // No MAC → nothing to send. Network `PWR ON` (for a
+            // Communication-On standby) is driven by the connection's
+            // power path, not here.
+            return Ok(());
+        }
+
+        // Retry the magic packet while the local NIC recovers — the
+        // first attempt can fail with "network unreachable" right after
+        // system resume.
+        let mut last_err = None;
+        for attempt in 1..=WAKE_SEND_MAX_ATTEMPTS {
+            match Self::send_wol(&config) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    warn!(ip = %config.ip, attempt, error = %e, "WoL send failed, retrying");
+                    last_err = Some(e);
+                    let delay = if attempt <= 2 { 2000 } else { 3000 };
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| Error::WakeOnLan("WoL failed after retries".into())))
+    }
+
+    async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
+        let config = EpsonVendorConfig::from_toml(vendor_config)?;
+
+        // Send the magic packet if a MAC is configured. A connect
+        // failure below resends it — early packets may be lost while
+        // the desktop network is still recovering.
+        self.wake(vendor_config).await?;
+
+        let mut client = None;
+        let mut last_err = None;
+        for attempt in 1..=WAKE_CONNECT_MAX_ATTEMPTS {
+            if attempt > 1 && config.mac.is_some() {
+                if let Err(e) = Self::send_wol(&config) {
+                    warn!(ip = %config.ip, attempt, error = %e, "WoL resend failed");
+                }
+            }
+            match EpsonClient::connect(config.ip.clone(), config.port).await {
+                Ok(c) => {
+                    info!(ip = %config.ip, attempt, "Epson projector reachable after wake");
+                    client = Some(c);
+                    break;
+                }
+                Err(e) => {
+                    debug!(ip = %config.ip, attempt, error = %e, "projector not ready yet");
+                    last_err = Some(e);
+                    tokio::time::sleep(WAKE_CONNECT_RETRY_INTERVAL).await;
+                }
+            }
+        }
+
+        let mut client = client.ok_or_else(|| {
+            last_err.unwrap_or_else(|| {
+                Error::backend(
+                    crate::VENDOR_ID,
+                    format!("projector at {} did not come online after wake", config.ip),
+                )
+            })
+        })?;
+
+        // Drive the projector on and poll through warmup to Active so
+        // downstream action chains (on_startup = power_on → switch_input)
+        // don't fire while the laser is still warming and no usable image
+        // is projected. A projector that was already on returns Active on
+        // the first poll, so this is a fast path in the common case.
+        client.power_on().await?;
+        poll_until_active(&mut client, &config.ip).await?;
+
+        Ok(Box::new(EpsonConnection::new(client)))
+    }
+
+    fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
+        let config = EpsonVendorConfig::from_toml(vendor_config)?;
+        let host = config.ip.clone();
+        let port = config.port;
+
+        let (session, mut command_rx, state_tx) = PairingSession::create();
+
+        tokio::spawn(async move {
+            // ESC/VP21 over TCP has no authentication — "pairing" is a
+            // connectivity check. Show an awaiting prompt, then race the
+            // handshake against a cancel command.
+            let _ = state_tx.send(PairingState::awaiting_tv_prompt(
+                "Checking the connection to your Epson projector...",
+            ));
+
+            tokio::select! {
+                result = EpsonClient::connect(host.clone(), port) => {
+                    match result {
+                        Ok(mut client) => {
+                            info!(ip = %host, "Epson projector reachable; pairing complete");
+                            let _ = client.close().await;
+                            // No credential to store — the empty key is a
+                            // deliberate marker for the no-auth flow.
+                            let _ = state_tx.send(PairingState::complete(Credentials::new("")));
+                        }
+                        Err(e) => {
+                            warn!(ip = %host, error = %e, "Epson projector unreachable during pairing");
+                            let _ = state_tx.send(PairingState::failed(
+                                PairingError::connection_failed(e.to_string()),
+                            ));
+                        }
+                    }
+                }
+                cmd = command_rx.recv() => {
+                    match cmd {
+                        Some(PairingCommand::Cancel) | None => {
+                            info!(ip = %host, "Epson pairing cancelled");
+                            let _ = state_tx.send(PairingState::failed(PairingError::cancelled()));
+                        }
+                        Some(PairingCommand::SubmitInput(_)) => {
+                            // No-auth flow takes no user input; keep waiting.
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(session)
+    }
+
+    fn build_config_from_pairing(
+        &self,
+        pairing_params: &toml::Value,
+        _credentials: &Credentials,
+    ) -> Result<toml::Value> {
+        // The credential is empty (no auth) — the persisted config is
+        // just the normalized pairing params.
+        EpsonVendorConfig::from_toml(pairing_params)?.to_toml()
+    }
+
+    fn config_schema(&self) -> Vec<tisvlay_core::PairingField> {
+        config::config_schema()
+    }
+}
+
+/// Poll `PWR?` until the projector reports [`PowerState::Active`],
+/// tolerating the [`PowerState::WarmingUp`] transient.
+///
+/// Returns an error if the projector is still not active when
+/// [`WARMUP_POLL_TIMEOUT`] elapses, or if it reports a state that
+/// can't progress to active (standby / cooling) — those indicate the
+/// `PWR ON` didn't take.
+async fn poll_until_active(client: &mut EpsonClient, ip: &str) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + WARMUP_POLL_TIMEOUT;
+    loop {
+        match client.get_power_state().await? {
+            PowerState::Active | PowerState::ScreenOff => {
+                // ScreenOff is on + A/V-muted: the projector is up; the
+                // image being blanked is a separate, recoverable concern.
+                return Ok(());
+            }
+            PowerState::WarmingUp | PowerState::Unknown => {
+                // Still warming (or a transient indistinct reading) —
+                // keep polling.
+            }
+            other @ (PowerState::Standby | PowerState::CoolingDown) => {
+                return Err(Error::backend(
+                    crate::VENDOR_ID,
+                    format!(
+                        "projector at {ip} reported {other:?} during warmup; PWR ON did not take"
+                    ),
+                ));
+            }
+            other => {
+                // Any other substate isn't an expected warmup reading
+                // for a projector; keep polling until the deadline.
+                debug!(%ip, ?other, "unexpected state during warmup poll");
+            }
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::backend(
+                crate::VENDOR_ID,
+                format!("projector at {ip} did not reach Active within the warmup timeout"),
+            ));
+        }
+        tokio::time::sleep(WARMUP_POLL_INTERVAL).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_value(ip: &str, mac: Option<&str>, port: u16) -> toml::Value {
+        let mut cfg = EpsonVendorConfig::new(ip);
+        cfg.mac = mac.map(str::to_string);
+        cfg.port = port;
+        cfg.to_toml().unwrap()
+    }
+
+    #[test]
+    fn transport_is_network() {
+        assert_eq!(EpsonConnector::new().transport(), Transport::Network);
+    }
+
+    #[test]
+    fn does_not_survive_source_ip_change() {
+        assert!(!EpsonConnector::new().survives_source_ip_change());
+    }
+
+    #[test]
+    fn supports_wake_gated_on_mac() {
+        let connector = EpsonConnector::new();
+        assert!(connector.supports_wake(&config_value(
+            "10.0.0.1",
+            Some("AA:BB:CC:DD:EE:FF"),
+            3629
+        )));
+        assert!(!connector.supports_wake(&config_value("10.0.0.1", None, 3629)));
+    }
+
+    #[tokio::test]
+    async fn wake_without_mac_is_noop_ok() {
+        let connector = EpsonConnector::new();
+        // No MAC → wake is a no-op that succeeds without touching the
+        // network.
+        connector
+            .wake(&config_value("10.0.0.1", None, 3629))
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn build_config_from_pairing_ignores_empty_credentials() {
+        let connector = EpsonConnector::new();
+        let params = config_value("192.168.1.50", Some("AA:BB:CC:DD:EE:FF"), 3629);
+        let result = connector
+            .build_config_from_pairing(&params, &Credentials::new(""))
+            .unwrap();
+        let config = EpsonVendorConfig::from_toml(&result).unwrap();
+        assert_eq!(config.ip, "192.168.1.50");
+        assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+    }
+
+    #[test]
+    fn config_schema_delegates_to_config_module() {
+        let schema = EpsonConnector::new().config_schema();
+        assert_eq!(schema[0].name, "ip");
+    }
+
+    // -----------------------------------------------------------------------
+    // Connector against the fake server.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn connect_returns_live_connection() {
+        let server = crate::test_server::FakeEpsonServer::start().await;
+        let connector = EpsonConnector::new();
+        let config = config_value(&server.host(), None, server.port());
+
+        let mut conn = connector.connect(&config).await.unwrap();
+        assert!(conn.is_connected());
+        assert_eq!(conn.vendor_id(), "epson");
+        // A live query round-trips through the real transport.
+        assert_eq!(
+            conn.get_power_state().await.unwrap(),
+            PowerState::Active,
+            "default fake-server power code is 01 (on, unmuted) → Active",
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_to_dead_address_fails_fast() {
+        let connector = EpsonConnector::new();
+        // Port 1 on loopback refuses fast.
+        let config = config_value("127.0.0.1", None, 1);
+        assert!(connector.connect(&config).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn start_pairing_completes_with_empty_credentials() {
+        let server = crate::test_server::FakeEpsonServer::start().await;
+        let connector = EpsonConnector::new();
+        let config = config_value(&server.host(), None, server.port());
+
+        let mut session = connector.start_pairing(&config).unwrap();
+        let creds = tokio::time::timeout(Duration::from_secs(5), session.wait_for_completion())
+            .await
+            .expect("pairing should resolve within 5s")
+            .expect("pairing should succeed against the fake server");
+        // No-auth flow: the credential is empty.
+        assert_eq!(creds.data, "");
+    }
+
+    #[tokio::test]
+    async fn start_pairing_fails_when_unreachable() {
+        let connector = EpsonConnector::new();
+        let config = config_value("127.0.0.1", None, 1);
+
+        let mut session = connector.start_pairing(&config).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(12), session.wait_for_completion())
+            .await
+            .expect("pairing should resolve within the connect timeout");
+        assert!(result.is_err(), "unreachable projector → pairing fails");
+    }
+}

@@ -4,6 +4,7 @@ members = [
     "crates/tisvlay-core",
     "crates/tisvlay-ssdp",
     "crates/tisvlay-lg",
+    "crates/tisvlay-epson",
     "crates/tisvlay-mock",
     "crates/tisvlay-test",
     "crates/tisvlay-backends",
@@ -115,6 +116,7 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 tisvlay-core = { path = "crates/tisvlay-core", version = "0.1.0" }
 tisvlay-ssdp = { path = "crates/tisvlay-ssdp", version = "0.1.0" }
 tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.1.0" }
+tisvlay-epson = { path = "crates/tisvlay-epson", version = "0.1.0" }
 tisvlay-mock = { path = "crates/tisvlay-mock", version = "0.1.0" }
 tisvlay-test = { path = "crates/tisvlay-test", version = "0.1.0" }
 tisvlay-backends = { path = "crates/tisvlay-backends", version = "0.1.0" }

@@ -1,0 +1,38 @@
+[package]
+name = "tisvlay-epson"
+description = "Epson projector backend for tisvlay (ESC/VP21 over TCP)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# Core abstractions
+tisvlay-core = { workspace = true }
+
+# Async runtime (raw TCP transport). `io-util` brings the
+# AsyncReadExt / AsyncWriteExt extension traits the transport uses; the
+# rest mirror the workspace default set. Declared explicitly so the
+# crate builds in isolation (e.g. doc tests) without relying on
+# feature unification from sibling crates.
+tokio = { workspace = true, features = ["io-util", "net", "time", "sync", "macros", "rt"] }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+toml = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+parking_lot = { workspace = true }
+
+[lints]
+workspace = true
