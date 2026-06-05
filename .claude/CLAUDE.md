@@ -53,6 +53,18 @@ tisvlay/
 │   │       ├── config.rs         # LgVendorConfig
 │   │       └── discovery.rs      # SSDP TV discovery (feature-gated)
 │   │
+│   ├── tisvlay-epson/             # Epson projector vendor implementation (ESC/VP21 over TCP)
+│   │   └── src/
+│   │       ├── lib.rs            # Public exports, VENDOR_ID, module layout
+│   │       ├── backend.rs        # EpsonBackend (metadata, capabilities, verify_retry_config)
+│   │       ├── connector.rs      # EpsonConnector (factory, WoL+warmup-poll wake, no-auth pairing)
+│   │       ├── connection.rs     # EpsonConnection (power/screen/input/backlight trait impl)
+│   │       ├── client.rs         # EpsonClient - high-level command sequencing + reconnect + PowerIntent
+│   │       ├── transport.rs      # Raw TCP transport: ESC/VP.net handshake, framed command exchange (pub(crate))
+│   │       ├── escvp21.rs        # Pure ESC/VP21 codec (handshake, framing, power/mute/source tables); I/O-free
+│   │       ├── config.rs         # EpsonVendorConfig + config_schema
+│   │       └── test_server.rs    # FakeEpsonServer (#[cfg(test)] TCP fake, scriptable warmup/cooldown)
+│   │
 │   ├── tisvlay-mock/              # In-memory mock backend (optional, for dev/tests)
 │   │   └── src/
 │   │       ├── lib.rs            # Public exports, VENDOR_ID, new_test_parts/new_production_parts
@@ -162,7 +174,9 @@ tisvlay/
 │   ├── configs/                  # Sample daemon + session TOML configs
 │   ├── watchers/
 │   │   └── network.md            # Network monitoring: carrier, route resolution, pitfalls
+│   ├── backends/                 # Vendor-backend author guide (implementing-a-vendor.md)
 │   ├── lg/                       # LG-specific docs (WebOS notes, benchmarks)
+│   ├── epson/                    # Epson-specific docs (ESC/VP21 protocol, firmware quirks, testing)
 │   ├── kde/                      # KDE-specific notes (tray quirks)
 │   └── bugs/                     # Per-bug detail docs
 │
@@ -415,10 +429,12 @@ just test-snapshot-accept   # accept all pending snapshot changes
 ## Reference Documentation
 
 - [docs/design.md](docs/design.md) - Full architecture, D-Bus interface, config schema, phases
+- [docs/backends/implementing-a-vendor.md](docs/backends/implementing-a-vendor.md) - Vendor-backend author guide: the four traits, capability/schema model, pairing spectrum, fake-server test pattern, registration (Mock/LG/Epson references)
 - [docs/discovery.md](docs/discovery.md) - SSDP transport ownership, streaming-discovery RPCs, manual-entry MAC enrichment, schema-form trust signal
 - [docs/i18n.md](docs/i18n.md) - Translation architecture, workflow, add-a-locale walkthrough, decision rationale (gettext-rs vs Fluent / i18n-embed)
 - [docs/testing.md](docs/testing.md) - Testing guide: mock backend, harnesses, coverage, observability
 - [docs/lg/firmware-quirks.md](docs/lg/firmware-quirks.md) - LG WebOS firmware quirks (Bug A/B, `processing`/`onOff` discriminators, post-wake settle, `REQUEST_MS`-is-load-bearing)
+- [docs/epson/firmware-quirks.md](docs/epson/firmware-quirks.md) - Epson projector hardware-validation open questions (PWR? warming/cooling distinctness, LUMLEVEL range, WoL + Communication-On timing)
 - [docs/watchers/network.md](docs/watchers/network.md) - Network monitoring: carrier detection, route resolution, pitfalls
 - [docs/firewall.md](docs/firewall.md) - SSDP firewall configuration
 - [docs/bugs.md](docs/bugs.md) - Known bugs and fix plans

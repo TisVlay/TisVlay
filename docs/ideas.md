@@ -16,6 +16,8 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [`a{sv}` wire-format migration for vendor-config surfaces](ideas/asv-wire-format-migration.md)
 - [Typed `Failed { reason }` payload across daemon error vocabulary](ideas/typed-failed-reason-payload.md)
 - [Notification-subsystem follow-up cleanups](ideas/notification-subsystem-followups.md)
+- [Projector lamp / laser-hours diagnostic surface](ideas/projector-lamp-hours-diagnostic.md)
+- [Adaptive poll rate during power transitions](ideas/poll-rate-during-power-transition.md)
 
 ## Operational
 

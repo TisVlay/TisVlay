@@ -51,6 +51,7 @@ See `CLAUDE.md` for the full file tree. Key crates:
 |-------|---------|
 | `tisvlay-core` | Core traits (`TvBackend`, `TvConnection`, `TvConnector`), types, config, schema (`PairingField`, `FieldVisibility`), D-Bus client |
 | `tisvlay-lg` | LG WebOS backend (WebSocket, SSAP protocol, SSDP discovery) |
+| `tisvlay-epson` | Epson projector backend (ESC/VP21 over raw TCP, poll-only, no auth) |
 | `tisvlay-mock` | In-memory mock backend (dev/tests, optional via `mock` feature) |
 | `tisvlay-test` | OS-environment fakes — private `dbus-daemon`, fake logind, fake screensaver |
 | `tisvlay-backends` | Composition crate — only place that imports vendor crates |
@@ -67,6 +68,7 @@ See `CLAUDE.md` for the full file tree. Key crates:
 graph BT
     core["tisvlay-core<br/><i>traits, types, schema, D-Bus client</i>"]
     lg["tisvlay-lg"]
+    epson["tisvlay-epson"]
     mock["tisvlay-mock"]
     samsung["tisvlay-samsung, ..."]
     backends["tisvlay-backends<br/><i>composition — ONLY crate that imports vendors</i>"]
@@ -77,9 +79,11 @@ graph BT
     gui["tisvlay-gui"]
 
     lg --> core
+    epson --> core
     mock --> core
     samsung -.-> core
     backends --> lg
+    backends --> epson
     backends -->|"mock feature"| mock
     backends -.-> samsung
     daemon --> backends
@@ -96,7 +100,7 @@ Adding a new vendor requires only:
 2. Add dependency to `tisvlay-backends/Cargo.toml`
 3. Register backend in `tisvlay-backends/src/lib.rs`
 
-No changes needed to daemon, CLI, or session service.
+No changes needed to daemon, CLI, or session service. The step-by-step how-to companion to this contract — implementing the four traits, the capability/schema model, the pairing spectrum, the fake-server test pattern, and the registration edit — is [the vendor-backend implementation guide](backends/implementing-a-vendor.md), worked through the Mock (minimal), LG (network-push), and Epson (poll-only TCP) reference backends.
 
 ---
 

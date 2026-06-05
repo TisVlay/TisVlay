@@ -128,6 +128,10 @@ These tests use `#[tokio::test(flavor = "multi_thread")]` because `assert_cmd_sn
 
 The `tisvlay-lg` crate has its own fake SSAP server for testing without a real TV. See [docs/lg/testing.md](lg/testing.md) for details.
 
+## Epson backend testing
+
+The `tisvlay-epson` crate has its own fake ESC/VP21 TCP server (`FakeEpsonServer`) for testing without a real projector — it performs the `ESC/VP.net` handshake and answers scripted replies, with hooks to script warmup/cooldown progressions and drop the connection. See [docs/epson/testing.md](epson/testing.md) for details.
+
 ### On-hardware triage tooling
 
 Two Python scripts under `scripts/` complement the in-process LG tests by talking to a real TV. Both open their own SSAP WebSocket using the daemon's stored client key — stop the daemon (or stop the tray/GUI/session, leaving the daemon alone is OK too if it isn't holding the only registration) before running, so two clients don't fight over the same key.

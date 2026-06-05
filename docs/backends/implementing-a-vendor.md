@@ -1,6 +1,12 @@
 # Implementing a vendor backend
 
-A *vendor backend* teaches `tisvlay` how to control one family of devices (LG WebOS TVs, Epson projectors, …). It is one crate that implements four traits from `tisvlay-core` plus a single registration line — no daemon, CLI, GUI, or session changes. This guide is the *how-to*; [docs/design.md](../design.md) § Core Traits is the authoritative *contract* (trait signatures, the D-Bus surface, the config schema). It teaches by pointing at the two living reference backends rather than pasting code that would drift: [`tisvlay-mock`](../../crates/tisvlay-mock) is the minimal template you copy from, and [`tisvlay-lg`](../../crates/tisvlay-lg) is the real-world, network-protocol example. Read the trait definitions in [`crates/tisvlay-core/src/traits.rs`](../../crates/tisvlay-core/src/traits.rs) alongside this guide — that file is the source of truth for every signature named below.
+A *vendor backend* teaches `tisvlay` how to control one family of devices (LG WebOS TVs, Epson projectors, …). It is one crate that implements four traits from `tisvlay-core` plus a single registration line — no daemon, CLI, GUI, or session changes. This guide is the *how-to*; [docs/design.md](../design.md) § Core Traits is the authoritative *contract* (trait signatures, the D-Bus surface, the config schema). It teaches by pointing at the three living reference backends rather than pasting code that would drift, bracketing the range you might land in:
+
+- [`tisvlay-mock`](../../crates/tisvlay-mock) — the **minimal** template you copy from (in-memory, auto-accept pairing, push via an in-process channel).
+- [`tisvlay-lg`](../../crates/tisvlay-lg) — the **network-push** real-world example (WebSocket + SSAP, interactive accept-on-device pairing with a returned client key, a real `subscribe_state()` push channel, feature-gated SSDP discovery).
+- [`tisvlay-epson`](../../crates/tisvlay-epson) — the **poll-only, no-auth** example (ESC/VP21 over a raw TCP socket, unauthenticated pairing reduced to a connectivity check, no push channel so the daemon polls, no discovery in v1).
+
+Read the trait definitions in [`crates/tisvlay-core/src/traits.rs`](../../crates/tisvlay-core/src/traits.rs) alongside this guide — that file is the source of truth for every signature named below.
 
 ## Architecture
 
@@ -15,20 +21,20 @@ The single composition point is [`tisvlay-backends`](../../crates/tisvlay-backen
 
 ## Crate structure
 
-There is no mandated file layout — only the four traits must be implemented somewhere in your crate. The two references bracket the sensible range:
+There is no mandated file layout — only the four traits must be implemented somewhere in your crate. The three references bracket the sensible range:
 
-| Concern | `tisvlay-mock` (minimal) | `tisvlay-lg` (real-world) |
-|---------|--------------------------|---------------------------|
-| `TvBackend` impl | `backend.rs` | `backend.rs` |
-| `TvConnector` impl | `connector.rs` | `backend.rs` |
-| `TvConnection` impl | `connection.rs` | `backend.rs` |
-| `TvDiscovery` impl | `discovery.rs` | `backend.rs` (feature-gated) |
-| Vendor config struct | `config.rs` | `config.rs` |
-| Wire protocol / transport | (in-memory `state.rs`) | `client.rs`, `connection.rs`, `protocol.rs`, `endpoints.rs` |
-| Fake server for tests | (driven via `handle.rs`) | `test_server.rs` (`#[cfg(test)]`) |
-| `lib.rs` | `pub use` re-exports + `VENDOR_ID` + factory fns | same |
+| Concern | `tisvlay-mock` (minimal) | `tisvlay-lg` (network-push) | `tisvlay-epson` (poll-only TCP) |
+|---------|--------------------------|-----------------------------|---------------------------------|
+| `TvBackend` impl | `backend.rs` | `backend.rs` | `backend.rs` |
+| `TvConnector` impl | `connector.rs` | `backend.rs` | `connector.rs` |
+| `TvConnection` impl | `connection.rs` | `backend.rs` | `connection.rs` |
+| `TvDiscovery` impl | `discovery.rs` | `backend.rs` (feature-gated) | (none in v1) |
+| Vendor config struct | `config.rs` | `config.rs` | `config.rs` |
+| Wire protocol / transport | (in-memory `state.rs`) | `client.rs`, `connection.rs`, `protocol.rs`, `endpoints.rs` | `escvp21.rs` (codec), `transport.rs` (TCP), `client.rs` (sequencing) |
+| Fake server for tests | (driven via `handle.rs`) | `test_server.rs` (`#[cfg(test)]`) | `test_server.rs` (`#[cfg(test)]`) |
+| `lib.rs` | `pub use` re-exports + `VENDOR_ID` + factory fns | same | same |
 
-**Mock puts one trait impl per file** — the clearest layout to learn from; copy it when starting. **LG puts all four trait impls in `backend.rs`** and reserves the other modules for its substantial SSAP-over-WebSocket protocol machinery — a fine grouping when the wire protocol is large. Pick whichever keeps each file readable; the daemon can't tell the difference. Every crate exposes its `VENDOR_ID` / `VENDOR_NAME` constants and a constructor from `lib.rs` (see [`tisvlay-mock/src/lib.rs`](../../crates/tisvlay-mock/src/lib.rs) `new_production_parts()` / `new_test_parts()`).
+**Mock puts one trait impl per file** — the clearest layout to learn from; copy it when starting. **LG puts all four trait impls in `backend.rs`** and reserves the other modules for its substantial SSAP-over-WebSocket protocol machinery — a fine grouping when the wire protocol is large. **Epson splits per-trait like Mock** but factors its wire protocol into a pure, I/O-free codec (`escvp21.rs`, exhaustively table-tested) separate from the concrete TCP transport (`transport.rs`) and the high-level command sequencing (`client.rs`) — a clean split worth copying when your protocol has a non-trivial grammar but you still want each file readable. Pick whichever keeps each file readable; the daemon can't tell the difference. Every crate exposes its `VENDOR_ID` / `VENDOR_NAME` constants and a constructor from `lib.rs` (see [`tisvlay-mock/src/lib.rs`](../../crates/tisvlay-mock/src/lib.rs) `new_production_parts()` / `new_test_parts()`).
 
 ## Implementing the four traits
 
@@ -43,7 +49,7 @@ Work in this order; lean on the mock as a skeleton and the LG impl when you need
    - `start_pairing()` / `build_config_from_pairing()` drive the pairing state machine (see § Pairing and authentication).
    - `config_schema()` declares every vendor-config field once; the framework projects it into the pairing wizard, the INFO pane, and config display (see § Capabilities, config schema, and field visibility).
 
-3. **`TvConnection`** — override the feature methods your device supports (`power_off`, `get_power_state`, `screen_on` / `screen_off` / `is_screen_on`, `set_volume` / `set_mute`, `switch_input` / `list_inputs`, `set_backlight`, …). Leave the rest at their `NotSupported` defaults. `get_state()` returns a full [`TvState`](../../crates/tisvlay-core/src/state.rs) snapshot. If your protocol pushes asynchronous updates, implement `subscribe_state()` to return an `mpsc` receiver of cumulative `TvState` snapshots (LG does); if it is poll-only, leave it unimplemented and the daemon falls back to periodic polling. Map your device's raw power substates onto the `PowerState` enum — including the transient `WarmingUp` / `CoolingDown` for warmup/cooldown-gated devices (see [docs/design.md](../design.md) § Power & Screen State Machine).
+3. **`TvConnection`** — override the feature methods your device supports (`power_off`, `get_power_state`, `screen_on` / `screen_off` / `is_screen_on`, `set_volume` / `set_mute`, `switch_input` / `list_inputs`, `set_backlight`, …). Leave the rest at their `NotSupported` defaults — a speakerless projector simply never overrides volume/mute. `get_state()` returns a full [`TvState`](../../crates/tisvlay-core/src/state.rs) snapshot. If your protocol pushes asynchronous updates, implement `subscribe_state()` to return an `mpsc` receiver of cumulative `TvState` snapshots (LG does); if it is **poll-only, leave `subscribe_state()` unimplemented and the daemon's periodic poll feeds the same cached-state channel** — the reliability machinery never learns the difference (Epson is poll-only; ESC/VP21 has no push channel). Map your device's raw power substates onto the `PowerState` enum — including the transient `WarmingUp` / `CoolingDown` for warmup/cooldown-gated devices (see [docs/design.md](../design.md) § Power & Screen State Machine). When a substate has no native code of its own — an A/V-muted projector still reports "power on" — derive it from a *compound* read (Epson computes `ScreenOff` from `PWR?=on AND MUTE?=on`, the same compound derivation LG does), so the daemon's vendor-agnostic `screen_*` dispatch sees a clean `ScreenOff`.
 
 4. **`TvDiscovery`** (optional) — implement `discover(timeout) -> Vec<DiscoveredTv>` only if you have a discovery protocol, and feature-gate it (LG gates SSDP behind a `discovery` feature). Return SSDP-shaped `DiscoveredTv` entries so the daemon's post-discovery MAC enrichment and `autofill: "discovery.<key>"` wizard pre-fill apply. See [docs/discovery.md](../discovery.md) § Trait boundary for why this is a bounded `Vec`, not a stream.
 
@@ -63,7 +69,7 @@ Declare the schema once and the framework projects it everywhere — adding an e
 
 The same `PairingState` machine ([`crates/tisvlay-core/src/pairing.rs`](../../crates/tisvlay-core/src/pairing.rs): `AwaitingTvPrompt`, `AwaitingUserInput { input_type }`, `Complete { credentials }`, `Failed`) spans a wide range of auth models. The three references show the spectrum:
 
-- **No real auth (trivial).** The mock auto-accepts via a config shorthand. A backend whose transport is unauthenticated (e.g. raw TCP) validates connectivity in `start_pairing()` and emits `Complete` with empty credentials immediately — the simplest end of the machine.
+- **No real auth (trivial).** The mock auto-accepts via a config shorthand. A backend whose transport is unauthenticated validates connectivity in `start_pairing()` and emits `Complete` with **empty credentials** immediately — the simplest end of the machine. Epson is the worked example: ESC/VP21 over raw TCP has no auth, so its `start_pairing()` ([`connector.rs`](../../crates/tisvlay-epson/src/connector.rs)) opens the socket, performs the `ESC/VP.net` handshake to confirm the projector responds, and races that against a cancel command — "pairing" *is* a reachability check. The empty credential is a deliberate marker for the no-auth flow that `build_config_from_pairing()` reads.
 - **Interactive accept-on-device with a returned credential.** LG races a `tokio::select!` between the TV's user-approval handshake and a cancel command, captures the returned client key, and stores it via `build_config_from_pairing()`. Uses `AwaitingTvPrompt`.
 - **A user-supplied secret (password / PIN).** Collect it up front through a `PairingFieldType::Password` schema field, or surface `AwaitingUserInput(InputType::Password)` mid-flow if the device only challenges on connect. Persist it as a `Secret`-visibility field.
 
@@ -73,8 +79,9 @@ The same `PairingState` machine ([`crates/tisvlay-core/src/pairing.rs`](../../cr
 
 A backend is fully testable with no hardware. The pattern is a **fake wire server** plus a **connection seam** that points your client at it:
 
-- LG's [`test_server.rs`](../../crates/tisvlay-lg/src) `FakeSsapServer` (`#[cfg(test)] pub(crate)`) speaks the real protocol against `127.0.0.1:0`, with hooks to script registration outcomes, push subscription updates, send raw frames, and drop the connection for fault injection. Mirror this shape for your transport. See [docs/lg/testing.md](../lg/testing.md).
-- Layer the tests: pure protocol-codec tests (table-driven encode/decode) → config-parse tests → client integration against the fake server → backend-trait tests → fault injection (auth failure, timeout, mid-transition busy, connection drop).
+- LG's [`test_server.rs`](../../crates/tisvlay-lg/src) `FakeSsapServer` (`#[cfg(test)] pub(crate)`) speaks the real protocol against `127.0.0.1:0`, with hooks to script registration outcomes, push subscription updates, send raw frames, and drop the connection for fault injection. See [docs/lg/testing.md](../lg/testing.md).
+- Epson's `FakeEpsonServer` mirrors the shape for a poll-only transport: a `tokio` TCP responder that performs the `ESC/VP.net` handshake and answers scripted `NAME=VALUE:` / `:` replies, with hooks to set the steady-state codes, **script a warmup/cooldown progression** that advances per `PWR?` read, and drop the connection. No push hook (there's no push channel to fake) — the test polls the same way the daemon does. See [docs/epson/testing.md](../epson/testing.md). Mirror whichever is closer to your transport.
+- Layer the tests: pure protocol-codec tests (table-driven encode/decode) → config-parse tests → client integration against the fake server → backend-trait tests → fault injection (auth failure, timeout, mid-transition busy, connection drop). Push the *grammar* into a pure, I/O-free codec module so it is exhaustively table-testable without a socket (Epson's `escvp21.rs` is the model); the fake server then only has to exercise the I/O seams, not re-test the parser.
 
 The workspace test crates compose underneath ([docs/testing.md](../testing.md)): `tisvlay-test` (OS-environment fakes — private D-Bus, fake logind), `tisvlay-mock` (the in-memory backend, for daemon tests), and `tisvlay-harness` (`TestDaemon` / `TestSession` binary-lifecycle fixtures). Your vendor crate owns its own fake server and protocol tests; the daemon-level integration tests use the mock, not your real backend.
 

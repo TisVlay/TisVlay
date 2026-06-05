@@ -16,6 +16,8 @@ The workspace ships `tisvlay-ssdp` (~250 LOC incl. unit tests, `publish = true`,
 
 The `TvDiscovery::discover(timeout) -> Vec<DiscoveredTv>` trait in [`crates/tisvlay-core/src/traits.rs`](../crates/tisvlay-core/src/traits.rs) is the per-vendor discovery contract — **a bounded scan that returns a list**. Streaming (the wizard's "walk to the TV, walk back" UX) lives one layer up in the daemon, orchestrating bounded scans over time. This split keeps the vendor trait simple (no Stream return type, no session lifecycle), and means a future vendor backend that does discovery via a non-streamable mechanism (vendor cloud API, mDNS one-shot, etc.) can implement `TvDiscovery::discover` without confronting streaming machinery.
 
+Discovery is also genuinely optional: a backend with no discovery protocol simply doesn't implement `TvDiscovery` and omits `Capabilities::DISCOVERY`, and the daemon falls back to manual entry. The [Epson projector backend](epson/protocol.md#discovery) ships exactly this way — discovery is deferred to a hardware-validation follow-up, and notably the LS12000's *documented* discovery mechanisms are PJLink / AMX Device Discovery / Control4 SDDP, **not** mDNS/SSDP, so the v4-only `tisvlay-ssdp` transport below wouldn't apply to it even once discovery lands.
+
 LG's discovery layer in [`crates/tisvlay-lg/src/discovery.rs`](../crates/tisvlay-lg/src/discovery.rs) calls `tisvlay_ssdp::search` with all three LG-specific search targets on a single shared socket (one timeout window), then applies LG-specific predicates (`is_lg_tv` against DLNA header / server string / USN) and parsing (DLNA name → model, USN → UUID, EDID PNPID `GSM`).
 
 ## Streaming discovery (`Manager1.StartDiscovery`)
