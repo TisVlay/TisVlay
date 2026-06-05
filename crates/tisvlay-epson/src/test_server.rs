@@ -21,6 +21,25 @@ use tokio::sync::mpsc;
 
 use crate::escvp21;
 
+/// An in-flight power transition the fake projector walks through on a
+/// `PWR ON` / `PWR OFF`. `Warming` and `Cooling` are mutually exclusive
+/// by construction — a projector only ever heads one direction — so the
+/// single enum makes the other-direction-also-active state
+/// unrepresentable (the parallel `*_remaining` / `*_code` fields it
+/// replaced had to be hand-cleared to stay exclusive).
+///
+/// `remaining` counts the `PWR?` reads that still answer with the
+/// transitional `code` before the projector snaps to its steady code
+/// (`"01"` on after warming, `"04"` standby after cooling). `code` is
+/// usually the distinct `"02"` / `"03"`, but a test can set the
+/// indistinct-busy code to exercise the client's last-power-intent
+/// fallback.
+enum Transition {
+    None,
+    Warming { remaining: usize, code: String },
+    Cooling { remaining: usize, code: String },
+}
+
 /// Scriptable projector state the server answers from.
 pub(crate) struct FakeState {
     /// Current `PWR?` status code (e.g. `"01"`, `"04"`).
@@ -31,19 +50,9 @@ pub(crate) struct FakeState {
     source: String,
     /// Current `LUMLEVEL?` value.
     lumlevel: i64,
-    /// Remaining `PWR?` reads that answer with the warming code before
-    /// the projector reports on. Set by a `PWR ON`; decremented per
-    /// `PWR?`.
-    warmup_remaining: usize,
-    /// Warming code returned while `warmup_remaining > 0` (`"02"` by
-    /// default; a test can set the indistinct-busy code to exercise the
-    /// intent fallback).
-    warmup_code: String,
-    /// Remaining `PWR?` reads that answer with the cooling code before
-    /// the projector reports standby. Set by a `PWR OFF`.
-    cooldown_remaining: usize,
-    /// Cooling code returned while `cooldown_remaining > 0`.
-    cooldown_code: String,
+    /// The in-flight power transition (warmup or cooldown), or
+    /// [`Transition::None`] when the projector is at a steady code.
+    transition: Transition,
     /// A warmup progression armed to start on the *next* `PWR ON`
     /// (`(count, code)`), rather than immediately. Lets a test script a
     /// cooldown that completes to standby and a warmup that only kicks
@@ -64,10 +73,7 @@ impl Default for FakeState {
             mute: false,
             source: "30".into(),
             lumlevel: 50,
-            warmup_remaining: 0,
-            warmup_code: "02".into(),
-            cooldown_remaining: 0,
-            cooldown_code: "03".into(),
+            transition: Transition::None,
             pending_warmup: None,
             split_reply_at: None,
         }
@@ -129,19 +135,19 @@ impl FakeEpsonHandle {
     /// also marks the projector as currently on so the warming reads
     /// precede the on reading.
     pub(crate) fn script_warmup(&self, count: usize, code: impl Into<String>) {
-        let mut state = self.state.lock();
-        state.warmup_remaining = count;
-        state.warmup_code = code.into();
-        state.cooldown_remaining = 0;
+        self.state.lock().transition = Transition::Warming {
+            remaining: count,
+            code: code.into(),
+        };
     }
 
     /// Script a cooldown progression: the next `count` `PWR?` reads
     /// answer with `code`, then the projector reports standby (`"04"`).
     pub(crate) fn script_cooldown(&self, count: usize, code: impl Into<String>) {
-        let mut state = self.state.lock();
-        state.cooldown_remaining = count;
-        state.cooldown_code = code.into();
-        state.warmup_remaining = 0;
+        self.state.lock().transition = Transition::Cooling {
+            remaining: count,
+            code: code.into(),
+        };
     }
 
     /// Arm a warmup progression to begin on the *next* `PWR ON` (rather
@@ -330,21 +336,27 @@ impl FakeEpsonServer {
         let mut s = state.lock();
         match cmd {
             "PWR ON" => {
-                s.cooldown_remaining = 0;
                 if let Some((count, code)) = s.pending_warmup.take() {
-                    // A warmup armed for this `PWR ON` starts now.
-                    s.warmup_remaining = count;
-                    s.warmup_code = code;
-                } else if s.warmup_remaining == 0 {
-                    // No warmup scripted or pending — snap to on.
+                    // A warmup armed for this `PWR ON` starts now, cancelling
+                    // any in-flight cooldown.
+                    s.transition = Transition::Warming {
+                        remaining: count,
+                        code,
+                    };
+                } else if !matches!(s.transition, Transition::Warming { .. }) {
+                    // Not already warming — snap straight to on, cancelling
+                    // any cooldown.
+                    s.transition = Transition::None;
                     s.power_code = "01".into();
                 }
             }
             "PWR OFF" => {
-                if s.cooldown_remaining == 0 {
+                if !matches!(s.transition, Transition::Cooling { .. }) {
+                    // Not already cooling — snap to standby, cancelling any
+                    // warmup in progress.
+                    s.transition = Transition::None;
                     s.power_code = "04".into();
                 }
-                s.warmup_remaining = 0;
             }
             "MUTE ON" => s.mute = true,
             "MUTE OFF" => s.mute = false,
@@ -366,28 +378,32 @@ impl FakeEpsonServer {
     /// the condition under which a real projector rejects source /
     /// brightness / mute queries.
     fn in_standby(state: &FakeState) -> bool {
-        state.warmup_remaining == 0
-            && state.cooldown_remaining == 0
+        matches!(state.transition, Transition::None)
             && matches!(state.power_code.trim(), "00" | "04")
     }
 
     /// Resolve the `PWR?` value, advancing any scripted warmup/cooldown
     /// progression.
     fn power_value(state: &mut FakeState) -> String {
-        if state.warmup_remaining > 0 {
-            state.warmup_remaining -= 1;
-            if state.warmup_remaining == 0 {
-                state.power_code = "01".into();
+        // Advance any in-flight transition by one read; when it reaches
+        // zero the projector settles to its steady code. The settle is
+        // applied after the match so the borrow on `state.transition`
+        // ends before reassigning it.
+        let (code, settled) = match &mut state.transition {
+            Transition::Warming { remaining, code } => {
+                *remaining -= 1;
+                (code.clone(), (*remaining == 0).then_some("01"))
             }
-            return state.warmup_code.clone();
-        }
-        if state.cooldown_remaining > 0 {
-            state.cooldown_remaining -= 1;
-            if state.cooldown_remaining == 0 {
-                state.power_code = "04".into();
+            Transition::Cooling { remaining, code } => {
+                *remaining -= 1;
+                (code.clone(), (*remaining == 0).then_some("04"))
             }
-            return state.cooldown_code.clone();
+            Transition::None => return state.power_code.clone(),
+        };
+        if let Some(steady) = settled {
+            state.transition = Transition::None;
+            state.power_code = steady.into();
         }
-        state.power_code.clone()
+        code
     }
 }
