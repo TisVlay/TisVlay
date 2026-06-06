@@ -64,6 +64,14 @@ pub(crate) struct FakeState {
     /// this byte offset (with a flush between) to exercise the client's
     /// read-until-terminator accumulation against a segmented reply.
     split_reply_at: Option<usize>,
+    /// When set to a query name (e.g. `"SOURCE"`), that query answers
+    /// `ERR` even while the projector is on — the complement of the
+    /// standby query-gate, for the best-effort `get_state` path against
+    /// a single flaky sub-query.
+    error_query: Option<String>,
+    /// When set, the next `PWR ON` leaves the projector in standby
+    /// instead of turning on — a power-on that doesn't take.
+    fail_next_power_on: bool,
 }
 
 impl Default for FakeState {
@@ -76,6 +84,8 @@ impl Default for FakeState {
             transition: Transition::None,
             pending_warmup: None,
             split_reply_at: None,
+            error_query: None,
+            fail_next_power_on: false,
         }
     }
 }
@@ -95,6 +105,10 @@ pub(crate) struct FakeEpsonHandle {
     /// command but before replying — a socket failure mid-exchange, as
     /// distinct from a quiescent FIN between commands.
     abort_next_command: Arc<AtomicBool>,
+    /// When set, the server reads the next command but never replies,
+    /// leaving the socket open so the client's read hits its command
+    /// timeout — a slow-but-live projector, distinct from a socket drop.
+    hang_next_command: Arc<AtomicBool>,
     _server_task: tokio::task::JoinHandle<()>,
 }
 
@@ -179,6 +193,30 @@ impl FakeEpsonHandle {
     pub(crate) fn abort_next_command(&self) {
         self.abort_next_command.store(true, Ordering::SeqCst);
     }
+
+    /// Make a single query (`name`, e.g. `"SOURCE"`) answer `ERR` for
+    /// the connection's life, even while the projector is on — the
+    /// complement of the standby query-gate. Exercises the best-effort
+    /// `get_state` path where one sub-query is flaky while the rest
+    /// answer.
+    pub(crate) fn fail_query(&self, name: impl Into<String>) {
+        self.state.lock().error_query = Some(name.into());
+    }
+
+    /// Make the next `PWR ON` leave the projector in standby instead of
+    /// turning on — a power-on that doesn't take, so the connector's
+    /// warmup poll reads a steady standby and hard-errors. Single-shot.
+    pub(crate) fn fail_next_power_on(&self) {
+        self.state.lock().fail_next_power_on = true;
+    }
+
+    /// Make the server read the next command but send no reply, leaving
+    /// the socket open so the client's in-flight read hits its command
+    /// timeout (a slow-but-live projector). Single-shot — the retry is
+    /// answered.
+    pub(crate) fn hang_next_command(&self) {
+        self.hang_next_command.store(true, Ordering::SeqCst);
+    }
 }
 
 /// The fake ESC/VP21 server.
@@ -195,11 +233,13 @@ impl FakeEpsonServer {
         let state = Arc::new(Mutex::new(FakeState::default()));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let abort_next_command = Arc::new(AtomicBool::new(false));
+        let hang_next_command = Arc::new(AtomicBool::new(false));
         let server_state = Arc::clone(&state);
         let server_abort = Arc::clone(&abort_next_command);
+        let server_hang = Arc::clone(&hang_next_command);
 
         let server_task = tokio::spawn(async move {
-            Self::accept_loop(listener, server_state, cmd_rx, server_abort).await
+            Self::accept_loop(listener, server_state, cmd_rx, server_abort, server_hang).await
         });
 
         FakeEpsonHandle {
@@ -207,6 +247,7 @@ impl FakeEpsonServer {
             state,
             cmd_tx,
             abort_next_command,
+            hang_next_command,
             _server_task: server_task,
         }
     }
@@ -216,6 +257,7 @@ impl FakeEpsonServer {
         state: Arc<Mutex<FakeState>>,
         mut cmd_rx: mpsc::UnboundedReceiver<ServerCommand>,
         abort_next_command: Arc<AtomicBool>,
+        hang_next_command: Arc<AtomicBool>,
     ) {
         loop {
             let (mut stream, _) = match listener.accept().await {
@@ -258,6 +300,13 @@ impl FakeEpsonServer {
                                     // post-reconnect retry is answered.
                                     if abort_next_command.swap(false, Ordering::SeqCst) {
                                         break 'conn;
+                                    }
+                                    // Hang: read the command but send no
+                                    // reply, leaving the socket open so the
+                                    // client's read hits its command timeout.
+                                    // Single-shot — the retry is answered.
+                                    if hang_next_command.swap(false, Ordering::SeqCst) {
+                                        continue 'conn;
                                     }
                                     let (resp, split_at) = {
                                         let split = state.lock().split_reply_at;
@@ -322,6 +371,11 @@ impl FakeEpsonServer {
             if matches!(name, "MUTE" | "SOURCE" | "LUMLEVEL") && Self::in_standby(&s) {
                 return "ERR\r:".to_string();
             }
+            // A specific query forced to ERR even while on — a flaky
+            // sub-query, independent of the standby gate above.
+            if s.error_query.as_deref() == Some(name) {
+                return "ERR\r:".to_string();
+            }
             let value = match name {
                 "PWR" => Self::power_value(&mut s),
                 "MUTE" => if s.mute { "ON" } else { "OFF" }.to_string(),
@@ -336,7 +390,13 @@ impl FakeEpsonServer {
         let mut s = state.lock();
         match cmd {
             "PWR ON" => {
-                if let Some((count, code)) = s.pending_warmup.take() {
+                if s.fail_next_power_on {
+                    // A power-on that doesn't take: the projector stays
+                    // in standby instead of turning on.
+                    s.fail_next_power_on = false;
+                    s.transition = Transition::None;
+                    s.power_code = "04".into();
+                } else if let Some((count, code)) = s.pending_warmup.take() {
                     // A warmup armed for this `PWR ON` starts now, cancelling
                     // any in-flight cooldown.
                     s.transition = Transition::Warming {

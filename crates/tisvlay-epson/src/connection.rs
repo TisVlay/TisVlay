@@ -118,6 +118,7 @@ mod tests {
     use super::*;
     use crate::test_server::FakeEpsonServer;
     use std::time::Duration;
+    use tisvlay_core::Error;
 
     /// Build an `EpsonConnection` pointed at a fake server.
     async fn connect(handle: &crate::test_server::FakeEpsonHandle) -> EpsonConnection {
@@ -454,6 +455,76 @@ mod tests {
             conn.get_power_state().await.unwrap(),
             PowerState::Unknown,
             "intent was cleared by the steady On reading, so a busy code is directionless",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // A live projector that rejects ONE sub-query (a transient or
+    // firmware quirk) must not sink the whole snapshot — only that field
+    // goes empty. Complements the standby case above, where the gated
+    // sub-queries aren't issued at all.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_state_tolerates_a_live_sub_query_error() {
+        let server = FakeEpsonServer::start().await;
+        server.set_power_code("01"); // on, unmuted → Active
+        // SOURCE? answers ERR even though the projector is up.
+        server.fail_query("SOURCE");
+        let mut conn = connect(&server).await;
+
+        let state = conn
+            .get_state()
+            .await
+            .expect("a single sub-query ERR must not sink the snapshot");
+        assert_eq!(state.power_state, PowerState::Active);
+        assert!(state.is_on);
+        // SOURCE failed → the input is empty, but everything else still
+        // populated (the failure is per-field, not snapshot-wide).
+        assert_eq!(state.current_input, None);
+        assert_eq!(state.backlight, Some(50), "LUMLEVEL still answered");
+        assert_eq!(state.inputs.len(), 6);
+    }
+
+    // -----------------------------------------------------------------------
+    // A command timeout is NOT a stale socket: a slow-but-live projector
+    // must surface the timeout without churning a reconnect, leaving the
+    // socket usable for the next command. `start_paused` advances the
+    // virtual clock to COMMAND_TIMEOUT while the read is parked (the same
+    // paused-clock-with-pending-IO mechanism pinned by tisvlay-test's
+    // clock_spike.rs); the wall-clock guard fails loudly if that ever
+    // stops auto-advancing instead of silently waiting the real 5 s.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn command_timeout_does_not_reconnect() {
+        let server = FakeEpsonServer::start().await;
+        server.set_power_code("01");
+        let mut conn = connect(&server).await;
+
+        // The server reads the next command (the `PWR?` get_power_state
+        // issues first) but never replies.
+        server.hang_next_command();
+        let started = std::time::Instant::now();
+        let err = conn
+            .get_power_state()
+            .await
+            .expect_err("a hung command must surface the timeout");
+        // Getting the timeout back (rather than an Active reading) is
+        // itself the no-reconnect proof: a reconnect-and-retry would have
+        // re-issued PWR? on a fresh socket (the single-shot hang already
+        // cleared) and returned Active.
+        assert!(
+            matches!(&err, Error::Backend { message, .. } if message.contains("timed out")),
+            "expected a command-timeout error, got: {err}",
+        );
+        assert!(
+            conn.is_connected(),
+            "a timeout is not a stale socket — the transport survives",
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "start_paused should auto-advance the virtual clock, not wait the real 5 s",
         );
     }
 }

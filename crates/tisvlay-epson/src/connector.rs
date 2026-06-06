@@ -516,4 +516,31 @@ mod tests {
             .await
             .expect("probe is best-effort and returns Ok regardless of reachability");
     }
+
+    // A `PWR ON` that doesn't take: `wake_and_connect` drives the
+    // projector on and polls through warmup, so a projector reporting a
+    // steady standby after `PWR ON` (the power-on didn't take — a failing
+    // lamp or fault) must surface as a hard error, not a hang or a false
+    // success. Complements the happy cooldown-then-warmup ride above.
+    #[tokio::test]
+    async fn wake_and_connect_errors_when_power_on_does_not_take() {
+        let server = crate::test_server::FakeEpsonServer::start().await;
+        // Projector in standby; the wake-and-connect `PWR ON` leaves it
+        // there instead of turning on. No MAC → wake() is a no-op.
+        server.set_power_code("04");
+        server.fail_next_power_on();
+
+        let connector = EpsonConnector::new();
+        let config = config_value(&server.host(), None, server.port());
+
+        let err = connector
+            .wake_and_connect(&config)
+            .await
+            .err()
+            .expect("a PWR ON that doesn't take must hard-error");
+        assert!(
+            matches!(&err, Error::Backend { message, .. } if message.contains("PWR ON did not take")),
+            "expected the Standby-during-warmup error, got: {err}",
+        );
+    }
 }
