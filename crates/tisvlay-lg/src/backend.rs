@@ -1170,9 +1170,11 @@ mod tests {
     #[test]
     fn build_config_preserves_mac() {
         let connector = LgConnector::new();
-        let params =
-            toml::Value::try_from(LgVendorConfig::with_mac("10.0.0.1", "AA:BB:CC:DD:EE:FF"))
-                .unwrap();
+        let params = toml::Value::try_from(LgVendorConfig {
+            mac: Some("AA:BB:CC:DD:EE:FF".into()),
+            ..LgVendorConfig::new("10.0.0.1")
+        })
+        .unwrap();
         let creds = Credentials::with_type("key", "client_key").with_extra("scheme", "ws");
         let result = connector
             .build_config_from_pairing(&params, &creds)

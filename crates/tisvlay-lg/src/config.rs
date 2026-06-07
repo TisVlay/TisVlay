@@ -129,17 +129,6 @@ impl LgVendorConfig {
         }
     }
 
-    /// Create a config with IP and MAC for Wake-on-LAN.
-    pub fn with_mac(ip: impl Into<String>, mac: impl Into<String>) -> Self {
-        Self {
-            ip: ip.into(),
-            mac: Some(mac.into()),
-            client_key: None,
-            default_input: None,
-            scheme: WebOsScheme::default(),
-        }
-    }
-
     /// Set the client key.
     pub fn set_client_key(&mut self, key: impl Into<String>) {
         self.client_key = Some(key.into());
@@ -235,7 +224,8 @@ mod tests {
 
     #[test]
     fn builder_methods() {
-        let mut config = LgVendorConfig::with_mac("10.0.0.1", "AA:BB:CC:DD:EE:FF");
+        let mut config = LgVendorConfig::new("10.0.0.1");
+        config.mac = Some("AA:BB:CC:DD:EE:FF".into());
         config.set_client_key("key");
         config.set_default_input("HDMI_3");
         assert_eq!(config.ip, "10.0.0.1");
