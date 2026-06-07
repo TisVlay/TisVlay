@@ -108,7 +108,9 @@ pub use config::{
 pub use profile_refs::{TvAssignment, references_of, user_references_of};
 
 // State
-pub use state::{DiscoveredTv, InputInfo, PowerCyclePhase, PowerState, TvState};
+pub use state::{
+    DiscoveredTv, InputInfo, PowerCyclePhase, PowerState, TvState, power_state_str_is_on,
+};
 
 // Errors
 pub use error::{Error, Result};

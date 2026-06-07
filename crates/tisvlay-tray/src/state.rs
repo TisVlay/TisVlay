@@ -3,7 +3,7 @@
 //! Builds snapshots from `TvInfo` (from `list_tvs()` via `GetManagedObjects`)
 //! which includes both identity and cached state properties.
 
-use tisvlay_core::{DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient};
+use tisvlay_core::{DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient, power_state_str_is_on};
 use tracing::debug;
 
 /// Snapshot of a single TV's state, cached locally for menu rendering.
@@ -44,18 +44,6 @@ pub(crate) struct CachedTvState {
     pub managed: bool,
     /// Whether automation should fire for this TV right now.
     pub automated: bool,
-}
-
-/// Derive the tray's on/off indicator from the daemon's cached
-/// `Tv1.Power.PowerState` wire string.
-///
-/// "On" covers everything powered and progressing toward usable:
-/// `active`, `screen_off` (panel blanked but powered), and
-/// `warming_up` (powering up). "Off" is `standby`, `unknown`, and
-/// `cooling_down` (powering down). A denylist mirroring the daemon's
-/// [`derive_power_state`](../../tisvlayd/src/power_state.rs) vocabulary.
-fn is_on_from_power_state(power_state: &str) -> bool {
-    !matches!(power_state, "standby" | "unknown" | "cooling_down")
 }
 
 /// Fetch current state for all configured TVs.
@@ -124,7 +112,7 @@ pub(crate) async fn fetch_all_state(
             None => None,
         };
 
-        let is_on = is_on_from_power_state(&tv.power_state);
+        let is_on = power_state_str_is_on(&tv.power_state);
 
         let cached = CachedTvState {
             id: tv.uuid.clone(),
@@ -371,20 +359,5 @@ mod tests {
                 ("uuid-other".to_string(), "zulu".to_string()),
             ]
         );
-    }
-
-    /// The on/off indicator must classify the projector-class
-    /// transients correctly: `warming_up` reads as on (powering up),
-    /// `cooling_down` as off (powering down) — a denylist that forgot
-    /// `cooling_down` would wrongly light the tray for a TV on its way
-    /// off.
-    #[test]
-    fn is_on_from_power_state_classifies_transients() {
-        assert!(is_on_from_power_state("active"));
-        assert!(is_on_from_power_state("screen_off"));
-        assert!(is_on_from_power_state("warming_up"));
-        assert!(!is_on_from_power_state("cooling_down"));
-        assert!(!is_on_from_power_state("standby"));
-        assert!(!is_on_from_power_state("unknown"));
     }
 }
