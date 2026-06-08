@@ -1,5 +1,11 @@
 //! Test-driven control surface for the mock backend.
 //!
+//! **Mock test-double machinery — not the backend pattern.** A real
+//! backend has no `MockHandle`: it talks to hardware instead of an
+//! injectable state machine. Don't copy this file when cloning mock as
+//! a skeleton for a new backend (see the dev guide's crate-structure
+//! section).
+//!
 //! `MockHandle` is the single entry point by which a test drives
 //! everything the mock backend does: publishing discoverable TVs,
 //! approving or rejecting pairing sessions, simulating timeouts.
