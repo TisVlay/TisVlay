@@ -15,20 +15,25 @@ The single composition point is [`tisvlay-backends`](../../crates/tisvlay-backen
 
 ## Crate structure
 
-There is no mandated file layout — only the four traits must be implemented somewhere in your crate. The two references bracket the sensible range:
+One trait impl per same-named file — the layout `tisvlay-mock` (minimal) and `tisvlay-lg` (real-world) both follow:
 
-| Concern | `tisvlay-mock` (minimal) | `tisvlay-lg` (real-world) |
-|---------|--------------------------|---------------------------|
-| `TvBackend` impl | `backend.rs` | `backend.rs` |
-| `TvConnector` impl | `connector.rs` | `backend.rs` |
-| `TvConnection` impl | `connection.rs` | `backend.rs` |
-| `TvDiscovery` impl | `discovery.rs` | `backend.rs` (feature-gated) |
-| Vendor config struct | `config.rs` | `config.rs` |
-| Wire protocol / transport | (in-memory `state.rs`) | `client.rs`, `connection.rs`, `protocol.rs`, `endpoints.rs` |
-| Fake server for tests | (driven via `handle.rs`) | `test_server.rs` (`#[cfg(test)]`) |
-| `lib.rs` | `pub use` re-exports + `VENDOR_ID` + factory fns | same |
+| Concern | file | `tisvlay-mock` | `tisvlay-lg` |
+|---------|------|----------------|--------------|
+| `TvBackend` impl | `backend.rs` | metadata only | metadata only |
+| `TvConnector` impl | `connector.rs` | ✓ | ✓ |
+| `TvConnection` impl | `connection.rs` | ✓ | ✓ |
+| `TvDiscovery` impl | `discovery.rs` | ✓ | ✓ (feature-gated) |
+| Vendor config struct | `config.rs` | ✓ | ✓ |
+| Wire layer (sized to the protocol) | — | none (in-memory) | `client.rs`, `transport.rs`, `protocol.rs`, `endpoints.rs` |
+| `lib.rs` | re-exports + `VENDOR_ID` + factory fns | ✓ | ✓ |
 
-**Mock puts one trait impl per file** — the clearest layout to learn from; copy it when starting. **LG puts all four trait impls in `backend.rs`** and reserves the other modules for its substantial SSAP-over-WebSocket protocol machinery — a fine grouping when the wire protocol is large. Pick whichever keeps each file readable; the daemon can't tell the difference. Every crate exposes its `VENDOR_ID` / `VENDOR_NAME` constants and a constructor from `lib.rs` (see [`tisvlay-mock/src/lib.rs`](../../crates/tisvlay-mock/src/lib.rs) `new_production_parts()` / `new_test_parts()`).
+**The invariant: one trait impl per same-named file (`backend` / `connector` / `connection` / `discovery`) plus `config.rs`.** Past that, the wire layer scales to your protocol — the mock needs none (its "wire" is an in-memory state machine), while LG's SSAP-over-WebSocket spreads across `client.rs` (the high-level command API), `transport.rs` (the raw WebSocket + request/response multiplexing), `protocol.rs` (message types), and `endpoints.rs` (constants). A tiny backend *could* fuse the trait impls into fewer files, but both references split for clarity — prefer it; the daemon can't tell the difference, so what matters is that each file stays readable. Discovery rides the shared [`tisvlay-ssdp`](../../crates/tisvlay-ssdp/) crate (SSDP M-SEARCH) rather than a per-vendor reimplementation — see LG's `discovery.rs`. Every crate exposes its `VENDOR_ID` / `VENDOR_NAME` constants and a constructor from `lib.rs` (see [`tisvlay-mock/src/lib.rs`](../../crates/tisvlay-mock/src/lib.rs) `new_production_parts()` / `new_test_parts()`).
+
+### Test code comes in three flavors
+
+- **Inline unit tests** — a `#[cfg(test)] mod tests` at the bottom of each file, covering that file's concern; compiled only for your crate's `cargo test`.
+- **A `#[cfg(test)] pub(crate)` fake-server file** — `test_server.rs` (LG's `FakeSsapServer`): a scriptable stand-in for the real device that drives your client through its real code paths with no hardware. The inline integration tests call it; build one.
+- **Mock-only test-driving scaffolding** — the mock's `handle.rs` / `state.rs` / `pairing.rs` are an always-compiled control surface (`MockHandle`) over an injectable state store, so *external* test crates can drive the mock (publish discoverable TVs, force pairing outcomes, inject state). A real backend has no equivalent — it talks to hardware. **When cloning mock as a skeleton, copy `backend.rs` / `connector.rs` / `connection.rs` / `config.rs` / `discovery.rs`; skip `handle.rs` / `state.rs` / `pairing.rs`.**
 
 ## Implementing the four traits
 
