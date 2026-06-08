@@ -45,13 +45,16 @@ tisvlay/
 │   ├── tisvlay-lg/                # LG WebOS vendor implementation
 │   │   └── src/
 │   │       ├── lib.rs            # Public exports
-│   │       ├── backend.rs        # LgConnector, LgConnection trait impls
-│   │       ├── client.rs         # WebOsClient - high-level API
-│   │       ├── connection.rs     # WebSocket with rustls TLS
+│   │       ├── backend.rs        # LgBackend (TvBackend metadata)
+│   │       ├── connector.rs      # LgConnector (factory, wake, pairing)
+│   │       ├── connection.rs     # LgConnection (TvConnection) + SSAP state parsing
+│   │       ├── client.rs         # WebOsClient - high-level SSAP API
+│   │       ├── transport.rs      # Raw WebSocket (rustls TLS) + request/response multiplexing
 │   │       ├── protocol.rs       # SSAP message types
 │   │       ├── endpoints.rs      # API endpoint constants
 │   │       ├── config.rs         # LgVendorConfig
-│   │       └── discovery.rs      # SSDP TV discovery (feature-gated)
+│   │       ├── discovery.rs      # LgDiscovery (TvDiscovery) + SSDP search (feature-gated)
+│   │       └── test_server.rs    # FakeSsapServer (#[cfg(test)])
 │   │
 │   ├── tisvlay-mock/              # In-memory mock backend (optional, for dev/tests)
 │   │   └── src/

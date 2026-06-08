@@ -29,8 +29,8 @@ let mut client = WebOsClient::connect_url(&server.ws_url(), None).await?;
 | Protocol fixtures | serde round-trips, fixture JSON parsing | `tests/protocol_fixtures.rs` + `tests/fixtures/*.json` |
 | Config parsing | TOML with aliases, round-trip | `src/config.rs` (inline) |
 | Client integration | registration, commands, subscriptions | `src/client.rs` (inline) |
-| Backend traits | subscription merging, `LgConnection` surface | `src/backend.rs` (inline) |
-| Fault injection | malformed JSON, connection drop, with_retry | `src/backend.rs` (inline) |
+| Backend traits | subscription merging, `LgConnection` surface | `src/connection.rs` (inline) |
+| Fault injection | malformed JSON + connection drop (`src/client.rs`); `with_retry` (`src/connection.rs`) | inline |
 
 ## Connection seam
 
