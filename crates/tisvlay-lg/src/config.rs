@@ -9,7 +9,7 @@ use tisvlay_core::Error;
 /// `Wss` (port 3001 + TLS with self-signed cert) is the modern
 /// firmware default; `Ws` (port 3000, plain) is older firmware that
 /// shipped before LG's TLS rollout. Pairing probes both via
-/// [`Connection::connect`](crate::connection::Connection::connect)
+/// [`Connection::connect`](crate::transport::Connection::connect)
 /// and persists the working one into [`LgVendorConfig::scheme`] so
 /// post-pairing reconnects dispatch directly without the fallback
 /// round-trip.

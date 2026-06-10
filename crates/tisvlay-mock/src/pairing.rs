@@ -1,5 +1,12 @@
 //! Pairing state machine for the mock backend.
 //!
+//! **Mock test-double machinery — not the backend pattern.** A real
+//! backend drives pairing inside `TvConnector::start_pairing` against
+//! real hardware; the `PairingOutcome` here is a test-seeded shortcut.
+//! (`PairingShorthand` is the one production-facing piece — the
+//! `[tv.mock] pairing = "..."` config knob.) Don't copy the
+//! test-driving parts when cloning mock as a skeleton.
+//!
 //! Pairing is modelled as an explicit state transition
 //! `Idle → Prompted → {Accepted, Rejected, TimedOut}`. Real backends
 //! have much more complex flows (WebSocket handshake, capability
