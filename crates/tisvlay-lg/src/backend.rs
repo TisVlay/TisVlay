@@ -562,30 +562,10 @@ impl TvConnector for LgConnector {
         let config = parse_config(vendor_config)?;
         if let Some(ref mac) = config.mac {
             let mac_addr = MacAddress::parse(mac)?;
-
-            // Try sending WoL, retrying if network is not yet up (e.g., after system resume).
-            // The first attempt may fail with "Network is unreachable" while the
-            // desktop's network interface is still recovering from sleep.
-            let mut last_err = None;
-            for attempt in 1..=8u32 {
-                match tisvlay_core::wol::wake(&mac_addr) {
-                    Ok(()) => {
-                        debug!(ip = %config.ip, mac = %mac, attempt, "WoL packet sent");
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        warn!(mac = %mac, attempt, error = %e, "WoL send failed, retrying");
-                        last_err = Some(e);
-                        let delay = if attempt <= 2 { 2000 } else { 3000 };
-                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                    }
-                }
-            }
-
-            Err(last_err.unwrap_or_else(|| Error::WakeOnLan("WoL failed after retries".into())))
-        } else {
-            Ok(())
+            tisvlay_core::wol::wake_with_retry(&mac_addr, 8).await?;
+            debug!(ip = %config.ip, mac = %mac, "WoL packet sent");
         }
+        Ok(())
     }
 
     async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
@@ -600,9 +580,7 @@ impl TvConnector for LgConnector {
             if attempt > 1 {
                 if let Some(ref mac) = config.mac {
                     if let Ok(mac_addr) = MacAddress::parse(mac) {
-                        if let Err(e) = tisvlay_core::wol::wake(&mac_addr) {
-                            warn!(mac = %mac, attempt, error = %e, "WoL resend failed");
-                        }
+                        tisvlay_core::wol::wake_best_effort(&mac_addr);
                     }
                 }
             }
@@ -1192,9 +1170,11 @@ mod tests {
     #[test]
     fn build_config_preserves_mac() {
         let connector = LgConnector::new();
-        let params =
-            toml::Value::try_from(LgVendorConfig::with_mac("10.0.0.1", "AA:BB:CC:DD:EE:FF"))
-                .unwrap();
+        let params = toml::Value::try_from(LgVendorConfig {
+            mac: Some("AA:BB:CC:DD:EE:FF".into()),
+            ..LgVendorConfig::new("10.0.0.1")
+        })
+        .unwrap();
         let creds = Credentials::with_type("key", "client_key").with_extra("scheme", "ws");
         let result = connector
             .build_config_from_pairing(&params, &creds)

@@ -24,6 +24,41 @@ use std::time::Duration;
 /// `TvConnector::connect()` fast-fail contract are also bounded
 /// here.
 const DIRECT_CONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How often [`state_poll_loop`] refreshes state for connected
+/// poll-only TVs (backends without a `subscribe_state` push channel).
+///
+/// Push backends (LG, the default mock) get real-time state and are
+/// skipped by the loop entirely, so this cadence only governs how
+/// stale a poll-only projector's D-Bus state can be between its own
+/// state changes. 20 s keeps the projector's `warming_up` /
+/// `cooling_down` / volume / input reasonably fresh without a busy
+/// poll; the reliable-dispatch verify loop refreshes power state on
+/// demand for the cases that need sub-second accuracy.
+const STATE_POLL_INTERVAL: Duration = Duration::from_secs(20);
+
+/// Per-TV cap on a single `get_state` query inside
+/// [`state_poll_loop`]. Bounds how long the poll holds a TV's
+/// per-`Mutex<ManagedTv>` so a slow or reconnecting projector can't
+/// block concurrent `Tv1.*` calls behind the poll for more than this.
+/// On timeout the tick skips the TV; the next tick retries.
+const STATE_POLL_QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Upper bound on how long [`TvManager::screen_on`] waits for a
+/// projector reporting [`PowerState::WarmingUp`] to reach a usable
+/// (`Active` / `ScreenSaver`) state before falling through to the
+/// normal verify-retry loop.
+///
+/// Projector laser/lamp warm-up is typically 20-40 s; 60 s is a
+/// generous ceiling. Instant-power backends (LG) never report
+/// `WarmingUp`, so this never engages for them.
+const WARMUP_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Delay between authoritative power-state polls while
+/// [`TvManager::screen_on`] waits out a warming-up projector. Each
+/// poll issues a live `get_power_state`, so this paces the queries
+/// rather than busy-looping.
+const WARMUP_POLL_INTERVAL: Duration = Duration::from_secs(2);
 use tisvlay_core::{
     ActionExecutor, Capabilities, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID,
     FieldVisibility, PowerState, ResolvedSystemProfile, SessionAction, SystemConfig,
@@ -324,6 +359,23 @@ struct ManagedTv {
     /// scope carrier monitoring to the correct interface — only disconnect
     /// this TV when its specific NIC goes down, not when any NIC changes.
     monitored_interface: Option<String>,
+    /// Whether the active connection pushes state via a backend
+    /// subscription (`subscribe_state` succeeded and a forwarder task
+    /// is running). Set from the return of
+    /// [`TvManager::try_subscribe_state`] at every connect/reconnect
+    /// site; `false` for poll-only backends (e.g. an Epson projector
+    /// over a request/response transport) that don't implement
+    /// `subscribe_state`.
+    ///
+    /// Two consumers gate on this so push backends (LG, the default
+    /// mock) keep their exact prior behavior:
+    /// - [`state_poll_loop`] only polls TVs with `false` here — a push
+    ///   backend's state already flows through the subscription task.
+    /// - `screen_on` / `screen_off` actively call
+    ///   [`TvManager::refresh_power_state`] in their verify loop when
+    ///   this is `false`, because nothing else fires the
+    ///   `power_state_tx` watch the passive verify awaits.
+    has_push_subscription: bool,
 }
 
 impl ManagedTv {
@@ -340,6 +392,7 @@ impl ManagedTv {
             last_known_power_state: PowerState::Unknown,
             power_state_tx,
             monitored_interface: None,
+            has_push_subscription: false,
         }
     }
 
@@ -539,6 +592,54 @@ fn apply_tv_option(tv: &mut TvConfig, key: &str, value: &str) -> Result<(), TvMa
     Ok(())
 }
 
+/// Ingest one `TvState` snapshot into the daemon's caches and fan it
+/// out to the D-Bus property forwarder.
+///
+/// Updates the in-process cached fields on `ManagedTv` that the
+/// reliable-dispatch helper and automation gate read
+/// (`last_known_input`, `last_known_power_state`), fires the
+/// `power_state_tx` watch so verify waiters wake, then sends a
+/// `StateChangeEvent::SubscriptionUpdate` so `update_tv_cached_state`
+/// refreshes the cached D-Bus properties + emits `PropertiesChanged`.
+///
+/// Shared by [`run_subscription_task`] (push backends) and
+/// [`state_poll_loop`] (poll-only backends) so a polled snapshot lands
+/// exactly like a pushed one. Returns `false` if the forwarder channel
+/// has closed, so the push task can stop iterating.
+async fn forward_state_snapshot(
+    tv_id: &str,
+    tvs: &Arc<RwLock<IndexMap<String, TvEntry>>>,
+    tx: &mpsc::UnboundedSender<StateChangeEvent>,
+    state: TvState,
+) -> bool {
+    // Update cached fields on ManagedTv that the daemon's
+    // reliable-dispatch helper and automation gate read in-process.
+    // `last_known_power_state` carries the raw vendor PowerState so
+    // the pre-flight wake gate can distinguish ActiveStandby from a
+    // true ScreenOff steady state; the D-Bus property emit collapses
+    // to a string via `crate::power_state::derive_power_state`.
+    {
+        let tvs_read = tvs.read().await;
+        if let Some((_, tv_arc)) = tvs_read.get(tv_id) {
+            let mut tv = tv_arc.lock().await;
+            if let Some(ref input) = state.current_input {
+                tv.last_known_input = Some(input.clone());
+            }
+            tv.last_known_power_state = state.power_state;
+            // Fire the watch so reliable-dispatch paths waiting on a
+            // transition wake up. `send_replace` ignores the "no
+            // receivers" case (no one is currently waiting — fine; the
+            // next subscriber sees this value via `borrow()`).
+            tv.power_state_tx.send_replace(state.power_state);
+        }
+    }
+    tx.send(StateChangeEvent::SubscriptionUpdate {
+        tv_id: tv_id.to_string(),
+        state,
+    })
+    .is_ok()
+}
+
 /// Body of the task spawned by [`TvManager::try_subscribe_state`].
 ///
 /// Forwards backend state pushes as `StateChangeEvent::SubscriptionUpdate`
@@ -560,34 +661,7 @@ async fn run_subscription_task(
     mut state_rx: mpsc::UnboundedReceiver<TvState>,
 ) {
     while let Some(state) = state_rx.recv().await {
-        // Update cached fields on ManagedTv that the daemon's
-        // reliable-dispatch helper and automation gate read
-        // in-process. `last_known_power_state` carries the raw
-        // vendor PowerState so the pre-flight wake gate can
-        // distinguish ActiveStandby from a true ScreenOff steady
-        // state; the D-Bus property emit collapses to a string via
-        // `crate::power_state::derive_power_state`.
-        {
-            let tvs_read = tvs.read().await;
-            if let Some((_, tv_arc)) = tvs_read.get(tv_id.as_str()) {
-                let mut tv = tv_arc.lock().await;
-                if let Some(ref input) = state.current_input {
-                    tv.last_known_input = Some(input.clone());
-                }
-                tv.last_known_power_state = state.power_state;
-                // Fire the watch so reliable-dispatch paths waiting
-                // on a transition wake up. `send_replace` ignores
-                // the "no receivers" case (no one is currently
-                // waiting — fine; the next subscriber sees this
-                // value via `borrow()`).
-                tv.power_state_tx.send_replace(state.power_state);
-            }
-        }
-        let event = StateChangeEvent::SubscriptionUpdate {
-            tv_id: tv_id.clone(),
-            state,
-        };
-        if tx.send(event).is_err() {
+        if !forward_state_snapshot(&tv_id, &tvs, &tx, state).await {
             break;
         }
     }
@@ -614,6 +688,37 @@ async fn run_subscription_task(
         still_connected,
         "Backend state subscription ended"
     );
+}
+
+/// Persistent background task that periodically refreshes state for
+/// connected poll-only TVs.
+///
+/// Spawned once at daemon startup alongside the state-change
+/// forwarder. Push backends (LG, the default mock) flow state through
+/// their `subscribe_state` task in real time and are skipped here — so
+/// this loop changes nothing for them. Poll-only backends (e.g. an
+/// Epson projector over a request/response transport) have no push
+/// channel, so without this loop their live state (power, volume,
+/// input, the projector `warming_up` / `cooling_down` substates) would
+/// never reach D-Bus clients after the initial connect snapshot.
+///
+/// Each tick calls [`TvManager::poll_state_once`], which snapshots the
+/// TV ids under the read lock and then, per id, queries any connected
+/// poll-only TV and forwards the result exactly like a pushed update.
+pub async fn state_poll_loop(manager: Arc<TvManager>) {
+    info!(
+        interval_secs = STATE_POLL_INTERVAL.as_secs(),
+        "Poll-only state refresh loop started"
+    );
+    let mut ticker = tokio::time::interval(STATE_POLL_INTERVAL);
+    // Skip the immediate first tick `interval` fires at t=0: a
+    // just-connected poll-only TV already has its connect snapshot, so
+    // the first useful poll is one interval later.
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        manager.poll_state_once().await;
+    }
 }
 
 impl TvManager {
@@ -673,9 +778,21 @@ impl TvManager {
     /// Try to subscribe to backend state updates for a TV.
     ///
     /// If the backend supports push-based state (e.g., LG SSAP subscriptions),
-    /// spawns a background task that forwards state updates as StateChangeEvents.
-    /// If not supported, does nothing (the tray's fallback poll handles it).
-    async fn try_subscribe_state(&self, tv_id: &str, connection: &mut dyn TvConnection) {
+    /// spawns a background task that forwards state updates as StateChangeEvents
+    /// and returns `true`. If the backend doesn't support subscriptions, returns
+    /// `false` without spawning anything.
+    ///
+    /// The returned bool is stored on [`ManagedTv::has_push_subscription`]
+    /// (via [`Self::refresh_subscription`]) so the daemon can tell push
+    /// backends (poll skipped, passive verify) apart from poll-only backends
+    /// (the [`state_poll_loop`] refreshes their state; `screen_on` /
+    /// `screen_off` actively verify).
+    ///
+    /// The spawned forwarder reads back from `self.tvs` to apply
+    /// `last_known_input` updates, so subscribing *before* the TV is inserted
+    /// into the map is safe: its `if let Some(...)` guard skips the update for
+    /// a not-yet-present entry and keeps forwarding the state event.
+    async fn try_subscribe_state(&self, tv_id: &str, connection: &mut dyn TvConnection) -> bool {
         match connection.subscribe_state().await {
             Ok(state_rx) => {
                 info!(tv_id = %tv_id, "Subscribed to backend state updates");
@@ -685,17 +802,95 @@ impl TvManager {
                     self.state_change_tx.clone(),
                     state_rx,
                 ));
+                true
             }
             Err(_) => {
-                // Backend doesn't support subscriptions -- this is fine,
-                // the tray's fallback poll handles state refresh.
+                // Backend doesn't push state (poll-only, e.g. a projector
+                // over a request/response transport). `state_poll_loop`
+                // periodically refreshes such TVs via `get_state`, and the
+                // reliable-dispatch verify loop actively queries power state
+                // instead of awaiting a push that never arrives.
+                false
             }
         }
+    }
+
+    /// Subscribe to backend state pushes (if supported) and store the
+    /// result on the TV. A thin wrapper over [`Self::try_subscribe_state`]
+    /// for the call sites that install a fresh connection.
+    async fn refresh_subscription(&self, tv_id: &str, tv: &mut ManagedTv) {
+        tv.has_push_subscription = if let Some(conn) = tv.connection.as_mut() {
+            self.try_subscribe_state(tv_id, conn.as_mut()).await
+        } else {
+            false
+        };
     }
 
     /// Get a clone of the state change sender for external event sources.
     pub fn state_change_sender(&self) -> mpsc::UnboundedSender<StateChangeEvent> {
         self.state_change_tx.clone()
+    }
+
+    /// Run a single state-refresh pass over all connected poll-only TVs.
+    ///
+    /// One iteration of [`state_poll_loop`], factored out so tests can
+    /// drive a deterministic poll without waiting on the
+    /// [`STATE_POLL_INTERVAL`] timer.
+    ///
+    /// Snapshots the TV ids under the read lock, then per id: locks the
+    /// TV and — only if it is **connected** and has **no push
+    /// subscription** — queries `get_state` wrapped in
+    /// [`STATE_POLL_QUERY_TIMEOUT`] so a slow/reconnecting projector
+    /// can't hold the per-TV `Mutex` (and block concurrent `Tv1.*`
+    /// calls) for longer than that. On success the snapshot is ingested
+    /// exactly like a pushed update. On error or timeout the TV is
+    /// skipped (the backend self-marks disconnected; the next pass skips
+    /// it via the connected check).
+    ///
+    /// Push backends (LG, the default mock) are never polled here — the
+    /// `has_push_subscription` gate is what keeps their behavior
+    /// identical to before this loop existed.
+    pub async fn poll_state_once(&self) {
+        let tv_ids: Vec<String> = {
+            let tvs = self.tvs.read().await;
+            tvs.keys().cloned().collect()
+        };
+
+        for tv_id in &tv_ids {
+            let Ok(tv_arc) = self.get_tv(tv_id).await else {
+                continue;
+            };
+
+            // Hold the per-TV lock across the query so the snapshot
+            // can't race a concurrent reconnect swapping the connection
+            // out. The timeout bounds how long that lock is held.
+            let snapshot = {
+                let mut tv = tv_arc.lock().await;
+                // Skip push backends (their subscription already pushes
+                // state) and disconnected TVs (nothing to query).
+                if tv.has_push_subscription || !tv.is_connected() {
+                    continue;
+                }
+                let Some(conn) = tv.connection.as_mut() else {
+                    continue;
+                };
+                match tokio::time::timeout(STATE_POLL_QUERY_TIMEOUT, conn.get_state()).await {
+                    Ok(Ok(state)) => Some(state),
+                    Ok(Err(e)) => {
+                        debug!(tv_id = %tv_id, error = %e, "Poll-only state query failed; skipping");
+                        None
+                    }
+                    Err(_elapsed) => {
+                        debug!(tv_id = %tv_id, "Poll-only state query timed out; skipping");
+                        None
+                    }
+                }
+            };
+
+            if let Some(state) = snapshot {
+                forward_state_snapshot(tv_id, &self.tvs, &self.state_change_tx, state).await;
+            }
+        }
     }
 
     /// Resolve and store the NIC carrying traffic to a TV.
@@ -1007,9 +1202,7 @@ impl TvManager {
                         let mut tv = tv_arc.lock().await;
                         tv.connection = Some(connection);
                         tv.powered_off = false;
-                        if let Some(conn) = tv.connection.as_mut() {
-                            manager.try_subscribe_state(tv_id, conn.as_mut()).await;
-                        }
+                        manager.refresh_subscription(tv_id, &mut tv).await;
                     }
                 }
                 manager.emit_connection_changed(tv_id, true);
@@ -1744,9 +1937,7 @@ impl TvManager {
                 Ok(connection) => {
                     info!(tv_id = %tv_id, "Connected to TV");
                     tv.connection = Some(connection);
-                    if let Some(conn) = tv.connection.as_mut() {
-                        self.try_subscribe_state(tv_id, conn.as_mut()).await;
-                    }
+                    self.refresh_subscription(tv_id, &mut tv).await;
                 }
                 Err(e) => {
                     return Err(TvManagerError::ConnectionFailed {
@@ -1923,9 +2114,7 @@ impl TvManager {
             }
 
             // Subscribe to backend state updates if supported
-            if let Some(conn) = tv.connection.as_mut() {
-                self.try_subscribe_state(tv_id, conn.as_mut()).await;
-            }
+            self.refresh_subscription(tv_id, &mut tv).await;
         }
 
         let connection = tv
@@ -2094,9 +2283,7 @@ impl TvManager {
             let mut tv = tv_arc.lock().await;
             tv.reconnecting = false;
             tv.connection = Some(connection);
-            if let Some(conn) = tv.connection.as_mut() {
-                self.try_subscribe_state(tv_id, conn.as_mut()).await;
-            }
+            self.refresh_subscription(tv_id, &mut tv).await;
         }
 
         self.emit_power_cycle_phase(tv_id, tisvlay_core::PowerCyclePhase::Connected);
@@ -2289,23 +2476,75 @@ impl TvManager {
     /// set); strictly improves worst-case wake time when the TV has
     /// slipped to deeper standby or transitioned through
     /// `ActiveStandby` after a remote-press power-off.
+    ///
+    /// **Projector warm-up.** If the refreshed state is
+    /// [`PowerState::WarmingUp`], the device is already powering on
+    /// (laser/lamp warming, no image yet); escalating to `power_on`
+    /// would be redundant and report success with a blank screen.
+    /// Instead, poll the device to a usable state (`Active` /
+    /// `ScreenSaver`), bounded by [`WARMUP_WAIT_TIMEOUT`], then fall
+    /// through to the verify-retry loop. Projector-class only — LG
+    /// never reports `WarmingUp`.
+    ///
+    /// **Poll-only verify.** Backends without a push subscription get
+    /// an active [`Self::refresh_power_state`] before each passive
+    /// verify-await (nothing else fires the `power_state_tx` watch they
+    /// await). Push backends keep the passive-await-only path.
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        // Pull retry config under a lock; the cached state will be
-        // refreshed via an authoritative query just below so a
-        // stale subscription doesn't decide the pre-flight wrong.
-        let retry_config = {
+        // Pull retry config and the push/poll discriminator under a
+        // lock; the cached state will be refreshed via an authoritative
+        // query just below so a stale subscription doesn't decide the
+        // pre-flight wrong.
+        let (retry_config, has_push) = {
             let tv_arc = self.get_tv(tv_id).await?;
             let tv = tv_arc.lock().await;
             let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
                 TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
             })?;
-            registered.backend.verify_retry_config()
+            (
+                registered.backend.verify_retry_config(),
+                tv.has_push_subscription,
+            )
         };
         let fresh = self
             .refresh_power_state(tv_id, retry_config.verify_delay)
             .await;
 
-        if crate::power_state::needs_wake_preflight(fresh) {
+        // Projector already powering on (laser warming, no image yet).
+        // Escalating to `power_on` here is redundant and returns
+        // success with a blank screen, so instead wait for the device
+        // to reach a usable state, then fall through to the normal
+        // verify-retry loop (which sends `screen_on` / unmutes and
+        // verifies). `WarmingUp` is projector-class only — LG never
+        // reports it, so this never engages for push backends.
+        if fresh == PowerState::WarmingUp {
+            info!(
+                tv_id,
+                "screen_on: projector warming up; waiting for a usable state before verifying",
+            );
+            let deadline = tokio::time::Instant::now() + WARMUP_WAIT_TIMEOUT;
+            loop {
+                // `refresh_power_state` issues a live `get_power_state`
+                // and fires `power_state_tx`, so the cached property /
+                // D-Bus state track the warm-up progression too.
+                let state = self
+                    .refresh_power_state(tv_id, retry_config.verify_delay)
+                    .await;
+                if matches!(state, PowerState::Active | PowerState::ScreenSaver) {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    info!(
+                        tv_id,
+                        cached_power_state = ?state,
+                        "screen_on: projector did not finish warming up within the timeout; \
+                         proceeding to verify anyway",
+                    );
+                    break;
+                }
+                tokio::time::sleep(WARMUP_POLL_INTERVAL).await;
+            }
+        } else if crate::power_state::needs_wake_preflight(fresh) {
             info!(
                 tv_id,
                 cached_power_state = ?fresh,
@@ -2323,6 +2562,16 @@ impl TvManager {
             {
                 debug!(tv_id, attempt, error = %e, "screen_on failed; escalating to power_on");
                 break;
+            }
+            // Poll-only backends never push to `power_state_tx`, so the
+            // passive await below would always time out. Refresh the
+            // cached state with a live query first (which also fires the
+            // watch) so the await sees the fresh value. Push backends
+            // (LG/mock) skip this — their subscription already updates
+            // the cache, so their behavior is unchanged.
+            if !has_push {
+                self.refresh_power_state(tv_id, retry_config.verify_delay)
+                    .await;
             }
             match self
                 .await_power_state(tv_id, retry_config.verify_delay, |s| {
@@ -2379,25 +2628,62 @@ impl TvManager {
     /// return `Ok` with an info log rather than burning more
     /// retries on a `turnOffScreen` LG will keep rejecting.
     ///
+    /// **Projector cool-down.** If the refreshed state is
+    /// [`PowerState::CoolingDown`], the projector is already powering
+    /// off and the panel is going dark — the screen-off intent is
+    /// satisfied, so return `Ok` rather than escalating to `power_on`
+    /// (which would re-light the projector). Projector-class only — LG
+    /// never reports `CoolingDown`. This is distinct from `Standby`,
+    /// which still routes through the pre-flight wake so the
+    /// `on_startup = screen_off` case works.
+    ///
+    /// **Poll-only verify.** Backends without a push subscription get
+    /// an active [`Self::refresh_power_state`] before each passive
+    /// verify-await; otherwise the await never sees the transition and
+    /// the loop spuriously warns "panel did not blank". Push backends
+    /// keep the passive-await-only path.
+    ///
     /// Side effect: `on_session_lock = "screen_off"` with the TV
     /// already off briefly powers it on before blanking. Rare but
     /// known; see `docs/lg/firmware-quirks.md` (when ported) for
     /// the design rationale.
     pub async fn screen_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
-        // Pull retry config under a lock; the cached state will be
-        // refreshed via an authoritative query just below so a
-        // stale subscription doesn't decide the pre-flight wrong.
-        let retry_config = {
+        // Pull retry config and the push/poll discriminator under a
+        // lock; the cached state will be refreshed via an authoritative
+        // query just below so a stale subscription doesn't decide the
+        // pre-flight wrong.
+        let (retry_config, has_push) = {
             let tv_arc = self.get_tv(tv_id).await?;
             let tv = tv_arc.lock().await;
             let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
                 TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
             })?;
-            registered.backend.verify_retry_config()
+            (
+                registered.backend.verify_retry_config(),
+                tv.has_push_subscription,
+            )
         };
         let fresh = self
             .refresh_power_state(tv_id, retry_config.verify_delay)
             .await;
+
+        // Projector deliberately powering off (cooling the light source,
+        // panel already going dark). The screen-off intent is already
+        // satisfied; escalating to `power_on` would cancel the user's
+        // power-off and re-light the projector. `CoolingDown` is
+        // projector-class only — LG never reports it — so this is inert
+        // for push backends. Note this is checked BEFORE the
+        // `needs_wake_preflight` branch (which would otherwise catch
+        // `CoolingDown`). `Standby` is intentionally left to that branch
+        // so the `on_startup = screen_off` wake case still fires.
+        if fresh == PowerState::CoolingDown {
+            info!(
+                tv_id,
+                "screen_off: projector cooling down (powering off); panel already blanking, \
+                 accepting as screen-off",
+            );
+            return Ok(());
+        }
 
         if crate::power_state::needs_wake_preflight(fresh) {
             info!(
@@ -2464,6 +2750,16 @@ impl TvManager {
             {
                 debug!(tv_id, attempt, error = %e, "screen_off failed; giving up");
                 return Err(e);
+            }
+            // Poll-only backends never push to `power_state_tx`, so the
+            // passive await below would always time out and spuriously
+            // warn "panel did not blank". Refresh the cached state with
+            // a live query first (which also fires the watch) so the
+            // await sees the fresh value. Push backends (LG/mock) skip
+            // this — their subscription already updates the cache.
+            if !has_push {
+                self.refresh_power_state(tv_id, retry_config.verify_delay)
+                    .await;
             }
             match self
                 .await_power_state(tv_id, retry_config.verify_delay, |s| {
@@ -2718,16 +3014,7 @@ impl TvManager {
         };
         let mut managed_tv = ManagedTv::new(tv_config.clone(), system_profile);
         managed_tv.connection = Some(conn);
-        if let Some(conn) = managed_tv.connection.as_mut() {
-            // Spawns a forwarder task that reads from `self.tvs`
-            // for `last_known_input` updates. State pushes that
-            // arrive before the insert below land in a sub-ms race
-            // window; the forwarder's existing `if let Some(...)`
-            // guard handles the miss gracefully (skips the
-            // last_known_input update, continues forwarding the
-            // SubscriptionUpdate event).
-            self.try_subscribe_state(tv_id, conn.as_mut()).await;
-        }
+        self.refresh_subscription(tv_id, &mut managed_tv).await;
         {
             let mut tvs = self.tvs.write().await;
             tvs.insert(

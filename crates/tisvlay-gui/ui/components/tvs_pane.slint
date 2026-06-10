@@ -617,7 +617,9 @@ component TvDetail inherits Rectangle {
                                     : root.tv.power-cycle-phase == "connected" ? @tr("Connected")
                                     : root.tv.power-cycle-phase == "failed" ? @tr("Wake failed")
                                     : root.tv.connected
-                                        ? @tr("Power state: {}", root.tv.power-state)
+                                        ? (root.tv.power-state == "warming_up" ? @tr("Warming up…")
+                                            : root.tv.power-state == "cooling_down" ? @tr("Cooling down…")
+                                            : @tr("Power state: {}", root.tv.power-state))
                                         : !power-row.can-power-on
                                             ? @tr("Wake-on-LAN unavailable — no MAC configured. Pair the TV again or edit the config to add one.")
                                             : @tr("Reconnect, or wake from standby with WoL.");

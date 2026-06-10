@@ -39,6 +39,7 @@ use tisvlay_backends::{MockHandle, create_test_registry};
 use tisvlay_core::{SystemConfig, TvConfig};
 use tisvlayd::__internals::{
     BusKind, ManagerService, TvManager, build_dbus_connection, state_change_forwarder,
+    state_poll_loop,
 };
 use tokio::task::JoinHandle;
 use tracing::instrument;
@@ -79,6 +80,34 @@ pub fn mock_config_with_tvs(tv_ids: &[&str]) -> SystemConfig {
 }
 
 fn build_mock_tv(tv_id: &str, managed: bool, primary_input: Option<&str>) -> TvConfig {
+    build_mock_tv_inner(tv_id, managed, primary_input, false)
+}
+
+/// Build a `SystemConfig` with one managed, poll-only mock TV.
+///
+/// The mock's vendor config sets `disable_subscription = true`, so its
+/// `subscribe_state` returns `NotSupported` and the daemon treats it
+/// like a real poll-only backend (e.g. a projector): no push channel,
+/// state refreshed via the periodic `state_poll_loop` / `get_state`
+/// path and the reliable-dispatch active-verify path.
+pub fn mock_tv_config_poll_only(
+    tv_id: &str,
+    managed: bool,
+    primary_input: Option<&str>,
+) -> SystemConfig {
+    let mut config = SystemConfig::default();
+    config
+        .tv
+        .push(build_mock_tv_inner(tv_id, managed, primary_input, true));
+    config
+}
+
+fn build_mock_tv_inner(
+    tv_id: &str,
+    managed: bool,
+    primary_input: Option<&str>,
+    disable_subscription: bool,
+) -> TvConfig {
     let mut tv = TvConfig::with_uuid(test_tv_uuid(tv_id), tv_id, "mock", managed);
     if let Some(input) = primary_input {
         tv = tv.with_primary_input(input);
@@ -88,6 +117,12 @@ fn build_mock_tv(tv_id: &str, managed: bool, primary_input: Option<&str>) -> TvC
         "address".to_string(),
         toml::Value::String(format!("mock://{}", tv_id)),
     );
+    if disable_subscription {
+        vendor_table.insert(
+            "disable_subscription".to_string(),
+            toml::Value::Boolean(true),
+        );
+    }
     tv.vendor_config.insert(
         "mock".to_string(),
         toml::Value::Table(vendor_table.into_iter().collect()),
@@ -107,6 +142,12 @@ pub struct TestDaemon {
     manager: Arc<TvManager>,
     handle: MockHandle,
     forwarder: JoinHandle<()>,
+    /// Background poll-only state refresh loop. Spawned so tests match
+    /// the production daemon's wiring; poll-only mock TVs (via the
+    /// `disable_subscription` knob) get periodic refreshes. Tests that
+    /// need a deterministic single pass call `manager().poll_state_once()`
+    /// directly rather than waiting on the loop's interval.
+    poll_loop: JoinHandle<()>,
     _config_dir: tempfile::TempDir,
 }
 
@@ -165,11 +206,14 @@ impl TestDaemon {
             manager.clone(),
         ));
 
+        let poll_loop = tokio::spawn(state_poll_loop(manager.clone()));
+
         Ok(Self {
             connection,
             manager,
             handle,
             forwarder,
+            poll_loop,
             _config_dir: config_dir,
         })
     }
@@ -183,6 +227,17 @@ impl TestDaemon {
     #[instrument]
     pub async fn with_one_mock_tv(tv_id: &str) -> anyhow::Result<Self> {
         Self::with_config(mock_tv_config(tv_id, true, None)).await
+    }
+
+    /// Build a daemon with a single managed, poll-only mock TV.
+    ///
+    /// The mock's `subscribe_state` returns `NotSupported` (via the
+    /// `disable_subscription` vendor-config knob), so the daemon
+    /// exercises its poll/active-verify paths instead of subscription
+    /// pushes. See [`mock_tv_config_poll_only`].
+    #[instrument]
+    pub async fn with_one_poll_only_mock_tv(tv_id: &str) -> anyhow::Result<Self> {
+        Self::with_config(mock_tv_config_poll_only(tv_id, true, None)).await
     }
 
     /// The zbus connection bound to the private test bus.
@@ -211,5 +266,6 @@ impl TestDaemon {
 impl Drop for TestDaemon {
     fn drop(&mut self) {
         self.forwarder.abort();
+        self.poll_loop.abort();
     }
 }

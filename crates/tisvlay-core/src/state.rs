@@ -141,6 +141,17 @@ pub enum PowerState {
     ScreenSaver,
     /// TV is in screen off mode (OLED blank).
     ScreenOff,
+    /// Projector-class transient: the light source is warming up after
+    /// a power-on and no usable image is projected yet. Counts as
+    /// powering on (`is_on = true`) but not yet usable
+    /// (`is_screen_on = false`). Instant-power backends (LG) never
+    /// report this.
+    WarmingUp,
+    /// Projector-class transient: the light source is cooling down
+    /// after a power-off. Counts as powering off (`is_on = false`,
+    /// `is_screen_on = false`). Instant-power backends never report
+    /// this.
+    CoolingDown,
     /// Unknown state.
     #[default]
     Unknown,
@@ -156,6 +167,8 @@ impl PowerState {
             "active standby" | "activestandby" => Self::ActiveStandby,
             "screen saver" | "screensaver" => Self::ScreenSaver,
             "screen off" | "screenoff" => Self::ScreenOff,
+            "warming up" | "warmingup" | "warming_up" => Self::WarmingUp,
+            "cooling down" | "coolingdown" | "cooling_down" => Self::CoolingDown,
             _ => Self::Unknown,
         }
     }
@@ -164,9 +177,34 @@ impl PowerState {
     pub fn is_on(self) -> bool {
         matches!(
             self,
-            Self::Active | Self::ActiveStandby | Self::ScreenSaver | Self::ScreenOff
+            Self::Active
+                | Self::ActiveStandby
+                | Self::ScreenSaver
+                | Self::ScreenOff
+                | Self::WarmingUp
         )
     }
+}
+
+/// Shared client-side interpretation of the daemon's
+/// `Tv1.Power.PowerState` wire string: whether the TV is "on".
+///
+/// Clients (CLI, tray, GUI) read the collapsed wire vocabulary the
+/// daemon's `derive_power_state` emits — `"active"`, `"screen_off"`,
+/// `"warming_up"`, `"cooling_down"`, `"standby"` — rather than the rich
+/// [`PowerState`] enum. This is the single place that maps that
+/// vocabulary to an on/off bit, so every client agrees: a TV is *not*
+/// on for `"standby"`, `"unknown"`, or `"cooling_down"` (powering down,
+/// no longer usable), and on otherwise — `"active"`, `"screen_off"`
+/// (powered, panel blanked), and `"warming_up"` (powering up) all read
+/// as on.
+///
+/// Kept consistent with [`PowerState::is_on`] for the variants that
+/// share a wire string; the one deliberate divergence is the
+/// `ActiveStandby` substate, which the daemon collapses to `"standby"`
+/// (off) on the wire even though the enum's `is_on` treats it as on.
+pub fn power_state_str_is_on(power_state: &str) -> bool {
+    !matches!(power_state, "standby" | "unknown" | "cooling_down")
 }
 
 impl TvState {
@@ -284,11 +322,13 @@ mod tests {
     /// TV transitions from `ScreenOff` to `ActiveStandby` (user presses
     /// Power on the remote while the screen is blank), the subscription
     /// pushes `PowerState::ActiveStandby`. The forwarder derives the
-    /// cached `Tv1.Power.PowerState` property from `(is_on, is_screen_on)`,
-    /// so `is_screen_on` MUST be `false` for `ActiveStandby` — otherwise
-    /// the cached property reads `"active"` and the reliable dispatch
-    /// tier's verify check thinks `screen_on` succeeded while the panel
-    /// is dark. See `docs/lg/firmware-quirks.md` — "Bug A".
+    /// cached `Tv1.Power.PowerState` property from the raw `power_state`
+    /// enum (via the daemon's `derive_power_state`), and `ActiveStandby`
+    /// collapses to `"standby"` there — but only because `is_screen_on`
+    /// is `false` keeps the substate honest for the reliable-dispatch
+    /// tier's verify check, which would otherwise think `screen_on`
+    /// succeeded while the panel is dark. See `docs/lg/firmware-quirks.md`
+    /// — "Bug A".
     #[test]
     fn active_standby_marks_screen_off() {
         let mut state = TvState::new();
@@ -320,6 +360,8 @@ mod tests {
             (PowerState::ActiveStandby, true, false),
             (PowerState::ScreenSaver, true, true),
             (PowerState::ScreenOff, true, false),
+            (PowerState::WarmingUp, true, false),
+            (PowerState::CoolingDown, false, false),
             (PowerState::Standby, false, false),
             (PowerState::Suspend, false, false),
             (PowerState::Unknown, false, false),
@@ -342,5 +384,22 @@ mod tests {
                 s.is_screen_on
             );
         }
+    }
+
+    /// Pins the shared client-side on/off interpretation against the
+    /// full daemon wire vocabulary. The two transient projector codes
+    /// are the ones that bit the three-way client fork: `warming_up`
+    /// reads as on (powering up), `cooling_down` as off (powering down).
+    #[test]
+    fn power_state_str_is_on_covers_wire_vocabulary() {
+        assert!(power_state_str_is_on("active"));
+        assert!(power_state_str_is_on("screen_off"));
+        assert!(power_state_str_is_on("warming_up"));
+        assert!(!power_state_str_is_on("cooling_down"));
+        assert!(!power_state_str_is_on("standby"));
+        // `unknown` is not part of `derive_power_state`'s emitted set
+        // (it collapses `Unknown` to `standby`), but a client reading a
+        // stale or hand-set value must still classify it as off.
+        assert!(!power_state_str_is_on("unknown"));
     }
 }
