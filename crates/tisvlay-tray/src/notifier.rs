@@ -17,12 +17,20 @@
 //! stalled round-trip followed by suppressed retries, not N concurrent
 //! stalls. It also caps in-flight bus work at one emit regardless of how
 //! fast callers enqueue.
+//!
+//! The worker also keeps the handle of the most recent *tracked* emit
+//! ([`Notifier::notify_tracked`]) so [`Notifier::clear_tracked`] can
+//! dismiss it later — the resident daemon-offline toast is closed when
+//! the daemon returns instead of lingering until the user swats it.
+//! Routing the close through the same queue keeps it ordered behind the
+//! emit that produced the handle, so a fast daemon flap can't clear
+//! ahead of the show.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
-use notify_rust::{Notification, Urgency};
+use notify_rust::{Notification, NotificationHandle, Urgency};
 use tisvlay_core::NotificationCategory;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -45,12 +53,24 @@ const ICON_NAME: &str = "video-display";
 
 /// One queued emit. `bypass_backoff` is set by [`Notifier::notify_test`]
 /// so the user-requested diagnostic fires even on a known-wedged
-/// notification daemon.
+/// notification daemon. `track` is set by [`Notifier::notify_tracked`]
+/// so the worker keeps the resulting handle for a later
+/// [`WorkerMsg::ClearTracked`].
 struct EmitRequest {
     summary: String,
     body: String,
     urgency: Urgency,
     bypass_backoff: bool,
+    track: bool,
+}
+
+/// Work item for the single background [`emit_worker`].
+enum WorkerMsg {
+    /// Show a notification.
+    Emit(EmitRequest),
+    /// Dismiss the notification last emitted with `track` set (the
+    /// resident daemon-offline toast), if it's still on screen.
+    ClearTracked,
 }
 
 #[derive(Clone)]
@@ -59,10 +79,10 @@ pub(crate) struct Notifier {
     /// `TrayConfig` by the D-Bus update handler. Hot-path reads only
     /// touch this atomic.
     enabled_bits: Arc<AtomicU8>,
-    /// Hands emit requests to the single background worker. Cloning a
+    /// Hands work to the single background worker. Cloning a
     /// `Notifier` clones the sender; the worker lives until every
     /// sender drops (process shutdown).
-    tx: mpsc::UnboundedSender<EmitRequest>,
+    tx: mpsc::UnboundedSender<WorkerMsg>,
 }
 
 impl Notifier {
@@ -87,12 +107,56 @@ impl Notifier {
         body: String,
         urgency: Urgency,
     ) {
+        if !self.category_enabled(category) {
+            return;
+        }
+        self.queue(summary, body, urgency, false, false);
+    }
+
+    /// Like [`Self::notify`], but the worker keeps the emitted
+    /// notification's handle so a later [`Self::clear_tracked`] can
+    /// dismiss it. Used for the resident daemon-offline toast:
+    /// `Urgency::Critical` makes most DEs hold it on screen until
+    /// dismissed, so when the daemon returns we close it rather than
+    /// leave the user staring at a stale "daemon stopped" banner. Only
+    /// one notification is tracked at a time — a second `notify_tracked`
+    /// replaces the remembered handle.
+    pub(crate) fn notify_tracked(
+        &self,
+        category: NotificationCategory,
+        summary: String,
+        body: String,
+        urgency: Urgency,
+    ) {
+        if !self.category_enabled(category) {
+            return;
+        }
+        self.queue(summary, body, urgency, false, true);
+    }
+
+    /// Dismiss the notification last emitted via [`Self::notify_tracked`],
+    /// if it's still on screen. No-op when nothing is tracked, when the
+    /// category was disabled so nothing was emitted, or when the user
+    /// already swatted it away (the server ignores `CloseNotification`
+    /// for an unknown id). Routed through the same serialized worker as
+    /// the emits so the close can't race ahead of the show that produced
+    /// the handle.
+    pub(crate) fn clear_tracked(&self) {
+        if self.tx.send(WorkerMsg::ClearTracked).is_err() {
+            debug!("clear_tracked dropped; emit worker gone");
+        }
+    }
+
+    /// Lock-free category gate shared by [`Self::notify`] and
+    /// [`Self::notify_tracked`]. Returns `true` when the category's bit
+    /// is set (the emit should proceed).
+    fn category_enabled(&self, category: NotificationCategory) -> bool {
         let bits = self.enabled_bits.load(Ordering::Acquire);
         if bits & category.bit() == 0 {
             debug!(?category, "notification suppressed (category disabled)");
-            return;
+            return false;
         }
-        self.queue(summary, body, urgency, false);
+        true
     }
 
     /// Fire a single test notification, bypassing both the category
@@ -103,19 +167,27 @@ impl Notifier {
     /// The worker still serializes it behind any in-flight emit, so a
     /// burst of test clicks can't pile up concurrent bus round-trips.
     pub(crate) fn notify_test(&self, summary: String, body: String) {
-        self.queue(summary, body, Urgency::Normal, true);
+        self.queue(summary, body, Urgency::Normal, true, false);
     }
 
-    fn queue(&self, summary: String, body: String, urgency: Urgency, bypass_backoff: bool) {
+    fn queue(
+        &self,
+        summary: String,
+        body: String,
+        urgency: Urgency,
+        bypass_backoff: bool,
+        track: bool,
+    ) {
         let req = EmitRequest {
             summary,
             body,
             urgency,
             bypass_backoff,
+            track,
         };
         // `send` only fails if the receiver dropped, i.e. the worker
         // exited — which happens only at shutdown. Drop silently then.
-        if self.tx.send(req).is_err() {
+        if self.tx.send(WorkerMsg::Emit(req)).is_err() {
             debug!("notification dropped; emit worker gone");
         }
     }
@@ -125,29 +197,49 @@ impl Notifier {
 /// never needs a lock, and stamps it before pulling the next request —
 /// the property the [module docs](self) rely on for the backoff to
 /// actually suppress a burst.
-async fn emit_worker(mut rx: mpsc::UnboundedReceiver<EmitRequest>) {
+async fn emit_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
     let mut last_failure_at: Option<Instant> = None;
-    while let Some(req) = rx.recv().await {
-        if !req.bypass_backoff && last_failure_at.is_some_and(|t| t.elapsed() < FAILURE_BACKOFF) {
-            debug!(summary = %req.summary, "notification suppressed (failure backoff)");
-            continue;
-        }
-        let result = Notification::new()
-            .appname(APP_NAME)
-            .summary(&req.summary)
-            .body(&req.body)
-            .icon(ICON_NAME)
-            .urgency(req.urgency)
-            .show_async()
-            .await;
-        match result {
-            Ok(_handle) => {
-                debug!(summary = %req.summary, "Notification emitted");
-                last_failure_at = None;
+    // Handle to the most recent `track`ed emit (the resident
+    // daemon-offline toast). Carries its own session-bus connection, so
+    // `ClearTracked` dismisses it without opening a new one. `None`
+    // until a tracked emit succeeds, and again after a clear.
+    let mut tracked: Option<NotificationHandle> = None;
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            WorkerMsg::Emit(req) => {
+                if !req.bypass_backoff
+                    && last_failure_at.is_some_and(|t| t.elapsed() < FAILURE_BACKOFF)
+                {
+                    debug!(summary = %req.summary, "notification suppressed (failure backoff)");
+                    continue;
+                }
+                let result = Notification::new()
+                    .appname(APP_NAME)
+                    .summary(&req.summary)
+                    .body(&req.body)
+                    .icon(ICON_NAME)
+                    .urgency(req.urgency)
+                    .show_async()
+                    .await;
+                match result {
+                    Ok(handle) => {
+                        debug!(summary = %req.summary, "Notification emitted");
+                        last_failure_at = None;
+                        if req.track {
+                            tracked = Some(handle);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, summary = %req.summary, "Failed to show notification");
+                        last_failure_at = Some(Instant::now());
+                    }
+                }
             }
-            Err(e) => {
-                warn!(error = %e, summary = %req.summary, "Failed to show notification");
-                last_failure_at = Some(Instant::now());
+            WorkerMsg::ClearTracked => {
+                if let Some(handle) = tracked.take() {
+                    handle.close_async().await;
+                    debug!("tracked notification dismissed");
+                }
             }
         }
     }
