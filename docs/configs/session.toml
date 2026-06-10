@@ -3,6 +3,7 @@ name = "default"
 on_session_lock = "screen_off"
 on_session_unlock = "screen_on"
 on_greeter_wake = "screen_on"
+idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
 on_idle_resume = "screen_on"
 
