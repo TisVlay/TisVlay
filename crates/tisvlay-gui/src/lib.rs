@@ -355,7 +355,6 @@ pub fn run() -> Result<()> {
         "system-user-list",
         "preferences-desktop-user",
     ]));
-    app.set_session_icon(load_themed_icon(&["clock", "appointment-new"]));
     app.set_settings_icon(load_themed_icon(&[
         "configure",
         "settings-configure",

@@ -152,7 +152,6 @@ fn sidebar_nav_items_are_findable_by_accessible_id() {
     for id in [
         "sidebar-tvs",
         "sidebar-profiles",
-        "sidebar-session",
         "sidebar-settings",
         "sidebar-about",
         "sidebar-reload",

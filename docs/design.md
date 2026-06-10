@@ -41,7 +41,7 @@ graph TD
 | **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle); reactively prunes orphan user-config `[[tv]]` assignments via `ObjectManager.InterfacesRemoved`. |
 | **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
 | **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Subscribes to daemon D-Bus signals for real-time state updates (30s fallback poll). Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
-| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. Profiles pane with master/detail layout, two-sub-tab system/user profile editor, inheritance with locally-set indicators + per-field reset glyph + reset-all, rename/duplicate/delete flows. About pane built; Session pane is a placeholder pending the M5 work in [docs/plan.md](plan.md). |
+| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. Profiles pane with master/detail layout, two-sub-tab system/user profile editor, inheritance with locally-set indicators + per-field reset glyph + reset-all, rename/duplicate/delete flows. About and Settings panes built. |
 
 ### Crate Structure
 
@@ -59,7 +59,7 @@ See `CLAUDE.md` for the full file tree. Key crates:
 | `tisvlay-cli` | CLI tool — vendor-agnostic |
 | `tisvlay-session` | User session service — vendor-agnostic |
 | `tisvlay-tray` | System-tray app (ksni) — vendor-agnostic |
-| `tisvlay-gui` | Slint-based settings window — vendor-agnostic; status in [plan.md](plan.md) |
+| `tisvlay-gui` | Slint-based settings window — vendor-agnostic |
 
 ### Dependency Graph
 
@@ -945,7 +945,7 @@ Forward-looking work that hasn't shipped yet. No fixed sequencing — entries la
 
 ### GUI Configuration
 
-`tisvlay-gui` is largely built and packaged — see [docs/plan.md](plan.md) for the full milestone status, and [packaging/README.md](../packaging/README.md) for the shipping channels. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), About pane, and Profiles pane (master/detail catalog editor with inheritance + per-field reset — see [Profile catalog](#profile-catalog)) shipped through M3 + M3.5 + M4 + Plan-6 follow-on work. The Session pane, NixOS module's `enableGui` flag, and the XDG `.desktop` entry remain as M5 / M6 follow-ups.
+`tisvlay-gui` is largely built and packaged — see [packaging/README.md](../packaging/README.md) for the shipping channels. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), Profiles pane (master/detail catalog editor with inheritance + per-field reset — see [Profile catalog](#profile-catalog)), Settings pane (notification preferences), and About pane have all shipped. The NixOS module's `enableGui` flag and the XDG `.desktop` entry remain as packaging follow-ups.
 
 ### Event-Driven Power Management
 
