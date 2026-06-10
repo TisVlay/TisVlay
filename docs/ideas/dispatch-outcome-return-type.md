@@ -10,7 +10,7 @@ All three look identical on the wire. Clients (GUI, tray, telemetry) can't disti
 
 ## Why this is worth fixing
 
-- **Telemetry need.** Once the GUI's Profiles pane (M4) lands, users will benefit from seeing per-TV reliability — "this TV falls back X% of the time" surfaces firmware quirks early.
+- **Telemetry need.** Now that the GUI's Profiles pane has landed, users will benefit from seeing per-TV reliability — "this TV falls back X% of the time" surfaces firmware quirks early.
 - **Smarter retry logic.** A future session-side event handler could decide differently based on outcome (e.g., suppress repeated screen_off events when graceful-fallback is being hit, since the panel is already off and the command is fighting LG firmware).
 - **Future-proofing the return type.** Retrofitting `Result<()>` → `Result<DispatchOutcome>` later is harder than starting with it. The code review specifically flagged this as the "one design choice most likely to age into a regret."
 
@@ -46,7 +46,7 @@ When picked up:
 
 File this when one of:
 
-- The GUI Profiles pane (M4 in [docs/plan.md](../plan.md)) is being implemented and wants to surface quirk-fallback frequency per TV.
+- The GUI Profiles pane is being implemented and wants to surface quirk-fallback frequency per TV.
 - The session event handler is refactored to make smarter dispatch decisions based on prior outcomes.
 - A field bug reports the daemon "lying about success" because a real `Refused` looks the same as a `Reached` on the wire.
 

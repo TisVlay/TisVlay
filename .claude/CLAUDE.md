@@ -17,8 +17,8 @@ See [docs/design.md](docs/design.md) for the full architecture, D-Bus interface 
 
 The TVs and Profiles panes of `tisvlay-gui` are feature-complete (master/detail with live-state controls + edit-mode pencil for TVs; master/detail with create/rename/delete/duplicate + per-field inheritance editor for Profiles; pairing wizard with discovery streaming; About pane). Remaining GUI work, packaging, and architectural follow-ups:
 
-- **Session pane + polish** — user-bus connection indicator, session-service status, default user-profile selector, error toasts, keyboard nav, window-state persistence. M5 in [docs/plan.md](../docs/plan.md).
-- **GUI packaging** — NixOS module `enableGui` flag, nfpm desktop entry, XDG `.desktop` file. M6 in [docs/plan.md](../docs/plan.md).
+- **GUI polish** — error toasts, keyboard nav, window-state persistence.
+- **GUI packaging** — NixOS module `enableGui` flag, nfpm desktop entry, XDG `.desktop` file.
 - **Event-driven power-management redesign** — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md). A narrow first slice shipped: the daemon-side DPMS connector watcher (`tisvlayd/src/dpms.rs`) driving the opt-in `on_dpms_off`/`on_dpms_on` system-profile actions.
 - **Plus other deferred ideas**: polkit gating for multi-user workstations, CLI shorthand for `Tv1.UpdateConfig`, `a{sv}` wire-format migration for vendor configs, atomic config writes, typed `Failed { reason }` payload, "Open logs" affordance. All filed in [docs/ideas.md](../docs/ideas.md).
 
@@ -156,7 +156,6 @@ tisvlay/
 ├── docs/
 │   ├── design.md                 # Full architecture design
 │   ├── discovery.md              # SSDP transport, streaming RPCs, manual-entry MAC enrichment
-│   ├── plan.md                   # GUI roadmap + ship status
 │   ├── ideas.md                  # Deferred work + research notes
 │   ├── concerns.md               # Design concerns / technical debt
 │   ├── bugs.md                   # Known bugs index (per-bug docs in bugs/)

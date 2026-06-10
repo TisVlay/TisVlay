@@ -27,7 +27,6 @@ import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } fr
 import { Toast, ToastView } from "globals/toast.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
-import { SessionPane } from "components/session_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
 import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 
@@ -36,7 +35,6 @@ export { TvViewModel, Theme, WizardDiscoveredTv, VendorOption, Daemon, Tray, Tra
 export enum Pane {
     tvs,
     profiles,
-    session,
     settings,
     about,
 }
@@ -140,7 +138,6 @@ export component AppWindow inherits Window {
     // label-only without errors.
     in property <image> tvs-icon;
     in property <image> profiles-icon;
-    in property <image> session-icon;
     in property <image> settings-icon;
     in property <image> about-icon;
     // App-identity glyph for the About pane header. Resolved
@@ -192,13 +189,6 @@ export component AppWindow inherits Window {
                     selected: root.active-pane == Pane.profiles;
                     accessible-id: "sidebar-profiles";
                     clicked => { root.active-pane = Pane.profiles; }
-                }
-                SidebarItem {
-                    icon: root.session-icon;
-                    label: @tr("Session");
-                    selected: root.active-pane == Pane.session;
-                    accessible-id: "sidebar-session";
-                    clicked => { root.active-pane = Pane.session; }
                 }
                 SidebarItem {
                     icon: root.settings-icon;
@@ -331,10 +321,6 @@ export component AppWindow inherits Window {
                 user-profiles: root.user-profiles;
             }
             if root.active-pane == Pane.profiles: ProfilesPane {
-                width: 100%;
-                height: 100%;
-            }
-            if root.active-pane == Pane.session: SessionPane {
                 width: 100%;
                 height: 100%;
             }
