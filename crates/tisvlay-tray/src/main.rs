@@ -504,6 +504,11 @@ async fn watch_state(
                 trigger_refresh();
             }
             StateEvent::DaemonAppeared => {
+                // Daemon's back — dismiss the resident "daemon stopped"
+                // banner from the matching `DaemonDisappeared` so it
+                // doesn't linger past the outage it warned about. No-op
+                // if the user already swatted it or the category is off.
+                notifier.clear_tracked();
                 // Re-sync per-TV power-cycle subscriptions — the
                 // previous batch (if any) was bound to a connection
                 // that no longer exists.
@@ -525,7 +530,10 @@ async fn watch_state(
                 trigger_refresh();
             }
             StateEvent::DaemonDisappeared => {
-                notifier.notify(
+                // `notify_tracked` so the matching `DaemonAppeared` can
+                // dismiss this resident banner once the daemon returns
+                // (Critical urgency keeps it on screen until then).
+                notifier.notify_tracked(
                     NotificationCategory::DaemonOffline,
                     gettext("TisVlay daemon stopped"),
                     gettext("TV controls are unavailable until the daemon restarts."),
