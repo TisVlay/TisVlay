@@ -653,9 +653,8 @@ async fn screen_off_accepts_active_standby_when_wake_refuses() {
 
 // ---------- Poll-only backends (no subscribe_state push) ----------
 
-/// FIX 1 end-to-end: a poll-only backend (no `subscribe_state` push)
-/// has its live state reach D-Bus clients via the daemon's periodic
-/// state poll.
+/// End-to-end: a poll-only backend (no `subscribe_state` push) has its
+/// live state reach D-Bus clients via the daemon's periodic state poll.
 ///
 /// The mock's `disable_subscription` knob makes `subscribe_state`
 /// return `NotSupported`, so no push fires when state changes. After
@@ -717,7 +716,7 @@ async fn poll_only_state_reaches_dbus_via_poll() {
     assert!(!tv.is_screen_on, "no usable image while warming up");
 }
 
-/// FIX 1b: a poll-only backend's `screen_on` does NOT spuriously
+/// A poll-only backend's `screen_on` does NOT spuriously
 /// escalate to `power_on`. The verify loop awaits `power_state_tx`,
 /// which a poll-only backend never fires, so without the active
 /// `refresh_power_state` the await always times out and the command
@@ -777,7 +776,7 @@ async fn poll_only_screen_on_does_not_spuriously_escalate() {
     assert!(tv.is_screen_on);
 }
 
-/// FIX 2: a poll-only projector reporting `CoolingDown` (deliberately
+/// A poll-only projector reporting `CoolingDown` (deliberately
 /// powering off) is NOT re-powered by `screen_off`. Escalating to
 /// `power_on` would cancel the user's power-off and re-light the lamp.
 ///
@@ -836,7 +835,7 @@ async fn poll_only_screen_off_does_not_repower_cooling_down() {
     );
 }
 
-/// FIX 3: a poll-only projector reporting `WarmingUp` is waited out to
+/// A poll-only projector reporting `WarmingUp` is waited out to
 /// a usable state rather than escalated to `power_on` (which would be
 /// redundant and report success with a blank screen).
 ///
@@ -878,8 +877,8 @@ async fn poll_only_screen_on_waits_out_warming_up() {
     flip.await.expect("flip task");
 
     // The warm-up wait exited once the projector reached Active, then
-    // the verify loop sent exactly one `screen_on` and verified. A
-    // missing-FIX-3 regression escalates to power_on (count == 0).
+    // the verify loop sent exactly one `screen_on` and verified.
+    // Without the warm-up wait, this would escalate to power_on (count == 0).
     assert_eq!(
         daemon.handle().screen_on_call_count(addr),
         1,
