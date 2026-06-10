@@ -20,6 +20,7 @@ mod diagnostic;
 mod edit_pane;
 mod file_manager;
 mod icon_theme;
+mod nav;
 mod power_cycle;
 mod profiles;
 mod schema_form;
@@ -593,6 +594,11 @@ pub fn run() -> Result<()> {
     // in a follow-up commit).
     let editor: ProfileEditor = new_editor();
 
+    // Single choke point for pane navigation (sidebar, click-throughs,
+    // Alt+Left/Right, mouse back/forward). Wired before the callbacks so
+    // the click-throughs can record into its history.
+    let nav = nav::wire(&app, daemon.clone(), session.clone(), editor.clone());
+
     // Wire callbacks before the event loop starts so they're ready when
     // the user interacts with controls.
     register_callbacks(
@@ -606,6 +612,7 @@ pub fn run() -> Result<()> {
         wizard_cancel.clone(),
         wizard_manual_lookup_cancel.clone(),
         editor.clone(),
+        &nav,
     );
 
     // Background watcher: refresh on every signal-driven state change.
@@ -625,6 +632,37 @@ pub fn run() -> Result<()> {
     // `Theme.accent` at its hardcoded default — this just upgrades
     // the experience when it can.
     tokio::spawn(watch_accent_color(app.as_weak()));
+
+    // Mouse back/forward buttons → history navigation, handled at the
+    // winit layer so the side buttons work anywhere in the window
+    // without a full-window TouchArea swallowing clicks. Gated on
+    // `nav-enabled` so it stays inert behind the pairing wizard / TV
+    // edit-mode, matching the Alt+Left/Right FocusScope.
+    {
+        use slint::winit_030::winit::event::{ElementState, MouseButton, WindowEvent};
+        use slint::winit_030::{EventResult, WinitWindowAccessor};
+
+        let app_weak = app.as_weak();
+        let back = nav.back.clone();
+        let forward = nav.forward.clone();
+        app.window().on_winit_window_event(move |_window, event| {
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } = event
+                && let Some(app) = app_weak.upgrade()
+                && app.get_nav_enabled()
+            {
+                match button {
+                    MouseButton::Back => back(&app),
+                    MouseButton::Forward => forward(&app),
+                    _ => {}
+                }
+            }
+            EventResult::Propagate
+        });
+    }
 
     // Slint event loop blocks the main thread; tokio workers keep
     // driving tasks. `rt` drops at end of `main`, aborting any
@@ -647,6 +685,7 @@ fn register_callbacks(
     wizard_cancel: WizardDiscoveryCancel,
     wizard_manual_lookup_cancel: WizardManualLookupCancel,
     editor: ProfileEditor,
+    nav: &crate::nav::NavHandles,
 ) {
     // Slint global handles. Bound once for the registration phase;
     // closures captured by `move` re-acquire from the upgraded
@@ -857,11 +896,12 @@ fn register_callbacks(
         });
     }
 
-    // open-tv: jump to the TVs pane and select the named TV. Empty
-    // UUID or unknown TV is treated as a no-op (covers race against
-    // a removal mid-click).
+    // open-tv: jump to the TVs pane and select the named TV. Unknown
+    // TV (a race against a removal mid-click) is a no-op; otherwise the
+    // history record + selection run through the shared nav path.
     {
         let app_weak = app.as_weak();
+        let go_tv = nav.go_tv.clone();
         profiles_global.on_open_tv(move |tv_uuid| {
             if tv_uuid.is_empty() {
                 return;
@@ -869,75 +909,37 @@ fn register_callbacks(
             let Some(app) = app_weak.upgrade() else {
                 return;
             };
-            let tvs = app.get_tvs();
-            let mut found_index: i32 = -1;
-            for i in 0..tvs.row_count() {
-                if let Some(row) = tvs.row_data(i)
-                    && row.uuid == tv_uuid
-                {
-                    found_index = i as i32;
-                    break;
-                }
-            }
-            if found_index < 0 {
+            let known = {
+                let tvs = app.get_tvs();
+                (0..tvs.row_count()).any(|i| tvs.row_data(i).is_some_and(|row| row.uuid == tv_uuid))
+            };
+            if !known {
                 warn!(tv_uuid = %tv_uuid, "open_tv: TV not in current list");
                 return;
             }
-            app.set_selected_tv_index(found_index);
-            app.set_active_pane(Pane::Tvs);
+            go_tv(&app, tv_uuid);
         });
     }
 
     // open-profile-by-uuid: jump to the Profiles pane and select the
     // named profile. The TVs pane's PROFILES-row pencil routes here.
+    // Validate up front; the row lookup + editor fetch run in the shared
+    // nav path (apply → select_profile_in_ui).
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
         let app_weak = app.as_weak();
+        let go_profile = nav.go_profile.clone();
         profiles_global.on_open_profile_by_uuid(move |kind, uuid_str| {
-            let Some(editor_kind) = EditorKind::from_slint(kind) else {
+            if EditorKind::from_slint(kind).is_none() {
                 return;
-            };
-            let Ok(uuid) = uuid::Uuid::parse_str(&uuid_str) else {
+            }
+            if uuid::Uuid::parse_str(&uuid_str).is_err() {
                 warn!(uuid = %uuid_str, "open_profile_by_uuid: malformed UUID, ignoring");
                 return;
-            };
+            }
             let Some(app) = app_weak.upgrade() else {
                 return;
             };
-            // Find the matching ProfileRow in the catalog so the
-            // detail header materializes on the same frame as the
-            // pane flip — same `selected-row` push the master-list
-            // click handler uses.
-            let profiles_g = app.global::<Profiles>();
-            let model = match editor_kind {
-                EditorKind::System => profiles_g.get_system(),
-                EditorKind::User => profiles_g.get_user(),
-            };
-            let mut matched_row: Option<ProfileRow> = None;
-            for i in 0..model.row_count() {
-                if let Some(row) = model.row_data(i)
-                    && row.uuid == uuid_str
-                {
-                    matched_row = Some(row);
-                    break;
-                }
-            }
-            profiles_g.set_selected_kind(kind);
-            profiles_g.set_selected_uuid(uuid_str);
-            if let Some(row) = matched_row {
-                profiles_g.set_selected_row(row);
-            }
-            app.set_active_pane(Pane::Profiles);
-
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
-            tokio::spawn(async move {
-                profiles::select(ed, d, s, app_weak, editor_kind, uuid).await;
-            });
+            go_profile(&app, kind, uuid_str);
         });
     }
 

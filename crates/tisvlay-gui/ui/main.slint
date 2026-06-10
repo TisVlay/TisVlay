@@ -123,6 +123,17 @@ export component AppWindow inherits Window {
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
 
+    // Browser-style history navigation (Alt+Left/Right, mouse back/forward).
+    // `navigate` is the single choke point for pane changes (sidebar +
+    // Rust click-throughs); `nav-back` / `nav-forward` replay the
+    // Rust-owned history. `nav-enabled` keeps the shortcuts inert while
+    // the pairing wizard or a TV config edit owns the view.
+    callback navigate(Pane);
+    callback nav-back();
+    callback nav-forward();
+    out property <bool> nav-enabled: !PairingWizard.active && EditPane.tv-uuid == "";
+    forward-focus: nav-scope;
+
     // About-pane button callbacks (Rust handles URL launch + clipboard write).
     callback view-source-clicked();
     callback view-release-clicked();
@@ -152,194 +163,217 @@ export component AppWindow inherits Window {
     // (globals/pairing_wizard.slint). Appearance follows
     // `Palette.color-scheme` directly — no app-level setting.
 
-    HorizontalBox {
-        padding: 0;
-        spacing: 0;
-
-        // Sidebar
-        Rectangle {
-            width: Design.width-sidebar;
-            background: Theme.sidebar;
-
-            VerticalBox {
-                padding: Design.gap-stack;
-                spacing: 2px;
-
-                Text {
-                    text: "TisVlay";
-                    font-size: 16px;
-                    font-weight: 700;
-                    color: Theme.sidebar-text;
-                    letter-spacing: 0.2px;
-                    horizontal-alignment: center;
-                    height: Design.size-sidebar-item;
-                    vertical-alignment: center;
-                }
-
-                SidebarItem {
-                    icon: root.tvs-icon;
-                    label: @tr("TVs");
-                    selected: root.active-pane == Pane.tvs;
-                    accessible-id: "sidebar-tvs";
-                    clicked => { root.active-pane = Pane.tvs; }
-                }
-                SidebarItem {
-                    icon: root.profiles-icon;
-                    label: @tr("Profiles");
-                    selected: root.active-pane == Pane.profiles;
-                    accessible-id: "sidebar-profiles";
-                    clicked => { root.active-pane = Pane.profiles; }
-                }
-                SidebarItem {
-                    icon: root.settings-icon;
-                    label: @tr("Settings");
-                    selected: root.active-pane == Pane.settings;
-                    accessible-id: "sidebar-settings";
-                    clicked => { root.active-pane = Pane.settings; }
-                }
-                SidebarItem {
-                    icon: root.about-icon;
-                    label: @tr("About");
-                    selected: root.active-pane == Pane.about;
-                    accessible-id: "sidebar-about";
-                    clicked => { root.active-pane = Pane.about; }
-                }
-
-                // Spacer pushes status to bottom
-                Rectangle { vertical-stretch: 1; }
-
-                // Reload daemon config — power-user action. The daemon
-                // re-reads `~/.config/tisvlay/config.toml` from disk;
-                // useful only when someone edited the file outside the
-                // GUI. Sits above the daemon/session status because
-                // it's a daemon-scoped action.
-                Rectangle {
-                    height: 28px;
-                    background: reload-touch.has-hover && root.daemon-available
-                        ? Theme.sidebar-hover
-                        : transparent;
-                    border-radius: 5px;
-                    animate background { duration: 150ms; }
-
-                    accessible-role: button;
-                    accessible-label: @tr("Reload daemon config");
-                    accessible-enabled: root.daemon-available;
-                    accessible-id: "sidebar-reload";
-                    accessible-action-default => {
-                        if (root.daemon-available) {
-                            Daemon.reload-config();
-                        }
-                    }
-
-                    HorizontalLayout {
-                        width: 100%;
-                        height: 100%;
-                        spacing: Design.gap-tight;
-                        alignment: center;
-                        VerticalLayout {
-                            alignment: center;
-                            Image {
-                                source: Icons.reload;
-                                width: 16px;
-                                height: 16px;
-                                colorize: root.daemon-available
-                                    ? Theme.sidebar-text
-                                    : Theme.sidebar-text-dim;
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            Text {
-                                text: @tr("Reload");
-                                color: root.daemon-available
-                                    ? Theme.sidebar-text
-                                    : Theme.sidebar-text-dim;
-                                font-size: Design.font-caption;
-                            }
-                        }
-                    }
-
-                    reload-touch := TouchArea {
-                        enabled: root.daemon-available;
-                        clicked => { Daemon.reload-config(); }
-                    }
-                }
-
-                // Footer status block — three peer indicators (Daemon /
-                // Session / Tray) grouped together and centred within
-                // the sidebar. Each row is a single left-aligned Text
-                // (dot glyph + label), so the dots naturally share an
-                // x-coord (the row's left edge); wrapping the whole
-                // VerticalLayout in a centred HorizontalLayout shifts
-                // the block into the middle of the sidebar without
-                // disturbing per-row layout.
-                HorizontalLayout {
-                    alignment: center;
-                    padding-bottom: Design.gap-stack;
-                    VerticalLayout {
-                        spacing: 2px;
-                        horizontal-stretch: 0;
-                        Text {
-                            text: (root.daemon-available ? "● " : "○ ") + @tr("Daemon");
-                            color: root.daemon-available ? Theme.success : Theme.danger;
-                            font-size: Design.font-caption;
-                            horizontal-alignment: left;
-                        }
-                        Text {
-                            text: (root.session-available ? "● " : "○ ") + @tr("Session");
-                            color: root.session-available ? Theme.success : Theme.danger;
-                            font-size: Design.font-caption;
-                            horizontal-alignment: left;
-                        }
-                        Text {
-                            text: (root.tray-available ? "● " : "○ ") + @tr("Tray");
-                            color: root.tray-available ? Theme.success : Theme.danger;
-                            font-size: Design.font-caption;
-                            horizontal-alignment: left;
-                        }
-                    }
-                }
+    nav-scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        // Global Alt+Left/Right history nav. As an ancestor of every
+        // pane it catches the arrows bubbling up from whatever child
+        // holds focus; a text input that consumes Alt+arrow (word-jump)
+        // wins first, so we don't steal keys mid-edit. `nav-enabled`
+        // covers the modal/edit flows that don't hold key focus.
+        key-pressed(event) => {
+            if (root.nav-enabled && event.modifiers.alt && event.text == Key.LeftArrow) {
+                root.nav-back();
+                return accept;
             }
+            if (root.nav-enabled && event.modifiers.alt && event.text == Key.RightArrow) {
+                root.nav-forward();
+                return accept;
+            }
+            return reject;
         }
 
-        // Content area
-        Rectangle {
-            background: Theme.surface-alt;
-            horizontal-stretch: 1;
+        HorizontalBox {
+            width: 100%;
+            height: 100%;
+            padding: 0;
+            spacing: 0;
 
-            // Each pane is positioned absolutely within this Rectangle.
-            // Slint Rectangles don't lay out children, so panes must
-            // bind width / height to the parent explicitly.
-            if root.active-pane == Pane.tvs: TvsPane {
-                width: 100%;
-                height: 100%;
-                tvs: root.tvs;
-                tvs-connected-count: root.tvs-connected-count;
-                selected-index <=> root.selected-tv-index;
-                daemon-available: root.daemon-available;
-                system-profiles: root.system-profiles;
-                user-profiles: root.user-profiles;
+            // Sidebar
+            Rectangle {
+                width: Design.width-sidebar;
+                background: Theme.sidebar;
+
+                VerticalBox {
+                    padding: Design.gap-stack;
+                    spacing: 2px;
+
+                    Text {
+                        text: "TisVlay";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: Theme.sidebar-text;
+                        letter-spacing: 0.2px;
+                        horizontal-alignment: center;
+                        height: Design.size-sidebar-item;
+                        vertical-alignment: center;
+                    }
+
+                    SidebarItem {
+                        icon: root.tvs-icon;
+                        label: @tr("TVs");
+                        selected: root.active-pane == Pane.tvs;
+                        accessible-id: "sidebar-tvs";
+                        clicked => { root.navigate(Pane.tvs); }
+                    }
+                    SidebarItem {
+                        icon: root.profiles-icon;
+                        label: @tr("Profiles");
+                        selected: root.active-pane == Pane.profiles;
+                        accessible-id: "sidebar-profiles";
+                        clicked => { root.navigate(Pane.profiles); }
+                    }
+                    SidebarItem {
+                        icon: root.settings-icon;
+                        label: @tr("Settings");
+                        selected: root.active-pane == Pane.settings;
+                        accessible-id: "sidebar-settings";
+                        clicked => { root.navigate(Pane.settings); }
+                    }
+                    SidebarItem {
+                        icon: root.about-icon;
+                        label: @tr("About");
+                        selected: root.active-pane == Pane.about;
+                        accessible-id: "sidebar-about";
+                        clicked => { root.navigate(Pane.about); }
+                    }
+
+                    // Spacer pushes status to bottom
+                    Rectangle { vertical-stretch: 1; }
+
+                    // Reload daemon config — power-user action. The daemon
+                    // re-reads `~/.config/tisvlay/config.toml` from disk;
+                    // useful only when someone edited the file outside the
+                    // GUI. Sits above the daemon/session status because
+                    // it's a daemon-scoped action.
+                    Rectangle {
+                        height: 28px;
+                        background: reload-touch.has-hover && root.daemon-available
+                            ? Theme.sidebar-hover
+                            : transparent;
+                        border-radius: 5px;
+                        animate background { duration: 150ms; }
+
+                        accessible-role: button;
+                        accessible-label: @tr("Reload daemon config");
+                        accessible-enabled: root.daemon-available;
+                        accessible-id: "sidebar-reload";
+                        accessible-action-default => {
+                            if (root.daemon-available) {
+                                Daemon.reload-config();
+                            }
+                        }
+
+                        HorizontalLayout {
+                            width: 100%;
+                            height: 100%;
+                            spacing: Design.gap-tight;
+                            alignment: center;
+                            VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: Icons.reload;
+                                    width: 16px;
+                                    height: 16px;
+                                    colorize: root.daemon-available
+                                        ? Theme.sidebar-text
+                                        : Theme.sidebar-text-dim;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: @tr("Reload");
+                                    color: root.daemon-available
+                                        ? Theme.sidebar-text
+                                        : Theme.sidebar-text-dim;
+                                    font-size: Design.font-caption;
+                                }
+                            }
+                        }
+
+                        reload-touch := TouchArea {
+                            enabled: root.daemon-available;
+                            clicked => { Daemon.reload-config(); }
+                        }
+                    }
+
+                    // Footer status block — three peer indicators (Daemon /
+                    // Session / Tray) grouped together and centred within
+                    // the sidebar. Each row is a single left-aligned Text
+                    // (dot glyph + label), so the dots naturally share an
+                    // x-coord (the row's left edge); wrapping the whole
+                    // VerticalLayout in a centred HorizontalLayout shifts
+                    // the block into the middle of the sidebar without
+                    // disturbing per-row layout.
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-bottom: Design.gap-stack;
+                        VerticalLayout {
+                            spacing: 2px;
+                            horizontal-stretch: 0;
+                            Text {
+                                text: (root.daemon-available ? "● " : "○ ") + @tr("Daemon");
+                                color: root.daemon-available ? Theme.success : Theme.danger;
+                                font-size: Design.font-caption;
+                                horizontal-alignment: left;
+                            }
+                            Text {
+                                text: (root.session-available ? "● " : "○ ") + @tr("Session");
+                                color: root.session-available ? Theme.success : Theme.danger;
+                                font-size: Design.font-caption;
+                                horizontal-alignment: left;
+                            }
+                            Text {
+                                text: (root.tray-available ? "● " : "○ ") + @tr("Tray");
+                                color: root.tray-available ? Theme.success : Theme.danger;
+                                font-size: Design.font-caption;
+                                horizontal-alignment: left;
+                            }
+                        }
+                    }
+                }
             }
-            if root.active-pane == Pane.profiles: ProfilesPane {
-                width: 100%;
-                height: 100%;
-            }
-            if root.active-pane == Pane.settings: SettingsPane {
-                width: 100%;
-                height: 100%;
-            }
-            if root.active-pane == Pane.about: AboutPane {
-                width: 100%;
-                height: 100%;
-                gui-version: root.gui-version;
-                components: root.about-components;
-                logo: root.app-logo;
-                view-source-clicked => { root.view-source-clicked(); }
-                view-release-clicked => { root.view-release-clicked(); }
-                view-notices-clicked => { root.view-notices-clicked(); }
-                report-issue-clicked => { root.report-issue-clicked(); }
-                copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
-                open-config-folder(p) => { root.open-config-folder(p); }
+
+            // Content area
+            Rectangle {
+                background: Theme.surface-alt;
+                horizontal-stretch: 1;
+
+                // Each pane is positioned absolutely within this Rectangle.
+                // Slint Rectangles don't lay out children, so panes must
+                // bind width / height to the parent explicitly.
+                if root.active-pane == Pane.tvs: TvsPane {
+                    width: 100%;
+                    height: 100%;
+                    tvs: root.tvs;
+                    tvs-connected-count: root.tvs-connected-count;
+                    selected-index <=> root.selected-tv-index;
+                    daemon-available: root.daemon-available;
+                    system-profiles: root.system-profiles;
+                    user-profiles: root.user-profiles;
+                }
+                if root.active-pane == Pane.profiles: ProfilesPane {
+                    width: 100%;
+                    height: 100%;
+                }
+                if root.active-pane == Pane.settings: SettingsPane {
+                    width: 100%;
+                    height: 100%;
+                }
+                if root.active-pane == Pane.about: AboutPane {
+                    width: 100%;
+                    height: 100%;
+                    gui-version: root.gui-version;
+                    components: root.about-components;
+                    logo: root.app-logo;
+                    view-source-clicked => { root.view-source-clicked(); }
+                    view-release-clicked => { root.view-release-clicked(); }
+                    view-notices-clicked => { root.view-notices-clicked(); }
+                    report-issue-clicked => { root.report-issue-clicked(); }
+                    copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
+                    open-config-folder(p) => { root.open-config-folder(p); }
+                }
             }
         }
     }
