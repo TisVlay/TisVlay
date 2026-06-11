@@ -77,6 +77,15 @@ only as `[dev-dependencies]`).
   `dev-dependencies` are exempt) — so publishing `tisvlay-backends` requires
   `tisvlay-mock` published too. **Resolution: publish `tisvlay-mock`** (legit
   in-memory backend; also reserves the name).
+- **Dev-dep blocker (found during implementation).** Beyond the mock optional-dep,
+  every production crate that dev-deps on `tisvlay-test` / `tisvlay-harness` is
+  *also* blocked: those `workspace.dependencies` entries carry a `version`, so
+  `cargo publish` keeps the dev-dep and demands the (unpublished) crate from
+  crates.io — `tisvlay-core` fails the dry-run on exactly this. **Fix: make
+  `tisvlay-test` / `tisvlay-harness` path-only** (drop `version`) in
+  `workspace.dependencies`; a versionless dev-dep is dropped from published
+  manifests. (`tisvlay-mock` keeps its version — it's a real published optional
+  dep of `tisvlay-backends`.)
 - **Flip publish flags** — change `publish.workspace = true` → `publish = true`
   on each of: `tisvlay-core`, `tisvlay-lg`, `tisvlay-backends`, `tisvlay-cli`
   (→`tisvlay`), `tisvlayd`, `tisvlay-session`, `tisvlay-tray`, `tisvlay-gui`,
