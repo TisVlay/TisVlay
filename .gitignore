@@ -22,6 +22,8 @@ target
 
 # Direnv
 .direnv/
+# Host/session-specific direnv overrides (see .envrc.local.example)
+.envrc.local
 
 # Nix build output symlink
 result

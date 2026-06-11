@@ -1,0 +1,11 @@
+# Copy to .envrc.local (untracked) for host/session-specific direnv overrides.
+#
+# Over remote-ssh the code-server is bootstrapped by sshd, so it inherits no
+# graphical-session vars and GUI tasks (`just gui-start`) fail with
+# "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set". Point the
+# GUI at the compositor running on this machine's physical display.
+#
+# Find the socket: `ls $XDG_RUNTIME_DIR/wayland-*`. XDG_RUNTIME_DIR is already
+# set; only the display vars are missing.
+export WAYLAND_DISPLAY=wayland-0
+export DISPLAY=:0   # XWayland fallback
