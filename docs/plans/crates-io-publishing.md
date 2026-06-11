@@ -196,6 +196,14 @@ Independent of the crates.io work (it only needs the feature flag), but pairs
 thematically — `tisvlay-mock` graduates from test fixture to supported debug
 backend.
 
+- **Implementation note.** Most of Part E was already in place: the `mock`
+  passthrough feature exists on `tisvlayd`, the display name is already
+  `VENDOR_NAME = "Mock (testing)"`, and the ~16 panic sites are all
+  `#[cfg(test)]` in `handle.rs` (the production path — `new_production_parts`
+  → `MockConnector` / `MockDiscovery`, config via serde — has none). So the
+  actual change was enabling the feature in the two build recipes plus the
+  README / crate-description label.
+
 ---
 
 ## Suggested phasing (separate PRs)
