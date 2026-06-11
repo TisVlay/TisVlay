@@ -151,6 +151,38 @@ only the crate/package id changes.
   from `release.yml` — the publish set + order are already known.
 - Requires Parts B + C done first (every crate must be publishable in order).
 
+## Part E — Ship the mock backend as a visible debug aid
+
+A field-debugging aid: with the mock backend in the shipped daemon, a user can
+add a `mock` TV and confirm the daemon / D-Bus / CLI / GUI / tray stack works
+end-to-end independent of a real TV — isolating "tisvlay bug" from "TV/network
+issue." The production path **already exists**
+(`tisvlay-backends::register_mock_production`, `#[cfg(feature = "mock")]`, called
+from `create_registry`); this just turns the feature on for shipped builds.
+
+- **Enable the feature on the shipped `tisvlayd`** — only the daemon builds the
+  registry, so add a passthrough feature `mock = ["tisvlay-backends/mock"]` to
+  `crates/tisvlayd/Cargo.toml` and build the packages with it on:
+  - `justfile` `package-build`: `cargo zigbuild --release … --features tisvlayd/mock`.
+  - `packaging/nix/package.nix`: `buildFeatures = [ "tisvlayd/mock" ]`.
+  The CLI / GUI / tray need no change — they pick up the new vendor over D-Bus via
+  `Manager1.GetSupportedVendors`.
+- **Visible (chosen).** `mock` appears in the pairing wizard's manual-entry vendor
+  dropdown and the CLI's vendor list — discoverable for self-service triage. Give
+  the backend a clear display name (e.g. "Mock (test backend)") in
+  `crates/tisvlay-mock/src/backend.rs` so it isn't mistaken for real hardware. Its
+  discovery returns empty, so it never surfaces fake TVs in SSDP results.
+- **Robustness pass (it's shipped code now).** Audit the ~16 `.expect()` / `panic!`
+  sites in `crates/tisvlay-mock/src/` — especially `MockVendorConfig` TOML parsing
+  reachable from user/config input — and convert to error returns so a malformed
+  mock config can't panic the system-service daemon.
+- **Label it as a debug backend** in `tisvlay-mock`'s crate `description` + a line
+  in the root README's vendor/debug section.
+
+Independent of the crates.io work (it only needs the feature flag), but pairs
+thematically — `tisvlay-mock` graduates from test fixture to supported debug
+backend.
+
 ---
 
 ## Suggested phasing (separate PRs)
@@ -159,6 +191,8 @@ only the crate/package id changes.
 2. **PR 2 — Parts B + C**: publish flags + mock + the `tisvlay-cli`→`tisvlay`
    rename. The "publish-ready" PR.
 3. **PR 3 — Part D**: release-plz workflow + config.
+4. **PR 4 — Part E**: ship the mock backend visibly (feature on in release builds
+   + label + robustness pass). Independent — can land any time after PR 1.
 
 ## Verification
 
@@ -173,6 +207,10 @@ only the crate/package id changes.
 - **Part D**: run `release-plz` in dry-run / let the `release-pr` job open a PR on
   a branch; confirm it targets the 10 publishable crates in order and skips
   test/harness. First real publish is `0.1.0`.
+- **Part E**: `cargo run -p tisvlayd --features mock` (or an installed package
+  built with the feature) lists `mock` in `Manager1.GetSupportedVendors`; add a
+  mock TV and exercise power / screen / volume via CLI + GUI; feed a malformed
+  mock config and confirm the daemon logs an error rather than panicking.
 - **Post-publish smoke**: in a scratch dir, `cargo new x && cd x && cargo add
   tisvlay-core` (and `tisvlay`) resolves from crates.io.
 
