@@ -87,7 +87,7 @@ tisvlay/
 │   │   └── src/
 │   │       └── lib.rs            # BackendRegistry, vendor registration, MockHandle re-export
 │   │
-│   ├── tisvlay-cli/               # CLI tool
+│   ├── tisvlay/                   # CLI tool
 │   │   └── src/
 │   │       └── main.rs           # clap-based CLI
 │   │

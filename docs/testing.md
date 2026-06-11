@@ -108,7 +108,7 @@ Snapshots live in `crates/*/tests/snapshots/`.
 
 ### CLI snapshot tests (insta-cmd)
 
-`crates/tisvlay-cli/tests/pair_snapshot.rs` snapshots the `tisvlay pair` and `tisvlay list` CLI output. A `TestDaemon` runs in-process on the private bus; the CLI binary is spawned as a subprocess with `DBUS_SESSION_BUS_ADDRESS` pointing at the test bus.
+`crates/tisvlay/tests/pair_snapshot.rs` snapshots the `tisvlay pair` and `tisvlay list` CLI output. A `TestDaemon` runs in-process on the private bus; the CLI binary is spawned as a subprocess with `DBUS_SESSION_BUS_ADDRESS` pointing at the test bus.
 
 ```rust
 assert_cmd_snapshot!(Command::new(cli_bin())
@@ -290,7 +290,7 @@ flowchart TD
 
 ### Why these boundaries, not fewer
 
-**`tisvlay-mock` is separate from `tisvlay-harness`** because mock is library-level and reusable from any test that needs a fake backend — `tisvlay-core` unit tests, `tisvlay-cli` snapshot tests, or a hypothetical downstream consumer's integration tests. Folding it into the harness would tie a useful library-level tool to "spin up the whole daemon" ceremony.
+**`tisvlay-mock` is separate from `tisvlay-harness`** because mock is library-level and reusable from any test that needs a fake backend — `tisvlay-core` unit tests, `tisvlay` snapshot tests, or a hypothetical downstream consumer's integration tests. Folding it into the harness would tie a useful library-level tool to "spin up the whole daemon" ceremony.
 
 **`tisvlay-test` is separate from `tisvlay-mock`** because they answer different questions. A backend-trait-contract test needs `tisvlay-mock` but no `dbus-daemon`; a service-lifecycle test needs `PrivateBus` + `FakeLogind` but no TV protocol stack. Split crates let each test pull in only what it needs.
 

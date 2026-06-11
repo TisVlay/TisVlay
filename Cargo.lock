@@ -5736,19 +5736,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
-name = "tisvlay-backends"
-version = "0.1.0"
-dependencies = [
- "tisvlay-core",
- "tisvlay-lg",
- "tisvlay-mock",
- "tokio",
- "toml 1.1.2+spec-1.1.0",
- "tracing",
-]
-
-[[package]]
-name = "tisvlay-cli"
+name = "tisvlay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -5763,6 +5751,18 @@ dependencies = [
  "tisvlay-test",
  "tokio",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "tisvlay-backends"
+version = "0.1.0"
+dependencies = [
+ "tisvlay-core",
+ "tisvlay-lg",
+ "tisvlay-mock",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]

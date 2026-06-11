@@ -131,7 +131,7 @@ def main():
         revert()
 
     # 3. Best-case incremental: invalidate a leaf bin.
-    revert = force_rebuild("crates/tisvlay-cli/src/main.rs")
+    revert = force_rebuild("crates/tisvlay/src/main.rs")
     try:
         measurements.append(run_step(
             build_cmd_timings, "03-incr-after-leaf-edit", save_timings=True,

@@ -56,7 +56,7 @@ See `CLAUDE.md` for the full file tree. Key crates:
 | `tisvlay-backends` | Composition crate — only place that imports vendor crates |
 | `tisvlay-harness` | Binary-lifecycle test fixtures (`TestDaemon`, `TestSession`, `TestTray`) |
 | `tisvlayd` | System daemon — vendor-agnostic TV management |
-| `tisvlay-cli` | CLI tool — vendor-agnostic |
+| `tisvlay` | CLI tool — vendor-agnostic |
 | `tisvlay-session` | User session service — vendor-agnostic |
 | `tisvlay-tray` | System-tray app (ksni) — vendor-agnostic |
 | `tisvlay-gui` | Slint-based settings window — vendor-agnostic |
@@ -71,7 +71,7 @@ graph BT
     samsung["tisvlay-samsung, ..."]
     backends["tisvlay-backends<br/><i>composition — ONLY crate that imports vendors</i>"]
     daemon["tisvlayd<br/><i>system daemon</i>"]
-    cli["tisvlay-cli"]
+    cli["tisvlay"]
     session["tisvlay-session"]
     tray["tisvlay-tray"]
     gui["tisvlay-gui"]

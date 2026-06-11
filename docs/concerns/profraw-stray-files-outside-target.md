@@ -6,7 +6,7 @@
 
 ### Symptom
 
-After running tests (`just test`, `prek run -a`, IDE test actions, etc.), `git status` shows hundreds of untracked files matching `default_<hash>_<pid>.profraw` scattered across crate directories — most commonly `crates/tisvlay-cli/`, `crates/tisvlay-core/`, `crates/tisvlay-lg/`, `crates/tisvlay-tray/`. The files survive `cargo clean` and `rm -rf target/`. Naively gitignoring them would mask the leak rather than fix it; users who delete `target/` reasonably expect all build-time artifacts to be gone.
+After running tests (`just test`, `prek run -a`, IDE test actions, etc.), `git status` shows hundreds of untracked files matching `default_<hash>_<pid>.profraw` scattered across crate directories — most commonly `crates/tisvlay/`, `crates/tisvlay-core/`, `crates/tisvlay-lg/`, `crates/tisvlay-tray/`. The files survive `cargo clean` and `rm -rf target/`. Naively gitignoring them would mask the leak rather than fix it; users who delete `target/` reasonably expect all build-time artifacts to be gone.
 
 ### Layered root cause
 
