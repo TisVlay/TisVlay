@@ -137,6 +137,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # build would also compile the dev-only crates (tisvlay-mock /
   # tisvlay-test / tisvlay-harness).
 
+  # Ship the daemon's "Mock (testing)" backend for field debugging, in
+  # step with the justfile's package-build. Scoped to tisvlayd — only the
+  # daemon builds the backend registry.
+  buildFeatures = [ "tisvlayd/mock" ];
+
   useNextest = true;
 
   # Tests opt back into the full workspace: `--workspace` because

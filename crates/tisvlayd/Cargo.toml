@@ -19,10 +19,13 @@ path = "src/main.rs"
 [features]
 default = ["discovery"]
 discovery = ["tisvlay-backends/discovery"]
-# Enable the in-memory mock backend in the built binary. Off by default
-# in release/distro builds. Integration tests pull their harness from
-# the separate `tisvlay-harness` crate (see [dev-dependencies]) rather
-# than gating test code inside this crate.
+# Compile the in-memory mock backend into the daemon. Off by default (so
+# a dev `cargo build` excludes it); the distro + Nix packaging recipes
+# turn it on (`--features tisvlayd/mock` / `buildFeatures`) so the shipped
+# daemon registers "Mock (testing)" as a field-debugging vendor — add a
+# mock TV to verify the daemon / D-Bus / desktop stack without real
+# hardware. Integration tests pull their harness from the separate
+# `tisvlay-harness` crate (see [dev-dependencies]).
 mock = ["tisvlay-backends/mock"]
 
 [dependencies]
