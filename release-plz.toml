@@ -1,0 +1,18 @@
+# release-plz automates crates.io publishing. On push to `main` it opens a
+# "release" PR that bumps the shared workspace version (`version.workspace`)
+# and updates the per-crate CHANGELOGs; merging that PR makes the next run
+# publish every publishable crate (`publish = true`) to crates.io in
+# dependency order. The dev-only crates (`publish = false`: tisvlay-test /
+# tisvlay-harness) are skipped automatically.
+#
+# Distro packages (.deb/.rpm/.pkg) and the GitHub release stay owned by
+# `.github/workflows/release.yml`, which fires on a manually-pushed `v*`
+# tag — so disable release-plz's own GitHub release here to avoid
+# double-creating it. release-plz still makes its per-package
+# `{{ package }}-v{{ version }}` git tags (its changelog anchors); those
+# don't match release.yml's `v*` trigger, so the two release paths stay
+# decoupled rather than colliding. (A single `v{{ version }}` tag is not
+# used: release-plz tags every published package, which would collide on a
+# shared-version workspace.)
+[workspace]
+git_release_enable = false
