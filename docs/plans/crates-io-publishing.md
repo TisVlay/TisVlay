@@ -148,13 +148,17 @@ only the crate/package id changes.
   (opens version-bump + changelog PRs) and `release` (tags + publishes to
   crates.io on merge to `main`). Secrets: `CARGO_REGISTRY_TOKEN` (crates.io) and
   a GitHub token with PR/contents write.
-- **Integrate with the existing `release.yml`** (distro packages on `v*` tags):
-  release-plz owns the version bump + crates.io publish + git tag; the existing
-  workflow keys off the `v*` tag and attaches the `.deb`/`.rpm`/`.pkg` assets.
-  **Set `git_release_enable = false`** in `release-plz.toml` (review finding) so
-  release-plz does NOT create the GitHub release — let `release.yml` own release
-  creation + asset upload, avoiding a double-create. Keep
-  `git_tag_name = "v{{ version }}"` to match the `v*` trigger.
+- **Integrate with `release.yml` — decoupled, not tag-coupled** (implementation
+  finding). release-plz creates one tag *per package* (`{{ package }}-v{{ version }}`);
+  a single shared `v{{ version }}` tag "may create conflicts in multi-package
+  workspaces" (it tags every published crate at the same name). So we don't couple
+  via the tag. Instead: release-plz owns crates.io (version bump + publish +
+  per-package tags + CHANGELOGs) with **`git_release_enable = false`** so it makes
+  no GitHub release; the existing `release.yml` keeps owning the distro packages +
+  GitHub release, still triggered by a **manually-pushed `v*` tag** (its
+  per-package tags don't match `v*`, so the two paths don't collide). Net flow:
+  merge the release PR → crates.io auto-publish; push `v0.x.y` → distro packages +
+  GitHub release (unchanged from today).
 - **Bail-out.** If release-plz's automation proves heavy, the fallback is a small
   scripted `cargo publish` in topological order (with `CRATES_IO_TOKEN`) invoked
   from `release.yml` — the publish set + order are already known.
