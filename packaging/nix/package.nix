@@ -130,32 +130,20 @@ rustPlatform.buildRustPackage (finalAttrs: {
   '';
   dontPatchELF = true;
 
-  # Scope the build to the shipping binary crates. cargo pulls in
-  # the full dependency closure (tisvlay-core, tisvlay-ssdp,
-  # tisvlay-lg, tisvlay-backends, …) automatically, so this is the
-  # minimal set — and matches the justfile's `package-build` recipe
-  # so distro and Nix derivations build the same artifacts. Without
-  # this scoping, buildRustPackage's default `cargo build` would also
-  # compile dev-only crates (tisvlay-mock / tisvlay-test /
-  # tisvlay-harness) that aren't part of the shipped binaries.
-  cargoBuildFlags = [
-    "-p"
-    "tisvlayd"
-    "-p"
-    "tisvlay-cli"
-    "-p"
-    "tisvlay-session"
-    "-p"
-    "tisvlay-tray"
-    "-p"
-    "tisvlay-gui"
-  ];
+  # Build scoping comes from `workspace.default-members` in the root
+  # Cargo.toml (the shipping binary set) — buildRustPackage's bare
+  # `cargo build` picks it up, so the crate list lives in one place
+  # instead of being repeated here as `-p` flags. Without it the default
+  # build would also compile the dev-only crates (tisvlay-mock /
+  # tisvlay-test / tisvlay-harness).
 
   useNextest = true;
 
-  # Tests need the `mock` feature (and other test-only features) across
-  # the workspace; the build itself ships default features only.
-  cargoTestFlags = [ "--all-features" ];
+  # Tests opt back into the full workspace: `--workspace` because
+  # `default-members` would otherwise narrow the default `cargo test` to
+  # the shipping binaries, and the dev-only crates' tests (which need the
+  # `mock` and other test-only features) are still wanted here.
+  cargoTestFlags = [ "--workspace" "--all-features" ];
 
   meta = {
     description = "TV Display control for Linux";

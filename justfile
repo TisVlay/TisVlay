@@ -340,15 +340,12 @@ glibc_baseline := "2.34"
 # Cross-distro release build — see packaging/README.md for the full
 # pipeline rationale. Output lands in target/x86_64-unknown-linux-gnu
 # /release/; zigbuild strips the `.<glibc>` suffix when invoking cargo.
+# Crate scoping comes from `workspace.default-members` (the shipping
+# binaries) in the root Cargo.toml — no `-p` flags repeated here.
 [private]
 package-build:
     cargo zigbuild --release \
-        --target x86_64-unknown-linux-gnu.{{ glibc_baseline }} \
-        -p tisvlayd \
-        -p tisvlay-cli \
-        -p tisvlay-session \
-        -p tisvlay-tray \
-        -p tisvlay-gui
+        --target x86_64-unknown-linux-gnu.{{ glibc_baseline }}
 
 # Build .deb package
 [group('package')]

@@ -15,6 +15,21 @@ members = [
     "crates/tisvlay-harness",
 ]
 
+# `default-members` = the shipping binary crates. Bare `cargo build` /
+# `cargo test` (without `--workspace`) scope to these + their dependency
+# closure, so the justfile and packaging/nix consume one list instead of
+# each repeating it as `-p` flags. Use `just check` or `--workspace` to
+# build/test the whole tree (every dev/CI path does). The separate
+# crates.io publish set is tracked per-crate via `publish = true` (the
+# workspace default below is `publish = false`).
+default-members = [
+    "crates/tisvlayd",
+    "crates/tisvlay-cli",
+    "crates/tisvlay-session",
+    "crates/tisvlay-tray",
+    "crates/tisvlay-gui",
+]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

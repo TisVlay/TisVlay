@@ -22,7 +22,8 @@ TV Display control for Linux
 ## Quick Start
 
 ```bash
-# Build all components
+# Build all components (the shipping binaries; add --workspace for the
+# libraries + dev/test crates, or use `just check`)
 cargo build --release
 
 # Pair with your TV (shows prompt on TV screen)
