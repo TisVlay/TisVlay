@@ -1,6 +1,6 @@
 [package]
 name = "tisvlay"
-description = "CLI tool for TV control"
+description = "Rust client SDK for the tisvlay TV-control daemon (over D-Bus)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,28 +10,17 @@ publish = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
-categories.workspace = true
+categories = ["api-bindings", "hardware-support"]
 
-[[bin]]
-name = "tisvlay"
-path = "src/main.rs"
+[features]
+# The client surface needs D-Bus; on by default so `cargo add tisvlay`
+# gives you `DaemonClient` out of the box. Disable for the state/error
+# types alone.
+default = ["dbus"]
+dbus = ["tisvlay-core/dbus"]
 
 [dependencies]
-tisvlay-core = { workspace = true, features = ["dbus"] }
-tokio = { workspace = true }
-clap = { workspace = true }
-anyhow = { workspace = true }
-tracing-subscriber = { workspace = true }
-serde_json = { workspace = true }
-futures-util = { workspace = true }
-
-[dev-dependencies]
-tisvlay-harness = { workspace = true }
-tisvlay-test = { workspace = true }
-tisvlay-backends = { workspace = true, features = ["mock"] }
-tokio = { workspace = true, features = ["test-util"] }
-insta = { workspace = true }
-insta-cmd = { workspace = true }
+tisvlay-core = { workspace = true }
 
 [lints]
 workspace = true

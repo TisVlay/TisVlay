@@ -6,6 +6,6 @@ Path forward:
 
 - Define typed sub-variants (`Failed::ConnectionRefused`, `Failed::TvUnreachable { last_seen_at }`, `Failed::PairingRejected`, `Failed::Internal { kind }`) under the existing `tisvlay-core/src/errors/` per-domain enum tree.
 - D-Bus wire encoding: variant-tagged dict rather than a free-form string, so clients can branch on reason kind.
-- Migrate `tisvlay` and the GUI's inline-error surface to render the typed variant rather than the raw string.
+- Migrate `tisvlay-cli` and the GUI's inline-error surface to render the typed variant rather than the raw string.
 
 Useful when the GUI grows kind-based recovery actions ("Edit MAC", "Open firewall settings", etc.) — each action ID is gated on the corresponding `Failed::*` variant.

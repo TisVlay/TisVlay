@@ -8,6 +8,7 @@ members = [
     "crates/tisvlay-test",
     "crates/tisvlay-backends",
     "crates/tisvlay",
+    "crates/tisvlay-cli",
     "crates/tisvlayd",
     "crates/tisvlay-session",
     "crates/tisvlay-tray",
@@ -24,7 +25,7 @@ members = [
 # workspace default below is `publish = false`).
 default-members = [
     "crates/tisvlayd",
-    "crates/tisvlay",
+    "crates/tisvlay-cli",
     "crates/tisvlay-session",
     "crates/tisvlay-tray",
     "crates/tisvlay-gui",

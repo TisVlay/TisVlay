@@ -1,0 +1,37 @@
+[package]
+name = "tisvlay-cli"
+description = "CLI tool for TV control"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "tisvlay"
+path = "src/main.rs"
+
+[dependencies]
+tisvlay-core = { workspace = true, features = ["dbus"] }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+tisvlay-harness = { workspace = true }
+tisvlay-test = { workspace = true }
+tisvlay-backends = { workspace = true, features = ["mock"] }
+tokio = { workspace = true, features = ["test-util"] }
+insta = { workspace = true }
+insta-cmd = { workspace = true }
+
+[lints]
+workspace = true

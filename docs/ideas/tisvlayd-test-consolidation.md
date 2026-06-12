@@ -23,4 +23,4 @@ Adjust based on which tests share helpers; a few of these import the same `TestD
 
 ## What this is *not*
 
-Not a way to reduce test count or coverage — every test stays. Not a fix for slow individual tests — those want their own profiling. Not applicable to `tisvlay-session` / `tisvlay-gui` / `tisvlay` test surfaces; they each have far fewer integration test files (≤4) and the parallelism story already works for them.
+Not a way to reduce test count or coverage — every test stays. Not a fix for slow individual tests — those want their own profiling. Not applicable to `tisvlay-session` / `tisvlay-gui` / `tisvlay-cli` test surfaces; they each have far fewer integration test files (≤4) and the parallelism story already works for them.

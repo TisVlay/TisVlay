@@ -37,8 +37,8 @@ fn redactions() -> insta::Settings {
 /// Path to the compiled `tisvlay` binary under the test profile.
 fn cli_bin() -> std::path::PathBuf {
     // `env!("CARGO_BIN_EXE_tisvlay")` is only available in the same
-    // package's integration tests. Since tisvlay defines the binary,
-    // and we ARE in tisvlay's integration tests, it works here.
+    // package's integration tests. Since tisvlay-cli defines the binary,
+    // and we ARE in tisvlay-cli's integration tests, it works here.
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_tisvlay"))
 }
 
