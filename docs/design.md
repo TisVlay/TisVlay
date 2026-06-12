@@ -865,9 +865,11 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 
 **Multi-distro** — see [packaging/README.md](../packaging/README.md).
 
-**GitHub releases**: see [`.github/workflows/release.yml`](../.github/workflows/release.yml) — triggers on `v*` tags.
+**GitHub releases** ([`.github/workflows/release.yml`](../.github/workflows/release.yml)) — a `v*` tag builds the distro packages into a *draft* release; promoting the verified draft to a full release publishes the crates to crates.io. crates.io is irreversible (yank only rolls forward), so it intentionally comes **last**, after the artifacts are verified. release-plz opens the version-bump + CHANGELOG PR on `main` ([`release-plz.toml`](../release-plz.toml)); the publish runs from `release.yml` on release-finalize, in topological order. A deferred CI-side smoke-test would automate that artifact verification — [docs/ideas/ci-artifact-smoke-test.md](ideas/ci-artifact-smoke-test.md).
 
-**crates.io**: each crate published independently; `cargo install` provides binaries only (no service files)
+**crates.io** — 11 crates publish; `tisvlay-test` / `tisvlay-harness` stay `publish = false` (dev-only). Publishing reserves those names plus their `-`/`_`/case variants as namespace defense (arbitrary typos aren't covered). The prime `tisvlay` crate is a thin **client-SDK facade**: it re-exports tisvlay-core's D-Bus *client* (`DaemonClient`, `SessionClient`, `StateWatcher`, state/error types) for external Rust consumers — e.g. a desktop-environment applet driving the stack — deliberately **not** the vendor-backend traits, which are for adding TV hardware, not consuming the daemon. The CLI stays `tisvlay-cli` (its binary is still `tisvlay`); `cargo install` provides binaries only (no service files). Two orthogonal lists govern scope — `workspace.default-members` (the 5 shipping binaries; what a bare build compiles) and per-crate `publish` (the 11 registry crates) — both documented in the root [`Cargo.toml`](../Cargo.toml).
+
+**Mock backend as a field-debug aid** — release builds enable `tisvlayd`'s `mock` feature, so the shipped daemon registers the `"Mock (testing)"` vendor. A user (or a bug report) can add a mock TV to confirm the daemon / D-Bus / desktop stack works without real hardware, isolating a tisvlay issue from a TV/network one.
 
 **Common**:
 - `tisvlayd`/`tisvlay-session` `--config` flag for explicit config path
