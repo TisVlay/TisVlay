@@ -140,24 +140,24 @@ Rust desktop-environment applet (Cosmic, …) that wants to drive the stack.
 - **`release-plz.toml`** (root): unified workspace version (keep the shared
   `0.1.0` scheme); release-plz auto-skips `publish = false` crates and publishes
   the rest in topological order.
-- **`.github/workflows/release-plz.yml`**: the standard two jobs — `release-pr`
-  (opens version-bump + changelog PRs) and `release` (tags + publishes to
-  crates.io on merge to `main`). Secrets: `CARGO_REGISTRY_TOKEN` (crates.io) and
-  a GitHub token with PR/contents write.
-- **Integrate with `release.yml` — decoupled, not tag-coupled** (implementation
-  finding). release-plz creates one tag *per package* (`{{ package }}-v{{ version }}`);
-  a single shared `v{{ version }}` tag "may create conflicts in multi-package
-  workspaces" (it tags every published crate at the same name). So we don't couple
-  via the tag. Instead: release-plz owns crates.io (version bump + publish +
-  per-package tags + CHANGELOGs) with **`git_release_enable = false`** so it makes
-  no GitHub release; the existing `release.yml` keeps owning the distro packages +
-  GitHub release, still triggered by a **manually-pushed `v*` tag** (its
-  per-package tags don't match `v*`, so the two paths don't collide). Net flow:
-  merge the release PR → crates.io auto-publish; push `v0.x.y` → distro packages +
-  GitHub release (unchanged from today).
-- **Bail-out.** If release-plz's automation proves heavy, the fallback is a small
-  scripted `cargo publish` in topological order (with `CRATES_IO_TOKEN`) invoked
-  from `release.yml` — the publish set + order are already known.
+- **`.github/workflows/release-plz.yml`**: just the `release-pr` job on `main` —
+  opens/updates the version-bump + CHANGELOG PR. (The publish job lives in
+  `release.yml`, below.) Needs the "Allow GitHub Actions to create and approve pull
+  requests" repo setting; secret `CARGO_REGISTRY_TOKEN`.
+- **Publish is gated on release *finalize*, not merge-to-main** (reworked to keep
+  the maintainer's verify-before-publish gate). crates.io is irreversible (yank-
+  only) and the distro artifacts are verified on the draft, so publishing on
+  merge-to-main would jump that gate. Instead `release.yml` owns the whole lifecycle
+  off the GitHub release: `on: [push tags, release: released]`. Phase 1 (tag push)
+  builds the distro packages + draft; phase 2 (`release: released` — you promote the
+  verified draft to a full release) runs `release-plz release` to publish the crates.
+  `git_release_enable = false` so release-plz makes no GitHub release; its per-package
+  `{{ package }}-v{{ version }}` tags don't match the `v*` trigger, so they don't
+  re-fire the distro build. (A single `v{{ version }}` tag isn't used — release-plz
+  tags every package, colliding on a shared-version workspace.)
+- **Reworked flow:** merge the release PR (bump) → tag `vX.Y.Z` → build + draft →
+  verify the `.deb`/`.rpm`/`.pkg` → promote to full release → crates.io publishes
+  last.
 - Requires Parts B + C done first (every crate must be publishable in order).
 
 ## Part E — Ship the mock backend as a visible debug aid
