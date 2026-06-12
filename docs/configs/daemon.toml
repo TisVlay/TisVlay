@@ -1,7 +1,7 @@
 [system.profiles.00000000-0000-0000-0000-000000005159]
 name = "default"
 on_startup = "power_on"
-on_shutdown = "screen_off"
+on_shutdown = "power_off"
 on_reboot = "none"
 on_no_session = "none"
 on_sleep = "power_off"

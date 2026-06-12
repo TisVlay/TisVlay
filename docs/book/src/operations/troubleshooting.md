@@ -47,3 +47,30 @@ busctl --user monitor org.tisvlay.Daemon
 - The TV must be `managed = true` (see `tisvlay manage`).
 - Check the TV's `automate_when` gate and `primary_input` — with `on_primary`, automation only fires when the TV is showing the PC.
 - The per-user `tisvlay-session` service must be running for lock/idle events: `systemctl --user status tisvlay-session`.
+
+## Isolating tisvlay from the TV (mock backend)
+
+When you can't tell whether a problem is in tisvlay or in the TV / network, take the TV out of the equation: the shipped daemon includes a **"Mock (testing)"** vendor — an in-memory fake TV that pairs, connects, and answers every command without any hardware or network traffic.
+
+Add one from the GUI: **Add TV → manual entry**, vendor *Mock (testing)*, any address (e.g. `mock://test`); leave *Pairing behavior* at `accept` and pair. Without the GUI, add it to the daemon config by hand and reload:
+
+```toml
+[[tv]]
+uuid = "7d2f9e4a-5b1c-4f6e-9a3d-2e8b4c6f1a05"   # any UUID (uuidgen)
+name = "mock-test"
+vendor = "mock"
+
+[tv.mock]
+address = "mock://test"
+```
+
+```sh
+sudo busctl call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ReloadConfig
+```
+
+Then exercise it exactly like a real TV — grab its ID from `tisvlay list`, then `tisvlay -t <id> status`, `volume 50`, `screen off`, the tray submenu, the GUI's live controls:
+
+- **The mock works, your TV doesn't** → the tisvlay stack (daemon, D-Bus, services, clients) is healthy; the problem is TV-side or network-side — work through the sections above (WoL settings, firewall, pairing).
+- **The mock misbehaves too** → it's a tisvlay bug; please report it with the daemon logs (see [Inspecting the daemon](#inspecting-the-daemon)).
+
+Clean up with `tisvlay remove <id>` when done.

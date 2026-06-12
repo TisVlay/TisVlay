@@ -1,16 +1,20 @@
 # Configuration
 
-tisvlay is configured with TOML. There are two config files:
+tisvlay is configured with TOML. There are three config files:
 
 | File | Owner | Purpose |
 |------|-------|---------|
 | `/var/lib/tisvlay/config.toml` | the daemon (`tisvlay` user) | TV definitions, discovery, and **system** profiles |
-| `~/.config/tisvlay/config.toml` | each desktop user | **user** profiles and per-user TV profile assignments |
+| `~/.config/tisvlay/session.toml` | each desktop user | **user** profiles and per-user TV profile assignments |
+| `~/.config/tisvlay/tray.toml` | each desktop user | tray notification preferences |
 
-Most edits are easier through the CLI (`tisvlay pair`, `tisvlay manage`, `tisvlay profile …`) or the GUI, but the schema is straightforward to edit by hand. After a manual edit, reload without restarting:
+Most edits are easier through the CLI (`tisvlay pair`, `tisvlay manage`, `tisvlay profile …`) or the GUI, but the schema is straightforward to edit by hand. After a manual edit, reload without restarting — each service has a `ReloadConfig`:
 
 ```sh
-busctl --user call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ReloadConfig
+# Daemon config (system bus; drop sudo and add --user for a dev-mode daemon)
+sudo busctl call org.tisvlay.Daemon /org/tisvlay/Manager org.tisvlay.Manager1 ReloadConfig
+# User config (session bus)
+busctl --user call org.tisvlay.Session /org/tisvlay/Session org.tisvlay.Session1 ReloadConfig
 ```
 
 ## TV definitions
