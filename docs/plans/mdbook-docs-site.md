@@ -1,5 +1,17 @@
 # User-facing documentation site: mdBook → Read the Docs
 
+## Status (after merging main, 2026-06-11)
+
+Implementation §1–§3 and §5–§7 are **done** on this branch (CLI lib refactor `a33d250`, scaffold + content + RTD `9cb1dde`, mermaid `3e16c0a`): the site builds, the CLI reference is auto-generated with a CI freshness gate, RTD is connected, and the README is the concise variant linking to the site. §4's v1 pages all have real content (introduction, installation, quick-start, pairing, CLI, configuration, firewall-discovery, troubleshooting, requirements); the four planned stubs (profiles, session-automation, gui-tray, FAQ) remain "work in progress" pages by design.
+
+### Post-merge reconciliation (PRs #74–#80 landed on main since the content was written)
+
+- [ ] **`configuration.md` system-profile example** — shows `on_shutdown = "power_off"`, but #74 changed the sample config recommendation (`docs/configs/daemon.toml`) to `screen_off`. Reconcile the example (and re-check the surrounding prose) against the current sample configs.
+- [ ] **Troubleshooting: mock-backend triage section** — #80 ships the `"Mock (testing)"` vendor in the packages as a field-debug aid (the README already advertises it). Add a "verify the stack without a TV" subsection to `troubleshooting.md`: add a mock TV, exercise power/volume, conclude tisvlay-vs-TV/network. The book currently has zero mock coverage.
+- [ ] **`installation.md` Cargo section** — #80 plumbed crates.io publishing, but nothing is published until the first release is finalized. When `0.1.0` lands on crates.io, add `cargo install tisvlay-cli` as a real channel (binary-only, no service files — point at the distro packages for the full stack). Until then from-source stays primary.
+- [ ] **CLI reference freshness** — #74 touched the CLI (power-state vocabulary: `WarmingUp`/`CoolingDown`); `just docs-cli-check` verifies whether `cli-generated.md` drifted. No book page enumerates power states in prose, so no other staleness from that model change.
+- Non-items, checked: #75's "guide" is the developer-facing `docs/backends/implementing-a-vendor.md` (no book collision); #78/#79 (Session pane removal, back/forward nav) don't contradict the `gui-tray` stub; `requirements.md` is unaffected by poll-only backends / the WoL helper.
+
 ## Context
 
 tisvlay has no user-facing docs site today — `docs/*.md` is ~95% developer-facing (design, testing, ideas, plans), and the `main` README is a 67-line stub. We want a published user guide (install / pair / CLI / config / firewall / troubleshooting) on **Read the Docs**.
