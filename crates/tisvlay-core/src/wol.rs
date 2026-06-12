@@ -140,6 +140,44 @@ pub fn wake_with_options(mac: &MacAddress, options: WakeOptions) -> Result<()> {
     Ok(())
 }
 
+/// Send a Wake-on-LAN packet, retrying while the local NIC recovers.
+///
+/// The first attempt can fail with "network unreachable" right after
+/// system resume, before the desktop's interface is back up. Retries
+/// the send up to `max_attempts` times with a short backoff, returning
+/// the last send error (or a generic failure) if every attempt fails.
+///
+/// The `max_attempts` cap is the caller's knob; the backoff curve is a
+/// fixed NIC-recovery policy (not vendor-specific), so it stays
+/// internal. Callers log their own success line — this helper has only
+/// the MAC, not the device's IP.
+pub async fn wake_with_retry(mac: &MacAddress, max_attempts: u32) -> Result<()> {
+    let mut last_err = None;
+    for attempt in 1..=max_attempts {
+        match wake(mac) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                tracing::warn!(mac = %mac, attempt, error = %e, "WoL send failed, retrying");
+                last_err = Some(e);
+                let delay = if attempt <= 2 { 2000 } else { 3000 };
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| Error::WakeOnLan("WoL failed after retries".into())))
+}
+
+/// Send a single Wake-on-LAN packet, logging (not returning) any error.
+///
+/// For best-effort resends inside a connect-retry loop, where a lost
+/// packet is retried by the next iteration anyway, so one failed send
+/// shouldn't abort the loop.
+pub fn wake_best_effort(mac: &MacAddress) {
+    if let Err(e) = wake(mac) {
+        tracing::warn!(mac = %mac, error = %e, "WoL resend failed");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +233,17 @@ mod tests {
             let offset = 6 + i * 6;
             assert_eq!(&packet[offset..offset + 6], mac.bytes());
         }
+    }
+
+    #[tokio::test]
+    async fn wake_with_retry_exhausts_to_error() {
+        let mac = MacAddress::parse("AA:BB:CC:DD:EE:FF").unwrap();
+        // A zero-attempt cap runs an empty `1..=0` loop, so nothing is
+        // sent and the call falls through to the generic failure. This
+        // is the only network-free branch of the loop — it exercises
+        // the exhaustion fallback without a socket or a backoff sleep.
+        let err = wake_with_retry(&mac, 0).await.unwrap_err();
+        assert!(matches!(err, Error::WakeOnLan(_)));
     }
 
     proptest! {

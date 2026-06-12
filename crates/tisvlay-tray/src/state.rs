@@ -3,7 +3,7 @@
 //! Builds snapshots from `TvInfo` (from `list_tvs()` via `GetManagedObjects`)
 //! which includes both identity and cached state properties.
 
-use tisvlay_core::{DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient};
+use tisvlay_core::{DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient, power_state_str_is_on};
 use tracing::debug;
 
 /// Snapshot of a single TV's state, cached locally for menu rendering.
@@ -112,7 +112,7 @@ pub(crate) async fn fetch_all_state(
             None => None,
         };
 
-        let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
+        let is_on = power_state_str_is_on(&tv.power_state);
 
         let cached = CachedTvState {
             id: tv.uuid.clone(),

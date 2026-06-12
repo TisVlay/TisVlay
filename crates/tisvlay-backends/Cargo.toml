@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
 description = "Backend registry for tisvlay - composition crate for all vendor implementations"
 keywords = ["tisvlay", "backends", "registry"]
 

@@ -41,7 +41,7 @@ graph TD
 | **User Service** | `tisvlay-session` | Systemd user service. Monitors D-Bus session events (session lock/unlock, idle); reactively prunes orphan user-config `[[tv]]` assignments via `ObjectManager.InterfacesRemoved`. |
 | **CLI** | `tisvlay` | Command-line interface. Communicates with daemon via D-Bus. |
 | **Tray App** | `tisvlay-tray` | System tray icon using `ksni`. Subscribes to daemon D-Bus signals for real-time state updates (30s fallback poll). Per-TV power/screen/volume/backlight/input controls with scroll wheel support. |
-| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. Profiles pane with master/detail layout, two-sub-tab system/user profile editor, inheritance with locally-set indicators + per-field reset glyph + reset-all, rename/duplicate/delete flows. About pane built; Session pane is a placeholder pending the M5 work in [docs/plan.md](plan.md). |
+| **GUI** | `tisvlay-gui` | Slint-based configuration window. TVs pane with master/detail layout, per-TV editor (live state controls + edit-mode pencil for config edits), pairing wizard with discovery streaming. Profiles pane with master/detail layout, two-sub-tab system/user profile editor, inheritance with locally-set indicators + per-field reset glyph + reset-all, rename/duplicate/delete flows. About and Settings panes built. |
 
 ### Crate Structure
 
@@ -57,9 +57,10 @@ See `CLAUDE.md` for the full file tree. Key crates:
 | `tisvlay-harness` | Binary-lifecycle test fixtures (`TestDaemon`, `TestSession`, `TestTray`) |
 | `tisvlayd` | System daemon — vendor-agnostic TV management |
 | `tisvlay-cli` | CLI tool — vendor-agnostic |
+| `tisvlay` | Client SDK — Rust re-export of core's D-Bus client, for external consumers |
 | `tisvlay-session` | User session service — vendor-agnostic |
 | `tisvlay-tray` | System-tray app (ksni) — vendor-agnostic |
-| `tisvlay-gui` | Slint-based settings window — vendor-agnostic; status in [plan.md](plan.md) |
+| `tisvlay-gui` | Slint-based settings window — vendor-agnostic |
 
 ### Dependency Graph
 
@@ -612,15 +613,23 @@ Key design: `TvConfig` uses `#[serde(flatten)]` to capture vendor-specific field
 ```mermaid
 stateDiagram-v2
     [*] --> STANDBY
-    STANDBY --> ON : WoL / PowerOn
+    STANDBY --> ON : WoL / PowerOn (instant backends)
+    STANDBY --> WARMINGUP : PowerOn (projector-class)
+    WARMINGUP --> ON : warmup settles
     ON --> BLANKED : ScreenOff
     BLANKED --> ON : ScreenOn
-    ON --> STANDBY : PowerOff
+    ON --> STANDBY : PowerOff (instant)
+    ON --> COOLINGDOWN : PowerOff (projector-class)
     BLANKED --> STANDBY : PowerOff
+    COOLINGDOWN --> STANDBY : cooldown settles
 
     note right of BLANKED : OLED-safe\nInstant resume
     note right of STANDBY : Network may be inactive\nRequires WoL to wake
+    note right of WARMINGUP : Transient — is_on=true,\nis_screen_on=false
+    note right of COOLINGDOWN : Transient — is_on=false,\nis_screen_on=false
 ```
+
+**Transient power substates.** `PowerState::WarmingUp` / `CoolingDown` model the multi-second laser/lamp warmup and cooldown of projector-class backends; instant-power TVs skip them and go `STANDBY → ON` directly. `WarmingUp` is `is_on=true, is_screen_on=false` (powering up, no usable image yet); `CoolingDown` is `is_on=false, is_screen_on=false` (powering down). The daemon gives each its own `Tv1.Power.PowerState` wire string (`warming_up` / `cooling_down`) so GUIs can show staged feedback, and both sit in the [`needs_wake_preflight`](#reliable-screen-state-actions) set — a screen action waits for the transition to settle rather than racing it. They complement the [`PowerCyclePhase`](../crates/tisvlay-core/src/state.rs) progress signal, which narrates a *daemon-driven* power-on; these substates are the steady state a *passively* warming/cooling device sits in (e.g. powered on by its own remote).
 
 ### Event → Action Mapping
 
@@ -670,6 +679,7 @@ Cached state is `ManagedTv::last_known_power_state` (raw [`PowerState`](../crate
 - `Standby` / `Suspend` — TV is deeply off; in-band `screen_on` would stall on the half-asleep WS.
 - `ActiveStandby` — transient substate after a remote-press power-off; LG firmware ACKs `screen_*` but won't actually transition.
 - `Unknown` — no subscription push received yet; safest to assume off.
+- `WarmingUp` / `CoolingDown` — projector-class transients; a screen action waits for the warmup/cooldown to settle rather than racing it.
 - (`ScreenOff` deliberately **excluded** — it's the target state for `screen_off`, and `screen_on` from `ScreenOff` is exactly the lockscreen-wake fast path the `with_retry` "knock" mechanism is tuned for.)
 
 **Per-backend tuning.** Verify-delay and max-attempts come from `TvBackend::verify_retry_config() -> RetryConfig`, defaulted to `{ verify_delay: 300ms, max_attempts: 2 }` (LG-tuned). Future USB-CEC / RS-232 backends are expected to override for their different latency characteristics.
@@ -855,9 +865,11 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 
 **Multi-distro** — see [packaging/README.md](../packaging/README.md).
 
-**GitHub releases**: see [`.github/workflows/release.yml`](../.github/workflows/release.yml) — triggers on `v*` tags.
+**GitHub releases** ([`.github/workflows/release.yml`](../.github/workflows/release.yml)) — a `v*` tag builds the distro packages into a *draft* release; promoting the verified draft to a full release publishes the crates to crates.io. crates.io is irreversible (yank only rolls forward), so it intentionally comes **last**, after the artifacts are verified. release-plz opens the version-bump + CHANGELOG PR on `main` ([`release-plz.toml`](../release-plz.toml)); the publish runs from `release.yml` on release-finalize, in topological order. A deferred CI-side smoke-test would automate that artifact verification — [docs/ideas/ci-artifact-smoke-test.md](ideas/ci-artifact-smoke-test.md).
 
-**crates.io**: each crate published independently; `cargo install` provides binaries only (no service files)
+**crates.io** — 11 crates publish; `tisvlay-test` / `tisvlay-harness` stay `publish = false` (dev-only). Publishing reserves those names plus their `-`/`_`/case variants as namespace defense (arbitrary typos aren't covered). The prime `tisvlay` crate is a thin **client-SDK facade**: it re-exports tisvlay-core's D-Bus *client* (`DaemonClient`, `SessionClient`, `StateWatcher`, state/error types) for external Rust consumers — e.g. a desktop-environment applet driving the stack — deliberately **not** the vendor-backend traits, which are for adding TV hardware, not consuming the daemon. The CLI stays `tisvlay-cli` (its binary is still `tisvlay`); `cargo install` provides binaries only (no service files). Two orthogonal lists govern scope — `workspace.default-members` (the 5 shipping binaries; what a bare build compiles) and per-crate `publish` (the 11 registry crates) — both documented in the root [`Cargo.toml`](../Cargo.toml).
+
+**Mock backend as a field-debug aid** — release builds enable `tisvlayd`'s `mock` feature, so the shipped daemon registers the `"Mock (testing)"` vendor. A user (or a bug report) can add a mock TV to confirm the daemon / D-Bus / desktop stack works without real hardware, isolating a tisvlay issue from a TV/network one.
 
 **Common**:
 - `tisvlayd`/`tisvlay-session` `--config` flag for explicit config path
@@ -936,7 +948,7 @@ Forward-looking work that hasn't shipped yet. No fixed sequencing — entries la
 
 ### GUI Configuration
 
-`tisvlay-gui` is largely built and packaged — see [docs/plan.md](plan.md) for the full milestone status, and [packaging/README.md](../packaging/README.md) for the shipping channels. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), About pane, and Profiles pane (master/detail catalog editor with inheritance + per-field reset — see [Profile catalog](#profile-catalog)) shipped through M3 + M3.5 + M4 + Plan-6 follow-on work. The Session pane, NixOS module's `enableGui` flag, and the XDG `.desktop` entry remain as M5 / M6 follow-ups.
+`tisvlay-gui` is largely built and packaged — see [packaging/README.md](../packaging/README.md) for the shipping channels. The TVs pane (master/detail with live-state controls + edit-mode pencil), pairing wizard (discovery streaming + schema-driven step-2 form), Profiles pane (master/detail catalog editor with inheritance + per-field reset — see [Profile catalog](#profile-catalog)), Settings pane (notification preferences), and About pane have all shipped. The NixOS module's `enableGui` flag and the XDG `.desktop` entry remain as packaging follow-ups.
 
 ### Event-Driven Power Management
 

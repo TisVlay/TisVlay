@@ -12,6 +12,7 @@ TV Display control for Linux
 - **Volume Control**: Adjust volume, mute/unmute
 - **Desktop Integration**: Automatic screen control on lock/unlock, suspend/resume
 - **Wayland Support**: Detects lock screen interaction to unblank TV before password entry
+- **Mock Backend**: a built-in "Mock (testing)" vendor ships in the packages for field debugging — add a mock TV to verify the daemon / D-Bus / desktop stack without real hardware
 
 ## Components
 
@@ -24,7 +25,8 @@ TV Display control for Linux
 ## Quick Start
 
 ```bash
-# Build all components
+# Build all components (the shipping binaries; add --workspace for the
+# libraries + dev/test crates, or use `just check`)
 cargo build --release
 
 # Pair with your TV (shows prompt on TV screen)

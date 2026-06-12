@@ -9,7 +9,7 @@ use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
-use tisvlay_core::{DiscoveredTv, HardwareId, Result};
+use tisvlay_core::{DiscoveredTv, HardwareId, Result, TvDiscovery};
 use tisvlay_ssdp::{SearchOptions, SsdpResponse};
 
 /// Search targets that LG WebOS TVs respond to.
@@ -173,6 +173,35 @@ fn parse_ip_from_url(location: &str) -> Option<String> {
         .ok()?
         .host_str()
         .map(|s| s.to_string())
+}
+
+/// LG-specific network discovery — the [`TvDiscovery`] implementation.
+#[derive(Debug, Default)]
+pub struct LgDiscovery {
+    /// Source UDP port for the SSDP M-SEARCH socket. `None` lets the
+    /// OS pick an ephemeral port; setting a value pins the source
+    /// port for a tractable firewall rule (see `docs/firewall.md`).
+    bind_port: Option<u16>,
+}
+
+impl LgDiscovery {
+    /// Create a new LG discovery instance with default options
+    /// (ephemeral bind port).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Pin the SSDP source UDP port. Builder.
+    pub fn with_bind_port(mut self, port: u16) -> Self {
+        self.bind_port = Some(port);
+        self
+    }
+}
+
+impl TvDiscovery for LgDiscovery {
+    async fn discover(&self, timeout: Duration) -> Result<Vec<DiscoveredTv>> {
+        discover_lg_tvs(timeout, self.bind_port).await
+    }
 }
 
 #[cfg(test)]

@@ -1,11 +1,11 @@
 //! High-level WebOS TV client.
 
-use crate::connection::Connection;
 use crate::endpoints::{audio, input, luna, notification, picture, power, system, timeouts};
 use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
     VolumeInfo, VolumeResponse,
 };
+use crate::transport::Connection;
 use serde_json::{Value, json};
 use std::time::Duration;
 use tisvlay_core::{Error, HardwareId, InputInfo, PowerState, Result, TvState};
@@ -430,7 +430,7 @@ impl WebOsClient {
 
     /// Get the current power state.
     ///
-    /// Routes through [`crate::backend::parse_power_state_payload`]
+    /// Routes through [`crate::connection::parse_power_state_payload`]
     /// so the `processing` / `onOff` discriminators that LG ships
     /// during transitions take precedence over the stale `state`
     /// field. Without that, a `get_power_state` query issued during
@@ -438,8 +438,10 @@ impl WebOsClient {
     /// while the panel is actually going dark.
     pub async fn get_power_state(&mut self) -> Result<PowerState> {
         let response = self.command(power::GET_POWER_STATE, json!({})).await?;
-        Ok(crate::backend::parse_power_state_payload(&response.payload)
-            .unwrap_or(PowerState::Unknown))
+        Ok(
+            crate::connection::parse_power_state_payload(&response.payload)
+                .unwrap_or(PowerState::Unknown),
+        )
     }
 
     // -------------------------------------------------------------------------
@@ -683,6 +685,45 @@ impl WebOsClient {
 mod tests {
     use super::*;
     use crate::test_server::{FakeSsapServer, RegistrationOutcome};
+
+    // -----------------------------------------------------------------------
+    // Reader-loop fault injection — these exercise the WebOsClient reader
+    // directly (malformed frame tolerance, socket-drop detection).
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn malformed_json_does_not_crash_reader() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        // Send garbage — the reader should log a warning and continue.
+        server.send_raw_text("this is not JSON {{{");
+
+        // A valid command after the garbage should still work.
+        let state = client.get_power_state().await.unwrap();
+        assert_eq!(state, PowerState::Active);
+    }
+
+    #[tokio::test]
+    async fn connection_drop_detected_by_client() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+        assert!(client.is_connected());
+
+        // Server drops the WebSocket.
+        server.drop_connection();
+
+        // Give the reader loop time to notice the close.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Next command should fail with a connection error.
+        let result = client.get_power_state().await;
+        assert!(result.is_err(), "should fail after server drops connection");
+    }
 
     #[tokio::test]
     async fn connect_and_register_two_phase() {

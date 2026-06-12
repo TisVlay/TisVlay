@@ -1,5 +1,11 @@
 //! Test-driven control surface for the mock backend.
 //!
+//! **Mock test-double machinery — not the backend pattern.** A real
+//! backend has no `MockHandle`: it talks to hardware instead of an
+//! injectable state machine. Don't copy this file when cloning mock as
+//! a skeleton for a new backend (see the dev guide's crate-structure
+//! section).
+//!
 //! `MockHandle` is the single entry point by which a test drives
 //! everything the mock backend does: publishing discoverable TVs,
 //! approving or rejecting pairing sessions, simulating timeouts.
@@ -443,5 +449,48 @@ mod tests {
         let (_connector, _discovery, handle) = new_test_parts();
         assert_eq!(handle.screen_on_call_count("mock://never_connected"), 0);
         assert_eq!(handle.screen_off_call_count("mock://never_connected"), 0);
+    }
+
+    /// `disable_subscription = true` makes `subscribe_state` return
+    /// `NotSupported` (modeling a poll-only backend) while `get_state`
+    /// still works — so the daemon's poll path has something to read.
+    /// The default (knob absent / false) keeps the push subscription,
+    /// which the bulk of the mock-based tests rely on.
+    #[tokio::test]
+    async fn disable_subscription_makes_subscribe_state_unsupported() {
+        let (connector, _discovery, _handle) = new_test_parts();
+
+        // Default config: subscription works.
+        let mut push = connector
+            .connect(&vendor_config("mock://push"))
+            .await
+            .expect("connect push");
+        assert!(
+            push.subscribe_state().await.is_ok(),
+            "default mock must keep its push subscription",
+        );
+
+        // Poll-only config: subscription refused, but get_state works.
+        let mut table = toml::value::Table::new();
+        table.insert(
+            "address".into(),
+            toml::Value::String("mock://poll".to_string()),
+        );
+        table.insert("disable_subscription".into(), toml::Value::Boolean(true));
+        let cfg = toml::Value::Table(table);
+
+        let mut poll = connector.connect(&cfg).await.expect("connect poll");
+        let err = poll
+            .subscribe_state()
+            .await
+            .expect_err("poll-only must refuse subscribe_state");
+        assert!(
+            err.is_not_supported(),
+            "poll-only subscribe_state should be NotSupported, got: {err:?}",
+        );
+        assert!(
+            poll.get_state().await.is_ok(),
+            "poll-only get_state must still work so the daemon can poll",
+        );
     }
 }

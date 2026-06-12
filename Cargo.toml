@@ -7,12 +7,28 @@ members = [
     "crates/tisvlay-mock",
     "crates/tisvlay-test",
     "crates/tisvlay-backends",
+    "crates/tisvlay",
     "crates/tisvlay-cli",
     "crates/tisvlayd",
     "crates/tisvlay-session",
     "crates/tisvlay-tray",
     "crates/tisvlay-gui",
     "crates/tisvlay-harness",
+]
+
+# `default-members` = the shipping binary crates. Bare `cargo build` /
+# `cargo test` (without `--workspace`) scope to these + their dependency
+# closure, so the justfile and packaging/nix consume one list instead of
+# each repeating it as `-p` flags. Use `just check` or `--workspace` to
+# build/test the whole tree (every dev/CI path does). The separate
+# crates.io publish set is tracked per-crate via `publish = true` (the
+# workspace default below is `publish = false`).
+default-members = [
+    "crates/tisvlayd",
+    "crates/tisvlay-cli",
+    "crates/tisvlay-session",
+    "crates/tisvlay-tray",
+    "crates/tisvlay-gui",
 ]
 
 [workspace.package]
@@ -108,17 +124,20 @@ futures-core = "0.3"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
-# Internal crates. Both `path` and `version` are required so the same
-# entries work for local development (path wins) and for `cargo package`
-# / publish (version is used when path is stripped from the published
-# manifest).
+# Internal crates. Published crates carry both `path` and `version`, so
+# the entries work for local dev (path wins) and for `cargo publish` (the
+# version is used once the path is stripped). The dev-only crates
+# (`tisvlay-test` / `tisvlay-harness`, `publish = false`) are path-ONLY:
+# a *versioned* dev-dependency on them is kept in the published manifest
+# and would demand an unpublished crate from crates.io, whereas a
+# path-only dev-dependency is dropped on publish.
 tisvlay-core = { path = "crates/tisvlay-core", version = "0.1.0" }
 tisvlay-ssdp = { path = "crates/tisvlay-ssdp", version = "0.1.0" }
 tisvlay-lg = { path = "crates/tisvlay-lg", version = "0.1.0" }
 tisvlay-mock = { path = "crates/tisvlay-mock", version = "0.1.0" }
-tisvlay-test = { path = "crates/tisvlay-test", version = "0.1.0" }
+tisvlay-test = { path = "crates/tisvlay-test" }
 tisvlay-backends = { path = "crates/tisvlay-backends", version = "0.1.0" }
-tisvlay-harness = { path = "crates/tisvlay-harness", version = "0.1.0" }
+tisvlay-harness = { path = "crates/tisvlay-harness" }
 # Binary crates exposed as libs for the harness. `tisvlay-tray` is
 # currently bin-only; add here when its lib surface is exposed.
 tisvlayd = { path = "crates/tisvlayd", version = "0.1.0" }

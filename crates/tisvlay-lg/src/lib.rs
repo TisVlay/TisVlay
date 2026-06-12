@@ -43,8 +43,10 @@ mod backend;
 mod client;
 mod config;
 mod connection;
+mod connector;
 mod endpoints;
 pub mod protocol;
+mod transport;
 
 #[cfg(feature = "discovery")]
 mod discovery;
@@ -53,11 +55,11 @@ mod discovery;
 pub(crate) mod test_server;
 
 // Public re-exports
-#[cfg(feature = "discovery")]
-pub use backend::LgDiscovery;
-pub use backend::{LgBackend, LgConnection, LgConnector};
+pub use backend::LgBackend;
 pub use client::WebOsClient;
 pub use config::{LgConfig, LgVendorConfig};
+pub use connection::LgConnection;
+pub use connector::LgConnector;
 pub use endpoints::{
     WS_PORT, WSS_PORT, audio as audio_endpoints, buttons, input as input_endpoints,
     picture as picture_endpoints, power as power_endpoints, timeouts,
@@ -65,7 +67,7 @@ pub use endpoints::{
 pub use protocol::{ExternalInput, PowerState as ProtocolPowerState, VolumeInfo};
 
 #[cfg(feature = "discovery")]
-pub use discovery::discover_lg_tvs;
+pub use discovery::{LgDiscovery, discover_lg_tvs};
 
 /// Vendor ID for LG WebOS TVs.
 pub const VENDOR_ID: &str = "lg";

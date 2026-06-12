@@ -1,0 +1,26 @@
+[package]
+name = "tisvlay"
+description = "Rust client SDK for the tisvlay TV-control daemon (over D-Bus)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories = ["api-bindings", "hardware-support"]
+
+[features]
+# The client surface needs D-Bus; on by default so `cargo add tisvlay`
+# gives you `DaemonClient` out of the box. Disable for the state/error
+# types alone.
+default = ["dbus"]
+dbus = ["tisvlay-core/dbus"]
+
+[dependencies]
+tisvlay-core = { workspace = true }
+
+[lints]
+workspace = true

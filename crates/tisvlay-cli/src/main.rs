@@ -8,7 +8,7 @@ use tisvlay_cli::{
     Cli, Commands, ManageState, MuteState, PowerAction, ProfileAction, ScreenAction,
     SystemProfileAction, UserProfileAction,
 };
-use tisvlay_core::{DaemonClient, PairTerminal, SessionClient, TvInfo};
+use tisvlay_core::{DaemonClient, PairTerminal, SessionClient, TvInfo, power_state_str_is_on};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -418,7 +418,7 @@ async fn get_tv_id(client: &DaemonClient, requested_id: Option<&str>) -> Result<
 }
 
 fn print_tv_status(tv: &TvInfo, user_profile: Option<&str>) {
-    let is_on = tv.power_state != "standby" && tv.power_state != "unknown";
+    let is_on = power_state_str_is_on(&tv.power_state);
     println!("TV: {} ({})", tv.uuid, tv.name);
     println!("  Vendor: {}", tv.vendor);
     // User-editable vendor config (LG: IP, MAC) followed by the

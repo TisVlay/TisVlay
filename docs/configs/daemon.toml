@@ -1,26 +1,13 @@
-# Discovery settings. Uncomment any field below to override.
-# - `bind_port`: pin the SSDP source UDP port so a firewall can accept
-#   a single `--dport` rule instead of allowing the unbounded
-#   ephemeral range. Defaults to OS-assigned ephemeral port — fine on
-#   systems without a strict firewall. See docs/firewall.md.
-# - `poll_interval_ms`: per-iteration period for the streaming
-#   discovery loop (Manager1.StartDiscovery) — smaller is more
-#   responsive to a TV being powered on mid-session, larger reduces
-#   steady-state multicast traffic. Default 8000 ms.
-[discovery]
-bind_port = 1901
-poll_interval_ms = 8000
-
 [system.profiles.00000000-0000-0000-0000-000000005159]
 name = "default"
 on_startup = "power_on"
-on_shutdown = "power_off"
+on_shutdown = "screen_off"
 on_reboot = "none"
 on_no_session = "none"
 on_sleep = "power_off"
 on_wake = "power_on"
-on_dpms_off = "none"             # action when the matched host display's DPMS leaves On (display off)
-on_dpms_on = "none"              # action when the matched host display's DPMS returns to On (display on)
+on_dpms_off = "none"
+on_dpms_on = "none"
 automate_when = "always"
 
 [user.profiles.00000000-0000-0000-0000-00000000515a]
@@ -31,6 +18,10 @@ on_greeter_wake = "screen_on"
 idle_timeout_seconds = 0
 on_idle_timeout = "screen_off"
 on_idle_resume = "screen_on"
+
+[discovery]
+bind_port = 1901
+poll_interval_ms = 8000
 
 [[tv]]
 uuid = "9a3f1b22-c4d8-4e90-b21f-7f1a2c8e5b40"

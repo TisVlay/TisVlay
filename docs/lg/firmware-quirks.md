@@ -53,7 +53,7 @@ self.is_screen_on = !matches!(
 
 [`scripts/probe_power_state_timing.py`](../../scripts/probe_power_state_timing.py) captures the wire payloads — see the "Reference probe data" section below. Before this fix, the daemon read only the `state` field, so it saw the lie.
 
-**Fix.** New `parse_power_state_payload(&Value) -> Option<PowerState>` helper in [`tisvlay-lg/src/backend.rs`](../../crates/tisvlay-lg/src/backend.rs) projects to `ActiveStandby` whenever `onOff == "off"` OR `processing` is present and not `"None"`. Both call sites route through it:
+**Fix.** New `parse_power_state_payload(&Value) -> Option<PowerState>` helper in [`tisvlay-lg/src/connection.rs`](../../crates/tisvlay-lg/src/connection.rs) projects to `ActiveStandby` whenever `onOff == "off"` OR `processing` is present and not `"None"`. Both call sites route through it:
 
 - `update_state_from_subscription` (the subscription push path).
 - `WebOsClient::get_power_state` (the synchronous query path used by `tv_manager::refresh_power_state`).
@@ -62,7 +62,7 @@ self.is_screen_on = !matches!(
 
 **Regression coverage.**
 
-- `tisvlay-lg/src/backend.rs` — `subscription_power_transition_to_off_projects_active_standby` (all three captured `processing` values), `subscription_power_on_off_field_alone_projects_active_standby`, `subscription_power_processing_none_falls_through_to_state_field`, and the direct-helper tests `parse_payload_*` pin the contract for both subscription and synchronous-query callers.
+- `tisvlay-lg/src/connection.rs` — `subscription_power_transition_to_off_projects_active_standby` (all three captured `processing` values), `subscription_power_on_off_field_alone_projects_active_standby`, `subscription_power_processing_none_falls_through_to_state_field`, and the direct-helper tests `parse_payload_*` pin the contract for both subscription and synchronous-query callers.
 
 ## Recent remote-off latches LG firmware against `turnOn` for ~1 s
 
@@ -120,7 +120,7 @@ The instinctive fix is "shorten the wait" — either by adding a tighter timeout
 
 ### Why each bypass loses
 
-The LG client's `with_retry` wrapper ([backend.rs](../../crates/tisvlay-lg/src/backend.rs)) responds to `Error::RequestTimeout` (i.e., `REQUEST_MS` expiring) by tearing down the current WebSocket, opening a fresh one with `register`, and retrying the command. That fresh-WS handshake **physically rouses the TV** — by the time the second attempt also fails and the dispatch escalates to `power_on`, the TV is already warm enough that the subsequent WoL → Registration happens in <1 s.
+The LG client's `with_retry` wrapper ([connection.rs](../../crates/tisvlay-lg/src/connection.rs)) responds to `Error::RequestTimeout` (i.e., `REQUEST_MS` expiring) by tearing down the current WebSocket, opening a fresh one with `register`, and retrying the command. That fresh-WS handshake **physically rouses the TV** — by the time the second attempt also fails and the dispatch escalates to `power_on`, the TV is already warm enough that the subsequent WoL → Registration happens in <1 s.
 
 Any approach that *bypasses* `screen_on` to avoid the 10 s wait skips this accidental knock. The TV slips deeper into standby, and full WoL recovery now takes 9-12 s instead of <1 s. The arithmetic: ~7-10 s saved on the bypassed wait, ~9-12 s lost on slower recovery. Net pessimization in every case.
 

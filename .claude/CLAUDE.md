@@ -17,8 +17,8 @@ See [docs/design.md](docs/design.md) for the full architecture, D-Bus interface 
 
 The TVs and Profiles panes of `tisvlay-gui` are feature-complete (master/detail with live-state controls + edit-mode pencil for TVs; master/detail with create/rename/delete/duplicate + per-field inheritance editor for Profiles; pairing wizard with discovery streaming; About pane). Remaining GUI work, packaging, and architectural follow-ups:
 
-- **Session pane + polish** — user-bus connection indicator, session-service status, default user-profile selector, error toasts, keyboard nav, window-state persistence. M5 in [docs/plan.md](../docs/plan.md).
-- **GUI packaging** — NixOS module `enableGui` flag, nfpm desktop entry, XDG `.desktop` file. M6 in [docs/plan.md](../docs/plan.md).
+- **GUI polish** — error toasts, keyboard nav, window-state persistence.
+- **GUI packaging** — NixOS module `enableGui` flag, nfpm desktop entry, XDG `.desktop` file.
 - **Event-driven power-management redesign** — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md). A narrow first slice shipped: the daemon-side DPMS connector watcher (`tisvlayd/src/dpms.rs`) driving the opt-in `on_dpms_off`/`on_dpms_on` system-profile actions.
 - **Plus other deferred ideas**: polkit gating for multi-user workstations, CLI shorthand for `Tv1.UpdateConfig`, `a{sv}` wire-format migration for vendor configs, atomic config writes, typed `Failed { reason }` payload, "Open logs" affordance. All filed in [docs/ideas.md](../docs/ideas.md).
 
@@ -45,13 +45,16 @@ tisvlay/
 │   ├── tisvlay-lg/                # LG WebOS vendor implementation
 │   │   └── src/
 │   │       ├── lib.rs            # Public exports
-│   │       ├── backend.rs        # LgConnector, LgConnection trait impls
-│   │       ├── client.rs         # WebOsClient - high-level API
-│   │       ├── connection.rs     # WebSocket with rustls TLS
+│   │       ├── backend.rs        # LgBackend (TvBackend metadata)
+│   │       ├── connector.rs      # LgConnector (factory, wake, pairing)
+│   │       ├── connection.rs     # LgConnection (TvConnection) + SSAP state parsing
+│   │       ├── client.rs         # WebOsClient - high-level SSAP API
+│   │       ├── transport.rs      # Raw WebSocket (rustls TLS) + request/response multiplexing
 │   │       ├── protocol.rs       # SSAP message types
 │   │       ├── endpoints.rs      # API endpoint constants
 │   │       ├── config.rs         # LgVendorConfig
-│   │       └── discovery.rs      # SSDP TV discovery (feature-gated)
+│   │       ├── discovery.rs      # LgDiscovery (TvDiscovery) + SSDP search (feature-gated)
+│   │       └── test_server.rs    # FakeSsapServer (#[cfg(test)])
 │   │
 │   ├── tisvlay-mock/              # In-memory mock backend (optional, for dev/tests)
 │   │   └── src/
@@ -83,6 +86,10 @@ tisvlay/
 │   ├── tisvlay-backends/          # Backend registry (composition point)
 │   │   └── src/
 │   │       └── lib.rs            # BackendRegistry, vendor registration, MockHandle re-export
+│   │
+│   ├── tisvlay/                   # Client SDK (re-exports core's D-Bus client)
+│   │   └── src/
+│   │       └── lib.rs            # DaemonClient + StateWatcher + state-type re-exports
 │   │
 │   ├── tisvlay-cli/               # CLI tool
 │   │   └── src/
@@ -153,7 +160,6 @@ tisvlay/
 ├── docs/
 │   ├── design.md                 # Full architecture design
 │   ├── discovery.md              # SSDP transport, streaming RPCs, manual-entry MAC enrichment
-│   ├── plan.md                   # GUI roadmap + ship status
 │   ├── ideas.md                  # Deferred work + research notes
 │   ├── concerns.md               # Design concerns / technical debt
 │   ├── bugs.md                   # Known bugs index (per-bug docs in bugs/)

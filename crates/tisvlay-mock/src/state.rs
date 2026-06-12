@@ -1,5 +1,10 @@
 //! Shared state for the mock backend.
 //!
+//! **Mock test-double machinery — not the backend pattern.** A real
+//! backend keeps its state inside its connection; `MockState` is
+//! externalized only so the test handle can drive it. Don't replicate
+//! this shape when cloning mock as a skeleton.
+//!
 //! `MockState` is the single source of truth for everything a test can
 //! control about the mock backend: which TVs are "on the network"
 //! (discoverable), and the current state of any in-flight pairing

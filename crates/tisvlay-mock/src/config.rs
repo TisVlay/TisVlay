@@ -67,6 +67,19 @@ pub struct MockVendorConfig {
     /// new command mid-ramp deterministically.
     #[serde(default)]
     pub backlight_ramp_step_delay_ms: u64,
+
+    /// Make this mock TV behave like a poll-only backend.
+    ///
+    /// When `true`, the mock connection's `subscribe_state` returns
+    /// `NotSupported` instead of a push channel — modeling a backend
+    /// (e.g. an Epson projector over a request/response transport) that
+    /// has no real-time state stream. The daemon then drives the TV
+    /// through its periodic `state_poll_loop` / `get_state` path and
+    /// the reliable-dispatch active-verify path instead of subscription
+    /// pushes. Default `false` (push, like LG) so existing mock-based
+    /// tests are unaffected.
+    #[serde(default)]
+    pub disable_subscription: bool,
 }
 
 fn default_address() -> String {
@@ -109,6 +122,7 @@ impl Default for MockVendorConfig {
             pairing: PairingShorthand::default(),
             backlight_ramp_intermediates: Vec::new(),
             backlight_ramp_step_delay_ms: 0,
+            disable_subscription: false,
         }
     }
 }
