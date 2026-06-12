@@ -113,31 +113,27 @@ only as `[dev-dependencies]`).
 
 **Topological publish order** (release-plz computes this, listed for reference):
 `tisvlay-core`, `tisvlay-ssdp` → `tisvlay-lg`, `tisvlay-mock` → `tisvlay-backends`
-→ `tisvlay`/`tisvlayd`/`tisvlay-session`/`tisvlay-tray`/`tisvlay-gui`.
+→ `tisvlay`/`tisvlay-cli`/`tisvlayd`/`tisvlay-session`/`tisvlay-tray`/`tisvlay-gui`.
 
-## Part C — Claim the `tisvlay` name (rename `tisvlay-cli` → `tisvlay`)
+## Part C — Claim the `tisvlay` name (client-SDK facade, not a CLI rename)
 
-The binary is **already** `tisvlay` (`[[bin]] name = "tisvlay"`), so user-facing
-naming and the nfpm install paths (`target/.../release/tisvlay`) are unchanged —
-only the crate/package id changes.
+First pass renamed `tisvlay-cli` → `tisvlay` so the CLI owned the prime name; on
+reflection that was **reverted** in favor of a **client-SDK facade**, which
+claims the name with content genuinely useful to external consumers — e.g. a
+Rust desktop-environment applet (Cosmic, …) that wants to drive the stack.
 
-- `git mv crates/tisvlay-cli crates/tisvlay`.
-- `crates/tisvlay/Cargo.toml`: `name = "tisvlay"`; keep `[[bin]] name = "tisvlay"`;
-  `publish = true`.
-- `Cargo.toml` (root): update the `members` and `default-members` path
-  `crates/tisvlay-cli` → `crates/tisvlay`. **No `[workspace.dependencies]` change**
-  (review finding) — `tisvlay-cli` is bin-only and nothing depends on it as a
-  crate, so it isn't listed there (unlike `tisvlayd`/`-session`/`-gui`, which are
-  exposed as libs for the harness).
-- **Grep-and-update every `tisvlay-cli` / `tisvlay_cli` reference** (full list per
-  review): root `Cargo.toml` members; `packaging/nix/package.nix` + `justfile`
-  (only if any `-p` survives Part A); `.claude/CLAUDE.md`; `docs/design.md` /
-  `docs/testing.md` / `docs/ideas/*`; `scripts/bench_build_baselines.py`; and a
-  comment in `crates/tisvlay-cli/tests/pair_snapshot.rs`. No Rust `use tisvlay_cli`
-  exists (bin-only). No backwards-compat shim (project policy).
-- **Fallback (not chosen):** a facade `tisvlay` *lib* crate re-exporting
-  `tisvlay-core` — pick this only if a public library API ("TV-control SDK")
-  becomes a goal; it gives no `cargo install` and weaker content.
+- **Keep the CLI as `tisvlay-cli`** (`cargo install tisvlay-cli`; the binary is
+  still `tisvlay`). The first-pass rename + its doc/script ref churn is undone.
+- **New `crates/tisvlay` lib = the client SDK.** `src/lib.rs` re-exports
+  `tisvlay-core`'s D-Bus *client* surface — `DaemonClient`, `SessionClient`,
+  `StateWatcher`, `StateEvent`, and the state/error types — behind a `dbus`
+  feature (default-on), so `cargo add tisvlay` yields `tisvlay::DaemonClient`. The
+  vendor-backend traits (`TvBackend` etc., for adding TV *hardware*) are
+  deliberately **not** re-exported — those aren't a consumer's concern.
+- The stable contract is the D-Bus interface itself (`org.tisvlay.Manager1` /
+  `Tv1.*`); the crate is the ergonomic Rust wrapper, explicitly unstable pre-1.0.
+- Publish set becomes **11 crates** (adds the facade); `default-members` keeps the
+  shipping CLI binary at `crates/tisvlay-cli`.
 
 ## Part D — release-plz automation
 
