@@ -1,18 +1,19 @@
-# release-plz automates crates.io publishing. On push to `main` it opens a
+# release-plz drives crates.io. On push to `main` it opens/updates a
 # "release" PR that bumps the shared workspace version (`version.workspace`)
-# and updates the per-crate CHANGELOGs; merging that PR makes the next run
-# publish every publishable crate (`publish = true`) to crates.io in
-# dependency order. The dev-only crates (`publish = false`: tisvlay-test /
-# tisvlay-harness) are skipped automatically.
+# and the per-crate CHANGELOGs (.github/workflows/release-plz.yml). Merging
+# that PR lands the bump; the publish of the publishable crates
+# (`publish = true`) to crates.io — in dependency order, skipping the
+# `publish = false` dev crates (tisvlay-test / tisvlay-harness) — runs from
+# .github/workflows/release.yml when you promote the GitHub release to a
+# full release, i.e. AFTER you've verified the distro artifacts (crates.io
+# is irreversible, so it comes last).
 #
-# Distro packages (.deb/.rpm/.pkg) and the GitHub release stay owned by
-# `.github/workflows/release.yml`, which fires on a manually-pushed `v*`
-# tag — so disable release-plz's own GitHub release here to avoid
-# double-creating it. release-plz still makes its per-package
-# `{{ package }}-v{{ version }}` git tags (its changelog anchors); those
-# don't match release.yml's `v*` trigger, so the two release paths stay
-# decoupled rather than colliding. (A single `v{{ version }}` tag is not
-# used: release-plz tags every published package, which would collide on a
-# shared-version workspace.)
+# `git_release_enable = false`: release-plz creates no GitHub release —
+# `release.yml` owns that (the draft you cut on the `v*` tag). release-plz
+# still makes its per-package `{{ package }}-v{{ version }}` git tags (its
+# changelog anchors); those don't match `release.yml`'s `v*` trigger, so
+# they don't re-fire the distro build. (A single `v{{ version }}` tag is
+# not used: release-plz tags every published package, which would collide
+# on a shared-version workspace.)
 [workspace]
 git_release_enable = false
