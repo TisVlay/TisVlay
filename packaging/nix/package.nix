@@ -130,11 +130,25 @@ rustPlatform.buildRustPackage (finalAttrs: {
   '';
   dontPatchELF = true;
 
+  # Build scoping comes from `workspace.default-members` in the root
+  # Cargo.toml (the shipping binary set) — buildRustPackage's bare
+  # `cargo build` picks it up, so the crate list lives in one place
+  # instead of being repeated here as `-p` flags. Without it the default
+  # build would also compile the dev-only crates (tisvlay-mock /
+  # tisvlay-test / tisvlay-harness).
+
+  # Ship the daemon's "Mock (testing)" backend for field debugging, in
+  # step with the justfile's package-build. Scoped to tisvlayd — only the
+  # daemon builds the backend registry.
+  buildFeatures = [ "tisvlayd/mock" ];
+
   useNextest = true;
 
-  # Tests need the `mock` feature (and other test-only features) across
-  # the workspace; the build itself ships default features only.
-  cargoTestFlags = [ "--all-features" ];
+  # Tests opt back into the full workspace: `--workspace` because
+  # `default-members` would otherwise narrow the default `cargo test` to
+  # the shipping binaries, and the dev-only crates' tests (which need the
+  # `mock` and other test-only features) are still wanted here.
+  cargoTestFlags = [ "--workspace" "--all-features" ];
 
   meta = {
     description = "TV Display control for Linux";

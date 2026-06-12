@@ -1,12 +1,12 @@
 [package]
 name = "tisvlay-mock"
-description = "In-memory mock backend for tisvlay development and testing"
+description = "In-memory mock backend for tisvlay development, testing, and field debugging"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true

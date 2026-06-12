@@ -87,6 +87,10 @@ tisvlay/
 │   │   └── src/
 │   │       └── lib.rs            # BackendRegistry, vendor registration, MockHandle re-export
 │   │
+│   ├── tisvlay/                   # Client SDK (re-exports core's D-Bus client)
+│   │   └── src/
+│   │       └── lib.rs            # DaemonClient + StateWatcher + state-type re-exports
+│   │
 │   ├── tisvlay-cli/               # CLI tool
 │   │   └── src/
 │   │       └── main.rs           # clap-based CLI
