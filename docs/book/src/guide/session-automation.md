@@ -1,12 +1,46 @@
 # Session Automation
 
-> 📝 This page is a work in progress.
+Two services drive automation, each through its own profile kind:
 
-`tisvlay-session` maps desktop events — session lock/unlock, greeter wake,
-and idle timeout/resume — onto TV actions via your **user profile**. The
-daemon separately handles system lifecycle events (boot, suspend/resume,
-display DPMS blank/wake) via the **system profile**.
+- **`tisvlay-session`** (a per-user service) watches *your desktop session* — lock, unlock, lock-screen interaction, idle — and dispatches the **user profile** actions.
+- **`tisvlayd`** (the system daemon) watches *machine lifecycle* — boot, shutdown, suspend/resume, host-display power — and dispatches the **system profile** actions.
 
-For now, configure these through the user/system profile fields documented in
-[Configuration](./guide/configuration.md). A full guide with examples is
-coming here.
+Field-by-field configuration is in [Configuration](./configuration.md#profiles); which TVs react is governed by the [automation gate](./profiles.md#the-automation-gate).
+
+## Session events (user profile)
+
+| Event | Field | Default |
+|-------|-------|---------|
+| Session locks | `on_session_lock` | `screen_off` |
+| You interact with the lock screen | `on_greeter_wake` | `screen_on` |
+| Session unlocks | `on_session_unlock` | `screen_on` |
+| No input for `idle_timeout_seconds` | `on_idle_timeout` | `screen_off` |
+| Activity resumes after idle | `on_idle_resume` | `screen_on` |
+
+Notes:
+
+- **Greeter wake** exists so the TV is lit *before* you type your password: the moment you wiggle the mouse at the lock screen, `on_greeter_wake` fires — the later unlock is then a no-op. (Wayland sessions only.)
+- **Idle** is off by default (`idle_timeout_seconds = 0`). It is independent of your desktop's own screen-locking/DPMS timers — it blanks the TV even if the desktop never locks.
+
+A typical day with the defaults: lock the screen → TV blanks (OLED-safe, instant resume) → come back and tap a key → TV is already lit when the password prompt appears → unlock → nothing left to do. Suspend the machine → `on_sleep` powers the TV off → resume → `on_wake` wakes it via Wake-on-LAN.
+
+## System events (daemon)
+
+Boot (`on_startup`), shutdown (`on_shutdown`), reboot (`on_reboot`), all-sessions-ended (`on_no_session`), suspend (`on_sleep`), and resume (`on_wake`) are handled by the daemon — no desktop session required.
+
+The daemon can also mirror a **host display's power state** onto the TV that shares its connector: `on_dpms_off` / `on_dpms_on` fire when your desktop blanks or wakes the display the TV is attached to. Both default to `none` — they overlap with the lock/idle path above, so enable one path or the other, not both. A useful property when enabled: `on_dpms_on = "screen_on"` escalates to a full power-on for a TV in standby, so "wake the TV with my display" works from any state.
+
+## Checking that it's running
+
+Session events need the user service alive:
+
+```sh
+systemctl --user status tisvlay-session
+journalctl --user -u tisvlay-session -f
+```
+
+If an event fires but the TV does nothing, see [Automation does nothing](../operations/troubleshooting.md#automation-does-nothing).
+
+## Reliability
+
+Screen actions are verify-and-retry, not fire-and-forget: the daemon confirms the panel actually changed state, retries if it didn't, and escalates `screen_on` to a Wake-on-LAN power-on when the TV turns out to be in standby. Automation works from any starting state without you scripting the difference.
