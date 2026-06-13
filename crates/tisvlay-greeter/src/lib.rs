@@ -42,6 +42,9 @@ fn next_notify(transition: IdleTransition, last_sent: Option<bool>) -> Option<bo
 /// cleanly. It deliberately does *not* send a resume on exit — the user
 /// session that follows owns re-enabling the screen.
 pub async fn run(daemon: DaemonClient) -> Result<()> {
+    // Read once at greeter-session start. A config change made while a greeter
+    // is live applies on the next greeter session (each is a fresh process);
+    // the greeter is short-lived, so this is acceptable.
     let timeout_secs = daemon
         .greeter_idle_timeout_seconds()
         .await
@@ -66,22 +69,50 @@ pub async fn run(daemon: DaemonClient) -> Result<()> {
         let Some(idle) = next_notify(transition, last_sent) else {
             continue;
         };
-        match daemon.notify_greeter_idle(idle).await {
-            Ok(()) => last_sent = Some(idle),
-            Err(e) => warn!(error = %e, idle, "NotifyGreeterIdle failed; retrying on next edge"),
+        if notify_with_retry(&daemon, idle).await {
+            last_sent = Some(idle);
         }
     }
 
+    // Reached when the watch thread exits (the compositor socket closed). The
+    // common cause is the greeter session ending at login, where systemd is
+    // already stopping this unit — returning Ok is correct and avoids logging
+    // the normal teardown as an error. The disabled (timeout 0) path above
+    // also returns Ok; the unit's Restart=on-failure deliberately does NOT
+    // restart these clean exits (Restart=always would busy-loop the disabled
+    // case). A fresh greeter session re-creates the unit.
     warn!("Greeter idle watch ended (compositor disconnected); exiting");
     Ok(())
+}
+
+/// Send a greeter idle/resume notification, retrying briefly so a transient
+/// daemon hiccup (e.g. a restart) doesn't strand the screen state — at an
+/// unattended login screen there may be no further input edge to retry on.
+/// Returns whether it eventually succeeded.
+async fn notify_with_retry(daemon: &DaemonClient, idle: bool) -> bool {
+    const MAX_ATTEMPTS: u32 = 5;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match daemon.notify_greeter_idle(idle).await {
+            Ok(()) => return true,
+            Err(e) if attempt == MAX_ATTEMPTS => {
+                warn!(error = %e, idle, "NotifyGreeterIdle failed after retries");
+                return false;
+            }
+            Err(e) => {
+                debug!(attempt, error = %e, idle, "NotifyGreeterIdle failed; retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+    false
 }
 
 /// Start the idle watch, retrying while the greeter compositor comes up.
 ///
 /// Our unit is ordered after kwin's bus name, but the compositor's wayland
-/// socket can land a moment later — so retry (like the greeter's
-/// `QT_WAYLAND_RECONNECT` clients) rather than failing on the first attempt.
-/// If it never appears, log the wayland environment and let systemd restart.
+/// socket can land a moment later — so retry rather than failing on the first
+/// attempt. If it never appears, log the wayland environment and exit (the
+/// unit's Restart=on-failure brings us back).
 async fn connect_idle_watch(
     timeout_ms: u32,
     tx: &mpsc::UnboundedSender<IdleTransition>,
