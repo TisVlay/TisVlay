@@ -40,6 +40,7 @@ tisvlay/
 │   │       ├── logging.rs        # Shared logging init with journald (feature-gated)
 │   │       ├── state.rs          # TvState, PowerState, InputInfo
 │   │       ├── wol.rs            # Wake-on-LAN
+│   │       ├── wayland.rs        # Policy-free ext-idle-notify-v1 transport (feature-gated; session + greeter)
 │   │       └── error.rs          # Error types
 │   │
 │   ├── tisvlay-lg/                # LG WebOS vendor implementation
@@ -116,8 +117,13 @@ tisvlay/
 │   │       ├── main.rs           # Entry point (thin, delegates to lib)
 │   │       ├── session_dbus.rs   # org.tisvlay.Session1 D-Bus interface
 │   │       ├── session_monitor.rs # Session lock/unlock detection
-│   │       ├── wayland_idle.rs   # Wayland greeter wake detection
+│   │       ├── wayland_idle.rs   # Greeter-wake policy over tisvlay-core's shared wayland idle transport
 │   │       └── idle.rs           # Idle timeout detection
+│   │
+│   ├── tisvlay-greeter/           # Login-greeter idle client (lib + bin)
+│   │   └── src/
+│   │       ├── lib.rs            # run() loop: ext-idle-notify-v1 → Manager1.NotifyGreeterIdle; next_notify dedup
+│   │       └── main.rs           # Entry point (thin, delegates to lib)
 │   │
 │   ├── tisvlay-tray/              # System tray app
 │   │   └── src/
