@@ -194,8 +194,11 @@ impl SessionState {
     pub fn effective_idle_timeout(&self) -> u64 {
         self.profiles
             .values()
+            // A TV with a timeout but no idle action would pull the single
+            // shared clock shorter without ever acting — exclude it, matching
+            // the greeter resolver (`TvManager::greeter_idle_timeout_seconds`).
+            .filter(|p| p.idle_timeout_seconds > 0 && p.on_idle_timeout != SessionAction::None)
             .map(|p| p.idle_timeout_seconds)
-            .filter(|&t| t > 0)
             .min()
             .unwrap_or(0)
     }
@@ -928,4 +931,47 @@ pub async fn update_user_profile(
 
     info!(profile_uuid = %uuid, name = %trimmed, "User profile updated");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with(profiles: HashMap<String, ResolvedUserProfile>) -> SessionState {
+        let (idle_timeout_tx, _) = watch::channel(None);
+        SessionState {
+            profiles,
+            user_config: UserConfig::default(),
+            admin_user_default: UserProfileConfig::full_default(),
+            admin_user_profiles: HashMap::new(),
+            tv_ids: Vec::new(),
+            idle_timeout_tx,
+        }
+    }
+
+    fn profile(idle_timeout_seconds: u64, on_idle_timeout: SessionAction) -> ResolvedUserProfile {
+        ResolvedUserProfile {
+            idle_timeout_seconds,
+            on_idle_timeout,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn effective_idle_timeout_ignores_actionless_tv() {
+        let mut profiles = HashMap::new();
+        // Timeout set, but no idle action: must not govern the shared clock,
+        // matching the greeter resolver.
+        profiles.insert("a".to_string(), profile(600, SessionAction::None));
+        assert_eq!(state_with(profiles).effective_idle_timeout(), 0);
+    }
+
+    #[test]
+    fn effective_idle_timeout_is_min_nonzero_across_acting_tvs() {
+        let mut profiles = HashMap::new();
+        profiles.insert("a".to_string(), profile(600, SessionAction::ScreenOff));
+        profiles.insert("b".to_string(), profile(300, SessionAction::ScreenOff));
+        profiles.insert("c".to_string(), profile(0, SessionAction::ScreenOff)); // disabled
+        assert_eq!(state_with(profiles).effective_idle_timeout(), 300);
+    }
 }
