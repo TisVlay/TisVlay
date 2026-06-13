@@ -15,7 +15,11 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None at present._
+- [`coalesce-deferred-screen-actions.md`](coalesce-deferred-screen-actions.md) —
+  coalesce screen on/off to a per-TV desired state so actions deferred while a TV
+  is reconnecting (e.g. a greeter blank during a cold boot) apply the latest
+  intent on reconnect, and a login's `screen_on` supersedes a stale greeter
+  `screen_off`.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
