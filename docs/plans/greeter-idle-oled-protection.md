@@ -275,7 +275,28 @@ The v1 target (one TV = the desktop) is exact.
   `docs/ideas/event-driven-power-management.md:40`. **Retire this plan file into a
   design.md subsection** per `docs/plans/README.md` convention.
 
-## Implementation note
-This file is the tracked baseline. Implement PR 1 (default flip) first, then
-PR 2 (greeter idle client). Retire it into `docs/design.md` when the work
-merges, per `docs/plans/README.md`.
+## Status: implemented (branch `feat/power-default`)
+
+Shipped as a commit series: the DPMS-mirror default flip; the
+`tisvlay-core::wayland` transport extraction; the `tisvlay-greeter` client;
+system-profile idle fields + daemon dispatch + `Manager1.NotifyGreeterIdle` /
+`GreeterIdleTimeoutSeconds` + GUI rows; and packaging (systemd user unit +
+NixOS `greeter.enable` + nfpm). Confirmed working on hardware
+(plasma-login-manager greeter: 30 s idle → blank, activity → restore).
+
+Deviations from the plan above, learned on hardware:
+
+- **The connect path ended up simpler, not more complex.** A socket-discovery
+  / `from_socket` detour was added while chasing a connection failure, then
+  reverted to plain `connect_to_env` once the real cause surfaced: the
+  `tisvlay-greeter` binary lacked `libwayland-client.so` on its RUNPATH
+  (package.nix's `postFixup` rpath splice covered only gui/session). Fixed in
+  packaging; the greeter connects with a lean startup retry.
+- **`on_login` not built, `on_no_session` removed** — see the Decision section
+  above. The greeter idle/resume pair is the complete OLED mechanism;
+  interactive logins are covered by the resume edge.
+- The login-time safety-net testing in Verification is moot (no `on_login`).
+
+Retire this file into `docs/design.md` when the PR merges, per
+`docs/plans/README.md` — the durable content already lives in the design.md
+"Greeter idle client" subsection.
