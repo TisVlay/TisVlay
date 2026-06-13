@@ -151,10 +151,10 @@ pub fn start_idle_watch(
 /// socket rather than the `WAYLAND_DISPLAY` environment.
 ///
 /// The greeter client uses this: its `systemd.user` unit doesn't carry
-/// `WAYLAND_DISPLAY`, and the greeter compositor's socket is not necessarily
-/// `wayland-0` (a lingering user manager can take that name), so the greeter
-/// discovers the actual `wayland-N` socket under `XDG_RUNTIME_DIR` and connects
-/// to it explicitly. `connect_to_env`'s `wayland-0` default would miss it.
+/// `WAYLAND_DISPLAY`, and wayland-client's `connect_to_env` requires it (returns
+/// `NoCompositor` when unset; it does not fall back to `wayland-0` the way
+/// libwayland's C client does). So the greeter discovers the actual `wayland-N`
+/// socket under `XDG_RUNTIME_DIR` and connects to it via this entry point.
 pub fn start_idle_watch_on_socket(
     stream: UnixStream,
     timeout_ms: u32,

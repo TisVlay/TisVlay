@@ -112,11 +112,12 @@ async fn notify_with_retry(daemon: &DaemonClient, idle: bool) -> bool {
 /// Discover the greeter compositor's wayland socket under `XDG_RUNTIME_DIR`
 /// and start the idle watch, retrying while the socket appears.
 ///
-/// The unit is ordered after kwin's bus name, but the socket can land a moment
-/// later, and the greeter `systemd.user` unit carries no `WAYLAND_DISPLAY` (and
-/// the socket is not necessarily `wayland-0` — a lingering user manager can hold
-/// that name), so we connect to the discovered socket explicitly and retry
-/// rather than failing on the first attempt. `connect_to_env` would miss it.
+/// The greeter `systemd.user` unit carries no `WAYLAND_DISPLAY`, and
+/// wayland-client's `connect_to_env` *requires* it — with it unset, `connect_to_env`
+/// returns `NoCompositor` rather than falling back to `wayland-0` the way
+/// libwayland's C client does. So we discover the actual `wayland-<n>` socket
+/// under `XDG_RUNTIME_DIR` and connect to it explicitly. The retry covers the
+/// socket landing a moment after our unit (ordered after kwin's bus name) starts.
 async fn connect_idle_watch(
     timeout_ms: u32,
     tx: &mpsc::UnboundedSender<IdleTransition>,
