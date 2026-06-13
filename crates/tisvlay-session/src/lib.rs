@@ -3,7 +3,6 @@
 //! The binary entry point lives in `main.rs`; this library exposes the
 //! modules that integration tests need to drive.
 
-pub mod idle;
 pub mod session_dbus;
 pub mod session_monitor;
 pub mod wayland_idle;
@@ -170,12 +169,13 @@ impl SessionState {
     ///
     /// # Design tradeoff: single shared timer
     ///
-    /// A single `IdleMonitor` fires at the minimum non-zero timeout across all TVs.
-    /// When `IdleTimeout` fires, `get_action_for_event` applies *each TV's own*
-    /// `on_idle_timeout` action — so a TV with a 30-minute timeout won't do anything
-    /// extra, but it *will* receive the event at 5 minutes if another TV has a shorter
-    /// timeout. Per-TV timers (multiple `IdleMonitor` instances) would be more precise
-    /// but add significant complexity for a marginal gain in the common single-TV case.
+    /// A single `ext-idle-notify-v1` idle notification fires at the minimum
+    /// non-zero timeout across all TVs. When `IdleTimeout` fires,
+    /// `get_action_for_event` applies *each TV's own* `on_idle_timeout` action —
+    /// so a TV with a 30-minute timeout won't do anything extra, but it *will*
+    /// receive the event at 5 minutes if another TV has a shorter timeout. Per-TV
+    /// notifications would be more precise but add significant complexity for a
+    /// marginal gain in the common single-TV case.
     ///
     /// The daemon has a deliberate parallel for the login greeter
     /// (`TvManager::greeter_idle_timeout_seconds` + its `GreeterIdle`/`GreeterResume`

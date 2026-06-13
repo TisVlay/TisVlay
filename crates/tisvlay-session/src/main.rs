@@ -17,7 +17,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{DaemonClient, UserConfig, UserProfileConfig, absolutize};
 use tisvlay_session::SessionState;
-use tisvlay_session::idle::IdleMonitor;
 use tisvlay_session::session_monitor::{SessionEvent, SessionMonitor};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
@@ -179,31 +178,29 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Start Wayland idle monitor for lock wake detection
-    match tisvlay_session::wayland_idle::start_wayland_idle_monitor(event_tx.clone(), is_locked) {
+    // Compute the effective in-session idle timeout (minimum non-zero across
+    // all TVs; `None` = disabled). Fixed at launch — a reload requires a
+    // restart to re-register the notification (see the SIGHUP handler).
+    let idle_timeout_ms = {
+        let s = state.read().await;
+        let secs = s.effective_idle_timeout();
+        (secs > 0).then(|| secs.saturating_mul(1000).min(u32::MAX as u64) as u32)
+    };
+
+    // Start the Wayland presence watches: lock-wake (always) plus the
+    // in-session idle watch when a timeout is configured.
+    match tisvlay_session::wayland_idle::start_wayland_idle_monitor(
+        event_tx.clone(),
+        is_locked,
+        idle_timeout_ms,
+    ) {
         Ok(()) => {
-            info!("Wayland lock wake detection enabled");
+            info!(idle_timeout_ms = ?idle_timeout_ms, "Wayland presence detection enabled");
         }
         Err(e) => {
             // Not fatal - Wayland may not be available (X11, SSH, etc.)
-            warn!("Wayland lock wake detection unavailable: {}", e);
+            warn!("Wayland presence detection unavailable: {}", e);
         }
-    }
-
-    // Start idle monitor if enabled (using minimum non-zero timeout across all profiles)
-    let idle_timeout = {
-        let s = state.read().await;
-        s.effective_idle_timeout()
-    };
-
-    if idle_timeout > 0 {
-        info!(timeout = idle_timeout, "Starting idle monitor");
-        let idle_monitor = IdleMonitor::new(idle_timeout, event_tx.clone());
-        tokio::spawn(async move {
-            idle_monitor.run().await;
-        });
-    } else {
-        debug!("Idle monitoring disabled (no TVs have idle_timeout_seconds set)");
     }
 
     // Spawn event handler

@@ -54,10 +54,6 @@ trait ScreenSaver {
     /// `active` is true when screen is locked, false when unlocked.
     #[zbus(signal)]
     fn active_changed(&self, active: bool) -> zbus::Result<()>;
-
-    /// Get the session idle time in seconds.
-    /// Used by the idle timeout feature.
-    fn get_session_idle_time(&self) -> zbus::Result<u32>;
 }
 
 /// Monitors D-Bus session events.
@@ -150,19 +146,4 @@ async fn monitor_screen_saver(
     }
 
     Ok(())
-}
-
-/// Get the session idle time in seconds from the ScreenSaver interface.
-///
-/// Used by the idle timeout feature. Note: This may not be supported on all
-/// platforms (e.g., KDE Plasma Wayland). The idle.rs module handles failures gracefully.
-pub async fn get_session_idle_time(conn: &zbus::Connection) -> Result<u32> {
-    let proxy = ScreenSaverProxy::new(conn)
-        .await
-        .context("Failed to create ScreenSaver proxy")?;
-
-    proxy
-        .get_session_idle_time()
-        .await
-        .context("Failed to get session idle time")
 }

@@ -44,7 +44,7 @@ impl FakeScreenSaver {
     #[instrument(skip_all)]
     pub async fn register(conn: &zbus::Connection) -> zbus::Result<Self> {
         conn.object_server()
-            .at(OBJECT_PATH, ScreenSaverIface { idle_time: 0 })
+            .at(OBJECT_PATH, ScreenSaverIface)
             .await?;
         conn.request_name(SERVICE_NAME).await?;
         let iface = conn
@@ -62,24 +62,12 @@ impl FakeScreenSaver {
         debug!(active, "fake screensaver emitting ActiveChanged");
         ScreenSaverIface::active_changed(self.iface.signal_emitter(), active).await
     }
-
-    /// Set the idle time returned by `GetSessionIdleTime`.
-    pub async fn set_idle_time(&self, seconds: u32) {
-        let mut iface = self.iface.get_mut().await;
-        iface.idle_time = seconds;
-    }
 }
 
-pub(crate) struct ScreenSaverIface {
-    idle_time: u32,
-}
+pub(crate) struct ScreenSaverIface;
 
 #[zbus::interface(name = "org.freedesktop.ScreenSaver")]
 impl ScreenSaverIface {
-    fn get_session_idle_time(&self) -> u32 {
-        self.idle_time
-    }
-
     #[zbus(signal)]
     async fn active_changed(emitter: &SignalEmitter<'_>, active: bool) -> zbus::Result<()>;
 }
