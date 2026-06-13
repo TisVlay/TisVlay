@@ -410,8 +410,9 @@ in
       documentation = [ "https://github.com/ruffsl/tisvlay" ];
       after = [ "plasma-login-kwin_wayland.service" ];
       requires = [ "plasma-login-kwin_wayland.service" ];
+      # partOf stops us with the greeter session; the target itself bindsTo the
+      # compositor, so a compositor death stops the target and thus us.
       partOf = [ "plasma-login-wayland.target" ];
-      bindsTo = [ "plasma-login-wayland.target" ];
       # Deliberately NOT wantedBy graphical-session.target (that is every real
       # user session); attached to the greeter target via the drop-in below.
       environment = {
