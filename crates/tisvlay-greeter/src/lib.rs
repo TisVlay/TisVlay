@@ -16,7 +16,9 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 use tisvlay_core::DaemonClient;
-use tisvlay_core::wayland::{IdleNotification, IdleTransition, start_idle_watch_on_socket};
+use tisvlay_core::wayland::{
+    IdleNotification, IdleTransition, WatchHandle, start_idle_watch_on_socket,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -63,7 +65,10 @@ pub async fn run(daemon: DaemonClient) -> Result<()> {
     info!(timeout_secs, "Starting greeter idle watch");
 
     let (tx, mut rx) = mpsc::unbounded_channel::<(u32, IdleTransition)>();
-    connect_idle_watch(timeout_ms, &tx).await?;
+    // Hold the watch handle for the lifetime of `run`; dropping it would stop
+    // the watch. The greeter never re-registers (it's short-lived, one process
+    // per greeter session), so it just keeps the handle until it exits.
+    let _watch = connect_idle_watch(timeout_ms, &tx).await?;
     // The watch thread holds its own sender clone; drop ours so `rx` closes
     // when the compositor disconnects (greeter session ends).
     drop(tx);
@@ -132,12 +137,12 @@ async fn notify_with_retry(daemon: &DaemonClient, idle: bool) -> bool {
 async fn connect_idle_watch(
     timeout_ms: u32,
     tx: &mpsc::UnboundedSender<(u32, IdleTransition)>,
-) -> Result<()> {
+) -> Result<WatchHandle> {
     const MAX_ATTEMPTS: u32 = 15;
     let mut last_err = anyhow!("no connection attempt made");
     for attempt in 1..=MAX_ATTEMPTS {
         match try_connect(timeout_ms, tx.clone()) {
-            Ok(()) => return Ok(()),
+            Ok(handle) => return Ok(handle),
             Err(e) => {
                 debug!(attempt, error = %e, "greeter compositor not ready; retrying");
                 last_err = e;
@@ -154,7 +159,10 @@ async fn connect_idle_watch(
     Err(last_err.context("connect to greeter compositor"))
 }
 
-fn try_connect(timeout_ms: u32, tx: mpsc::UnboundedSender<(u32, IdleTransition)>) -> Result<()> {
+fn try_connect(
+    timeout_ms: u32,
+    tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
+) -> Result<WatchHandle> {
     let path =
         greeter_socket_path().ok_or_else(|| anyhow!("no wayland socket under XDG_RUNTIME_DIR"))?;
     let stream = UnixStream::connect(&path)

@@ -354,6 +354,65 @@ pub async fn event_handler(
     info!("Event handler stopped");
 }
 
+/// Supervise the Wayland presence watch so an in-session idle-timeout change
+/// (via the GUI, a D-Bus `ReloadConfig`, or SIGHUP — all of which update
+/// [`SessionState`]) is applied **without a session restart**. The watch
+/// registers its `ext-idle-notify-v1` notification with the timeout captured at
+/// start, so re-registering means restarting it: this task polls the effective
+/// timeout and, when it changes, drops the old [`WatchHandle`](wayland_idle::WatchHandle)
+/// (stopping the watch + its policy task) and starts a fresh watch with the new
+/// timeout. The lock-wake notification (fixed at 200 ms) is re-registered too,
+/// transparently. Polling — rather than threading a notification through every
+/// profile mutator — keeps this self-contained and robust to any change source;
+/// the change applies within one poll interval, effectively live for a setting
+/// that changes rarely.
+pub async fn idle_watch_supervisor(
+    event_tx: mpsc::UnboundedSender<session_monitor::SessionEvent>,
+    is_locked: Arc<std::sync::atomic::AtomicBool>,
+    state: Arc<RwLock<SessionState>>,
+) {
+    const POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    let effective_ms = |s: &SessionState| -> Option<u32> {
+        let secs = s.effective_idle_timeout();
+        (secs > 0).then(|| secs.saturating_mul(1000).min(u32::MAX as u64) as u32)
+    };
+    let start = |timeout_ms: Option<u32>| match wayland_idle::start_wayland_idle_monitor(
+        event_tx.clone(),
+        is_locked.clone(),
+        timeout_ms,
+    ) {
+        Ok(handle) => {
+            info!(idle_timeout_ms = ?timeout_ms, "Wayland presence detection enabled");
+            Some(handle)
+        }
+        Err(e) => {
+            warn!("Wayland presence detection unavailable: {}", e);
+            None
+        }
+    };
+
+    let mut current = effective_ms(&*state.read().await);
+    let mut handle = start(current);
+    let mut ticker = tokio::time::interval(POLL);
+    loop {
+        ticker.tick().await;
+        let next = effective_ms(&*state.read().await);
+        if next != current {
+            info!(
+                old_ms = ?current,
+                new_ms = ?next,
+                "in-session idle timeout changed; re-registering Wayland watch",
+            );
+            // Drop the old handle first so the old watch stops before the new
+            // one binds (avoids a momentary double notification).
+            drop(handle.take());
+            handle = start(next);
+            current = next;
+        }
+    }
+}
+
 // =============================================================================
 // User-profile CRUD
 //

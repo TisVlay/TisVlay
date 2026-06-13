@@ -178,29 +178,16 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Compute the effective in-session idle timeout (minimum non-zero across
-    // all TVs; `None` = disabled). Fixed at launch — a reload requires a
-    // restart to re-register the notification (see the SIGHUP handler).
-    let idle_timeout_ms = {
-        let s = state.read().await;
-        let secs = s.effective_idle_timeout();
-        (secs > 0).then(|| secs.saturating_mul(1000).min(u32::MAX as u64) as u32)
-    };
-
-    // Start the Wayland presence watches: lock-wake (always) plus the
-    // in-session idle watch when a timeout is configured.
-    match tisvlay_session::wayland_idle::start_wayland_idle_monitor(
-        event_tx.clone(),
-        is_locked,
-        idle_timeout_ms,
-    ) {
-        Ok(()) => {
-            info!(idle_timeout_ms = ?idle_timeout_ms, "Wayland presence detection enabled");
-        }
-        Err(e) => {
-            // Not fatal - Wayland may not be available (X11, SSH, etc.)
-            warn!("Wayland presence detection unavailable: {}", e);
-        }
+    // Wayland presence watches (lock-wake + in-session idle), supervised so an
+    // idle-timeout change (GUI / D-Bus ReloadConfig / SIGHUP) re-registers the
+    // notification without a session restart. The supervisor owns the watch
+    // lifecycle for the life of the process.
+    {
+        let sup_state = state.clone();
+        let sup_event_tx = event_tx.clone();
+        tokio::spawn(async move {
+            tisvlay_session::idle_watch_supervisor(sup_event_tx, is_locked, sup_state).await;
+        });
     }
 
     // Spawn event handler
@@ -290,8 +277,9 @@ async fn wait_for_signals(
                             tvs = s.tv_ids.len(),
                             "Configuration reloaded"
                         );
-                        // Note: idle timeout changes require restart to take effect
-                        // since the idle monitor is started once at launch
+                        // An idle-timeout change here is picked up by
+                        // `idle_watch_supervisor`, which re-registers the
+                        // Wayland watch — no restart needed.
                     }
                     Err(e) => {
                         error!("Failed to reload config: {}", e);
