@@ -107,24 +107,32 @@ pub fn start_wayland_idle_monitor(
 /// Lock-screen wake decision for one idle transition.
 ///
 /// Returns `(next_lock_wake_sent, fire)`. Fires `LockWake` on the first
-/// `Resumed` (user activity) seen while the screen is locked, at most once per
-/// lock cycle; the latch is cleared whenever the screen is observed unlocked,
-/// so the next lock cycle can wake again. The transport forwards only
-/// idle/resume edges, so the reset is observed on the next such edge rather
-/// than on every wayland event as before — sufficient in practice, since any
-/// pause longer than the 200 ms threshold produces one.
+/// `Resumed` (user activity) of each idle cycle while the screen is locked, at
+/// most once per cycle. The next `Idled` clears the latch (a fresh idle cycle
+/// begins), so a panel that re-blanks within one lock session wakes again, and
+/// a rapid unlock→relock that produced no "unlocked" edge still wakes on the
+/// next idle cycle. While unlocked the latch is never set, so no wake fires.
+/// Because the latch is per idle cycle (not per lock session), a watch
+/// re-registration mid-session can't strand or duplicate a wake.
 fn lock_wake_policy(
     transition: IdleTransition,
     is_locked: bool,
     lock_wake_sent: bool,
 ) -> (bool, bool) {
-    let fire = transition == IdleTransition::Resumed && is_locked && !lock_wake_sent;
-    let next_sent = if is_locked {
-        lock_wake_sent || fire
-    } else {
-        false
-    };
-    (next_sent, fire)
+    match transition {
+        // A fresh idle cycle clears the latch so the next resume can wake,
+        // independent of any "unlocked" edge — robust to a panel that re-blanks
+        // within one lock session and to a rapid unlock→relock. Idle itself
+        // never fires a wake.
+        IdleTransition::Idled => (false, false),
+        IdleTransition::Resumed => {
+            let fire = is_locked && !lock_wake_sent;
+            // Stay latched (meaningful only while locked) until the next Idled,
+            // so a burst of resume events doesn't spam LockWake.
+            let next_sent = is_locked && (lock_wake_sent || fire);
+            (next_sent, fire)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -132,8 +140,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fires_once_per_lock_cycle_on_resume() {
-        // Idled while locked: no fire, latch unchanged.
+    fn fires_once_per_idle_cycle_on_resume() {
+        // Idled while locked: no fire, latch cleared (new idle cycle).
         assert_eq!(
             lock_wake_policy(IdleTransition::Idled, true, false),
             (false, false)
@@ -147,6 +155,26 @@ mod tests {
         assert_eq!(
             lock_wake_policy(IdleTransition::Resumed, true, true),
             (true, false)
+        );
+    }
+
+    #[test]
+    fn idled_clears_latch_so_each_idle_cycle_can_wake() {
+        // First resume of a locked idle cycle fires and latches.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, false),
+            (true, true)
+        );
+        // A fresh Idled while still locked clears the latch — even across a
+        // rapid unlock/relock that produced no "unlocked" edge.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Idled, true, true),
+            (false, false)
+        );
+        // So the next resume fires again.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, false),
+            (true, true)
         );
     }
 
