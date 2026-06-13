@@ -388,7 +388,7 @@ pub struct UserProfileBody {
     pub name:                 String,
     pub on_session_lock:      Option<SessionAction>,
     pub on_session_unlock:    Option<SessionAction>,
-    pub on_greeter_wake:      Option<SessionAction>,
+    pub on_lock_wake:      Option<SessionAction>,
     pub on_idle_timeout:      Option<SessionAction>,
     pub on_idle_resume:       Option<SessionAction>,
     pub idle_timeout_seconds: Option<u64>,
@@ -531,7 +531,7 @@ on_shutdown = "screen_off"
 name = "default"
 on_session_lock = "screen_off"   # screen_off | power_off | none
 on_session_unlock = "screen_on"  # screen_on | power_on | none
-on_greeter_wake = "screen_on"    # unblank on lock screen interaction (Wayland only)
+on_lock_wake = "screen_on"    # unblank on lock screen interaction (Wayland only)
 idle_timeout_seconds = 0         # 0 to disable
 on_idle_timeout = "none"
 on_idle_resume = "screen_on"     # action when activity resumes after idle
@@ -641,8 +641,8 @@ stateDiagram-v2
 |-------|---------------|--------|-------|
 | System boot | Power on | `on_startup` (system profile) | WoL → connect → screen on → input switch |
 | Session lock | Screen off | `on_session_lock` (user profile) | Instant resume on unlock |
-| Greeter wake | Screen on | `on_greeter_wake` (user profile) | User interacted with lock screen (Wayland only) |
-| Session unlock | Screen on | `on_session_unlock` (user profile) | Skipped if GreeterWake already unblanked |
+| Lock wake | Screen on | `on_lock_wake` (user profile) | User interacted with lock screen (Wayland only) |
+| Session unlock | Screen on | `on_session_unlock` (user profile) | Skipped if LockWake already unblanked |
 | User idle timeout | Screen off | `on_idle_timeout` (user profile) | Fires at minimum across all TVs |
 | Activity resumes | Screen on | `on_idle_resume` (user profile) | After idle timeout |
 | System suspend | Power off | `on_sleep` (system profile) | Network unavailable during sleep |
@@ -984,7 +984,7 @@ A narrow, daemon-only first slice has **shipped**: the [Host display DPMS watche
 | PowerOff + SessionLocked race on sleep | Daemon `powered_off` flag prevents blocking connect to dead TV |
 | Screen on/off returns 500 when idempotent | LG backend treats application errors as success for screen commands |
 | DHCP IP changes | Use MAC for WoL; re-discover via SSDP |
-| Greeter wake unavailable on X11 | Wayland `ext-idle-notify-v1` only; falls back gracefully |
+| Lock wake unavailable on X11 | Wayland `ext-idle-notify-v1` only; falls back gracefully |
 | GUI is Wayland-only | `tisvlay-gui` builds against `slint = ["backend-winit-wayland"]` and `wl-clipboard-rs`; X11 sessions run the daemon, CLI, and tray (ksni) but the settings window doesn't launch. Aligns with `tisvlay-session`'s Wayland-best-effort posture above and trims `x11rb` from the dep graph. See [build.md](build.md). |
 | Backlight write requires workaround | SSAP subscriptions work for reading; writing requires Luna `createAlert` workaround (direct setSystemSettings returns 401) |
 

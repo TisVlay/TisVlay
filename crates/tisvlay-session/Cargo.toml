@@ -21,7 +21,7 @@ name = "tisvlay-session"
 path = "src/main.rs"
 
 [dependencies]
-# Wayland idle detection (greeter wake) comes from tisvlay-core's `wayland` feature.
+# Wayland idle detection (lock wake) comes from tisvlay-core's `wayland` feature.
 tisvlay-core = { workspace = true, features = ["dbus", "logging", "wayland"] }
 tokio = { workspace = true }
 zbus = { workspace = true }

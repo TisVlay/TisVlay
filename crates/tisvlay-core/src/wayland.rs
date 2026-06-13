@@ -2,7 +2,7 @@
 //!
 //! Policy-free: connects to the session's Wayland compositor and forwards raw
 //! idle/resume transitions on a channel. Consumers layer their own policy on
-//! top — the session service's lock-aware greeter-wake, or the greeter idle
+//! top — the session service's lock-screen wake, or the greeter idle
 //! client's screen blank/restore.
 //!
 //! Uses the standard `ext-idle-notify-v1` protocol (KDE Plasma 6+, Sway,

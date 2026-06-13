@@ -147,7 +147,7 @@ async fn get_effective_user_profile_includes_all_fields() {
     for key in [
         "on_session_lock",
         "on_session_unlock",
-        "on_greeter_wake",
+        "on_lock_wake",
         "idle_timeout_seconds",
         "on_idle_timeout",
         "on_idle_resume",

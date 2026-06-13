@@ -263,7 +263,7 @@ pub fn get_action_for_event(
     match event {
         session_monitor::SessionEvent::SessionLocked => profile.on_session_lock,
         session_monitor::SessionEvent::SessionUnlocked => profile.on_session_unlock,
-        session_monitor::SessionEvent::GreeterWake => profile.on_greeter_wake,
+        session_monitor::SessionEvent::LockWake => profile.on_lock_wake,
         session_monitor::SessionEvent::IdleTimeout => profile.on_idle_timeout,
         session_monitor::SessionEvent::IdleResume => profile.on_idle_resume,
     }
@@ -493,7 +493,7 @@ impl SessionState {
             name: display_name,
             on_session_lock: Some(resolved.on_session_lock),
             on_session_unlock: Some(resolved.on_session_unlock),
-            on_greeter_wake: Some(resolved.on_greeter_wake),
+            on_lock_wake: Some(resolved.on_lock_wake),
             on_idle_timeout: Some(resolved.on_idle_timeout),
             on_idle_resume: Some(resolved.on_idle_resume),
             idle_timeout_seconds: Some(resolved.idle_timeout_seconds),

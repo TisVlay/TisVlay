@@ -262,7 +262,7 @@ impl SessionService {
         let json = serde_json::json!({
             "on_session_lock": resolved.on_session_lock,
             "on_session_unlock": resolved.on_session_unlock,
-            "on_greeter_wake": resolved.on_greeter_wake,
+            "on_lock_wake": resolved.on_lock_wake,
             "idle_timeout_seconds": resolved.idle_timeout_seconds,
             "on_idle_timeout": resolved.on_idle_timeout,
             "on_idle_resume": resolved.on_idle_resume,

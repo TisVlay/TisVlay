@@ -179,14 +179,14 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Start Wayland idle monitor for greeter wake detection
+    // Start Wayland idle monitor for lock wake detection
     match tisvlay_session::wayland_idle::start_wayland_idle_monitor(event_tx.clone(), is_locked) {
         Ok(()) => {
-            info!("Wayland greeter wake detection enabled");
+            info!("Wayland lock wake detection enabled");
         }
         Err(e) => {
             // Not fatal - Wayland may not be available (X11, SSH, etc.)
-            warn!("Wayland greeter wake detection unavailable: {}", e);
+            warn!("Wayland lock wake detection unavailable: {}", e);
         }
     }
 
