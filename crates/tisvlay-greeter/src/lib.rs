@@ -41,8 +41,10 @@ fn next_notify(transition: IdleTransition, last_sent: Option<bool>) -> Option<bo
 /// `ext-idle-notify-v1` watch and forwards each idle/resume edge to
 /// `Manager1.NotifyGreeterIdle` until the compositor disconnects (greeter
 /// session ended), at which point it returns `Ok(())` so the process exits
-/// cleanly. It deliberately does *not* send a resume on exit — the user
-/// session that follows owns re-enabling the screen.
+/// cleanly. On startup it sends one `NotifyGreeterIdle(false)` to assert the
+/// login screen is present (lit), so a screen-off latched by the prior user
+/// session doesn't strand it dark. It deliberately does *not* send a resume on
+/// exit — the user session that follows owns re-enabling the screen.
 pub async fn run(daemon: DaemonClient) -> Result<()> {
     // Read once at greeter-session start. A config change made while a greeter
     // is live applies on the next greeter session (each is a fresh process);
@@ -66,7 +68,16 @@ pub async fn run(daemon: DaemonClient) -> Result<()> {
     // when the compositor disconnects (greeter session ends).
     drop(tx);
 
+    // Assert the greeter is present (panel on) at startup, before the first
+    // idle edge. A prior user session may have latched the panel off (e.g.
+    // logout from a locked session); `NotifyGreeterIdle(false)` maps to the
+    // resume action so the login screen is lit for the person now at it. This
+    // also primes the de-dup so the first real `Idled` edge still fires.
     let mut last_sent: Option<bool> = None;
+    if notify_with_retry(&daemon, false).await {
+        last_sent = Some(false);
+    }
+
     while let Some((_tag, transition)) = rx.recv().await {
         let Some(idle) = next_notify(transition, last_sent) else {
             continue;

@@ -181,16 +181,16 @@ The bare commands are idempotent (LG masks the "already on/off" `500`). Why a si
 
 **Cold-boot deferral (A3):** a greeter `screen_off` arriving while the boot wake runs must defer rather than pre-flight its own competing `power_on`. So `on_startup`'s `wake_and_connect` must set `reconnecting` for its duration (it currently does not — the review flagged this), and `on_startup`'s own gated `screen_on` runs *after* the wake clears `reconnecting`.
 
-**Reconcile trigger:** one manager-wide channel, not per-TV tasks. `forward_state_snapshot` (already runs on every push *and* poll, for every TV including live-added ones) sends the `tv_id` after it updates `power_state_tx`; a single `reconcile_loop(Arc<TvManager>)` spawned once at startup (the `state_poll_loop` precedent) drains it and calls `reconcile_screen`. One spawn site, no per-TV task lifecycle/leak. The public `screen_on`/`screen_off` keep awaiting their (#57) body so the CLI/`SetScreen` "done" contract holds.
+**Reconcile trigger (as built):** `reconcile_screen` is spawned from the existing `state_change_forwarder` (which already holds `Arc<TvManager>` and fires on every `SubscriptionUpdate`, push or poll, for every TV including live-added ones). Spawned — not awaited inline — so the bare verify-retry never stalls the D-Bus forwarder; it no-ops fast when the panel already matches and serializes on the per-TV `Mutex`, so concurrent spawns can't storm. (Simpler than a dedicated channel + loop, and reuses the one place that already has the manager and the per-TV state.) The public `screen_on`/`screen_off` keep running their (#57) body, so the CLI/`SetScreen` "done" contract holds.
 
-### Presence completeness — re-assert signals (fixes critical #4)
+### Presence completeness — re-assert signals
 
-The latch that fixes A2/C2/K1 strands G1/H/daemon-restart unless presence is re-asserted on those transitions. Each sets `desired=on` for automated TVs (latest-wins — an immediately-following lock re-blanks):
+The latch can strand a panel only where a presence *edge* never fires to refresh it. Re-examined against the real flows, most edges are already covered, so only one re-assert is needed:
 
-- **Login** — daemon `logind` `SessionNew` matching `Class=user ∧ Type∈{wayland,x11} ∧ Active ∧ seat=seat0` (excludes the plasmalogin greeter *and* SSH/polkit/user-manager sessions). Fixes C2 autologin.
-- **Resume** — in `handle_prepare_for_sleep(false)`, after the `on_wake` power action. Fixes H resume-to-unlocked/blanked.
-- **Greeter present** — `tisvlay-greeter` asserts present once at startup (`NotifyGreeterIdle(false)` before the idle watch). Fixes G1 logout→greeter.
-- **Daemon restart** — `connect_all_on_restart` re-establishes intent per TV (present unless the session reports locked), since `on_startup` early-returns on a restart (boot marker present).
+- **Resume (H)** — already covered: suspend-from-locked leaves `desired=off`; on resume the lock screen is shown and the user's first input fires lock-wake → `screen_on`; walk-away-after-resume correctly stays off. No signal needed.
+- **Daemon restart** — already safe: `desired_screen` resets to `None`, so reconcile no-ops and the panel keeps its physical state; the next presence event re-establishes intent. No signal needed.
+- **Greeter present (G1)** — **implemented.** Without it the latch would strand the login screen dark after a logout from a *locked* session. `tisvlay-greeter` sends one `NotifyGreeterIdle(false)` at startup (→ the resume action → `screen_on` for automated TVs), asserting the login screen is lit for the person now at it, and priming the de-dup so the first real `Idled` edge still fires.
+- **Login / autologin (C2)** — **deferred follow-up.** Interactive login already lights the panel via the greeter's resume edge before auth completes; only *zero-input autologin after the greeter idled* is uncovered. A daemon `logind` `SessionNew` handler (graphical, `Active`, `seat0`) would close it; filed for later since the target setup uses interactive login.
 
 ### Commit sequence (single PR #83)
 
@@ -200,19 +200,16 @@ One PR — splitting would land a half-built model that strands G1/H/restart (cr
 2. **Wayland multi-notification + tagging** — `wayland.rs` `_idle_notification` (`:49`,`:255`) → a tagged collection; change the `Dispatch` userdata from `()` (`:114`) to a `NotificationKind` so the consumer routes 200 ms (`LockWake`) vs `idle_timeout_seconds` (`IdleTimeout`/`IdleResume`).
 3. **Session idle → ext-idle** — replace `idle.rs`'s dead `GetSessionIdleTime` poll with a second notification on the existing connection; delete the poll path. In-session idle now fires on Wayland without PowerDevil.
 4. **`desired_screen` + `reconcile_screen` + `apply_screen_raw` + the reconcile task**; rewrite `screen_on`/`screen_off`/`SetScreen`/`apply_action` to set-intent+reconcile; gate `on_startup`'s wake; `on_wake` power-only.
-5. **Re-assert signals** — login (`SessionNew`), resume, greeter-present-on-start, restart (one shared "assert present unless locked" helper).
+5. **Greeter-present re-assert** — `tisvlay-greeter` asserts present (`NotifyGreeterIdle(false)`) at startup so the latch can't strand the login screen dark after a logout-from-locked. (Resume/restart need no signal; autologin's `SessionNew` handler is a deferred follow-up — see above.)
 
-### Hard parts / risks (for review)
+### Residual risks
 
-- **The reconcile decision table + `reconcile_in_flight` guard** is the delicate core — the guarded wake (desired=on + dark) must terminate (one wake; post-wake push either reaches `Active`→bare-apply or stays dark→no re-wake while in-flight). Test the `ActiveStandby`→wake→`Active` path explicitly.
-- **`on_startup` gate atomicity** — read `desired_screen` and conditionally set `Some(true)` in one lock acquisition, then reconcile; a greeter `desired=off` arriving mid-window must not be lost.
-- **Login predicate** — the full `Class/Type/Active/seat` filter; a non-graphical `SessionNew` (SSH/polkit/user-manager) must **not** fire (negative test).
-- **Multi-notification** touches the greeter's shared transport — greeter-unchanged regression.
-- **Reconcile-task lifecycle** — spawned once per TV at registration; torn down on `Tv1.Remove`; no leak, no double-fire.
+- **`ActiveStandby` panel-on (A1 residual)** — `apply_screen_on_raw`'s bare `turnOnScreen` is expected to light an `ActiveStandby` panel; if LG firmware refuses, attended-boot panel-on relies on the TV already being `Active` after `wake_and_connect` (the common cold-boot case). Verify on hardware.
+- **Reconcile spawn churn** — one task per `SubscriptionUpdate`; cheap (fast no-op) and serialized by the per-TV `Mutex`. If a chatty TV ever makes this matter, gate the spawn on an actual power-state change.
 
-### Tests
+### Tests (as built)
 
-mock + `tisvlay-harness` (drive readiness via `set_connect_delay`/`inject_power_state`, `profile_dispatch.rs` template): (a) presence `off` while not-ready → deferred, applied on next state push; (b) off-then-on while not-ready → only `on` (latest-wins); (c) `on_startup` defers to a pre-set greeter `desired=off` (A2 — fixture must set `idle_timeout_seconds>0`, else inert); (d) attended boot → panel on (A1); (e) `ActiveStandby` + desired=on → guarded wake → `Active`, single command (no storm); (f) login `SessionNew` (graphical, seat0) → on; **(f′) non-graphical `SessionNew` → no action**; (g) resume → on; (h) greeter-present-on-start → on; (i) daemon-restart-mid-session re-establishes intent; (j) session ext-idle drives `IdleTimeout`/`IdleResume`.
+mock + `tisvlay-harness` (`profile_dispatch.rs`, driving the reconnecting window via `set_connect_delay`): (a) reconcile re-asserts `desired=on` after the panel drifts off (no escalation); (b) a `screen_off` issued while reconnecting defers (sends no `turnOffScreen`) and is applied by reconcile on reconnect (A3); (c) off-then-on while reconnecting applies only `on` (latest-wins). PR #57's reliability suite and the existing greeter-idle dispatch tests are preserved and still pass — confirming the direct-action contract.
 
 ### Verification
 
