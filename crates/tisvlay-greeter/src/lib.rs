@@ -12,11 +12,9 @@
 //! process exits without watching.
 
 use anyhow::{Context, Result, anyhow};
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::time::Duration;
 use tisvlay_core::DaemonClient;
-use tisvlay_core::wayland::{IdleTransition, start_idle_watch_on_socket};
+use tisvlay_core::wayland::{IdleTransition, start_idle_watch};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -78,26 +76,24 @@ pub async fn run(daemon: DaemonClient) -> Result<()> {
     Ok(())
 }
 
-/// Discover the greeter compositor's wayland socket under `XDG_RUNTIME_DIR`
-/// and start the idle watch, retrying while the socket appears.
+/// Start the idle watch, retrying while the greeter compositor comes up.
 ///
-/// The unit is ordered after kwin's bus name, but the socket can land a
-/// moment later, and the greeter `systemd.user` unit may not carry
-/// `WAYLAND_DISPLAY` — so we connect to the discovered socket explicitly and
-/// retry (like the `QT_WAYLAND_RECONNECT` clients in the greeter session)
-/// rather than failing on the first attempt.
+/// Our unit is ordered after kwin's bus name, but the compositor's wayland
+/// socket can land a moment later — so retry (like the greeter's
+/// `QT_WAYLAND_RECONNECT` clients) rather than failing on the first attempt.
+/// If it never appears, log the wayland environment and let systemd restart.
 async fn connect_idle_watch(
     timeout_ms: u32,
     tx: &mpsc::UnboundedSender<IdleTransition>,
 ) -> Result<()> {
-    const MAX_ATTEMPTS: u32 = 30;
+    const MAX_ATTEMPTS: u32 = 15;
     let mut last_err = anyhow!("no connection attempt made");
     for attempt in 1..=MAX_ATTEMPTS {
-        match try_connect(timeout_ms, tx.clone()) {
+        match start_idle_watch(timeout_ms, tx.clone()) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 debug!(attempt, error = %e, "greeter compositor not ready; retrying");
-                last_err = e;
+                last_err = anyhow!("{e}");
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
@@ -105,57 +101,9 @@ async fn connect_idle_watch(
     warn!(
         xdg_runtime_dir = ?std::env::var("XDG_RUNTIME_DIR").ok(),
         wayland_display = ?std::env::var("WAYLAND_DISPLAY").ok(),
-        sockets = ?wayland_sockets(),
         "Could not connect to the greeter compositor after retries"
     );
     Err(last_err.context("connect to greeter compositor"))
-}
-
-fn try_connect(timeout_ms: u32, tx: mpsc::UnboundedSender<IdleTransition>) -> Result<()> {
-    let path =
-        greeter_socket_path().ok_or_else(|| anyhow!("no wayland socket under XDG_RUNTIME_DIR"))?;
-    let stream = UnixStream::connect(&path)
-        .with_context(|| format!("connect wayland socket {}", path.display()))?;
-    start_idle_watch_on_socket(stream, timeout_ms, tx).map_err(|e| anyhow!("{e}"))
-}
-
-/// Resolve the compositor socket path: `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`
-/// when set, else the first `wayland-<n>` socket in `$XDG_RUNTIME_DIR`.
-fn greeter_socket_path() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
-    if let Some(disp) = std::env::var_os("WAYLAND_DISPLAY") {
-        let disp = PathBuf::from(disp);
-        return Some(if disp.is_absolute() {
-            disp
-        } else {
-            dir.join(disp)
-        });
-    }
-    wayland_sockets()
-        .into_iter()
-        .next()
-        .map(|name| dir.join(name))
-}
-
-/// Sorted `wayland-<n>` socket names present in `$XDG_RUNTIME_DIR` (the
-/// `.lock` companions are excluded). Also used for failure diagnostics.
-fn wayland_sockets() -> Vec<String> {
-    let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| {
-            n.strip_prefix("wayland-")
-                .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
-        })
-        .collect();
-    names.sort();
-    names
 }
 
 #[cfg(test)]

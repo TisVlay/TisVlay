@@ -9,7 +9,6 @@
 //! Hyprland, Mutter, …) rather than the D-Bus `GetSessionIdleTime` approach,
 //! which does not work on KDE Plasma Wayland.
 
-use std::os::unix::net::UnixStream;
 use std::thread;
 use tokio::sync::mpsc;
 use tracing::{error, info, trace, warn};
@@ -141,36 +140,11 @@ pub fn start_idle_watch(
     timeout_ms: u32,
     tx: mpsc::UnboundedSender<IdleTransition>,
 ) -> Result<(), WaylandIdleError> {
+    // Connect to Wayland first to validate it's available.
     let conn = Connection::connect_to_env().map_err(|e| {
         WaylandIdleError::ConnectionFailed(format!("Failed to connect to Wayland: {}", e))
     })?;
-    spawn_watch(conn, timeout_ms, tx)
-}
 
-/// Like [`start_idle_watch`], but against an already-connected compositor
-/// socket rather than the `WAYLAND_DISPLAY` environment.
-///
-/// The greeter client uses this: its `systemd.user` unit may not carry
-/// `WAYLAND_DISPLAY`, so it discovers the socket under `XDG_RUNTIME_DIR` and
-/// connects to it explicitly.
-pub fn start_idle_watch_on_socket(
-    stream: UnixStream,
-    timeout_ms: u32,
-    tx: mpsc::UnboundedSender<IdleTransition>,
-) -> Result<(), WaylandIdleError> {
-    let conn = Connection::from_socket(stream).map_err(|e| {
-        WaylandIdleError::ConnectionFailed(format!("Failed to connect to Wayland socket: {}", e))
-    })?;
-    spawn_watch(conn, timeout_ms, tx)
-}
-
-/// Initialize the registry on an established connection and spawn the watch
-/// thread that forwards idle/resume transitions.
-fn spawn_watch(
-    conn: Connection,
-    timeout_ms: u32,
-    tx: mpsc::UnboundedSender<IdleTransition>,
-) -> Result<(), WaylandIdleError> {
     // Initialize the event queue and registry.
     let (globals, event_queue): (GlobalList, EventQueue<WaylandState>) = registry_queue_init(&conn)
         .map_err(|e| {
