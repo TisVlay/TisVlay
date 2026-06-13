@@ -183,13 +183,37 @@ a lock→unlock signal; `logind.rs:304-316` `SessionNew` is a no-op). Correct mo
   password is itself an `ext-idle` `Resumed` edge → client sends
   `notify_greeter_idle(false)` → `ScreenOn` *before* login completes (the in-flight
   daemon→TV command survives the greeter exiting). Covered by (d)'s loop.
-- **Zero-input login (autologin / programmatic):** no `Resumed` edge → panel left
-  off. **Add an explicit login-time `ScreenOn` safety net.** Recommended: on
-  logind `SessionNew` for an active graphical `user` session, the daemon dispatches
-  a `ScreenOn`-defaulting action for automated TVs (new minimal `SystemEvent` or a
-  targeted call), guarded so it only acts when transitioning greeter→user. This is
-  a small daemon addition that lands in PR 2. (Alt: make `tisvlay-session` assert
-  `on_session_unlock` unconditionally at startup — simpler but session-side.)
+- **Zero-input login (autologin / programmatic):** no `Resumed` edge → panel
+  left off. **Accepted limitation, not patched** — see the Decision below.
+
+## Decision (after on-hardware confirmation): drop `on_login`, remove `on_no_session`
+
+Once the greeter idle/resume path was confirmed working on real hardware, we
+revisited the event model. Two distinct pairs exist, driven by different signals:
+
+- **Greeter-presence pair** (`on_idle_timeout` / `on_idle_resume`): driven by
+  *user presence* at the login screen (compositor `ext-idle-notify`).
+  Self-consistent — blanks when you walk away, restores on any input. This is the
+  correct and complete OLED-protection mechanism at the greeter.
+- **Session-lifecycle pair** (`on_no_session` / hypothetical `on_login`): driven
+  by *logout/login transitions*, fires immediately. A *power-policy* tool (e.g.
+  power the TV off between sessions), not a screen tool.
+
+Conclusions:
+
+- **`on_login`: not built.** Interactive logins are already covered by the greeter
+  resume edge (login requires input → resume → `screen_on` before login completes).
+  `on_login` would only serve a zero-input autologin after an idle-blank, or be the
+  symmetric partner to a power-action `on_no_session` — neither is in use. YAGNI.
+- **`on_no_session`: removed.** Superseded by the greeter idle pair for the screen
+  use case, and actively *wrong* for screens (`on_no_session = screen_off` blanks
+  via SSAP on logout, but the compositor never sees it, so no resume restores it →
+  stranded black login screen). Its only coherent use was a `power_off` kiosk
+  policy, which itself needs `on_login` — neither wanted. The logind session
+  tracking (`check_active_sessions`, `SessionNew`/`SessionRemoved`) existed solely
+  to fire it and is deleted with it. No backwards-compat requirement: the field,
+  the `SystemEvent::NoSession` variant, and the tracking are removed outright (no
+  deprecation shim).
 
 ---
 
@@ -232,12 +256,10 @@ The v1 target (one TV = the desktop) is exact.
 - Integration (`tisvlay-harness` over `PrivateBus` + mock): system profile with
   `idle_timeout_seconds>0`, `on_idle_timeout=ScreenOff`; `Manager1.NotifyGreeterIdle(true)`
   → mock recorded `turnOffScreen`; `(false)` → `turnOnScreen`;
-  `GreeterIdleTimeoutSeconds` returns configured / `0` when off; **the login-time
-  safety net turns the screen on for a simulated `SessionNew`**.
+  `GreeterIdleTimeoutSeconds` returns configured / `0` when off.
 - Hardware: PR 1 — Esc → true OLED panel-off (not "No Signal"), keypress →
   restored. PR 2 — set the timeout, walk away → blank after timeout → mouse →
-  restored → log in → panel on (interactive). Also test autologin → panel on
-  (safety net). Re-pull boot logs.
+  restored → log in → panel on (interactive resume edge). Re-pull boot logs.
 
 ## Risks / coverage / docs
 - **Coverage ratchet** (`just cov-ratchet`): the new binary's wayland half is
