@@ -7,8 +7,6 @@
 //!   panel comes back to show the password prompt.
 //! - **In-session idle** (the user profile's `idle_timeout_seconds`): an
 //!   `Idled`/`Resumed` edge emits `SessionEvent::IdleTimeout`/`IdleResume`.
-//!   This replaces the old `GetSessionIdleTime` poll, which does not work on
-//!   KDE Plasma Wayland.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
