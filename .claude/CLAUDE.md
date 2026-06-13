@@ -19,7 +19,7 @@ The TVs and Profiles panes of `tisvlay-gui` are feature-complete (master/detail 
 
 - **GUI polish** — error toasts, keyboard nav, window-state persistence.
 - **GUI packaging** — NixOS module `enableGui` flag, nfpm desktop entry, XDG `.desktop` file.
-- **Event-driven power-management redesign** — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md). A narrow first slice shipped: the daemon-side DPMS connector watcher (`tisvlayd/src/dpms.rs`) driving the opt-in `on_dpms_off`/`on_dpms_on` system-profile actions.
+- **Event-driven power-management redesign** — replace today's session-bus listener path with per-DE adapters (KWin / wlroots / X11 / logind fallback). See [docs/ideas.md](../docs/ideas.md). A narrow first slice shipped: the daemon-side DPMS connector watcher (`tisvlayd/src/dpms.rs`) driving the `on_dpms_off`/`on_dpms_on` system-profile actions (default `screen_off`/`screen_on`).
 - **Plus other deferred ideas**: polkit gating for multi-user workstations, CLI shorthand for `Tv1.UpdateConfig`, `a{sv}` wire-format migration for vendor configs, atomic config writes, typed `Failed { reason }` payload, "Open logs" affordance. All filed in [docs/ideas.md](../docs/ideas.md).
 
 ## Current Project Structure
@@ -40,6 +40,7 @@ tisvlay/
 │   │       ├── logging.rs        # Shared logging init with journald (feature-gated)
 │   │       ├── state.rs          # TvState, PowerState, InputInfo
 │   │       ├── wol.rs            # Wake-on-LAN
+│   │       ├── wayland.rs        # Policy-free ext-idle-notify-v1 transport (feature-gated; session + greeter)
 │   │       └── error.rs          # Error types
 │   │
 │   ├── tisvlay-lg/                # LG WebOS vendor implementation
@@ -116,8 +117,13 @@ tisvlay/
 │   │       ├── main.rs           # Entry point (thin, delegates to lib)
 │   │       ├── session_dbus.rs   # org.tisvlay.Session1 D-Bus interface
 │   │       ├── session_monitor.rs # Session lock/unlock detection
-│   │       ├── wayland_idle.rs   # Wayland greeter wake detection
+│   │       ├── wayland_idle.rs   # Greeter-wake policy over tisvlay-core's shared wayland idle transport
 │   │       └── idle.rs           # Idle timeout detection
+│   │
+│   ├── tisvlay-greeter/           # Login-greeter idle client (lib + bin)
+│   │   └── src/
+│   │       ├── lib.rs            # run() loop: ext-idle-notify-v1 → Manager1.NotifyGreeterIdle; next_notify dedup
+│   │       └── main.rs           # Entry point (thin, delegates to lib)
 │   │
 │   ├── tisvlay-tray/              # System tray app
 │   │   └── src/
@@ -208,7 +214,7 @@ tisvlay/
 - `Transport` enum on `TvConnector`: Network, Serial, Usb, Cec. Daemon scopes carrier/route events to network-dependent backends only
 - `TvConnector::survives_source_ip_change()`: backends declare whether their protocol survives client IP changes (WebSocket: false, future QUIC: true). Daemon uses this on NIC failover to decide whether to reconnect
 - Per-TV `reconnecting` flag prevents carrier/route events from racing with in-flight WoL retry loops
-- KWin on Wayland writes its DPMS-off through to the legacy sysfs `dpms` connector attribute (`/sys/class/drm/<card>-<conn>/dpms`), so `tisvlayd/src/dpms.rs` can poll it without a per-DE compositor protocol. The `dpms` watcher gates on `status == connected` (a powered-off TV that drops its EDID link reads `disconnected` and is skipped) and defers dispatch while a TV is `reconnecting`. `on_dpms_off`/`on_dpms_on` are `none` by default — opt-in so they don't double-dispatch against the session idle/lock path
+- KWin on Wayland writes its DPMS-off through to the legacy sysfs `dpms` connector attribute (`/sys/class/drm/<card>-<conn>/dpms`), so `tisvlayd/src/dpms.rs` can poll it without a per-DE compositor protocol. The `dpms` watcher gates on `status == connected` (a powered-off TV that drops its EDID link reads `disconnected` and is skipped) and defers dispatch while a TV is `reconnecting`. `on_dpms_off`/`on_dpms_on` default to `screen_off`/`screen_on`, so the mirror is active out of the box; when a user session is also running, its idle/lock path can drive the same screen-off/on — a redundant-but-safe double-dispatch (`screen_off` is idempotent; the `reconnecting` gate covers `screen_on`/WoL)
 - zbus 5.x's `ObjectServer::at` returns `Ok(false)` (not `Err`) when an interface is already registered at the path. `register_tv_interfaces` uses `.await?` on each of its seven `at()` calls and discards the bool, so a re-register against a stale path *silently fails to refresh state* — the pre-existing interface keeps serving with its old field values. The defensive `unregister_tv_interfaces` before every `register_tv_interfaces` call site (`apply_reload_diff`, `Manager1.AddTv`) is what makes fresh state actually take effect. Foundation contract is locked down by `crates/tisvlayd/tests/register_tv_interfaces_collision.rs`. Future zbus upgrades that change `at()`'s return type are a watch item.
 - Per-TV `Mutex<ManagedTv>` is the de-facto drain layer between `Tv1.Remove` (and `apply_reload_diff`'s removed half) and concurrent in-flight `Tv1.*` calls. zbus has no drain primitive; the observable correctness rests on the Mutex-held-across-await pattern in `with_connection` and similar helpers. Three sub-cases (call hasn't reached `get_tv` → `TvNotFound`; call holds Arc awaiting inner Mutex → `NotConnected` after removal closes; call holds Mutex during work → removal blocks until in-flight completes) documented at `tv_manager::remove_tv`. Locked down by `crates/tisvlayd/tests/in_flight_call_during_remove.rs` (invariant-based, not per-case).
 - `pair_tv` generates the new TV's UUID upfront (before `start_pairing`) so `Manager1.PairingProgress` signals can carry a stable identifier from the very first phase update — clients watching progress get correlation before any persistent state lands. Same UUID lets `Manager1.CancelPair(tv_id)` reach the in-flight session via the `pairing_sessions` map for both AddTv and re-pair flows.

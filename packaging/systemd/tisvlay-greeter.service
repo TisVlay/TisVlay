@@ -1,0 +1,24 @@
+[Unit]
+Description=tisvlay greeter idle client (plasma-login-manager)
+Documentation=https://github.com/ruffsl/tisvlay
+# A systemd *user* unit for the greeter user (e.g. plasmalogin). Plasma-login
+# specific: the unit names below only exist under plasma-login-manager; other
+# display managers (SDDM/GDM/greetd) need their own wiring. The compositor must
+# be up so its Wayland socket exists before we connect; WAYLAND_DISPLAY /
+# XDG_RUNTIME_DIR are inherited from the greeter user manager (no Environment=).
+After=plasma-login-kwin_wayland.service
+Requires=plasma-login-kwin_wayland.service
+# Stop with the greeter session. The target itself BindsTo the compositor, so a
+# compositor death stops the target and thus us — no need to bind here too.
+PartOf=plasma-login-wayland.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tisvlay-greeter
+# on-failure (not always): a clean exit — compositor disconnect at login, or
+# the timeout-disabled early-exit — must not restart-loop.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=plasma-login-wayland.target

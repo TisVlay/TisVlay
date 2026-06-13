@@ -5,7 +5,7 @@
 use crate::dbus::{DaemonError, apply_reload_diff};
 use crate::json_toml::json_to_toml;
 use crate::registry::BackendRegistry;
-use crate::tv_manager::TvManager;
+use crate::tv_manager::{SystemEvent, TvManager};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -802,6 +802,28 @@ impl ManagerService {
             .get_effective_system_profile(tv_id)
             .await
             .map_err(DaemonError::from)
+    }
+
+    /// Greeter idle/resume notification from `tisvlay-greeter` (running in
+    /// the login-screen session). `idle = true` → `GreeterIdle`, `false` →
+    /// `GreeterResume`; the daemon fans the event out to every automated TV
+    /// using each TV's resolved `on_idle_timeout` / `on_idle_resume`.
+    async fn notify_greeter_idle(&self, idle: bool) {
+        debug!(idle, "D-Bus: NotifyGreeterIdle");
+        let event = if idle {
+            SystemEvent::GreeterIdle
+        } else {
+            SystemEvent::GreeterResume
+        };
+        self.manager.execute_system_event(event, "greeter").await;
+    }
+
+    /// Shortest enabled greeter idle timeout (seconds) across automated TVs,
+    /// or 0 when none is set. `tisvlay-greeter` registers its
+    /// `ext-idle-notify-v1` notification at this value.
+    async fn greeter_idle_timeout_seconds(&self) -> u64 {
+        debug!("D-Bus: GreeterIdleTimeoutSeconds");
+        self.manager.greeter_idle_timeout_seconds().await
     }
 
     // -------------------------------------------------------------------------

@@ -15,7 +15,6 @@
 //! | Sleep     | PowerOff |
 //! | Wake      | PowerOn  |
 //! | Reboot    | None     |
-//! | NoSession | None     |
 
 #![cfg(feature = "mock")]
 
@@ -128,33 +127,6 @@ async fn reboot_does_not_disconnect_tv() {
     assert!(
         daemon.manager().is_connected(&tv_uuid).await,
         "TV should still be connected (reboot action is None by default)",
-    );
-}
-
-// ---------- NoSession → None ----------
-
-#[tokio::test]
-async fn no_session_does_not_disconnect_tv() {
-    let tv_uuid = test_tv_uuid("lr_nosess").to_string();
-    let daemon = TestDaemon::with_one_mock_tv("lr_nosess")
-        .await
-        .expect("daemon");
-    daemon
-        .manager()
-        .reconnect(&tv_uuid)
-        .await
-        .expect("reconnect");
-    settle().await;
-
-    daemon
-        .manager()
-        .execute_system_event(SystemEvent::NoSession, "test")
-        .await;
-    settle().await;
-
-    assert!(
-        daemon.manager().is_connected(&tv_uuid).await,
-        "TV should still be connected (no_session action is None by default)",
     );
 }
 
@@ -333,5 +305,175 @@ async fn on_startup_screen_off_powers_on_first() {
     assert!(
         !tv.is_screen_on,
         "panel should be off after screen_off lands on the live connection",
+    );
+}
+
+// ---------- Greeter idle dispatch (Manager1.NotifyGreeterIdle) ----------
+
+/// Build a config whose "default" system profile sets the greeter idle
+/// fields, so an automated TV inherits them.
+fn config_with_greeter_idle(
+    tv_id: &str,
+    idle_timeout_seconds: u64,
+    on_idle_timeout: SessionAction,
+    on_idle_resume: SessionAction,
+) -> SystemConfig {
+    let mut config = mock_tv_config(tv_id, true, None);
+    config.system.profiles.insert(
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+        SystemProfileConfig {
+            name: "default".to_string(),
+            idle_timeout_seconds: Some(idle_timeout_seconds),
+            on_idle_timeout: Some(on_idle_timeout),
+            on_idle_resume: Some(on_idle_resume),
+            ..Default::default()
+        },
+    );
+    config
+}
+
+/// `NotifyGreeterIdle(true)` blanks the panel via `on_idle_timeout =
+/// ScreenOff`; `NotifyGreeterIdle(false)` restores it via `on_idle_resume
+/// = ScreenOn`. Exercises the full Manager1 method → `execute_system_event`
+/// → reliable `screen_off`/`screen_on` path.
+#[tokio::test]
+async fn greeter_idle_blanks_then_resume_restores_screen() {
+    let tv_uuid = test_tv_uuid("greeter_idle").to_string();
+    let config = config_with_greeter_idle(
+        "greeter_idle",
+        600,
+        SessionAction::ScreenOff,
+        SessionAction::ScreenOn,
+    );
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    client
+        .notify_greeter_idle(true)
+        .await
+        .expect("notify greeter idle");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        !tv.is_screen_on,
+        "greeter idle should blank the panel via screen_off",
+    );
+
+    client
+        .notify_greeter_idle(false)
+        .await
+        .expect("notify greeter resume");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "greeter resume should restore the panel via screen_on",
+    );
+}
+
+/// `GreeterIdleTimeoutSeconds` reports the configured timeout for an
+/// automated TV.
+#[tokio::test]
+async fn greeter_idle_timeout_reports_configured_value() {
+    let config = config_with_greeter_idle(
+        "greeter_timeout",
+        600,
+        SessionAction::ScreenOff,
+        SessionAction::ScreenOn,
+    );
+    // Kept alive (registered on the shared bus) for the client call below.
+    let _daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    let secs = client
+        .greeter_idle_timeout_seconds()
+        .await
+        .expect("greeter idle timeout");
+    assert_eq!(secs, 600, "configured idle timeout for the automated TV");
+}
+
+/// With no greeter idle timeout configured (hard-coded baseline = 0), the
+/// daemon reports 0, so the greeter client leaves the watch disabled.
+#[tokio::test]
+async fn greeter_idle_timeout_zero_when_unset() {
+    // Kept alive (registered on the shared bus) for the client call below.
+    let _daemon = TestDaemon::with_one_mock_tv("greeter_unset")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    let secs = client
+        .greeter_idle_timeout_seconds()
+        .await
+        .expect("greeter idle timeout");
+    assert_eq!(secs, 0, "no automated TV has a greeter idle timeout set");
+}
+
+/// A TV with idle_timeout_seconds=0 (greeter idle disabled) must NOT be
+/// blanked when GreeterIdle fires, even though its on_idle_timeout defaults
+/// to ScreenOff — otherwise an un-opted-in TV would blank whenever any other
+/// TV's greeter timeout elapses.
+#[tokio::test]
+async fn greeter_idle_skips_tv_with_zero_timeout() {
+    let tv_uuid = test_tv_uuid("greeter_zero").to_string();
+    let config = config_with_greeter_idle(
+        "greeter_zero",
+        0, // disabled for this TV
+        SessionAction::ScreenOff,
+        SessionAction::ScreenOn,
+    );
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    client
+        .notify_greeter_idle(true)
+        .await
+        .expect("notify greeter idle");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "a TV with idle_timeout_seconds=0 must not be blanked by greeter idle",
+    );
+}
+
+/// A TV with a timeout but no idle action (on_idle_timeout=None) must not
+/// govern the single greeter clock — it would otherwise pull the shared
+/// timeout shorter while never acting.
+#[tokio::test]
+async fn greeter_idle_timeout_ignores_actionless_tv() {
+    let config = config_with_greeter_idle(
+        "greeter_noaction",
+        600,
+        SessionAction::None, // timeout set, but nothing to do at idle
+        SessionAction::ScreenOn,
+    );
+    let _daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    let secs = client
+        .greeter_idle_timeout_seconds()
+        .await
+        .expect("greeter idle timeout");
+    assert_eq!(
+        secs, 0,
+        "a TV with no idle action must not govern the greeter clock",
     );
 }

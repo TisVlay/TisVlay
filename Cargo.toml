@@ -11,6 +11,7 @@ members = [
     "crates/tisvlay-cli",
     "crates/tisvlayd",
     "crates/tisvlay-session",
+    "crates/tisvlay-greeter",
     "crates/tisvlay-tray",
     "crates/tisvlay-gui",
     "crates/tisvlay-harness",
@@ -27,6 +28,7 @@ default-members = [
     "crates/tisvlayd",
     "crates/tisvlay-cli",
     "crates/tisvlay-session",
+    "crates/tisvlay-greeter",
     "crates/tisvlay-tray",
     "crates/tisvlay-gui",
 ]

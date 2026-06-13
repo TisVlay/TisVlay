@@ -141,10 +141,17 @@ async fn list_after_pair_output() {
         .await
         .unwrap();
     let config_json = r#"{"address": "mock://bedroom"}"#;
-    client
+    // AddTv is async-spawn: the TV isn't registered until `complete`
+    // arrives. Subscribe first, then drain to terminal so the `list`
+    // subprocess below deterministically sees the paired TV.
+    let stream = client.pairing_progress_stream().await.unwrap();
+    let tv_id = client
         .pair_tv("Bedroom", "mock", config_json, true)
         .await
         .unwrap();
+    DaemonClient::drain_pair_to_terminal(stream, &tv_id, |_, _| {})
+        .await
+        .expect("pair should reach terminal");
 
     redactions().bind(|| {
         assert_cmd_snapshot!(

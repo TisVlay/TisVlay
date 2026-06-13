@@ -127,13 +127,6 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
-        wire: "on_no_session",
-        kind: FieldKind::Enum {
-            options: SESSION_ACTION_OPTIONS,
-            class: EnumClass::SessionAction,
-        },
-    },
-    FieldSpec {
         wire: "on_sleep",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
@@ -159,6 +152,29 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
             class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
+        wire: "on_idle_timeout",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
+        wire: "on_idle_resume",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
+        wire: "idle_timeout_seconds",
+        kind: FieldKind::Number {
+            min: 0,
+            max: 86_400,
+            step: 15,
+            unit: "seconds",
         },
     },
     FieldSpec {
@@ -230,7 +246,6 @@ fn field_label(wire: &str) -> String {
         "on_startup" => gettext("On startup"),
         "on_shutdown" => gettext("On shutdown"),
         "on_reboot" => gettext("On reboot"),
-        "on_no_session" => gettext("On no session"),
         "on_sleep" => gettext("On sleep"),
         "on_wake" => gettext("On wake"),
         "on_dpms_off" => gettext("On DPMS off"),
@@ -404,11 +419,13 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
         "on_startup" => body.on_startup.map(session_action_token),
         "on_shutdown" => body.on_shutdown.map(session_action_token),
         "on_reboot" => body.on_reboot.map(session_action_token),
-        "on_no_session" => body.on_no_session.map(session_action_token),
         "on_sleep" => body.on_sleep.map(session_action_token),
         "on_wake" => body.on_wake.map(session_action_token),
         "on_dpms_off" => body.on_dpms_off.map(session_action_token),
         "on_dpms_on" => body.on_dpms_on.map(session_action_token),
+        "on_idle_timeout" => body.on_idle_timeout.map(session_action_token),
+        "on_idle_resume" => body.on_idle_resume.map(session_action_token),
+        "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
         "automate_when" => body.automate_when.map(automate_when_token),
         _ => None,
     }
@@ -1129,11 +1146,15 @@ fn set_system_field(
         "on_startup" => body.on_startup = session_action_patch(patch, "on_startup")?,
         "on_shutdown" => body.on_shutdown = session_action_patch(patch, "on_shutdown")?,
         "on_reboot" => body.on_reboot = session_action_patch(patch, "on_reboot")?,
-        "on_no_session" => body.on_no_session = session_action_patch(patch, "on_no_session")?,
         "on_sleep" => body.on_sleep = session_action_patch(patch, "on_sleep")?,
         "on_wake" => body.on_wake = session_action_patch(patch, "on_wake")?,
         "on_dpms_off" => body.on_dpms_off = session_action_patch(patch, "on_dpms_off")?,
         "on_dpms_on" => body.on_dpms_on = session_action_patch(patch, "on_dpms_on")?,
+        "on_idle_timeout" => body.on_idle_timeout = session_action_patch(patch, "on_idle_timeout")?,
+        "on_idle_resume" => body.on_idle_resume = session_action_patch(patch, "on_idle_resume")?,
+        "idle_timeout_seconds" => {
+            body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
+        }
         "automate_when" => body.automate_when = automate_when_patch(patch, "automate_when")?,
         other => anyhow::bail!("Unknown system-profile field: {other}"),
     }
@@ -1526,11 +1547,13 @@ mod tests {
             on_startup: Some(SessionAction::PowerOn),
             on_shutdown: Some(SessionAction::PowerOff),
             on_reboot: Some(SessionAction::None),
-            on_no_session: Some(SessionAction::None),
             on_sleep: Some(SessionAction::PowerOff),
             on_wake: Some(SessionAction::PowerOn),
-            on_dpms_off: Some(SessionAction::None),
-            on_dpms_on: Some(SessionAction::None),
+            on_dpms_off: Some(SessionAction::ScreenOff),
+            on_dpms_on: Some(SessionAction::ScreenOn),
+            idle_timeout_seconds: Some(0),
+            on_idle_timeout: Some(SessionAction::ScreenOff),
+            on_idle_resume: Some(SessionAction::ScreenOn),
             automate_when: Some(AutomateWhen::Always),
         }
     }
@@ -1861,11 +1884,12 @@ mod tests {
             "on_startup",
             "on_shutdown",
             "on_reboot",
-            "on_no_session",
             "on_sleep",
             "on_wake",
             "on_dpms_off",
             "on_dpms_on",
+            "on_idle_timeout",
+            "on_idle_resume",
         ] {
             set_system_field(
                 &mut body,
@@ -1877,11 +1901,20 @@ mod tests {
         assert_eq!(body.on_startup, Some(SessionAction::PowerOn));
         assert_eq!(body.on_shutdown, Some(SessionAction::PowerOn));
         assert_eq!(body.on_reboot, Some(SessionAction::PowerOn));
-        assert_eq!(body.on_no_session, Some(SessionAction::PowerOn));
         assert_eq!(body.on_sleep, Some(SessionAction::PowerOn));
         assert_eq!(body.on_wake, Some(SessionAction::PowerOn));
         assert_eq!(body.on_dpms_off, Some(SessionAction::PowerOn));
         assert_eq!(body.on_dpms_on, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_idle_timeout, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_idle_resume, Some(SessionAction::PowerOn));
+    }
+
+    #[test]
+    fn set_system_field_writes_idle_timeout_number() {
+        let mut body = SystemProfileBody::default();
+        set_system_field(&mut body, "idle_timeout_seconds", BodyPatch::Number(600))
+            .expect("known wire");
+        assert_eq!(body.idle_timeout_seconds, Some(600));
     }
 
     #[test]
@@ -2093,7 +2126,6 @@ mod tests {
         assert_eq!(body.on_startup, None);
         assert_eq!(body.on_shutdown, None);
         assert_eq!(body.on_reboot, None);
-        assert_eq!(body.on_no_session, None);
         assert_eq!(body.on_sleep, None);
         assert_eq!(body.on_wake, None);
         assert_eq!(body.on_dpms_off, None);

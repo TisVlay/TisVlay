@@ -543,17 +543,21 @@ enum AwaitOutcome {
 /// System lifecycle event type.
 ///
 /// Dispatched per-TV from each TV's resolved system profile by the
-/// `logind` monitor, the daemon startup path, and the DPMS watcher.
+/// `logind` monitor, the daemon startup path, the DPMS watcher, and the
+/// greeter idle client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemEvent {
     Startup,
     Shutdown,
     Reboot,
-    NoSession,
     Sleep,
     Wake,
     DpmsOff,
     DpmsOn,
+    /// Login greeter went idle (from `tisvlay-greeter` over `Manager1`).
+    GreeterIdle,
+    /// Login greeter activity resumed.
+    GreeterResume,
 }
 
 /// Apply a key-value TV option to a `TvConfig`.
@@ -1015,12 +1019,59 @@ impl TvManager {
             SystemEvent::Startup => tv.system_profile.on_startup,
             SystemEvent::Shutdown => tv.system_profile.on_shutdown,
             SystemEvent::Reboot => tv.system_profile.on_reboot,
-            SystemEvent::NoSession => tv.system_profile.on_no_session,
             SystemEvent::Sleep => tv.system_profile.on_sleep,
             SystemEvent::Wake => tv.system_profile.on_wake,
             SystemEvent::DpmsOff => tv.system_profile.on_dpms_off,
             SystemEvent::DpmsOn => tv.system_profile.on_dpms_on,
+            // Greeter idle is enabled per-TV by a non-zero `idle_timeout_seconds`.
+            // The greeter fires one fan-out event for the whole compositor, so
+            // gate the action here too — otherwise a TV that never opted in
+            // (timeout 0, but the default `on_idle_timeout` is `screen_off`)
+            // would still be blanked whenever another TV's timeout elapses.
+            SystemEvent::GreeterIdle if tv.system_profile.idle_timeout_seconds > 0 => {
+                tv.system_profile.on_idle_timeout
+            }
+            SystemEvent::GreeterResume if tv.system_profile.idle_timeout_seconds > 0 => {
+                tv.system_profile.on_idle_resume
+            }
+            SystemEvent::GreeterIdle | SystemEvent::GreeterResume => SessionAction::None,
         }
+    }
+
+    /// Shortest greeter idle timeout (seconds) across the TVs that have it
+    /// enabled, or 0 when none do.
+    ///
+    /// The login greeter has a single idle clock but system profiles are
+    /// per-TV, so the greeter client registers one notification at the
+    /// shortest enabled timeout; the daemon then fans the resulting
+    /// greeter-idle/resume out per-TV. A TV counts only if it has a non-zero
+    /// `idle_timeout_seconds` AND a real `on_idle_timeout` action — otherwise
+    /// it would pull the single clock shorter without ever acting. TVs that do
+    /// share the clock still blank at the shortest value (a longer-timeout TV
+    /// fires early).
+    ///
+    /// This is a deliberate parallel of the *session* idle pipeline
+    /// (`tisvlay_session::SessionState::effective_idle_timeout` + its
+    /// `IdleTimeout`/`IdleResume` → `on_idle_timeout`/`on_idle_resume` fan-out):
+    /// same single-shared-clock-plus-per-TV-action shape, but over the system
+    /// profile / greeter rather than the user profile / logged-in session, in a
+    /// different crate. They share no code (different profile types, sync map
+    /// vs async-locked registry); keep the shared-clock semantics in sync, or
+    /// unify them behind a generic idle pipeline if a third consumer appears.
+    pub async fn greeter_idle_timeout_seconds(&self) -> u64 {
+        let tvs = self.tvs.read().await;
+        let mut min: Option<u64> = None;
+        for (_, (managed, tv_arc)) in tvs.iter() {
+            let tv = tv_arc.lock().await;
+            if !tv.is_automated(*managed) {
+                continue;
+            }
+            let p = &tv.system_profile;
+            if p.idle_timeout_seconds > 0 && p.on_idle_timeout != SessionAction::None {
+                min = Some(min.map_or(p.idle_timeout_seconds, |m| m.min(p.idle_timeout_seconds)));
+            }
+        }
+        min.unwrap_or(0)
     }
 
     /// List TV IDs where automation should fire (managed + input-aware gate).
@@ -1382,11 +1433,13 @@ impl TvManager {
             on_startup: Some(resolved.on_startup),
             on_shutdown: Some(resolved.on_shutdown),
             on_reboot: Some(resolved.on_reboot),
-            on_no_session: Some(resolved.on_no_session),
             on_sleep: Some(resolved.on_sleep),
             on_wake: Some(resolved.on_wake),
             on_dpms_off: Some(resolved.on_dpms_off),
             on_dpms_on: Some(resolved.on_dpms_on),
+            idle_timeout_seconds: Some(resolved.idle_timeout_seconds),
+            on_idle_timeout: Some(resolved.on_idle_timeout),
+            on_idle_resume: Some(resolved.on_idle_resume),
             automate_when: Some(resolved.automate_when),
         })
     }
