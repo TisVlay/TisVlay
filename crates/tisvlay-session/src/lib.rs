@@ -26,7 +26,7 @@ use tisvlay_core::{
     ResolvedUserProfile, SessionAction, TvAssignment, UserConfig, UserProfileBody,
     UserProfileConfig, user_references_of,
 };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -365,7 +365,10 @@ pub async fn event_handler(
 /// transparently. Polling — rather than threading a notification through every
 /// profile mutator — keeps this self-contained and robust to any change source;
 /// the change applies within one poll interval, effectively live for a setting
-/// that changes rarely.
+/// that changes rarely. It also retries a failed start and restarts the watch
+/// when the compositor disconnects, so a transient Wayland-unavailable at
+/// launch or a mid-session compositor restart doesn't silently disable presence
+/// detection until the next config edit.
 pub async fn idle_watch_supervisor(
     event_tx: mpsc::UnboundedSender<session_monitor::SessionEvent>,
     is_locked: Arc<std::sync::atomic::AtomicBool>,
@@ -377,26 +380,41 @@ pub async fn idle_watch_supervisor(
         let secs = s.effective_idle_timeout();
         (secs > 0).then(|| secs.saturating_mul(1000).min(u32::MAX as u64) as u32)
     };
+    // Returns the handle (kept to hold the watch open) and a receiver that fires
+    // if the watch thread dies. A `None` handle means the start failed (Wayland
+    // not up yet / X11) — retried on the next poll tick.
     let start = |timeout_ms: Option<u32>| match wayland_idle::start_wayland_idle_monitor(
         event_tx.clone(),
         is_locked.clone(),
         timeout_ms,
     ) {
-        Ok(handle) => {
+        Ok((handle, dead)) => {
             info!(idle_timeout_ms = ?timeout_ms, "Wayland presence detection enabled");
-            Some(handle)
+            (Some(handle), Some(dead))
         }
         Err(e) => {
             warn!("Wayland presence detection unavailable: {}", e);
-            None
+            (None, None)
         }
     };
 
     let mut current = effective_ms(&*state.read().await);
-    let mut handle = start(current);
+    let (mut handle, mut dead_rx) = start(current);
     let mut ticker = tokio::time::interval(POLL);
     loop {
-        ticker.tick().await;
+        // Wake on a poll tick (timeout-change / retry) or the watch dying.
+        let died = tokio::select! {
+            _ = ticker.tick() => false,
+            _ = wait_watch_dead(&mut dead_rx) => true,
+        };
+        if died {
+            // A compositor restart / disconnect killed the watch. Restart it so
+            // lock-wake and idle don't silently stop until a config edit.
+            warn!("Wayland presence watch ended (compositor gone?); restarting");
+            drop(handle.take());
+            (handle, dead_rx) = start(current);
+            continue;
+        }
         let next = effective_ms(&*state.read().await);
         if next != current {
             info!(
@@ -407,9 +425,26 @@ pub async fn idle_watch_supervisor(
             // Drop the old handle first so the old watch stops before the new
             // one binds (avoids a momentary double notification).
             drop(handle.take());
-            handle = start(next);
+            (handle, dead_rx) = start(next);
             current = next;
+        } else if handle.is_none() {
+            // A prior start failed (Wayland not up yet at login, or a restart
+            // left no watch). Retry so presence detection recovers without
+            // waiting for a config edit.
+            debug!("Retrying Wayland presence watch");
+            (handle, dead_rx) = start(current);
         }
+    }
+}
+
+/// Await the watch-died signal, or pend forever when no watch is running (so the
+/// `select!` falls through to the poll tick, which retries the start).
+async fn wait_watch_dead(dead_rx: &mut Option<oneshot::Receiver<()>>) {
+    match dead_rx.as_mut() {
+        Some(rx) => {
+            let _ = rx.await;
+        }
+        None => std::future::pending::<()>().await,
     }
 }
 

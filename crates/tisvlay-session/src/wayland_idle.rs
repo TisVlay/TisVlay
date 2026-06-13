@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 pub use tisvlay_core::wayland::WaylandIdleError;
@@ -38,16 +38,16 @@ const IDLE_TAG: u32 = 1;
 /// in-session idle notification. Transitions are routed by tag to the
 /// lock-aware `LockWake` policy or to `IdleTimeout`/`IdleResume`.
 ///
-/// Returns a [`WatchHandle`] once the watch thread is spawned — hold it to keep
-/// the watch running; dropping it stops the watch (and ends the policy task, as
-/// the transition channel then closes). Errors if Wayland is unavailable or the
-/// protocol is missing (not fatal — the caller logs and continues, e.g. on
-/// X11/SSH).
+/// Returns the [`WatchHandle`] (hold it to keep the watch running; dropping it
+/// stops the watch and ends the policy task) plus a [`oneshot::Receiver`] that
+/// fires when the watch thread dies — the compositor disconnected — so the
+/// supervisor can restart it. Errors if Wayland is unavailable or the protocol
+/// is missing (not fatal — the caller logs and continues, e.g. on X11/SSH).
 pub fn start_wayland_idle_monitor(
     event_tx: mpsc::UnboundedSender<SessionEvent>,
     is_locked: Arc<AtomicBool>,
     idle_timeout_ms: Option<u32>,
-) -> Result<WatchHandle, WaylandIdleError> {
+) -> Result<(WatchHandle, oneshot::Receiver<()>), WaylandIdleError> {
     let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<(u32, IdleTransition)>();
     let mut notifications = vec![IdleNotification {
         tag: LOCK_WAKE_TAG,
@@ -61,6 +61,9 @@ pub fn start_wayland_idle_monitor(
     }
     let handle = start_idle_watch(notifications, raw_tx)?;
 
+    // Fires when the watch thread dies (compositor disconnected, closing
+    // `raw_rx`), so the supervisor can restart the watch.
+    let (dead_tx, dead_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
         let mut lock_wake_sent = false;
         while let Some((tag, transition)) = raw_rx.recv().await {
@@ -93,9 +96,12 @@ pub fn start_wayland_idle_monitor(
             }
         }
         warn!("Wayland idle transition channel closed");
+        // Tell the supervisor the watch ended; a dropped receiver (it already
+        // re-registered) is fine.
+        let _ = dead_tx.send(());
     });
 
-    Ok(handle)
+    Ok((handle, dead_rx))
 }
 
 /// Lock-screen wake decision for one idle transition.
