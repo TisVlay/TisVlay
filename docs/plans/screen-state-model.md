@@ -160,22 +160,21 @@ Per-TV **`desired_screen: Option<bool>`** on `ManagedTv` (`None` = no opinion ye
 **Intent writers** (set `desired_screen`, then call `reconcile_screen`):
 
 - The daemon's **`screen_on`/`screen_off`** — and therefore `Tv1.Screen.SetScreen` and `apply_action(ScreenOn|ScreenOff)` — are rewritten to **set `desired_screen` + reconcile**, not drive the panel directly. This is the key structural change: every screen caller becomes a latching writer through one path — GUI/CLI/tray, **the session process** (lock/unlock/lock-wake/idle, which reach the daemon only as `SetScreen` over D-Bus — fixes critical #3), the greeter (`NotifyGreeterIdle`), the DPMS mirror, and the new login/resume/greeter-present signals.
-- **`on_startup`** sets `desired_screen = Some(true)` **only if it is not already `Some(false)`** (read-and-set in one lock acquisition), then reconciles — so the attended greeter is woken (A1) but an away user's already-recorded greeter `desired=off` is honored (A2).
+- **`on_startup`** (PowerOn branch) already did `wake_and_connect` (the power axis); it then sets `desired_screen = Some(true)` **only if not already `Some(false)`** and reconciles (driving the panel) — so the attended greeter is woken (A1) but an away user's already-recorded greeter `desired=off` is honored (A2).
 
-**`reconcile_screen(&self, tv_id)`** — the *only* path that touches the panel, via a new internal **`apply_screen_raw`** (bare SSAP `conn.screen_on/off` through `with_connection`, bounded verify, **no `power_on` escalation**). Under the per-TV lock, re-read `desired_screen` (never captured at trigger time) and observed `PowerState`:
+**`reconcile_screen(&self, tv_id)`** — the *only* path that touches the panel, via two internal escalation-free primitives `apply_screen_on_raw`/`apply_screen_off_raw` (the current `screen_on`/`screen_off` bodies **minus** the `power_on` pre-flight and tail escalations; the projector `WarmingUp`/`CoolingDown` branches and verify loops are kept). It reads `desired_screen` + the cached `PowerState` under the per-TV lock, drops the lock (the `tokio::Mutex` is non-reentrant and `with_connection` re-locks), then:
 
-| `desired_screen` | observed | action |
+| `desired_screen` | cached state | action |
 |---|---|---|
-| `Some(true)` | `Active`/`ScreenSaver` | no-op |
-| `Some(true)` | `ScreenOff` | `apply_screen_raw(on)` |
-| `Some(true)` | dark (`ActiveStandby`/`Standby`/…) | **guarded one-shot wake** (`power_on`); the post-wake state push re-runs reconcile → then no-op/bare-apply |
-| `Some(false)` | `Active`/`ScreenSaver` | `apply_screen_raw(off)` |
-| `Some(false)` | dark / `ScreenOff` | no-op (already dark — **never `power_on` to blank**) |
+| `Some(true)` | `Active`/`ScreenSaver` | no-op (already on) |
+| `Some(true)` | anything else | `apply_screen_on_raw` (bare `turnOnScreen` + verify) |
+| `Some(false)` | `ScreenOff` | no-op (already off) |
+| `Some(false)` | anything else | `apply_screen_off_raw` (bare `turnOffScreen` + verify) |
 | `None` | any | no-op |
 
-A per-TV **`reconcile_in_flight`** guard around the wake stops the wake's own `power_state_tx` push from re-entering reconcile (breaks the recursion that killed the rejected plan — fixes critical #2).
+**Reconcile never calls `power_on`** — that is the recursion fix (refined after the focused review, which showed *any* single `reconcile_in_flight` flag either re-storms WoL or never lights the screen, because the post-wake push can be `ActiveStandby` *or* `Unknown`, both `needs_wake_preflight`). Power lives purely on the lifecycle axis: `on_startup`'s `wake_and_connect` and `on_wake`'s `power_on` bring the TV up; reconcile then drives only the panel via the bare, idempotent commands (LG masks the "already on/off" 500). With no `power_on` inside reconcile, the `screen→power_on→state-push→reconcile` loop is impossible *by construction* — no flag, no cooldown. (Residual, flagged for hardware verify: if `turnOnScreen` alone can't wake a stuck `ActiveStandby` panel, attended-boot panel-on relies on the TV already being `Active` after `wake_and_connect` — the common cold-boot case.)
 
-**Reconcile trigger (fixes critical #1 + the watcher leak):** a per-TV task spawned **once at TV registration** (holding `Arc<TvManager>`, the `state_poll_loop` precedent — *not* in `refresh_subscription`, which re-spawns on every connect and would leak N watchers), subscribed to `power_state_tx` ([tv_manager.rs:355](../../crates/tisvlayd/src/tv_manager.rs)). It calls `reconcile_screen` on **any** state change (not only "ready" transitions), so it re-asserts after the TV reaches `Active` post-WoL/reconnect, *including climbing out of `ActiveStandby`*. Intent writers also call `reconcile_screen` directly for the immediate-when-reachable case.
+**Reconcile trigger:** one manager-wide channel, not per-TV tasks. `forward_state_snapshot` (which already runs on every push *and* poll, for every TV including live-added ones) sends the `tv_id` after it updates `power_state_tx`; a single `reconcile_loop(Arc<TvManager>)` spawned once at startup (the `state_poll_loop` precedent) drains it and calls `reconcile_screen`. One spawn site, no per-TV task lifecycle/leak (the review showed per-TV-task-at-registration needs three spawn sites + teardown bookkeeping). Intent writers also call `reconcile_screen` directly, and the public `screen_on`/`screen_off` **await** it so the CLI/`SetScreen` "done" contract holds.
 
 ### Presence completeness — re-assert signals (fixes critical #4)
 
