@@ -15,7 +15,10 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None at present._
+- [`greeter-idle-oled-protection.md`](greeter-idle-oled-protection.md) — flip the
+  DPMS-mirror defaults to `ScreenOff`/`ScreenOn` (PR 1) and add a `tisvlay-greeter`
+  idle client that blanks/restores managed TVs at an unattended plasma-login
+  greeter via `ext-idle-notify-v1` (PR 2), protecting the OLED panel before login.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
