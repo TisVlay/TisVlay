@@ -42,6 +42,10 @@ tracing-subscriber = { workspace = true, optional = true }
 tracing-journald = { workspace = true, optional = true }
 tracing-log = { workspace = true, optional = true }
 
+# Optional: Wayland idle detection (ext-idle-notify-v1) for session/greeter
+wayland-client = { workspace = true, optional = true }
+wayland-protocols = { workspace = true, optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 zbus = { workspace = true }
@@ -54,6 +58,7 @@ tisvlay-test = { workspace = true }
 default = []
 dbus = ["dep:zbus", "dep:anyhow", "dep:futures-util"]
 logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
+wayland = ["dep:wayland-client", "dep:wayland-protocols"]
 
 [lints]
 workspace = true

@@ -5797,6 +5797,8 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "uuid",
+ "wayland-client",
+ "wayland-protocols",
  "zbus",
 ]
 
@@ -5902,8 +5904,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "wayland-client",
- "wayland-protocols",
  "zbus",
 ]
 
