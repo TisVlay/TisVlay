@@ -703,6 +703,16 @@ async fn latest_wins_off_then_on_while_reconnecting() {
     settle().await;
     settle().await;
 
+    // The mock re-inits to Active (panel on) on reconnect, which would let the
+    // final assert pass vacuously. Force the panel dark, so re-lighting it can
+    // only come from reconcile applying the latched *on* (the latest intent);
+    // had the latch wrongly ended off, reconcile would leave it dark.
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::ScreenOff);
+    settle().await;
+    settle().await;
+
     let tvs = client.list_tvs().await.expect("list_tvs");
     let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
     assert!(

@@ -3037,18 +3037,40 @@ impl TvManager {
             observed = ?observed,
             "reconcile: re-asserting desired screen state",
         );
+        // Re-check the intent under the lock right before applying: a concurrent
+        // direct `screen_on` / `screen_off` may have flipped `desired_screen`
+        // between the read above and now. The newer intent owns the outcome (its
+        // own dispatch, or the next push-driven reconcile), so bail if it moved.
+        {
+            let Ok(tv_arc) = self.get_tv(tv_id).await else {
+                return;
+            };
+            if tv_arc.lock().await.desired_screen != Some(want_on) {
+                return;
+            }
+        }
         let result = if want_on {
             self.apply_screen_on_raw(tv_id).await
         } else {
             self.apply_screen_off_raw(tv_id).await
         };
-        if let Err(e) = result {
-            debug!(
+        match result {
+            Ok(true) => {}
+            // Budget exhausted: the TV is reachable but refused to reach the
+            // target. The forwarder only re-spawns reconcile on an actual
+            // power-state change, so a TV stuck refusing won't thrash the verify
+            // loop — but surface it for diagnosis.
+            Ok(false) => debug!(
+                tv_id,
+                desired_on = want_on,
+                "reconcile_screen: panel did not reach target (verify budget exhausted)",
+            ),
+            Err(e) => debug!(
                 tv_id,
                 desired_on = want_on,
                 error = %e,
                 "reconcile_screen: bare apply failed (TV unreachable?)",
-            );
+            ),
         }
     }
 
