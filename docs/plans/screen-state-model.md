@@ -60,7 +60,7 @@ Target hardware is a single Nvidia/KDE workstation whose display is an LG OLED (
 | IdleTimeout | idle ≥ timeout | `on_idle_timeout` | `ScreenOff` |
 | IdleResume | activity after idle | `on_idle_resume` | `ScreenOn` |
 
-`idle_timeout_seconds` (session) also defaults to `0` = disabled. Note both profiles carry an `on_idle_timeout`/`on_idle_resume` pair — system = *greeter* idle, user = *in-session* idle — driven by two independent idle clocks.
+`idle_timeout_seconds` (session) also defaults to `0` = disabled. Both profiles carry an `on_idle_timeout`/`on_idle_resume` pair — system = *greeter* idle, user = *in-session* idle — on two independent clocks. **Mechanism caveat:** the greeter idle uses `ext-idle-notify-v1` (works), but the in-session idle pair still uses the D-Bus `GetSessionIdleTime` poll, which the project flags as non-functional on KDE Plasma Wayland ([wayland.rs](../../crates/tisvlay-core/src/wayland.rs)). So on a KDE Wayland box the in-session `on_idle_timeout`/`on_idle_resume` effectively never fire — PowerDevil's DPMS timeout blanks the idle unlocked session and the daemon only mirrors it. **Naming caveat:** `on_greeter_wake` (user profile) fires at the in-session *lock screen* (first input while locked, via ext-idle), not the logged-out greeter — the real greeter wake is the *system* profile's `on_idle_resume`.
 
 **Readiness model.** A TV is `connected` (live handle) and has a `PowerState` (`Active`, `ScreenSaver`, `ScreenOff` = ready; `Standby`/`ActiveStandby`/`Suspend`/`WarmingUp` = not ready). `needs_wake_preflight` is true for any not-ready state, so `screen_off`/`screen_on` power the TV fully on first. The `reconnecting` flag is set by `power_on`/`reconnect` but **not** by `on_startup`'s power-on (it calls `wake_and_connect_tv` directly). A cold LG takes ~85 s to reach `Active`.
 
@@ -131,23 +131,32 @@ Status legend: ✓ works today · ⚠ partial / fragile · ✗ broken.
 A single idea covers most of the stories: **presence drives a persistent, reconciled desired screen state; the OS lifecycle drives TV power separately.**
 
 - **Two axes.** *Power* (TV reachable / warming) and *screen* (panel lit) are independent. The OLED-safe idle state is "powered on, screen off." OS-lifecycle events (`on_startup`/`on_wake`/`on_sleep`/`on_shutdown`) own power and stay imperative/immediate.
-- **Presence collapses many events into one state.** Greeter idle/resume, session lock/unlock, in-session idle/resume, greeter-wake — all are "presence changed." The configured action (`ScreenOff`/`ScreenOn`) sets a **persistent per-TV desired screen** (latest-wins, latching).
+- **Presence collapses many events into one state.** Greeter idle/resume, session lock/unlock, in-session idle/resume, lock-wake — all are "presence changed." The configured action (`ScreenOff`/`ScreenOn`) sets a **persistent per-TV desired screen** (latest-wins, latching).
 - **Reconcile, don't fire.** A per-TV reconcile drives the panel toward the desired screen whenever the TV is ready, and re-asserts it after reconnect/boot. Crucially, **`on_startup` powers the TV on but does *not* force the screen on** — the presence layer (greeter attended vs idle) owns the screen. That one change resolves both the cold-boot override (A2) and the autologin dark screen (C2).
 
 This is a *declarative* refactor of the existing event→action wiring, not a new policy: the actions still come from config, but they set state that is reconciled rather than commands that fire and are lost.
 
-## Scope decisions to make (need your call)
+## Scope — resolved (2026-06-13)
 
-1. **Adopt the two-axes / persistent-desired-screen model**, or keep the imperative model and bolt latching + readiness-gating onto just the greeter path?
-2. **Should `on_startup`/`on_wake` stop forcing screen-on** and let the presence layer own the screen? (The elegant fix for A2/C2 — but a behavior change worth stating loudly.)
-3. **Unify the two idle pipelines** (greeter system-idle + in-session user-idle) under one presence abstraction, or leave them parallel and put the desired-state layer beneath both?
-4. **This PR vs split.** `feat/power-default` is already large. Land the whole model here, or land the model doc + the cold-boot (A3) and cross-login (C2) fixes now, with the full unification as a follow-up?
-5. **Multi-TV.** Desired-state is obviously per-TV; do we tackle heterogeneous idle timeouts now, or keep today's "min non-zero" pragmatic caveat?
+- **Wayland-native.** X11 is best-effort / no guarantees, no commitment (the GUI already dropped X11). Design to the Wayland protocols.
+- **Don't assume PowerDevil.** It is KDE-specific; other Wayland DEs have no equivalent, so the in-session idle timer is load-bearing there. The model must not silently depend on PowerDevil to blank an idle session.
+- **Consequence — fix in-session idle.** Move the in-session idle pair off the dead `GetSessionIdleTime` poll onto `ext-idle-notify-v1` (the path the greeter already uses), so it actually fires on Wayland without PowerDevil.
+- **Breadth — the desired-state layer covers both greeter *and* session** (not greeter-only). The earlier "broken-parts-only" lean is superseded: leaving in-session to PowerDevil would re-introduce the hidden KDE dependency above.
+- **Greeter = `plasma-login-manager` for now.** Generalizing to other Wayland greeters (if any gain traction) is a post-release, contributor-driven follow-up.
+- **Rename `on_greeter_wake` → `on_lock_wake`** (user profile; exact spelling provisional). Clean trio: `on_session_lock` (off) → `on_lock_wake` (on, to show the prompt) → `on_session_unlock` (on). No back-compat shim.
 
-## Non-goals (draft)
+## Still open — the model shape (decide next)
 
+1. **Full two-axes desired-state vs lighter latching.** Either (a) the full *presence → persistent reconciled desired screen; OS lifecycle → power* model above, or (b) a lighter "latch the last presence intent + readiness-gate the apply" without a standing reconcile loop. This is the next thing to nail down.
+2. **Should `on_startup`/`on_wake` stop forcing screen-on** and let the presence layer own the screen? (The elegant A2/C2 fix — a behavior change; decide alongside the model shape.)
+3. **Multi-TV.** Desired-state is per-TV; do we model heterogeneous idle timeouts or keep today's "min non-zero" caveat? (Low priority — one TV = the desktop is exact.)
+
+## Non-goals
+
+- X11 support (best-effort only; no guarantees, no commitment).
+- Other Wayland greeters beyond `plasma-login-manager` (revisit post-release if contributors want them).
 - Multi-seat / fast-user-switching.
-- Replacing PowerDevil — we mirror/augment its in-session DPMS, not supplant it.
+- Replacing PowerDevil — on KDE we still mirror its DPMS-off OLED-safe; we just stop *depending* on it for the in-session idle blank.
 - Input/HDR-specific screen policy; non-LG presence nuances.
 
 ## Pointers
