@@ -125,6 +125,15 @@ pub async fn state_change_forwarder(
                 // correct global claim.
                 if connected {
                     refresh_desktop_mapping(&manager).await;
+                    // Reconnect complete — `reconnecting` has cleared by the
+                    // time `ConnectionChanged(true)` is emitted, so re-assert
+                    // the desired screen state now that the TV is reachable. A
+                    // screen action deferred while it was reconnecting lands
+                    // here (the push-driven reconcile no-ops fast when the
+                    // panel already matches, and never escalates to `power_on`).
+                    let mgr = manager.clone();
+                    let id = tv_id.clone();
+                    tokio::spawn(async move { mgr.reconcile_screen(&id).await });
                 }
             }
             StateChangeEvent::OptionChanged {

@@ -1285,7 +1285,7 @@ impl TvManager {
                 // Wake the panel — unless a presence source already requested
                 // it off while we were booting (an away user's greeter idle).
                 // That latched `desired_screen = Some(false)` is left for
-                // reconcile to apply, so the panel stays dark (A2).
+                // reconcile to apply, so the panel stays dark.
                 let want_screen_on = match manager.get_tv(tv_id).await {
                     Ok(arc) => arc.lock().await.desired_screen != Some(false),
                     Err(_) => true,
@@ -2409,6 +2409,12 @@ impl TvManager {
             let tv_arc = self.get_tv(tv_id).await?;
             let mut tv = tv_arc.lock().await;
             tv.connection = None;
+            // An explicit or system power-off ends any screen intent — the TV
+            // is off. Drop the latch so the push-driven reconcile does not
+            // later re-assert it (e.g. re-lighting a TV the user just powered
+            // off). `screen_on` / `screen_off` re-establish it on the next
+            // request. Safe here because no screen path calls `power_off`.
+            tv.desired_screen = None;
             if result.is_ok() {
                 tv.powered_off = true;
             }
@@ -2587,7 +2593,7 @@ impl TvManager {
         }
         // Defer while a lifecycle wake is in progress: recording the intent
         // and letting the post-wake reconcile apply it avoids a second
-        // competing `power_on` racing the wake (the cold-boot tangle, A3).
+        // competing `power_on` racing the wake (the cold-boot tangle).
         if self.is_reconnecting(tv_id).await {
             debug!(
                 tv_id,
@@ -2760,7 +2766,7 @@ impl TvManager {
         }
         // Defer while a lifecycle wake is in progress: recording the intent
         // and letting the post-wake reconcile apply it avoids a second
-        // competing `power_on` racing the wake (the cold-boot tangle, A3).
+        // competing `power_on` racing the wake (the cold-boot tangle).
         if self.is_reconnecting(tv_id).await {
             debug!(
                 tv_id,
@@ -2909,6 +2915,17 @@ impl TvManager {
         Ok(())
     }
 
+    /// Override the per-TV desired-screen latch directly. The explicit
+    /// `Tv1.Power.PowerOn` path uses it: an explicit power-on is an unambiguous
+    /// "on and visible", so it sets the latch on (overriding any stale
+    /// screen-off) *before* waking, so the push-driven reconcile keeps the
+    /// freshly-woken panel on instead of re-blanking it.
+    pub async fn set_desired_screen(&self, tv_id: &str, desired: Option<bool>) {
+        if let Ok(tv_arc) = self.get_tv(tv_id).await {
+            tv_arc.lock().await.desired_screen = desired;
+        }
+    }
+
     /// Issue `screen_on` and verify, with **no `power_on` escalation** — the
     /// bare counterpart of [`Self::screen_on`]. The push-driven
     /// [`Self::reconcile_screen`] uses this to re-assert the desired screen
@@ -2985,6 +3002,16 @@ impl TvManager {
     /// holds no `power_on`, the `screen→power_on→state-push→reconcile` loop is
     /// impossible by construction.
     pub async fn reconcile_screen(&self, tv_id: &str) {
+        // Never re-assert while a lifecycle wake is in flight: a stale push
+        // could otherwise drive a bare apply that opens a second connection,
+        // racing the in-flight `power_on` (the wake-race the direct
+        // `screen_on` / `screen_off` defer prevents). And act only on automated
+        // TVs, like every direct dispatch path. A deferred intent still lands —
+        // the reconnect-complete `ConnectionChanged(true)` spawns a fresh
+        // reconcile once `reconnecting` has cleared.
+        if self.is_reconnecting(tv_id).await || !self.is_tv_automated(tv_id).await {
+            return;
+        }
         let (desired, observed) = {
             let Ok(tv_arc) = self.get_tv(tv_id).await else {
                 return;

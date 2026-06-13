@@ -575,7 +575,7 @@ async fn reconcile_reasserts_desired_on_after_drift() {
 /// (`is_reconnecting`) defers: it records `desired_screen` and returns without
 /// sending a `turnOffScreen` that would race the wake. The push-driven
 /// reconcile applies it once the TV is reachable again (the cold-boot tangle
-/// fix, A3).
+/// fix).
 #[tokio::test]
 async fn screen_off_deferred_during_reconnect_applies_on_ready() {
     let id = "defer_reconnect";
@@ -708,5 +708,52 @@ async fn latest_wins_off_then_on_while_reconnecting() {
     assert!(
         tv.is_screen_on,
         "latest-wins: the on should supersede the earlier off after reconnect",
+    );
+}
+
+/// An explicit `Tv1.Power.PowerOn` overrides a stale `screen_off` latch: it sets
+/// `desired_screen = Some(true)` before waking, so the push-driven reconcile
+/// keeps the freshly-woken panel on instead of re-blanking it.
+#[tokio::test]
+async fn power_on_clears_stale_screen_off_latch() {
+    let id = "poweron_clears_latch";
+    let tv_uuid = test_tv_uuid(id).to_string();
+    let addr = "mock://poweron_clears_latch";
+    let daemon = TestDaemon::with_one_mock_tv(id).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // Latch the panel off (a prior idle / lock blank).
+    daemon
+        .manager()
+        .screen_off(&tv_uuid)
+        .await
+        .expect("screen_off");
+    settle().await;
+
+    // Explicit power-on must override that stale screen-off latch.
+    client.power_on(&tv_uuid).await.expect("power_on");
+    settle().await;
+
+    // Panel drifts off again: with the latch correctly flipped to ON, reconcile
+    // re-lights it; had the stale OFF latch survived the power-on, reconcile
+    // would leave it dark.
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::ScreenOff);
+    settle().await;
+    settle().await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "explicit power-on must flip the latch on; reconcile then keeps the panel lit",
     );
 }
