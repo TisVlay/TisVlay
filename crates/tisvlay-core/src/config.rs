@@ -349,8 +349,8 @@ impl Default for ResolvedSystemProfile {
             on_no_session: SessionAction::None,
             on_sleep: SessionAction::PowerOff,
             on_wake: SessionAction::PowerOn,
-            on_dpms_off: SessionAction::None,
-            on_dpms_on: SessionAction::None,
+            on_dpms_off: SessionAction::ScreenOff,
+            on_dpms_on: SessionAction::ScreenOn,
             automate_when: AutomateWhen::Always,
         }
     }
@@ -1824,9 +1824,9 @@ ip = "192.168.1.101"
         assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
         assert_eq!(resolved.on_reboot, SessionAction::None);
         assert_eq!(resolved.on_no_session, SessionAction::None);
-        // DPMS actions are opt-in: no default behavior.
-        assert_eq!(resolved.on_dpms_off, SessionAction::None);
-        assert_eq!(resolved.on_dpms_on, SessionAction::None);
+        // DPMS actions mirror the host display by default.
+        assert_eq!(resolved.on_dpms_off, SessionAction::ScreenOff);
+        assert_eq!(resolved.on_dpms_on, SessionAction::ScreenOn);
     }
 
     #[test]

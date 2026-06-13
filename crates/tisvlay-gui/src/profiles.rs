@@ -1529,8 +1529,8 @@ mod tests {
             on_no_session: Some(SessionAction::None),
             on_sleep: Some(SessionAction::PowerOff),
             on_wake: Some(SessionAction::PowerOn),
-            on_dpms_off: Some(SessionAction::None),
-            on_dpms_on: Some(SessionAction::None),
+            on_dpms_off: Some(SessionAction::ScreenOff),
+            on_dpms_on: Some(SessionAction::ScreenOn),
             automate_when: Some(AutomateWhen::Always),
         }
     }
