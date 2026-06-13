@@ -12,9 +12,11 @@
 //! process exits without watching.
 
 use anyhow::{Context, Result, anyhow};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::time::Duration;
 use tisvlay_core::DaemonClient;
-use tisvlay_core::wayland::{IdleTransition, start_idle_watch};
+use tisvlay_core::wayland::{IdleTransition, start_idle_watch_on_socket};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -107,12 +109,14 @@ async fn notify_with_retry(daemon: &DaemonClient, idle: bool) -> bool {
     false
 }
 
-/// Start the idle watch, retrying while the greeter compositor comes up.
+/// Discover the greeter compositor's wayland socket under `XDG_RUNTIME_DIR`
+/// and start the idle watch, retrying while the socket appears.
 ///
-/// Our unit is ordered after kwin's bus name, but the compositor's wayland
-/// socket can land a moment later — so retry rather than failing on the first
-/// attempt. If it never appears, log the wayland environment and exit (the
-/// unit's Restart=on-failure brings us back).
+/// The unit is ordered after kwin's bus name, but the socket can land a moment
+/// later, and the greeter `systemd.user` unit carries no `WAYLAND_DISPLAY` (and
+/// the socket is not necessarily `wayland-0` — a lingering user manager can hold
+/// that name), so we connect to the discovered socket explicitly and retry
+/// rather than failing on the first attempt. `connect_to_env` would miss it.
 async fn connect_idle_watch(
     timeout_ms: u32,
     tx: &mpsc::UnboundedSender<IdleTransition>,
@@ -120,11 +124,11 @@ async fn connect_idle_watch(
     const MAX_ATTEMPTS: u32 = 15;
     let mut last_err = anyhow!("no connection attempt made");
     for attempt in 1..=MAX_ATTEMPTS {
-        match start_idle_watch(timeout_ms, tx.clone()) {
+        match try_connect(timeout_ms, tx.clone()) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 debug!(attempt, error = %e, "greeter compositor not ready; retrying");
-                last_err = anyhow!("{e}");
+                last_err = e;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
@@ -132,9 +136,57 @@ async fn connect_idle_watch(
     warn!(
         xdg_runtime_dir = ?std::env::var("XDG_RUNTIME_DIR").ok(),
         wayland_display = ?std::env::var("WAYLAND_DISPLAY").ok(),
+        sockets = ?wayland_sockets(),
         "Could not connect to the greeter compositor after retries"
     );
     Err(last_err.context("connect to greeter compositor"))
+}
+
+fn try_connect(timeout_ms: u32, tx: mpsc::UnboundedSender<IdleTransition>) -> Result<()> {
+    let path =
+        greeter_socket_path().ok_or_else(|| anyhow!("no wayland socket under XDG_RUNTIME_DIR"))?;
+    let stream = UnixStream::connect(&path)
+        .with_context(|| format!("connect wayland socket {}", path.display()))?;
+    start_idle_watch_on_socket(stream, timeout_ms, tx).map_err(|e| anyhow!("{e}"))
+}
+
+/// Resolve the compositor socket path: `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` when
+/// set, else the first `wayland-<n>` socket in `$XDG_RUNTIME_DIR`.
+fn greeter_socket_path() -> Option<PathBuf> {
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+    if let Some(disp) = std::env::var_os("WAYLAND_DISPLAY") {
+        let disp = PathBuf::from(disp);
+        return Some(if disp.is_absolute() {
+            disp
+        } else {
+            dir.join(disp)
+        });
+    }
+    wayland_sockets()
+        .into_iter()
+        .next()
+        .map(|name| dir.join(name))
+}
+
+/// Sorted `wayland-<n>` socket names present in `$XDG_RUNTIME_DIR` (the `.lock`
+/// companions are excluded). Also used for failure diagnostics.
+fn wayland_sockets() -> Vec<String> {
+    let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| {
+            n.strip_prefix("wayland-")
+                .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 #[cfg(test)]
