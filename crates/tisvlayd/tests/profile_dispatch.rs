@@ -454,6 +454,54 @@ async fn greeter_idle_skips_tv_with_zero_timeout() {
     );
 }
 
+/// A greeter resume (e.g. the client's startup presence-assert) must re-light
+/// an automated TV the prior session latched dark, *even when greeter idle is
+/// disabled for it* (idle_timeout_seconds=0). Only proactive blanking is opt-in;
+/// restoring presence at the login screen is not gated on the idle timer.
+#[tokio::test]
+async fn greeter_resume_lights_tv_with_zero_timeout() {
+    let tv_uuid = test_tv_uuid("greeter_resume_zero").to_string();
+    let config = config_with_greeter_idle(
+        "greeter_resume_zero",
+        0, // greeter idle disabled for this TV
+        SessionAction::ScreenOff,
+        SessionAction::ScreenOn,
+    );
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // Simulate a prior locked session that latched the panel dark across logout.
+    daemon
+        .manager()
+        .screen_off(&tv_uuid)
+        .await
+        .expect("screen_off");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(!tv.is_screen_on, "precondition: panel latched off");
+
+    // The greeter's presence-assert / resume edge.
+    client
+        .notify_greeter_idle(false)
+        .await
+        .expect("notify greeter resume");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "greeter resume must re-light an automated TV even with idle disabled",
+    );
+}
+
 /// A TV with a timeout but no idle action (on_idle_timeout=None) must not
 /// govern the single greeter clock — it would otherwise pull the shared
 /// timeout shorter while never acting.

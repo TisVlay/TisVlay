@@ -1032,18 +1032,23 @@ impl TvManager {
             SystemEvent::Wake => tv.system_profile.on_wake,
             SystemEvent::DpmsOff => tv.system_profile.on_dpms_off,
             SystemEvent::DpmsOn => tv.system_profile.on_dpms_on,
-            // Greeter idle is enabled per-TV by a non-zero `idle_timeout_seconds`.
-            // The greeter fires one fan-out event for the whole compositor, so
-            // gate the action here too — otherwise a TV that never opted in
-            // (timeout 0, but the default `on_idle_timeout` is `screen_off`)
-            // would still be blanked whenever another TV's timeout elapses.
+            // Proactive greeter blanking is opt-in per-TV via a non-zero
+            // `idle_timeout_seconds`: the greeter fires one fan-out event for
+            // the whole compositor, so gate the *idle* action here too —
+            // otherwise a TV that never opted in (timeout 0, but the default
+            // `on_idle_timeout` is `screen_off`) would be blanked whenever
+            // another TV's timeout elapses.
             SystemEvent::GreeterIdle if tv.system_profile.idle_timeout_seconds > 0 => {
                 tv.system_profile.on_idle_timeout
             }
-            SystemEvent::GreeterResume if tv.system_profile.idle_timeout_seconds > 0 => {
-                tv.system_profile.on_idle_resume
-            }
-            SystemEvent::GreeterIdle | SystemEvent::GreeterResume => SessionAction::None,
+            SystemEvent::GreeterIdle => SessionAction::None,
+            // Resume/presence is *not* gated on the idle timer: a greeter
+            // resume — including the client's presence-assert at startup — must
+            // re-light an automated TV the prior session latched dark, even when
+            // that TV opts out of proactive blanking. The automation gate in
+            // `execute_system_event_for_tv` already scopes this to managed TVs;
+            // `on_idle_resume` defaults to `screen_on`.
+            SystemEvent::GreeterResume => tv.system_profile.on_idle_resume,
         }
     }
 
