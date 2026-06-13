@@ -127,3 +127,40 @@ reconnect path so it can't stall it). It runs with a fresh generation and, since
 - **Generation check placement:** must cover every `await` boundary in the
   pre-flight + verify-retry loops, or a superseded action could still issue a stale
   command.
+
+## Review outcome — design rejected, work deferred
+
+Two independent reviews (impl-correctness + design/maintainability) found the
+design above **does not work as written and is the wrong altitude for this PR**:
+
+1. **Premise is false.** `on_startup`'s power-on calls `wake_and_connect_tv`
+   *directly* (`tv_manager.rs:1238`) and never sets `reconnecting` — only
+   `TvManager::power_on` does (`:2239`). So in the cold-boot scenario this plan
+   targets, `is_reconnecting()` is `false`, the greeter `screen_off` is **not**
+   deferred, and it runs its own pre-flight `power_on` — the exact duplicate-wake
+   tangle the plan claimed to remove.
+2. **Reconcile recurses into a WoL storm.** At the reconnect-success hook
+   (`:2337`) the TV is merely connected, not Active (commonly `ActiveStandby`), so
+   reconciling `screen_off` → pre-flight `power_on` → success → reconcile → … and
+   re-sends WoL for the whole cold-boot window.
+3. **Not spawnable as written.** `power_on`/`reconnect` take `&self`; there is no
+   `Weak<Self>`, and adding `self: &Arc<Self>` collides with the `ActionExecutor`
+   trait (`action.rs:21`). Plus TOCTOU between "set intent" and "test reconnecting"
+   unless done in one locked critical section, and the generation check must sit at
+   every `await` in the verify-retry loops, not once.
+4. **Doesn't help the target user.** Even corrected, coalescing only fixes
+   login-supersession. The short-timeout / away-user / cold-boot case (the one OLED
+   protection is *for*) is unaffected, because `on_startup`'s `screen_on`
+   (`:1262`) is the genuine latest intent. That case needs a *latching* greeter
+   intent that re-asserts after `on_startup` — the larger per-DE redesign, not this.
+
+**Revised decision:** this narrow coalescer is **superseded**, not merely deferred.
+The review showed the real problem is that the daemon has no persistent notion of
+*what the screen should be* — so a per-event coalescer can only ever patch one
+slice. The work is reframed into a proper per-TV **desired screen state** model
+spanning every boot/login/lock/idle context: see
+[`screen-state-model.md`](screen-state-model.md), which maps the user stories and
+fixes the goal/scope before any mechanism is designed.
+
+This plan file is retained as the record of the rejected approach and the four
+concrete failure modes above — useful input to the model design.

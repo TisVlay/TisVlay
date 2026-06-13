@@ -15,11 +15,13 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
+- [`screen-state-model.md`](screen-state-model.md) — user stories + scope for a
+  per-TV *desired screen state* model: presence drives a persistent, reconciled
+  screen state (latching across boot/login/lock/idle/reconnect); OS lifecycle
+  drives TV power separately. Supersedes the narrow coalescer below.
 - [`coalesce-deferred-screen-actions.md`](coalesce-deferred-screen-actions.md) —
-  coalesce screen on/off to a per-TV desired state so actions deferred while a TV
-  is reconnecting (e.g. a greeter blank during a cold boot) apply the latest
-  intent on reconnect, and a login's `screen_on` supersedes a stale greeter
-  `screen_off`.
+  **superseded** (rejected in review). Retained as the record of the narrow
+  per-event coalescer and its four failure modes, which feed the model above.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
