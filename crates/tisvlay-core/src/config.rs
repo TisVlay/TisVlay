@@ -15,7 +15,6 @@
 //! on_startup = "power_on"
 //! on_shutdown = "power_off"
 //! on_reboot = "none"
-//! on_no_session = "none"
 //! on_sleep = "power_off"
 //! on_wake = "power_on"
 //!
@@ -266,10 +265,6 @@ pub struct SystemProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_reboot: Option<SessionAction>,
 
-    /// Action when all user sessions end (e.g., after logout, login screen).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_no_session: Option<SessionAction>,
-
     /// Action on system sleep/suspend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_sleep: Option<SessionAction>,
@@ -313,7 +308,6 @@ profile_plumbing! {
         on_startup,
         on_shutdown,
         on_reboot,
-        on_no_session,
         on_sleep,
         on_wake,
         on_dpms_off,
@@ -342,8 +336,6 @@ pub struct ResolvedSystemProfile {
     pub on_shutdown: SessionAction,
     /// Action when the system reboots (including kexec).
     pub on_reboot: SessionAction,
-    /// Action when all user sessions end.
-    pub on_no_session: SessionAction,
     /// Action on system sleep/suspend.
     pub on_sleep: SessionAction,
     /// Action on system wake/resume.
@@ -368,7 +360,6 @@ impl Default for ResolvedSystemProfile {
             on_startup: SessionAction::PowerOn,
             on_shutdown: SessionAction::PowerOff,
             on_reboot: SessionAction::None,
-            on_no_session: SessionAction::None,
             on_sleep: SessionAction::PowerOff,
             on_wake: SessionAction::PowerOn,
             on_dpms_off: SessionAction::ScreenOff,
@@ -543,7 +534,6 @@ pub struct SystemProfileBody {
     pub on_startup: Option<SessionAction>,
     pub on_shutdown: Option<SessionAction>,
     pub on_reboot: Option<SessionAction>,
-    pub on_no_session: Option<SessionAction>,
     pub on_sleep: Option<SessionAction>,
     pub on_wake: Option<SessionAction>,
     pub on_dpms_off: Option<SessionAction>,
@@ -1498,7 +1488,6 @@ mod tests {
         assert_eq!(resolved.on_startup, SessionAction::PowerOn);
         assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
         assert_eq!(resolved.on_reboot, SessionAction::None);
-        assert_eq!(resolved.on_no_session, SessionAction::None);
     }
 
     #[test]
@@ -1564,7 +1553,6 @@ name = "default"
 on_startup = "power_on"
 on_shutdown = "power_off"
 on_reboot = "none"
-on_no_session = "screen_on"
 
 [user.profiles."00000000-0000-0000-0000-00000000515a"]
 name = "default"
@@ -1594,7 +1582,6 @@ mac = "AA:BB:CC:DD:EE:FF"
         assert_eq!(sys_default.on_startup, Some(SessionAction::PowerOn));
         assert_eq!(sys_default.on_shutdown, Some(SessionAction::PowerOff));
         assert_eq!(sys_default.on_reboot, Some(SessionAction::None));
-        assert_eq!(sys_default.on_no_session, Some(SessionAction::ScreenOn));
 
         // Check user profile
         let user_default = config
@@ -1854,7 +1841,6 @@ ip = "192.168.1.101"
         assert_eq!(resolved.on_startup, SessionAction::PowerOn);
         assert_eq!(resolved.on_shutdown, SessionAction::PowerOff);
         assert_eq!(resolved.on_reboot, SessionAction::None);
-        assert_eq!(resolved.on_no_session, SessionAction::None);
         // DPMS actions mirror the host display by default.
         assert_eq!(resolved.on_dpms_off, SessionAction::ScreenOff);
         assert_eq!(resolved.on_dpms_on, SessionAction::ScreenOn);
@@ -2700,7 +2686,6 @@ ip = "192.168.1.1"
             on_startup: Some(SessionAction::PowerOn),
             on_shutdown: Some(SessionAction::PowerOff),
             on_reboot: Some(SessionAction::None),
-            on_no_session: Some(SessionAction::None),
             on_sleep: Some(SessionAction::PowerOff),
             on_wake: Some(SessionAction::PowerOn),
             on_dpms_off: Some(SessionAction::ScreenOff),
@@ -2767,7 +2752,6 @@ ip = "192.168.1.1"
             on_startup: Some(SessionAction::PowerOn),
             on_shutdown: None,
             on_reboot: Some(SessionAction::None),
-            on_no_session: None,
             on_sleep: Some(SessionAction::PowerOff),
             on_wake: None,
             on_dpms_off: Some(SessionAction::ScreenOff),

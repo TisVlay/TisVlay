@@ -15,7 +15,6 @@
 //! | Sleep     | PowerOff |
 //! | Wake      | PowerOn  |
 //! | Reboot    | None     |
-//! | NoSession | None     |
 
 #![cfg(feature = "mock")]
 
@@ -128,33 +127,6 @@ async fn reboot_does_not_disconnect_tv() {
     assert!(
         daemon.manager().is_connected(&tv_uuid).await,
         "TV should still be connected (reboot action is None by default)",
-    );
-}
-
-// ---------- NoSession → None ----------
-
-#[tokio::test]
-async fn no_session_does_not_disconnect_tv() {
-    let tv_uuid = test_tv_uuid("lr_nosess").to_string();
-    let daemon = TestDaemon::with_one_mock_tv("lr_nosess")
-        .await
-        .expect("daemon");
-    daemon
-        .manager()
-        .reconnect(&tv_uuid)
-        .await
-        .expect("reconnect");
-    settle().await;
-
-    daemon
-        .manager()
-        .execute_system_event(SystemEvent::NoSession, "test")
-        .await;
-    settle().await;
-
-    assert!(
-        daemon.manager().is_connected(&tv_uuid).await,
-        "TV should still be connected (no_session action is None by default)",
     );
 }
 

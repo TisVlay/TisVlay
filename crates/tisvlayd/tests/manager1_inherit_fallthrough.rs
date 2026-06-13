@@ -63,7 +63,6 @@ async fn effective_falls_through_to_default_then_baseline() {
     assert!(effective.on_startup.is_some());
     assert!(effective.on_shutdown.is_some());
     assert!(effective.on_reboot.is_some());
-    assert!(effective.on_no_session.is_some());
     assert!(effective.on_sleep.is_some());
     assert!(effective.on_wake.is_some());
     assert!(effective.on_dpms_off.is_some());

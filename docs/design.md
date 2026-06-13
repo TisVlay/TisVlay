@@ -372,7 +372,6 @@ pub struct SystemProfileBody {
     pub on_startup:    Option<SessionAction>,
     pub on_shutdown:   Option<SessionAction>,
     pub on_reboot:     Option<SessionAction>,
-    pub on_no_session: Option<SessionAction>,
     pub on_sleep:      Option<SessionAction>,
     pub on_wake:       Option<SessionAction>,
     pub on_dpms_off:   Option<SessionAction>,
@@ -508,7 +507,6 @@ name = "default"
 on_startup = "power_on"          # action on system boot (default: power_on)
 on_shutdown = "power_off"        # action on poweroff/halt (default: power_off)
 on_reboot = "none"               # action on reboot/kexec (default: none)
-on_no_session = "none"           # action when all user sessions end (login screen)
 on_sleep = "power_off"           # action on system suspend/hibernate (default: power_off)
 on_wake = "power_on"             # action on system resume from sleep (default: power_on)
 on_dpms_off = "screen_off"       # action when the matched host display's DPMS leaves On (default: screen_off)
@@ -649,7 +647,6 @@ stateDiagram-v2
 | Activity resumes | Screen on | `on_idle_resume` (user profile) | After idle timeout |
 | System suspend | Power off | `on_sleep` (system profile) | Network unavailable during sleep |
 | System resume | Power on | `on_wake` (system profile) | Backend handles WoL retry for lost packets |
-| All sessions end | None | `on_no_session` (system profile) | Login screen / after logout |
 | System shutdown | Power off | `on_shutdown` (system profile) | poweroff or halt |
 | System reboot | None | `on_reboot` (system profile) | reboot or kexec; TV stays on for BIOS/TTY |
 | Display DPMS off | Screen off | `on_dpms_off` (system profile) | EDID-matched connector leaves DPMS On; default `screen_off`. A concurrent user-session idle/lock path may also fire — a redundant-but-safe double-dispatch |
@@ -718,7 +715,7 @@ Cached state is `ManagedTv::last_known_power_state` (raw [`PowerState`](../crate
 
 **Opt-in.** `idle_timeout_seconds` defaults to `0`. The proactive greeter timer is the one piece that *originates* a blank rather than mirroring one, so it ships off; turning it on is two steps — install the client (`services.tisvlay.greeter.enable` on NixOS) and set `idle_timeout_seconds` on a system profile (Profiles pane or declarative config).
 
-**Cross-login handoff (known gap).** The greeter client never sends a resume-on-exit; when the user logs in, the greeter session tears down and the panel is restored by the *resume edge* — the keypress that wakes the greeter to type a password is itself an `ext-idle` resume, so `ScreenOn` is dispatched before login completes. This covers interactive logins. A **zero-input login** (autologin, or a remote/programmatic session) *after* the greeter has already idle-blanked has no resume edge, so the panel can stay off. `on_session_unlock` does **not** close this — it is lock→unlock signal-driven and never fires at a fresh login. The intended fix is a configurable `on_login` system-profile action (default `screen_on`) fired on logind `SessionNew`, the symmetric partner of `on_no_session`; it is deferred pending hardware testing of the login-transition race the daemon's `SessionNew` handler currently no-ops to avoid.
+**Cross-login handoff.** The greeter client never sends a resume-on-exit; when the user logs in, the greeter session tears down and the panel is restored by the *resume edge* — the keypress that wakes the greeter to type a password is itself an `ext-idle` resume, so `ScreenOn` is dispatched before login completes. This covers interactive logins. A **zero-input login** (autologin, or a remote/programmatic session) *after* the greeter has already idle-blanked has no resume edge, so the panel can stay off — an accepted limitation, since login normally involves input. A configurable login-time action was considered and rejected as YAGNI: it would serve only that zero-input case, the daemon deliberately no-ops `SessionNew` to dodge a login-transition race, and the greeter-presence pair (`on_idle_timeout`/`on_idle_resume`) — not a session-lifecycle action — is the right tool for screen state at the login screen.
 
 ---
 
@@ -869,7 +866,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 2. Profile field-level inheritance: user profile fields override admin defaults, unset fields fall through
 3. `on_idle_resume` added to `UserProfileConfig` (action when activity resumes after idle)
 4. `org.tisvlay.Session1` D-Bus interface on session bus: `ListUserProfiles`, `GetTvUserProfile`, `SetTvUserProfile`, `GetEffectiveUserProfile`, `ReloadConfig`
-5. Daemon gains `org.freedesktop.login1` monitoring: `PrepareForShutdown` (inhibitor lock), `SessionNew`/`SessionRemoved` for `on_no_session`
+5. Daemon gains `org.freedesktop.login1` monitoring: `PrepareForShutdown` (inhibitor lock) and `PrepareForSleep`
 6. Boot-wake refactored: retry-connect loop with WoL resend replaces blind sleep delay
 7. Session service event replay after late daemon connect
 8. Tray gains User Profile and System Profile submenus per TV
@@ -932,7 +929,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 
 1. Renamed `ProfileConfig` → `UserProfileConfig`, `ResolvedProfile` → `ResolvedUserProfile` across all crates
 2. D-Bus renames: `GetSystemProfile` → `GetUserProfileDefault`, `GetSystemProfiles` → `ListUserProfiles`, `ListProfiles` → `ListUserProfiles`, `GetTvProfile` → `GetTvUserProfile`, `SetTvProfile` → `SetTvUserProfile`, `GetEffectiveProfile` → `GetEffectiveUserProfile`
-3. Added `SystemProfileConfig` and `ResolvedSystemProfile` with fields: `on_startup`, `on_shutdown`, `on_reboot`, `on_no_session`
+3. Added `SystemProfileConfig` and `ResolvedSystemProfile` with fields: `on_startup`, `on_shutdown`, `on_reboot`
 4. Config restructured: `[daemon]` → `[system.profiles.*]`, `[profiles.*]` → `[user.profiles.*]`, `profile = "name"` → `profile.user = "name"`, new `profile.system = "name"` on `TvConfig`
 5. Removed `DaemonConfig` — replaced by per-TV system profile resolution
 6. Daemon dispatches lifecycle events per-TV using each TV's resolved system profile
