@@ -26,7 +26,7 @@ use tisvlay_core::{
     ResolvedUserProfile, SessionAction, TvAssignment, UserConfig, UserProfileBody,
     UserProfileConfig, user_references_of,
 };
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -43,6 +43,12 @@ pub struct SessionState {
     pub admin_user_profiles: HashMap<String, UserProfileConfig>,
     /// TV IDs from the daemon (ordered).
     pub tv_ids: Vec<String>,
+    /// Publishes the effective idle timeout (ms; `None` = disabled) to the
+    /// idle-watch supervisor. [`Self::republish_idle_timeout`] refreshes it
+    /// whenever the resolved `profiles` change (GUI / `ReloadConfig` / SIGHUP),
+    /// so the supervisor re-registers the watch event-driven, without polling.
+    /// Every mutation of `profiles` must call `republish_idle_timeout`.
+    pub idle_timeout_tx: watch::Sender<Option<u32>>,
 }
 
 impl SessionState {
@@ -156,13 +162,17 @@ impl SessionState {
 
         info!(tvs = tv_ids.len(), "Session state loaded");
 
-        Ok(Self {
+        let (idle_timeout_tx, _) = watch::channel(None);
+        let state = Self {
             profiles,
             user_config,
             admin_user_default,
             admin_user_profiles,
             tv_ids,
-        })
+            idle_timeout_tx,
+        };
+        state.republish_idle_timeout();
+        Ok(state)
     }
 
     /// Get the effective idle timeout (minimum non-zero across all TV profiles).
@@ -188,6 +198,35 @@ impl SessionState {
             .filter(|&t| t > 0)
             .min()
             .unwrap_or(0)
+    }
+
+    /// The effective idle timeout as milliseconds for the Wayland watch, or
+    /// `None` when idle blanking is disabled (no TV has a non-zero timeout).
+    fn effective_idle_timeout_ms(&self) -> Option<u32> {
+        let secs = self.effective_idle_timeout();
+        (secs > 0).then(|| secs.saturating_mul(1000).min(u32::MAX as u64) as u32)
+    }
+
+    /// Recompute the effective idle timeout and publish it to the idle-watch
+    /// supervisor iff it changed. Call after every mutation of `profiles`, so a
+    /// GUI / `ReloadConfig` / SIGHUP edit re-registers the watch without a
+    /// session restart (and without the supervisor polling).
+    pub fn republish_idle_timeout(&self) {
+        let next = self.effective_idle_timeout_ms();
+        self.idle_timeout_tx.send_if_modified(|cur| {
+            if *cur != next {
+                *cur = next;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    /// A receiver for the effective idle timeout (ms; `None` = disabled), for
+    /// the idle-watch supervisor to park on.
+    pub fn subscribe_idle_timeout(&self) -> watch::Receiver<Option<u32>> {
+        self.idle_timeout_tx.subscribe()
     }
 }
 
@@ -233,6 +272,7 @@ pub async fn reconcile_user_config_orphans(
     // tv_ids/profiles caches need to grow accordingly.
     s.tv_ids = current_uuids.iter().cloned().collect();
     s.profiles.retain(|tv_id, _| current_uuids.contains(tv_id));
+    s.republish_idle_timeout();
 
     if pruned == 0 {
         return;
@@ -355,34 +395,32 @@ pub async fn event_handler(
 }
 
 /// Supervise the Wayland presence watch so an in-session idle-timeout change
-/// (via the GUI, a D-Bus `ReloadConfig`, or SIGHUP — all of which update
-/// [`SessionState`]) is applied **without a session restart**. The watch
-/// registers its `ext-idle-notify-v1` notification with the timeout captured at
-/// start, so re-registering means restarting it: this task polls the effective
-/// timeout and, when it changes, drops the old [`WatchHandle`](wayland_idle::WatchHandle)
-/// (stopping the watch + its policy task) and starts a fresh watch with the new
-/// timeout. The lock-wake notification (fixed at 200 ms) is re-registered too,
-/// transparently. Polling — rather than threading a notification through every
-/// profile mutator — keeps this self-contained and robust to any change source;
-/// the change applies within one poll interval, effectively live for a setting
-/// that changes rarely. It also retries a failed start and restarts the watch
-/// when the compositor disconnects, so a transient Wayland-unavailable at
-/// launch or a mid-session compositor restart doesn't silently disable presence
-/// detection until the next config edit.
+/// (via the GUI, a D-Bus `ReloadConfig`, or SIGHUP — all of which re-resolve
+/// [`SessionState::profiles`] and call [`SessionState::republish_idle_timeout`])
+/// is applied **without a session restart**. The watch registers its
+/// `ext-idle-notify-v1` notification with the timeout captured at start, so
+/// re-registering means restarting it: this task parks on the effective-timeout
+/// [`watch::Receiver`] and, when the value changes, drops the old
+/// [`WatchHandle`](wayland_idle::WatchHandle) (stopping the watch + its policy
+/// task) and starts a fresh watch with the new timeout. The lock-wake
+/// notification (fixed at 200 ms) is re-registered too, transparently.
+///
+/// Event-driven, not polled: a healthy watch arms no timer, so there is no
+/// per-interval wakeup and a change applies immediately. A failed start
+/// (Wayland not up yet at login / X11) arms a short retry timer until it
+/// succeeds, and a watch the compositor killed is restarted — so a transient
+/// unavailable at launch or a mid-session compositor restart doesn't silently
+/// disable presence detection. The loop ends when every `idle_timeout_tx` is
+/// dropped (the session is shutting down).
 pub async fn idle_watch_supervisor(
     event_tx: mpsc::UnboundedSender<session_monitor::SessionEvent>,
     is_locked: Arc<std::sync::atomic::AtomicBool>,
-    state: Arc<RwLock<SessionState>>,
+    mut timeout_rx: watch::Receiver<Option<u32>>,
 ) {
-    const POLL: std::time::Duration = std::time::Duration::from_secs(2);
+    // Retry cadence while no watch is running (failed start / X11). A healthy
+    // watch arms no timer at all.
+    const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
-    let effective_ms = |s: &SessionState| -> Option<u32> {
-        let secs = s.effective_idle_timeout();
-        (secs > 0).then(|| secs.saturating_mul(1000).min(u32::MAX as u64) as u32)
-    };
-    // Returns the handle (kept to hold the watch open) and a receiver that fires
-    // if the watch thread dies. A `None` handle means the start failed (Wayland
-    // not up yet / X11) — retried on the next poll tick.
     let start = |timeout_ms: Option<u32>| match wayland_idle::start_wayland_idle_monitor(
         event_tx.clone(),
         is_locked.clone(),
@@ -398,47 +436,69 @@ pub async fn idle_watch_supervisor(
         }
     };
 
-    let mut current = effective_ms(&*state.read().await);
+    enum Wake {
+        Changed,
+        Died,
+        Retry,
+        Shutdown,
+    }
+
+    let mut current = *timeout_rx.borrow_and_update();
     let (mut handle, mut dead_rx) = start(current);
-    let mut ticker = tokio::time::interval(POLL);
     loop {
-        // Wake on a poll tick (timeout-change / retry) or the watch dying.
-        let died = tokio::select! {
-            _ = ticker.tick() => false,
-            _ = wait_watch_dead(&mut dead_rx) => true,
+        // Arm the retry timer only while no watch is running; a healthy watch
+        // waits purely on events (timeout change or the watch dying).
+        let need_retry = handle.is_none();
+        let wake = tokio::select! {
+            res = timeout_rx.changed() => {
+                if res.is_err() { Wake::Shutdown } else { Wake::Changed }
+            }
+            _ = wait_watch_dead(&mut dead_rx) => Wake::Died,
+            _ = async {
+                if need_retry {
+                    tokio::time::sleep(RETRY).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => Wake::Retry,
         };
-        if died {
-            // A compositor restart / disconnect killed the watch. Restart it so
-            // lock-wake and idle don't silently stop until a config edit.
-            warn!("Wayland presence watch ended (compositor gone?); restarting");
-            drop(handle.take());
-            (handle, dead_rx) = start(current);
-            continue;
-        }
-        let next = effective_ms(&*state.read().await);
-        if next != current {
-            info!(
-                old_ms = ?current,
-                new_ms = ?next,
-                "in-session idle timeout changed; re-registering Wayland watch",
-            );
-            // Drop the old handle first so the old watch stops before the new
-            // one binds (avoids a momentary double notification).
-            drop(handle.take());
-            (handle, dead_rx) = start(next);
-            current = next;
-        } else if handle.is_none() {
-            // A prior start failed (Wayland not up yet at login, or a restart
-            // left no watch). Retry so presence detection recovers without
-            // waiting for a config edit.
-            debug!("Retrying Wayland presence watch");
-            (handle, dead_rx) = start(current);
+        match wake {
+            // Every `idle_timeout_tx` dropped → the session is shutting down.
+            Wake::Shutdown => return,
+            Wake::Changed => {
+                let next = *timeout_rx.borrow_and_update();
+                if next != current {
+                    info!(
+                        old_ms = ?current,
+                        new_ms = ?next,
+                        "in-session idle timeout changed; re-registering Wayland watch",
+                    );
+                    // Drop the old handle first so the old watch stops before the
+                    // new one binds (avoids a momentary double notification).
+                    drop(handle.take());
+                    (handle, dead_rx) = start(next);
+                    current = next;
+                }
+            }
+            Wake::Died => {
+                // A compositor restart / disconnect killed the watch. Restart it
+                // so lock-wake and idle don't silently stop.
+                warn!("Wayland presence watch ended (compositor gone?); restarting");
+                drop(handle.take());
+                (handle, dead_rx) = start(current);
+            }
+            Wake::Retry => {
+                // A prior start failed (Wayland not up yet at login / X11).
+                debug!("Retrying Wayland presence watch");
+                drop(handle.take());
+                (handle, dead_rx) = start(current);
+            }
         }
     }
 }
 
-/// Await the watch-died signal, or pend forever when no watch is running (so the
-/// `select!` falls through to the poll tick, which retries the start).
+/// Await the watch-died signal, or pend forever when no watch is running (its
+/// restart is the `select!`'s retry-timer arm, not this one).
 async fn wait_watch_dead(dead_rx: &mut Option<oneshot::Receiver<()>>) {
     match dead_rx.as_mut() {
         Some(rx) => {
@@ -864,6 +924,7 @@ pub async fn update_user_profile(
         let resolved = user_config_snapshot.resolve_user_profile(tv_id, &admin_default);
         s.profiles.insert(tv_id.clone(), resolved);
     }
+    s.republish_idle_timeout();
 
     info!(profile_uuid = %uuid, name = %trimmed, "User profile updated");
     Ok(())

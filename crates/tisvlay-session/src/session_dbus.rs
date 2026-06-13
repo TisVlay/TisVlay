@@ -222,6 +222,7 @@ impl SessionService {
             .user_config
             .resolve_user_profile(tv_id, &s.admin_user_default);
         s.profiles.insert(tv_id.to_string(), resolved);
+        s.republish_idle_timeout();
 
         // Save user config to disk
         let save_result = match &self.config_path {

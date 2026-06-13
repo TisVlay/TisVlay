@@ -93,6 +93,7 @@ async fn main() -> Result<()> {
                 admin_user_default: UserProfileConfig::full_default(),
                 admin_user_profiles: HashMap::new(),
                 tv_ids: Vec::new(),
+                idle_timeout_tx: tokio::sync::watch::channel(None).0,
             }
         }
     };
@@ -183,10 +184,10 @@ async fn main() -> Result<()> {
     // notification without a session restart. The supervisor owns the watch
     // lifecycle for the life of the process.
     {
-        let sup_state = state.clone();
+        let sup_timeout_rx = state.read().await.subscribe_idle_timeout();
         let sup_event_tx = event_tx.clone();
         tokio::spawn(async move {
-            tisvlay_session::idle_watch_supervisor(sup_event_tx, is_locked, sup_state).await;
+            tisvlay_session::idle_watch_supervisor(sup_event_tx, is_locked, sup_timeout_rx).await;
         });
     }
 
