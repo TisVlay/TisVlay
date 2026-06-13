@@ -37,28 +37,82 @@ pub fn start_wayland_idle_monitor(
     start_idle_watch(GREETER_WAKE_TIMEOUT_MS, raw_tx)?;
 
     tokio::spawn(async move {
-        // Fire GreeterWake at most once per lock cycle; reset when unlocked.
         let mut greeter_wake_sent = false;
         while let Some(transition) = raw_rx.recv().await {
-            if transition == IdleTransition::Resumed
-                && is_locked.load(Ordering::SeqCst)
-                && !greeter_wake_sent
-            {
+            let (next_sent, fire) = greeter_wake_policy(
+                transition,
+                is_locked.load(Ordering::SeqCst),
+                greeter_wake_sent,
+            );
+            greeter_wake_sent = next_sent;
+            if fire {
                 debug!("User activity detected while locked - sending GreeterWake");
-                greeter_wake_sent = true;
                 if event_tx.send(SessionEvent::GreeterWake).is_err() {
                     warn!("Event channel closed");
                 }
-            }
-
-            // Reset once the screen is unlocked (mirrors the prior
-            // per-dispatch reset, so the next lock cycle can wake again).
-            if !is_locked.load(Ordering::SeqCst) {
-                greeter_wake_sent = false;
             }
         }
         warn!("Wayland idle transition channel closed");
     });
 
     Ok(())
+}
+
+/// Lock-aware greeter-wake decision for one idle transition.
+///
+/// Returns `(next_greeter_wake_sent, fire)`. Fires `GreeterWake` on the first
+/// `Resumed` (user activity) seen while the screen is locked, at most once per
+/// lock cycle; the latch is cleared whenever the screen is observed unlocked,
+/// so the next lock cycle can wake again. The transport forwards only
+/// idle/resume edges, so the reset is observed on the next such edge rather
+/// than on every wayland event as before — sufficient in practice, since any
+/// pause longer than the 200 ms threshold produces one.
+fn greeter_wake_policy(
+    transition: IdleTransition,
+    is_locked: bool,
+    greeter_wake_sent: bool,
+) -> (bool, bool) {
+    let fire = transition == IdleTransition::Resumed && is_locked && !greeter_wake_sent;
+    let next_sent = if is_locked {
+        greeter_wake_sent || fire
+    } else {
+        false
+    };
+    (next_sent, fire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fires_once_per_lock_cycle_on_resume() {
+        // Idled while locked: no fire, latch unchanged.
+        assert_eq!(
+            greeter_wake_policy(IdleTransition::Idled, true, false),
+            (false, false)
+        );
+        // First Resumed while locked: fire and latch.
+        assert_eq!(
+            greeter_wake_policy(IdleTransition::Resumed, true, false),
+            (true, true)
+        );
+        // Second Resumed while still locked (already latched): no fire.
+        assert_eq!(
+            greeter_wake_policy(IdleTransition::Resumed, true, true),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn resets_when_unlocked_and_never_fires() {
+        assert_eq!(
+            greeter_wake_policy(IdleTransition::Resumed, false, true),
+            (false, false)
+        );
+        assert_eq!(
+            greeter_wake_policy(IdleTransition::Idled, false, true),
+            (false, false)
+        );
+    }
 }
