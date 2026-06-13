@@ -809,7 +809,7 @@ impl ManagerService {
     /// `GreeterResume`; the daemon fans the event out to every automated TV
     /// using each TV's resolved `on_idle_timeout` / `on_idle_resume`.
     async fn notify_greeter_idle(&self, idle: bool) {
-        debug!(idle, "D-Bus: NotifyGreeterIdle");
+        info!(idle, "D-Bus: NotifyGreeterIdle (idle={idle})");
         let event = if idle {
             SystemEvent::GreeterIdle
         } else {

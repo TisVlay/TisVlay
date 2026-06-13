@@ -2999,6 +2999,12 @@ impl TvManager {
         if panel_lit == want_on {
             return;
         }
+        info!(
+            tv_id,
+            desired_on = want_on,
+            observed = ?observed,
+            "reconcile: re-asserting desired screen state",
+        );
         let result = if want_on {
             self.apply_screen_on_raw(tv_id).await
         } else {

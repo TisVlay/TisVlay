@@ -301,7 +301,7 @@ pub async fn event_handler(
     // firings would silently skip the second.
 
     while let Some(event) = event_rx.recv().await {
-        info!(event = %event, "Processing session event");
+        info!(event = %event, "Processing session event: {event}");
 
         // Query current automated set from daemon (live, not cached).
         let automated_ids: HashSet<String> = match daemon.list_tvs().await {
@@ -338,7 +338,7 @@ pub async fn event_handler(
                 continue;
             }
 
-            debug!(tv_id = %tv_id, action = ?action, "Executing action");
+            info!(tv_id = %tv_id, action = ?action, "Dispatching session action: {action:?}");
             if let Err(e) = execute_action_for_tv(&daemon, &tv_id, action).await {
                 warn!(tv_id = %tv_id, error = %e, "Action failed");
             } else {
