@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 pub use tisvlay_core::wayland::WaylandIdleError;
-use tisvlay_core::wayland::{IdleTransition, start_idle_watch};
+use tisvlay_core::wayland::{IdleNotification, IdleTransition, start_idle_watch};
 
 use crate::session_monitor::SessionEvent;
 
@@ -23,6 +23,10 @@ use crate::session_monitor::SessionEvent;
 /// at 200 ms even a rapid lock-then-move clears the threshold.
 const LOCK_WAKE_TIMEOUT_MS: u32 = 200;
 
+/// Notification tag for the lock-wake watch (the only one today; the in-session
+/// idle watch will register a second tag on the same connection).
+const LOCK_WAKE_TAG: u32 = 0;
+
 /// Start lock-wake detection: a Wayland idle watch plus the lock-aware
 /// policy task that turns a resume-while-locked into one `LockWake`.
 ///
@@ -33,12 +37,18 @@ pub fn start_wayland_idle_monitor(
     event_tx: mpsc::UnboundedSender<SessionEvent>,
     is_locked: Arc<AtomicBool>,
 ) -> Result<(), WaylandIdleError> {
-    let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<IdleTransition>();
-    start_idle_watch(LOCK_WAKE_TIMEOUT_MS, raw_tx)?;
+    let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<(u32, IdleTransition)>();
+    start_idle_watch(
+        vec![IdleNotification {
+            tag: LOCK_WAKE_TAG,
+            timeout_ms: LOCK_WAKE_TIMEOUT_MS,
+        }],
+        raw_tx,
+    )?;
 
     tokio::spawn(async move {
         let mut lock_wake_sent = false;
-        while let Some(transition) = raw_rx.recv().await {
+        while let Some((_tag, transition)) = raw_rx.recv().await {
             let (next_sent, fire) =
                 lock_wake_policy(transition, is_locked.load(Ordering::SeqCst), lock_wake_sent);
             lock_wake_sent = next_sent;

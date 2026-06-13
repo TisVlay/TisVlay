@@ -40,29 +40,42 @@ pub enum IdleTransition {
     Resumed,
 }
 
-/// State for the Wayland idle monitor. Forwards transitions verbatim — no
-/// lock/greeter policy lives here.
+/// One idle notification to register on a watch: a caller-assigned `tag`
+/// (echoed back with every transition, so a consumer running several
+/// notifications on one connection can tell them apart) and the idle
+/// `timeout_ms` after which the compositor reports `Idled`.
+#[derive(Debug, Clone, Copy)]
+pub struct IdleNotification {
+    /// Caller-assigned identifier, returned alongside each transition.
+    pub tag: u32,
+    /// Idle timeout in milliseconds.
+    pub timeout_ms: u32,
+}
+
+/// State for the Wayland idle monitor. Forwards `(tag, transition)` verbatim —
+/// no lock/idle policy lives here.
 struct WaylandState {
-    /// Channel to forward raw idle transitions to the consumer.
-    tx: mpsc::UnboundedSender<IdleTransition>,
-    /// The idle notification object (kept alive to receive events).
-    _idle_notification: Option<ExtIdleNotificationV1>,
+    /// Channel to forward `(tag, transition)` to the consumer; `tag` identifies
+    /// which registered notification fired.
+    tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
+    /// The idle notification objects (kept alive to receive events).
+    _idle_notifications: Vec<ExtIdleNotificationV1>,
     /// The seat we're monitoring.
     _seat: Option<WlSeat>,
 }
 
 impl WaylandState {
-    fn new(tx: mpsc::UnboundedSender<IdleTransition>) -> Self {
+    fn new(tx: mpsc::UnboundedSender<(u32, IdleTransition)>) -> Self {
         Self {
             tx,
-            _idle_notification: None,
+            _idle_notifications: Vec::new(),
             _seat: None,
         }
     }
 
-    fn forward(&self, transition: IdleTransition) {
-        trace!(?transition, "Wayland idle transition");
-        if self.tx.send(transition).is_err() {
+    fn forward(&self, tag: u32, transition: IdleTransition) {
+        trace!(tag, ?transition, "Wayland idle transition");
+        if self.tx.send((tag, transition)).is_err() {
             warn!("Idle transition channel closed");
         }
     }
@@ -110,19 +123,21 @@ impl Dispatch<ExtIdleNotifierV1, u32> for WaylandState {
     }
 }
 
-// Dispatch implementation for ExtIdleNotificationV1.
-impl Dispatch<ExtIdleNotificationV1, ()> for WaylandState {
+// Dispatch implementation for ExtIdleNotificationV1 (user data is the caller's tag).
+impl Dispatch<ExtIdleNotificationV1, u32> for WaylandState {
     fn event(
         state: &mut Self,
         _proxy: &ExtIdleNotificationV1,
         event: ext_idle_notification_v1::Event,
-        _data: &(),
+        data: &u32,
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
         match event {
-            ext_idle_notification_v1::Event::Idled => state.forward(IdleTransition::Idled),
-            ext_idle_notification_v1::Event::Resumed => state.forward(IdleTransition::Resumed),
+            ext_idle_notification_v1::Event::Idled => state.forward(*data, IdleTransition::Idled),
+            ext_idle_notification_v1::Event::Resumed => {
+                state.forward(*data, IdleTransition::Resumed)
+            }
             _ => {}
         }
     }
@@ -131,20 +146,21 @@ impl Dispatch<ExtIdleNotificationV1, ()> for WaylandState {
 /// Start a Wayland idle watch on a dedicated thread.
 ///
 /// Connects to the compositor named by the `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`
-/// environment and registers an `ext-idle-notify-v1` notification with the
-/// given `timeout_ms`. Each `Idled` / `Resumed` edge is forwarded on `tx`. The
-/// watch thread exits (closing `tx`) when the compositor disconnects, so a
-/// caller can treat a closed channel as "compositor gone".
+/// environment and registers one `ext-idle-notify-v1` notification per entry in
+/// `notifications`. Each `Idled` / `Resumed` edge is forwarded on `tx` as
+/// `(tag, transition)`, where `tag` is the entry's caller-assigned id. The watch
+/// thread exits (closing `tx`) when the compositor disconnects, so a caller can
+/// treat a closed channel as "compositor gone".
 ///
 /// Returns an error if Wayland is unavailable or the protocol is missing.
 pub fn start_idle_watch(
-    timeout_ms: u32,
-    tx: mpsc::UnboundedSender<IdleTransition>,
+    notifications: Vec<IdleNotification>,
+    tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
 ) -> Result<(), WaylandIdleError> {
     let conn = Connection::connect_to_env().map_err(|e| {
         WaylandIdleError::ConnectionFailed(format!("Failed to connect to Wayland: {}", e))
     })?;
-    spawn_watch(conn, timeout_ms, tx)
+    spawn_watch(conn, notifications, tx)
 }
 
 /// Like [`start_idle_watch`], but against an already-connected compositor
@@ -157,21 +173,21 @@ pub fn start_idle_watch(
 /// socket under `XDG_RUNTIME_DIR` and connects to it via this entry point.
 pub fn start_idle_watch_on_socket(
     stream: UnixStream,
-    timeout_ms: u32,
-    tx: mpsc::UnboundedSender<IdleTransition>,
+    notifications: Vec<IdleNotification>,
+    tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
 ) -> Result<(), WaylandIdleError> {
     let conn = Connection::from_socket(stream).map_err(|e| {
         WaylandIdleError::ConnectionFailed(format!("Failed to connect to Wayland socket: {}", e))
     })?;
-    spawn_watch(conn, timeout_ms, tx)
+    spawn_watch(conn, notifications, tx)
 }
 
 /// Initialize the registry on an established connection and spawn the watch
 /// thread that forwards idle/resume transitions.
 fn spawn_watch(
     conn: Connection,
-    timeout_ms: u32,
-    tx: mpsc::UnboundedSender<IdleTransition>,
+    notifications: Vec<IdleNotification>,
+    tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
 ) -> Result<(), WaylandIdleError> {
     // Initialize the event queue and registry.
     let (globals, event_queue): (GlobalList, EventQueue<WaylandState>) = registry_queue_init(&conn)
@@ -211,7 +227,7 @@ fn spawn_watch(
                 event_queue,
                 globals,
                 tx,
-                timeout_ms,
+                notifications,
                 notifier_global,
                 seat_global,
             );
@@ -226,8 +242,8 @@ fn run_idle_loop(
     _conn: Connection,
     mut event_queue: EventQueue<WaylandState>,
     globals: GlobalList,
-    tx: mpsc::UnboundedSender<IdleTransition>,
-    timeout_ms: u32,
+    tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
+    notifications: Vec<IdleNotification>,
     notifier_global: wayland_client::globals::Global,
     seat_global: wayland_client::globals::Global,
 ) {
@@ -252,10 +268,12 @@ fn run_idle_loop(
         notifier_version,
     );
 
-    let notification = notifier.get_idle_notification(timeout_ms, &seat, &qhandle, ());
-    state._idle_notification = Some(notification);
+    for n in &notifications {
+        let notification = notifier.get_idle_notification(n.timeout_ms, &seat, &qhandle, n.tag);
+        state._idle_notifications.push(notification);
+    }
 
-    info!("Wayland idle watch started (timeout: {}ms)", timeout_ms);
+    info!(count = notifications.len(), "Wayland idle watch started");
 
     loop {
         match event_queue.blocking_dispatch(&mut state) {

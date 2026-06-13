@@ -16,7 +16,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 use tisvlay_core::DaemonClient;
-use tisvlay_core::wayland::{IdleTransition, start_idle_watch_on_socket};
+use tisvlay_core::wayland::{IdleNotification, IdleTransition, start_idle_watch_on_socket};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -60,14 +60,14 @@ pub async fn run(daemon: DaemonClient) -> Result<()> {
     let timeout_ms = timeout_secs.saturating_mul(1000).min(u32::MAX as u64) as u32;
     info!(timeout_secs, "Starting greeter idle watch");
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<IdleTransition>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<(u32, IdleTransition)>();
     connect_idle_watch(timeout_ms, &tx).await?;
     // The watch thread holds its own sender clone; drop ours so `rx` closes
     // when the compositor disconnects (greeter session ends).
     drop(tx);
 
     let mut last_sent: Option<bool> = None;
-    while let Some(transition) = rx.recv().await {
+    while let Some((_tag, transition)) = rx.recv().await {
         let Some(idle) = next_notify(transition, last_sent) else {
             continue;
         };
@@ -120,7 +120,7 @@ async fn notify_with_retry(daemon: &DaemonClient, idle: bool) -> bool {
 /// socket landing a moment after our unit (ordered after kwin's bus name) starts.
 async fn connect_idle_watch(
     timeout_ms: u32,
-    tx: &mpsc::UnboundedSender<IdleTransition>,
+    tx: &mpsc::UnboundedSender<(u32, IdleTransition)>,
 ) -> Result<()> {
     const MAX_ATTEMPTS: u32 = 15;
     let mut last_err = anyhow!("no connection attempt made");
@@ -143,12 +143,14 @@ async fn connect_idle_watch(
     Err(last_err.context("connect to greeter compositor"))
 }
 
-fn try_connect(timeout_ms: u32, tx: mpsc::UnboundedSender<IdleTransition>) -> Result<()> {
+fn try_connect(timeout_ms: u32, tx: mpsc::UnboundedSender<(u32, IdleTransition)>) -> Result<()> {
     let path =
         greeter_socket_path().ok_or_else(|| anyhow!("no wayland socket under XDG_RUNTIME_DIR"))?;
     let stream = UnixStream::connect(&path)
         .with_context(|| format!("connect wayland socket {}", path.display()))?;
-    start_idle_watch_on_socket(stream, timeout_ms, tx).map_err(|e| anyhow!("{e}"))
+    // A single notification (the greeter idle timeout); tag is unused here.
+    start_idle_watch_on_socket(stream, vec![IdleNotification { tag: 0, timeout_ms }], tx)
+        .map_err(|e| anyhow!("{e}"))
 }
 
 /// Resolve the compositor socket path: `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` when
