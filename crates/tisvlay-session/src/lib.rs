@@ -176,6 +176,11 @@ impl SessionState {
     /// extra, but it *will* receive the event at 5 minutes if another TV has a shorter
     /// timeout. Per-TV timers (multiple `IdleMonitor` instances) would be more precise
     /// but add significant complexity for a marginal gain in the common single-TV case.
+    ///
+    /// The daemon has a deliberate parallel for the login greeter
+    /// (`TvManager::greeter_idle_timeout_seconds` + its `GreeterIdle`/`GreeterResume`
+    /// fan-out): the same single-shared-clock-plus-per-TV-action shape over the
+    /// system profile. They share no code; keep the shared-clock semantics in sync.
     pub fn effective_idle_timeout(&self) -> u64 {
         self.profiles
             .values()

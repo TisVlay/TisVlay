@@ -1048,7 +1048,16 @@ impl TvManager {
     /// `idle_timeout_seconds` AND a real `on_idle_timeout` action — otherwise
     /// it would pull the single clock shorter without ever acting. TVs that do
     /// share the clock still blank at the shortest value (a longer-timeout TV
-    /// fires early — the same pragmatic reduction the session uses).
+    /// fires early).
+    ///
+    /// This is a deliberate parallel of the *session* idle pipeline
+    /// (`tisvlay_session::SessionState::effective_idle_timeout` + its
+    /// `IdleTimeout`/`IdleResume` → `on_idle_timeout`/`on_idle_resume` fan-out):
+    /// same single-shared-clock-plus-per-TV-action shape, but over the system
+    /// profile / greeter rather than the user profile / logged-in session, in a
+    /// different crate. They share no code (different profile types, sync map
+    /// vs async-locked registry); keep the shared-clock semantics in sync, or
+    /// unify them behind a generic idle pipeline if a third consumer appears.
     pub async fn greeter_idle_timeout_seconds(&self) -> u64 {
         let tvs = self.tvs.read().await;
         let mut min: Option<u64> = None;
