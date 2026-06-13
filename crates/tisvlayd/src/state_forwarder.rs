@@ -89,6 +89,16 @@ pub async fn state_change_forwarder(
                 let path = tv_path(tv_id);
                 debug!(tv_id = %tv_id, "Forwarding subscription update to D-Bus properties");
                 update_tv_cached_state(object_server, &path, state).await;
+                // Re-assert the desired screen state now that the TV's state
+                // changed (e.g. it reached Active post-wake, or reconnected),
+                // so a screen action deferred while it was reconnecting lands.
+                // Spawned so the bare verify-retry can't stall the forwarder;
+                // `reconcile_screen` no-ops fast when the panel already
+                // matches, never escalates to `power_on`, and serializes on
+                // the per-TV lock so concurrent spawns can't storm.
+                let mgr = manager.clone();
+                let id = tv_id.clone();
+                tokio::spawn(async move { mgr.reconcile_screen(&id).await });
             }
             StateChangeEvent::ConnectionChanged {
                 ref tv_id,
