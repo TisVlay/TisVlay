@@ -1,5 +1,16 @@
 # Screen & power state model — user stories and scope
 
+## Status — shipped in PR #83 (hardware-validated)
+
+Implemented in [PR #83](https://github.com/ruffsl/TisVlay/pull/83) and validated on an LG OLED (KDE Plasma Wayland): cold-boot wake + panel-on (no WoL storm), greeter idle blank post-boot, in-session lock-screen idle blank with PowerDevil stopped (the `ext-idle` migration), and the live idle-timeout re-register. The doc body below reflects the as-built design; the notable course-corrections from the original plan:
+
+- **Reconcile never calls `power_on`** — the planned `reconcile_in_flight` guard was found unsound in a focused review (the post-wake push is `ActiveStandby`/`Unknown`). PR #57's escalation stays on the *direct* `screen_on`/`screen_off` path; only the push-driven re-assert is bare. See *Builds on PR #57* below.
+- **Reconcile is driven by spawning from the state-change forwarder**, not a dedicated channel/loop — same trigger, one fewer moving part.
+- **Re-assert reduced to greeter-present-on-start**; resume and daemon-restart need no signal, and the autologin `SessionNew` handler is a deferred follow-up.
+- **Post-plan addition (surfaced in testing):** a live idle-timeout re-register — the watch was registered once at launch, so a GUI timeout edit needed a session restart. Fixed with a stoppable `WatchHandle` + a session supervisor.
+
+Slated for decommissioning per [`README.md`](README.md) once PR #83 merges.
+
 ## Why this doc
 
 The narrow "coalesce deferred screen actions" plan was rejected in review (see [`coalesce-deferred-screen-actions.md`](coalesce-deferred-screen-actions.md)): it didn't fire in its own headline scenario, recursed on reconnect, and only patched one slice. The deeper problem the review exposed is that the daemon has **no persistent notion of what the screen should be**. Every presence/lifecycle event fires an *imperative* screen command that can be lost (TV not ready), tangled (pre-flight power-on during boot), or overridden (`on_startup`'s screen-on beats an away user's blank). This doc maps the user stories across every boot/login/lock/idle/sleep context to fix the **goal and scope** before designing the mechanism. Design comes after we agree on these.
@@ -192,15 +203,20 @@ The latch can strand a panel only where a presence *edge* never fires to refresh
 - **Greeter present (G1)** — **implemented.** Without it the latch would strand the login screen dark after a logout from a *locked* session. `tisvlay-greeter` sends one `NotifyGreeterIdle(false)` at startup (→ the resume action → `screen_on` for automated TVs), asserting the login screen is lit for the person now at it, and priming the de-dup so the first real `Idled` edge still fires.
 - **Login / autologin (C2)** — **deferred follow-up.** Interactive login already lights the panel via the greeter's resume edge before auth completes; only *zero-input autologin after the greeter idled* is uncovered. A daemon `logind` `SessionNew` handler (graphical, `Active`, `seat0`) would close it; filed for later since the target setup uses interactive login.
 
-### Commit sequence (single PR #83)
+### What shipped (as built, PR #83)
 
-One PR — splitting would land a half-built model that strands G1/H/restart (cruft). Internally sequenced, each commit compiling + green:
+Single PR, sequenced as coherent commits:
 
-1. **Rename `on_greeter_wake` → `on_lock_wake`** (~60 occurrences / 14 files incl. the `deny_unknown_fields` wire contract + `session_dbus_contract.rs:150` in lockstep). Mechanical, first, so later diffs read in final vocabulary.
-2. **Wayland multi-notification + tagging** — `wayland.rs` `_idle_notification` (`:49`,`:255`) → a tagged collection; change the `Dispatch` userdata from `()` (`:114`) to a `NotificationKind` so the consumer routes 200 ms (`LockWake`) vs `idle_timeout_seconds` (`IdleTimeout`/`IdleResume`).
-3. **Session idle → ext-idle** — replace `idle.rs`'s dead `GetSessionIdleTime` poll with a second notification on the existing connection; delete the poll path. In-session idle now fires on Wayland without PowerDevil.
-4. **`desired_screen` + `reconcile_screen` + `apply_screen_raw` + the reconcile task**; rewrite `screen_on`/`screen_off`/`SetScreen`/`apply_action` to set-intent+reconcile; gate `on_startup`'s wake; `on_wake` power-only.
-5. **Greeter-present re-assert** — `tisvlay-greeter` asserts present (`NotifyGreeterIdle(false)`) at startup so the latch can't strand the login screen dark after a logout-from-locked. (Resume/restart need no signal; autologin's `SessionNew` handler is a deferred follow-up — see above.)
+1. **Rename `on_greeter_wake` → `on_lock_wake`** (the `deny_unknown_fields` wire contract + GUI `.pot` + `session_dbus_contract.rs` in lockstep). Mechanical, first, so later diffs read in final vocabulary.
+2. **Wayland transport: N tagged idle notifications per connection** — `Dispatch` userdata `()` → a tag, so one connection routes the 200 ms lock-wake vs the `idle_timeout_seconds` idle watch.
+3. **Session idle → `ext-idle-notify-v1`** — second notification on the existing connection; deleted `idle.rs`/`IdleMonitor` + the `GetSessionIdleTime` path. In-session idle fires on Wayland without PowerDevil.
+4. **The core — per-TV `desired_screen` latch.** Direct `screen_on`/`screen_off` set it, defer while a lifecycle wake is in progress, then run #57's escalating body unchanged; bare `apply_screen_{on,off}_raw` drives the panel for the push-driven `reconcile_screen` (never escalates); `on_startup` gates its wake on the latch. (+ harness tests: defer→reconcile, latest-wins, reconcile re-assert.)
+5. **Greeter asserts presence on startup** so the latch can't strand the login screen dark after a logout-from-locked.
+
+Beyond the original plan, surfaced in testing:
+
+6. **Dispatch logs promoted to `info`** — greeter idle, in-session idle, and reconcile re-assert legible in `journalctl` short-format.
+7. **Live idle-timeout re-register** — a stoppable `WatchHandle` (a stop pipe the watch's event loop polls alongside the wayland fd) + a session supervisor that re-registers on a timeout change, so a GUI edit / `ReloadConfig` applies without a session restart.
 
 ### Residual risks
 
@@ -211,9 +227,11 @@ One PR — splitting would land a half-built model that strands G1/H/restart (cr
 
 mock + `tisvlay-harness` (`profile_dispatch.rs`, driving the reconnecting window via `set_connect_delay`): (a) reconcile re-asserts `desired=on` after the panel drifts off (no escalation); (b) a `screen_off` issued while reconnecting defers (sends no `turnOffScreen`) and is applied by reconcile on reconnect (A3); (c) off-then-on while reconnecting applies only `on` (latest-wins). PR #57's reliability suite and the existing greeter-idle dispatch tests are preserved and still pass — confirming the direct-action contract.
 
-### Verification
+### Verification (done)
 
-`just check`; hardware: cold boot attended (panel on) and away (blanks, *stays* off through the on_startup window — with a configured greeter timeout), autologin (panel on), logout→greeter (on), suspend/resume (no stranded dark panel), full lock cycle, manual `SetScreen off` then unlock (comes on — latest-wins).
+- `just check` green — 551 tests (#57's reliability suite + the greeter-idle dispatch tests preserved).
+- Hardware (LG OLED, KDE Plasma Wayland): cold-boot wake + panel-on (~17 s, no WoL storm); greeter idle blank post-boot; in-session lock-screen idle blank **with PowerDevil stopped** (the `ext-idle` migration); defer-during-wake fired (greeter presence-assert deferred behind the in-flight wake); live idle-timeout re-register (`15000 → … → 25000 ms`, each applied, no restart).
+- Not yet exercised on hardware: the `ActiveStandby`-reconcile residual (above) and zero-input autologin (deferred).
 
 ## Non-goals
 
