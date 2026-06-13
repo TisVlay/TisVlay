@@ -5803,6 +5803,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tisvlay-greeter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tisvlay-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tisvlay-gui"
 version = "0.1.0"
 dependencies = [
