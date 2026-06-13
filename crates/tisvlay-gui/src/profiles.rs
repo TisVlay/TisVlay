@@ -1888,6 +1888,8 @@ mod tests {
             "on_wake",
             "on_dpms_off",
             "on_dpms_on",
+            "on_idle_timeout",
+            "on_idle_resume",
         ] {
             set_system_field(
                 &mut body,
@@ -1903,6 +1905,16 @@ mod tests {
         assert_eq!(body.on_wake, Some(SessionAction::PowerOn));
         assert_eq!(body.on_dpms_off, Some(SessionAction::PowerOn));
         assert_eq!(body.on_dpms_on, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_idle_timeout, Some(SessionAction::PowerOn));
+        assert_eq!(body.on_idle_resume, Some(SessionAction::PowerOn));
+    }
+
+    #[test]
+    fn set_system_field_writes_idle_timeout_number() {
+        let mut body = SystemProfileBody::default();
+        set_system_field(&mut body, "idle_timeout_seconds", BodyPatch::Number(600))
+            .expect("known wire");
+        assert_eq!(body.idle_timeout_seconds, Some(600));
     }
 
     #[test]
