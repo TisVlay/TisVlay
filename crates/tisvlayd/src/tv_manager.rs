@@ -543,7 +543,8 @@ enum AwaitOutcome {
 /// System lifecycle event type.
 ///
 /// Dispatched per-TV from each TV's resolved system profile by the
-/// `logind` monitor, the daemon startup path, and the DPMS watcher.
+/// `logind` monitor, the daemon startup path, the DPMS watcher, and the
+/// greeter idle client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemEvent {
     Startup,
@@ -554,6 +555,10 @@ pub enum SystemEvent {
     Wake,
     DpmsOff,
     DpmsOn,
+    /// Login greeter went idle (from `tisvlay-greeter` over `Manager1`).
+    GreeterIdle,
+    /// Login greeter activity resumed.
+    GreeterResume,
 }
 
 /// Apply a key-value TV option to a `TvConfig`.
@@ -1020,7 +1025,34 @@ impl TvManager {
             SystemEvent::Wake => tv.system_profile.on_wake,
             SystemEvent::DpmsOff => tv.system_profile.on_dpms_off,
             SystemEvent::DpmsOn => tv.system_profile.on_dpms_on,
+            SystemEvent::GreeterIdle => tv.system_profile.on_idle_timeout,
+            SystemEvent::GreeterResume => tv.system_profile.on_idle_resume,
         }
+    }
+
+    /// Minimum non-zero greeter idle timeout (seconds) across automated TVs,
+    /// or 0 when none have it set.
+    ///
+    /// The login greeter has a single idle clock but system profiles are
+    /// per-TV, so the greeter client registers one notification at the
+    /// shortest enabled timeout; the daemon then fans the resulting
+    /// greeter-idle/resume out per-TV (each applies its own action). A
+    /// longer-timeout TV therefore receives the event early — the same
+    /// pragmatic reduction the session uses for its idle timeout.
+    pub async fn greeter_idle_timeout_seconds(&self) -> u64 {
+        let tvs = self.tvs.read().await;
+        let mut min: Option<u64> = None;
+        for (_, (managed, tv_arc)) in tvs.iter() {
+            let tv = tv_arc.lock().await;
+            if !tv.is_automated(*managed) {
+                continue;
+            }
+            let secs = tv.system_profile.idle_timeout_seconds;
+            if secs > 0 {
+                min = Some(min.map_or(secs, |m| m.min(secs)));
+            }
+        }
+        min.unwrap_or(0)
     }
 
     /// List TV IDs where automation should fire (managed + input-aware gate).
@@ -1387,6 +1419,9 @@ impl TvManager {
             on_wake: Some(resolved.on_wake),
             on_dpms_off: Some(resolved.on_dpms_off),
             on_dpms_on: Some(resolved.on_dpms_on),
+            idle_timeout_seconds: Some(resolved.idle_timeout_seconds),
+            on_idle_timeout: Some(resolved.on_idle_timeout),
+            on_idle_resume: Some(resolved.on_idle_resume),
             automate_when: Some(resolved.automate_when),
         })
     }

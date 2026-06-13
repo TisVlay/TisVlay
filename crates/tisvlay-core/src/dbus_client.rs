@@ -277,6 +277,15 @@ trait TisvlayManager {
     /// → hardcoded baseline).
     fn get_effective_system_profile(&self, tv_id: &str) -> zbus::Result<SystemProfileBody>;
 
+    /// Greeter idle/resume notification from `tisvlay-greeter`. `idle =
+    /// true` blanks per-TV `on_idle_timeout`; `false` restores via
+    /// `on_idle_resume`.
+    fn notify_greeter_idle(&self, idle: bool) -> zbus::Result<()>;
+
+    /// Shortest enabled greeter idle timeout (seconds) across automated
+    /// TVs, or 0 when none is set.
+    fn greeter_idle_timeout_seconds(&self) -> zbus::Result<u64>;
+
     /// A system profile's body was mutated (any field including
     /// `name`). Clients with a cached body should re-fetch via
     /// `GetSystemProfile(uuid)`.
@@ -1842,6 +1851,26 @@ impl DaemonClient {
             .get_effective_system_profile(tv_id)
             .await
             .with_context(|| format!("Failed to get effective system profile for TV '{}'", tv_id))
+    }
+
+    /// Notify the daemon of a greeter idle (`idle = true`) or resume
+    /// (`false`) transition. Used by `tisvlay-greeter` in the login session.
+    pub async fn notify_greeter_idle(&self, idle: bool) -> Result<()> {
+        debug!(idle, "Calling NotifyGreeterIdle on daemon");
+        self.manager
+            .notify_greeter_idle(idle)
+            .await
+            .context("Failed to notify greeter idle")
+    }
+
+    /// Shortest enabled greeter idle timeout (seconds) across automated
+    /// TVs, or 0 when none is set.
+    pub async fn greeter_idle_timeout_seconds(&self) -> Result<u64> {
+        debug!("Calling GreeterIdleTimeoutSeconds on daemon");
+        self.manager
+            .greeter_idle_timeout_seconds()
+            .await
+            .context("Failed to get greeter idle timeout")
     }
 
     /// Subscribe to `Manager1.SystemProfileChanged` signals.

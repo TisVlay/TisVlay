@@ -162,6 +162,29 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
+        wire: "on_idle_timeout",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
+        wire: "on_idle_resume",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
+        },
+    },
+    FieldSpec {
+        wire: "idle_timeout_seconds",
+        kind: FieldKind::Number {
+            min: 0,
+            max: 86_400,
+            step: 15,
+            unit: "seconds",
+        },
+    },
+    FieldSpec {
         wire: "automate_when",
         kind: FieldKind::Enum {
             options: AUTOMATE_WHEN_OPTIONS,
@@ -409,6 +432,9 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
         "on_wake" => body.on_wake.map(session_action_token),
         "on_dpms_off" => body.on_dpms_off.map(session_action_token),
         "on_dpms_on" => body.on_dpms_on.map(session_action_token),
+        "on_idle_timeout" => body.on_idle_timeout.map(session_action_token),
+        "on_idle_resume" => body.on_idle_resume.map(session_action_token),
+        "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
         "automate_when" => body.automate_when.map(automate_when_token),
         _ => None,
     }
@@ -1134,6 +1160,11 @@ fn set_system_field(
         "on_wake" => body.on_wake = session_action_patch(patch, "on_wake")?,
         "on_dpms_off" => body.on_dpms_off = session_action_patch(patch, "on_dpms_off")?,
         "on_dpms_on" => body.on_dpms_on = session_action_patch(patch, "on_dpms_on")?,
+        "on_idle_timeout" => body.on_idle_timeout = session_action_patch(patch, "on_idle_timeout")?,
+        "on_idle_resume" => body.on_idle_resume = session_action_patch(patch, "on_idle_resume")?,
+        "idle_timeout_seconds" => {
+            body.idle_timeout_seconds = number_patch(patch, "idle_timeout_seconds")?
+        }
         "automate_when" => body.automate_when = automate_when_patch(patch, "automate_when")?,
         other => anyhow::bail!("Unknown system-profile field: {other}"),
     }
@@ -1531,6 +1562,9 @@ mod tests {
             on_wake: Some(SessionAction::PowerOn),
             on_dpms_off: Some(SessionAction::ScreenOff),
             on_dpms_on: Some(SessionAction::ScreenOn),
+            idle_timeout_seconds: Some(0),
+            on_idle_timeout: Some(SessionAction::ScreenOff),
+            on_idle_resume: Some(SessionAction::ScreenOn),
             automate_when: Some(AutomateWhen::Always),
         }
     }

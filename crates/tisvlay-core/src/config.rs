@@ -286,6 +286,19 @@ pub struct SystemProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_dpms_on: Option<SessionAction>,
 
+    /// Greeter idle timeout in seconds (0 to disable). Drives the
+    /// `tisvlay-greeter` idle client at the login screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_seconds: Option<u64>,
+
+    /// Action when the greeter goes idle (after `idle_timeout_seconds`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_idle_timeout: Option<SessionAction>,
+
+    /// Action when greeter activity resumes after idle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_idle_resume: Option<SessionAction>,
+
     /// When to apply automation relative to the TV's current input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automate_when: Option<AutomateWhen>,
@@ -305,6 +318,9 @@ profile_plumbing! {
         on_wake,
         on_dpms_off,
         on_dpms_on,
+        idle_timeout_seconds,
+        on_idle_timeout,
+        on_idle_resume,
         automate_when,
     ],
 }
@@ -336,6 +352,12 @@ pub struct ResolvedSystemProfile {
     pub on_dpms_off: SessionAction,
     /// Action when the matched host display connector wakes (DPMS on).
     pub on_dpms_on: SessionAction,
+    /// Greeter idle timeout in seconds (0 to disable).
+    pub idle_timeout_seconds: u64,
+    /// Action when the greeter goes idle.
+    pub on_idle_timeout: SessionAction,
+    /// Action when greeter activity resumes after idle.
+    pub on_idle_resume: SessionAction,
     /// When to apply automation relative to the TV's current input.
     pub automate_when: AutomateWhen,
 }
@@ -351,6 +373,12 @@ impl Default for ResolvedSystemProfile {
             on_wake: SessionAction::PowerOn,
             on_dpms_off: SessionAction::ScreenOff,
             on_dpms_on: SessionAction::ScreenOn,
+            // Off by default: the greeter idle timer is opt-in (set a non-zero
+            // timeout, e.g. via the NixOS `greeter.enable` option). The DPMS
+            // mirror above is the only default-on screen automation.
+            idle_timeout_seconds: 0,
+            on_idle_timeout: SessionAction::ScreenOff,
+            on_idle_resume: SessionAction::ScreenOn,
             automate_when: AutomateWhen::Always,
         }
     }
@@ -520,6 +548,9 @@ pub struct SystemProfileBody {
     pub on_wake: Option<SessionAction>,
     pub on_dpms_off: Option<SessionAction>,
     pub on_dpms_on: Option<SessionAction>,
+    pub idle_timeout_seconds: Option<u64>,
+    pub on_idle_timeout: Option<SessionAction>,
+    pub on_idle_resume: Option<SessionAction>,
     pub automate_when: Option<AutomateWhen>,
 }
 
@@ -2674,6 +2705,9 @@ ip = "192.168.1.1"
             on_wake: Some(SessionAction::PowerOn),
             on_dpms_off: Some(SessionAction::ScreenOff),
             on_dpms_on: Some(SessionAction::ScreenOn),
+            idle_timeout_seconds: Some(600),
+            on_idle_timeout: Some(SessionAction::ScreenOff),
+            on_idle_resume: Some(SessionAction::ScreenOn),
             automate_when: Some(AutomateWhen::Always),
         };
 
@@ -2683,6 +2717,9 @@ ip = "192.168.1.1"
         assert_eq!(decoded.on_startup, body.on_startup);
         assert_eq!(decoded.on_dpms_off, body.on_dpms_off);
         assert_eq!(decoded.on_dpms_on, body.on_dpms_on);
+        assert_eq!(decoded.idle_timeout_seconds, Some(600));
+        assert_eq!(decoded.on_idle_timeout, body.on_idle_timeout);
+        assert_eq!(decoded.on_idle_resume, body.on_idle_resume);
         assert_eq!(decoded.automate_when, body.automate_when);
     }
 
@@ -2735,6 +2772,9 @@ ip = "192.168.1.1"
             on_wake: None,
             on_dpms_off: Some(SessionAction::ScreenOff),
             on_dpms_on: None,
+            idle_timeout_seconds: Some(900),
+            on_idle_timeout: Some(SessionAction::ScreenOff),
+            on_idle_resume: None,
             automate_when: Some(AutomateWhen::OnPrimary),
         };
         let body = SystemProfileBody::from_config(&cfg);
@@ -2743,6 +2783,9 @@ ip = "192.168.1.1"
         assert_eq!(body.on_shutdown, cfg.on_shutdown);
         assert_eq!(body.on_dpms_off, cfg.on_dpms_off);
         assert_eq!(body.on_dpms_on, cfg.on_dpms_on);
+        assert_eq!(body.idle_timeout_seconds, cfg.idle_timeout_seconds);
+        assert_eq!(body.on_idle_timeout, cfg.on_idle_timeout);
+        assert_eq!(body.on_idle_resume, cfg.on_idle_resume);
         assert_eq!(body.automate_when, cfg.automate_when);
 
         // Reverse: full round-trip including name.
