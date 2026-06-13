@@ -1023,20 +1023,32 @@ impl TvManager {
             SystemEvent::Wake => tv.system_profile.on_wake,
             SystemEvent::DpmsOff => tv.system_profile.on_dpms_off,
             SystemEvent::DpmsOn => tv.system_profile.on_dpms_on,
-            SystemEvent::GreeterIdle => tv.system_profile.on_idle_timeout,
-            SystemEvent::GreeterResume => tv.system_profile.on_idle_resume,
+            // Greeter idle is enabled per-TV by a non-zero `idle_timeout_seconds`.
+            // The greeter fires one fan-out event for the whole compositor, so
+            // gate the action here too — otherwise a TV that never opted in
+            // (timeout 0, but the default `on_idle_timeout` is `screen_off`)
+            // would still be blanked whenever another TV's timeout elapses.
+            SystemEvent::GreeterIdle if tv.system_profile.idle_timeout_seconds > 0 => {
+                tv.system_profile.on_idle_timeout
+            }
+            SystemEvent::GreeterResume if tv.system_profile.idle_timeout_seconds > 0 => {
+                tv.system_profile.on_idle_resume
+            }
+            SystemEvent::GreeterIdle | SystemEvent::GreeterResume => SessionAction::None,
         }
     }
 
-    /// Minimum non-zero greeter idle timeout (seconds) across automated TVs,
-    /// or 0 when none have it set.
+    /// Shortest greeter idle timeout (seconds) across the TVs that have it
+    /// enabled, or 0 when none do.
     ///
     /// The login greeter has a single idle clock but system profiles are
     /// per-TV, so the greeter client registers one notification at the
     /// shortest enabled timeout; the daemon then fans the resulting
-    /// greeter-idle/resume out per-TV (each applies its own action). A
-    /// longer-timeout TV therefore receives the event early — the same
-    /// pragmatic reduction the session uses for its idle timeout.
+    /// greeter-idle/resume out per-TV. A TV counts only if it has a non-zero
+    /// `idle_timeout_seconds` AND a real `on_idle_timeout` action — otherwise
+    /// it would pull the single clock shorter without ever acting. TVs that do
+    /// share the clock still blank at the shortest value (a longer-timeout TV
+    /// fires early — the same pragmatic reduction the session uses).
     pub async fn greeter_idle_timeout_seconds(&self) -> u64 {
         let tvs = self.tvs.read().await;
         let mut min: Option<u64> = None;
@@ -1045,9 +1057,9 @@ impl TvManager {
             if !tv.is_automated(*managed) {
                 continue;
             }
-            let secs = tv.system_profile.idle_timeout_seconds;
-            if secs > 0 {
-                min = Some(min.map_or(secs, |m| m.min(secs)));
+            let p = &tv.system_profile;
+            if p.idle_timeout_seconds > 0 && p.on_idle_timeout != SessionAction::None {
+                min = Some(min.map_or(p.idle_timeout_seconds, |m| m.min(p.idle_timeout_seconds)));
             }
         }
         min.unwrap_or(0)

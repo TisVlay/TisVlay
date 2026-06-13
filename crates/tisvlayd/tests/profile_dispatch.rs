@@ -417,3 +417,63 @@ async fn greeter_idle_timeout_zero_when_unset() {
         .expect("greeter idle timeout");
     assert_eq!(secs, 0, "no automated TV has a greeter idle timeout set");
 }
+
+/// A TV with idle_timeout_seconds=0 (greeter idle disabled) must NOT be
+/// blanked when GreeterIdle fires, even though its on_idle_timeout defaults
+/// to ScreenOff — otherwise an un-opted-in TV would blank whenever any other
+/// TV's greeter timeout elapses.
+#[tokio::test]
+async fn greeter_idle_skips_tv_with_zero_timeout() {
+    let tv_uuid = test_tv_uuid("greeter_zero").to_string();
+    let config = config_with_greeter_idle(
+        "greeter_zero",
+        0, // disabled for this TV
+        SessionAction::ScreenOff,
+        SessionAction::ScreenOn,
+    );
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    client
+        .notify_greeter_idle(true)
+        .await
+        .expect("notify greeter idle");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "a TV with idle_timeout_seconds=0 must not be blanked by greeter idle",
+    );
+}
+
+/// A TV with a timeout but no idle action (on_idle_timeout=None) must not
+/// govern the single greeter clock — it would otherwise pull the shared
+/// timeout shorter while never acting.
+#[tokio::test]
+async fn greeter_idle_timeout_ignores_actionless_tv() {
+    let config = config_with_greeter_idle(
+        "greeter_noaction",
+        600,
+        SessionAction::None, // timeout set, but nothing to do at idle
+        SessionAction::ScreenOn,
+    );
+    let _daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    let secs = client
+        .greeter_idle_timeout_seconds()
+        .await
+        .expect("greeter idle timeout");
+    assert_eq!(
+        secs, 0,
+        "a TV with no idle action must not govern the greeter clock",
+    );
+}
