@@ -206,7 +206,7 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
-        wire: "on_greeter_wake",
+        wire: "on_lock_wake",
         kind: FieldKind::Enum {
             options: SESSION_ACTION_OPTIONS,
             class: EnumClass::SessionAction,
@@ -253,7 +253,7 @@ fn field_label(wire: &str) -> String {
         "automate_when" => gettext("Automate when"),
         "on_session_lock" => gettext("On session lock"),
         "on_session_unlock" => gettext("On session unlock"),
-        "on_greeter_wake" => gettext("On greeter wake"),
+        "on_lock_wake" => gettext("On lock wake"),
         "on_idle_timeout" => gettext("On idle timeout"),
         "on_idle_resume" => gettext("On idle resume"),
         "idle_timeout_seconds" => gettext("Idle timeout"),
@@ -436,7 +436,7 @@ fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
     match wire {
         "on_session_lock" => body.on_session_lock.map(session_action_token),
         "on_session_unlock" => body.on_session_unlock.map(session_action_token),
-        "on_greeter_wake" => body.on_greeter_wake.map(session_action_token),
+        "on_lock_wake" => body.on_lock_wake.map(session_action_token),
         "on_idle_timeout" => body.on_idle_timeout.map(session_action_token),
         "on_idle_resume" => body.on_idle_resume.map(session_action_token),
         "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
@@ -1168,7 +1168,7 @@ fn set_user_field(body: &mut UserProfileBody, wire: &str, patch: BodyPatch) -> a
         "on_session_unlock" => {
             body.on_session_unlock = session_action_patch(patch, "on_session_unlock")?
         }
-        "on_greeter_wake" => body.on_greeter_wake = session_action_patch(patch, "on_greeter_wake")?,
+        "on_lock_wake" => body.on_lock_wake = session_action_patch(patch, "on_lock_wake")?,
         "on_idle_timeout" => body.on_idle_timeout = session_action_patch(patch, "on_idle_timeout")?,
         "on_idle_resume" => body.on_idle_resume = session_action_patch(patch, "on_idle_resume")?,
         "idle_timeout_seconds" => {
@@ -1563,7 +1563,7 @@ mod tests {
             name: "baseline".to_string(),
             on_session_lock: Some(SessionAction::ScreenOff),
             on_session_unlock: Some(SessionAction::ScreenOn),
-            on_greeter_wake: Some(SessionAction::ScreenOn),
+            on_lock_wake: Some(SessionAction::ScreenOn),
             on_idle_timeout: Some(SessionAction::ScreenOff),
             on_idle_resume: Some(SessionAction::ScreenOn),
             idle_timeout_seconds: Some(0),
@@ -1983,7 +1983,7 @@ mod tests {
         for wire in [
             "on_session_lock",
             "on_session_unlock",
-            "on_greeter_wake",
+            "on_lock_wake",
             "on_idle_timeout",
             "on_idle_resume",
         ] {
@@ -1996,7 +1996,7 @@ mod tests {
         }
         assert_eq!(body.on_session_lock, Some(SessionAction::ScreenOff));
         assert_eq!(body.on_session_unlock, Some(SessionAction::ScreenOff));
-        assert_eq!(body.on_greeter_wake, Some(SessionAction::ScreenOff));
+        assert_eq!(body.on_lock_wake, Some(SessionAction::ScreenOff));
         assert_eq!(body.on_idle_timeout, Some(SessionAction::ScreenOff));
         assert_eq!(body.on_idle_resume, Some(SessionAction::ScreenOff));
     }
@@ -2148,7 +2148,7 @@ mod tests {
         assert_eq!(body.name, "movies");
         assert_eq!(body.on_session_lock, None);
         assert_eq!(body.on_session_unlock, None);
-        assert_eq!(body.on_greeter_wake, None);
+        assert_eq!(body.on_lock_wake, None);
         assert_eq!(body.on_idle_timeout, None);
         assert_eq!(body.on_idle_resume, None);
         assert_eq!(body.idle_timeout_seconds, None);

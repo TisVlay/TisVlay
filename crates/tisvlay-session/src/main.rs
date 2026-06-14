@@ -17,7 +17,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tisvlay_core::{DaemonClient, UserConfig, UserProfileConfig, absolutize};
 use tisvlay_session::SessionState;
-use tisvlay_session::idle::IdleMonitor;
 use tisvlay_session::session_monitor::{SessionEvent, SessionMonitor};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
@@ -94,6 +93,7 @@ async fn main() -> Result<()> {
                 admin_user_default: UserProfileConfig::full_default(),
                 admin_user_profiles: HashMap::new(),
                 tv_ids: Vec::new(),
+                idle_timeout_tx: tokio::sync::watch::channel(None).0,
             }
         }
     };
@@ -179,31 +179,16 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Start Wayland idle monitor for greeter wake detection
-    match tisvlay_session::wayland_idle::start_wayland_idle_monitor(event_tx.clone(), is_locked) {
-        Ok(()) => {
-            info!("Wayland greeter wake detection enabled");
-        }
-        Err(e) => {
-            // Not fatal - Wayland may not be available (X11, SSH, etc.)
-            warn!("Wayland greeter wake detection unavailable: {}", e);
-        }
-    }
-
-    // Start idle monitor if enabled (using minimum non-zero timeout across all profiles)
-    let idle_timeout = {
-        let s = state.read().await;
-        s.effective_idle_timeout()
-    };
-
-    if idle_timeout > 0 {
-        info!(timeout = idle_timeout, "Starting idle monitor");
-        let idle_monitor = IdleMonitor::new(idle_timeout, event_tx.clone());
+    // Wayland presence watches (lock-wake + in-session idle), supervised so an
+    // idle-timeout change (GUI / D-Bus ReloadConfig / SIGHUP) re-registers the
+    // notification without a session restart. The supervisor owns the watch
+    // lifecycle for the life of the process.
+    {
+        let sup_timeout_rx = state.read().await.subscribe_idle_timeout();
+        let sup_event_tx = event_tx.clone();
         tokio::spawn(async move {
-            idle_monitor.run().await;
+            tisvlay_session::idle_watch_supervisor(sup_event_tx, is_locked, sup_timeout_rx).await;
         });
-    } else {
-        debug!("Idle monitoring disabled (no TVs have idle_timeout_seconds set)");
     }
 
     // Spawn event handler
@@ -293,8 +278,9 @@ async fn wait_for_signals(
                             tvs = s.tv_ids.len(),
                             "Configuration reloaded"
                         );
-                        // Note: idle timeout changes require restart to take effect
-                        // since the idle monitor is started once at launch
+                        // An idle-timeout change here is picked up by
+                        // `idle_watch_supervisor`, which re-registers the
+                        // Wayland watch — no restart needed.
                     }
                     Err(e) => {
                         error!("Failed to reload config: {}", e);

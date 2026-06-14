@@ -45,6 +45,12 @@ The session crate either gets folded into `tisvlayd` (its session-bus connection
 - **Don't unify "blank" and "off" semantics.** Two distinct LG SSAP code paths with different physics. Pick per-event.
 - **Don't drop the per-DE adapter pattern in favor of "one universal observer".** Each DE exposes session state differently and there's no Linux-wide standard event.
 
+### Zero-input-login screen-on safety net (deferred)
+
+The [greeter idle client](../design.md#greeter-idle-client) restores a blanked login screen from the *resume edge* of whatever input wakes it, and `tisvlay-greeter` additionally asserts presence once at startup — together covering every interactive login as well as the logout-from-locked handoff. The remaining gap is a **zero-input login**: autologin, or a remote/programmatic session, that completes *after* the greeter has already idle-blanked. With no keypress there is no `ext-idle` resume edge, so the per-TV `desired_screen = off` latch can leave the panel dark into the user session.
+
+**Fix when it bites.** Have the daemon re-assert `ScreenOn` on the greeter→user transition. `logind.rs`'s `SessionNew` handler is a no-op today; on a `SessionNew` for an active graphical `user` session it could dispatch a `ScreenOn`-defaulting action for automated TVs, guarded so it fires only on that transition (not on every session add). A new minimal `SystemEvent`, or a targeted call into the screen path mirroring how `on_dpms_on` reaches `screen_on`. Deferred because the target single-user desktop logs in interactively, where the resume edge already covers it; the trigger is someone running autologin — or a headless/remote login — against an OLED they want protected.
+
 ### Lineage
 
 Volume sync via PipeWire and brightness sync via KWin Wayland + D-Bus + an out-of-tree kernel module were explored in [#34](https://github.com/ruffsl/TisVlay/pull/34) and scrapped before merging to main. Reasons worth preserving so this isn't re-discovered:

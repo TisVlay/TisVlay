@@ -16,7 +16,9 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 use tisvlay_core::DaemonClient;
-use tisvlay_core::wayland::{IdleTransition, start_idle_watch_on_socket};
+use tisvlay_core::wayland::{
+    IdleNotification, IdleTransition, WatchHandle, start_idle_watch_on_socket,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -36,13 +38,16 @@ fn next_notify(transition: IdleTransition, last_sent: Option<bool>) -> Option<bo
 
 /// Connect the greeter compositor's idle notifications to the daemon.
 ///
-/// Queries the daemon for the greeter idle timeout; if `0`, returns
-/// immediately (feature disabled). Otherwise registers an
-/// `ext-idle-notify-v1` watch and forwards each idle/resume edge to
-/// `Manager1.NotifyGreeterIdle` until the compositor disconnects (greeter
+/// On startup it sends one `NotifyGreeterIdle(false)` to assert the login
+/// screen is present (lit), so a screen-off latched by the prior user session
+/// doesn't strand it dark — this happens regardless of the idle timer. It then
+/// queries the daemon for the greeter idle timeout; if `0`, returns immediately
+/// (proactive blanking disabled, presence already asserted). Otherwise it
+/// registers an `ext-idle-notify-v1` watch and forwards each idle/resume edge
+/// to `Manager1.NotifyGreeterIdle` until the compositor disconnects (greeter
 /// session ended), at which point it returns `Ok(())` so the process exits
-/// cleanly. It deliberately does *not* send a resume on exit — the user
-/// session that follows owns re-enabling the screen.
+/// cleanly. It deliberately does *not* send a resume on exit — the user session
+/// that follows owns re-enabling the screen.
 pub async fn run(daemon: DaemonClient) -> Result<()> {
     // Read once at greeter-session start. A config change made while a greeter
     // is live applies on the next greeter session (each is a fresh process);
@@ -52,22 +57,36 @@ pub async fn run(daemon: DaemonClient) -> Result<()> {
         .await
         .context("query greeter idle timeout")?;
 
+    // Assert the greeter is present (panel on) at startup, before anything else
+    // and regardless of the idle timer. A prior user session may have latched
+    // the panel off (e.g. logout from a locked session); `NotifyGreeterIdle(false)`
+    // maps to the resume action so the login screen is lit for the person now at
+    // it. This must run even when proactive blanking is disabled — stranding the
+    // panel dark is independent of whether the greeter idle timer is wanted. It
+    // also primes the de-dup so the first real `Idled` edge still fires.
+    let mut last_sent: Option<bool> = None;
+    if notify_with_retry(&daemon, false).await {
+        last_sent = Some(false);
+    }
+
     if timeout_secs == 0 {
-        info!("Greeter idle timeout is 0 (disabled); nothing to watch");
+        info!("Greeter idle timeout is 0 (disabled); presence asserted, nothing to watch");
         return Ok(());
     }
 
     let timeout_ms = timeout_secs.saturating_mul(1000).min(u32::MAX as u64) as u32;
     info!(timeout_secs, "Starting greeter idle watch");
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<IdleTransition>();
-    connect_idle_watch(timeout_ms, &tx).await?;
+    let (tx, mut rx) = mpsc::unbounded_channel::<(u32, IdleTransition)>();
+    // Hold the watch handle for the lifetime of `run`; dropping it would stop
+    // the watch. The greeter never re-registers (it's short-lived, one process
+    // per greeter session), so it just keeps the handle until it exits.
+    let _watch = connect_idle_watch(timeout_ms, &tx).await?;
     // The watch thread holds its own sender clone; drop ours so `rx` closes
     // when the compositor disconnects (greeter session ends).
     drop(tx);
 
-    let mut last_sent: Option<bool> = None;
-    while let Some(transition) = rx.recv().await {
+    while let Some((_tag, transition)) = rx.recv().await {
         let Some(idle) = next_notify(transition, last_sent) else {
             continue;
         };
@@ -120,13 +139,13 @@ async fn notify_with_retry(daemon: &DaemonClient, idle: bool) -> bool {
 /// socket landing a moment after our unit (ordered after kwin's bus name) starts.
 async fn connect_idle_watch(
     timeout_ms: u32,
-    tx: &mpsc::UnboundedSender<IdleTransition>,
-) -> Result<()> {
+    tx: &mpsc::UnboundedSender<(u32, IdleTransition)>,
+) -> Result<WatchHandle> {
     const MAX_ATTEMPTS: u32 = 15;
     let mut last_err = anyhow!("no connection attempt made");
     for attempt in 1..=MAX_ATTEMPTS {
         match try_connect(timeout_ms, tx.clone()) {
-            Ok(()) => return Ok(()),
+            Ok(handle) => return Ok(handle),
             Err(e) => {
                 debug!(attempt, error = %e, "greeter compositor not ready; retrying");
                 last_err = e;
@@ -143,12 +162,17 @@ async fn connect_idle_watch(
     Err(last_err.context("connect to greeter compositor"))
 }
 
-fn try_connect(timeout_ms: u32, tx: mpsc::UnboundedSender<IdleTransition>) -> Result<()> {
+fn try_connect(
+    timeout_ms: u32,
+    tx: mpsc::UnboundedSender<(u32, IdleTransition)>,
+) -> Result<WatchHandle> {
     let path =
         greeter_socket_path().ok_or_else(|| anyhow!("no wayland socket under XDG_RUNTIME_DIR"))?;
     let stream = UnixStream::connect(&path)
         .with_context(|| format!("connect wayland socket {}", path.display()))?;
-    start_idle_watch_on_socket(stream, timeout_ms, tx).map_err(|e| anyhow!("{e}"))
+    // A single notification (the greeter idle timeout); tag is unused here.
+    start_idle_watch_on_socket(stream, vec![IdleNotification { tag: 0, timeout_ms }], tx)
+        .map_err(|e| anyhow!("{e}"))
 }
 
 /// Resolve the compositor socket path: `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` when

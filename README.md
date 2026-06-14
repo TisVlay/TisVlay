@@ -46,7 +46,7 @@ The session service automatically controls your TV based on desktop events:
 [session]
 on_session_lock = "screen_off"
 on_session_unlock = "screen_on"
-on_greeter_wake = "screen_on"  # Unblank when interacting with lock screen (Wayland only)
+on_lock_wake = "screen_on"  # Unblank when interacting with lock screen (Wayland only)
 on_sleep = "power_off"
 on_wake = "power_on"
 ```
@@ -62,7 +62,7 @@ on_wake = "power_on"
 - LG WebOS TV (tested with C3, G4 models)
 - "TV On via Wi-Fi" enabled in TV settings
 - Linux with D-Bus (for daemon/session service)
-- Wayland compositor with `ext-idle-notify-v1` support (for greeter wake detection)
+- Wayland compositor with `ext-idle-notify-v1` support (for lock wake detection)
 
 ## License
 

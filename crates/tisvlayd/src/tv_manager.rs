@@ -376,6 +376,14 @@ struct ManagedTv {
     ///   this is `false`, because nothing else fires the
     ///   `power_state_tx` watch the passive verify awaits.
     has_push_subscription: bool,
+    /// Desired screen state — the single source of truth for the panel:
+    /// `Some(true)` = on, `Some(false)` = off, `None` = no opinion yet
+    /// (resets each daemon start). Every direct screen action sets it
+    /// (latest-wins); the push-driven [`TvManager::reconcile_screen`]
+    /// re-asserts it whenever the TV's `PowerState` changes, so an action
+    /// that arrived while the TV was reconnecting still lands once the TV
+    /// is reachable.
+    desired_screen: Option<bool>,
 }
 
 impl ManagedTv {
@@ -393,6 +401,7 @@ impl ManagedTv {
             power_state_tx,
             monitored_interface: None,
             has_push_subscription: false,
+            desired_screen: None,
         }
     }
 
@@ -1023,18 +1032,23 @@ impl TvManager {
             SystemEvent::Wake => tv.system_profile.on_wake,
             SystemEvent::DpmsOff => tv.system_profile.on_dpms_off,
             SystemEvent::DpmsOn => tv.system_profile.on_dpms_on,
-            // Greeter idle is enabled per-TV by a non-zero `idle_timeout_seconds`.
-            // The greeter fires one fan-out event for the whole compositor, so
-            // gate the action here too — otherwise a TV that never opted in
-            // (timeout 0, but the default `on_idle_timeout` is `screen_off`)
-            // would still be blanked whenever another TV's timeout elapses.
+            // Proactive greeter blanking is opt-in per-TV via a non-zero
+            // `idle_timeout_seconds`: the greeter fires one fan-out event for
+            // the whole compositor, so gate the *idle* action here too —
+            // otherwise a TV that never opted in (timeout 0, but the default
+            // `on_idle_timeout` is `screen_off`) would be blanked whenever
+            // another TV's timeout elapses.
             SystemEvent::GreeterIdle if tv.system_profile.idle_timeout_seconds > 0 => {
                 tv.system_profile.on_idle_timeout
             }
-            SystemEvent::GreeterResume if tv.system_profile.idle_timeout_seconds > 0 => {
-                tv.system_profile.on_idle_resume
-            }
-            SystemEvent::GreeterIdle | SystemEvent::GreeterResume => SessionAction::None,
+            SystemEvent::GreeterIdle => SessionAction::None,
+            // Resume/presence is *not* gated on the idle timer: a greeter
+            // resume — including the client's presence-assert at startup — must
+            // re-light an automated TV the prior session latched dark, even when
+            // that TV opts out of proactive blanking. The automation gate in
+            // `execute_system_event_for_tv` already scopes this to managed TVs;
+            // `on_idle_resume` defaults to `screen_on`.
+            SystemEvent::GreeterResume => tv.system_profile.on_idle_resume,
         }
     }
 
@@ -1226,11 +1240,15 @@ impl TvManager {
                         Ok(arc) => arc,
                         Err(_) => continue,
                     };
-                    let tv = tv_arc.lock().await;
+                    let mut tv = tv_arc.lock().await;
                     if !manager.registry.supports_wake(&tv.config) {
                         warn!(tv_id = %tv_id, "Startup PowerOn: TV does not support wake, skipping");
                         continue;
                     }
+                    // Mark the wake in progress so a concurrent screen action
+                    // (e.g. a greeter screen_off) defers and records intent
+                    // instead of racing this wake with its own power_on.
+                    tv.reconnecting = true;
                     tv.config.clone()
                 };
 
@@ -1242,28 +1260,45 @@ impl TvManager {
                     }
                     Err(e) => {
                         warn!(tv_id = %tv_id, error = %e, "Startup: TV did not come online after wake");
+                        if let Ok(tv_arc) = manager.get_tv(tv_id).await {
+                            tv_arc.lock().await.reconnecting = false;
+                        }
                         continue;
                     }
                 };
 
-                // Store the connection and subscribe to state updates.
+                // Store the connection and subscribe to state updates, clearing
+                // the wake-in-progress flag now that we're connected.
                 {
                     let tvs = manager.tvs.read().await;
                     if let Some((_, tv_arc)) = tvs.get(tv_id.as_str()) {
                         let mut tv = tv_arc.lock().await;
                         tv.connection = Some(connection);
                         tv.powered_off = false;
+                        tv.reconnecting = false;
                         manager.refresh_subscription(tv_id, &mut tv).await;
                     }
                 }
                 manager.emit_connection_changed(tv_id, true);
                 manager.resolve_monitored_interface(tv_id).await;
 
-                match manager.screen_on(tv_id).await {
-                    Ok(()) => info!(tv_id = %tv_id, "Startup: screen on"),
-                    Err(e) => {
-                        warn!(tv_id = %tv_id, error = %e, "Startup: failed to turn screen on")
+                // Wake the panel — unless a presence source already requested
+                // it off while we were booting (an away user's greeter idle).
+                // That latched `desired_screen = Some(false)` is left for
+                // reconcile to apply, so the panel stays dark.
+                let want_screen_on = match manager.get_tv(tv_id).await {
+                    Ok(arc) => arc.lock().await.desired_screen != Some(false),
+                    Err(_) => true,
+                };
+                if want_screen_on {
+                    match manager.screen_on(tv_id).await {
+                        Ok(()) => info!(tv_id = %tv_id, "Startup: screen on"),
+                        Err(e) => {
+                            warn!(tv_id = %tv_id, error = %e, "Startup: failed to turn screen on")
+                        }
                     }
+                } else {
+                    info!(tv_id = %tv_id, "Startup: leaving panel off (presence requested screen off)");
                 }
 
                 if let Some(ref input) = tv_config.primary_input {
@@ -2374,6 +2409,12 @@ impl TvManager {
             let tv_arc = self.get_tv(tv_id).await?;
             let mut tv = tv_arc.lock().await;
             tv.connection = None;
+            // An explicit or system power-off ends any screen intent — the TV
+            // is off. Drop the latch so the push-driven reconcile does not
+            // later re-assert it (e.g. re-lighting a TV the user just powered
+            // off). `screen_on` / `screen_off` re-establish it on the next
+            // request. Safe here because no screen path calls `power_off`.
+            tv.desired_screen = None;
             if result.is_ok() {
                 tv.powered_off = true;
             }
@@ -2544,21 +2585,27 @@ impl TvManager {
     /// verify-await (nothing else fires the `power_state_tx` watch they
     /// await). Push backends keep the passive-await-only path.
     pub async fn screen_on(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        // Latch the intent so an action deferred (or superseded) here still
+        // lands via the push-driven reconcile once the TV is reachable.
+        {
+            let tv_arc = self.get_tv(tv_id).await?;
+            tv_arc.lock().await.desired_screen = Some(true);
+        }
+        // Defer while a lifecycle wake is in progress: recording the intent
+        // and letting the post-wake reconcile apply it avoids a second
+        // competing `power_on` racing the wake (the cold-boot tangle).
+        if self.is_reconnecting(tv_id).await {
+            debug!(
+                tv_id,
+                "screen_on deferred (reconnecting); reconcile applies on ready"
+            );
+            return Ok(());
+        }
         // Pull retry config and the push/poll discriminator under a
         // lock; the cached state will be refreshed via an authoritative
         // query just below so a stale subscription doesn't decide the
         // pre-flight wrong.
-        let (retry_config, has_push) = {
-            let tv_arc = self.get_tv(tv_id).await?;
-            let tv = tv_arc.lock().await;
-            let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
-                TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
-            })?;
-            (
-                registered.backend.verify_retry_config(),
-                tv.has_push_subscription,
-            )
-        };
+        let (retry_config, has_push) = self.verify_config(tv_id).await?;
         let fresh = self
             .refresh_power_state(tv_id, retry_config.verify_delay)
             .await;
@@ -2701,21 +2748,27 @@ impl TvManager {
     /// known; see `docs/lg/firmware-quirks.md` (when ported) for
     /// the design rationale.
     pub async fn screen_off(&self, tv_id: &str) -> Result<(), TvManagerError> {
+        // Latch the intent so an action deferred (or superseded) here still
+        // lands via the push-driven reconcile once the TV is reachable.
+        {
+            let tv_arc = self.get_tv(tv_id).await?;
+            tv_arc.lock().await.desired_screen = Some(false);
+        }
+        // Defer while a lifecycle wake is in progress: recording the intent
+        // and letting the post-wake reconcile apply it avoids a second
+        // competing `power_on` racing the wake (the cold-boot tangle).
+        if self.is_reconnecting(tv_id).await {
+            debug!(
+                tv_id,
+                "screen_off deferred (reconnecting); reconcile applies on ready"
+            );
+            return Ok(());
+        }
         // Pull retry config and the push/poll discriminator under a
         // lock; the cached state will be refreshed via an authoritative
         // query just below so a stale subscription doesn't decide the
         // pre-flight wrong.
-        let (retry_config, has_push) = {
-            let tv_arc = self.get_tv(tv_id).await?;
-            let tv = tv_arc.lock().await;
-            let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
-                TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
-            })?;
-            (
-                registered.backend.verify_retry_config(),
-                tv.has_push_subscription,
-            )
-        };
+        let (retry_config, has_push) = self.verify_config(tv_id).await?;
         let fresh = self
             .refresh_power_state(tv_id, retry_config.verify_delay)
             .await;
@@ -2840,6 +2893,182 @@ impl TvManager {
             "screen_off verify-retry exhausted; TV reachable but panel did not blank",
         );
         Ok(())
+    }
+
+    /// Override the per-TV desired-screen latch directly. The explicit
+    /// `Tv1.Power.PowerOn` path uses it: an explicit power-on is an unambiguous
+    /// "on and visible", so it sets the latch on (overriding any stale
+    /// screen-off) *before* waking, so the push-driven reconcile keeps the
+    /// freshly-woken panel on instead of re-blanking it.
+    pub async fn set_desired_screen(&self, tv_id: &str, desired: Option<bool>) {
+        if let Ok(tv_arc) = self.get_tv(tv_id).await {
+            tv_arc.lock().await.desired_screen = desired;
+        }
+    }
+
+    /// Issue `screen_on` and verify, with **no `power_on` escalation** — the
+    /// bare counterpart of [`Self::screen_on`]. The push-driven
+    /// [`Self::reconcile_screen`] uses this to re-assert the desired screen
+    /// state on a TV that is already reachable, keeping the recursion-prone
+    /// `power_on` out of the reconcile loop. The wake-from-deep-substate
+    /// escalation stays on the direct `screen_on` path (PR #57's contract).
+    /// `Ok(true)` if the panel verified into `Active`/`ScreenSaver`,
+    /// `Ok(false)` if the verify budget was exhausted, `Err` if the command
+    /// could not be sent.
+    async fn apply_screen_on_raw(&self, tv_id: &str) -> Result<bool, TvManagerError> {
+        let (retry_config, has_push) = self.verify_config(tv_id).await?;
+        for attempt in 0..retry_config.effective_max_attempts() {
+            self.with_connection(tv_id, |conn| {
+                Box::pin(async move { conn.screen_on().await })
+            })
+            .await?;
+            if !has_push {
+                self.refresh_power_state(tv_id, retry_config.verify_delay)
+                    .await;
+            }
+            if let AwaitOutcome::Matched(_) = self
+                .await_power_state(tv_id, retry_config.verify_delay, |s| {
+                    matches!(s, PowerState::Active | PowerState::ScreenSaver)
+                })
+                .await
+            {
+                return Ok(true);
+            }
+            debug!(
+                tv_id,
+                attempt, "apply_screen_on_raw: panel did not reach active"
+            );
+        }
+        Ok(false)
+    }
+
+    /// Issue `screen_off` and verify, with **no `power_on` pre-flight** — the
+    /// bare counterpart of [`Self::screen_off`], used by
+    /// [`Self::reconcile_screen`]. Never powers the panel on to blank it (the
+    /// momentary-flash that the direct `screen_off` accepts for the
+    /// `on_startup = screen_off` case is the direct path's job, not the
+    /// re-assert's).
+    async fn apply_screen_off_raw(&self, tv_id: &str) -> Result<bool, TvManagerError> {
+        let (retry_config, has_push) = self.verify_config(tv_id).await?;
+        for attempt in 0..retry_config.effective_max_attempts() {
+            self.with_connection(tv_id, |conn| {
+                Box::pin(async move { conn.screen_off().await })
+            })
+            .await?;
+            if !has_push {
+                self.refresh_power_state(tv_id, retry_config.verify_delay)
+                    .await;
+            }
+            if let AwaitOutcome::Matched(_) = self
+                .await_power_state(tv_id, retry_config.verify_delay, |s| {
+                    s == PowerState::ScreenOff
+                })
+                .await
+            {
+                return Ok(true);
+            }
+            debug!(tv_id, attempt, "apply_screen_off_raw: panel did not blank");
+        }
+        Ok(false)
+    }
+
+    /// Re-assert the TV's `desired_screen` toward the panel, **never**
+    /// escalating to `power_on` (that stays on the direct `screen_on` /
+    /// `screen_off` path, preserving PR #57's wake reliability). Called by the
+    /// state-change forwarder on every power-state change, so a screen action
+    /// that was deferred while the TV was reconnecting lands once it is
+    /// reachable, and the latest intent re-asserts after a reconnect. No-ops
+    /// when the cached state already matches the desire. Because reconcile
+    /// holds no `power_on`, the `screen→power_on→state-push→reconcile` loop is
+    /// impossible by construction.
+    pub async fn reconcile_screen(&self, tv_id: &str) {
+        // Never re-assert while a lifecycle wake is in flight: a stale push
+        // could otherwise drive a bare apply that opens a second connection,
+        // racing the in-flight `power_on` (the wake-race the direct
+        // `screen_on` / `screen_off` defer prevents). And act only on automated
+        // TVs, like every direct dispatch path. A deferred intent still lands —
+        // the reconnect-complete `ConnectionChanged(true)` spawns a fresh
+        // reconcile once `reconnecting` has cleared.
+        if self.is_reconnecting(tv_id).await || !self.is_tv_automated(tv_id).await {
+            return;
+        }
+        let (desired, observed) = {
+            let Ok(tv_arc) = self.get_tv(tv_id).await else {
+                return;
+            };
+            let tv = tv_arc.lock().await;
+            (tv.desired_screen, tv.last_known_power_state)
+        };
+        let Some(want_on) = desired else {
+            return;
+        };
+        // The panel is "lit" only in Active / ScreenSaver; every other state
+        // (ScreenOff, ActiveStandby, Standby, …) is dark. Reconcile acts only
+        // when the panel's lit-ness disagrees with the desire — so a desired-off
+        // TV sitting in ActiveStandby (panel dark, e.g. #57's wake-refusal
+        // graceful fallback) is already satisfied and we send nothing.
+        let panel_lit = matches!(observed, PowerState::Active | PowerState::ScreenSaver);
+        if panel_lit == want_on {
+            return;
+        }
+        info!(
+            tv_id,
+            desired_on = want_on,
+            observed = ?observed,
+            "reconcile: re-asserting desired screen state",
+        );
+        // Re-check the intent under the lock right before applying: a concurrent
+        // direct `screen_on` / `screen_off` may have flipped `desired_screen`
+        // between the read above and now. The newer intent owns the outcome (its
+        // own dispatch, or the next push-driven reconcile), so bail if it moved.
+        {
+            let Ok(tv_arc) = self.get_tv(tv_id).await else {
+                return;
+            };
+            if tv_arc.lock().await.desired_screen != Some(want_on) {
+                return;
+            }
+        }
+        let result = if want_on {
+            self.apply_screen_on_raw(tv_id).await
+        } else {
+            self.apply_screen_off_raw(tv_id).await
+        };
+        match result {
+            Ok(true) => {}
+            // Budget exhausted: the TV is reachable but refused to reach the
+            // target. The forwarder only re-spawns reconcile on an actual
+            // power-state change, so a TV stuck refusing won't thrash the verify
+            // loop — but surface it for diagnosis.
+            Ok(false) => debug!(
+                tv_id,
+                desired_on = want_on,
+                "reconcile_screen: panel did not reach target (verify budget exhausted)",
+            ),
+            Err(e) => debug!(
+                tv_id,
+                desired_on = want_on,
+                error = %e,
+                "reconcile_screen: bare apply failed (TV unreachable?)",
+            ),
+        }
+    }
+
+    /// Read a TV's backend verify-retry config and push/poll discriminator
+    /// under a brief lock. Shared by the bare `apply_screen_*_raw` paths.
+    async fn verify_config(
+        &self,
+        tv_id: &str,
+    ) -> Result<(tisvlay_core::RetryConfig, bool), TvManagerError> {
+        let tv_arc = self.get_tv(tv_id).await?;
+        let tv = tv_arc.lock().await;
+        let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
+            TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
+        })?;
+        Ok((
+            registered.backend.verify_retry_config(),
+            tv.has_push_subscription,
+        ))
     }
 
     // -------------------------------------------------------------------------

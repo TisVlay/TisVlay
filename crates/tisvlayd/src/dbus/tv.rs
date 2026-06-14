@@ -388,6 +388,12 @@ impl TvPowerService {
     /// Power on the TV (Wake-on-LAN).
     async fn power_on(&self) -> Result<(), DaemonError> {
         info!(tv_id = %self.tv_id, "D-Bus: PowerOn");
+        // An explicit power-on means "on and visible": set the screen latch on
+        // *before* waking, so a stale screen-off can't have the push-driven
+        // reconcile re-blank the freshly-woken panel.
+        self.manager
+            .set_desired_screen(&self.tv_id, Some(true))
+            .await;
         self.manager
             .power_on(&self.tv_id)
             .await
