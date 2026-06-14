@@ -160,11 +160,6 @@ pub struct WatchHandle {
     stop: OwnedFd,
 }
 
-impl WatchHandle {
-    /// Stop the watch now (equivalent to dropping the handle).
-    pub fn stop(self) {}
-}
-
 /// Start a Wayland idle watch on a dedicated thread.
 ///
 /// Connects to the compositor named by the `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`

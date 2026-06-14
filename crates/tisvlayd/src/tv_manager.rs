@@ -2605,17 +2605,7 @@ impl TvManager {
         // lock; the cached state will be refreshed via an authoritative
         // query just below so a stale subscription doesn't decide the
         // pre-flight wrong.
-        let (retry_config, has_push) = {
-            let tv_arc = self.get_tv(tv_id).await?;
-            let tv = tv_arc.lock().await;
-            let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
-                TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
-            })?;
-            (
-                registered.backend.verify_retry_config(),
-                tv.has_push_subscription,
-            )
-        };
+        let (retry_config, has_push) = self.verify_config(tv_id).await?;
         let fresh = self
             .refresh_power_state(tv_id, retry_config.verify_delay)
             .await;
@@ -2778,17 +2768,7 @@ impl TvManager {
         // lock; the cached state will be refreshed via an authoritative
         // query just below so a stale subscription doesn't decide the
         // pre-flight wrong.
-        let (retry_config, has_push) = {
-            let tv_arc = self.get_tv(tv_id).await?;
-            let tv = tv_arc.lock().await;
-            let registered = self.registry.get(&tv.config.vendor).ok_or_else(|| {
-                TvManagerError::TvNotFound(format!("vendor {:?} not registered", tv.config.vendor))
-            })?;
-            (
-                registered.backend.verify_retry_config(),
-                tv.has_push_subscription,
-            )
-        };
+        let (retry_config, has_push) = self.verify_config(tv_id).await?;
         let fresh = self
             .refresh_power_state(tv_id, retry_config.verify_delay)
             .await;
