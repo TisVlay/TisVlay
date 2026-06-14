@@ -44,59 +44,70 @@
         # `nix build .#checks.${system}.vm` or `nix flake check`.
         checks.vm = pkgs.callPackage ./packaging/nix/test.nix { };
 
+        # Cargo unit + integration suite in the Nix sandbox. The package
+        # ships with doCheck = false (no binary cache means consumers build
+        # from source and shouldn't re-run CI's suite); this output keeps it
+        # reachable via `nix flake check` and for a future nixpkgs submission.
+        checks.tests = self.packages.${system}.tisvlay.overrideAttrs (_: {
+          doCheck = true;
+        });
+
         devShells.default =
           let
             slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
           in
           pkgs.mkShell {
-            packages = with pkgs; [
-              # cargo-about generates the bundled third-party license
-              # attribution; cargo-deny enforces the SPDX allow-list
-              # at PR time via prek so a future dep bump can't drag
-              # in a forbidden license. Maintenance reference:
-              # docs/licensing.md.
-              cargo-about
-              cargo-deny
-              cargo-insta
-              cargo-llvm-cov
-              cargo-nextest
-              # cargo-zigbuild + zig drive the release build: zig serves
-              # as the linker so the resulting glibc-dynamic binary
-              # carries an explicit min-glibc baseline (see justfile's
-              # `package-build`) and runs on any distro at-or-newer than
-              # that anchor — without baking Nix-store paths into the
-              # ELF interpreter the way a plain `cargo build` from the
-              # dev shell would.
-              cargo-zigbuild
-              zig
-              just
-              just-lsp
-              linuxConsoleTools
-              lldb
-              llvmPackages_21.bintools-unwrapped
-              # nfpm (Go binary) is the packager that cargo-nfpm shells
-              # out to. cargo-nfpm itself is not in nixpkgs — install
-              # with `cargo install cargo-nfpm` to drive `just package-*`.
-              nfpm
-              pkg-config
-              prek
-              # slint-lsp on $PATH so editor integrations (VSCode Slint
-              # extension, Helix, Neovim) pick up the system-provided LSP
-              # instead of failing to find a bundled binary.
-              # Tracks slint-ui/slint#2577 (NixOS LSP discovery).
-              slint-lsp
-              socat
-              tcpdump
-              wakeonlan
-              rust
-              # i18n tooling. `gettext` provides xgettext / msgfmt /
-              # msgmerge for building .pot / .po / .mo from Rust + Slint
-              # source. `slint-tr-extractor` walks .slint files and
-              # emits the equivalent .pot for `@tr()` literals; the
-              # justfile recipe combines both into a single catalog.
-              gettext
-              slint-tr-extractor
-            ] ++ slintRuntimeLibs;
+            packages =
+              with pkgs;
+              [
+                # cargo-about generates the bundled third-party license
+                # attribution; cargo-deny enforces the SPDX allow-list
+                # at PR time via prek so a future dep bump can't drag
+                # in a forbidden license. Maintenance reference:
+                # docs/licensing.md.
+                cargo-about
+                cargo-deny
+                cargo-insta
+                cargo-llvm-cov
+                cargo-nextest
+                # cargo-zigbuild + zig drive the release build: zig serves
+                # as the linker so the resulting glibc-dynamic binary
+                # carries an explicit min-glibc baseline (see justfile's
+                # `package-build`) and runs on any distro at-or-newer than
+                # that anchor — without baking Nix-store paths into the
+                # ELF interpreter the way a plain `cargo build` from the
+                # dev shell would.
+                cargo-zigbuild
+                zig
+                just
+                just-lsp
+                linuxConsoleTools
+                lldb
+                llvmPackages_21.bintools-unwrapped
+                # nfpm (Go binary) is the packager that cargo-nfpm shells
+                # out to. cargo-nfpm itself is not in nixpkgs — install
+                # with `cargo install cargo-nfpm` to drive `just package-*`.
+                nfpm
+                pkg-config
+                prek
+                # slint-lsp on $PATH so editor integrations (VSCode Slint
+                # extension, Helix, Neovim) pick up the system-provided LSP
+                # instead of failing to find a bundled binary.
+                # Tracks slint-ui/slint#2577 (NixOS LSP discovery).
+                slint-lsp
+                socat
+                tcpdump
+                wakeonlan
+                rust
+                # i18n tooling. `gettext` provides xgettext / msgfmt /
+                # msgmerge for building .pot / .po / .mo from Rust + Slint
+                # source. `slint-tr-extractor` walks .slint files and
+                # emits the equivalent .pot for `@tr()` literals; the
+                # justfile recipe combines both into a single catalog.
+                gettext
+                slint-tr-extractor
+              ]
+              ++ slintRuntimeLibs;
 
             # Tell rust-analyzer where to find std sources for go-to-definition.
             RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library";

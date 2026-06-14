@@ -143,13 +143,24 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # daemon builds the backend registry.
   buildFeatures = [ "tisvlayd/mock" ];
 
+  # No binary cache for this flake, so every consumer builds from source —
+  # the checkPhase would re-run, from scratch, the same suite CI already
+  # gates on, compiling far more than the shipping build (the dev-only
+  # crates plus every feature). Skip it here; `checks.tests` in flake.nix
+  # flips doCheck back on for `nix flake check`, keeping the flags below
+  # exercised.
+  doCheck = false;
+
   useNextest = true;
 
   # Tests opt back into the full workspace: `--workspace` because
   # `default-members` would otherwise narrow the default `cargo test` to
   # the shipping binaries, and the dev-only crates' tests (which need the
   # `mock` and other test-only features) are still wanted here.
-  cargoTestFlags = [ "--workspace" "--all-features" ];
+  cargoTestFlags = [
+    "--workspace"
+    "--all-features"
+  ];
 
   meta = {
     description = "TV Display control for Linux";
