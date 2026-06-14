@@ -53,8 +53,8 @@ See [Firewall & Discovery](../operations/firewall-discovery.md) for why `bind_po
 
 Profiles map **events** to **actions**. There are two kinds:
 
-- **System profiles** (daemon-wide lifecycle): boot, shutdown, reboot, suspend/resume, host-display DPMS blank/wake.
-- **User profiles** (per desktop session): lock, unlock, greeter wake, idle timeout/resume.
+- **System profiles** (daemon-wide lifecycle): boot, shutdown, reboot, suspend/resume, host-display DPMS blank/wake, and the login-screen (greeter) idle timer.
+- **User profiles** (per desktop session): lock, unlock, lock-screen wake, idle timeout/resume.
 
 ### Action vocabulary
 
@@ -76,12 +76,14 @@ name = "default"
 on_startup = "power_on"
 on_shutdown = "power_off"
 on_reboot = "none"
-on_no_session = "none"
 on_sleep = "power_off"
 on_wake = "power_on"
-on_dpms_off = "none"       # matched host display blanked (DPMS off)
-on_dpms_on = "none"        # matched host display woke (DPMS on)
-automate_when = "always"   # always | on_primary | off_primary
+on_dpms_off = "screen_off"  # matched host display blanked (DPMS off)
+on_dpms_on = "screen_on"    # matched host display woke (DPMS on)
+idle_timeout_seconds = 0    # login-screen (greeter) idle timer; 0 disables it
+on_idle_timeout = "screen_off"
+on_idle_resume = "screen_on"
+automate_when = "always"    # always | on_primary | off_primary
 ```
 
 ### User profile
@@ -91,7 +93,7 @@ automate_when = "always"   # always | on_primary | off_primary
 name = "default"
 on_session_lock = "screen_off"
 on_session_unlock = "screen_on"
-on_greeter_wake = "screen_on"     # interaction with the lock screen (Wayland)
+on_lock_wake = "screen_on"        # interaction with the lock screen (Wayland)
 idle_timeout_seconds = 0          # 0 disables the idle timer
 on_idle_timeout = "screen_off"
 on_idle_resume = "screen_on"

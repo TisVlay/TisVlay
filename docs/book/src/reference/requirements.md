@@ -13,7 +13,7 @@ For LG, enable **"TV On via Wi-Fi"** (sometimes "Mobile TV On") in the TV's netw
 
 - **Linux with D-Bus** — required for `tisvlayd` and the session/tray services.
 - **Network reachability** — the host and TV on the same L2 network (Wake-on-LAN magic packets don't cross routers).
-- **Wayland compositor with `ext-idle-notify-v1`** — optional, needed only for greeter-wake detection (unblanking the TV when you interact with the lock screen before typing your password).
+- **Wayland compositor with `ext-idle-notify-v1`** — optional, needed only for lock-wake detection (unblanking the TV when you interact with the lock screen before typing your password) and the in-session idle timer.
 - For the DPMS display-blank automation, the host must expose the matched connector's power state via `/sys/class/drm/*/dpms` (verified on KDE Plasma Wayland).
 
 ## What runs where
