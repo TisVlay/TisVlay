@@ -200,21 +200,30 @@ in
       '';
     };
 
-    greeter.enable = lib.mkEnableOption ''
-      the tisvlay greeter idle client. Runs `tisvlay-greeter` as the
-      plasma-login-manager greeter user inside the greeter Wayland session
-      so managed TVs blank on greeter idle and restore on resume — OLED
-      burn-in protection at an unattended login screen.
+    greeter.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.services.displayManager.plasma-login-manager.enable;
+      defaultText = lib.literalExpression "config.services.displayManager.plasma-login-manager.enable";
+      description = ''
+        Whether to enable the tisvlay greeter idle client. Runs
+        `tisvlay-greeter` as the plasma-login-manager greeter user inside
+        the greeter Wayland session so managed TVs blank on greeter idle
+        and restore on resume — OLED burn-in protection at an unattended
+        login screen.
 
-      Defaults to on when `services.displayManager.plasma-login-manager`
-      is the active display manager — the only greeter this client
-      currently supports (the unit attaches to its greeter target) — and
-      is otherwise off; set it explicitly to override. The feature also
-      needs a non-zero `idle_timeout_seconds` on a system profile — set it
-      in the GUI Profiles pane or declaratively; it defaults to 0 (off),
-      so enabling this option alone installs the client but does not yet
-      blank anything
-    '';
+        Defaults to on when `services.displayManager.plasma-login-manager`
+        is the active display manager — the only greeter this client
+        currently supports (the unit attaches to its greeter target);
+        other greeters (greetd + wlroots, GDM) need separate adapters, see
+        `docs/ideas/greeter-integration-generalization.md`. Set it
+        explicitly to override.
+
+        The feature also needs a non-zero `idle_timeout_seconds` on a
+        system profile — set it in the GUI Profiles pane or declaratively;
+        it defaults to 0 (off), so enabling this option alone installs the
+        client but does not yet blank anything.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -231,13 +240,19 @@ in
       }
     ];
 
-    # Default the greeter idle client on when plasma-login-manager is the
-    # active display manager — the only greeter it currently supports (its
-    # units below attach to plasma-login's greeter target). mkDefault so an
-    # explicit greeter.enable still wins. Other greeters (greetd + wlroots,
-    # GDM) need separate adapters — see
+    # tisvlay-greeter only supports plasma-login-manager today (its units
+    # below attach to that greeter's session target). greeter.enable
+    # auto-defaults to plasma-login being active; warn — rather than assert —
+    # when it is enabled on another DM, so an explicit override degrades
+    # visibly instead of silently producing units that never start. See
     # docs/ideas/greeter-integration-generalization.md.
-    services.tisvlay.greeter.enable = lib.mkDefault config.services.displayManager.plasma-login-manager.enable;
+    warnings =
+      lib.optional (cfg.greeter.enable && !config.services.displayManager.plasma-login-manager.enable)
+        ''
+          services.tisvlay.greeter.enable is set, but plasma-login-manager is not
+          the active display manager. The greeter idle client only supports
+          plasma-login-manager today, so tisvlay-greeter.service will not start.
+        '';
 
     # Dedicated system user and group for tisvlayd. uid/gid stay
     # unset by default — NixOS allocates from the system range and
