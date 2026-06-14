@@ -22,6 +22,17 @@ Scope: all four stubs, text-first (no screenshots — current-UI captures are a 
 - [x] `guide/gui-tray.md` — panes (TVs / Profiles / Settings / About), pairing wizard, Alt+←/→ + mouse back/forward history nav, tray menu + scroll-wheel behavior, notification categories table. Verified the `.desktop` entry ships (nfpm `contents` + Nix `makeDesktopItem`), so "launch from the application menu" is accurate.
 - [x] `reference/faq.md` — eight Q&As (CEC rationale, supported TVs, optional services, OLED safety, scripting via `--json`/D-Bus, config locations, `client_key` sensitivity incl. the verified `0750`/`UMask=0077` permissions, multi-TV), closing pointer to Troubleshooting.
 
+### Post-merge reconciliation (#82–#83 landed on main after the content + stubs were written)
+
+Merged `origin/main` into this branch (single conflict — `docs/plans/README.md`, kept this plan's entry over #83's reset-to-none; `daemon.toml` auto-merged with the new fields; `just check` green, 556 tests). The book content needed the screen-state model folded in:
+
+- [x] **`on_greeter_wake` → `on_lock_wake`** — #83 renamed the user-profile field (it fires at the in-session lock screen, not the logged-out greeter). Updated `configuration.md`, `session-automation.md` (event table + prose), and `requirements.md`.
+- [x] **`on_dpms_off` / `on_dpms_on` defaults flipped `none` → `screen_off` / `screen_on`** (#82's "DPMS-mirror defaults"). Rewrote the `session-automation.md` guidance: the mirror is on out of the box, and the lock/idle and DPMS paths now both run by design (overlap is idempotent / reconnect-gated), replacing the old "enable one path or the other."
+- [x] **Dropped `on_no_session`** — #83 removed the field; pulled it from the `configuration.md` schema and the `session-automation.md` system-events list.
+- [x] **Documented the greeter idle client** (#82, previously absent from the book) — the system-profile idle pair (`idle_timeout_seconds` / `on_idle_timeout` / `on_idle_resume`) + opt-in `services.tisvlay.greeter.enable`, in `session-automation.md` and the `configuration.md` system-profile schema.
+- [x] **Latched-screen-state reliability note** — added that the desired screen state survives a reconnect / the login→session handoff (the user-visible upshot of #83's latch + reconcile).
+- Non-items, checked: `profiles.md` describes resolution abstractly (no field-name churn); `cli-generated.md` unchanged (#82/#83 don't touch the clap surface — `docs-cli-check` green); the concise root README stays feature-level and accurate.
+
 ## Context
 
 tisvlay has no user-facing docs site today — `docs/*.md` is ~95% developer-facing (design, testing, ideas, plans), and the `main` README is a 67-line stub. We want a published user guide (install / pair / CLI / config / firewall / troubleshooting) on **Read the Docs**.
