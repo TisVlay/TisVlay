@@ -919,6 +919,16 @@ component ProfileDetail inherits Rectangle {
 
                         VerticalLayout {
                             width: 100%;
+                            // Rows run full-bleed horizontally (the 2 px
+                            // gutter accent meets the card's inner edge),
+                            // so the card carries no horizontal body
+                            // padding. Vertically, each row self-pads by
+                            // `gap-stack`; add the remainder up to
+                            // `pad-card` here so the first/last row clear
+                            // the card border by the same inset a `Group`
+                            // card uses in the TVs pane.
+                            padding-top: Design.pad-card - Design.gap-stack;
+                            padding-bottom: Design.pad-card - Design.gap-stack;
                             spacing: 0;
                             alignment: start;
                             for entry[i] in Profiles.editor-fields: VerticalLayout {
