@@ -5,11 +5,13 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_core::Stream;
 use thiserror::Error;
 use tokio::net::UdpSocket;
+use tokio::sync::{OnceCell, broadcast};
 
 const SSDP_MULTICAST_V4: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
 const SSDP_PORT: u16 = 1900;
@@ -163,6 +165,163 @@ pub async fn search(
             }
         }
     })
+}
+
+/// Capacity of a [`SharedSearcher`]'s broadcast buffer. Generous next to
+/// the handful of devices on a home LAN; a subscriber that lags past this
+/// drops the oldest responses (logged) rather than stalling the shared
+/// receive loop.
+const BROADCAST_CAPACITY: usize = 256;
+
+/// A long-lived SSDP socket that multiplexes concurrent searches onto a
+/// single bound source port.
+///
+/// Binds lazily on the first [`search`](Self::search) — with an ephemeral
+/// fallback if the requested port is already in use — then runs **one**
+/// background receive loop that fans every parsed response out to all
+/// active subscribers over a broadcast channel.
+///
+/// This is what lets several overlapping discovery sessions share one
+/// firewall-targetable port. A single reader owns the socket, so the
+/// alternative — each search binding its own socket — is unnecessary, and
+/// the failure mode it carried (a second `bind()` to the same pinned port
+/// returning `EADDRINUSE`) cannot occur. Equally, two searches can't steal
+/// each other's datagrams off separate `recv` calls: every reply is read
+/// once and copied to each subscriber.
+#[derive(Debug)]
+pub struct SharedSearcher {
+    /// Requested source port. `0` binds an OS-chosen ephemeral port.
+    bind_port: u16,
+    /// `ST:` targets sent on every [`search`](Self::search) burst.
+    targets: Vec<String>,
+    inner: OnceCell<SharedInner>,
+}
+
+#[derive(Debug)]
+struct SharedInner {
+    socket: Arc<UdpSocket>,
+    tx: broadcast::Sender<SsdpResponse>,
+}
+
+impl SharedSearcher {
+    /// Build a searcher for `targets`, binding `bind_port` on first use.
+    ///
+    /// Nothing is bound or spawned until the first [`search`](Self::search).
+    pub fn new(bind_port: u16, targets: Vec<String>) -> Self {
+        Self {
+            bind_port,
+            targets,
+            inner: OnceCell::new(),
+        }
+    }
+
+    /// Bind the socket once and spawn the receive→broadcast loop.
+    async fn inner(&self) -> Result<&SharedInner> {
+        self.inner
+            .get_or_try_init(|| async {
+                let socket = bind_with_fallback(self.bind_port).await?;
+                if let Err(e) = socket.set_multicast_ttl_v4(DEFAULT_TTL) {
+                    tracing::debug!(error = %e, ttl = DEFAULT_TTL, "set_multicast_ttl_v4 failed; continuing with kernel default");
+                }
+                let socket = Arc::new(socket);
+                let (tx, _rx) = broadcast::channel(BROADCAST_CAPACITY);
+                let recv_socket = Arc::clone(&socket);
+                let recv_tx = tx.clone();
+                tokio::spawn(recv_loop(recv_socket, recv_tx));
+                Ok(SharedInner { socket, tx })
+            })
+            .await
+    }
+
+    /// The socket's actually-bound address once initialized, else `None`.
+    /// After an ephemeral fallback this reflects the real bound port, not
+    /// the requested one.
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.inner.get().and_then(|i| i.socket.local_addr().ok())
+    }
+
+    /// Send an M-SEARCH burst for the configured targets and yield
+    /// responses that arrive within `timeout`.
+    ///
+    /// Subscribes to the shared response stream *before* sending, so no
+    /// reply is missed. Concurrent callers each get their own subscription
+    /// and every one sees every response.
+    pub async fn search(&self, timeout: Duration) -> Result<impl Stream<Item = SsdpResponse>> {
+        let inner = self.inner().await?;
+        let mut rx = inner.tx.subscribe();
+
+        let multicast_addr = SocketAddr::new(IpAddr::V4(SSDP_MULTICAST_V4), SSDP_PORT);
+        for target in &self.targets {
+            let packet = build_m_search(target, DEFAULT_MX);
+            inner
+                .socket
+                .send_to(packet.as_bytes(), multicast_addr)
+                .await?;
+        }
+
+        Ok(async_stream::stream! {
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(remaining, rx.recv()).await {
+                    Err(_) => break, // overall search timeout elapsed
+                    Ok(Ok(resp)) => yield resp,
+                    Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
+                        tracing::debug!(skipped = n, "SSDP subscriber lagged; dropped responses");
+                    }
+                    Ok(Err(broadcast::error::RecvError::Closed)) => break,
+                }
+            }
+        })
+    }
+}
+
+/// Bind `0.0.0.0:port`, falling back to an ephemeral port if a non-zero
+/// `port` is already in use. The fallback keeps discovery working when
+/// something else holds the pinned port, at the cost of a firewall rule
+/// for `port` no longer matching — logged so the degradation is visible.
+async fn bind_with_fallback(port: u16) -> Result<UdpSocket> {
+    let requested = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
+    match UdpSocket::bind(requested).await {
+        Ok(socket) => Ok(socket),
+        Err(e) if port != 0 && e.kind() == std::io::ErrorKind::AddrInUse => {
+            tracing::warn!(
+                port,
+                "SSDP source port in use; falling back to an ephemeral port — a firewall rule for the pinned port will not match"
+            );
+            let ephemeral = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+            Ok(UdpSocket::bind(ephemeral).await?)
+        }
+        Err(e) => Err(Error::from(e)),
+    }
+}
+
+/// The single shared reader: parse every datagram and copy it to all
+/// subscribers. Runs for the searcher's lifetime. Send errors mean no
+/// active subscribers — the normal idle state between searches — and are
+/// ignored.
+async fn recv_loop(socket: Arc<UdpSocket>, tx: broadcast::Sender<SsdpResponse>) {
+    let mut buf = [0u8; RECV_BUFFER_SIZE];
+    loop {
+        match socket.recv_from(&mut buf).await {
+            Ok((n, _src)) => {
+                if let Ok(body) = std::str::from_utf8(&buf[..n])
+                    && let Ok(resp) = parse_response(body)
+                {
+                    let _ = tx.send(resp);
+                }
+            }
+            Err(e) => {
+                // Back off briefly so a persistent socket error doesn't
+                // spin a hot loop.
+                tracing::debug!(error = %e, "SSDP shared receive failed; backing off");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
 }
 
 fn build_m_search(target: &str, mx: u8) -> String {
@@ -350,5 +509,56 @@ mod tests {
         for item in &collected {
             assert!(item.is_ok(), "unexpected parse failure: {item:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn concurrent_searches_share_one_socket_and_fan_out() {
+        use futures_util::StreamExt;
+
+        // One shared searcher on an ephemeral port (0) so the test never
+        // collides with anything already on the host.
+        let searcher = SharedSearcher::new(0, vec!["urn:tisvlay-test:shared:1".to_string()]);
+
+        // First search binds the socket and starts the background reader;
+        // a second, overlapping search reuses it. With the old
+        // per-search bind, this is exactly the concurrent case that could
+        // not share a pinned source port.
+        let s1 = searcher
+            .search(Duration::from_millis(300))
+            .await
+            .expect("first search binds");
+        let addr = searcher.local_addr().expect("bound after first search");
+        let s2 = searcher
+            .search(Duration::from_millis(300))
+            .await
+            .expect("second search reuses socket");
+
+        // A stand-in device unicasts one valid SSDP reply to the shared
+        // socket (localhost, since the searcher bound 0.0.0.0). Both
+        // subscriptions already exist, so the broadcast must reach both.
+        let dest = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), addr.port());
+        let device = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("device socket");
+        device
+            .send_to(TYPICAL_LG_RESPONSE.as_bytes(), dest)
+            .await
+            .expect("send reply");
+
+        // Collect each stream to its deadline and assert both saw *our*
+        // injected response (matched by USN, so unrelated UPnP chatter on
+        // a dev host can't mask a broken fan-out). If a single reader were
+        // not copying to every subscriber, one of these would be empty.
+        let want_usn = "uuid:abcd1234-1234-1234-1234-1234567890ab::urn:schemas-upnp-org:device:MediaRenderer:1";
+        let r1: Vec<_> = s1.collect().await;
+        let r2: Vec<_> = s2.collect().await;
+        assert!(
+            r1.iter().any(|r| r.usn() == want_usn),
+            "first subscriber missed the shared response"
+        );
+        assert!(
+            r2.iter().any(|r| r.usn() == want_usn),
+            "second subscriber missed the shared response"
+        );
     }
 }

@@ -19,6 +19,8 @@ on_idle_timeout = "screen_off"
 on_idle_resume = "screen_on"
 
 [discovery]
+# Source UDP port for SSDP discovery. 1901 is the built-in default when
+# omitted; set 0 for an OS-chosen ephemeral port (not firewall-targetable).
 bind_port = 1901
 poll_interval_ms = 8000
 

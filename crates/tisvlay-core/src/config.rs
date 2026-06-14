@@ -1042,6 +1042,16 @@ impl TvConfig {
 // SystemConfig (aka Config)
 // =============================================================================
 
+/// Default SSDP source UDP port used when `[discovery] bind_port` is
+/// unset.
+///
+/// Pinning a known source port (rather than an OS-chosen ephemeral one)
+/// lets a firewall accept discovery replies with a single `--dport`
+/// rule instead of an `accept any UDP from subnet` fallback. 1901 sits
+/// one above the SSDP/UPnP multicast port (1900) and is otherwise
+/// unassigned. See `docs/firewall.md`.
+pub const DEFAULT_BIND_PORT: u16 = 1901;
+
 /// Discovery-related daemon settings.
 ///
 /// Lives under `[discovery]` in the system TOML. All fields are
@@ -1050,13 +1060,13 @@ impl TvConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
     /// Source UDP port to bind for SSDP M-SEARCH. `None` (or omitted)
-    /// lets the OS pick an ephemeral port — the standard
-    /// SSDP-client behavior, which forces an overly broad
-    /// `accept any UDP from subnet` firewall rule because TV
-    /// replies arrive at an unpredictable destination port. Setting
-    /// a specific port (e.g. `1901`) lets a firewall accept a
-    /// single `--dport` rule. See `docs/firewall.md` for the rule
-    /// recipes per distro.
+    /// resolves to [`DEFAULT_BIND_PORT`] (see [`DiscoveryConfig::bind_port`]),
+    /// so discovery is firewall-targetable out of the box — a single
+    /// `--dport` rule suffices instead of the broad
+    /// `accept any UDP from subnet` an ephemeral port would force.
+    /// Set an explicit port to override; set `0` for the old
+    /// OS-chosen ephemeral behavior. See `docs/firewall.md` for the
+    /// per-distro rule recipes.
     #[serde(default)]
     pub bind_port: Option<u16>,
 
@@ -1072,6 +1082,13 @@ pub struct DiscoveryConfig {
 }
 
 impl DiscoveryConfig {
+    /// Effective SSDP source port: the configured `bind_port` field, or
+    /// [`DEFAULT_BIND_PORT`] when unset. A configured `0` is returned
+    /// as-is and binds an OS-chosen ephemeral port at the socket layer.
+    pub fn bind_port(&self) -> u16 {
+        self.bind_port.unwrap_or(DEFAULT_BIND_PORT)
+    }
+
     /// Effective polling interval for streaming discovery iterations.
     pub fn poll_interval(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.poll_interval_ms.unwrap_or(8000))

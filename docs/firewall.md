@@ -5,26 +5,26 @@ The `DiscoverTvs` D-Bus method uses SSDP (Simple Service Discovery Protocol) to 
 ## How SSDP Works
 
 1. Client sends M-SEARCH to multicast address `239.255.255.250:1900`
-2. TVs respond via unicast from their IP, **from a high ephemeral port** (e.g., 50000), **to our ephemeral port**
+2. TVs respond via unicast from their IP, **from a high ephemeral port** (e.g., 50000), **to our source port** — which `tisvlayd` pins to 1901 by default (see below)
 
-The key issue: responses don't come from port 1900, so `--sport 1900` rules won't help.
+The key issue: responses don't come from port 1900, so `--sport 1900` rules won't help — match on the destination port instead.
 
 ## Symptoms
 
 If discovery returns 0 TVs but the TV is reachable (WebSocket connection works), firewall is likely blocking UDP responses.
 
-## Recommended: pin the SSDP source port
+## The SSDP source port is pinned by default
 
-Add to `/var/lib/tisvlay/config.toml` (or `~/.config/tisvlay/config.toml` when running `tisvlayd --session`):
+`tisvlayd` binds its SSDP source socket to **port 1901 by default**, so discovery replies arrive at a known port and a single `--dport` rule suffices — no config needed. Override only to use a different port or to opt back into ephemeral, in `/var/lib/tisvlay/config.toml` (or `~/.config/tisvlay/config.toml` when running `tisvlayd --session`):
 
 ```toml
 [discovery]
-bind_port = 1901
+bind_port = 1901   # the default; any unused port above 1024 works, or 0 for ephemeral
 ```
 
-Any unused port above 1024 works. 1901 is a convention — adjacent to SSDP's well-known 1900, not assigned by IANA. Restart `tisvlayd` for the change to take effect.
+1901 is adjacent to SSDP's well-known 1900 and isn't assigned by IANA. Restart `tisvlayd` after changing it.
 
-With a pinned `bind_port`, every distro recipe below collapses to a single-port `--dport` rule:
+With the pinned `bind_port`, every distro recipe below collapses to a single-port `--dport` rule:
 
 ```bash
 # Generic iptables: accept UDP destined for the pinned port
@@ -66,11 +66,11 @@ sudo firewall-cmd --permanent --add-port=1901/udp
 sudo firewall-cmd --reload
 ```
 
-Without `bind_port`, the OS hands out an ephemeral port per scan, so no `--dport` rule can target it — the recipes below all fall back to allowing any UDP from the subnet, which is broader than necessary.
+If you set `bind_port = 0` (opting back into OS-chosen ephemeral ports), no `--dport` rule can target the per-scan port — the recipes below fall back to allowing any UDP from the subnet, which is broader than necessary.
 
 ## Solutions by Distribution
 
-These accept any UDP from the local subnet — the fallback for users who have not pinned `bind_port` above. If you pinned a port, use the single-port rules instead.
+These accept any UDP from the local subnet — the fallback for users who set `bind_port = 0`. With the default pinned port, use the single-port rules above instead.
 
 ### NixOS
 

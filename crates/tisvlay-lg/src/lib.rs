@@ -67,7 +67,7 @@ pub use endpoints::{
 pub use protocol::{ExternalInput, PowerState as ProtocolPowerState, VolumeInfo};
 
 #[cfg(feature = "discovery")]
-pub use discovery::{LgDiscovery, discover_lg_tvs};
+pub use discovery::LgDiscovery;
 
 /// Vendor ID for LG WebOS TVs.
 pub const VENDOR_ID: &str = "lg";

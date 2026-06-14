@@ -118,23 +118,30 @@ in
 
     bindPort = lib.mkOption {
       type = lib.types.nullOr lib.types.port;
-      default = null;
+      default = 1901;
       example = 1901;
       description = ''
-        Pin tisvlayd's SSDP source UDP port for firewall-friendly TV
-        discovery — pairs with `openFirewall` below to drop a tight
-        `--dport` accept rule in place of the
+        SSDP source UDP port for TV discovery, pinned so `openFirewall`
+        below can drop a tight `--dport` accept rule in place of the
         broad `allow-any-UDP-from-subnet` fallback most distros
-        otherwise need. When unset (`null`, the default), the
-        kernel hands out an ephemeral port per scan and a firewall
-        rule needs to be correspondingly wide.
+        otherwise need.
 
-        Plumbed via tisvlayd's `--bind-port` CLI flag, which
-        overrides the `[discovery].bind_port` setting in the
-        daemon's writable config file. Using the CLI flag (rather
-        than baking the value into `settings`) keeps the config
-        file writable so the pairing wizard can still persist
-        credentials.
+        Defaults to 1901, matching tisvlayd's own built-in default, so
+        discovery is firewall-targetable out of the box and a user who
+        wants the port opened need only set `openFirewall = true` — no
+        need to also name the port.
+
+        Plumbed via tisvlayd's `--bind-port` CLI flag, which overrides
+        the `[discovery].bind_port` setting in the daemon's writable
+        config file. Using the CLI flag (rather than baking the value
+        into `settings`) keeps the config file writable so the pairing
+        wizard can still persist credentials.
+
+        Set to `0` for an OS-chosen ephemeral port — a firewall rule
+        then can't target a single port. Set to `null` to omit the flag
+        entirely and defer to the daemon's config/built-in default;
+        that is incompatible with `openFirewall`, since the port isn't
+        known at evaluation time.
 
         See `docs/firewall.md` for the network-level rationale.
       '';
