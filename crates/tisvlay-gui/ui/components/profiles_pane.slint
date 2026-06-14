@@ -440,7 +440,9 @@ component ProfileFieldRowNumber inherits Rectangle {
 
             VerticalLayout {
                 width: Design.width-label-col-profile;
-                alignment: start;
+                // Center the label against the input — same as the enum
+                // row. There's no helper line to top-align to here.
+                alignment: center;
                 Text {
                     text: root.entry.label;
                     color: Theme.text;
@@ -449,7 +451,7 @@ component ProfileFieldRowNumber inherits Rectangle {
                     // Wrap rather than clip when a label exceeds the
                     // column width (long fields, localization
                     // expansion). The fixed column still keeps every
-                    // ComboBox / SpinBox aligned at the same x; only
+                    // ComboBox / NumberField aligned at the same x; only
                     // the affected row grows taller.
                     wrap: word-wrap;
                 }
