@@ -18,13 +18,13 @@
 // section title row above the FIELDS card groups catalog-body
 // actions (Duplicate, Reset all) with the body they act on.
 
-import { ComboBox, ScrollView, SpinBox } from "std-widgets.slint";
+import { ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
+import { ConfirmDialog, Chip, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, NumberField, ProfileTile } from "../widgets.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -455,31 +455,25 @@ component ProfileFieldRowNumber inherits Rectangle {
                 }
             }
 
-            // Value column. SpinBox + optional unit Text in a
-            // stretching HorizontalLayout. SpinBox's std-widget
-            // definition (every style) sets `min-width: max(128px,
-            // …)`; that floor would otherwise push the row-layout
-            // 4 px past its parent's width and shift the reset
-            // glyph right of the ComboBox rows' glyphs. We override
-            // the floor with `min-width: 0px` so the SpinBox's
-            // built-in `horizontal-stretch: 1` is free to shrink
-            // and absorb whatever space the unit Text leaves —
-            // keeping the reset column at the same x across rows.
-            // SpinBox's own internal minimum (text input + two
-            // buttons + padding ≈ 120 px) still applies inside,
-            // so we never compress the chrome below the usable
-            // floor.
+            // Value column. NumberField + optional unit Text in a
+            // stretching HorizontalLayout. NumberField carries its
+            // own modest `min-width` (96 px) and `horizontal-stretch:
+            // 1`, so it shrinks to absorb whatever space the unit
+            // Text leaves — keeping the reset column at the same x
+            // across enum + number rows. Unlike std SpinBox it
+            // commits on Enter / focus-loss rather than per keystroke,
+            // so a multi-digit value can be typed without the daemon
+            // echo tearing the focused row out from under the cursor.
             HorizontalLayout {
                 horizontal-stretch: 1;
                 spacing: Design.gap-stack;
                 alignment: stretch;
-                SpinBox {
-                    min-width: 0px;
+                NumberField {
                     value: root.entry.number-value;
                     minimum: root.entry.min-value;
                     maximum: root.entry.max-value;
                     step-size: root.entry.step;
-                    edited(v) => { Profiles.value-edited-number(root.entry.field-name, v); }
+                    committed(v) => { Profiles.value-edited-number(root.entry.field-name, v); }
                 }
                 if root.entry.unit != "": VerticalLayout {
                     alignment: center;

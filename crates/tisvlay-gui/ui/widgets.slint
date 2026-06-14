@@ -453,6 +453,178 @@ export component LineEditField inherits Rectangle {
 
 
 // =============================================================================
+// NumberField — integer input that commits on Enter / focus-loss.
+// =============================================================================
+//
+// Bespoke replacement for std-widgets `SpinBox`. The std SpinBox fires
+// its `edited` callback on every keystroke and rewrites its own text on
+// every `value` change. When each edit round-trips to the daemon and
+// the echoed `*ProfileChanged` signal rebuilds the editor-fields model,
+// that tears down and recreates the focused row — focus is lost after
+// the first digit, and the async echo races the next keystroke and
+// clobbers the in-progress text. Multi-digit entry becomes impossible.
+//
+// NumberField instead holds a local `draft` and only emits `committed`
+// when the edit is *finished*: Enter, focus-loss (Tab / click away), or
+// a stepper click. While the field has focus an authoritative `value`
+// change is ignored, so a daemon echo can't overwrite what the user is
+// typing. The clamp to `[minimum, maximum]` is deferred to commit so
+// transient intermediate values (e.g. a half-typed number) are allowed.
+
+component StepperBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 18px;
+    background: !root.enabled
+        ? transparent
+        : (touch.has-hover ? Theme.row-hover : transparent);
+    border-radius: 3px;
+    animate background { duration: 150ms; }
+
+    Text {
+        text: root.glyph;
+        color: root.enabled ? Theme.text-dim : Theme.text-faint;
+        font-size: Design.font-helper;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component NumberField inherits Rectangle {
+    in property <int> value;
+    in property <int> minimum;
+    in property <int> maximum: 100;
+    in property <int> step-size: 1;
+    in property <bool> enabled: true;
+    /// Fired once per finished edit, carrying the clamped result.
+    callback committed(int);
+
+    /// In-progress value as the user types. Seeded from `value`, and
+    /// resynced from it whenever the authoritative value changes while
+    /// the field is unfocused (see `changed value`).
+    property <int> draft: root.value;
+
+    horizontal-stretch: 1;
+    min-width: 96px;
+    min-height: Design.size-input;
+
+    border-radius: Design.radius-control;
+    border-width: Design.border-thin;
+    border-color: ti.has-focus ? Theme.accent : Theme.border;
+    background: root.enabled ? Theme.surface2 : Theme.surface-alt;
+    animate border-color { duration: 150ms; }
+
+    accessible-role: spinbox;
+    accessible-enabled: root.enabled;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: root.step-size;
+
+    // Resync the draft + visible text to the authoritative value, but
+    // only when not mid-edit: an async daemon echo must not overwrite
+    // what the user is currently typing.
+    changed value => {
+        if !ti.has-focus {
+            root.draft = root.value;
+            ti.text = root.value;
+        }
+    }
+
+    function clamp(v: int) -> int {
+        return Math.max(root.minimum, Math.min(root.maximum, v));
+    }
+
+    // Stepper / programmatic commit — always emits.
+    function commit() {
+        root.draft = root.clamp(root.draft);
+        ti.text = root.draft;
+        root.committed(root.draft);
+    }
+
+    // Enter / focus-loss commit — emits only when the value actually
+    // changed, so tabbing through or re-focusing without editing is a
+    // no-op. A garbage / out-of-range draft snaps back to the value.
+    function commit-edit() {
+        if root.clamp(root.draft) == root.value {
+            root.draft = root.value;
+            ti.text = root.value;
+            return;
+        }
+        root.commit();
+    }
+
+    function step(delta: int) {
+        root.draft = root.clamp(root.draft + delta);
+        ti.text = root.draft;
+        root.committed(root.draft);
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 2px;
+        spacing: 2px;
+
+        Rectangle {
+            clip: true;
+            horizontal-stretch: 1;
+            ti := TextInput {
+                width: 100%;
+                height: 100%;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+                text: root.value;
+                color: root.enabled ? Theme.text : Theme.text-faint;
+                font-size: Design.font-body;
+                enabled: root.enabled;
+                single-line: true;
+                input-type: number;
+                // The NumberField root carries the spinbox a11y role.
+                accessible-role: none;
+
+                edited => {
+                    // Track the draft without clamping so intermediate
+                    // states are typable; clamp is deferred to commit.
+                    if self.text.is-float() {
+                        root.draft = self.text.to-float();
+                    }
+                }
+                accepted => { root.commit-edit(); }
+                changed has-focus => {
+                    if !self.has-focus {
+                        root.commit-edit();
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            width: 18px;
+            StepperBtn {
+                glyph: "+";
+                enabled: root.enabled && root.value < root.maximum;
+                clicked => { root.step(root.step-size); }
+            }
+            StepperBtn {
+                glyph: "−";
+                enabled: root.enabled && root.value > root.minimum;
+                clicked => { root.step(-root.step-size); }
+            }
+        }
+    }
+}
+
+
+// =============================================================================
 // InlineError — Kirigami-style sticky inline message.
 // =============================================================================
 //
