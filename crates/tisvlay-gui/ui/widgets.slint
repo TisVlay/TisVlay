@@ -471,22 +471,28 @@ export component LineEditField inherits Rectangle {
 // typing. The clamp to `[minimum, maximum]` is deferred to commit so
 // transient intermediate values (e.g. a half-typed number) are allowed.
 
+// One stepper button. Mirrors fluent `SpinBoxButton`: a flat 28 px
+// cell, subtle hover/press fill, a centered chevron glyph. The chevron
+// is a Unicode glyph (fluent uses bundled icon *images*, which the std
+// style doesn't re-export); ⌃ / ⌄ are the closest common-font match.
 component StepperBtn inherits Rectangle {
     in property <string> glyph;
     in property <bool> enabled: true;
     callback clicked();
 
-    width: 18px;
+    min-width: 28px;
+    horizontal-stretch: 0;
+    border-radius: 3px;
     background: !root.enabled
         ? transparent
-        : (touch.has-hover ? Theme.row-hover : transparent);
-    border-radius: 3px;
-    animate background { duration: 150ms; }
+        : (touch.pressed ? Theme.surface-alt
+          : (touch.has-hover ? Theme.row-hover : transparent));
+    animate background { duration: 100ms; }
 
     Text {
         text: root.glyph;
         color: root.enabled ? Theme.text-dim : Theme.text-faint;
-        font-size: Design.font-helper;
+        font-size: Design.font-caption;
         horizontal-alignment: center;
         vertical-alignment: center;
         width: 100%;
@@ -514,12 +520,16 @@ export component NumberField inherits Rectangle {
     property <int> draft: root.value;
 
     horizontal-stretch: 1;
-    min-width: 96px;
+    min-width: 100px;
     min-height: Design.size-input;
 
+    // Chrome mirrors the fluent SpinBox: neutral border at rest, a 2 px
+    // accent underline (the `focus-border` below) on focus rather than
+    // recoloring the whole border. The border firms up to
+    // `border-strong` on focus for a touch of emphasis.
     border-radius: Design.radius-control;
     border-width: Design.border-thin;
-    border-color: ti.has-focus ? Theme.accent : Theme.border;
+    border-color: ti.has-focus ? Theme.border-strong : Theme.border;
     background: root.enabled ? Theme.surface2 : Theme.surface-alt;
     animate border-color { duration: 150ms; }
 
@@ -570,9 +580,11 @@ export component NumberField inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 10px;
+        padding-left: 12px;
         padding-right: 2px;
-        spacing: 2px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 4px;
 
         Rectangle {
             clip: true;
@@ -607,19 +619,28 @@ export component NumberField inherits Rectangle {
             }
         }
 
-        VerticalLayout {
-            width: 18px;
-            StepperBtn {
-                glyph: "+";
-                enabled: root.enabled && root.value < root.maximum;
-                clicked => { root.step(root.step-size); }
-            }
-            StepperBtn {
-                glyph: "−";
-                enabled: root.enabled && root.value > root.minimum;
-                clicked => { root.step(-root.step-size); }
-            }
+        // Steppers side by side (up-left, down-right) — fluent layout.
+        StepperBtn {
+            glyph: "⌃";
+            enabled: root.enabled && root.value < root.maximum;
+            clicked => { root.step(root.step-size); }
         }
+        StepperBtn {
+            glyph: "⌄";
+            enabled: root.enabled && root.value > root.minimum;
+            clicked => { root.step(-root.step-size); }
+        }
+    }
+
+    // Focus underline — fluent accent bar pinned to the bottom edge,
+    // inset by the corner radius so it doesn't poke past the rounding.
+    focus-border := Rectangle {
+        x: parent.border-radius;
+        y: parent.height - self.height;
+        width: parent.width - 2 * parent.border-radius;
+        height: 2px;
+        background: ti.has-focus ? Theme.accent : transparent;
+        animate background { duration: 150ms; }
     }
 }
 
