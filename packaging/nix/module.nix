@@ -206,12 +206,14 @@ in
       so managed TVs blank on greeter idle and restore on resume — OLED
       burn-in protection at an unattended login screen.
 
-      Only meaningful when the display manager is plasma-login-manager (the
-      unit attaches to its greeter target). The feature also needs a
-      non-zero `idle_timeout_seconds` on a system profile — set it in the
-      GUI Profiles pane or declaratively; it defaults to 0 (off), so
-      enabling this option alone installs the client but does not yet blank
-      anything
+      Defaults to on when `services.displayManager.plasma-login-manager`
+      is the active display manager — the only greeter this client
+      currently supports (the unit attaches to its greeter target) — and
+      is otherwise off; set it explicitly to override. The feature also
+      needs a non-zero `idle_timeout_seconds` on a system profile — set it
+      in the GUI Profiles pane or declaratively; it defaults to 0 (off),
+      so enabling this option alone installs the client but does not yet
+      blank anything
     '';
   };
 
@@ -228,6 +230,14 @@ in
         '';
       }
     ];
+
+    # Default the greeter idle client on when plasma-login-manager is the
+    # active display manager — the only greeter it currently supports (its
+    # units below attach to plasma-login's greeter target). mkDefault so an
+    # explicit greeter.enable still wins. Other greeters (greetd + wlroots,
+    # GDM) need separate adapters — see
+    # docs/ideas/greeter-integration-generalization.md.
+    services.tisvlay.greeter.enable = lib.mkDefault config.services.displayManager.plasma-login-manager.enable;
 
     # Dedicated system user and group for tisvlayd. uid/gid stay
     # unset by default — NixOS allocates from the system range and
