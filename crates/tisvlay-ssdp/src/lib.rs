@@ -12,6 +12,7 @@ use futures_core::Stream;
 use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::{OnceCell, broadcast};
+use tokio::task::JoinHandle;
 
 const SSDP_MULTICAST_V4: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
 const SSDP_PORT: u16 = 1900;
@@ -135,15 +136,8 @@ pub async fn search(
     let ttl = opts.ttl.unwrap_or(DEFAULT_TTL);
 
     let socket = UdpSocket::bind(bind_addr).await?;
-    if let Err(e) = socket.set_multicast_ttl_v4(ttl) {
-        tracing::debug!(error = %e, ttl, "set_multicast_ttl_v4 failed; continuing with kernel default");
-    }
-
-    let multicast_addr = SocketAddr::new(IpAddr::V4(SSDP_MULTICAST_V4), SSDP_PORT);
-    for target in targets {
-        let packet = build_m_search(target, mx);
-        socket.send_to(packet.as_bytes(), multicast_addr).await?;
-    }
+    apply_multicast_ttl(&socket, ttl);
+    send_m_search_burst(&socket, targets, mx).await?;
 
     Ok(async_stream::stream! {
         let mut buf = [0u8; RECV_BUFFER_SIZE];
@@ -155,13 +149,8 @@ pub async fn search(
             }
             match tokio::time::timeout(remaining, socket.recv_from(&mut buf)).await {
                 Err(_) => break,
-                Ok(Err(e)) => {
-                    yield Err(Error::from(e));
-                }
-                Ok(Ok((n, _src))) => match std::str::from_utf8(&buf[..n]) {
-                    Err(_) => yield Err(Error::Parse("response not valid UTF-8")),
-                    Ok(body) => yield parse_response(body),
-                },
+                Ok(Err(e)) => yield Err(Error::from(e)),
+                Ok(Ok((n, _src))) => yield decode_datagram(&buf[..n]),
             }
         }
     })
@@ -201,6 +190,15 @@ pub struct SharedSearcher {
 struct SharedInner {
     socket: Arc<UdpSocket>,
     tx: broadcast::Sender<SsdpResponse>,
+    /// Handle to the shared receive loop, aborted on drop so a dropped
+    /// searcher doesn't leak the task and keep the UDP port bound.
+    recv_task: JoinHandle<()>,
+}
+
+impl Drop for SharedInner {
+    fn drop(&mut self) {
+        self.recv_task.abort();
+    }
 }
 
 impl SharedSearcher {
@@ -220,15 +218,17 @@ impl SharedSearcher {
         self.inner
             .get_or_try_init(|| async {
                 let socket = bind_with_fallback(self.bind_port).await?;
-                if let Err(e) = socket.set_multicast_ttl_v4(DEFAULT_TTL) {
-                    tracing::debug!(error = %e, ttl = DEFAULT_TTL, "set_multicast_ttl_v4 failed; continuing with kernel default");
-                }
+                apply_multicast_ttl(&socket, DEFAULT_TTL);
                 let socket = Arc::new(socket);
                 let (tx, _rx) = broadcast::channel(BROADCAST_CAPACITY);
-                let recv_socket = Arc::clone(&socket);
-                let recv_tx = tx.clone();
-                tokio::spawn(recv_loop(recv_socket, recv_tx));
-                Ok(SharedInner { socket, tx })
+                // Single shared reader; aborted via SharedInner's Drop when
+                // the searcher goes away, so it can't outlive the searcher.
+                let recv_task = tokio::spawn(recv_loop(Arc::clone(&socket), tx.clone()));
+                Ok(SharedInner {
+                    socket,
+                    tx,
+                    recv_task,
+                })
             })
             .await
     }
@@ -249,15 +249,7 @@ impl SharedSearcher {
     pub async fn search(&self, timeout: Duration) -> Result<impl Stream<Item = SsdpResponse>> {
         let inner = self.inner().await?;
         let mut rx = inner.tx.subscribe();
-
-        let multicast_addr = SocketAddr::new(IpAddr::V4(SSDP_MULTICAST_V4), SSDP_PORT);
-        for target in &self.targets {
-            let packet = build_m_search(target, DEFAULT_MX);
-            inner
-                .socket
-                .send_to(packet.as_bytes(), multicast_addr)
-                .await?;
-        }
+        send_m_search_burst(&inner.socket, &self.targets, DEFAULT_MX).await?;
 
         Ok(async_stream::stream! {
             let deadline = tokio::time::Instant::now() + timeout;
@@ -307,21 +299,52 @@ async fn recv_loop(socket: Arc<UdpSocket>, tx: broadcast::Sender<SsdpResponse>) 
     let mut buf = [0u8; RECV_BUFFER_SIZE];
     loop {
         match socket.recv_from(&mut buf).await {
-            Ok((n, _src)) => {
-                if let Ok(body) = std::str::from_utf8(&buf[..n])
-                    && let Ok(resp) = parse_response(body)
-                {
+            Ok((n, _src)) => match decode_datagram(&buf[..n]) {
+                // Ignore send errors: no subscribers is the normal idle
+                // state between searches.
+                Ok(resp) => {
                     let _ = tx.send(resp);
                 }
-            }
+                Err(e) => tracing::debug!(error = %e, "Dropping unparseable SSDP datagram"),
+            },
             Err(e) => {
-                // Back off briefly so a persistent socket error doesn't
-                // spin a hot loop.
-                tracing::debug!(error = %e, "SSDP shared receive failed; backing off");
+                // A bound UDP socket rarely errors; surface it at warn (a
+                // persistent failure means discovery is silently dead) and
+                // back off so a transient error can't spin a hot loop.
+                tracing::warn!(error = %e, "SSDP shared receive failed; backing off");
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
     }
+}
+
+/// Set the multicast TTL on `socket`, logging (but not failing) when the
+/// kernel rejects it. Shared by the one-shot [`search`] and [`SharedSearcher`].
+fn apply_multicast_ttl(socket: &UdpSocket, ttl: u32) {
+    if let Err(e) = socket.set_multicast_ttl_v4(ttl) {
+        tracing::debug!(error = %e, ttl, "set_multicast_ttl_v4 failed; continuing with kernel default");
+    }
+}
+
+/// Send one M-SEARCH datagram per target to the SSDP multicast group.
+/// Returns `Err` on the first send failure.
+async fn send_m_search_burst<S: AsRef<str>>(
+    socket: &UdpSocket,
+    targets: &[S],
+    mx: u8,
+) -> Result<()> {
+    let multicast_addr = SocketAddr::new(IpAddr::V4(SSDP_MULTICAST_V4), SSDP_PORT);
+    for target in targets {
+        let packet = build_m_search(target.as_ref(), mx);
+        socket.send_to(packet.as_bytes(), multicast_addr).await?;
+    }
+    Ok(())
+}
+
+/// Decode one received datagram into an [`SsdpResponse`] (UTF-8 then parse).
+fn decode_datagram(bytes: &[u8]) -> Result<SsdpResponse> {
+    let body = std::str::from_utf8(bytes).map_err(|_| Error::Parse("response not valid UTF-8"))?;
+    parse_response(body)
 }
 
 fn build_m_search(target: &str, mx: u8) -> String {
@@ -545,20 +568,33 @@ mod tests {
             .await
             .expect("send reply");
 
-        // Collect each stream to its deadline and assert both saw *our*
-        // injected response (matched by USN, so unrelated UPnP chatter on
-        // a dev host can't mask a broken fan-out). If a single reader were
-        // not copying to every subscriber, one of these would be empty.
+        // Scan both streams concurrently for *our* injected response (matched
+        // by USN, so unrelated UPnP chatter on a dev host can't mask a broken
+        // fan-out). Draining both at once returns as soon as the datagram
+        // arrives — fast, with no window for the broadcast buffer to evict it.
+        // If a single reader weren't copying to every subscriber, one of these
+        // would drain to its timeout and stay false.
         let want_usn = "uuid:abcd1234-1234-1234-1234-1234567890ab::urn:schemas-upnp-org:device:MediaRenderer:1";
-        let r1: Vec<_> = s1.collect().await;
-        let r2: Vec<_> = s2.collect().await;
-        assert!(
-            r1.iter().any(|r| r.usn() == want_usn),
-            "first subscriber missed the shared response"
-        );
-        assert!(
-            r2.iter().any(|r| r.usn() == want_usn),
-            "second subscriber missed the shared response"
-        );
+        let saw1 = async {
+            tokio::pin!(s1);
+            while let Some(r) = s1.next().await {
+                if r.usn() == want_usn {
+                    return true;
+                }
+            }
+            false
+        };
+        let saw2 = async {
+            tokio::pin!(s2);
+            while let Some(r) = s2.next().await {
+                if r.usn() == want_usn {
+                    return true;
+                }
+            }
+            false
+        };
+        let (got1, got2) = tokio::join!(saw1, saw2);
+        assert!(got1, "first subscriber missed the shared response");
+        assert!(got2, "second subscriber missed the shared response");
     }
 }
