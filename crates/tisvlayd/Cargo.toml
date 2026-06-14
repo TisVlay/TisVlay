@@ -97,12 +97,17 @@ contents = [
     # Binaries (tisvlayd is auto-added by cargo-nfpm from the -p target)
     { src = "target/x86_64-unknown-linux-gnu/release/tisvlay", dst = "/usr/bin/tisvlay" },
     { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-session", dst = "/usr/bin/tisvlay-session" },
+    { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-greeter", dst = "/usr/bin/tisvlay-greeter" },
     { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-tray", dst = "/usr/bin/tisvlay-tray" },
     { src = "target/x86_64-unknown-linux-gnu/release/tisvlay-gui", dst = "/usr/bin/tisvlay-gui" },
     # Systemd system service
     { src = "packaging/systemd/tisvlayd.service", dst = "/usr/lib/systemd/system/tisvlayd.service" },
     # Systemd user services
     { src = "packaging/systemd/tisvlay-session.service", dst = "/usr/lib/systemd/user/tisvlay-session.service" },
+    # Greeter idle client (plasma-login-manager); enablement into the greeter
+    # target is distro-specific — NixOS uses the services.tisvlay.greeter.enable
+    # module option. See docs/design.md "Greeter idle client".
+    { src = "packaging/systemd/tisvlay-greeter.service", dst = "/usr/lib/systemd/user/tisvlay-greeter.service" },
     { src = "packaging/systemd/tisvlay-tray.service", dst = "/usr/lib/systemd/user/tisvlay-tray.service" },
     # D-Bus activation service on the system bus. The activated
     # tisvlayd runs as the dedicated `tisvlay` system user (set

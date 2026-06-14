@@ -35,7 +35,7 @@ async fn create_returns_uuid_and_minimal_body() {
     assert_eq!(body.name, "guest");
     assert!(body.on_session_lock.is_none());
     assert!(body.on_session_unlock.is_none());
-    assert!(body.on_greeter_wake.is_none());
+    assert!(body.on_lock_wake.is_none());
     assert!(body.on_idle_timeout.is_none());
     assert!(body.on_idle_resume.is_none());
     assert!(body.idle_timeout_seconds.is_none());

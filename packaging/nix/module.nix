@@ -192,6 +192,20 @@ in
         the pairing wizard can modify.
       '';
     };
+
+    greeter.enable = lib.mkEnableOption ''
+      the tisvlay greeter idle client. Runs `tisvlay-greeter` as the
+      plasma-login-manager greeter user inside the greeter Wayland session
+      so managed TVs blank on greeter idle and restore on resume — OLED
+      burn-in protection at an unattended login screen.
+
+      Only meaningful when the display manager is plasma-login-manager (the
+      unit attaches to its greeter target). The feature also needs a
+      non-zero `idle_timeout_seconds` on a system profile — set it in the
+      GUI Profiles pane or declaratively; it defaults to 0 (off), so
+      enabling this option alone installs the client but does not yet blank
+      anything
+    '';
   };
 
   config = lib.mkIf cfg.enable {
@@ -382,6 +396,40 @@ in
         Restart = "on-failure";
         RestartSec = 5;
       };
+    };
+
+    # Greeter idle client. Runs as the plasma-login-manager greeter user
+    # inside the greeter Wayland session — a systemd *user* manager started by
+    # plasma-login on the session bus — so it MUST be a systemd.user unit: a
+    # system service can't be WantedBy= the user-scoped greeter target and
+    # wouldn't inherit the compositor's XDG_RUNTIME_DIR/WAYLAND_DISPLAY. The
+    # daemon's existing context="default" D-Bus policy already lets the greeter
+    # user call org.tisvlay.Daemon, so no extra policy is needed.
+    systemd.user.services.tisvlay-greeter = lib.mkIf cfg.greeter.enable {
+      description = "tisvlay greeter idle client (plasma-login-manager)";
+      documentation = [ "https://github.com/ruffsl/tisvlay" ];
+      after = [ "plasma-login-kwin_wayland.service" ];
+      requires = [ "plasma-login-kwin_wayland.service" ];
+      # partOf stops us with the greeter session; the target itself bindsTo the
+      # compositor, so a compositor death stops the target and thus us.
+      partOf = [ "plasma-login-wayland.target" ];
+      # Deliberately NOT wantedBy graphical-session.target (that is every real
+      # user session); attached to the greeter target via the drop-in below.
+      environment = {
+        RUST_LOG = cfg.logLevel;
+      };
+      serviceConfig = {
+        ExecStart = lib.getExe' cfg.package "tisvlay-greeter";
+        Restart = "on-failure";
+        RestartSec = 5;
+      };
+    };
+
+    # Pull the client into the greeter target only. The target is a
+    # vendor-shipped user unit; `asDropin` adds a Wants= without clobbering it.
+    systemd.user.targets."plasma-login-wayland" = lib.mkIf cfg.greeter.enable {
+      overrideStrategy = "asDropin";
+      wants = [ "tisvlay-greeter.service" ];
     };
   };
 

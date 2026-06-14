@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-tray\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-05-30 09:25-0500\n"
+"POT-Creation-Date: 2026-06-09 20:43-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -149,63 +149,63 @@ msgstr ""
 msgid "Paired with {0}"
 msgstr ""
 
-#: crates/tisvlay-tray/src/pairing.rs:49
+#: crates/tisvlay-tray/src/pairing.rs:48
 msgid "The TV is ready to use."
 msgstr ""
 
-#: crates/tisvlay-tray/src/pairing.rs:56
+#: crates/tisvlay-tray/src/pairing.rs:54
 #, rust-format
 msgid "Pairing failed for {0}"
 msgstr ""
 
-#: crates/tisvlay-tray/src/main.rs:102
+#: crates/tisvlay-tray/src/main.rs:111
 msgid "Failed to create daemon client"
 msgstr ""
 
-#: crates/tisvlay-tray/src/main.rs:152
+#: crates/tisvlay-tray/src/main.rs:161
 msgid "Failed to spawn tray icon (is a StatusNotifierHost running?)"
 msgstr ""
 
-#: crates/tisvlay-tray/src/main.rs:164
+#: crates/tisvlay-tray/src/main.rs:179
 msgid "Failed to resolve tray config path"
 msgstr ""
 
-#: crates/tisvlay-tray/src/main.rs:190
+#: crates/tisvlay-tray/src/main.rs:209
 msgid "Failed to register tray D-Bus interface"
 msgstr ""
 
-#: crates/tisvlay-tray/src/main.rs:364
+#: crates/tisvlay-tray/src/main.rs:391
 #, rust-format
 msgid "Connected to {0}"
 msgstr ""
 
-#: crates/tisvlay-tray/src/main.rs:370
+#: crates/tisvlay-tray/src/main.rs:397
 #, rust-format
 msgid "Disconnected from {0}"
 msgstr ""
 
-#: crates/tisvlay-tray/src/main.rs:371
+#: crates/tisvlay-tray/src/main.rs:398
 msgid "Reconnecting in the background."
 msgstr ""
 
-#: crates/tisvlay-tray/src/main.rs:500
+#: crates/tisvlay-tray/src/main.rs:538
 msgid "TisVlay daemon stopped"
 msgstr ""
 
-#: crates/tisvlay-tray/src/main.rs:501
+#: crates/tisvlay-tray/src/main.rs:539
 msgid "TV controls are unavailable until the daemon restarts."
 msgstr ""
 
-#: crates/tisvlay-tray/src/power_cycle.rs:157
+#: crates/tisvlay-tray/src/power_cycle.rs:189
 #, rust-format
 msgid "{0} is awake"
 msgstr ""
 
-#: crates/tisvlay-tray/src/power_cycle.rs:164
+#: crates/tisvlay-tray/src/power_cycle.rs:199
 #, rust-format
 msgid "Couldn't wake {0}"
 msgstr ""
 
-#: crates/tisvlay-tray/src/power_cycle.rs:165
+#: crates/tisvlay-tray/src/power_cycle.rs:200
 msgid "Check the TV's power and Wake-on-LAN setting."
 msgstr ""

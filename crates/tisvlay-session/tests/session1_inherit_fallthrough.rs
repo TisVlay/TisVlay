@@ -42,7 +42,7 @@ async fn effective_for_unassigned_tv_falls_to_baseline() {
     // Every field is Some after resolution.
     assert!(effective.on_session_lock.is_some());
     assert!(effective.on_session_unlock.is_some());
-    assert!(effective.on_greeter_wake.is_some());
+    assert!(effective.on_lock_wake.is_some());
     assert!(effective.on_idle_timeout.is_some());
     assert!(effective.on_idle_resume.is_some());
     assert!(effective.idle_timeout_seconds.is_some());
@@ -96,6 +96,6 @@ async fn resolved_defaults_baseline_is_stable() {
     assert_eq!(defaults.name, "default");
     assert_eq!(defaults.on_session_lock, Some(SessionAction::ScreenOff));
     assert_eq!(defaults.on_session_unlock, Some(SessionAction::ScreenOn));
-    assert_eq!(defaults.on_greeter_wake, Some(SessionAction::ScreenOn));
+    assert_eq!(defaults.on_lock_wake, Some(SessionAction::ScreenOn));
     assert_eq!(defaults.idle_timeout_seconds, Some(0));
 }

@@ -63,7 +63,6 @@ async fn effective_falls_through_to_default_then_baseline() {
     assert!(effective.on_startup.is_some());
     assert!(effective.on_shutdown.is_some());
     assert!(effective.on_reboot.is_some());
-    assert!(effective.on_no_session.is_some());
     assert!(effective.on_sleep.is_some());
     assert!(effective.on_wake.is_some());
     assert!(effective.on_dpms_off.is_some());
@@ -137,9 +136,9 @@ async fn resolved_defaults_baseline_is_stable() {
     assert_eq!(defaults.on_startup, Some(SessionAction::PowerOn));
     assert_eq!(defaults.on_shutdown, Some(SessionAction::PowerOff));
     assert_eq!(defaults.on_wake, Some(SessionAction::PowerOn));
-    // DPMS actions are opt-in: baseline resolves to None (present, no-op).
-    assert_eq!(defaults.on_dpms_off, Some(SessionAction::None));
-    assert_eq!(defaults.on_dpms_on, Some(SessionAction::None));
+    // DPMS actions mirror the host display: blank -> ScreenOff, wake -> ScreenOn.
+    assert_eq!(defaults.on_dpms_off, Some(SessionAction::ScreenOff));
+    assert_eq!(defaults.on_dpms_on, Some(SessionAction::ScreenOn));
     assert_eq!(defaults.automate_when, Some(AutomateWhen::Always));
     assert_eq!(defaults.name, "default");
 }

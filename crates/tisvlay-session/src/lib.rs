@@ -3,7 +3,6 @@
 //! The binary entry point lives in `main.rs`; this library exposes the
 //! modules that integration tests need to drive.
 
-pub mod idle;
 pub mod session_dbus;
 pub mod session_monitor;
 pub mod wayland_idle;
@@ -27,7 +26,7 @@ use tisvlay_core::{
     ResolvedUserProfile, SessionAction, TvAssignment, UserConfig, UserProfileBody,
     UserProfileConfig, user_references_of,
 };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -44,6 +43,12 @@ pub struct SessionState {
     pub admin_user_profiles: HashMap<String, UserProfileConfig>,
     /// TV IDs from the daemon (ordered).
     pub tv_ids: Vec<String>,
+    /// Publishes the effective idle timeout (ms; `None` = disabled) to the
+    /// idle-watch supervisor. [`Self::republish_idle_timeout`] refreshes it
+    /// whenever the resolved `profiles` change (GUI / `ReloadConfig` / SIGHUP),
+    /// so the supervisor re-registers the watch event-driven, without polling.
+    /// Every mutation of `profiles` must call `republish_idle_timeout`.
+    pub idle_timeout_tx: watch::Sender<Option<u32>>,
 }
 
 impl SessionState {
@@ -157,32 +162,74 @@ impl SessionState {
 
         info!(tvs = tv_ids.len(), "Session state loaded");
 
-        Ok(Self {
+        let (idle_timeout_tx, _) = watch::channel(None);
+        let state = Self {
             profiles,
             user_config,
             admin_user_default,
             admin_user_profiles,
             tv_ids,
-        })
+            idle_timeout_tx,
+        };
+        state.republish_idle_timeout();
+        Ok(state)
     }
 
     /// Get the effective idle timeout (minimum non-zero across all TV profiles).
     ///
     /// # Design tradeoff: single shared timer
     ///
-    /// A single `IdleMonitor` fires at the minimum non-zero timeout across all TVs.
-    /// When `IdleTimeout` fires, `get_action_for_event` applies *each TV's own*
-    /// `on_idle_timeout` action — so a TV with a 30-minute timeout won't do anything
-    /// extra, but it *will* receive the event at 5 minutes if another TV has a shorter
-    /// timeout. Per-TV timers (multiple `IdleMonitor` instances) would be more precise
-    /// but add significant complexity for a marginal gain in the common single-TV case.
+    /// A single `ext-idle-notify-v1` idle notification fires at the minimum
+    /// non-zero timeout across all TVs. When `IdleTimeout` fires,
+    /// `get_action_for_event` applies *each TV's own* `on_idle_timeout` action —
+    /// so a TV with a 30-minute timeout won't do anything extra, but it *will*
+    /// receive the event at 5 minutes if another TV has a shorter timeout. Per-TV
+    /// notifications would be more precise but add significant complexity for a
+    /// marginal gain in the common single-TV case.
+    ///
+    /// The daemon has a deliberate parallel for the login greeter
+    /// (`TvManager::greeter_idle_timeout_seconds` + its `GreeterIdle`/`GreeterResume`
+    /// fan-out): the same single-shared-clock-plus-per-TV-action shape over the
+    /// system profile. They share no code; keep the shared-clock semantics in sync.
     pub fn effective_idle_timeout(&self) -> u64 {
         self.profiles
             .values()
+            // A TV with a timeout but no idle action would pull the single
+            // shared clock shorter without ever acting — exclude it, matching
+            // the greeter resolver (`TvManager::greeter_idle_timeout_seconds`).
+            .filter(|p| p.idle_timeout_seconds > 0 && p.on_idle_timeout != SessionAction::None)
             .map(|p| p.idle_timeout_seconds)
-            .filter(|&t| t > 0)
             .min()
             .unwrap_or(0)
+    }
+
+    /// The effective idle timeout as milliseconds for the Wayland watch, or
+    /// `None` when idle blanking is disabled (no TV has a non-zero timeout).
+    fn effective_idle_timeout_ms(&self) -> Option<u32> {
+        let secs = self.effective_idle_timeout();
+        (secs > 0).then(|| secs.saturating_mul(1000).min(u32::MAX as u64) as u32)
+    }
+
+    /// Recompute the effective idle timeout and publish it to the idle-watch
+    /// supervisor iff it changed. Call after every mutation of `profiles`, so a
+    /// GUI / `ReloadConfig` / SIGHUP edit re-registers the watch without a
+    /// session restart (and without the supervisor polling).
+    pub fn republish_idle_timeout(&self) {
+        let next = self.effective_idle_timeout_ms();
+        self.idle_timeout_tx.send_if_modified(|cur| {
+            if *cur != next {
+                *cur = next;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    /// A receiver for the effective idle timeout (ms; `None` = disabled), for
+    /// the idle-watch supervisor to park on.
+    pub fn subscribe_idle_timeout(&self) -> watch::Receiver<Option<u32>> {
+        self.idle_timeout_tx.subscribe()
     }
 }
 
@@ -228,6 +275,7 @@ pub async fn reconcile_user_config_orphans(
     // tv_ids/profiles caches need to grow accordingly.
     s.tv_ids = current_uuids.iter().cloned().collect();
     s.profiles.retain(|tv_id, _| current_uuids.contains(tv_id));
+    s.republish_idle_timeout();
 
     if pruned == 0 {
         return;
@@ -258,7 +306,7 @@ pub fn get_action_for_event(
     match event {
         session_monitor::SessionEvent::SessionLocked => profile.on_session_lock,
         session_monitor::SessionEvent::SessionUnlocked => profile.on_session_unlock,
-        session_monitor::SessionEvent::GreeterWake => profile.on_greeter_wake,
+        session_monitor::SessionEvent::LockWake => profile.on_lock_wake,
         session_monitor::SessionEvent::IdleTimeout => profile.on_idle_timeout,
         session_monitor::SessionEvent::IdleResume => profile.on_idle_resume,
     }
@@ -296,7 +344,7 @@ pub async fn event_handler(
     // firings would silently skip the second.
 
     while let Some(event) = event_rx.recv().await {
-        info!(event = %event, "Processing session event");
+        info!(event = %event, "Processing session event: {event}");
 
         // Query current automated set from daemon (live, not cached).
         let automated_ids: HashSet<String> = match daemon.list_tvs().await {
@@ -333,7 +381,7 @@ pub async fn event_handler(
                 continue;
             }
 
-            debug!(tv_id = %tv_id, action = ?action, "Executing action");
+            info!(tv_id = %tv_id, action = ?action, "Dispatching session action: {action:?}");
             if let Err(e) = execute_action_for_tv(&daemon, &tv_id, action).await {
                 warn!(tv_id = %tv_id, error = %e, "Action failed");
             } else {
@@ -347,6 +395,120 @@ pub async fn event_handler(
     }
 
     info!("Event handler stopped");
+}
+
+/// Supervise the Wayland presence watch so an in-session idle-timeout change
+/// (via the GUI, a D-Bus `ReloadConfig`, or SIGHUP — all of which re-resolve
+/// [`SessionState::profiles`] and call [`SessionState::republish_idle_timeout`])
+/// is applied **without a session restart**. The watch registers its
+/// `ext-idle-notify-v1` notification with the timeout captured at start, so
+/// re-registering means restarting it: this task parks on the effective-timeout
+/// [`watch::Receiver`] and, when the value changes, drops the old
+/// [`WatchHandle`](wayland_idle::WatchHandle) (stopping the watch + its policy
+/// task) and starts a fresh watch with the new timeout. The lock-wake
+/// notification (fixed at 200 ms) is re-registered too, transparently.
+///
+/// Event-driven, not polled: a healthy watch arms no timer, so there is no
+/// per-interval wakeup and a change applies immediately. A failed start
+/// (Wayland not up yet at login / X11) arms a short retry timer until it
+/// succeeds, and a watch the compositor killed is restarted — so a transient
+/// unavailable at launch or a mid-session compositor restart doesn't silently
+/// disable presence detection. The loop ends when every `idle_timeout_tx` is
+/// dropped (the session is shutting down).
+pub async fn idle_watch_supervisor(
+    event_tx: mpsc::UnboundedSender<session_monitor::SessionEvent>,
+    is_locked: Arc<std::sync::atomic::AtomicBool>,
+    mut timeout_rx: watch::Receiver<Option<u32>>,
+) {
+    // Retry cadence while no watch is running (failed start / X11). A healthy
+    // watch arms no timer at all.
+    const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+    let start = |timeout_ms: Option<u32>| match wayland_idle::start_wayland_idle_monitor(
+        event_tx.clone(),
+        is_locked.clone(),
+        timeout_ms,
+    ) {
+        Ok((handle, dead)) => {
+            info!(idle_timeout_ms = ?timeout_ms, "Wayland presence detection enabled");
+            (Some(handle), Some(dead))
+        }
+        Err(e) => {
+            warn!("Wayland presence detection unavailable: {}", e);
+            (None, None)
+        }
+    };
+
+    enum Wake {
+        Changed,
+        Died,
+        Retry,
+        Shutdown,
+    }
+
+    let mut current = *timeout_rx.borrow_and_update();
+    let (mut handle, mut dead_rx) = start(current);
+    loop {
+        // Arm the retry timer only while no watch is running; a healthy watch
+        // waits purely on events (timeout change or the watch dying).
+        let need_retry = handle.is_none();
+        let wake = tokio::select! {
+            res = timeout_rx.changed() => {
+                if res.is_err() { Wake::Shutdown } else { Wake::Changed }
+            }
+            _ = wait_watch_dead(&mut dead_rx) => Wake::Died,
+            _ = async {
+                if need_retry {
+                    tokio::time::sleep(RETRY).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => Wake::Retry,
+        };
+        match wake {
+            // Every `idle_timeout_tx` dropped → the session is shutting down.
+            Wake::Shutdown => return,
+            Wake::Changed => {
+                let next = *timeout_rx.borrow_and_update();
+                if next != current {
+                    info!(
+                        old_ms = ?current,
+                        new_ms = ?next,
+                        "in-session idle timeout changed; re-registering Wayland watch",
+                    );
+                    // Drop the old handle first so the old watch stops before the
+                    // new one binds (avoids a momentary double notification).
+                    drop(handle.take());
+                    (handle, dead_rx) = start(next);
+                    current = next;
+                }
+            }
+            Wake::Died => {
+                // A compositor restart / disconnect killed the watch. Restart it
+                // so lock-wake and idle don't silently stop.
+                warn!("Wayland presence watch ended (compositor gone?); restarting");
+                drop(handle.take());
+                (handle, dead_rx) = start(current);
+            }
+            Wake::Retry => {
+                // A prior start failed (Wayland not up yet at login / X11).
+                debug!("Retrying Wayland presence watch");
+                drop(handle.take());
+                (handle, dead_rx) = start(current);
+            }
+        }
+    }
+}
+
+/// Await the watch-died signal, or pend forever when no watch is running (its
+/// restart is the `select!`'s retry-timer arm, not this one).
+async fn wait_watch_dead(dead_rx: &mut Option<oneshot::Receiver<()>>) {
+    match dead_rx.as_mut() {
+        Some(rx) => {
+            let _ = rx.await;
+        }
+        None => std::future::pending::<()>().await,
+    }
 }
 
 // =============================================================================
@@ -488,7 +650,7 @@ impl SessionState {
             name: display_name,
             on_session_lock: Some(resolved.on_session_lock),
             on_session_unlock: Some(resolved.on_session_unlock),
-            on_greeter_wake: Some(resolved.on_greeter_wake),
+            on_lock_wake: Some(resolved.on_lock_wake),
             on_idle_timeout: Some(resolved.on_idle_timeout),
             on_idle_resume: Some(resolved.on_idle_resume),
             idle_timeout_seconds: Some(resolved.idle_timeout_seconds),
@@ -765,7 +927,51 @@ pub async fn update_user_profile(
         let resolved = user_config_snapshot.resolve_user_profile(tv_id, &admin_default);
         s.profiles.insert(tv_id.clone(), resolved);
     }
+    s.republish_idle_timeout();
 
     info!(profile_uuid = %uuid, name = %trimmed, "User profile updated");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with(profiles: HashMap<String, ResolvedUserProfile>) -> SessionState {
+        let (idle_timeout_tx, _) = watch::channel(None);
+        SessionState {
+            profiles,
+            user_config: UserConfig::default(),
+            admin_user_default: UserProfileConfig::full_default(),
+            admin_user_profiles: HashMap::new(),
+            tv_ids: Vec::new(),
+            idle_timeout_tx,
+        }
+    }
+
+    fn profile(idle_timeout_seconds: u64, on_idle_timeout: SessionAction) -> ResolvedUserProfile {
+        ResolvedUserProfile {
+            idle_timeout_seconds,
+            on_idle_timeout,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn effective_idle_timeout_ignores_actionless_tv() {
+        let mut profiles = HashMap::new();
+        // Timeout set, but no idle action: must not govern the shared clock,
+        // matching the greeter resolver.
+        profiles.insert("a".to_string(), profile(600, SessionAction::None));
+        assert_eq!(state_with(profiles).effective_idle_timeout(), 0);
+    }
+
+    #[test]
+    fn effective_idle_timeout_is_min_nonzero_across_acting_tvs() {
+        let mut profiles = HashMap::new();
+        profiles.insert("a".to_string(), profile(600, SessionAction::ScreenOff));
+        profiles.insert("b".to_string(), profile(300, SessionAction::ScreenOff));
+        profiles.insert("c".to_string(), profile(0, SessionAction::ScreenOff)); // disabled
+        assert_eq!(state_with(profiles).effective_idle_timeout(), 300);
+    }
 }

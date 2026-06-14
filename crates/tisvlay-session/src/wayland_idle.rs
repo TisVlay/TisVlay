@@ -1,317 +1,192 @@
-//! Wayland idle detection using ext-idle-notify-v1 protocol.
+//! Session idle/lock-wake policy over the shared Wayland idle transport.
 //!
-//! This module provides greeter wake detection for Wayland compositors (KDE Plasma 6+,
-//! Sway, Hyprland, GNOME, etc.) by using the standard ext-idle-notify-v1 protocol.
-//!
-//! Unlike the D-Bus GetSessionIdleTime approach (which doesn't work on KDE Plasma Wayland),
-//! this directly connects to the Wayland compositor to receive idle/resumed events.
+//! Wraps `tisvlay_core`'s policy-free `ext-idle-notify-v1` watcher with the
+//! session's two presence rules, on one connection via tagged notifications:
+//! - **Lock-wake** (short timeout): while the screen is locked, the first
+//!   input after going idle emits a single `SessionEvent::LockWake`, so the
+//!   panel comes back to show the password prompt.
+//! - **In-session idle** (the user profile's `idle_timeout_seconds`): an
+//!   `Idled`/`Resumed` edge emits `SessionEvent::IdleTimeout`/`IdleResume`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace, warn};
-use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle,
-    globals::{GlobalList, GlobalListContents, registry_queue_init},
-    protocol::wl_registry,
-};
-use wayland_protocols::ext::idle_notify::v1::client::{
-    ext_idle_notification_v1::{self, ExtIdleNotificationV1},
-    ext_idle_notifier_v1::ExtIdleNotifierV1,
-};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, warn};
+
+pub use tisvlay_core::wayland::WaylandIdleError;
+use tisvlay_core::wayland::{IdleNotification, IdleTransition, WatchHandle, start_idle_watch};
 
 use crate::session_monitor::SessionEvent;
 
-/// Timeout duration for idle detection in milliseconds.
-/// This must be short enough that the user goes "idle" in the brief pause
-/// between locking the screen (e.g., pressing Super+L) and moving the
-/// mouse to wake the greeter. The ext-idle-notify-v1 protocol requires
-/// the idle→resumed cycle: "idled" must fire before "resumed" can trigger
-/// GreeterWake. At 200ms, even rapid lock-then-move sequences will work
-/// because the natural pause between the lock keypress and mouse movement
-/// exceeds this threshold.
-const IDLE_TIMEOUT_MS: u32 = 200;
-
-/// Maximum protocol version we support for ext_idle_notifier_v1.
-/// The wayland-protocols crate supports up to version 1 for this protocol.
-const EXT_IDLE_NOTIFIER_VERSION: u32 = 1;
-
-/// Maximum protocol version we support for wl_seat.
-const WL_SEAT_VERSION: u32 = 1;
-
-/// State for the Wayland idle monitor.
-struct WaylandState {
-    /// Channel to send events to the main event handler.
-    event_tx: mpsc::UnboundedSender<SessionEvent>,
-    /// Whether the screen is currently locked.
-    is_locked: Arc<AtomicBool>,
-    /// Whether we've already sent a GreeterWake event for this lock cycle.
-    greeter_wake_sent: bool,
-    /// Whether we're currently in idle state.
-    is_idle: bool,
-    /// The idle notification object (kept alive to receive events).
-    _idle_notification: Option<ExtIdleNotificationV1>,
-    /// The seat we're monitoring.
-    _seat: Option<WlSeat>,
-}
-
-impl WaylandState {
-    fn new(event_tx: mpsc::UnboundedSender<SessionEvent>, is_locked: Arc<AtomicBool>) -> Self {
-        Self {
-            event_tx,
-            is_locked,
-            greeter_wake_sent: false,
-            is_idle: false,
-            _idle_notification: None,
-            _seat: None,
-        }
-    }
-
-    /// Handle the idle notification becoming idle.
-    fn handle_idled(&mut self) {
-        trace!("Wayland idle notification: idled");
-        self.is_idle = true;
-    }
-
-    /// Handle the idle notification being resumed (user activity detected).
-    fn handle_resumed(&mut self) {
-        trace!("Wayland idle notification: resumed");
-        self.is_idle = false;
-
-        // Only fire GreeterWake if:
-        // 1. Screen is locked
-        // 2. We haven't already sent the event this lock cycle
-        if self.is_locked.load(Ordering::SeqCst) && !self.greeter_wake_sent {
-            debug!("User activity detected while locked - sending GreeterWake");
-            self.greeter_wake_sent = true;
-            if self.event_tx.send(SessionEvent::GreeterWake).is_err() {
-                warn!("Event channel closed");
-            }
-        }
-
-        // Reset greeter_wake_sent when screen is unlocked
-        if !self.is_locked.load(Ordering::SeqCst) {
-            self.greeter_wake_sent = false;
-        }
-    }
-}
-
-// Dispatch implementation for wl_registry to handle global objects
-impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wl_registry::WlRegistry,
-        _event: wl_registry::Event,
-        _data: &GlobalListContents,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-        // Registry events are handled by GlobalListContents
-    }
-}
-
-// Dispatch implementation for WlSeat (user data is version number)
-impl Dispatch<WlSeat, u32> for WaylandState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &WlSeat,
-        _event: wayland_client::protocol::wl_seat::Event,
-        _data: &u32,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-        // We don't need to handle seat events, just need the seat object
-    }
-}
-
-// Dispatch implementation for ExtIdleNotifierV1 (user data is version number)
-impl Dispatch<ExtIdleNotifierV1, u32> for WaylandState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &ExtIdleNotifierV1,
-        _event: wayland_protocols::ext::idle_notify::v1::client::ext_idle_notifier_v1::Event,
-        _data: &u32,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-        // The notifier doesn't emit events, only the notification does
-    }
-}
-
-// Dispatch implementation for ExtIdleNotificationV1
-impl Dispatch<ExtIdleNotificationV1, ()> for WaylandState {
-    fn event(
-        state: &mut Self,
-        _proxy: &ExtIdleNotificationV1,
-        event: ext_idle_notification_v1::Event,
-        _data: &(),
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-        match event {
-            ext_idle_notification_v1::Event::Idled => {
-                state.handle_idled();
-            }
-            ext_idle_notification_v1::Event::Resumed => {
-                state.handle_resumed();
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Start the Wayland idle monitor in a dedicated thread.
+/// Idle timeout for lock-wake detection, in milliseconds.
 ///
-/// This monitors for user activity via the ext-idle-notify-v1 protocol.
-/// When the screen is locked and user activity is detected, it sends
-/// a `GreeterWake` event.
+/// Must be short enough that the user goes "idle" in the brief pause between
+/// locking the screen (e.g. Super+L) and moving the mouse to wake the
+/// greeter: `ext-idle-notify-v1` only emits a `Resumed` after an `Idled`, so
+/// at 200 ms even a rapid lock-then-move clears the threshold.
+const LOCK_WAKE_TIMEOUT_MS: u32 = 200;
+
+/// Notification tag for the lock-wake watch.
+const LOCK_WAKE_TAG: u32 = 0;
+
+/// Notification tag for the in-session idle watch (registered only when the
+/// resolved `idle_timeout_seconds` is non-zero).
+const IDLE_TAG: u32 = 1;
+
+/// Start the session's Wayland presence watches on one connection: a short
+/// lock-wake notification (always) and, when `idle_timeout_ms` is `Some`, an
+/// in-session idle notification. Transitions are routed by tag to the
+/// lock-aware `LockWake` policy or to `IdleTimeout`/`IdleResume`.
 ///
-/// Returns `Ok(())` if the monitor started successfully, or an error if
-/// Wayland is not available or the protocol is not supported.
+/// Returns the [`WatchHandle`] (hold it to keep the watch running; dropping it
+/// stops the watch and ends the policy task) plus a [`oneshot::Receiver`] that
+/// fires when the watch thread dies — the compositor disconnected — so the
+/// supervisor can restart it. Errors if Wayland is unavailable or the protocol
+/// is missing (not fatal — the caller logs and continues, e.g. on X11/SSH).
 pub fn start_wayland_idle_monitor(
     event_tx: mpsc::UnboundedSender<SessionEvent>,
     is_locked: Arc<AtomicBool>,
-) -> Result<(), WaylandIdleError> {
-    // Try to connect to Wayland first to validate it's available
-    let conn = Connection::connect_to_env().map_err(|e| {
-        WaylandIdleError::ConnectionFailed(format!("Failed to connect to Wayland: {}", e))
-    })?;
+    idle_timeout_ms: Option<u32>,
+) -> Result<(WatchHandle, oneshot::Receiver<()>), WaylandIdleError> {
+    let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<(u32, IdleTransition)>();
+    let mut notifications = vec![IdleNotification {
+        tag: LOCK_WAKE_TAG,
+        timeout_ms: LOCK_WAKE_TIMEOUT_MS,
+    }];
+    if let Some(timeout_ms) = idle_timeout_ms {
+        notifications.push(IdleNotification {
+            tag: IDLE_TAG,
+            timeout_ms,
+        });
+    }
+    let handle = start_idle_watch(notifications, raw_tx)?;
 
-    // Initialize the event queue and registry
-    let (globals, event_queue): (GlobalList, EventQueue<WaylandState>) = registry_queue_init(&conn)
-        .map_err(|e| {
-            WaylandIdleError::ConnectionFailed(format!("Failed to initialize registry: {}", e))
-        })?;
-
-    // Get the list of available globals
-    let global_list = globals.contents().clone_list();
-
-    // Check if ext_idle_notifier_v1 is available
-    let notifier_global = global_list
-        .iter()
-        .find(|g| g.interface == "ext_idle_notifier_v1")
-        .ok_or_else(|| {
-            WaylandIdleError::ProtocolNotSupported(
-                "ext_idle_notifier_v1 protocol not available".to_string(),
-            )
-        })?
-        .clone();
-
-    // Check if wl_seat is available
-    let seat_global = global_list
-        .iter()
-        .find(|g| g.interface == "wl_seat")
-        .ok_or_else(|| WaylandIdleError::ProtocolNotSupported("wl_seat not available".to_string()))?
-        .clone();
-
-    info!(
-        "Wayland idle notifier available (server: v{}, using: v{})",
-        notifier_global.version,
-        notifier_global.version.min(EXT_IDLE_NOTIFIER_VERSION)
-    );
-
-    // Spawn the monitor thread
-    thread::Builder::new()
-        .name("wayland-idle".to_string())
-        .spawn(move || {
-            run_wayland_idle_loop(
-                conn,
-                event_queue,
-                globals,
-                event_tx,
-                is_locked,
-                notifier_global,
-                seat_global,
-            );
-        })
-        .map_err(|e| WaylandIdleError::ThreadSpawnFailed(e.to_string()))?;
-
-    Ok(())
-}
-
-/// Run the Wayland event loop in a dedicated thread.
-fn run_wayland_idle_loop(
-    _conn: Connection,
-    mut event_queue: EventQueue<WaylandState>,
-    globals: GlobalList,
-    event_tx: mpsc::UnboundedSender<SessionEvent>,
-    is_locked: Arc<AtomicBool>,
-    notifier_global: wayland_client::globals::Global,
-    seat_global: wayland_client::globals::Global,
-) {
-    let mut state = WaylandState::new(event_tx, is_locked);
-    let qhandle = event_queue.handle();
-
-    // Get the registry for direct binding with explicit version control.
-    // We use registry.bind() instead of globals.bind() because globals.bind()
-    // panics when the server advertises a version higher than the client library
-    // supports (e.g., KWin advertises v20 but wayland-protocols only has v2).
-    let registry = globals.registry();
-
-    // Bind to the seat with explicit version (capped at what we support)
-    let seat_version = seat_global.version.min(WL_SEAT_VERSION);
-    let seat: WlSeat = registry.bind(seat_global.name, seat_version, &qhandle, seat_version);
-    state._seat = Some(seat.clone());
-
-    // Bind to the idle notifier with explicit version (capped at what we support)
-    let notifier_version = notifier_global.version.min(EXT_IDLE_NOTIFIER_VERSION);
-    let notifier: ExtIdleNotifierV1 = registry.bind(
-        notifier_global.name,
-        notifier_version,
-        &qhandle,
-        notifier_version,
-    );
-
-    // Create the idle notification with our timeout
-    let notification = notifier.get_idle_notification(IDLE_TIMEOUT_MS, &seat, &qhandle, ());
-    state._idle_notification = Some(notification);
-
-    info!(
-        "Wayland greeter wake monitor started (timeout: {}ms)",
-        IDLE_TIMEOUT_MS
-    );
-
-    // Run the event loop
-    loop {
-        // Blocking dispatch - waits for events
-        match event_queue.blocking_dispatch(&mut state) {
-            Ok(_) => {
-                // Reset greeter_wake_sent when screen is unlocked
-                if !state.is_locked.load(Ordering::SeqCst) {
-                    state.greeter_wake_sent = false;
+    // Fires when the watch thread dies (compositor disconnected, closing
+    // `raw_rx`), so the supervisor can restart the watch.
+    let (dead_tx, dead_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let mut lock_wake_sent = false;
+        while let Some((tag, transition)) = raw_rx.recv().await {
+            match tag {
+                LOCK_WAKE_TAG => {
+                    let (next_sent, fire) = lock_wake_policy(
+                        transition,
+                        is_locked.load(Ordering::SeqCst),
+                        lock_wake_sent,
+                    );
+                    lock_wake_sent = next_sent;
+                    if fire {
+                        debug!("User activity detected while locked - sending LockWake");
+                        if event_tx.send(SessionEvent::LockWake).is_err() {
+                            warn!("Event channel closed");
+                        }
+                    }
                 }
-            }
-            Err(e) => {
-                error!("Wayland event dispatch error: {}", e);
-                break;
+                IDLE_TAG => {
+                    let event = match transition {
+                        IdleTransition::Idled => SessionEvent::IdleTimeout,
+                        IdleTransition::Resumed => SessionEvent::IdleResume,
+                    };
+                    debug!(event = %event, "In-session idle transition");
+                    if event_tx.send(event).is_err() {
+                        warn!("Event channel closed");
+                    }
+                }
+                _ => {}
             }
         }
-    }
+        warn!("Wayland idle transition channel closed");
+        // Tell the supervisor the watch ended; a dropped receiver (it already
+        // re-registered) is fine.
+        let _ = dead_tx.send(());
+    });
 
-    warn!("Wayland idle monitor exited");
+    Ok((handle, dead_rx))
 }
 
-/// Errors that can occur when starting the Wayland idle monitor.
-#[derive(Debug)]
-pub enum WaylandIdleError {
-    /// Failed to connect to Wayland compositor.
-    ConnectionFailed(String),
-    /// The ext-idle-notify-v1 protocol is not supported.
-    ProtocolNotSupported(String),
-    /// Failed to spawn the monitor thread.
-    ThreadSpawnFailed(String),
-}
-
-impl std::fmt::Display for WaylandIdleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ConnectionFailed(msg) => write!(f, "Wayland connection failed: {}", msg),
-            Self::ProtocolNotSupported(msg) => write!(f, "Protocol not supported: {}", msg),
-            Self::ThreadSpawnFailed(msg) => write!(f, "Thread spawn failed: {}", msg),
+/// Lock-screen wake decision for one idle transition.
+///
+/// Returns `(next_lock_wake_sent, fire)`. Fires `LockWake` on the first
+/// `Resumed` (user activity) of each idle cycle while the screen is locked, at
+/// most once per cycle. The next `Idled` clears the latch (a fresh idle cycle
+/// begins), so a panel that re-blanks within one lock session wakes again, and
+/// a rapid unlock→relock that produced no "unlocked" edge still wakes on the
+/// next idle cycle. While unlocked the latch is never set, so no wake fires.
+/// Because the latch is per idle cycle (not per lock session), a watch
+/// re-registration mid-session can't strand or duplicate a wake.
+fn lock_wake_policy(
+    transition: IdleTransition,
+    is_locked: bool,
+    lock_wake_sent: bool,
+) -> (bool, bool) {
+    match transition {
+        // A fresh idle cycle clears the latch so the next resume can wake,
+        // independent of any "unlocked" edge — robust to a panel that re-blanks
+        // within one lock session and to a rapid unlock→relock. Idle itself
+        // never fires a wake.
+        IdleTransition::Idled => (false, false),
+        IdleTransition::Resumed => {
+            let fire = is_locked && !lock_wake_sent;
+            // Stay latched (meaningful only while locked) until the next Idled,
+            // so a burst of resume events doesn't spam LockWake.
+            let next_sent = is_locked && (lock_wake_sent || fire);
+            (next_sent, fire)
         }
     }
 }
 
-impl std::error::Error for WaylandIdleError {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fires_once_per_idle_cycle_on_resume() {
+        // Idled while locked: no fire, latch cleared (new idle cycle).
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Idled, true, false),
+            (false, false)
+        );
+        // First Resumed while locked: fire and latch.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, false),
+            (true, true)
+        );
+        // Second Resumed while still locked (already latched): no fire.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, true),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn idled_clears_latch_so_each_idle_cycle_can_wake() {
+        // First resume of a locked idle cycle fires and latches.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, false),
+            (true, true)
+        );
+        // A fresh Idled while still locked clears the latch — even across a
+        // rapid unlock/relock that produced no "unlocked" edge.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Idled, true, true),
+            (false, false)
+        );
+        // So the next resume fires again.
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, true, false),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn resets_when_unlocked_and_never_fires() {
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Resumed, false, true),
+            (false, false)
+        );
+        assert_eq!(
+            lock_wake_policy(IdleTransition::Idled, false, true),
+            (false, false)
+        );
+    }
+}

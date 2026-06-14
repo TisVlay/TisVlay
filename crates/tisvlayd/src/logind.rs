@@ -4,14 +4,13 @@
 //! - `PrepareForShutdown`: execute `on_shutdown` or `on_reboot` action
 //!   (distinguished via the `ScheduledShutdown` property)
 //! - `PrepareForSleep`: execute `on_sleep` or `on_wake` action
-//! - Session tracking: detect when no user sessions are active
 //!
 //! Takes a shutdown inhibitor lock so the daemon can gracefully
 //! shut down TVs before the system powers off.
 
 use crate::tv_manager::{SystemEvent, TvManager};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use zbus::proxy;
 
 // =============================================================================
@@ -34,12 +33,6 @@ trait Login1Manager {
         mode: &str,
     ) -> zbus::Result<zbus::zvariant::OwnedFd>;
 
-    /// List current sessions.
-    /// Returns: [(session_id, uid, user_name, seat_id, session_object_path)]
-    fn list_sessions(
-        &self,
-    ) -> zbus::Result<Vec<(String, u32, String, String, zbus::zvariant::OwnedObjectPath)>>;
-
     /// The scheduled shutdown type and timestamp.
     /// Returns (type, usec) where type is "poweroff", "reboot", "halt", or "kexec".
     #[zbus(property)]
@@ -52,48 +45,13 @@ trait Login1Manager {
     /// Signal emitted before system sleep/hibernate and after wake.
     #[zbus(signal)]
     fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
-
-    /// Signal emitted when a new session is created.
-    #[zbus(signal)]
-    fn session_new(
-        &self,
-        session_id: String,
-        session_path: zbus::zvariant::ObjectPath<'_>,
-    ) -> zbus::Result<()>;
-
-    /// Signal emitted when a session is removed.
-    #[zbus(signal)]
-    fn session_removed(
-        &self,
-        session_id: String,
-        session_path: zbus::zvariant::ObjectPath<'_>,
-    ) -> zbus::Result<()>;
-}
-
-/// Proxy for org.freedesktop.login1.Session.
-#[proxy(
-    interface = "org.freedesktop.login1.Session",
-    default_service = "org.freedesktop.login1"
-)]
-trait Login1Session {
-    /// Whether this session is the active one on its seat.
-    #[zbus(property)]
-    fn active(&self) -> zbus::Result<bool>;
-
-    /// Session class: "user", "greeter", "lock-screen", etc.
-    #[zbus(property)]
-    fn class(&self) -> zbus::Result<String>;
-
-    /// Session type: "x11", "wayland", "tty", etc.
-    #[zbus(property, name = "Type")]
-    fn session_type(&self) -> zbus::Result<String>;
 }
 
 // =============================================================================
 // LogindMonitor
 // =============================================================================
 
-/// Monitors logind for system lifecycle events and session changes.
+/// Monitors logind for system lifecycle events (shutdown, sleep).
 #[derive(Debug)]
 pub struct LogindMonitor {
     manager: Arc<TvManager>,
@@ -114,7 +72,7 @@ impl LogindMonitor {
     /// This spawns background tasks for:
     /// - Shutdown inhibitor lock management
     /// - PrepareForShutdown signal handling
-    /// - Session tracking for on_no_session
+    /// - PrepareForSleep signal handling
     ///
     /// Returns immediately after spawning tasks.
     pub async fn start(&self) -> anyhow::Result<()> {
@@ -155,14 +113,6 @@ impl LogindMonitor {
         let proxy_for_sleep = Login1ManagerProxy::new(&connection).await?;
         tokio::spawn(async move {
             handle_prepare_for_sleep(proxy_for_sleep, manager).await;
-        });
-
-        // Spawn session tracking
-        let manager = self.manager.clone();
-        let proxy_for_sessions = Login1ManagerProxy::new(&connection).await?;
-        let connection_for_sessions = connection.clone();
-        tokio::spawn(async move {
-            handle_session_changes(proxy_for_sessions, connection_for_sessions, manager).await;
         });
 
         Ok(())
@@ -264,114 +214,5 @@ async fn handle_prepare_for_sleep(proxy: Login1ManagerProxy<'static>, manager: A
                 .execute_system_event(SystemEvent::Wake, "wake")
                 .await;
         }
-    }
-}
-
-/// Handle session changes to detect when no user sessions are active.
-async fn handle_session_changes(
-    proxy: Login1ManagerProxy<'static>,
-    connection: zbus::Connection,
-    manager: Arc<TvManager>,
-) {
-    use futures_util::StreamExt;
-
-    // Check initial session state before subscribing to signals.
-    // If the daemon starts when no user sessions exist (e.g. after a graphical
-    // session has ended or before the DM has started), on_no_session would
-    // never fire without this initial check because no SessionRemoved signal
-    // will arrive to trigger it.
-    check_active_sessions(&proxy, &connection, &manager).await;
-
-    // Subscribe to both SessionNew and SessionRemoved
-    let mut new_stream = match proxy.receive_session_new().await {
-        Ok(s) => s,
-        Err(e) => {
-            error!(error = %e, "Failed to subscribe to SessionNew signal");
-            return;
-        }
-    };
-
-    let mut removed_stream = match proxy.receive_session_removed().await {
-        Ok(s) => s,
-        Err(e) => {
-            error!(error = %e, "Failed to subscribe to SessionRemoved signal");
-            return;
-        }
-    };
-
-    loop {
-        tokio::select! {
-            Some(signal) = new_stream.next() => {
-                if let Ok(args) = signal.args() {
-                    debug!(
-                        session_id = %args.session_id(),
-                        "Session created"
-                    );
-                    // Do NOT call check_active_sessions here: the new session
-                    // object may not yet have Active=true when the D-Bus
-                    // round-trips complete (the seat hasn't switched yet).
-                    // Checking here causes a race where on_no_session can
-                    // fire in the middle of a login transition.
-                    // We only run the check when sessions disappear.
-                }
-            }
-            Some(signal) = removed_stream.next() => {
-                if let Ok(args) = signal.args() {
-                    debug!(
-                        session_id = %args.session_id(),
-                        "Session removed"
-                    );
-                    // Check if all user sessions are gone
-                    check_active_sessions(&proxy, &connection, &manager).await;
-                }
-            }
-            else => break,
-        }
-    }
-}
-
-/// Check if there are any active graphical user sessions.
-///
-/// If no active graphical user sessions exist, execute `on_no_session`.
-async fn check_active_sessions(
-    proxy: &Login1ManagerProxy<'_>,
-    connection: &zbus::Connection,
-    manager: &TvManager,
-) {
-    let sessions = match proxy.list_sessions().await {
-        Ok(sessions) => sessions,
-        Err(e) => {
-            warn!(error = %e, "Failed to list sessions");
-            return;
-        }
-    };
-
-    let mut has_active_graphical_user = false;
-
-    for (_session_id, _uid, _user_name, _seat_id, session_path) in &sessions {
-        // Check if this is an active graphical user session
-        let session_proxy = match Login1SessionProxy::builder(connection).path(session_path.clone())
-        {
-            Ok(builder) => match builder.build().await {
-                Ok(proxy) => proxy,
-                Err(_) => continue,
-            },
-            Err(_) => continue,
-        };
-
-        let class = session_proxy.class().await.unwrap_or_default();
-        let active = session_proxy.active().await.unwrap_or(false);
-
-        if class == "user" && active {
-            has_active_graphical_user = true;
-            break;
-        }
-    }
-
-    if !has_active_graphical_user {
-        debug!("No active graphical user sessions detected");
-        manager
-            .execute_system_event(SystemEvent::NoSession, "no_session")
-            .await;
     }
 }

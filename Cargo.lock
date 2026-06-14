@@ -5795,6 +5795,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "rstest",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "socket2",
@@ -5807,7 +5808,20 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "uuid",
+ "wayland-client",
+ "wayland-protocols",
  "zbus",
+]
+
+[[package]]
+name = "tisvlay-greeter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tisvlay-core",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -5912,8 +5926,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "wayland-client",
- "wayland-protocols",
  "zbus",
 ]
 

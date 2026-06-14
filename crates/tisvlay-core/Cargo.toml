@@ -42,6 +42,14 @@ tracing-subscriber = { workspace = true, optional = true }
 tracing-journald = { workspace = true, optional = true }
 tracing-log = { workspace = true, optional = true }
 
+# Optional: Wayland idle detection (ext-idle-notify-v1) for session/greeter
+wayland-client = { workspace = true, optional = true }
+wayland-protocols = { workspace = true, optional = true }
+# Interruptible poll over the wayland fd + a stop pipe, so the idle watch can be
+# torn down and re-registered on a timeout change. The same crate (and the same
+# `poll`) wayland-backend itself uses to read events.
+rustix = { version = "1.0", features = ["event", "pipe"], optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 zbus = { workspace = true }
@@ -54,6 +62,7 @@ tisvlay-test = { workspace = true }
 default = []
 dbus = ["dep:zbus", "dep:anyhow", "dep:futures-util"]
 logging = ["dep:tracing-subscriber", "dep:tracing-journald", "dep:tracing-log", "dep:anyhow"]
+wayland = ["dep:wayland-client", "dep:wayland-protocols", "dep:rustix"]
 
 [lints]
 workspace = true

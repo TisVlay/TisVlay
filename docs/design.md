@@ -372,11 +372,13 @@ pub struct SystemProfileBody {
     pub on_startup:    Option<SessionAction>,
     pub on_shutdown:   Option<SessionAction>,
     pub on_reboot:     Option<SessionAction>,
-    pub on_no_session: Option<SessionAction>,
     pub on_sleep:      Option<SessionAction>,
     pub on_wake:       Option<SessionAction>,
     pub on_dpms_off:   Option<SessionAction>,
     pub on_dpms_on:    Option<SessionAction>,
+    pub idle_timeout_seconds: Option<u64>,      // greeter idle timeout (0 = off)
+    pub on_idle_timeout: Option<SessionAction>, // greeter went idle
+    pub on_idle_resume:  Option<SessionAction>, // greeter activity resumed
     pub automate_when: Option<AutomateWhen>,
 }
 
@@ -386,7 +388,7 @@ pub struct UserProfileBody {
     pub name:                 String,
     pub on_session_lock:      Option<SessionAction>,
     pub on_session_unlock:    Option<SessionAction>,
-    pub on_greeter_wake:      Option<SessionAction>,
+    pub on_lock_wake:      Option<SessionAction>,
     pub on_idle_timeout:      Option<SessionAction>,
     pub on_idle_resume:       Option<SessionAction>,
     pub idle_timeout_seconds: Option<u64>,
@@ -505,11 +507,13 @@ name = "default"
 on_startup = "power_on"          # action on system boot (default: power_on)
 on_shutdown = "power_off"        # action on poweroff/halt (default: power_off)
 on_reboot = "none"               # action on reboot/kexec (default: none)
-on_no_session = "none"           # action when all user sessions end (login screen)
 on_sleep = "power_off"           # action on system suspend/hibernate (default: power_off)
 on_wake = "power_on"             # action on system resume from sleep (default: power_on)
-on_dpms_off = "none"             # action when the matched host display's DPMS leaves On (default: none)
-on_dpms_on = "none"              # action when the matched host display's DPMS returns to On (default: none)
+on_dpms_off = "screen_off"       # action when the matched host display's DPMS leaves On (default: screen_off)
+on_dpms_on = "screen_on"         # action when the matched host display's DPMS returns to On (default: screen_on)
+idle_timeout_seconds = 0         # greeter idle timeout, seconds (default: 0 = off; opt-in via the NixOS greeter option)
+on_idle_timeout = "screen_off"   # action when the greeter goes idle (default: screen_off)
+on_idle_resume = "screen_on"     # action when greeter activity resumes (default: screen_on)
 automate_when = "always"         # always | on_primary | off_primary (default: always)
 
 [system.profiles.a1b2c3d4-0000-0000-0000-00000000a000]
@@ -527,7 +531,7 @@ on_shutdown = "screen_off"
 name = "default"
 on_session_lock = "screen_off"   # screen_off | power_off | none
 on_session_unlock = "screen_on"  # screen_on | power_on | none
-on_greeter_wake = "screen_on"    # unblank on lock screen interaction (Wayland only)
+on_lock_wake = "screen_on"    # unblank on lock screen interaction (Wayland only)
 idle_timeout_seconds = 0         # 0 to disable
 on_idle_timeout = "none"
 on_idle_resume = "screen_on"     # action when activity resumes after idle
@@ -637,17 +641,18 @@ stateDiagram-v2
 |-------|---------------|--------|-------|
 | System boot | Power on | `on_startup` (system profile) | WoL → connect → screen on → input switch |
 | Session lock | Screen off | `on_session_lock` (user profile) | Instant resume on unlock |
-| Greeter wake | Screen on | `on_greeter_wake` (user profile) | User interacted with lock screen (Wayland only) |
-| Session unlock | Screen on | `on_session_unlock` (user profile) | Skipped if GreeterWake already unblanked |
+| Lock wake | Screen on | `on_lock_wake` (user profile) | User interacted with lock screen (Wayland only) |
+| Session unlock | Screen on | `on_session_unlock` (user profile) | Skipped if LockWake already unblanked |
 | User idle timeout | Screen off | `on_idle_timeout` (user profile) | Fires at minimum across all TVs |
 | Activity resumes | Screen on | `on_idle_resume` (user profile) | After idle timeout |
 | System suspend | Power off | `on_sleep` (system profile) | Network unavailable during sleep |
 | System resume | Power on | `on_wake` (system profile) | Backend handles WoL retry for lost packets |
-| All sessions end | None | `on_no_session` (system profile) | Login screen / after logout |
 | System shutdown | Power off | `on_shutdown` (system profile) | poweroff or halt |
 | System reboot | None | `on_reboot` (system profile) | reboot or kexec; TV stays on for BIOS/TTY |
-| Display DPMS off | None | `on_dpms_off` (system profile) | EDID-matched connector leaves DPMS On; opt-in (default none) to avoid double-dispatch with the user-profile idle/lock path |
-| Display DPMS on | None | `on_dpms_on` (system profile) | Connector returns to DPMS On; opt-in. `screen_on` escalates to power-on/WoL for an off-but-live TV |
+| Display DPMS off | Screen off | `on_dpms_off` (system profile) | EDID-matched connector leaves DPMS On; default `screen_off`. A concurrent user-session idle/lock path may also fire — a redundant-but-safe double-dispatch |
+| Display DPMS on | Screen on | `on_dpms_on` (system profile) | Connector returns to DPMS On; default `screen_on`, which escalates to power-on/WoL for an off-but-live TV |
+| Greeter idle | Screen off | `on_idle_timeout` (system profile) | Login screen idle for `idle_timeout_seconds` (opt-in, default 0); from `tisvlay-greeter` via `Manager1.NotifyGreeterIdle` |
+| Greeter resume | Screen on | `on_idle_resume` (system profile) | Login-screen activity resumed; also restores the panel before an interactive login completes |
 
 All lifecycle events accept any `SessionAction` value: `power_on`, `power_off`, `screen_on`, `screen_off`, or `none`. Different TVs can respond differently to the same event via per-TV profile assignments (e.g., gaming TV ignores session lock via user profile; guest TV only blanks on shutdown via system profile).
 
@@ -690,17 +695,45 @@ Cached state is `ManagedTv::last_known_power_state` (raw [`PowerState`](../crate
 
 **D-Bus surface.** Unchanged from pre-reliability work: `Tv1.Power.PowerOn` / `PowerOff`, `Tv1.Screen.SetScreen(b)`. Reliability is implementation-side; clients (tray, GUI, CLI, session service) get reliable dispatch implicitly without negotiating tiers.
 
+### Desired screen state (latch + reconcile)
+
+The [Event → Action Mapping](#event--action-mapping) is layered over a per-TV **desired screen state**, so screen actions *latch and reconcile* instead of firing once and risking being lost, tangled, or overridden. The split is **two axes**: OS-lifecycle events (`on_startup` / `on_wake` / `on_sleep` / `on_shutdown`) own TV *power* and are immediate; presence/control events own the *screen* via a latched `ManagedTv::desired_screen: Option<bool>` that survives boot, reconnect, and the greeter↔session handoff. It is built on top of the [reliable screen-state actions](#reliable-screen-state-actions) above — reusing them, not replacing them.
+
+**Why a persistent latch, not per-event coalescing.** Merging screen commands per event (latest-wins, no stored target) cannot cover the cases this model must: there is nothing to re-assert once `on_startup` has lit the panel, so an away user's greeter screen-off is lost; and a push-driven reconcile that kept the `power_on` escalation would recurse into a WoL storm (every reconnect push re-triggering a wake). A *persistent* per-TV target that every source writes and a non-escalating reconcile reads is what makes both tractable — coalescing then falls out for free, since the latch already holds the last write.
+
+**Direct actions set intent, then reconcile.** `screen_on` / `screen_off` — and therefore `Tv1.Screen.SetScreen` and every `apply_action(ScreenOn|ScreenOff)` (greeter idle, session lock/unlock/lock-wake/idle, the DPMS mirror, GUI/CLI/tray) — (1) set `desired_screen`, (2) **defer** if a lifecycle wake is already in progress (`is_reconnecting`), recording intent rather than racing a second `power_on` against that wake (the cold-boot tangle), else (3) run the reliable-screen-state body unchanged, **including its `power_on` escalation**. So "unlock wakes the TV from deep `Standby`" still holds for direct actions.
+
+**Reconcile re-asserts, never escalates.** A bare `apply_screen_{on,off}_raw` (the verify-retry loop *minus* the `power_on` pre-flight/tail) is the only thing the push-driven `reconcile_screen` calls. `reconcile_screen` runs on every `power_state` change (spawned from the [state-change forwarder](#push-based-state-pipeline)) and re-asserts `desired_screen` toward the panel when the cached lit-ness disagrees — but it **never calls `power_on`**. Keeping power off the push path makes the `screen → power_on → state-push → reconcile` WoL storm impossible by construction. A screen action deferred while the TV was reconnecting therefore lands once it is reachable, and the latest intent re-asserts after a reconnect (latest-wins).
+
+**`on_startup` gating.** The boot wake marks the TV `reconnecting` for its duration (so a concurrent greeter `screen_off` defers), then wakes the panel **only if `desired_screen != Some(false)`** — so an away user's greeter screen-off, recorded during the ~85 s cold boot, survives it (the panel stays dark) while an attended boot lights normally.
+
+**Presence re-assert at the greeter.** The latch can otherwise strand the login screen dark after a logout from a *locked* session (the prior session's `desired = off` persists across the handoff). `tisvlay-greeter` asserts presence once at startup (a `NotifyGreeterIdle(false)` → the resume action), lighting the panel for whoever is now at it. Resume-from-suspend and daemon-restart need no signal (the latch + lock-wake / physical-state retention cover them); a zero-input autologin *after* the greeter idled is the one uncovered case — a [filed follow-up](ideas/event-driven-power-management.md#zero-input-login-screen-on-safety-net-deferred).
+
+**In-session idle is Wayland-native.** The session's idle pair (`on_idle_timeout` / `on_idle_resume`) runs on `ext-idle-notify-v1` (the shared `tisvlay-core::wayland` transport, alongside the 200 ms lock-wake notification on one connection), not the D-Bus `org.freedesktop.ScreenSaver` idle query — which does not work on KDE Plasma Wayland — so it fires without depending on PowerDevil. The notification is registered with the timeout at watch start; a session supervisor re-registers it (via a stoppable `WatchHandle` whose drop closes a pipe the watch's `poll` loop wakes on) whenever the effective `idle_timeout_seconds` changes, so a GUI / `ReloadConfig` edit applies without a session restart.
+
+**Caveats.** `apply_screen_on_raw`'s bare `turnOnScreen` is expected to light an `ActiveStandby` panel; if LG firmware refuses, attended-boot panel-on relies on the TV already being `Active` after `wake_and_connect` (the common cold-boot case). Reconcile spawns one task per `SubscriptionUpdate` — cheap (a fast no-op when the panel already matches) and serialized by the per-TV `Mutex`.
+
 ### Host display DPMS watcher
 
-[`tisvlayd/src/dpms.rs`](../crates/tisvlayd/src/dpms.rs) drives the `on_dpms_off` / `on_dpms_on` system-profile actions (the last two rows of the [Event → Action Mapping](#event--action-mapping)). It mirrors a host display's power state onto the TV that shares its connector — the narrow, daemon-only, opt-in first slice of the [Event-Driven Power Management](#event-driven-power-management) redesign. No prior Linux project bridges DPMS to a *networked* TV (the established pattern is an idle daemon or CEC bridge running a script); this reuses tisvlay's existing EDID→connector matching instead.
+[`tisvlayd/src/dpms.rs`](../crates/tisvlayd/src/dpms.rs) drives the `on_dpms_off` / `on_dpms_on` system-profile actions (the last two rows of the [Event → Action Mapping](#event--action-mapping)). It mirrors a host display's power state onto the TV that shares its connector — the narrow, daemon-only first slice of the [Event-Driven Power Management](#event-driven-power-management) redesign. No prior Linux project bridges DPMS to a *networked* TV (the established pattern is an idle daemon or CEC bridge running a script); this reuses tisvlay's existing EDID→connector matching instead.
 
 **Polling, not events.** No event-driven primitive exists for the connector DPMS state — udev DRM uevents fire on hotplug, not DPMS property changes — so the watcher polls each EDID-matched connector's legacy sysfs attribute `/sys/class/drm/<card>-<conn>/dpms` at 1 Hz (`MissedTickBehavior::Skip`). ~1 s wake latency is imperceptible against the TV's own screen-on ramp; the sub-100 ms lockscreen-snap-back budget belongs to the session path, not this one. The `dpms` directory is scanned once per tick (not once per TV).
 
 **State model — On / Blanked only.** VESA defines four states (On / Standby / Suspend / Off), but Standby/Suspend are dead on modern Linux: KDE removed the intermediate modes driver-side (`kscreen-doctor --dpms` exposes only `on`/`off`), wlroots/Mutter emit only On/Off, and modern LCD/OLED collapse all off-states into one. `parse_dpms` maps any non-`On` value to `Blanked`, so the watcher is robust to a stray `Standby`. Per-state events would be config surface that never fires; the "light blank vs deep off" tiering is instead served by `on_dpms_off` (display off) + `on_sleep` (system suspend via logind). Field names follow the ecosystem-consensus `on`/`off` vocabulary (`xset`, `kscreen-doctor`, `swaymsg`, `wlopm`, the wlr/KDE protocols, and the sysfs values).
 
-**Dispatch & gates.** Per-connector edge detection (first observation primes without firing); `On→Blanked` fires `DpmsOff`, `Blanked→On` fires `DpmsOn`, scoped to the one TV whose connector changed (`execute_system_event_for_tv`). Dispatch is spawned off the poll tick so a slow `screen_on` (which may escalate to a WoL power-cycle) can't stall polling of other connectors. Two safety gates: only connectors whose sysfs `status == connected` are watched (a powered-off TV that drops its EDID link reads `disconnected` and is skipped), and dispatch is deferred while a TV is `reconnecting` (so a poll edge can't stack a second `power_on`). It composes with the reliable `screen_on`/`screen_off` escalation above: `on_dpms_on = screen_on` on an off-but-live TV escalates to `power_on`/WoL, so "wake the TV with my display" works without a dedicated action — at the cost that a remote-turned-off TV can be re-woken by a panel off→on cycle when this is enabled (opt-in; default `none`).
+**Dispatch & gates.** Per-connector edge detection (first observation primes without firing); `On→Blanked` fires `DpmsOff`, `Blanked→On` fires `DpmsOn`, scoped to the one TV whose connector changed (`execute_system_event_for_tv`). Dispatch is spawned off the poll tick so a slow `screen_on` (which may escalate to a WoL power-cycle) can't stall polling of other connectors. Two safety gates: only connectors whose sysfs `status == connected` are watched (a powered-off TV that drops its EDID link reads `disconnected` and is skipped), and dispatch is deferred while a TV is `reconnecting` (so a poll edge can't stack a second `power_on`). It composes with the reliable `screen_on`/`screen_off` escalation above: `on_dpms_on = screen_on` on an off-but-live TV escalates to `power_on`/WoL, so "wake the TV with my display" works without a dedicated action — at the cost, now the default since `on_dpms_on` defaults to `screen_on`, that a remote-turned-off TV can be re-woken by a panel off→on cycle.
 
 **Verified platform fact.** KWin on Wayland writes its DPMS-off through to the legacy sysfs attribute (`On → Off → On`), so the daemon-only approach needs no compositor protocol. Known edges: confirm the attribute flips on a *real idle-timeout* blank (the spike used the explicit `kscreen-doctor` command, which shares KWin's DPMS path); a blank that lands before the connector first appears in the mapping is swallowed until the next wake; and a multi-GPU host exposing the same bare connector name on two cards resolves to one arbitrarily (first match wins).
+
+### Greeter idle client
+
+[`tisvlay-greeter`](../crates/tisvlay-greeter/) protects the OLED panel at an **unattended login screen** — the one window the DPMS watcher and the session path both miss, because the host compositor never idle-blanks the connector there (no PowerDevil runs before login) and `tisvlay-session` isn't started yet. It is the **first user-context per-DE adapter** of the [Event-Driven Power Management](#event-driven-power-management) redesign, and it answers that section's open question ("can system-bus `tisvlayd` hold a Wayland connection?") with *no, a user-context helper does it*: the greeter compositor's wayland socket is owned by the greeter user (`0700`), unreachable by the unprivileged `tisvlay` daemon user, so the watcher must run **inside the greeter session**.
+
+**Shape.** A small binary launched as the greeter user (a `systemd.user` unit pulled into the greeter target — `plasma-login-wayland.target` for plasma-login-manager). It subscribes to the greeter compositor's `ext-idle-notify-v1` (the standard protocol, via the shared `tisvlay-core::wayland` transport) at the timeout reported by `Manager1.GreeterIdleTimeoutSeconds` (the min non-zero `idle_timeout_seconds` across automated TVs; `0` = disabled → the client exits). Each idle/resume edge calls `Manager1.NotifyGreeterIdle(bool)`, which fans out per-TV through each TV's `on_idle_timeout` / `on_idle_resume`. Policy stays daemon-side; the client is a dumb edge forwarder. Unlike the DPMS watcher this is event-driven (no sysfs poll), so it's exact, but it deliberately does **not** touch the fast lockscreen path (that's the logged-in session's job).
+
+**Opt-in, per TV.** `idle_timeout_seconds` defaults to `0`. The proactive greeter timer is the one piece that *originates* a blank rather than mirroring one, so it ships off; turning it on is two steps — install the client (`services.tisvlay.greeter.enable` on NixOS) and set `idle_timeout_seconds` on a system profile (Profiles pane or declarative config). `idle_timeout_seconds = 0` is the single per-TV gate: a TV with `0` is excluded from both the greeter clock (`greeter_idle_timeout_seconds`) *and* the `GreeterIdle`/`GreeterResume` dispatch, so its default `on_idle_timeout = screen_off` never fires at the login screen. Because the compositor has one idle clock, TVs that *are* enabled share it at the shortest configured timeout — a longer-timeout TV blanks early (the documented pragmatic reduction; per-TV timers would need multiple `ext-idle-notify` registrations).
+
+**Cross-login handoff.** Two mechanisms restore the panel when someone arrives at a blanked greeter. First, `tisvlay-greeter` asserts presence once at startup (`NotifyGreeterIdle(false)` → the resume action), so a logout from a *locked* session — whose `desired = off` latch would otherwise persist across the handoff and strand the login screen dark — still lights for whoever is now at it. Second, while the client runs it forwards every idle/resume edge: the keypress that wakes the greeter to type a password is itself an `ext-idle` resume, so `ScreenOn` is dispatched before login completes (the in-flight daemon→TV command survives the greeter exiting). Between them every **interactive** login is covered. The one gap is a **zero-input login** — autologin, or a remote/programmatic session — that lands *after* the greeter has already idle-blanked: with no keypress there is no resume edge, so the panel can stay off. That case is a [filed follow-up](ideas/event-driven-power-management.md#zero-input-login-screen-on-safety-net-deferred) — a daemon `logind` `SessionNew` handler that re-asserts `ScreenOn` on the greeter→user transition — deferred because the target single-user desktop logs in interactively, where the resume edge already covers it.
 
 ---
 
@@ -851,7 +884,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 2. Profile field-level inheritance: user profile fields override admin defaults, unset fields fall through
 3. `on_idle_resume` added to `UserProfileConfig` (action when activity resumes after idle)
 4. `org.tisvlay.Session1` D-Bus interface on session bus: `ListUserProfiles`, `GetTvUserProfile`, `SetTvUserProfile`, `GetEffectiveUserProfile`, `ReloadConfig`
-5. Daemon gains `org.freedesktop.login1` monitoring: `PrepareForShutdown` (inhibitor lock), `SessionNew`/`SessionRemoved` for `on_no_session`
+5. Daemon gains `org.freedesktop.login1` monitoring: `PrepareForShutdown` (inhibitor lock) and `PrepareForSleep`
 6. Boot-wake refactored: retry-connect loop with WoL resend replaces blind sleep delay
 7. Session service event replay after late daemon connect
 8. Tray gains User Profile and System Profile submenus per TV
@@ -914,7 +947,7 @@ Screen Off/On uses `backlight_item` (same as Backlight Up/Down) — clicking it 
 
 1. Renamed `ProfileConfig` → `UserProfileConfig`, `ResolvedProfile` → `ResolvedUserProfile` across all crates
 2. D-Bus renames: `GetSystemProfile` → `GetUserProfileDefault`, `GetSystemProfiles` → `ListUserProfiles`, `ListProfiles` → `ListUserProfiles`, `GetTvProfile` → `GetTvUserProfile`, `SetTvProfile` → `SetTvUserProfile`, `GetEffectiveProfile` → `GetEffectiveUserProfile`
-3. Added `SystemProfileConfig` and `ResolvedSystemProfile` with fields: `on_startup`, `on_shutdown`, `on_reboot`, `on_no_session`
+3. Added `SystemProfileConfig` and `ResolvedSystemProfile` with fields: `on_startup`, `on_shutdown`, `on_reboot`
 4. Config restructured: `[daemon]` → `[system.profiles.*]`, `[profiles.*]` → `[user.profiles.*]`, `profile = "name"` → `profile.user = "name"`, new `profile.system = "name"` on `TvConfig`
 5. Removed `DaemonConfig` — replaced by per-TV system profile resolution
 6. Daemon dispatches lifecycle events per-TV using each TV's resolved system profile
@@ -954,7 +987,7 @@ Forward-looking work that hasn't shipped yet. No fixed sequencing — entries la
 
 Today's `tisvlay-session` listener path drives `Tv1.Power.SetIsScreenOn` / `PowerOff` from session-bus events (screensaver, Wayland idle, logind, idle timer). A follow-up merge replaces this with per-DE adapters (KWin idle/DPMS, wlroots output management, X11 XScreenSaver, logind fallback) that emit a unified `ScreenBlank` / `ScreenWake` / `Sleep` / `Wake` event surface the daemon dispatches to `Tv1.Power.*`. Hard requirements (sub-100 ms lockscreen-snap-back, blank-vs-off distinction, multi-TV per-EDID-connector, detached-TV idle-timer fallback) and the "what NOT to do" gotchas are captured in [docs/ideas.md](ideas.md).
 
-A narrow, daemon-only first slice has **shipped**: the [Host display DPMS watcher](#host-display-dpms-watcher) (`on_dpms_off` / `on_dpms_on`). It is opt-in and reads the connector DPMS state directly via sysfs polling, deliberately scoped to *not* touch the fast lockscreen path — see [docs/ideas/event-driven-power-management.md](ideas/event-driven-power-management.md) for how the prohibition on sysfs-DPMS polling is scoped to the primary path only.
+A narrow, daemon-only first slice has **shipped**: the [Host display DPMS watcher](#host-display-dpms-watcher) (`on_dpms_off` / `on_dpms_on`, default `screen_off` / `screen_on`). It reads the connector DPMS state directly via sysfs polling, deliberately scoped to *not* touch the fast lockscreen path — see [docs/ideas/event-driven-power-management.md](ideas/event-driven-power-management.md) for how the prohibition on sysfs-DPMS polling is scoped to the primary path only.
 
 ---
 
@@ -969,7 +1002,7 @@ A narrow, daemon-only first slice has **shipped**: the [Host display DPMS watche
 | PowerOff + SessionLocked race on sleep | Daemon `powered_off` flag prevents blocking connect to dead TV |
 | Screen on/off returns 500 when idempotent | LG backend treats application errors as success for screen commands |
 | DHCP IP changes | Use MAC for WoL; re-discover via SSDP |
-| Greeter wake unavailable on X11 | Wayland `ext-idle-notify-v1` only; falls back gracefully |
+| Lock wake unavailable on X11 | Wayland `ext-idle-notify-v1` only; falls back gracefully |
 | GUI is Wayland-only | `tisvlay-gui` builds against `slint = ["backend-winit-wayland"]` and `wl-clipboard-rs`; X11 sessions run the daemon, CLI, and tray (ksni) but the settings window doesn't launch. Aligns with `tisvlay-session`'s Wayland-best-effort posture above and trims `x11rb` from the dep graph. See [build.md](build.md). |
 | Backlight write requires workaround | SSAP subscriptions work for reading; writing requires Luna `createAlert` workaround (direct setSystemSettings returns 401) |
 

@@ -15,7 +15,6 @@
 //! | Sleep     | PowerOff |
 //! | Wake      | PowerOn  |
 //! | Reboot    | None     |
-//! | NoSession | None     |
 
 #![cfg(feature = "mock")]
 
@@ -128,33 +127,6 @@ async fn reboot_does_not_disconnect_tv() {
     assert!(
         daemon.manager().is_connected(&tv_uuid).await,
         "TV should still be connected (reboot action is None by default)",
-    );
-}
-
-// ---------- NoSession → None ----------
-
-#[tokio::test]
-async fn no_session_does_not_disconnect_tv() {
-    let tv_uuid = test_tv_uuid("lr_nosess").to_string();
-    let daemon = TestDaemon::with_one_mock_tv("lr_nosess")
-        .await
-        .expect("daemon");
-    daemon
-        .manager()
-        .reconnect(&tv_uuid)
-        .await
-        .expect("reconnect");
-    settle().await;
-
-    daemon
-        .manager()
-        .execute_system_event(SystemEvent::NoSession, "test")
-        .await;
-    settle().await;
-
-    assert!(
-        daemon.manager().is_connected(&tv_uuid).await,
-        "TV should still be connected (no_session action is None by default)",
     );
 }
 
@@ -333,5 +305,465 @@ async fn on_startup_screen_off_powers_on_first() {
     assert!(
         !tv.is_screen_on,
         "panel should be off after screen_off lands on the live connection",
+    );
+}
+
+// ---------- Greeter idle dispatch (Manager1.NotifyGreeterIdle) ----------
+
+/// Build a config whose "default" system profile sets the greeter idle
+/// fields, so an automated TV inherits them.
+fn config_with_greeter_idle(
+    tv_id: &str,
+    idle_timeout_seconds: u64,
+    on_idle_timeout: SessionAction,
+    on_idle_resume: SessionAction,
+) -> SystemConfig {
+    let mut config = mock_tv_config(tv_id, true, None);
+    config.system.profiles.insert(
+        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+        SystemProfileConfig {
+            name: "default".to_string(),
+            idle_timeout_seconds: Some(idle_timeout_seconds),
+            on_idle_timeout: Some(on_idle_timeout),
+            on_idle_resume: Some(on_idle_resume),
+            ..Default::default()
+        },
+    );
+    config
+}
+
+/// `NotifyGreeterIdle(true)` blanks the panel via `on_idle_timeout =
+/// ScreenOff`; `NotifyGreeterIdle(false)` restores it via `on_idle_resume
+/// = ScreenOn`. Exercises the full Manager1 method → `execute_system_event`
+/// → reliable `screen_off`/`screen_on` path.
+#[tokio::test]
+async fn greeter_idle_blanks_then_resume_restores_screen() {
+    let tv_uuid = test_tv_uuid("greeter_idle").to_string();
+    let config = config_with_greeter_idle(
+        "greeter_idle",
+        600,
+        SessionAction::ScreenOff,
+        SessionAction::ScreenOn,
+    );
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    client
+        .notify_greeter_idle(true)
+        .await
+        .expect("notify greeter idle");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        !tv.is_screen_on,
+        "greeter idle should blank the panel via screen_off",
+    );
+
+    client
+        .notify_greeter_idle(false)
+        .await
+        .expect("notify greeter resume");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "greeter resume should restore the panel via screen_on",
+    );
+}
+
+/// `GreeterIdleTimeoutSeconds` reports the configured timeout for an
+/// automated TV.
+#[tokio::test]
+async fn greeter_idle_timeout_reports_configured_value() {
+    let config = config_with_greeter_idle(
+        "greeter_timeout",
+        600,
+        SessionAction::ScreenOff,
+        SessionAction::ScreenOn,
+    );
+    // Kept alive (registered on the shared bus) for the client call below.
+    let _daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    let secs = client
+        .greeter_idle_timeout_seconds()
+        .await
+        .expect("greeter idle timeout");
+    assert_eq!(secs, 600, "configured idle timeout for the automated TV");
+}
+
+/// With no greeter idle timeout configured (hard-coded baseline = 0), the
+/// daemon reports 0, so the greeter client leaves the watch disabled.
+#[tokio::test]
+async fn greeter_idle_timeout_zero_when_unset() {
+    // Kept alive (registered on the shared bus) for the client call below.
+    let _daemon = TestDaemon::with_one_mock_tv("greeter_unset")
+        .await
+        .expect("daemon");
+    let client = client().await;
+
+    let secs = client
+        .greeter_idle_timeout_seconds()
+        .await
+        .expect("greeter idle timeout");
+    assert_eq!(secs, 0, "no automated TV has a greeter idle timeout set");
+}
+
+/// A TV with idle_timeout_seconds=0 (greeter idle disabled) must NOT be
+/// blanked when GreeterIdle fires, even though its on_idle_timeout defaults
+/// to ScreenOff — otherwise an un-opted-in TV would blank whenever any other
+/// TV's greeter timeout elapses.
+#[tokio::test]
+async fn greeter_idle_skips_tv_with_zero_timeout() {
+    let tv_uuid = test_tv_uuid("greeter_zero").to_string();
+    let config = config_with_greeter_idle(
+        "greeter_zero",
+        0, // disabled for this TV
+        SessionAction::ScreenOff,
+        SessionAction::ScreenOn,
+    );
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    client
+        .notify_greeter_idle(true)
+        .await
+        .expect("notify greeter idle");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "a TV with idle_timeout_seconds=0 must not be blanked by greeter idle",
+    );
+}
+
+/// A greeter resume (e.g. the client's startup presence-assert) must re-light
+/// an automated TV the prior session latched dark, *even when greeter idle is
+/// disabled for it* (idle_timeout_seconds=0). Only proactive blanking is opt-in;
+/// restoring presence at the login screen is not gated on the idle timer.
+#[tokio::test]
+async fn greeter_resume_lights_tv_with_zero_timeout() {
+    let tv_uuid = test_tv_uuid("greeter_resume_zero").to_string();
+    let config = config_with_greeter_idle(
+        "greeter_resume_zero",
+        0, // greeter idle disabled for this TV
+        SessionAction::ScreenOff,
+        SessionAction::ScreenOn,
+    );
+    let daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // Simulate a prior locked session that latched the panel dark across logout.
+    daemon
+        .manager()
+        .screen_off(&tv_uuid)
+        .await
+        .expect("screen_off");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(!tv.is_screen_on, "precondition: panel latched off");
+
+    // The greeter's presence-assert / resume edge.
+    client
+        .notify_greeter_idle(false)
+        .await
+        .expect("notify greeter resume");
+    settle().await;
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "greeter resume must re-light an automated TV even with idle disabled",
+    );
+}
+
+/// A TV with a timeout but no idle action (on_idle_timeout=None) must not
+/// govern the single greeter clock — it would otherwise pull the shared
+/// timeout shorter while never acting.
+#[tokio::test]
+async fn greeter_idle_timeout_ignores_actionless_tv() {
+    let config = config_with_greeter_idle(
+        "greeter_noaction",
+        600,
+        SessionAction::None, // timeout set, but nothing to do at idle
+        SessionAction::ScreenOn,
+    );
+    let _daemon = TestDaemon::with_config(config).await.expect("daemon");
+    let client = client().await;
+
+    let secs = client
+        .greeter_idle_timeout_seconds()
+        .await
+        .expect("greeter idle timeout");
+    assert_eq!(
+        secs, 0,
+        "a TV with no idle action must not govern the greeter clock",
+    );
+}
+
+// ---------- Desired-screen latch + push-driven reconcile ----------
+
+/// `reconcile_screen` (driven by the state-change forwarder on every push)
+/// re-asserts the latched `desired_screen`: if the panel drifts off while the
+/// desire is "on", the next state push restores it — with no `power_on`
+/// escalation (the recursion-proof re-assert path).
+#[tokio::test]
+async fn reconcile_reasserts_desired_on_after_drift() {
+    let id = "reconcile_reassert";
+    let tv_uuid = test_tv_uuid(id).to_string();
+    let addr = "mock://reconcile_reassert";
+    let daemon = TestDaemon::with_one_mock_tv(id).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // Latch desired = on.
+    daemon
+        .manager()
+        .screen_on(&tv_uuid)
+        .await
+        .expect("screen_on");
+    settle().await;
+
+    // Panel drifts off (firmware slipped past the lit state). The push
+    // triggers reconcile, which re-asserts desired=on via a bare screen_on.
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::ScreenOff);
+    settle().await;
+    settle().await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "reconcile should re-assert desired=on after the panel drifted off",
+    );
+}
+
+/// A `screen_off` issued while a lifecycle wake is in progress
+/// (`is_reconnecting`) defers: it records `desired_screen` and returns without
+/// sending a `turnOffScreen` that would race the wake. The push-driven
+/// reconcile applies it once the TV is reachable again (the cold-boot tangle
+/// fix).
+#[tokio::test]
+async fn screen_off_deferred_during_reconnect_applies_on_ready() {
+    let id = "defer_reconnect";
+    let tv_uuid = test_tv_uuid(id).to_string();
+    let addr = "mock://defer_reconnect";
+    let daemon = TestDaemon::with_one_mock_tv(id).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+    daemon.handle().inject_power_state(addr, PowerState::Active);
+    settle().await;
+
+    // Make the next connect slow, then kick a reconnect so the TV sits in
+    // `reconnecting` long enough to issue a screen action during the window.
+    daemon
+        .handle()
+        .set_connect_delay(Duration::from_millis(700));
+    let mgr = daemon.manager().clone();
+    let reconnect_uuid = tv_uuid.clone();
+    let reconnect_task = tokio::spawn(async move {
+        let _ = mgr.reconnect(&reconnect_uuid).await;
+    });
+
+    // Wait until the reconnect has set `reconnecting`.
+    let mut waited = Duration::ZERO;
+    while !daemon.manager().is_reconnecting(&tv_uuid).await {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        waited += Duration::from_millis(10);
+        assert!(
+            waited < Duration::from_millis(600),
+            "reconnect never entered the reconnecting state",
+        );
+    }
+
+    let before = daemon.handle().screen_off_call_count(addr);
+    daemon
+        .manager()
+        .screen_off(&tv_uuid)
+        .await
+        .expect("screen_off (deferred) returns Ok");
+    assert!(
+        daemon.manager().is_reconnecting(&tv_uuid).await,
+        "still reconnecting when screen_off was issued",
+    );
+    assert_eq!(
+        daemon.handle().screen_off_call_count(addr),
+        before,
+        "screen_off must defer (send no turnOffScreen) while reconnecting",
+    );
+
+    // Let the reconnect finish; the post-wake push drives reconcile, which
+    // applies the deferred screen_off.
+    daemon.handle().clear_connect_delay();
+    let _ = reconnect_task.await;
+    settle().await;
+    settle().await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        !tv.is_screen_on,
+        "deferred screen_off should be applied by reconcile once reachable",
+    );
+}
+
+/// Latest-wins: an off-then-on pair issued while the TV is reconnecting both
+/// defer (latching `desired_screen`), and reconcile applies only the latest
+/// (on) once the TV is reachable — the cross-login supersession case (a login
+/// `screen_on` superseding a stale greeter `screen_off`).
+#[tokio::test]
+async fn latest_wins_off_then_on_while_reconnecting() {
+    let id = "latest_wins";
+    let tv_uuid = test_tv_uuid(id).to_string();
+    let addr = "mock://latest_wins";
+    let daemon = TestDaemon::with_one_mock_tv(id).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+    daemon.handle().inject_power_state(addr, PowerState::Active);
+    settle().await;
+
+    daemon
+        .handle()
+        .set_connect_delay(Duration::from_millis(700));
+    let mgr = daemon.manager().clone();
+    let reconnect_uuid = tv_uuid.clone();
+    let reconnect_task = tokio::spawn(async move {
+        let _ = mgr.reconnect(&reconnect_uuid).await;
+    });
+
+    let mut waited = Duration::ZERO;
+    while !daemon.manager().is_reconnecting(&tv_uuid).await {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        waited += Duration::from_millis(10);
+        assert!(
+            waited < Duration::from_millis(600),
+            "reconnect never entered the reconnecting state",
+        );
+    }
+
+    // Both defer; the latch ends as `on`.
+    daemon
+        .manager()
+        .screen_off(&tv_uuid)
+        .await
+        .expect("screen_off deferred");
+    daemon
+        .manager()
+        .screen_on(&tv_uuid)
+        .await
+        .expect("screen_on deferred");
+
+    daemon.handle().clear_connect_delay();
+    let _ = reconnect_task.await;
+    settle().await;
+    settle().await;
+
+    // The mock re-inits to Active (panel on) on reconnect, which would let the
+    // final assert pass vacuously. Force the panel dark, so re-lighting it can
+    // only come from reconcile applying the latched *on* (the latest intent);
+    // had the latch wrongly ended off, reconcile would leave it dark.
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::ScreenOff);
+    settle().await;
+    settle().await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "latest-wins: the on should supersede the earlier off after reconnect",
+    );
+}
+
+/// An explicit `Tv1.Power.PowerOn` overrides a stale `screen_off` latch: it sets
+/// `desired_screen = Some(true)` before waking, so the push-driven reconcile
+/// keeps the freshly-woken panel on instead of re-blanking it.
+#[tokio::test]
+async fn power_on_clears_stale_screen_off_latch() {
+    let id = "poweron_clears_latch";
+    let tv_uuid = test_tv_uuid(id).to_string();
+    let addr = "mock://poweron_clears_latch";
+    let daemon = TestDaemon::with_one_mock_tv(id).await.expect("daemon");
+    let client = client().await;
+
+    daemon
+        .manager()
+        .reconnect(&tv_uuid)
+        .await
+        .expect("reconnect");
+    settle().await;
+
+    // Latch the panel off (a prior idle / lock blank).
+    daemon
+        .manager()
+        .screen_off(&tv_uuid)
+        .await
+        .expect("screen_off");
+    settle().await;
+
+    // Explicit power-on must override that stale screen-off latch.
+    client.power_on(&tv_uuid).await.expect("power_on");
+    settle().await;
+
+    // Panel drifts off again: with the latch correctly flipped to ON, reconcile
+    // re-lights it; had the stale OFF latch survived the power-on, reconcile
+    // would leave it dark.
+    daemon
+        .handle()
+        .inject_power_state(addr, PowerState::ScreenOff);
+    settle().await;
+    settle().await;
+
+    let tvs = client.list_tvs().await.expect("list_tvs");
+    let tv = tvs.iter().find(|t| t.uuid == tv_uuid).expect("tv present");
+    assert!(
+        tv.is_screen_on,
+        "explicit power-on must flip the latch on; reconcile then keeps the panel lit",
     );
 }

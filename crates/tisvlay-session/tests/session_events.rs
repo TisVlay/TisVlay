@@ -82,24 +82,24 @@ async fn idle_resume_turns_screen_on() {
     assert!(tv.is_screen_on, "screen should be on after idle resume");
 }
 
-// ---------- Greeter wake ----------
+// ---------- Lock wake ----------
 
 #[tokio::test]
-async fn greeter_wake_turns_screen_on() {
+async fn lock_wake_turns_screen_on() {
     let session = TestSession::new("greeter_tv").await.unwrap();
 
     // Lock first (screen off).
     session.inject_event(SessionEvent::SessionLocked);
     settle().await;
 
-    // Greeter wake should turn screen back on (user moved mouse on
+    // Lock wake should turn screen back on (user moved mouse on
     // lock screen, before actually unlocking).
-    session.inject_event(SessionEvent::GreeterWake);
+    session.inject_event(SessionEvent::LockWake);
     settle().await;
 
     let tvs = session.client().list_tvs().await.unwrap();
     let tv = tvs.iter().find(|t| t.name == "greeter_tv").unwrap();
-    assert!(tv.is_screen_on, "screen should be on after greeter wake");
+    assert!(tv.is_screen_on, "screen should be on after lock wake");
 }
 
 // ---------- Redundant action skipping ----------

@@ -66,6 +66,8 @@ pub mod wol;
 mod dbus_client;
 #[cfg(feature = "logging")]
 pub mod logging;
+#[cfg(feature = "wayland")]
+pub mod wayland;
 
 // =============================================================================
 // Public re-exports: Core abstractions

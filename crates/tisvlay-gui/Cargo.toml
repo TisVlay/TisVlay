@@ -43,7 +43,7 @@ serde_json = { workspace = true }
 #     flamegraph-dominant; the test infra (Slint's testing backend
 #     reads `accessible-*` properties via the internal element tree,
 #     not AT-SPI) doesn't depend on this feature being on.
-# Wayland-only winit backend. tisvlay-session's greeter-wake support
+# Wayland-only winit backend. tisvlay-session's lock-wake support
 # is already Wayland-only (see `wayland_idle.rs`), so we lean into
 # Wayland-only for the GUI too — that lets us drop the X11 backend's
 # `x11rb-protocol` (10+ s on the cold-build critical path) and several
