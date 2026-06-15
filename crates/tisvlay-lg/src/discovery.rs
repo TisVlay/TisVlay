@@ -5,12 +5,12 @@
 //! SSDP transport itself lives in the vendor-neutral [`tisvlay_ssdp`]
 //! crate.
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 use tisvlay_core::{DiscoveredTv, HardwareId, Result, TvDiscovery};
-use tisvlay_ssdp::{SearchOptions, SsdpResponse};
+use tisvlay_ssdp::{SharedSearcher, SsdpResponse};
 
 /// Search targets that LG WebOS TVs respond to.
 ///
@@ -26,51 +26,17 @@ const LG_TARGETS: &[&str] = &[
     "upnp:rootdevice",
 ];
 
-/// Discover LG TVs on the network using SSDP.
+/// Filter, parse, and de-duplicate a stream of SSDP responses into LG
+/// TVs. Not finding any is not an error — the result is just empty.
 ///
-/// Sends an M-SEARCH burst to the SSDP multicast address and collects
-/// responses from LG WebOS TVs over `timeout`. Not finding any TVs is
-/// not an error — returns an empty list.
-///
-/// `bind_port`, when `Some`, pins the source UDP port — useful so a
-/// firewall can target it with a narrow rule. `None` lets the OS
-/// pick an ephemeral port (the default).
-pub async fn discover_lg_tvs(
-    timeout: Duration,
-    bind_port: Option<u16>,
-) -> Result<Vec<DiscoveredTv>> {
-    tracing::debug!(
-        timeout_ms = timeout.as_millis(),
-        ?bind_port,
-        "Starting LG SSDP discovery"
-    );
-
-    // Deduplicate by IP address since each TV exposes multiple UPnP services
-    // with different UUIDs. We prefer entries with DLNA device names.
+/// De-dup is by IP address (each TV answers from several UPnP services
+/// with different UUIDs), preferring entries that carry a real DLNA
+/// device name over the `LG TV (ip)` fallback.
+async fn collect_lg_tvs(stream: impl Stream<Item = SsdpResponse>) -> Vec<DiscoveredTv> {
+    tokio::pin!(stream);
     let mut tvs: HashMap<String, DiscoveredTv> = HashMap::new();
 
-    let opts = SearchOptions {
-        bind_addr: bind_port.map(|p| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), p)),
-        ..SearchOptions::default()
-    };
-
-    let stream = match tisvlay_ssdp::search(LG_TARGETS, timeout, opts).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "SSDP search setup failed");
-            return Ok(Vec::new());
-        }
-    };
-    tokio::pin!(stream);
-
-    while let Some(item) = stream.next().await {
-        let resp = match item {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(error = %e, "Dropping malformed SSDP response");
-                continue;
-            }
-        };
+    while let Some(resp) = stream.next().await {
         if !is_lg_tv(&resp) {
             continue;
         }
@@ -78,8 +44,6 @@ pub async fn discover_lg_tvs(
             continue;
         };
         tracing::debug!(id = %tv.id, name = %tv.name, address = %tv.address, "Discovered LG TV");
-        // Deduplicate by address, preferring entries with real DLNA names
-        // over fallback names like "LG TV (ip)".
         let dominated = tvs
             .get(&tv.address)
             .is_some_and(|existing| has_dlna_name(existing) && !has_dlna_name(&tv));
@@ -89,7 +53,7 @@ pub async fn discover_lg_tvs(
     }
 
     tracing::info!(count = tvs.len(), "LG SSDP discovery complete");
-    Ok(tvs.into_values().collect())
+    tvs.into_values().collect()
 }
 
 /// Check if a discovered TV has a real DLNA device name (vs fallback).
@@ -176,31 +140,42 @@ fn parse_ip_from_url(location: &str) -> Option<String> {
 }
 
 /// LG-specific network discovery — the [`TvDiscovery`] implementation.
-#[derive(Debug, Default)]
+///
+/// Wraps a shared SSDP socket ([`SharedSearcher`]) so overlapping
+/// discovery sessions reuse one bound, firewall-targetable source port
+/// instead of each binding their own. LG search targets and response
+/// filtering are layered on top.
+#[derive(Debug)]
 pub struct LgDiscovery {
-    /// Source UDP port for the SSDP M-SEARCH socket. `None` lets the
-    /// OS pick an ephemeral port; setting a value pins the source
-    /// port for a tractable firewall rule (see `docs/firewall.md`).
-    bind_port: Option<u16>,
+    searcher: Arc<SharedSearcher>,
 }
 
 impl LgDiscovery {
-    /// Create a new LG discovery instance with default options
-    /// (ephemeral bind port).
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Pin the SSDP source UDP port. Builder.
-    pub fn with_bind_port(mut self, port: u16) -> Self {
-        self.bind_port = Some(port);
-        self
+    /// Create LG discovery with `bind_port` as the SSDP source port
+    /// (`0` lets the OS pick an ephemeral one). The socket binds lazily
+    /// on the first `discover`. See `docs/firewall.md`.
+    pub fn new(bind_port: u16) -> Self {
+        let targets = LG_TARGETS.iter().map(|t| t.to_string()).collect();
+        Self {
+            searcher: Arc::new(SharedSearcher::new(bind_port, targets)),
+        }
     }
 }
 
 impl TvDiscovery for LgDiscovery {
     async fn discover(&self, timeout: Duration) -> Result<Vec<DiscoveredTv>> {
-        discover_lg_tvs(timeout, self.bind_port).await
+        tracing::debug!(
+            timeout_ms = timeout.as_millis(),
+            "Starting LG SSDP discovery"
+        );
+        let stream = match self.searcher.search(timeout).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "SSDP search setup failed");
+                return Ok(Vec::new());
+            }
+        };
+        Ok(collect_lg_tvs(stream).await)
     }
 }
 

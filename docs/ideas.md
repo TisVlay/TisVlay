@@ -5,6 +5,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 ## Architecture
 
 - [Event-driven power-management redesign](ideas/event-driven-power-management.md)
+- [Greeter integration generalization (greetd+wlroots, GDM, non-NixOS)](ideas/greeter-integration-generalization.md)
 - [TV-side power prevention (manage LG auto-off Luna settings)](ideas/tv-side-power-prevention.md)
 - [Richer `DispatchOutcome` return type for screen_on / screen_off](ideas/dispatch-outcome-return-type.md)
 - [Virtual DRM connector for detached TVs](ideas/virtual-drm-connector.md)

@@ -162,19 +162,19 @@ pub(crate) const SYSTEM_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
-        wire: "on_idle_resume",
-        kind: FieldKind::Enum {
-            options: SESSION_ACTION_OPTIONS,
-            class: EnumClass::SessionAction,
-        },
-    },
-    FieldSpec {
         wire: "idle_timeout_seconds",
         kind: FieldKind::Number {
             min: 0,
             max: 86_400,
             step: 15,
             unit: "seconds",
+        },
+    },
+    FieldSpec {
+        wire: "on_idle_resume",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
     FieldSpec {
@@ -220,19 +220,19 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
-        wire: "on_idle_resume",
-        kind: FieldKind::Enum {
-            options: SESSION_ACTION_OPTIONS,
-            class: EnumClass::SessionAction,
-        },
-    },
-    FieldSpec {
         wire: "idle_timeout_seconds",
         kind: FieldKind::Number {
             min: 0,
             max: 86_400,
             step: 15,
             unit: "seconds",
+        },
+    },
+    FieldSpec {
+        wire: "on_idle_resume",
+        kind: FieldKind::Enum {
+            options: SESSION_ACTION_OPTIONS,
+            class: EnumClass::SessionAction,
         },
     },
 ];

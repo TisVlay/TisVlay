@@ -64,13 +64,23 @@ A separate finding from the transport-family work: LG TVs do not join any v6 SSD
 
 LG's override sends a single UDP byte to the SSAP wss port (3001), bound to `0.0.0.0:0` — the kernel routing table picks the correct outbound NIC + source IP for the destination, which is the right behavior on typical multi-NIC hosts. The TV's UDP stack discards the unexpected byte silently (no TLS handshake side-effect, no inbound port needed, no `CAP_NET_RAW`). Explicit source-IP binding via netlink route lookup would only matter for VPN-policy-routing edge cases that aren't in scope today; filed as deferred work if anyone hits it.
 
+## Shared SSDP socket (concurrent-session coalescing)
+
+Discovery binds **one** SSDP source socket per daemon — lazily, on the first scan — and shares it across every concurrent discovery: the one-shot `DiscoverTvs` and any number of streaming `StartDiscovery` sessions. It lives in `tisvlay-ssdp`'s `SharedSearcher`: a single background task owns the socket's `recv`, parses each datagram, and fans it out to all active subscribers over a `broadcast` channel. Each `search(timeout)` subscribes, sends an M-SEARCH burst, and collects replies for its own window.
+
+This is load-bearing for the pinned default port. Concurrent discovery sessions all send the *same* targets and differ only by caller, so the old per-session socket bought nothing but a bind collision: two binds to a fixed `bind_port` would `EADDRINUSE`, and the loser silently returned empty. One shared socket removes the collision (a single bind, ever), keeps exactly one firewall port open, and — because a lone reader owns `recv` — stops concurrent searches from stealing each other's datagrams. If the pinned port is already held by another process at first bind, `SharedSearcher` falls back to an ephemeral port once and logs the degradation.
+
+Bursts are *not* coalesced — each `search` still sends its own M-SEARCH. Only the socket is shared, not the M-SEARCH cadence: with a single reader the extra datagrams are cheap, and it avoids a late-joining subscriber missing replies to a burst it didn't trigger.
+
+Per-protocol scope: this coalescing is within one discovery protocol (SSDP). A future vendor on a different transport (mDNS, a proprietary probe) gets its own socket with its own `bind_port`/firewall knob — it is not a subscriber to this one.
+
 ## Deployment-knob CLI pattern
 
 Discovery's bind-port story exposes a pattern worth naming: **deployment-knob CLI flags override config when declarative wrappers can't accept a writable file**. The shape:
 
 - Daemon's writable config file (`/var/lib/tisvlay/config.toml`) is read/written by `tisvlayd` itself — the pairing wizard persists vendor credentials here. Owned by the daemon, not by any declarative-config tool.
 - A NixOS user who wants to manage the bind port declaratively via the NixOS module ([`packaging/nix/module.nix`](../packaging/nix/module.nix)) can't put it in `services.tisvlay.settings` without making the whole config file read-only — which breaks the pairing wizard's write path.
-- The CLI flag (`tisvlayd --bind-port <PORT>`) overrides `[discovery] bind_port` from the config. NixOS module's `bindPort` option translates to a `--bind-port` arg on `ExecStart`. Config file stays writable; declarative deployment still controls the firewall-shaped knob.
+- The CLI flag (`tisvlayd --bind-port <PORT>`) overrides `[discovery] bind_port` from the config, which in turn overrides the built-in default (1901, `tisvlay_core::DEFAULT_BIND_PORT`) — so an unset port still resolves to a known, firewall-targetable value. The NixOS module's `bindPort` option (itself defaulting to 1901) translates to a `--bind-port` arg on `ExecStart`. Config file stays writable; declarative deployment still controls the firewall-shaped knob.
 
 `services.tisvlay.openFirewall = true` then adds the port to `networking.firewall.allowedUDPPorts`. The two options are asserted together — `openFirewall` without `bindPort` is rejected at NixOS evaluation time.
 

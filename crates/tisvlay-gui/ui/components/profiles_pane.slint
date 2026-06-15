@@ -440,7 +440,9 @@ component ProfileFieldRowNumber inherits Rectangle {
 
             VerticalLayout {
                 width: Design.width-label-col-profile;
-                alignment: start;
+                // Center the label against the input — same as the enum
+                // row. There's no helper line to top-align to here.
+                alignment: center;
                 Text {
                     text: root.entry.label;
                     color: Theme.text;
@@ -457,29 +459,45 @@ component ProfileFieldRowNumber inherits Rectangle {
 
             // Value column. SpinBox + optional unit Text in a
             // stretching HorizontalLayout. SpinBox's std-widget
-            // definition (every style) sets `min-width: max(128px,
-            // …)`; that floor would otherwise push the row-layout
-            // 4 px past its parent's width and shift the reset
-            // glyph right of the ComboBox rows' glyphs. We override
-            // the floor with `min-width: 0px` so the SpinBox's
-            // built-in `horizontal-stretch: 1` is free to shrink
-            // and absorb whatever space the unit Text leaves —
-            // keeping the reset column at the same x across rows.
-            // SpinBox's own internal minimum (text input + two
-            // buttons + padding ≈ 120 px) still applies inside,
-            // so we never compress the chrome below the usable
-            // floor.
+            // definition sets `min-width: max(128px, …)`; that floor
+            // would push the row-layout 4 px past its parent and shift
+            // the reset glyph right of the ComboBox rows' glyphs, so we
+            // override it with `min-width: 0px` and let the built-in
+            // `horizontal-stretch: 1` shrink to absorb whatever space
+            // the unit Text leaves — keeping the reset column at the
+            // same x across enum + number rows.
+            //
+            // Commit is deferred off the per-keystroke path: dispatching
+            // every keystroke round-trips to the daemon, whose echoed
+            // `*ProfileChanged` rebuilds this row's model and tears the
+            // focused SpinBox out from under the cursor — so multi-digit
+            // entry is impossible. Instead we route on focus state:
+            //   - `edited` while the text input is UNFOCUSED → a stepper
+            //     / scroll change → commit immediately.
+            //   - `edited` while FOCUSED → typing → defer.
+            //   - `changed has-focus` → false → commit the typed value on
+            //     blur (Tab / click away). The native SpinBox doesn't
+            //     forward `accepted`, so Enter alone does not commit.
             HorizontalLayout {
                 horizontal-stretch: 1;
                 spacing: Design.gap-stack;
                 alignment: stretch;
-                SpinBox {
+                spin := SpinBox {
                     min-width: 0px;
                     value: root.entry.number-value;
                     minimum: root.entry.min-value;
                     maximum: root.entry.max-value;
                     step-size: root.entry.step;
-                    edited(v) => { Profiles.value-edited-number(root.entry.field-name, v); }
+                    edited(v) => {
+                        if !self.has-focus {
+                            Profiles.value-edited-number(root.entry.field-name, v);
+                        }
+                    }
+                    changed has-focus => {
+                        if !self.has-focus && self.value != root.entry.number-value {
+                            Profiles.value-edited-number(root.entry.field-name, self.value);
+                        }
+                    }
                 }
                 if root.entry.unit != "": VerticalLayout {
                     alignment: center;
@@ -925,6 +943,16 @@ component ProfileDetail inherits Rectangle {
 
                         VerticalLayout {
                             width: 100%;
+                            // Rows run full-bleed horizontally (the 2 px
+                            // gutter accent meets the card's inner edge),
+                            // so the card carries no horizontal body
+                            // padding. Vertically, each row self-pads by
+                            // `gap-stack`; add the remainder up to
+                            // `pad-card` here so the first/last row clear
+                            // the card border by the same inset a `Group`
+                            // card uses in the TVs pane.
+                            padding-top: Design.pad-card - Design.gap-stack;
+                            padding-bottom: Design.pad-card - Design.gap-stack;
                             spacing: 0;
                             alignment: start;
                             for entry[i] in Profiles.editor-fields: VerticalLayout {

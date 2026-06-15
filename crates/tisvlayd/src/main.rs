@@ -41,7 +41,9 @@ struct Args {
     /// Overrides `[discovery] bind_port` in the config file. Useful for
     /// declaratively-managed deployments (NixOS, container images)
     /// that want to set the port at the deployment layer without
-    /// making the daemon's writable config read-only.
+    /// making the daemon's writable config read-only. When neither this
+    /// flag nor the config sets a port, discovery binds the default
+    /// (1901); pass 0 for an OS-chosen ephemeral port.
     /// See docs/firewall.md.
     #[arg(long, value_name = "PORT")]
     bind_port: Option<u16>,

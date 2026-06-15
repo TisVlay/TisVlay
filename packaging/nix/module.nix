@@ -118,23 +118,30 @@ in
 
     bindPort = lib.mkOption {
       type = lib.types.nullOr lib.types.port;
-      default = null;
+      default = 1901;
       example = 1901;
       description = ''
-        Pin tisvlayd's SSDP source UDP port for firewall-friendly TV
-        discovery — pairs with `openFirewall` below to drop a tight
-        `--dport` accept rule in place of the
+        SSDP source UDP port for TV discovery, pinned so `openFirewall`
+        below can drop a tight `--dport` accept rule in place of the
         broad `allow-any-UDP-from-subnet` fallback most distros
-        otherwise need. When unset (`null`, the default), the
-        kernel hands out an ephemeral port per scan and a firewall
-        rule needs to be correspondingly wide.
+        otherwise need.
 
-        Plumbed via tisvlayd's `--bind-port` CLI flag, which
-        overrides the `[discovery].bind_port` setting in the
-        daemon's writable config file. Using the CLI flag (rather
-        than baking the value into `settings`) keeps the config
-        file writable so the pairing wizard can still persist
-        credentials.
+        Defaults to 1901, matching tisvlayd's own built-in default, so
+        discovery is firewall-targetable out of the box and a user who
+        wants the port opened need only set `openFirewall = true` — no
+        need to also name the port.
+
+        Plumbed via tisvlayd's `--bind-port` CLI flag, which overrides
+        the `[discovery].bind_port` setting in the daemon's writable
+        config file. Using the CLI flag (rather than baking the value
+        into `settings`) keeps the config file writable so the pairing
+        wizard can still persist credentials.
+
+        Set to `0` for an OS-chosen ephemeral port — a firewall rule
+        then can't target a single port. Set to `null` to omit the flag
+        entirely and defer to the daemon's config/built-in default;
+        that is incompatible with `openFirewall`, since the port isn't
+        known at evaluation time.
 
         See `docs/firewall.md` for the network-level rationale.
       '';
@@ -193,19 +200,30 @@ in
       '';
     };
 
-    greeter.enable = lib.mkEnableOption ''
-      the tisvlay greeter idle client. Runs `tisvlay-greeter` as the
-      plasma-login-manager greeter user inside the greeter Wayland session
-      so managed TVs blank on greeter idle and restore on resume — OLED
-      burn-in protection at an unattended login screen.
+    greeter.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.services.displayManager.plasma-login-manager.enable;
+      defaultText = lib.literalExpression "config.services.displayManager.plasma-login-manager.enable";
+      description = ''
+        Whether to enable the tisvlay greeter idle client. Runs
+        `tisvlay-greeter` as the plasma-login-manager greeter user inside
+        the greeter Wayland session so managed TVs blank on greeter idle
+        and restore on resume — OLED burn-in protection at an unattended
+        login screen.
 
-      Only meaningful when the display manager is plasma-login-manager (the
-      unit attaches to its greeter target). The feature also needs a
-      non-zero `idle_timeout_seconds` on a system profile — set it in the
-      GUI Profiles pane or declaratively; it defaults to 0 (off), so
-      enabling this option alone installs the client but does not yet blank
-      anything
-    '';
+        Defaults to on when `services.displayManager.plasma-login-manager`
+        is the active display manager — the only greeter this client
+        currently supports (the unit attaches to its greeter target);
+        other greeters (greetd + wlroots, GDM) need separate adapters, see
+        `docs/ideas/greeter-integration-generalization.md`. Set it
+        explicitly to override.
+
+        The feature also needs a non-zero `idle_timeout_seconds` on a
+        system profile — set it in the GUI Profiles pane or declaratively;
+        it defaults to 0 (off), so enabling this option alone installs the
+        client but does not yet blank anything.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -221,6 +239,20 @@ in
         '';
       }
     ];
+
+    # tisvlay-greeter only supports plasma-login-manager today (its units
+    # below attach to that greeter's session target). greeter.enable
+    # auto-defaults to plasma-login being active; warn — rather than assert —
+    # when it is enabled on another DM, so an explicit override degrades
+    # visibly instead of silently producing units that never start. See
+    # docs/ideas/greeter-integration-generalization.md.
+    warnings =
+      lib.optional (cfg.greeter.enable && !config.services.displayManager.plasma-login-manager.enable)
+        ''
+          services.tisvlay.greeter.enable is set, but plasma-login-manager is not
+          the active display manager. The greeter idle client only supports
+          plasma-login-manager today, so tisvlay-greeter.service will not start.
+        '';
 
     # Dedicated system user and group for tisvlayd. uid/gid stay
     # unset by default — NixOS allocates from the system range and
