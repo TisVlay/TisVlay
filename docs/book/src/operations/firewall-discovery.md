@@ -8,17 +8,9 @@ LG TVs reply to SSDP from an **ephemeral** source port rather than the standard 
 
 **Symptom:** `tisvlay-gui`'s discovery (or `Manager1.StartDiscovery`) returns no TVs, but `tisvlay pair <ip>` works.
 
-## Recommended: pin the source port
+## Open the pinned source port
 
-Set a fixed SSDP source port in the daemon config so a **single** firewall rule suffices instead of opening the whole ephemeral range:
-
-```toml
-# /var/lib/tisvlay/config.toml
-[discovery]
-bind_port = 1901
-```
-
-Then allow inbound UDP on that port:
+tisvlay binds its SSDP source socket to a **fixed** port — **1901 by default** — so a single firewall rule lets the replies through instead of opening the whole ephemeral range. You don't need to configure the port; just allow inbound UDP on it:
 
 ```sh
 # Ubuntu / Debian (ufw)
@@ -32,9 +24,20 @@ sudo firewall-cmd --reload
 sudo iptables -I INPUT -p udp --dport 1901 -j ACCEPT
 ```
 
+On NixOS the module opens it for you — its `bindPort` already defaults to 1901:
+
 ```nix
-# NixOS — declarative
+services.tisvlay.openFirewall = true;
+# or, by hand:
 networking.firewall.allowedUDPPorts = [ 1901 ];
+```
+
+To use a different port — or an OS-chosen ephemeral one, which can't be narrowed to a single firewall rule — set it in the daemon config:
+
+```toml
+# /var/lib/tisvlay/config.toml
+[discovery]
+bind_port = 1901   # the default; any unused port works, or 0 for ephemeral
 ```
 
 > Note: a `--sport 1900` rule does **not** work — the TV's reply comes from an ephemeral port, so you must match on the pinned *destination* port instead.

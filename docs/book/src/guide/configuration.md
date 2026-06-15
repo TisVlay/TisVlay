@@ -43,7 +43,7 @@ scheme = "wss"
 
 ```toml
 [discovery]
-bind_port = 1901           # pin the SSDP source port so one firewall rule suffices
+bind_port = 1901           # SSDP source port (the default; 0 = OS-chosen ephemeral)
 poll_interval_ms = 8000    # streaming-discovery loop period
 ```
 
