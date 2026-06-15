@@ -148,7 +148,7 @@ tisvlay-gui = { path = "crates/tisvlay-gui", version = "0.1.0" }
 
 # Testing
 insta = { version = "1", features = ["json", "yaml", "filters"] }
-insta-cmd = "0.6"
+insta-cmd = "0.7"
 proptest = "1"
 rstest = "0.26"
 tempfile = "3"
