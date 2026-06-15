@@ -543,9 +543,8 @@ mod tests {
         let searcher = SharedSearcher::new(0, vec!["urn:tisvlay-test:shared:1".to_string()]);
 
         // First search binds the socket and starts the background reader;
-        // a second, overlapping search reuses it. With the old
-        // per-search bind, this is exactly the concurrent case that could
-        // not share a pinned source port.
+        // a second, overlapping search reuses it — the concurrent case a
+        // fixed source port makes impossible to bind twice (EADDRINUSE).
         let s1 = searcher
             .search(Duration::from_millis(300))
             .await

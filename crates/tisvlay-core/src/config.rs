@@ -1064,9 +1064,9 @@ pub struct DiscoveryConfig {
     /// so discovery is firewall-targetable out of the box — a single
     /// `--dport` rule suffices instead of the broad
     /// `accept any UDP from subnet` an ephemeral port would force.
-    /// Set an explicit port to override; set `0` for the old
-    /// OS-chosen ephemeral behavior. See `docs/firewall.md` for the
-    /// per-distro rule recipes.
+    /// Set an explicit port to override; set `0` for an OS-chosen
+    /// ephemeral port. See `docs/firewall.md` for the per-distro rule
+    /// recipes.
     #[serde(default)]
     pub bind_port: Option<u16>,
 
