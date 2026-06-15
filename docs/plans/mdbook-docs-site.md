@@ -33,6 +33,14 @@ Merged `origin/main` into this branch (single conflict — `docs/plans/README.md
 - [x] **Latched-screen-state reliability note** — added that the desired screen state survives a reconnect / the login→session handoff (the user-visible upshot of #83's latch + reconcile).
 - Non-items, checked: `profiles.md` describes resolution abstractly (no field-name churn); `cli-generated.md` unchanged (#82/#83 don't touch the clap surface — `docs-cli-check` green); the concise root README stays feature-level and accurate.
 
+### Post-merge reconciliation (#84–#85 landed on main)
+
+Merged `origin/main` into this branch (single conflict — `flake.nix`'s dev-shell `packages` list: took main's treefmt-reformatted list and re-inserted `mdbook`/`mdbook-mermaid`; `daemon.toml` auto-merged; `just check` green, 557 tests). #84 is GUI-internal polish (no book surface). #85's "simplify config defaults" needed the discovery/greeter framing folded in:
+
+- [x] **SSDP `bind_port` now defaults to 1901** (#85, was an OS-chosen ephemeral port). Reframed `operations/firewall-discovery.md` from "Recommended: pin the source port" to "Open the pinned source port" — the port is fixed by default, so the user only opens the firewall (added the `services.tisvlay.openFirewall = true` route, since the module's `bindPort` also defaults to 1901). Marked 1901 as the default in the `configuration.md` `[discovery]` comment (`0` = ephemeral).
+- [x] **Greeter client auto-enables on NixOS** (#85). `session-automation.md` now notes `services.tisvlay.greeter.enable` defaults on when plasma-login-manager is the active display manager (the only supported greeter today), rather than being a manual opt-in.
+- Non-items, checked: the shared-SSDP-socket coalescing (#85) is internal (no user-facing surface); `doCheck = false` / `checks.tests` is a packaging/dev-build change, not user-guide material; #84's profiles-pane number-field UX is GUI-internal (no book page describes the widget); `cli-generated.md` unchanged — #84/#85 don't touch the `tisvlay` clap surface (`docs-cli-check` green).
+
 ## Context
 
 tisvlay has no user-facing docs site today — `docs/*.md` is ~95% developer-facing (design, testing, ideas, plans), and the `main` README is a 67-line stub. We want a published user guide (install / pair / CLI / config / firewall / troubleshooting) on **Read the Docs**.
