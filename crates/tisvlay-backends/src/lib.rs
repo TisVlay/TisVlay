@@ -364,14 +364,13 @@ fn register_lg(registry: &mut BackendRegistry, discovery: &tisvlay_core::Discove
     #[cfg(feature = "discovery")]
     let lg_discover_fn: Option<Arc<DiscoverFn>> = {
         use tisvlay_core::TvDiscovery;
-        let mut lg_discovery = tisvlay_lg::LgDiscovery::new();
-        if let Some(port) = discovery.bind_port {
-            lg_discovery = lg_discovery.with_bind_port(port);
-        }
-        let discovery = Arc::new(lg_discovery);
+        // Resolve the effective source port (config value or the 1901
+        // default) so the shared SSDP socket always binds a known,
+        // firewall-targetable port. A configured 0 still means ephemeral.
+        let lg_discovery = Arc::new(tisvlay_lg::LgDiscovery::new(discovery.bind_port()));
         Some(Arc::new(move |timeout| {
-            let discovery = Arc::clone(&discovery);
-            Box::pin(async move { discovery.discover(timeout).await })
+            let lg = Arc::clone(&lg_discovery);
+            Box::pin(async move { lg.discover(timeout).await })
         }))
     };
 
