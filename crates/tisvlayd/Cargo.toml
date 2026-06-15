@@ -44,7 +44,7 @@ indexmap = { workspace = true }
 uuid = { workspace = true }
 rtnetlink = "0.21"
 netlink-packet-core = "0.8"
-netlink-packet-route = "0.30"
+netlink-packet-route = "0.31"
 async-trait = { workspace = true }
 
 # Sync mutex without poisoning for the in-flight pairing session map.
