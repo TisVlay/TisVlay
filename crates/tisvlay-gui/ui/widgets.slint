@@ -85,6 +85,60 @@ export component Chip inherits Rectangle {
 }
 
 // =============================================================================
+// InfoTip — small "?" glyph that reveals help text on hover.
+// =============================================================================
+//
+// Drop next to a control label to document a pane option without
+// permanently spending the vertical space that inline `helper:` text
+// does. The hover region is just this glyph (the built-in `Tooltip`
+// fills its parent's box, which here is the 16px circle), so a
+// stretched slider/combo row doesn't become one big hover target.
+// Call sites should gate on a non-empty tip (`if tip != "": InfoTip`)
+// so a tip-less row shows no glyph at all.
+
+export component InfoTip inherits Rectangle {
+    in property <string> text;
+
+    // Qualified enum: the local `text` property would otherwise shadow
+    // the `text` AccessibleRole value.
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: self.width / 2;
+    background: touch.has-hover ? Theme.info-soft : transparent;
+    border-color: touch.has-hover ? Theme.info : Theme.border;
+    border-width: Design.border-thin;
+    animate background, border-color { duration: 120ms; }
+
+    Text {
+        text: "?";
+        color: touch.has-hover ? Theme.info-text : Theme.text-faint;
+        font-size: Design.font-mini;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: help;
+    }
+
+    // The Tooltip's parent must be a non-layout item (this Rectangle),
+    // with at most one per parent. A plain string can't coerce to the
+    // styled-text `text`, so a dynamic tip goes through the markdown
+    // template form.
+    if root.text != "": Tooltip {
+        text: @markdown("\{root.text}");
+    }
+}
+
+// =============================================================================
 // LinkText — clickable single-line text with a tight hit area.
 // =============================================================================
 //
@@ -992,6 +1046,9 @@ export component IconBtn inherits Rectangle {
     /// reads as a labeled action; when empty, behaves as a square
     /// icon-only button (the original 24×24 ghost style).
     in property <string> label: "";
+    /// Optional hover help. Especially useful for icon-only buttons
+    /// (label == ""), where the glyph alone doesn't name the action.
+    in property <string> tip;
     callback clicked();
 
     accessible-role: button;
@@ -1076,6 +1133,11 @@ export component IconBtn inherits Rectangle {
     touch := TouchArea {
         enabled: root.interactive;
         clicked => { root.clicked(); }
+    }
+
+    // Direct child of the root Rectangle (never inside the layout above).
+    if root.tip != "": Tooltip {
+        text: @markdown("\{root.tip}");
     }
 }
 

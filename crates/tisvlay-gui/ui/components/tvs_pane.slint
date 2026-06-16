@@ -16,7 +16,7 @@ import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pair
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
-import { DangerBtn, Chip, ConfirmDialog, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
+import { DangerBtn, Chip, ConfirmDialog, Group, InfoTip, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 import { SchemaForm } from "schema_form.slint";
@@ -99,6 +99,9 @@ export struct TvViewModel {
 component FormRow {
     in property <string> label;
     in property <string> helper;
+    // Optional hover help shown as a "?" glyph next to the label —
+    // for context that doesn't warrant permanent inline `helper:` text.
+    in property <string> tip;
     in property <length> label-width: Design.width-label-col;
 
     HorizontalLayout {
@@ -113,11 +116,18 @@ component FormRow {
             // control itself, so the label top-aligns to track the
             // control's top edge (standard inline-form pattern).
             alignment: root.helper != "" ? start : center;
-            Text {
-                text: root.label;
-                color: Theme.text;
-                font-size: Design.font-body;
-                vertical-alignment: root.helper != "" ? top : center;
+            HorizontalLayout {
+                spacing: Design.gap-form;
+                alignment: start;
+                Text {
+                    text: root.label;
+                    color: Theme.text;
+                    font-size: Design.font-body;
+                    vertical-alignment: root.helper != "" ? top : center;
+                }
+                if root.tip != "": InfoTip {
+                    text: root.tip;
+                }
             }
         }
 
@@ -678,6 +688,7 @@ component TvDetail inherits Rectangle {
                                 IconBtn {
                                     source: Icons.edit;
                                     accessible-label: @tr("Edit system profile");
+                                    tip: @tr("Edit system profile");
                                     enabled: root.system-profiles.length > 0;
                                     clicked => {
                                         Profiles.open-profile-by-uuid(
@@ -726,6 +737,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Backlight");
+                        tip: @tr("Panel brightness. Lower values reduce power draw and burn-in risk.");
                         OptimisticSlider {
                             model-value: root.tv.backlight;
                             enabled: root.tv.connected;
@@ -736,7 +748,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Screen");
-                        // helper: "Blanks the panel without powering off (OLED-safe, instant resume).";
+                        tip: @tr("Blanks the panel without powering off (OLED-safe, instant resume).");
                         HorizontalLayout {
                             alignment: start;
                             VerticalLayout {
@@ -792,7 +804,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Primary");
-                        // helper: "Which input this PC uses; affects on-primary automation.";
+                        tip: @tr("Which input this PC uses; affects on-primary automation.");
                         ComboBox {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input == "" ? "—" : root.tv.primary-input;
