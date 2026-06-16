@@ -980,10 +980,10 @@ impl TvManager {
             self.emit_connection_changed(tv_id, false);
         }
 
-        if should_disconnect || should_reconnect {
-            if let Some(iface) = interface {
-                self.emit_state_change(StateChangeEvent::InterfaceUp { interface: iface });
-            }
+        if (should_disconnect || should_reconnect)
+            && let Some(iface) = interface
+        {
+            self.emit_state_change(StateChangeEvent::InterfaceUp { interface: iface });
         }
     }
 
@@ -1211,10 +1211,10 @@ impl TvManager {
 
         // Create the marker for subsequent restarts.
         // Failure is non-fatal but means on_startup will fire on every restart.
-        if let Some(dir) = marker_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                warn!(error = %e, "Failed to create boot marker directory — on_startup will fire on every restart");
-            }
+        if let Some(dir) = marker_path.parent()
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            warn!(error = %e, "Failed to create boot marker directory — on_startup will fire on every restart");
         }
         if let Err(e) = std::fs::write(marker_path, "") {
             warn!(error = %e, "Failed to write boot marker — on_startup will fire on every restart");
@@ -3914,12 +3914,12 @@ impl TvManager {
         } // per-TV lock released before I/O
 
         // Keep the outer managed flag in sync when this helper toggles `managed`.
-        if key == "managed" {
-            if let Ok(managed_val) = value.parse::<bool>() {
-                let mut tvs = self.tvs.write().await;
-                if let Some((flag, _)) = tvs.get_mut(tv_id) {
-                    *flag = managed_val;
-                }
+        if key == "managed"
+            && let Ok(managed_val) = value.parse::<bool>()
+        {
+            let mut tvs = self.tvs.write().await;
+            if let Some((flag, _)) = tvs.get_mut(tv_id) {
+                *flag = managed_val;
             }
         }
 
@@ -4151,10 +4151,10 @@ impl TvManager {
                 if key == "system_profile" {
                     system_profile_changed = true;
                 }
-                if key == "managed" {
-                    if let Ok(b) = value.parse::<bool>() {
-                        managed_changed_to = Some(b);
-                    }
+                if key == "managed"
+                    && let Ok(b) = value.parse::<bool>()
+                {
+                    managed_changed_to = Some(b);
                 }
             }
             for (key, value) in &vendor_patches {
