@@ -19,6 +19,11 @@ Working space for in-progress plan docs — anything substantial enough that a m
   git-rev pin of unreleased Slint 1.17, then add a reusable `InfoTip` tooltip
   widget to document pane option controls. Two ordered PRs (migration carries a
   `publish = false` policy change; tooltips need the 1.17 compiler).
+- [`tooltip-contextual-help.md`](tooltip-contextual-help.md) — redesign the
+  tooltip UX onto KDE conventions: inline helper text + an "i"
+  `ContextualHelpButton` toggletip backed by a custom element-anchored popover
+  (Slint's built-in `Tooltip` jitters / can't wrap). Supersedes the `InfoTip`
+  "?" glyph from the plan above; scoped to the primitive + TVs pane first.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
