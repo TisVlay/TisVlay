@@ -15,7 +15,10 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None currently._
+- [`slint-1.17-tooltip.md`](slint-1.17-tooltip.md) — migrate `tisvlay-gui` to a
+  git-rev pin of unreleased Slint 1.17, then add a reusable `InfoTip` tooltip
+  widget to document pane option controls. Two ordered PRs (migration carries a
+  `publish = false` policy change; tooltips need the 1.17 compiler).
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
