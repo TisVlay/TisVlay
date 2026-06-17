@@ -142,12 +142,14 @@ component FormRow {
             // fill their parent's available width by default, so the
             // explicit `width: 100%` is both unnecessary and harmful.
             HorizontalLayout {
-                spacing: Design.gap-tight;
+                spacing: Design.gap-row;
                 @children
-                // Trailing "i" toggletip (right of the control), per KDE.
+                // Trailing "i" toggletip (right of the control). Matches
+                // the PROFILES rows' trailing edit-pencil wrapper so all
+                // right-side row buttons share one layout + spacing.
                 if root.help != "": VerticalLayout {
                     alignment: center;
-                    horizontal-stretch: 0;
+                    width: 24px;
                     ContextualHelpButton {
                         text: root.help;
                         bullets: root.help-bullets;

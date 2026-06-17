@@ -117,15 +117,16 @@ export component ContextualHelpButton inherits Rectangle {
     };
     property <bool> active: Help.shown && Help.owner == root.help-id;
 
+    // Ghost style matching IconBtn: squarish, no resting border, dim
+    // glyph — so it sits naturally among the other right-side row
+    // buttons. Picks up the blue info tint only when hovered/engaged.
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    width: 18px;
-    height: 18px;
-    border-radius: self.width / 2;
+    min-width: 24px;
+    min-height: 24px;
+    border-radius: Design.radius-control;
     background: touch.has-hover || root.active ? Theme.info-soft : transparent;
-    border-color: touch.has-hover || root.active ? Theme.info : Theme.border;
-    border-width: Design.border-thin;
-    animate background, border-color { duration: 120ms; }
+    animate background { duration: 150ms; }
 
     accessible-role: button;
     accessible-label: root.name;
@@ -136,11 +137,13 @@ export component ContextualHelpButton inherits Rectangle {
 
     Image {
         source: Icons.info;
-        width: 12px;
-        height: 12px;
+        width: 14px;
+        height: 14px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        colorize: touch.has-hover || root.active ? Theme.info-text : Theme.text-faint;
+        colorize: touch.has-hover || root.active ? Theme.info-text : Theme.text-dim;
+        // Dim at rest like IconBtn's ghost glyph; full on engage.
+        opacity: touch.has-hover || root.active ? 1.0 : 0.7;
     }
 
     touch := TouchArea {
