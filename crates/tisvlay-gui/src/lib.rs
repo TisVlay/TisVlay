@@ -403,6 +403,15 @@ pub fn run() -> Result<()> {
     // keeps the cross-surface affordance consistent.
     icons.set_im_user(load_themed_icon(&["im-user"]));
     icons.set_system_users(load_themed_icon(&["system-users"]));
+    // Contextual-help "i" glyph for the help toggletip. Lead with the
+    // name KDE's own help button uses; `dialog-information` is a
+    // busier, different glyph kept only as a last-resort fallback.
+    icons.set_info(load_themed_icon(&[
+        "help-contextual-symbolic",
+        "help-contextual",
+        "documentinfo",
+        "dialog-information",
+    ]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing

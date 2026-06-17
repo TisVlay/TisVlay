@@ -16,7 +16,7 @@ import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pair
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
-import { DangerBtn, Chip, ConfirmDialog, Group, InfoTip, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
+import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 import { SchemaForm } from "schema_form.slint";
@@ -99,9 +99,11 @@ export struct TvViewModel {
 component FormRow {
     in property <string> label;
     in property <string> helper;
-    // Optional hover help shown as a "?" glyph next to the label —
-    // for context that doesn't warrant permanent inline `helper:` text.
-    in property <string> tip;
+    // Optional longer / optional help, revealed by a trailing "i"
+    // ContextualHelpButton. `help-bullets` adds a bulleted list (e.g.
+    // documenting each option of the control).
+    in property <string> help;
+    in property <[string]> help-bullets;
     in property <length> label-width: Design.width-label-col;
 
     HorizontalLayout {
@@ -116,18 +118,11 @@ component FormRow {
             // control itself, so the label top-aligns to track the
             // control's top edge (standard inline-form pattern).
             alignment: root.helper != "" ? start : center;
-            HorizontalLayout {
-                spacing: Design.gap-form;
-                alignment: start;
-                Text {
-                    text: root.label;
-                    color: Theme.text;
-                    font-size: Design.font-body;
-                    vertical-alignment: root.helper != "" ? top : center;
-                }
-                if root.tip != "": InfoTip {
-                    text: root.tip;
-                }
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+                vertical-alignment: root.helper != "" ? top : center;
             }
         }
 
@@ -147,7 +142,17 @@ component FormRow {
             // fill their parent's available width by default, so the
             // explicit `width: 100%` is both unnecessary and harmful.
             HorizontalLayout {
+                spacing: Design.gap-tight;
                 @children
+                // Trailing "i" toggletip (right of the control), per KDE.
+                if root.help != "": VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    ContextualHelpButton {
+                        text: root.help;
+                        bullets: root.help-bullets;
+                    }
+                }
             }
 
             if root.helper != "": Text {
@@ -737,7 +742,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Backlight");
-                        tip: @tr("Panel brightness. Lower values reduce power draw and burn-in risk.");
+                        help: @tr("Panel brightness. Lower values reduce power draw and burn-in risk.");
                         OptimisticSlider {
                             model-value: root.tv.backlight;
                             enabled: root.tv.connected;
@@ -748,7 +753,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Screen");
-                        tip: @tr("Blanks the panel without powering off (OLED-safe, instant resume).");
+                        help: @tr("Blanks the panel without powering off (OLED-safe, instant resume).");
                         HorizontalLayout {
                             alignment: start;
                             VerticalLayout {
@@ -793,6 +798,11 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Current");
+                        help: @tr("Which input the TV is showing right now.");
+                        help-bullets: [
+                            @tr("Current — what's on screen now; changing it switches the live input."),
+                            @tr("Primary — the input this PC uses, for on-primary automation."),
+                        ];
                         ComboBox {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
@@ -804,7 +814,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Primary");
-                        tip: @tr("Which input this PC uses; affects on-primary automation.");
+                        help: @tr("Which input this PC uses; affects on-primary automation.");
                         ComboBox {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input == "" ? "—" : root.tv.primary-input;

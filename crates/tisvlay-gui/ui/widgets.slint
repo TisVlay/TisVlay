@@ -85,56 +85,178 @@ export component Chip inherits Rectangle {
 }
 
 // =============================================================================
-// InfoTip — small "?" glyph that reveals help text on hover.
+// HelpBubble — the visual body of a help popover (no trigger logic).
 // =============================================================================
 //
-// Drop next to a control label to document a pane option without
-// permanently spending the vertical space that inline `helper:` text
-// does. The hover region is just this glyph (the built-in `Tooltip`
-// fills its parent's box, which here is the 16px circle), so a
-// stretched slider/combo row doesn't become one big hover target.
-// Call sites should gate on a non-empty tip (`if tip != "": InfoTip`)
-// so a tip-less row shows no glyph at all.
-
-export component InfoTip inherits Rectangle {
+// A shadowed, bordered card with a wrapped paragraph and optional
+// bullet rows. Placed inside a PopupWindow by the help widgets below;
+// it carries no hover/click behavior itself. The width is fixed so the
+// paragraph wraps; the height flows from the wrapped content. An outer
+// transparent inset gives the drop shadow room — popups clip at their
+// own bounds, so a shadow drawn at the card edge would be cut off.
+component HelpBubble inherits Rectangle {
     in property <string> text;
+    in property <[string]> bullets;
+    // Paragraph wrap width (the card; the popover adds the inset).
+    in property <length> content-width: 320px;
+    property <length> inset: 8px;
 
-    // Qualified enum: the local `text` property would otherwise shadow
-    // the `text` AccessibleRole value.
-    accessible-role: AccessibleRole.text;
-    accessible-label: root.text;
+    width: root.content-width + root.inset * 2;
+    height: card.height + root.inset * 2;
+    background: transparent;
+
+    card := Rectangle {
+        x: root.inset;
+        y: root.inset;
+        width: root.content-width;
+        height: col.preferred-height + 20px;
+        background: Theme.surface;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: Theme.drop-shadow;
+        drop-shadow-offset-y: 4px;
+
+        col := VerticalLayout {
+            x: 10px;
+            y: 10px;
+            width: parent.width - 20px;
+            spacing: Design.gap-tight;
+            if root.text != "": Text {
+                text: root.text;
+                wrap: word-wrap;
+                width: 100%;
+                color: Theme.text;
+                font-size: Design.font-helper;
+            }
+            for bullet in root.bullets: HorizontalLayout {
+                spacing: Design.gap-tight;
+                Text {
+                    text: "•";
+                    color: Theme.text-faint;
+                    font-size: Design.font-helper;
+                }
+                Text {
+                    text: bullet;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    color: Theme.text;
+                    font-size: Design.font-helper;
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// ContextualHelpButton — KDE-style "i" toggletip for settings-row help.
+// =============================================================================
+//
+// A circled "i" glyph placed trailing a control. Click/tap latches the
+// help card open; hovering (after a short linger) also opens it
+// transiently. The two open-sources are independent and OR'd, so a
+// click never closes what a hover opened. Dismiss: click again,
+// Escape, or (for the hover-only contribution) move off the glyph.
+// The card is anchored just below the glyph — it never tracks the
+// pointer — wraps long text, and the window keeps it on screen.
+export component ContextualHelpButton inherits Rectangle {
+    in property <string> text;
+    in property <[string]> bullets;
+    // Accessible name (the button's role label); the help copy itself
+    // rides on `accessible-description` so a screen-reader user who
+    // can't hover still hears it.
+    in property <string> name: @tr("Show help");
+
+    // click latch                 // hover contribution (after linger)
+    property <bool> pinned;
+    property <bool> hover-shown;
+    property <bool> open: root.pinned || root.hover-shown;
 
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     border-radius: self.width / 2;
-    background: touch.has-hover ? Theme.info-soft : transparent;
-    border-color: touch.has-hover ? Theme.info : Theme.border;
+    background: touch.has-hover || root.open ? Theme.info-soft : transparent;
+    border-color: touch.has-hover || root.open ? Theme.info : Theme.border;
     border-width: Design.border-thin;
     animate background, border-color { duration: 120ms; }
 
-    Text {
-        text: "?";
-        color: touch.has-hover ? Theme.info-text : Theme.text-faint;
-        font-size: Design.font-mini;
-        font-weight: 700;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        width: 100%;
-        height: 100%;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-description: root.text;
+    accessible-action-default => { root.pinned = !root.pinned; }
+
+    Image {
+        source: Icons.info;
+        width: 12px;
+        height: 12px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        colorize: touch.has-hover || root.open ? Theme.info-text : Theme.text-faint;
     }
 
     touch := TouchArea {
         mouse-cursor: help;
+        clicked => {
+            root.pinned = !root.pinned;
+        }
+        changed has-hover => {
+            if (self.has-hover) {
+                hover-timer.running = true;
+            } else {
+                hover-timer.running = false;
+                root.hover-shown = false;
+            }
+        }
     }
 
-    // The Tooltip's parent must be a non-layout item (this Rectangle),
-    // with at most one per parent. A plain string can't coerce to the
-    // styled-text `text`, so a dynamic tip goes through the markdown
-    // template form.
-    if root.text != "": Tooltip {
-        text: @markdown("\{root.text}");
+    // Hover-intent linger (KDE's tooltip delay). `running: false` so it
+    // doesn't fire on construction; restarted on hover-enter.
+    hover-timer := Timer {
+        interval: 700ms;
+        running: false;
+        triggered() => {
+            self.running = false;
+            root.hover-shown = true;
+        }
+    }
+
+    // PopupWindow opens/closes imperatively; drive it off the derived
+    // `open` state.
+    changed open => {
+        if (root.open) {
+            pop.show();
+        } else {
+            pop.close();
+        }
+    }
+
+    pop := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: bubble.width;
+        height: bubble.height;
+        // no-auto-close: a click on the "i" is an outside-popup click
+        // that would otherwise race our toggle. We own every dismissal
+        // (re-click, Escape, hover-leave), so Escape is wired manually.
+        close-policy: no-auto-close;
+
+        FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.pinned = false;
+                    root.hover-shown = false;
+                    return accept;
+                }
+                return reject;
+            }
+            bubble := HelpBubble {
+                text: root.text;
+                bullets: root.bullets;
+            }
+        }
     }
 }
 
@@ -1133,11 +1255,47 @@ export component IconBtn inherits Rectangle {
     touch := TouchArea {
         enabled: root.interactive;
         clicked => { root.clicked(); }
+        // Hover hint: linger opens an anchored help card below the
+        // button; leaving closes it. Click stays the button's action.
+        changed has-hover => {
+            if (self.has-hover && root.tip != "") {
+                tip-timer.running = true;
+            } else {
+                tip-timer.running = false;
+                root.tip-shown = false;
+            }
+        }
     }
 
-    // Direct child of the root Rectangle (never inside the layout above).
-    if root.tip != "": Tooltip {
-        text: @markdown("\{root.tip}");
+    property <bool> tip-shown;
+    tip-timer := Timer {
+        interval: 700ms;
+        running: false;
+        triggered() => {
+            self.running = false;
+            root.tip-shown = true;
+        }
+    }
+    changed tip-shown => {
+        if (root.tip-shown) {
+            tip-pop.show();
+        } else {
+            tip-pop.close();
+        }
+    }
+
+    // Declared unconditionally (a directly-conditional PopupWindow is
+    // rejected); it only ever shows when `tip` is set, since the hover
+    // gate above never sets `tip-shown` for an empty tip.
+    tip-pop := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: tip-bubble.width;
+        height: tip-bubble.height;
+        close-policy: no-auto-close;
+        tip-bubble := HelpBubble {
+            text: root.tip;
+        }
     }
 }
 
