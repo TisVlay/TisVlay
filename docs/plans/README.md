@@ -15,15 +15,16 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [`slint-1.17-tooltip.md`](slint-1.17-tooltip.md) — migrate `tisvlay-gui` to a
-  git-rev pin of unreleased Slint 1.17, then add a reusable `InfoTip` tooltip
-  widget to document pane option controls. Two ordered PRs (migration carries a
-  `publish = false` policy change; tooltips need the 1.17 compiler).
-- [`tooltip-contextual-help.md`](tooltip-contextual-help.md) — redesign the
-  tooltip UX onto KDE conventions: inline helper text + an "i"
-  `ContextualHelpButton` toggletip backed by a custom element-anchored popover
-  (Slint's built-in `Tooltip` jitters / can't wrap). Supersedes the `InfoTip`
-  "?" glyph from the plan above; scoped to the primitive + TVs pane first.
+- [`slint-1.17-tooltip.md`](slint-1.17-tooltip.md) — **(migration reverted)**
+  briefly pinned Slint 1.17-pre for its native `Tooltip`; reverted to crates.io
+  1.16.1 once the help UI became our own overlay. Historical record; kept the
+  MSRV 1.92 + let-chain fixes.
+- [`tooltip-contextual-help.md`](tooltip-contextual-help.md) — **(as-built)**
+  KDE-style contextual help: inline helper text + an "i" `ContextualHelpButton`
+  toggletip, rendered by an in-window overlay (`Help` global + `HelpOverlay`)
+  with focus-out dismiss, shrink-to-fit width, anchor tracking, and
+  ScrollView-clamped placement. Scoped to the primitive + TVs pane; includes the
+  Slint `Tooltip`/`PopupWindow` evolution notes worth upstreaming.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:

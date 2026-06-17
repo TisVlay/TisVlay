@@ -1,5 +1,16 @@
 # Slint 1.17 migration + reusable Tooltip pattern
 
+> **Status: migration reverted (back on crates.io 1.16.1).** Phase A (this plan)
+> landed, then we reverted it: the contextual-help UI became our own in-window
+> overlay (see `tooltip-contextual-help.md`), so 1.17's native `Tooltip` buys
+> nothing, and 1.17's new `SystemTrayIcon` couples `i-slint-core` to `ksni`'s
+> hardcoded `async-io` backend, which clashed with `tisvlay-tray`'s default-tokio
+> ksni (write-up: `docs/slint-systemtray-ksni-issue.md`). **Kept** from the
+> migration: the workspace `rust-version` 1.92 (now floored by the let-chain
+> fixes, not Slint) and the `collapsible_if` let-chain reformats. Phase B (the
+> `InfoTip` "?" proof) was superseded by the overlay redesign. The plan below is
+> the historical record of the migration mechanics.
+
 ## Context
 
 This work will (1) migrate `tisvlay-gui` off the pinned Slint `=1.16.1`
