@@ -94,18 +94,29 @@ export global Help {
 component HelpBubble inherits Rectangle {
     in property <string> text;
     in property <[string]> bullets;
-    in property <length> content-width: 320px;
-    property <length> inset: 8px;
+    // Cap on the text column. The bubble shrinks BELOW this to fit
+    // short text, and only grows to (and wraps at) the cap for long
+    // text — so a one-liner gets a snug box, not a fixed-width one.
+    in property <length> max-text-width: 320px;
+    property <length> pad: 10px;   // card inner padding, each side
+    property <length> inset: 8px;  // shadow breathing room, each side
 
-    width: root.content-width + root.inset * 2;
+    // Slint reports a word-wrap Text's preferred-width as its NoWrap
+    // (natural single-line) width, so `col.preferred-width` is the
+    // widest line in the content. Fit the column to it, clamped to the
+    // cap; the Texts then wrap within `text-w` only once it has to
+    // clamp. (Same result as Qt's hidden 1-line measuring Text, native.)
+    property <length> text-w: min(col.preferred-width, root.max-text-width);
+
+    width: root.text-w + root.pad * 2 + root.inset * 2;
     height: card.height + root.inset * 2;
     background: transparent;
 
     card := Rectangle {
         x: root.inset;
         y: root.inset;
-        width: root.content-width;
-        height: col.preferred-height + 20px;
+        width: root.text-w + root.pad * 2;
+        height: col.preferred-height + root.pad * 2;
         background: Theme.surface;
         border-color: Theme.border;
         border-width: Design.border-thin;
@@ -115,9 +126,9 @@ component HelpBubble inherits Rectangle {
         drop-shadow-offset-y: 4px;
 
         col := VerticalLayout {
-            x: 10px;
-            y: 10px;
-            width: parent.width - 20px;
+            x: root.pad;
+            y: root.pad;
+            width: root.text-w;
             spacing: Design.gap-tight;
             if root.text != "": Text {
                 text: root.text;
