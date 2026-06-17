@@ -17,7 +17,7 @@ import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
 import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
-import { Help } from "../globals/help.slint";
+import { HelpScrollView } from "../globals/help.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 import { SchemaForm } from "schema_form.slint";
@@ -573,34 +573,11 @@ component TvDetail inherits Rectangle {
             tv: root.tv;
         }
 
-        // Scrollable body. Pin viewport-width to visible-width so the
-        // content cannot scroll horizontally; without this, a row whose
-        // preferred width exceeds the visible viewport (e.g. a Slider
-        // stretched via FormRow) lets the viewport grow to fit and the
-        // overflow clips at the window edge instead of the card.
-        ScrollView {
-            viewport-width: self.visible-width;
-            // Scrolling moves the help anchors; nudge the overlay to
-            // re-read them (observing the scroll offset is cheap and
-            // doesn't touch absolute-position).
-            changed viewport-y => {
-                Help.reposition-tick += 1;
-            }
-            // Confine a bubble whose anchor is inside this viewport so a
-            // scrolled-away anchor pins to the scroll edge, not the
-            // window (which would ride up over the header / sidebar).
-            // Push our rect when a bubble appears and on each reposition
-            // tick (resize); `set-clip-if-inside` ignores it when the
-            // live bubble belongs elsewhere. absolute-position is read
-            // only in these post-layout handlers, never eagerly.
-            property <bool> help-shown-mirror: Help.shown;
-            property <int> reposition-mirror: Help.reposition-tick;
-            changed help-shown-mirror => {
-                Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
-            }
-            changed reposition-mirror => {
-                Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
-            }
+        // Scrollable body. HelpScrollView pins viewport-width (so a row
+        // wider than the viewport — e.g. a stretched Slider — clips at
+        // the card, not the window) and confines help bubbles to this
+        // viewport on scroll/resize. See globals/help.slint.
+        HelpScrollView {
             VerticalLayout {
                 width: 100%;
                 padding-left: Design.pad-pane;

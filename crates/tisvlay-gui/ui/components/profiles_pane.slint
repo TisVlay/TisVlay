@@ -25,7 +25,7 @@ import { Icons } from "../globals/icons.slint";
 import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
 import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
-import { Help } from "../globals/help.slint";
+import { HelpScrollView } from "../globals/help.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -876,23 +876,11 @@ component ProfileDetail inherits Rectangle {
         // ("SYSTEM PROFILE" / "USER PROFILE") so a user who arrived
         // via the TVs-pane pencil pane-hop sees the context without
         // relying on the col-1 tile glyph alone.
-        ScrollView {
-            viewport-width: self.visible-width;
-            // Help-bubble scroll tracking + viewport clip (see help.slint /
-            // tvs_pane). Reads absolute-position only in these post-layout
-            // handlers; `set-clip-if-inside` ignores bubbles anchored
-            // outside this ScrollView (e.g. the header rename/delete tips).
-            changed viewport-y => {
-                Help.reposition-tick += 1;
-            }
-            property <bool> help-shown-mirror: Help.shown;
-            property <int> reposition-mirror: Help.reposition-tick;
-            changed help-shown-mirror => {
-                Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
-            }
-            changed reposition-mirror => {
-                Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
-            }
+        // HelpScrollView pins viewport-width and confines help bubbles to
+        // this viewport on scroll/resize — bubbles anchored outside it (the
+        // header rename/delete tips) are left to the window. See
+        // globals/help.slint.
+        HelpScrollView {
             VerticalLayout {
                 width: 100%;
                 padding-left: Design.pad-pane;

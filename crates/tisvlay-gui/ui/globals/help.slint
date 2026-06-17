@@ -12,6 +12,7 @@
 // bubble — centered over the anchor, shifted to stay on screen, and
 // flipped below when there's no room above.
 
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 
@@ -331,4 +332,35 @@ export component HelpOverlay inherits Rectangle {
             }
         }
     }
+}
+
+// =============================================================================
+// HelpScrollView — a ScrollView that confines help bubbles to its viewport.
+// =============================================================================
+//
+// Drop-in replacement for a pane's scrollable body when it hosts help
+// affordances (ContextualHelpButton / IconBtn tips). It bumps the
+// reposition tick on scroll and pushes its viewport rect to Help.clip —
+// gated (via set-clip-if-inside) to bubbles anchored INSIDE it — so a
+// scrolled-away anchor pins the bubble to the scroll edge, not the
+// window (which would ride up over the header / sidebar). Encapsulates
+// the wiring every scrollable pane would otherwise re-solder.
+//
+// Pins viewport-width to visible-width (no horizontal scroll — the pane
+// convention). absolute-position is read only in these post-layout
+// handlers, never eagerly (which would trip the layout-cache panic).
+export component HelpScrollView inherits ScrollView {
+    viewport-width: self.visible-width;
+    changed viewport-y => {
+        Help.reposition-tick += 1;
+    }
+    property <bool> help-shown-mirror: Help.shown;
+    property <int> reposition-mirror: Help.reposition-tick;
+    changed help-shown-mirror => {
+        Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
+    }
+    changed reposition-mirror => {
+        Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
+    }
+    @children
 }
