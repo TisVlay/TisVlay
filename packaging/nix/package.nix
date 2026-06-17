@@ -15,17 +15,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   src = lib.cleanSource ../../.;
 
-  cargoLock = {
-    lockFile = ../../Cargo.lock;
-    # Slint is pinned to a git rev (1.17 is unreleased); buildRustPackage
-    # needs the source hash for the git crates. One entry covers every
-    # sibling crate from the shared rev. Re-capture (fake-hash flow) when
-    # the rev advances; drop this when the pin returns to a crates.io
-    # version. See docs/concerns/slint-unstable-winit-030.md.
-    outputHashes = {
-      "slint-1.17.0" = "sha256-MIAKr0w9p/vHAAMw9F4rZ/obxay0J542QnH6hY1s+Xs=";
-    };
-  };
+  cargoLock.lockFile = ../../Cargo.lock;
 
   # tisvlay-gui dlopens Slint's femtovg + winit runtime libs;
   # tisvlay-session and tisvlay-greeter dlopen libwayland-client.so via

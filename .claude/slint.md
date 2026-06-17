@@ -14,16 +14,13 @@ binary itself listens.
 
 ### Setup gotchas
 
-- **Pin `i-slint-backend-selector` to the exact same source as `slint`.**
-  It does not follow semver. Mismatch → build fails. Slint is currently
-  pinned to a git rev (1.17 unreleased; needed for the `Tooltip`
-  element), so the selector takes the identical `git` + `rev`:
+- **Pin `i-slint-backend-selector` to the exact `slint` version with `=`.**
+  It does not follow semver. Mismatch → build fails. Resolved Slint
+  version on crates.io is `1.16.1`, so:
   ```toml
-  slint = { git = "https://github.com/slint-ui/slint", rev = "<sha>" }
-  i-slint-backend-selector = { git = "https://github.com/slint-ui/slint", rev = "<sha>", features = ["mcp"], optional = true }
+  slint = "1.16"
+  i-slint-backend-selector = { version = "=1.16.1", features = ["mcp"], optional = true }
   ```
-  (See `docs/concerns/slint-unstable-winit-030.md` for the live rev and
-  the swap-back-to-crates.io trigger when 1.17.0 ships.)
 
 - **`SLINT_EMIT_DEBUG_INFO=1` must be set at *build time*, not just at
   runtime.** The element tree is dead without it — `get_element_tree`

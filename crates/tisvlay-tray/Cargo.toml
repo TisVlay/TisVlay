@@ -19,12 +19,7 @@ path = "src/main.rs"
 [dependencies]
 tisvlay-core = { workspace = true, features = ["dbus", "logging"] }
 tokio = { workspace = true }
-# async-io backend (not the default tokio): Slint 1.17's i-slint-core
-# pulls ksni with `async-io` under its `std` feature for SystemTrayIcon,
-# and ksni 0.3.5 hard-errors if both `tokio` and `async-io` are enabled.
-# Cargo unifies ksni to one feature set workspace-wide, so the tray must
-# match Slint's backend. ksni's spawn/Handle API is runtime-agnostic.
-ksni = { version = "0.3", default-features = false, features = ["async-io"] }
+ksni = "0.3"
 tracing = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

@@ -6,10 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-# Unpublishable while the slint deps point at a git rev (crates.io
-# rejects git/rev sources). Re-enable when the pin moves back to an
-# exact crates.io version — see docs/concerns/slint-unstable-winit-030.md.
-publish = false
+publish = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
@@ -60,13 +57,11 @@ serde_json = { workspace = true }
 # tray re-activations (taskbar pulse / KWin demands_attention)
 # and in src/lib.rs to plumb the cold-spawn `activation-token`
 # through `WindowAttributesExtStartupNotify::with_activation_token`.
-# Slint marks the module unstable, so the dep is **pinned to an exact
-# git rev** (Slint 1.17 is not yet released; the `Tooltip` element it
-# provides needs the 1.17 compiler) — rev bumps require re-auditing
-# the `winit_030` call sites. Every slint dep across the workspace
-# must share this exact rev. Pin rationale, audit checklist, and
+# Slint marks the module unstable, so the version is **pinned
+# exactly** — minor-version bumps require re-auditing the
+# `winit_030` call sites. Pin rationale, audit checklist, and
 # upgrade triggers: docs/concerns/slint-unstable-winit-030.md.
-slint = { git = "https://github.com/slint-ui/slint", rev = "bd7fbece0cda6b639bff3cdcccb0daf404cc6c9c", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
+slint = { version = "=1.16.1", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
 zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -121,7 +116,7 @@ rustix = { version = "1", features = ["system"] }
 libc = "0.2"
 
 # Optional: enable the in-process MCP server for AI-assisted UI inspection
-# during dev. Pinned to the same git rev as `slint` because the backend
+# during dev. Pinned to the exact slint version because the backend
 # selector does not follow semver. `default-features = false` is
 # critical — the selector's default is `backend-winit` which is
 # x11+wayland, and unifying that with our Wayland-only slint config
@@ -134,23 +129,25 @@ libc = "0.2"
 # `BackendSelector::select()` (which we use for the winit attributes
 # hook) bypasses it. So we call `i_slint_backend_testing::
 # mcp_server::init()` explicitly in `lib.rs`.
-i-slint-backend-selector = { git = "https://github.com/slint-ui/slint", rev = "bd7fbece0cda6b639bff3cdcccb0daf404cc6c9c", default-features = false, features = ["mcp"], optional = true }
-i-slint-backend-testing = { git = "https://github.com/slint-ui/slint", rev = "bd7fbece0cda6b639bff3cdcccb0daf404cc6c9c", features = ["mcp"], optional = true }
+i-slint-backend-selector = { version = "=1.16.1", default-features = false, features = ["mcp"], optional = true }
+i-slint-backend-testing = { version = "=1.16.1", features = ["mcp"], optional = true }
 
 [features]
 dev-mcp = ["dep:i-slint-backend-selector", "dep:i-slint-backend-testing"]
 
 [dev-dependencies]
 # Headless Slint backend for `find_by_accessible_id` / `single_click`
-# / element-tree queries in tests. Pinned to the same git rev as
-# `slint` because the crate's README warns "preliminary API, no
-# semver"; treat upstream rev bumps as breaking. Same crate declared
-# as an optional runtime dep above under the `dev-mcp` feature; Cargo
-# unifies the two and pulls in `mcp` only when the feature is active.
-i-slint-backend-testing = { git = "https://github.com/slint-ui/slint", rev = "bd7fbece0cda6b639bff3cdcccb0daf404cc6c9c" }
+# / element-tree queries in tests. Pinned to `=1.16.1` because the
+# crate's README warns "preliminary API, no semver" and 1.17 already
+# moved test helpers between modules
+# (slint-ui/slint#11516 merged 2026-04-27); treat upstream bumps as
+# breaking. Same crate declared as an optional runtime dep above
+# under the `dev-mcp` feature; Cargo unifies the two and pulls in
+# `mcp` only when the feature is active.
+i-slint-backend-testing = "=1.16.1"
 
 [build-dependencies]
-slint-build = { git = "https://github.com/slint-ui/slint", rev = "bd7fbece0cda6b639bff3cdcccb0daf404cc6c9c" }
+slint-build = "1.16"
 
 [lints]
 workspace = true
