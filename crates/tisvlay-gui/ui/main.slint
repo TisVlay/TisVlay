@@ -25,6 +25,7 @@ import { Errors } from "globals/errors.slint";
 import { Icons } from "globals/icons.slint";
 import { Profiles, ProfileKind, ProfileRow, ProfileTvRef, ProfileFieldEntry } from "globals/profiles.slint";
 import { Toast, ToastView } from "globals/toast.slint";
+import { Help, HelpOverlay } from "globals/help.slint";
 import { TvsPane, TvViewModel, WizardDiscoveredTv, VendorOption } from "components/tvs_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
@@ -387,4 +388,10 @@ export component AppWindow inherits Window {
         x: (root.width - self.width) / 2;
         y: 24px;
     }
+
+    // Contextual-help bubble overlay. Rendered last (top-most) and at
+    // the window root so it escapes the panes' clipping ScrollView and
+    // can place itself against the window bounds. Driven by the `Help`
+    // global; see globals/help.slint.
+    HelpOverlay { }
 }

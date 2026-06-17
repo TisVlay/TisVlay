@@ -1,0 +1,196 @@
+// Contextual-help popover, rendered as an in-window overlay (NOT a
+// Slint PopupWindow). A PopupWindow steals focus (→ hover flicker),
+// can't read the window size (→ no edge-aware placement), and its
+// focus grab made a clicked-open bubble undismissable. An overlay at
+// the AppWindow root sidesteps all three: it escapes the detail's
+// clipping ScrollView, sees the window size for placement, and never
+// grabs focus.
+//
+// Triggers (ContextualHelpButton, IconBtn) don't render the bubble.
+// They push their content + absolute anchor geometry to the `Help`
+// global; a single `HelpOverlay` at the root reads it and draws the
+// bubble — centered over the anchor, shifted to stay on screen, and
+// flipped below when there's no room above.
+
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+
+// Absolute (window-space) geometry of the control the help describes.
+export struct HelpAnchor {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+export global Help {
+    // Active request (empty `text` ⇒ nothing shown).
+    in-out property <string> text;
+    in-out property <[string]> bullets;
+    in-out property <HelpAnchor> anchor;
+    // Which trigger owns the active request (so a trigger only closes
+    // its own help, and a re-click toggles the right one).
+    in-out property <int> owner;
+    in-out property <int> next-id: 1;
+    // Click-latched (persists until dismissed) vs transient hover.
+    in-out property <bool> pinned;
+    // The owning trigger's live hover (post-delay) and the bubble's own
+    // hover — either keeps a transient (unpinned) help open. Moving from
+    // the glyph onto the bubble to read it must not dismiss it.
+    in-out property <bool> requester-hovered;
+    in-out property <bool> bubble-hovered;
+
+    out property <bool> shown: root.text != ""
+        && (root.pinned || root.requester-hovered || root.bubble-hovered);
+
+    // Hand each trigger a stable id once, at init.
+    public function claim-id() -> int {
+        root.next-id += 1;
+        return root.next-id - 1;
+    }
+
+    // Transient hover open; never overrides a pinned bubble.
+    public function hover-open(id: int, t: string, b: [string], a: HelpAnchor) {
+        if (!root.pinned) {
+            root.owner = id;
+            root.text = t;
+            root.bullets = b;
+            root.anchor = a;
+            root.requester-hovered = true;
+        }
+    }
+    public function hover-close(id: int) {
+        if (root.owner == id && !root.pinned) {
+            root.requester-hovered = false;
+        }
+    }
+
+    // Click toggle: re-clicking the same trigger dismisses; otherwise
+    // pin this trigger's help open.
+    public function toggle(id: int, t: string, b: [string], a: HelpAnchor) {
+        if (root.pinned && root.owner == id) {
+            root.dismiss();
+        } else {
+            root.owner = id;
+            root.text = t;
+            root.bullets = b;
+            root.anchor = a;
+            root.pinned = true;
+            root.requester-hovered = false;
+        }
+    }
+
+    public function dismiss() {
+        root.pinned = false;
+        root.requester-hovered = false;
+        root.bubble-hovered = false;
+        root.text = "";
+    }
+}
+
+// The bubble body: a shadowed, bordered card with a wrapped paragraph
+// and optional bullet rows. Fixed width so text wraps; height flows. An
+// outer transparent inset gives the drop shadow room.
+component HelpBubble inherits Rectangle {
+    in property <string> text;
+    in property <[string]> bullets;
+    in property <length> content-width: 320px;
+    property <length> inset: 8px;
+
+    width: root.content-width + root.inset * 2;
+    height: card.height + root.inset * 2;
+    background: transparent;
+
+    card := Rectangle {
+        x: root.inset;
+        y: root.inset;
+        width: root.content-width;
+        height: col.preferred-height + 20px;
+        background: Theme.surface;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: Theme.drop-shadow;
+        drop-shadow-offset-y: 4px;
+
+        col := VerticalLayout {
+            x: 10px;
+            y: 10px;
+            width: parent.width - 20px;
+            spacing: Design.gap-tight;
+            if root.text != "": Text {
+                text: root.text;
+                wrap: word-wrap;
+                width: 100%;
+                color: Theme.text;
+                font-size: Design.font-helper;
+            }
+            for bullet in root.bullets: HorizontalLayout {
+                spacing: Design.gap-tight;
+                Text {
+                    text: "•";
+                    color: Theme.text-faint;
+                    font-size: Design.font-helper;
+                }
+                Text {
+                    text: bullet;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    color: Theme.text;
+                    font-size: Design.font-helper;
+                }
+            }
+        }
+    }
+}
+
+// Rendered once at the AppWindow root. Fills the window so it can read
+// the window size and place the bubble edge-aware.
+export component HelpOverlay inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    visible: Help.shown;
+
+    property <length> margin: 8px;
+    property <length> gap: 6px;
+
+    // Centered over the anchor, clamped into the window.
+    property <length> anchor-cx: Help.anchor.x + Help.anchor.width / 2;
+    property <length> place-x: clamp(
+        root.anchor-cx - bubble.width / 2,
+        root.margin,
+        max(root.margin, root.width - bubble.width - root.margin));
+    // Above the anchor if it fits, else flip below.
+    property <bool> room-above: Help.anchor.y - bubble.height - root.gap >= root.margin;
+    property <length> place-y: root.room-above
+        ? Help.anchor.y - bubble.height - root.gap
+        : Help.anchor.y + Help.anchor.height + root.gap;
+
+    // Click-away dismiss for a pinned bubble. Only present while pinned,
+    // so transient hover help stays fully non-modal (events pass through
+    // everywhere except the bubble itself).
+    if Help.pinned: TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            Help.dismiss();
+        }
+    }
+
+    bubble := HelpBubble {
+        x: root.place-x;
+        y: root.place-y;
+        text: Help.text;
+        bullets: Help.bullets;
+
+        // Keep an unpinned bubble open while the pointer is on it, and
+        // swallow clicks so the scrim doesn't dismiss a click inside.
+        TouchArea {
+            changed has-hover => {
+                Help.bubble-hovered = self.has-hover;
+            }
+            clicked => { }
+        }
+    }
+}

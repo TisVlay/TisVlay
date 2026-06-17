@@ -10,6 +10,7 @@ import { Design } from "design.slint";
 import { Clipboard } from "globals/clipboard.slint";
 import { Icons } from "globals/icons.slint";
 import { ProfileKind } from "globals/profiles.slint";
+import { Help, HelpAnchor } from "globals/help.slint";
 
 // =============================================================================
 // Chip — small status pill (Connected, Managed, Unmanaged, etc.).
@@ -85,81 +86,15 @@ export component Chip inherits Rectangle {
 }
 
 // =============================================================================
-// HelpBubble — the visual body of a help popover (no trigger logic).
-// =============================================================================
-//
-// A shadowed, bordered card with a wrapped paragraph and optional
-// bullet rows. Placed inside a PopupWindow by the help widgets below;
-// it carries no hover/click behavior itself. The width is fixed so the
-// paragraph wraps; the height flows from the wrapped content. An outer
-// transparent inset gives the drop shadow room — popups clip at their
-// own bounds, so a shadow drawn at the card edge would be cut off.
-component HelpBubble inherits Rectangle {
-    in property <string> text;
-    in property <[string]> bullets;
-    // Paragraph wrap width (the card; the popover adds the inset).
-    in property <length> content-width: 320px;
-    property <length> inset: 8px;
-
-    width: root.content-width + root.inset * 2;
-    height: card.height + root.inset * 2;
-    background: transparent;
-
-    card := Rectangle {
-        x: root.inset;
-        y: root.inset;
-        width: root.content-width;
-        height: col.preferred-height + 20px;
-        background: Theme.surface;
-        border-color: Theme.border;
-        border-width: Design.border-thin;
-        border-radius: Design.radius-card;
-        drop-shadow-blur: 16px;
-        drop-shadow-color: Theme.drop-shadow;
-        drop-shadow-offset-y: 4px;
-
-        col := VerticalLayout {
-            x: 10px;
-            y: 10px;
-            width: parent.width - 20px;
-            spacing: Design.gap-tight;
-            if root.text != "": Text {
-                text: root.text;
-                wrap: word-wrap;
-                width: 100%;
-                color: Theme.text;
-                font-size: Design.font-helper;
-            }
-            for bullet in root.bullets: HorizontalLayout {
-                spacing: Design.gap-tight;
-                Text {
-                    text: "•";
-                    color: Theme.text-faint;
-                    font-size: Design.font-helper;
-                }
-                Text {
-                    text: bullet;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                    color: Theme.text;
-                    font-size: Design.font-helper;
-                }
-            }
-        }
-    }
-}
-
-// =============================================================================
 // ContextualHelpButton — KDE-style "i" toggletip for settings-row help.
 // =============================================================================
 //
 // A circled "i" glyph placed trailing a control. Click/tap latches the
 // help card open; hovering (after a short linger) also opens it
-// transiently. The two open-sources are independent and OR'd, so a
-// click never closes what a hover opened. Dismiss: click again,
-// Escape, or (for the hover-only contribution) move off the glyph.
-// The card is anchored just below the glyph — it never tracks the
-// pointer — wraps long text, and the window keeps it on screen.
+// transiently. The glyph does NOT render the card — it reports its
+// content and absolute position to the `Help` global, and a single
+// HelpOverlay at the window root draws it (centered over the anchor,
+// edge-aware, no focus steal, dismissable). See globals/help.slint.
 export component ContextualHelpButton inherits Rectangle {
     in property <string> text;
     in property <[string]> bullets;
@@ -168,25 +103,36 @@ export component ContextualHelpButton inherits Rectangle {
     // can't hover still hears it.
     in property <string> name: @tr("Show help");
 
-    // click latch                 // hover contribution (after linger)
-    property <bool> pinned;
-    property <bool> hover-shown;
-    property <bool> open: root.pinned || root.hover-shown;
+    // Stable id so the global can tell whose help is showing.
+    property <int> help-id;
+    init => {
+        self.help-id = Help.claim-id();
+    }
+    // Window-space geometry the overlay places the bubble against.
+    property <HelpAnchor> anchor: {
+        x: self.absolute-position.x,
+        y: self.absolute-position.y,
+        width: self.width,
+        height: self.height,
+    };
+    property <bool> active: Help.shown && Help.owner == root.help-id;
 
     horizontal-stretch: 0;
     vertical-stretch: 0;
     width: 18px;
     height: 18px;
     border-radius: self.width / 2;
-    background: touch.has-hover || root.open ? Theme.info-soft : transparent;
-    border-color: touch.has-hover || root.open ? Theme.info : Theme.border;
+    background: touch.has-hover || root.active ? Theme.info-soft : transparent;
+    border-color: touch.has-hover || root.active ? Theme.info : Theme.border;
     border-width: Design.border-thin;
     animate background, border-color { duration: 120ms; }
 
     accessible-role: button;
     accessible-label: root.name;
     accessible-description: root.text;
-    accessible-action-default => { root.pinned = !root.pinned; }
+    accessible-action-default => {
+        Help.toggle(root.help-id, root.text, root.bullets, root.anchor);
+    }
 
     Image {
         source: Icons.info;
@@ -194,68 +140,34 @@ export component ContextualHelpButton inherits Rectangle {
         height: 12px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        colorize: touch.has-hover || root.open ? Theme.info-text : Theme.text-faint;
+        colorize: touch.has-hover || root.active ? Theme.info-text : Theme.text-faint;
     }
 
     touch := TouchArea {
         mouse-cursor: help;
         clicked => {
-            root.pinned = !root.pinned;
+            Help.toggle(root.help-id, root.text, root.bullets, root.anchor);
         }
+        // The timer fires only on a real enter (changed has-hover), so
+        // moving within the glyph doesn't restart the linger.
         changed has-hover => {
             if (self.has-hover) {
                 hover-timer.running = true;
             } else {
                 hover-timer.running = false;
-                root.hover-shown = false;
+                Help.hover-close(root.help-id);
             }
         }
     }
 
     // Hover-intent linger (KDE's tooltip delay). `running: false` so it
-    // doesn't fire on construction; restarted on hover-enter.
+    // doesn't fire on construction.
     hover-timer := Timer {
         interval: 700ms;
         running: false;
         triggered() => {
             self.running = false;
-            root.hover-shown = true;
-        }
-    }
-
-    // PopupWindow opens/closes imperatively; drive it off the derived
-    // `open` state.
-    changed open => {
-        if (root.open) {
-            pop.show();
-        } else {
-            pop.close();
-        }
-    }
-
-    pop := PopupWindow {
-        x: 0;
-        y: root.height + 4px;
-        width: bubble.width;
-        height: bubble.height;
-        // no-auto-close: a click on the "i" is an outside-popup click
-        // that would otherwise race our toggle. We own every dismissal
-        // (re-click, Escape, hover-leave), so Escape is wired manually.
-        close-policy: no-auto-close;
-
-        FocusScope {
-            key-pressed(event) => {
-                if (event.text == Key.Escape) {
-                    root.pinned = false;
-                    root.hover-shown = false;
-                    return accept;
-                }
-                return reject;
-            }
-            bubble := HelpBubble {
-                text: root.text;
-                bullets: root.bullets;
-            }
+            Help.hover-open(root.help-id, root.text, root.bullets, root.anchor);
         }
     }
 }
@@ -1255,46 +1167,35 @@ export component IconBtn inherits Rectangle {
     touch := TouchArea {
         enabled: root.interactive;
         clicked => { root.clicked(); }
-        // Hover hint: linger opens an anchored help card below the
-        // button; leaving closes it. Click stays the button's action.
+        // Hover hint: linger reports the tip to the Help global, which
+        // the window-root overlay draws below the button. Click stays
+        // the button's action. The timer fires only on a real enter.
         changed has-hover => {
             if (self.has-hover && root.tip != "") {
                 tip-timer.running = true;
             } else {
                 tip-timer.running = false;
-                root.tip-shown = false;
+                Help.hover-close(root.tip-id);
             }
         }
     }
 
-    property <bool> tip-shown;
+    property <int> tip-id;
+    init => {
+        self.tip-id = Help.claim-id();
+    }
+    property <HelpAnchor> tip-anchor: {
+        x: self.absolute-position.x,
+        y: self.absolute-position.y,
+        width: self.width,
+        height: self.height,
+    };
     tip-timer := Timer {
         interval: 700ms;
         running: false;
         triggered() => {
             self.running = false;
-            root.tip-shown = true;
-        }
-    }
-    changed tip-shown => {
-        if (root.tip-shown) {
-            tip-pop.show();
-        } else {
-            tip-pop.close();
-        }
-    }
-
-    // Declared unconditionally (a directly-conditional PopupWindow is
-    // rejected); it only ever shows when `tip` is set, since the hover
-    // gate above never sets `tip-shown` for an empty tip.
-    tip-pop := PopupWindow {
-        x: 0;
-        y: root.height + 4px;
-        width: tip-bubble.width;
-        height: tip-bubble.height;
-        close-policy: no-auto-close;
-        tip-bubble := HelpBubble {
-            text: root.tip;
+            Help.hover-open(root.tip-id, root.tip, [], root.tip-anchor);
         }
     }
 }
