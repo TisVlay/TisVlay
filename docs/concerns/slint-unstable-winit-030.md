@@ -31,6 +31,16 @@ A `slint = "1.16"` constraint would let cargo pick any future 1.16.x patch relea
 - `slint-ui/slint#4382` lands a public raise/focus API → drop `unstable-winit-030`, switch the re-activation path to the new API.
 - `cargo update` produces a compile error despite the pin → check if a transitive Slint dep got promoted.
 
+### Why still on 1.16.1 (not 1.17)
+
+We briefly migrated to a 1.17-pre git rev for its native `Tooltip` element, then
+reverted: the contextual-help UI is now our own in-window overlay, so 1.17 buys
+nothing, and 1.17's new `SystemTrayIcon` makes `i-slint-core` pull `ksni` (under
+`std`) on a hardcoded `async-io` backend, which conflicts with `tisvlay-tray`'s
+default-tokio ksni. Staying on 1.16.1 avoids that coupling. Upstream issue draft:
+[`docs/slint-systemtray-ksni-issue.md`](../slint-systemtray-ksni-issue.md). Bumping
+to 1.17 again requires resolving that ksni backend clash.
+
 ### Audit checklist on upgrade
 
 When bumping `slint` to a new version, verify these still compile and behave as before:
