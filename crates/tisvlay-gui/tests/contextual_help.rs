@@ -7,8 +7,8 @@
 //! backend has no event loop to drive a `PopupWindow`.
 
 use i_slint_backend_testing::{ElementHandle, ElementQuery};
-use slint::{ModelRc, SharedString, VecModel};
-use tisvlay_gui::{AppWindow, Pane, TvViewModel};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use tisvlay_gui::{AppWindow, Help, Pane, TvViewModel};
 
 /// Boot an `AppWindow` with the TVs pane active and one TV selected, so
 /// the detail (and its `FormRow` `help:` slots) renders.
@@ -44,5 +44,40 @@ fn tvs_detail_renders_contextual_help_buttons_with_accessible_label() {
         !help_buttons.is_empty(),
         "FormRow `help:` slots should render ContextualHelpButton toggletips \
          announcing their accessible-label in the TV detail"
+    );
+}
+
+/// Locks the pin/toggle wiring of the `Help` global: a click latches the
+/// bubble open (pinned), and re-clicking the same button toggles it off.
+/// (The focus-out dismiss — clicking another control or tabbing away —
+/// and the live cursor are interactive and verified manually; the
+/// testing backend has no event loop to drive real focus changes.)
+#[test]
+fn contextual_help_click_pins_then_re_click_dismisses() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_with_tv_selected();
+    let help = app.global::<Help>();
+
+    assert!(!help.get_shown(), "no help bubble before any interaction");
+
+    let button = ElementQuery::from_root(&app)
+        .match_descendants()
+        .match_predicate(|e| e.accessible_label().as_deref() == Some("Show help"))
+        .find_first()
+        .expect("a ContextualHelpButton should render in the TV detail");
+
+    // A click (default action) latches the bubble open.
+    button.invoke_accessible_default_action();
+    assert!(
+        help.get_shown(),
+        "clicking the help button shows the bubble"
+    );
+    assert!(help.get_pinned(), "a click latches the bubble (pinned)");
+
+    // Re-clicking the same button toggles it back off.
+    button.invoke_accessible_default_action();
+    assert!(
+        !help.get_shown(),
+        "re-clicking the same help button dismisses the pinned bubble"
     );
 }

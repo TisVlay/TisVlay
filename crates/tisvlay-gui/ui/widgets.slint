@@ -132,7 +132,20 @@ export component ContextualHelpButton inherits Rectangle {
     accessible-label: root.name;
     accessible-description: root.text;
     accessible-action-default => {
+        root.activate();
+    }
+
+    // Click-or-tab-away dismissal without a blocking scrim (a Slint
+    // TouchArea scrim would freeze the cursor; KDE uses focus instead).
+    // A pinning click also focuses this button; losing that focus —
+    // clicking another control, or Tab — fires the focus-out dismiss in
+    // `fs` below. Hover-only opens never focus, so they don't steal
+    // focus mid-edit.
+    function activate() {
         Help.toggle(root.help-id, root.text, root.bullets, root.anchor);
+        if (Help.pinned && Help.owner == root.help-id) {
+            fs.focus();
+        }
     }
 
     Image {
@@ -146,10 +159,33 @@ export component ContextualHelpButton inherits Rectangle {
         opacity: touch.has-hover || root.active ? 1.0 : 0.7;
     }
 
+    // Holds keyboard focus while pinned. Below `touch` in z-order, so
+    // the pointer/cursor still go to the TouchArea; this only tracks
+    // focus + Escape.
+    fs := FocusScope {
+        width: 100%;
+        height: 100%;
+        // Focus is taken explicitly on the pinning click, not on any click.
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape && Help.pinned && Help.owner == root.help-id) {
+                Help.dismiss();
+                return accept;
+            }
+            return reject;
+        }
+        // Lost focus while owning the pinned bubble → dismiss.
+        changed has-focus => {
+            if (!self.has-focus && Help.pinned && Help.owner == root.help-id) {
+                Help.dismiss();
+            }
+        }
+    }
+
     touch := TouchArea {
         mouse-cursor: help;
         clicked => {
-            Help.toggle(root.help-id, root.text, root.bullets, root.anchor);
+            root.activate();
         }
         // The timer fires only on a real enter (changed has-hover), so
         // moving within the glyph doesn't restart the linger.
