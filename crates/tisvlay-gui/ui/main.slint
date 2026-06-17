@@ -123,6 +123,22 @@ export component AppWindow inherits Window {
     callback view-notices-clicked();
     in-out property <int> selected-tv-index: -1;
     in-out property <Pane> active-pane: Pane.tvs;
+    // Navigating panes retires any open help bubble: the owning info
+    // button is gone (or no longer hovered/focused), so its own
+    // hover-leave / focus-out dismiss can't fire — without this the
+    // bubble would linger over the new pane.
+    changed active-pane => {
+        Help.dismiss();
+    }
+    // Resizing moves the help anchor; nudge the overlay to re-read it
+    // (the window's own width/height are safe to observe — unlike a
+    // child's absolute-position).
+    changed width => {
+        Help.reposition-tick += 1;
+    }
+    changed height => {
+        Help.reposition-tick += 1;
+    }
 
     // Browser-style history navigation (Alt+Left/Right, mouse back/forward).
     // `navigate` is the single choke point for pane changes (sidebar +

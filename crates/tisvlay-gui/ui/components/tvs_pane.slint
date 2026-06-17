@@ -17,6 +17,7 @@ import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
 import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
+import { Help } from "../globals/help.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 import { SchemaForm } from "schema_form.slint";
@@ -579,6 +580,12 @@ component TvDetail inherits Rectangle {
         // overflow clips at the window edge instead of the card.
         ScrollView {
             viewport-width: self.visible-width;
+            // Scrolling moves the help anchors; nudge the overlay to
+            // re-read them (observing the scroll offset is cheap and
+            // doesn't touch absolute-position).
+            changed viewport-y => {
+                Help.reposition-tick += 1;
+            }
             VerticalLayout {
                 width: 100%;
                 padding-left: Design.pad-pane;

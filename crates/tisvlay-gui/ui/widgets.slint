@@ -109,6 +109,8 @@ export component ContextualHelpButton inherits Rectangle {
         self.help-id = Help.claim-id();
     }
     // Window-space geometry the overlay places the bubble against.
+    // `absolute-position` is reactive, so this re-evaluates as the
+    // button moves (scroll / resize).
     property <HelpAnchor> anchor: {
         x: self.absolute-position.x,
         y: self.absolute-position.y,
@@ -116,6 +118,19 @@ export component ContextualHelpButton inherits Rectangle {
         height: self.height,
     };
     property <bool> active: Help.shown && Help.owner == root.help-id;
+    // Track the anchor while we own the live bubble (KDE's tooltip is
+    // parent-relative and follows the button; the overlay re-clamps to
+    // the window). Driven by the scroll/resize tick, NOT `changed
+    // anchor`: observing `anchor` would evaluate `absolute-position`
+    // during layout and trip a reentrant layout-cache panic. The tick
+    // fires from post-layout events, so reading the anchor here is safe.
+    // (A local mirror is needed — `changed` can't watch a global prop.)
+    property <int> reposition-mirror: Help.reposition-tick;
+    changed reposition-mirror => {
+        if (root.active) {
+            Help.anchor = root.anchor;
+        }
+    }
 
     // Ghost style matching IconBtn: squarish, no resting border, dim
     // glyph — so it sits naturally among the other right-side row
@@ -1229,6 +1244,15 @@ export component IconBtn inherits Rectangle {
         width: self.width,
         height: self.height,
     };
+    // Track the anchor while this button's tip is the live one. Driven
+    // by the scroll/resize tick (post-layout), never `changed
+    // tip-anchor`, to avoid evaluating `absolute-position` during layout.
+    property <int> tip-reposition-mirror: Help.reposition-tick;
+    changed tip-reposition-mirror => {
+        if (Help.shown && Help.owner == root.tip-id) {
+            Help.anchor = root.tip-anchor;
+        }
+    }
     tip-timer := Timer {
         interval: 700ms;
         running: false;

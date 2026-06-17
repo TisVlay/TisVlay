@@ -39,6 +39,11 @@ export global Help {
     // the glyph onto the bubble to read it must not dismiss it.
     in-out property <bool> requester-hovered;
     in-out property <bool> bubble-hovered;
+    // Bumped on scroll / window-resize so the owning button re-pushes
+    // its live `anchor` (the overlay then re-clamps). Read lazily in the
+    // buttons' change handlers — not a geometry property itself — so it
+    // never forces an `absolute-position` read during layout.
+    in-out property <int> reposition-tick;
 
     out property <bool> shown: root.text != ""
         && (root.pinned || root.requester-hovered || root.bubble-hovered);
