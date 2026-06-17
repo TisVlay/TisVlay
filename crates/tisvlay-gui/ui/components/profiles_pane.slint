@@ -24,7 +24,8 @@ import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
 import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
+import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
+import { Help } from "../globals/help.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -407,6 +408,7 @@ component ProfileFieldRowEnum inherits Rectangle {
                 if root.entry.is-locally-set: IconBtn {
                     source: Icons.reload;
                     accessible-label: @tr("Reset {} to inherit", root.entry.label);
+                    tip: @tr("Reset to the inherited value");
                     clicked => { Profiles.reset-field(root.entry.field-name); }
                 }
             }
@@ -515,6 +517,7 @@ component ProfileFieldRowNumber inherits Rectangle {
                 if root.entry.is-locally-set: IconBtn {
                     source: Icons.reload;
                     accessible-label: @tr("Reset {} to inherit", root.entry.label);
+                    tip: @tr("Reset to the inherited value");
                     clicked => { Profiles.reset-field(root.entry.field-name); }
                 }
             }
@@ -715,6 +718,7 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         source: Icons.edit;
                         accessible-label: @tr("Rename profile");
+                        tip: @tr("Rename profile");
                         enabled: root.can-delete;
                         clicked => { root.begin-rename(); }
                     }
@@ -724,6 +728,7 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         source: Icons.delete;
                         accessible-label: @tr("Delete profile");
+                        tip: @tr("Delete this profile");
                         enabled: root.can-delete;
                         clicked => { root.request-delete(); }
                     }
@@ -873,6 +878,21 @@ component ProfileDetail inherits Rectangle {
         // relying on the col-1 tile glyph alone.
         ScrollView {
             viewport-width: self.visible-width;
+            // Help-bubble scroll tracking + viewport clip (see help.slint /
+            // tvs_pane). Reads absolute-position only in these post-layout
+            // handlers; `set-clip-if-inside` ignores bubbles anchored
+            // outside this ScrollView (e.g. the header rename/delete tips).
+            changed viewport-y => {
+                Help.reposition-tick += 1;
+            }
+            property <bool> help-shown-mirror: Help.shown;
+            property <int> reposition-mirror: Help.reposition-tick;
+            changed help-shown-mirror => {
+                Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
+            }
+            changed reposition-mirror => {
+                Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
+            }
             VerticalLayout {
                 width: 100%;
                 padding-left: Design.pad-pane;
@@ -905,12 +925,19 @@ component ProfileDetail inherits Rectangle {
                                 letter-spacing: 0.6px;
                             }
                         }
+                        VerticalLayout {
+                            alignment: center;
+                            ContextualHelpButton {
+                                text: @tr("Fields inherit from the default profile until you change one. A changed field shows a left accent and a reset arrow that restores the inherited value.");
+                            }
+                        }
                         Rectangle { horizontal-stretch: 1; }
                         VerticalLayout {
                             alignment: center;
                             IconBtn {
                                 source: Icons.copy;
                                 accessible-label: @tr("Duplicate profile");
+                                tip: @tr("Duplicate this profile");
                                 clicked => { root.request-duplicate(); }
                             }
                         }
@@ -919,6 +946,7 @@ component ProfileDetail inherits Rectangle {
                             IconBtn {
                                 source: Icons.reload;
                                 accessible-label: @tr("Reset all locally-set fields");
+                                tip: @tr("Reset all fields to inherited");
                                 enabled: Profiles.editor-can-reset-all;
                                 clicked => { root.request-reset-all(); }
                             }

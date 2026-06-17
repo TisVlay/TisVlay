@@ -674,7 +674,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Managed");
-                        // helper: "Participates in boot, sleep, and session automation.";
+                        help: @tr("Participates in boot, sleep, and session automation.");
                         HorizontalLayout {
                             spacing: 10px;
                             alignment: start;
@@ -702,7 +702,7 @@ component TvDetail inherits Rectangle {
                     // the Profiles-pane field-row reset glyph.
                     FormRow {
                         label: @tr("System");
-                        // helper: "Drives daemon lifecycle (boot/shutdown/sleep).";
+                        help: @tr("Drives daemon lifecycle (boot / shutdown / sleep).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ComboBox {
@@ -732,7 +732,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("User");
-                        // helper: "Drives session events (lock/unlock/idle).";
+                        help: @tr("Drives session events (lock / unlock / idle).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ComboBox {
