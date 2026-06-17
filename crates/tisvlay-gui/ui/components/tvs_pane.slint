@@ -760,6 +760,7 @@ component TvDetail inherits Rectangle {
                                 IconBtn {
                                     source: Icons.edit;
                                     accessible-label: @tr("Edit user profile");
+                                    tip: @tr("Edit user profile");
                                     enabled: root.user-profiles.length > 0;
                                     clicked => {
                                         Profiles.open-profile-by-uuid(

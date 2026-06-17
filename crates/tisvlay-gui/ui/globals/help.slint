@@ -68,6 +68,11 @@ export global Help {
             root.text = t;
             root.bullets = b;
             root.anchor = a;
+            // Start each request with a clean bubble-hover flag: a
+            // `visible: false` bubble doesn't emit `has-hover = false`,
+            // so a stale `true` from a prior bubble could otherwise keep
+            // this one latched open after the pointer has left.
+            root.bubble-hovered = false;
             root.requester-hovered = true;
         }
     }
@@ -89,6 +94,7 @@ export global Help {
             root.anchor = a;
             root.pinned = true;
             root.requester-hovered = false;
+            root.bubble-hovered = false;
         }
     }
 
@@ -97,6 +103,10 @@ export global Help {
         root.requester-hovered = false;
         root.bubble-hovered = false;
         root.text = "";
+        // Clear the owner too, so no stale trigger reads as the owner
+        // between bubbles (every owner check is paired with `shown`
+        // today, but a bare `owner` read would otherwise mis-attribute).
+        root.owner = 0;
         // Reset the clip so the next bubble (which may not live in a
         // ScrollView) falls back to the whole window until its own
         // ScrollView, if any, re-pushes a region.
@@ -204,10 +214,17 @@ export component HelpOverlay inherits Rectangle {
     property <length> raw-y: root.room-above
         ? Help.anchor.y - bubble.height - root.gap
         : Help.anchor.y + Help.anchor.height + root.gap;
+    // A bubble taller than the clip region would collapse the y-clamp
+    // range (lo == hi) and pin to the region top, covering the anchor.
+    // Fall back to the window for the vertical clamp so it stays fully
+    // visible (a bubble taller than the scroll viewport is degenerate).
+    property <bool> y-fits-region: root.clip-h >= bubble.height + root.margin * 2;
+    property <length> bound-y: root.y-fits-region ? root.clip-y : 0;
+    property <length> bound-h: root.y-fits-region ? root.clip-h : root.height;
     property <length> place-y: clamp(
         root.raw-y,
-        root.clip-y + root.margin,
-        max(root.clip-y + root.margin, root.clip-y + root.clip-h - bubble.height - root.margin));
+        root.bound-y + root.margin,
+        max(root.bound-y + root.margin, root.bound-y + root.bound-h - bubble.height - root.margin));
 
     // No full-window scrim: a Slint TouchArea can't catch clicks while
     // passing hover through, so a scrim would freeze the cursor over
