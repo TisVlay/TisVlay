@@ -586,6 +586,34 @@ component TvDetail inherits Rectangle {
             changed viewport-y => {
                 Help.reposition-tick += 1;
             }
+            // Confine help bubbles to this viewport so a scrolled-away
+            // anchor pins the bubble to the scroll edge, not the window
+            // (which would ride up over the header / sidebar). Push our
+            // rect when a bubble appears and on each reposition tick
+            // (resize). absolute-position is read only in these
+            // post-layout handlers, never eagerly.
+            property <bool> help-shown-mirror: Help.shown;
+            property <int> reposition-mirror: Help.reposition-tick;
+            changed help-shown-mirror => {
+                if (Help.shown) {
+                    Help.clip = {
+                        x: self.absolute-position.x,
+                        y: self.absolute-position.y,
+                        width: self.width,
+                        height: self.height,
+                    };
+                }
+            }
+            changed reposition-mirror => {
+                if (Help.shown) {
+                    Help.clip = {
+                        x: self.absolute-position.x,
+                        y: self.absolute-position.y,
+                        width: self.width,
+                        height: self.height,
+                    };
+                }
+            }
             VerticalLayout {
                 width: 100%;
                 padding-left: Design.pad-pane;

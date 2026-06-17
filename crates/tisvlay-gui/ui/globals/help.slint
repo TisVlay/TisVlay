@@ -28,6 +28,13 @@ export global Help {
     in-out property <string> text;
     in-out property <[string]> bullets;
     in-out property <HelpAnchor> anchor;
+    // The region (in window coords) the bubble is confined to — the
+    // originating ScrollView's viewport, pushed by that ScrollView. So
+    // an anchor scrolled past the viewport edge pins the bubble to the
+    // ScrollView's edge, not the window's, keeping it clear of chrome
+    // outside the scroll area (header, sidebar). `width == 0` ⇒ unset,
+    // fall back to the whole window.
+    in-out property <HelpAnchor> clip;
     // Which trigger owns the active request (so a trigger only closes
     // its own help, and a re-click toggles the right one).
     in-out property <int> owner;
@@ -90,6 +97,10 @@ export global Help {
         root.requester-hovered = false;
         root.bubble-hovered = false;
         root.text = "";
+        // Reset the clip so the next bubble (which may not live in a
+        // ScrollView) falls back to the whole window until its own
+        // ScrollView, if any, re-pushes a region.
+        root.clip = { x: 0, y: 0, width: 0, height: 0 };
     }
 }
 
@@ -171,17 +182,32 @@ export component HelpOverlay inherits Rectangle {
     property <length> margin: 8px;
     property <length> gap: 6px;
 
-    // Centered over the anchor, clamped into the window.
+    // Clamp region: the originating ScrollView's viewport (Help.clip)
+    // when set, else the whole window. Confining to the ScrollView keeps
+    // a scrolled-away bubble from riding up over the header / sidebar.
+    property <bool> has-clip: Help.clip.width > 0;
+    property <length> clip-x: root.has-clip ? Help.clip.x : 0;
+    property <length> clip-y: root.has-clip ? Help.clip.y : 0;
+    property <length> clip-w: root.has-clip ? Help.clip.width : root.width;
+    property <length> clip-h: root.has-clip ? Help.clip.height : root.height;
+
+    // Centered over the anchor, clamped into the clip region.
     property <length> anchor-cx: Help.anchor.x + Help.anchor.width / 2;
     property <length> place-x: clamp(
         root.anchor-cx - bubble.width / 2,
-        root.margin,
-        max(root.margin, root.width - bubble.width - root.margin));
-    // Above the anchor if it fits, else flip below.
-    property <bool> room-above: Help.anchor.y - bubble.height - root.gap >= root.margin;
-    property <length> place-y: root.room-above
+        root.clip-x + root.margin,
+        max(root.clip-x + root.margin, root.clip-x + root.clip-w - bubble.width - root.margin));
+    // Above the anchor if it fits within the region, else flip below;
+    // then clamp into the region so a scrolled-off anchor pins the
+    // bubble to the region's edge rather than the window's.
+    property <bool> room-above: Help.anchor.y - bubble.height - root.gap >= root.clip-y + root.margin;
+    property <length> raw-y: root.room-above
         ? Help.anchor.y - bubble.height - root.gap
         : Help.anchor.y + Help.anchor.height + root.gap;
+    property <length> place-y: clamp(
+        root.raw-y,
+        root.clip-y + root.margin,
+        max(root.clip-y + root.margin, root.clip-y + root.clip-h - bubble.height - root.margin));
 
     // No full-window scrim: a Slint TouchArea can't catch clicks while
     // passing hover through, so a scrim would freeze the cursor over
