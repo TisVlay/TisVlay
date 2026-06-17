@@ -98,6 +98,23 @@ export global Help {
         }
     }
 
+    // Confine the live bubble to `rect` (a ScrollView's viewport, in
+    // window coords) — but only while a bubble is shown AND its anchor
+    // lies inside `rect`, so a ScrollView only clips bubbles that
+    // actually originate within it (a trigger in the pane's header or
+    // another pane keeps the whole-window fallback). Call from a
+    // ScrollView's show/reposition handlers. Reads no geometry itself —
+    // the caller passes its own post-layout rect.
+    public function set-clip-if-inside(rect: HelpAnchor) {
+        if (root.shown
+            && root.anchor.x >= rect.x
+            && root.anchor.y >= rect.y
+            && root.anchor.x <= rect.x + rect.width
+            && root.anchor.y <= rect.y + rect.height) {
+            root.clip = rect;
+        }
+    }
+
     public function dismiss() {
         root.pinned = false;
         root.requester-hovered = false;
@@ -111,6 +128,74 @@ export global Help {
         // ScrollView) falls back to the whole window until its own
         // ScrollView, if any, re-pushes a region.
         root.clip = { x: 0, y: 0, width: 0, height: 0 };
+    }
+}
+
+// =============================================================================
+// HelpTrigger — shared, non-visual help-bubble trigger machinery.
+// =============================================================================
+//
+// Embed inside a help affordance (the "i" glyph, an IconBtn) sized to
+// fill it (`width: 100%; height: 100%`) so its `absolute-position`
+// tracks the affordance. The host's TouchArea forwards hover/click to
+// the public functions. All the id / live-anchor / hover-timer logic
+// lives here so each host is a thin wrapper and the rollout adds help
+// with one embed, not a copy of ~30 lines.
+//
+// Anchor is re-pushed off the scroll/resize tick — never `changed
+// anchor`, which would evaluate `absolute-position` during layout and
+// trip a reentrant layout-cache panic; the tick fires post-layout.
+//
+// Toggletip-specific focus-out/Escape dismissal stays in the host
+// (`ContextualHelpButton`), so hover-only hosts don't carry a FocusScope
+// (which would add a phantom tab stop). The host reads `pinned-mine`.
+export component HelpTrigger inherits Rectangle {
+    in property <string> text;
+    in property <[string]> bullets;
+    in property <duration> delay: 700ms;
+    // Is the live bubble ours? `active` for styling; `pinned-mine` for
+    // the host's focus-out dismissal.
+    out property <bool> active: Help.shown && Help.owner == root.id;
+    out property <bool> pinned-mine: Help.pinned && Help.owner == root.id;
+
+    property <int> id;
+    init => {
+        self.id = Help.claim-id();
+    }
+    property <HelpAnchor> anchor: {
+        x: self.absolute-position.x,
+        y: self.absolute-position.y,
+        width: self.width,
+        height: self.height,
+    };
+    property <int> reposition-mirror: Help.reposition-tick;
+    changed reposition-mirror => {
+        if (root.active) {
+            Help.anchor = root.anchor;
+        }
+    }
+
+    // Forwarded by the host's TouchArea.
+    public function hover-enter() {
+        if (root.text != "") {
+            timer.running = true;
+        }
+    }
+    public function hover-leave() {
+        timer.running = false;
+        Help.hover-close(root.id);
+    }
+    public function toggle() {
+        Help.toggle(root.id, root.text, root.bullets, root.anchor);
+    }
+
+    timer := Timer {
+        interval: root.delay;
+        running: false;
+        triggered() => {
+            self.running = false;
+            Help.hover-open(root.id, root.text, root.bullets, root.anchor);
+        }
     }
 }
 

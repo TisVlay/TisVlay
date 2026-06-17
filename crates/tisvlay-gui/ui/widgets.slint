@@ -10,7 +10,7 @@ import { Design } from "design.slint";
 import { Clipboard } from "globals/clipboard.slint";
 import { Icons } from "globals/icons.slint";
 import { ProfileKind } from "globals/profiles.slint";
-import { Help, HelpAnchor } from "globals/help.slint";
+import { Help, HelpTrigger } from "globals/help.slint";
 
 // =============================================================================
 // Chip — small status pill (Connected, Managed, Unmanaged, etc.).
@@ -103,35 +103,6 @@ export component ContextualHelpButton inherits Rectangle {
     // can't hover still hears it.
     in property <string> name: @tr("Show help");
 
-    // Stable id so the global can tell whose help is showing.
-    property <int> help-id;
-    init => {
-        self.help-id = Help.claim-id();
-    }
-    // Window-space geometry the overlay places the bubble against.
-    // `absolute-position` is reactive, so this re-evaluates as the
-    // button moves (scroll / resize).
-    property <HelpAnchor> anchor: {
-        x: self.absolute-position.x,
-        y: self.absolute-position.y,
-        width: self.width,
-        height: self.height,
-    };
-    property <bool> active: Help.shown && Help.owner == root.help-id;
-    // Track the anchor while we own the live bubble (KDE's tooltip is
-    // parent-relative and follows the button; the overlay re-clamps to
-    // the window). Driven by the scroll/resize tick, NOT `changed
-    // anchor`: observing `anchor` would evaluate `absolute-position`
-    // during layout and trip a reentrant layout-cache panic. The tick
-    // fires from post-layout events, so reading the anchor here is safe.
-    // (A local mirror is needed — `changed` can't watch a global prop.)
-    property <int> reposition-mirror: Help.reposition-tick;
-    changed reposition-mirror => {
-        if (root.active) {
-            Help.anchor = root.anchor;
-        }
-    }
-
     // Ghost style matching IconBtn: squarish, no resting border, dim
     // glyph — so it sits naturally among the other right-side row
     // buttons. Picks up the blue info tint only when hovered/engaged.
@@ -140,7 +111,7 @@ export component ContextualHelpButton inherits Rectangle {
     min-width: 24px;
     min-height: 24px;
     border-radius: Design.radius-control;
-    background: touch.has-hover || root.active ? Theme.info-soft : transparent;
+    background: touch.has-hover || trigger.active ? Theme.info-soft : transparent;
     animate background { duration: 150ms; }
 
     accessible-role: button;
@@ -150,15 +121,12 @@ export component ContextualHelpButton inherits Rectangle {
         root.activate();
     }
 
-    // Click-or-tab-away dismissal without a blocking scrim (a Slint
-    // TouchArea scrim would freeze the cursor; KDE uses focus instead).
-    // A pinning click also focuses this button; losing that focus —
-    // clicking another control, or Tab — fires the focus-out dismiss in
-    // `fs` below. Hover-only opens never focus, so they don't steal
-    // focus mid-edit.
+    // A pinning click both toggles the bubble AND focuses this button,
+    // so losing that focus (clicking another control, or Tab) fires the
+    // focus-out dismiss in `fs` — the KDE mechanism, no blocking scrim.
     function activate() {
-        Help.toggle(root.help-id, root.text, root.bullets, root.anchor);
-        if (Help.pinned && Help.owner == root.help-id) {
+        trigger.toggle();
+        if (trigger.pinned-mine) {
             fs.focus();
         }
     }
@@ -169,13 +137,22 @@ export component ContextualHelpButton inherits Rectangle {
         height: 14px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        colorize: touch.has-hover || root.active ? Theme.info-text : Theme.text-dim;
+        colorize: touch.has-hover || trigger.active ? Theme.info-text : Theme.text-dim;
         // Dim at rest like IconBtn's ghost glyph; full on engage.
-        opacity: touch.has-hover || root.active ? 1.0 : 0.7;
+        opacity: touch.has-hover || trigger.active ? 1.0 : 0.7;
     }
 
-    // Holds keyboard focus while pinned. Below `touch` in z-order, so
-    // the pointer/cursor still go to the TouchArea; this only tracks
+    // Shared id / anchor / hover-timer machinery (fills the button so
+    // its absolute-position tracks the glyph).
+    trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.text;
+        bullets: root.bullets;
+    }
+
+    // Toggletip focus-out + Escape dismissal. Below `touch` in z-order,
+    // so the pointer/cursor still go to the TouchArea; this only tracks
     // focus + Escape.
     fs := FocusScope {
         width: 100%;
@@ -183,15 +160,14 @@ export component ContextualHelpButton inherits Rectangle {
         // Focus is taken explicitly on the pinning click, not on any click.
         focus-on-click: false;
         key-pressed(event) => {
-            if (event.text == Key.Escape && Help.pinned && Help.owner == root.help-id) {
+            if (event.text == Key.Escape && trigger.pinned-mine) {
                 Help.dismiss();
                 return accept;
             }
             return reject;
         }
-        // Lost focus while owning the pinned bubble → dismiss.
         changed has-focus => {
-            if (!self.has-focus && Help.pinned && Help.owner == root.help-id) {
+            if (!self.has-focus && trigger.pinned-mine) {
                 Help.dismiss();
             }
         }
@@ -202,26 +178,12 @@ export component ContextualHelpButton inherits Rectangle {
         clicked => {
             root.activate();
         }
-        // The timer fires only on a real enter (changed has-hover), so
-        // moving within the glyph doesn't restart the linger.
         changed has-hover => {
             if (self.has-hover) {
-                hover-timer.running = true;
+                trigger.hover-enter();
             } else {
-                hover-timer.running = false;
-                Help.hover-close(root.help-id);
+                trigger.hover-leave();
             }
-        }
-    }
-
-    // Hover-intent linger (KDE's tooltip delay). `running: false` so it
-    // doesn't fire on construction.
-    hover-timer := Timer {
-        interval: 700ms;
-        running: false;
-        triggered() => {
-            self.running = false;
-            Help.hover-open(root.help-id, root.text, root.bullets, root.anchor);
         }
     }
 }
@@ -1218,47 +1180,24 @@ export component IconBtn inherits Rectangle {
         }
     }
 
+    // Hover hint (hover-only): the shared trigger reports `tip` to the
+    // Help global, which the window-root overlay draws below the button.
+    // Empty `tip` → the trigger no-ops on hover.
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
+
     touch := TouchArea {
         enabled: root.interactive;
         clicked => { root.clicked(); }
-        // Hover hint: linger reports the tip to the Help global, which
-        // the window-root overlay draws below the button. Click stays
-        // the button's action. The timer fires only on a real enter.
         changed has-hover => {
-            if (self.has-hover && root.tip != "") {
-                tip-timer.running = true;
+            if (self.has-hover) {
+                tip-trigger.hover-enter();
             } else {
-                tip-timer.running = false;
-                Help.hover-close(root.tip-id);
+                tip-trigger.hover-leave();
             }
-        }
-    }
-
-    property <int> tip-id;
-    init => {
-        self.tip-id = Help.claim-id();
-    }
-    property <HelpAnchor> tip-anchor: {
-        x: self.absolute-position.x,
-        y: self.absolute-position.y,
-        width: self.width,
-        height: self.height,
-    };
-    // Track the anchor while this button's tip is the live one. Driven
-    // by the scroll/resize tick (post-layout), never `changed
-    // tip-anchor`, to avoid evaluating `absolute-position` during layout.
-    property <int> tip-reposition-mirror: Help.reposition-tick;
-    changed tip-reposition-mirror => {
-        if (Help.shown && Help.owner == root.tip-id) {
-            Help.anchor = root.tip-anchor;
-        }
-    }
-    tip-timer := Timer {
-        interval: 700ms;
-        running: false;
-        triggered() => {
-            self.running = false;
-            Help.hover-open(root.tip-id, root.tip, [], root.tip-anchor);
         }
     }
 }
