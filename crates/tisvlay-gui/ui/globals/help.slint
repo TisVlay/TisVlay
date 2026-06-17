@@ -178,30 +178,24 @@ export component HelpOverlay inherits Rectangle {
         ? Help.anchor.y - bubble.height - root.gap
         : Help.anchor.y + Help.anchor.height + root.gap;
 
-    // Click-away dismiss for a pinned bubble. Only present while pinned,
-    // so transient hover help stays fully non-modal (events pass through
-    // everywhere except the bubble itself).
-    if Help.pinned: TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => {
-            Help.dismiss();
-        }
-    }
-
+    // No full-window scrim: a Slint TouchArea can't catch clicks while
+    // passing hover through, so a scrim would freeze the cursor over
+    // every control (including other info buttons) until dismissed —
+    // pseudo-modal, unlike KDE's non-modal popup. Instead the overlay
+    // intercepts nothing but the bubble itself, so the cursor stays
+    // live everywhere. A pinned bubble is dismissed by re-clicking its
+    // (highlighted) "i" or switching to another.
     bubble := HelpBubble {
         x: root.place-x;
         y: root.place-y;
         text: Help.text;
         bullets: Help.bullets;
 
-        // Keep an unpinned bubble open while the pointer is on it, and
-        // swallow clicks so the scrim doesn't dismiss a click inside.
+        // Keep an unpinned bubble open while the pointer is on it.
         TouchArea {
             changed has-hover => {
                 Help.bubble-hovered = self.has-hover;
             }
-            clicked => { }
         }
     }
 }
