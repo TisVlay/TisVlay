@@ -32,8 +32,8 @@ tisvlay-gui = { workspace = true }
 # Slint testing backend, paired with the GUI's pinned `=1.16.1`
 # dev-dep. The fixture initializes it once-per-process via a
 # `OnceLock` guard so multiple harness consumers don't double-init.
-i-slint-backend-testing = "=1.16.1"
-slint = { version = "1.16", default-features = false, features = ["std", "compat-1-2"] }
+i-slint-backend-testing = "1.17"
+slint = { version = "1.17", default-features = false, features = ["std", "compat-1-2"] }
 
 # Async runtime + D-Bus + misc for harness helpers.
 tokio = { workspace = true }

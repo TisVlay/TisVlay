@@ -61,7 +61,7 @@ serde_json = { workspace = true }
 # exactly** — minor-version bumps require re-auditing the
 # `winit_030` call sites. Pin rationale, audit checklist, and
 # upgrade triggers: docs/concerns/slint-unstable-winit-030.md.
-slint = { version = "=1.16.1", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
+slint = { version = "1.17", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
 zbus = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -129,8 +129,8 @@ libc = "0.2"
 # `BackendSelector::select()` (which we use for the winit attributes
 # hook) bypasses it. So we call `i_slint_backend_testing::
 # mcp_server::init()` explicitly in `lib.rs`.
-i-slint-backend-selector = { version = "=1.16.1", default-features = false, features = ["mcp"], optional = true }
-i-slint-backend-testing = { version = "=1.16.1", features = ["mcp"], optional = true }
+i-slint-backend-selector = { version = "1.17", default-features = false, features = ["mcp"], optional = true }
+i-slint-backend-testing = { version = "1.17", features = ["mcp"], optional = true }
 
 [features]
 dev-mcp = ["dep:i-slint-backend-selector", "dep:i-slint-backend-testing"]
@@ -144,10 +144,10 @@ dev-mcp = ["dep:i-slint-backend-selector", "dep:i-slint-backend-testing"]
 # breaking. Same crate declared as an optional runtime dep above
 # under the `dev-mcp` feature; Cargo unifies the two and pulls in
 # `mcp` only when the feature is active.
-i-slint-backend-testing = "=1.16.1"
+i-slint-backend-testing = "1.17"
 
 [build-dependencies]
-slint-build = "1.16"
+slint-build = "1.17"
 
 [lints]
 workspace = true
