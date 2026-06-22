@@ -62,18 +62,31 @@ export global Help {
         return root.next-id - 1;
     }
 
+    // Shared setup for a new request (hover or click). Resets the
+    // per-request state — crucially the `clip` back to the whole-window
+    // fallback — then stores the new content + anchor. A ScrollView only
+    // re-establishes `clip` for an anchor inside it (set-clip-if-inside,
+    // on the next shown-change), so a request whose anchor sits outside
+    // every ScrollView (the header Reload tip, the sidebar) must start
+    // from "no clip" rather than inherit the previous in-ScrollView
+    // bubble's region. This is the open-time counterpart to dismiss().
+    function begin-request(id: int, t: string, b: [string], a: HelpAnchor) {
+        root.owner = id;
+        root.text = t;
+        root.bullets = b;
+        root.anchor = a;
+        // Start each request with a clean bubble-hover flag: a
+        // `visible: false` bubble doesn't emit `has-hover = false`, so a
+        // stale `true` from a prior bubble could otherwise keep this one
+        // latched open after the pointer has left.
+        root.bubble-hovered = false;
+        root.clip = { x: 0, y: 0, width: 0, height: 0 };
+    }
+
     // Transient hover open; never overrides a pinned bubble.
     public function hover-open(id: int, t: string, b: [string], a: HelpAnchor) {
         if (!root.pinned) {
-            root.owner = id;
-            root.text = t;
-            root.bullets = b;
-            root.anchor = a;
-            // Start each request with a clean bubble-hover flag: a
-            // `visible: false` bubble doesn't emit `has-hover = false`,
-            // so a stale `true` from a prior bubble could otherwise keep
-            // this one latched open after the pointer has left.
-            root.bubble-hovered = false;
+            root.begin-request(id, t, b, a);
             root.requester-hovered = true;
         }
     }
@@ -89,13 +102,9 @@ export global Help {
         if (root.pinned && root.owner == id) {
             root.dismiss();
         } else {
-            root.owner = id;
-            root.text = t;
-            root.bullets = b;
-            root.anchor = a;
+            root.begin-request(id, t, b, a);
             root.pinned = true;
             root.requester-hovered = false;
-            root.bubble-hovered = false;
         }
     }
 
