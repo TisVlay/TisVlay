@@ -678,7 +678,7 @@ component TvDetail inherits Rectangle {
                     // placement matches the INFO group's CopyBtn and
                     // the Profiles-pane field-row reset glyph.
                     FormRow {
-                        label: @tr("System");
+                        label: @tr("system profile" => "System");
                         help: @tr("Drives daemon lifecycle (boot / shutdown / sleep).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
@@ -708,7 +708,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
-                        label: @tr("User");
+                        label: @tr("user profile" => "User");
                         help: @tr("Drives session events (lock / unlock / idle).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
@@ -754,7 +754,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
-                        label: @tr("Screen");
+                        label: @tr("screen power" => "Screen");
                         help: @tr("Blanks the panel without powering off (OLED-safe, instant resume).");
                         HorizontalLayout {
                             alignment: start;
@@ -799,7 +799,7 @@ component TvDetail inherits Rectangle {
                     title: @tr("INPUT");
 
                     FormRow {
-                        label: @tr("Current");
+                        label: @tr("current input" => "Current");
                         help: @tr("Which input the TV is showing right now.");
                         help-bullets: [
                             @tr("Current — what's on screen now; changing it switches the live input."),
@@ -815,7 +815,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
-                        label: @tr("Primary");
+                        label: @tr("primary input" => "Primary");
                         help: @tr("Which input this PC uses; affects on-primary automation.");
                         ComboBox {
                             model: root.tv.available-input-ids;
@@ -965,7 +965,7 @@ component TvDetail inherits Rectangle {
                     body-spacing: 0;
 
                     LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
-                    LabeledRow { label: @tr("Make"); value: root.tv.hw-manufacturer; }
+                    LabeledRow { label: @tr("manufacturer" => "Make"); value: root.tv.hw-manufacturer; }
                     LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }
                     LabeledRow { label: @tr("Serial"); value: root.tv.hw-serial; mono: true; }
                     LabeledRow { label: @tr("Connector"); value: root.tv.desktop-connector; mono: true; }
