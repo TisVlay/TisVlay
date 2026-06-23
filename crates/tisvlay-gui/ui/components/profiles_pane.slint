@@ -25,7 +25,7 @@ import { Icons } from "../globals/icons.slint";
 import { Errors } from "../globals/errors.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
 import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, InlineError, LineEditField, LinkText, NameInputDialog, ProfileTile } from "../widgets.slint";
-import { HelpScrollView } from "../globals/help.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
@@ -205,9 +205,22 @@ component ProfileSectionHeader inherits Rectangle {
                 width: 100%;
                 height: 100%;
             }
+            // Hover hint: clarify the "+" creates a named profile.
+            add-help := HelpTrigger {
+                width: 100%;
+                height: 100%;
+                text: @tr("Create a new profile.");
+            }
             add-touch := TouchArea {
                 enabled: root.add-enabled;
                 clicked => { root.add-clicked(); }
+                changed has-hover => {
+                    if (self.has-hover) {
+                        add-help.hover-enter();
+                    } else {
+                        add-help.hover-leave();
+                    }
+                }
             }
         }
     }

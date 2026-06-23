@@ -17,7 +17,7 @@ import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
 import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
-import { HelpScrollView } from "../globals/help.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 import { SchemaForm } from "schema_form.slint";
@@ -341,9 +341,23 @@ component TvList inherits Rectangle {
                         width: 100%;
                         height: 100%;
                     }
+                    // Hover hint: a bare "+" doesn't convey that it
+                    // pairs (network discovery), not just adds a row.
+                    pair-help := HelpTrigger {
+                        width: 100%;
+                        height: 100%;
+                        text: @tr("Pair a new TV — opens the pairing wizard.");
+                    }
                     pair-touch := TouchArea {
                         enabled: root.daemon-available;
                         clicked => { Daemon.request-pair(); }
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                pair-help.hover-enter();
+                            } else {
+                                pair-help.hover-leave();
+                            }
+                        }
                     }
                 }
             }
