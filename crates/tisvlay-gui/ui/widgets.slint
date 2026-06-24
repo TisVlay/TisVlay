@@ -133,8 +133,8 @@ export component ContextualHelpButton inherits Rectangle {
 
     Image {
         source: Icons.info;
-        width: 14px;
-        height: 14px;
+        width: Design.size-glyph;
+        height: Design.size-glyph;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         colorize: touch.has-hover || trigger.active ? Theme.info-text : Theme.text-dim;
@@ -445,6 +445,8 @@ export component UriBtn inherits Rectangle {
     in property <length> min-button-width: 80px;
     // Optional hover hint (hover-only); empty → no tip. Mirrors IconBtn.
     in property <string> tip;
+    // Optional leading glyph (e.g. external-link); empty → text only.
+    in property <image> icon;
     callback clicked();
 
     accessible-role: button;
@@ -475,7 +477,20 @@ export component UriBtn inherits Rectangle {
         height: 100%;
         padding-left: Design.gap-row;
         padding-right: Design.gap-row;
+        spacing: Design.gap-stack;
         alignment: center;
+        // Optional leading glyph in a centered wrapper (mirrors
+        // IconBtn — an Image's own vertical-alignment can't center it
+        // within the row). Colorized to the label, hidden when unset.
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
+                colorize: !root.enabled ? Theme.text-faint : Theme.text;
+            }
+        }
         Text {
             text: root.text;
             color: !root.enabled ? Theme.text-faint : Theme.text;
@@ -1064,8 +1079,8 @@ export component CopyBtn inherits Rectangle {
 
     Image {
         source: Clipboard.copy-icon;
-        width: 14px;
-        height: 14px;
+        width: Design.size-glyph;
+        height: Design.size-glyph;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         colorize: touch.has-hover ? Theme.text : Theme.text-dim;
@@ -1170,8 +1185,8 @@ export component IconBtn inherits Rectangle {
             alignment: center;
             Image {
                 source: root.source;
-                width: 14px;
-                height: 14px;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
                 colorize: root.fg;
                 // Ghost mode also fades icon opacity at rest. Framed
                 // mode stays fully opaque so the icon reads as a
@@ -1183,8 +1198,8 @@ export component IconBtn inherits Rectangle {
         if root.loading: VerticalLayout {
             alignment: center;
             SpinnerArc {
-                width: 14px;
-                height: 14px;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
             }
         }
 

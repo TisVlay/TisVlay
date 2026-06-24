@@ -412,6 +412,15 @@ pub fn run() -> Result<()> {
         "documentinfo",
         "dialog-information",
     ]));
+    // External-link glyph for URL-launching UriBtns (About pane). Leads
+    // with the symbolic name; broader names cover Breeze / Adwaita.
+    icons.set_open_link(load_themed_icon(&[
+        "open-link-symbolic",
+        "external-link-symbolic",
+        "emblem-symbolic-link",
+        "internet-web-browser",
+        "applications-internet",
+    ]));
 
     // Clipboard plumbing for the LabeledRow CopyBtn. Slint exposes
     // `Platform::set_clipboard_text` for backends but no app-facing
