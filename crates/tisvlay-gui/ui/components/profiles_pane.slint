@@ -420,8 +420,8 @@ component ProfileFieldRowEnum inherits Rectangle {
                 alignment: center;
                 if root.entry.is-locally-set: IconBtn {
                     source: Icons.reload;
-                    accessible-label: @tr("Reset {} to inherit", root.entry.label);
-                    tip: @tr("Reset to the inherited value");
+                    accessible-label: @tr("Reset {} to default", root.entry.label);
+                    tip: @tr("Reset field");
                     clicked => { Profiles.reset-field(root.entry.field-name); }
                 }
             }
@@ -741,7 +741,7 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         source: Icons.delete;
                         accessible-label: @tr("Delete profile");
-                        tip: @tr("Delete this profile");
+                        tip: @tr("Delete profile");
                         enabled: root.can-delete;
                         clicked => { root.request-delete(); }
                     }
@@ -929,7 +929,7 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             ContextualHelpButton {
-                                text: @tr("Fields inherit from the default profile until you change one. A changed field shows a left accent and a reset arrow that restores the inherited value.");
+                                text: @tr("Profile automation maps events to actions. Unset fields inherit from default.");
                             }
                         }
                         Rectangle { horizontal-stretch: 1; }
@@ -938,7 +938,7 @@ component ProfileDetail inherits Rectangle {
                             IconBtn {
                                 source: Icons.copy;
                                 accessible-label: @tr("Duplicate profile");
-                                tip: @tr("Duplicate this profile");
+                                tip: @tr("Duplicate profile");
                                 clicked => { root.request-duplicate(); }
                             }
                         }
@@ -946,8 +946,8 @@ component ProfileDetail inherits Rectangle {
                             alignment: center;
                             IconBtn {
                                 source: Icons.reload;
-                                accessible-label: @tr("Reset all locally-set fields");
-                                tip: @tr("Reset all fields to inherited");
+                                accessible-label: @tr("Reset profile");
+                                tip: @tr("Reset profile");
                                 enabled: Profiles.editor-can-reset-all;
                                 clicked => { root.request-reset-all(); }
                             }

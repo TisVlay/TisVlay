@@ -665,7 +665,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Managed");
-                        help: @tr("Participates in boot, sleep, and session automation.");
+                        help: @tr("Activate both System and User profile automation.");
                         HorizontalLayout {
                             spacing: 10px;
                             alignment: start;
@@ -758,7 +758,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Backlight");
-                        help: @tr("Panel brightness. Lower values reduce power draw and burn-in risk.");
+                        help: @tr("Control power draw and/or reduce burn-in risk.");
                         OptimisticSlider {
                             model-value: root.tv.backlight;
                             enabled: root.tv.connected;
@@ -769,7 +769,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("screen power" => "Screen");
-                        help: @tr("Blanks the panel without powering off (OLED-safe, instant resume).");
+                        help: @tr("Blank screen without powering off (instant resume).");
                         HorizontalLayout {
                             alignment: start;
                             VerticalLayout {
@@ -814,11 +814,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("current input" => "Current");
-                        help: @tr("Which input the TV is showing right now.");
-                        help-bullets: [
-                            @tr("Current — what's on screen now; changing it switches the live input."),
-                            @tr("Primary — the input this PC uses, for on-primary automation."),
-                        ];
+                        help: @tr("Current input shown now; changing it switches the live input.");
                         ComboBox {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
@@ -830,7 +826,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("primary input" => "Primary");
-                        help: @tr("Which input this PC uses; affects on-primary automation.");
+                        help: @tr("Primary input gating automation; E.g. input used for display.");
                         ComboBox {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input == "" ? "—" : root.tv.primary-input;
