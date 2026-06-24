@@ -36,6 +36,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Re-enable Slint `accessibility` feature once upstream blockers clear](ideas/re-enable-slint-accessibility.md)
 - [GUI test coverage fan-out (Layer-C end-to-end tests)](ideas/gui-test-coverage-fanout.md)
 - [Theme-icon upgrade for the default-profile indicator](ideas/profile-default-emblem-theme-icon.md)
+- [Contextual-help pencil/info double-affordance density](ideas/contextual-help-followups.md)
 
 ## Build & CI
 

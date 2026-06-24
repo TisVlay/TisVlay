@@ -15,14 +15,7 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [`tooltip-contextual-help.md`](tooltip-contextual-help.md) — **(as-built / merged)**
-  KDE-style contextual help: an "i" `ContextualHelpButton` toggletip + hover tips
-  on icon buttons / links / chips, drawn by an in-window overlay (`Help` global +
-  `HelpOverlay`) with focus-out dismiss, shrink-to-fit width, anchor tracking, and
-  ScrollView-clamped placement; rolled out across all panes. Consolidates the
-  earlier Slint 1.17 migration plan and folds in the 1.17.0 outcome (incl. the
-  upstream `system-tray` fix) plus the native `Tooltip`/`PopupWindow` evolution
-  notes worth upstreaming.
+_None in flight._
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
