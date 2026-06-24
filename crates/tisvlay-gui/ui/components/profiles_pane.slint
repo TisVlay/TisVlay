@@ -531,7 +531,7 @@ component ProfileFieldRowNumber inherits Rectangle {
                 if root.entry.is-locally-set: IconBtn {
                     source: Icons.reload;
                     accessible-label: @tr("Reset {} to inherit", root.entry.label);
-                    tip: @tr("Reset to the inherited value");
+                    tip: @tr("Reset field");
                     clicked => { Profiles.reset-field(root.entry.field-name); }
                 }
             }
