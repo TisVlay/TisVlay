@@ -264,13 +264,32 @@ export component AboutPane inherits Rectangle {
                             spacing: 2px;
                             horizontal-stretch: 1;
                             alignment: center;
-                            Text {
-                                // Brand name; intentionally not translated.
-                                text: "TisVlay";
-                                font-size: Design.font-title-1;
-                                font-weight: 700;
-                                color: brand-touch.has-hover ? Theme.accent : Theme.text;
-                                animate color { duration: 150ms; }
+                            // Title line: brand name + a trailing
+                            // external-link glyph hinting the brand area
+                            // is a link. Both track the hover accent so
+                            // the affordance reads as one unit.
+                            HorizontalLayout {
+                                spacing: Design.gap-tight;
+                                alignment: start;
+                                Text {
+                                    // Brand name; intentionally not translated.
+                                    text: "TisVlay";
+                                    font-size: Design.font-title-1;
+                                    font-weight: 700;
+                                    color: brand-touch.has-hover ? Theme.accent : Theme.text;
+                                    animate color { duration: 150ms; }
+                                    vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: Icons.open-link;
+                                        width: Design.size-glyph;
+                                        height: Design.size-glyph;
+                                        colorize: brand-touch.has-hover ? Theme.accent : Theme.text;
+                                        animate colorize { duration: 150ms; }
+                                    }
+                                }
                             }
                             Text {
                                 text: @tr("TV Display control for Linux.");
