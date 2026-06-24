@@ -1,10 +1,10 @@
-import { ScrollView, AboutSlint } from "std-widgets.slint";
+import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
 import { Clipboard } from "../globals/clipboard.slint";
 import { Icons } from "../globals/icons.slint";
-import { HelpTrigger } from "../globals/help.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
 // (friendly name + monospace bus address in parens) above a rich
@@ -205,7 +205,7 @@ export component AboutPane inherits Rectangle {
 
     background: Theme.surface-alt;
 
-    ScrollView {
+    HelpScrollView {
         VerticalLayout {
             width: 100%;
             padding-left: Design.pad-pane;
@@ -308,11 +308,7 @@ export component AboutPane inherits Rectangle {
                         mouse-cursor: pointer;
                         clicked => { root.view-source-clicked(); }
                         changed has-hover => {
-                            if (self.has-hover) {
-                                brand-help.hover-enter();
-                            } else {
-                                brand-help.hover-leave();
-                            }
+                            brand-help.set-hover(self.has-hover);
                         }
                     }
                 }

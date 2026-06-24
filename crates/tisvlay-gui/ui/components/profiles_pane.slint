@@ -213,13 +213,14 @@ component ProfileSectionHeader inherits Rectangle {
             }
             add-touch := TouchArea {
                 enabled: root.add-enabled;
-                clicked => { root.add-clicked(); }
+                // Clear on click: the click opens a modal name dialog the
+                // window-root tip would otherwise float over.
+                clicked => {
+                    root.add-clicked();
+                    add-help.hover-leave();
+                }
                 changed has-hover => {
-                    if (self.has-hover) {
-                        add-help.hover-enter();
-                    } else {
-                        add-help.hover-leave();
-                    }
+                    add-help.set-hover(self.has-hover);
                 }
             }
         }

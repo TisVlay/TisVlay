@@ -101,10 +101,8 @@ component FormRow {
     in property <string> label;
     in property <string> helper;
     // Optional longer / optional help, revealed by a trailing "i"
-    // ContextualHelpButton. `help-bullets` adds a bulleted list (e.g.
-    // documenting each option of the control).
+    // ContextualHelpButton.
     in property <string> help;
-    in property <[string]> help-bullets;
     in property <length> label-width: Design.width-label-col;
 
     HorizontalLayout {
@@ -153,7 +151,6 @@ component FormRow {
                     width: 24px;
                     ContextualHelpButton {
                         text: root.help;
-                        bullets: root.help-bullets;
                     }
                 }
             }
@@ -350,13 +347,15 @@ component TvList inherits Rectangle {
                     }
                     pair-touch := TouchArea {
                         enabled: root.daemon-available;
-                        clicked => { Daemon.request-pair(); }
+                        // Clear on click: the click swaps to the pairing
+                        // wizard, removing this button before it could
+                        // dismiss its own tip.
+                        clicked => {
+                            Daemon.request-pair();
+                            pair-help.hover-leave();
+                        }
                         changed has-hover => {
-                            if (self.has-hover) {
-                                pair-help.hover-enter();
-                            } else {
-                                pair-help.hover-leave();
-                            }
+                            pair-help.set-hover(self.has-hover);
                         }
                     }
                 }

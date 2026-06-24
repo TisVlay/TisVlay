@@ -27,7 +27,6 @@ export struct HelpAnchor {
 export global Help {
     // Active request (empty `text` ⇒ nothing shown).
     in-out property <string> text;
-    in-out property <[string]> bullets;
     in-out property <HelpAnchor> anchor;
     // The region (in window coords) the bubble is confined to — the
     // originating ScrollView's viewport, pushed by that ScrollView. So
@@ -70,10 +69,9 @@ export global Help {
     // every ScrollView (the header Reload tip, the sidebar) must start
     // from "no clip" rather than inherit the previous in-ScrollView
     // bubble's region. This is the open-time counterpart to dismiss().
-    function begin-request(id: int, t: string, b: [string], a: HelpAnchor) {
+    function begin-request(id: int, t: string, a: HelpAnchor) {
         root.owner = id;
         root.text = t;
-        root.bullets = b;
         root.anchor = a;
         // Start each request with a clean bubble-hover flag: a
         // `visible: false` bubble doesn't emit `has-hover = false`, so a
@@ -81,12 +79,16 @@ export global Help {
         // latched open after the pointer has left.
         root.bubble-hovered = false;
         root.clip = { x: 0, y: 0, width: 0, height: 0 };
+        // Re-run every ScrollView's containment check against the new
+        // anchor, so the clip is recomputed even on a pin→pin handoff
+        // where `shown` never transitions (no shown-change to fire it).
+        root.reposition-tick += 1;
     }
 
     // Transient hover open; never overrides a pinned bubble.
-    public function hover-open(id: int, t: string, b: [string], a: HelpAnchor) {
+    public function hover-open(id: int, t: string, a: HelpAnchor) {
         if (!root.pinned) {
-            root.begin-request(id, t, b, a);
+            root.begin-request(id, t, a);
             root.requester-hovered = true;
         }
     }
@@ -98,11 +100,11 @@ export global Help {
 
     // Click toggle: re-clicking the same trigger dismisses; otherwise
     // pin this trigger's help open.
-    public function toggle(id: int, t: string, b: [string], a: HelpAnchor) {
+    public function toggle(id: int, t: string, a: HelpAnchor) {
         if (root.pinned && root.owner == id) {
             root.dismiss();
         } else {
-            root.begin-request(id, t, b, a);
+            root.begin-request(id, t, a);
             root.pinned = true;
             root.requester-hovered = false;
         }
@@ -161,7 +163,6 @@ export global Help {
 // (which would add a phantom tab stop). The host reads `pinned-mine`.
 export component HelpTrigger inherits Rectangle {
     in property <string> text;
-    in property <[string]> bullets;
     in property <duration> delay: 700ms;
     // Is the live bubble ours? `active` for styling; `pinned-mine` for
     // the host's focus-out dismissal.
@@ -195,8 +196,18 @@ export component HelpTrigger inherits Rectangle {
         timer.running = false;
         Help.hover-close(root.id);
     }
+    // Host convenience: forward a `has-hover` change in one call, so each
+    // bespoke call site reads `changed has-hover => { t.set-hover(self.has-hover); }`
+    // instead of re-coding the enter/leave branch.
+    public function set-hover(h: bool) {
+        if (h) {
+            self.hover-enter();
+        } else {
+            self.hover-leave();
+        }
+    }
     public function toggle() {
-        Help.toggle(root.id, root.text, root.bullets, root.anchor);
+        Help.toggle(root.id, root.text, root.anchor);
     }
 
     timer := Timer {
@@ -204,17 +215,16 @@ export component HelpTrigger inherits Rectangle {
         running: false;
         triggered() => {
             self.running = false;
-            Help.hover-open(root.id, root.text, root.bullets, root.anchor);
+            Help.hover-open(root.id, root.text, root.anchor);
         }
     }
 }
 
-// The bubble body: a shadowed, bordered card with a wrapped paragraph
-// and optional bullet rows. Fixed width so text wraps; height flows. An
-// outer transparent inset gives the drop shadow room.
+// The bubble body: a shadowed, bordered card with a wrapped paragraph.
+// Fixed width so text wraps; height flows. An outer transparent inset
+// gives the drop shadow room.
 component HelpBubble inherits Rectangle {
     in property <string> text;
-    in property <[string]> bullets;
     // Cap on the text column. The bubble shrinks BELOW this to fit
     // short text, and only grows to (and wraps at) the cap for long
     // text — so a one-liner gets a snug box, not a fixed-width one.
@@ -257,21 +267,6 @@ component HelpBubble inherits Rectangle {
                 width: 100%;
                 color: Theme.text;
                 font-size: Design.font-helper;
-            }
-            for bullet in root.bullets: HorizontalLayout {
-                spacing: Design.gap-tight;
-                Text {
-                    text: "•";
-                    color: Theme.text-faint;
-                    font-size: Design.font-helper;
-                }
-                Text {
-                    text: bullet;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                    color: Theme.text;
-                    font-size: Design.font-helper;
-                }
             }
         }
     }
@@ -332,7 +327,6 @@ export component HelpOverlay inherits Rectangle {
         x: root.place-x;
         y: root.place-y;
         text: Help.text;
-        bullets: Help.bullets;
 
         // Keep an unpinned bubble open while the pointer is on it.
         TouchArea {
@@ -365,11 +359,17 @@ export component HelpScrollView inherits ScrollView {
     }
     property <bool> help-shown-mirror: Help.shown;
     property <int> reposition-mirror: Help.reposition-tick;
-    changed help-shown-mirror => {
+    // Push this ScrollView's post-layout viewport rect to Help;
+    // set-clip-if-inside ignores anchors outside it. absolute-position
+    // is read only here (a change handler), never eagerly.
+    function push-clip() {
         Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
     }
+    changed help-shown-mirror => {
+        self.push-clip();
+    }
     changed reposition-mirror => {
-        Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
+        self.push-clip();
     }
     @children
 }

@@ -320,11 +320,7 @@ export component AppWindow inherits Window {
                             enabled: root.daemon-available;
                             clicked => { Daemon.reload-config(); }
                             changed has-hover => {
-                                if (self.has-hover) {
-                                    reload-help.hover-enter();
-                                } else {
-                                    reload-help.hover-leave();
-                                }
+                                reload-help.set-hover(self.has-hover);
                             }
                         }
                     }

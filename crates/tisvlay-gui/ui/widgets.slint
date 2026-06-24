@@ -89,16 +89,23 @@ export component Chip inherits Rectangle {
         height: 100%;
         text: root.tip;
     }
+    // The `if`-gated TouchArea below is removed when the chip stops being
+    // interactive, so it can't emit `has-hover = false` to dismiss its
+    // own bubble — clear it here instead.
+    changed interactive => {
+        if (!root.interactive) {
+            tip-trigger.hover-leave();
+        }
+    }
 
     if root.interactive: TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => {
+            root.clicked();
+            tip-trigger.hover-leave();
+        }
         changed has-hover => {
-            if (self.has-hover) {
-                tip-trigger.hover-enter();
-            } else {
-                tip-trigger.hover-leave();
-            }
+            tip-trigger.set-hover(self.has-hover);
         }
     }
 }
@@ -115,7 +122,6 @@ export component Chip inherits Rectangle {
 // edge-aware, no focus steal, dismissable). See globals/help.slint.
 export component ContextualHelpButton inherits Rectangle {
     in property <string> text;
-    in property <[string]> bullets;
     // Accessible name (the button's role label); the help copy itself
     // rides on `accessible-description` so a screen-reader user who
     // can't hover still hears it.
@@ -166,7 +172,6 @@ export component ContextualHelpButton inherits Rectangle {
         width: 100%;
         height: 100%;
         text: root.text;
-        bullets: root.bullets;
     }
 
     // Toggletip focus-out + Escape dismissal. Below `touch` in z-order,
@@ -526,16 +531,24 @@ export component UriBtn inherits Rectangle {
         text: root.tip;
     }
 
+    // Clear the tip if the button is disabled while open (no pointer
+    // event would otherwise reset has-hover).
+    changed enabled => {
+        if (!root.enabled) {
+            tip-trigger.hover-leave();
+        }
+    }
+
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.clicked(); }
+        // Dismiss the tip on click too (parity with IconBtn).
+        clicked => {
+            root.clicked();
+            tip-trigger.hover-leave();
+        }
         changed has-hover => {
-            if (self.has-hover) {
-                tip-trigger.hover-enter();
-            } else {
-                tip-trigger.hover-leave();
-            }
+            tip-trigger.set-hover(self.has-hover);
         }
     }
 }
@@ -1165,6 +1178,14 @@ export component IconBtn inherits Rectangle {
     }
 
     property <bool> interactive: root.enabled && !root.loading;
+    // A button disabled while its tip is open (enabled/loading flips
+    // with no pointer event) would strand the bubble; clear it the
+    // moment interactivity drops.
+    changed interactive => {
+        if (!root.interactive) {
+            tip-trigger.hover-leave();
+        }
+    }
     property <bool> has-label: root.label != "";
     /// Foreground (icon colorize + label color) at rest. Ghost mode
     /// dims at rest and brightens on hover — the dim-then-bright
@@ -1241,13 +1262,15 @@ export component IconBtn inherits Rectangle {
 
     touch := TouchArea {
         enabled: root.interactive;
-        clicked => { root.clicked(); }
+        // Dismiss the tip on click as well: a click can destroy this
+        // button (an `if`-gated row glyph) before the TouchArea can emit
+        // `has-hover = false`, which would otherwise strand the bubble.
+        clicked => {
+            root.clicked();
+            tip-trigger.hover-leave();
+        }
         changed has-hover => {
-            if (self.has-hover) {
-                tip-trigger.hover-enter();
-            } else {
-                tip-trigger.hover-leave();
-            }
+            tip-trigger.set-hover(self.has-hover);
         }
     }
 }
