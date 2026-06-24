@@ -257,6 +257,9 @@ export component LinkText inherits Rectangle {
     /// (e.g. `@tr("{}, automated", tv.name)` for a status-tinted
     /// span). Empty string falls back to `root.text`.
     in property <string> accessible-label-override;
+    // Optional hover hint, driven by the same TouchArea as the underline
+    // (so both fire together — the hover isn't "hijacked"). Empty → none.
+    in property <string> tip;
     callback clicked();
 
     horizontal-stretch: 0;
@@ -286,8 +289,21 @@ export component LinkText inherits Rectangle {
         height: 1px;
         background: touch.has-hover ? inner.color : transparent;
     }
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
     touch := TouchArea {
-        clicked => { root.clicked(); }
+        clicked => {
+            root.clicked();
+            tip-trigger.hover-leave();
+        }
+        // The same has-hover that the underline reads above also drives
+        // the tip — no separate TouchArea to intercept the hover.
+        changed has-hover => {
+            tip-trigger.set-hover(self.has-hover);
+        }
     }
 }
 

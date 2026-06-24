@@ -812,6 +812,7 @@ component ProfileDetailHeader inherits Rectangle {
                         }
                         LinkText {
                             text: tv.name;
+                            tip: @tr("Edit {} config", tv.name);
                             text-color: tv.automated
                                 ? Theme.success-text
                                 : Theme.info-text;
