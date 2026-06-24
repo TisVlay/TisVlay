@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-23 20:14-0500\n"
+"POT-Creation-Date: 2026-06-23 20:58-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -1040,54 +1040,59 @@ msgctxt "ComponentRow"
 msgid "offline"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:276
+#: crates/tisvlay-gui/ui/components/about_pane.slint:295
 msgctxt "AboutPane"
 msgid "TV Display control for Linux."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:286
+#: crates/tisvlay-gui/ui/components/about_pane.slint:305
 msgctxt "AboutPane"
 msgid "Open TisVlay site via web browser"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:314
+#: crates/tisvlay-gui/ui/components/about_pane.slint:333
 msgctxt "AboutPane"
 msgid "Open release notes via web browser"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:324
+#: crates/tisvlay-gui/ui/components/about_pane.slint:343
 msgctxt "AboutPane"
 msgid "Diagnostics"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:325
+#: crates/tisvlay-gui/ui/components/about_pane.slint:344
 msgctxt "AboutPane"
 msgid "Copy diagnostics to clipboard"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:335
+#: crates/tisvlay-gui/ui/components/about_pane.slint:354
 msgctxt "AboutPane"
 msgid "Report issue"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:336
+#: crates/tisvlay-gui/ui/components/about_pane.slint:355
 msgctxt "AboutPane"
 msgid "Open issue tracker via web browser"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:347
+#: crates/tisvlay-gui/ui/components/about_pane.slint:366
 msgctxt "AboutPane"
 msgid "COMPONENTS"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:359
+#: crates/tisvlay-gui/ui/components/about_pane.slint:378
 msgctxt "AboutPane"
 msgid "LICENSE"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:380
+#: crates/tisvlay-gui/ui/components/about_pane.slint:399
 msgctxt "AboutPane"
 msgid "View third-party notices"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/about_pane.slint:400
+msgctxt "AboutPane"
+msgid "Open third-party notices via web browser"
 msgstr ""
 
 #: crates/tisvlay-gui/ui/components/profiles_pane.slint:89

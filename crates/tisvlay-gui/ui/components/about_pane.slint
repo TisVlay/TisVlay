@@ -397,6 +397,8 @@ export component AboutPane inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                     UriBtn {
                         text: @tr("View third-party notices");
+                        tip: @tr("Open third-party notices via web browser");
+                        icon: Icons.open-link;
                         accessible-id: "about-notices-button";
                         clicked => { root.view-notices-clicked(); }
                     }
