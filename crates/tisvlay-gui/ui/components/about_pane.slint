@@ -200,6 +200,7 @@ export component AboutPane inherits Rectangle {
     callback view-release-clicked();
     callback view-notices-clicked();
     callback report-issue-clicked();
+    callback view-docs-clicked();
     callback copy-diagnostic-clicked();
     callback open-config-folder(string);
 
@@ -302,41 +303,59 @@ export component AboutPane inherits Rectangle {
                     alignment: start;
                     horizontal-stretch: 0;
                     spacing: Design.gap-stack;
+
+                    // Row 1: Diagnostics (left) + version chip (right). A
+                    // stretch spacer pushes the chip to the column's
+                    // right edge so it stays vertically aligned with the
+                    // COMPONENTS rows' version chips below.
                     HorizontalLayout {
-                        alignment: end;
-                        Chip {
-                            label: "v" + root.gui-version;
-                            // `info` tone matches the COMPONENTS chips
-                            // when versions agree — visual continuity
-                            // for the running build's identifier.
-                            tone: "info";
-                            interactive: true;
-                            tip: @tr("Open release notes via web browser");
-                            accessible-id: "about-version-chip";
-                            clicked => { root.view-release-clicked(); }
-                        }
-                    }
-                    HorizontalLayout {
-                        alignment: end;
-                        spacing: Design.gap-stack;
                         IconBtn {
                             source: Clipboard.copy-icon;
                             label: @tr("Diagnostics");
                             tip: @tr("Copy diagnostics to clipboard");
-                            // Match the neighboring `Report issue`
-                            // UriBtn's row height. Width auto-grows
-                            // from the labeled-mode HorizontalLayout.
+                            // Standard control height so it lines up
+                            // with the row-2 link buttons. Width
+                            // auto-grows from the labeled-mode layout.
                             height: Design.size-input;
                             framed: true;
                             accessible-id: "about-diagnostics-button";
                             clicked => { root.copy-diagnostic-clicked(); }
                         }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            Chip {
+                                label: "v" + root.gui-version;
+                                // `info` tone matches the COMPONENTS chips
+                                // when versions agree — visual continuity
+                                // for the running build's identifier.
+                                tone: "info";
+                                interactive: true;
+                                tip: @tr("Open release notes via web browser");
+                                accessible-id: "about-version-chip";
+                                clicked => { root.view-release-clicked(); }
+                            }
+                        }
+                    }
+
+                    // Row 2: web-link buttons, left-aligned under
+                    // Diagnostics.
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: Design.gap-stack;
                         UriBtn {
                             text: @tr("Report issue");
                             tip: @tr("Open issue tracker via web browser");
                             icon: Icons.open-link;
                             accessible-id: "about-issue-button";
                             clicked => { root.report-issue-clicked(); }
+                        }
+                        UriBtn {
+                            text: @tr("Documentation");
+                            tip: @tr("Open documentation via web browser");
+                            icon: Icons.open-link;
+                            accessible-id: "about-docs-button";
+                            clicked => { root.view-docs-clicked(); }
                         }
                     }
                 }

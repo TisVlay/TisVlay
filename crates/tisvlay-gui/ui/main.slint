@@ -155,6 +155,7 @@ export component AppWindow inherits Window {
     callback view-source-clicked();
     callback view-release-clicked();
     callback report-issue-clicked();
+    callback view-docs-clicked();
     callback copy-diagnostic-clicked();
     // Per-row "reveal config in file manager" callback. Rust forwards
     // the path to `org.freedesktop.FileManager1.ShowItems`.
@@ -402,6 +403,7 @@ export component AppWindow inherits Window {
                     view-release-clicked => { root.view-release-clicked(); }
                     view-notices-clicked => { root.view-notices-clicked(); }
                     report-issue-clicked => { root.report-issue-clicked(); }
+                    view-docs-clicked => { root.view-docs-clicked(); }
                     copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
                     open-config-folder(p) => { root.open-config-folder(p); }
                 }
