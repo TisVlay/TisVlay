@@ -150,6 +150,7 @@ component ComponentRow {
                     if entry.bus_address != "": IconBtn {
                         source: Icons.folder-open;
                         label: @tr("Config");
+                        tip: @tr("Open config via file browser");
                         enabled: entry.config_path != "";
                         opacity: entry.config_path != "" ? 1 : Design.opacity-disabled;
                         accessible-id: "about-component-" + entry.name + "-config-button";
