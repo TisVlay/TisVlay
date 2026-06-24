@@ -443,6 +443,8 @@ export component UriBtn inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
     in property <length> min-button-width: 80px;
+    // Optional hover hint (hover-only); empty → no tip. Mirrors IconBtn.
+    in property <string> tip;
     callback clicked();
 
     accessible-role: button;
@@ -483,10 +485,25 @@ export component UriBtn inherits Rectangle {
         }
     }
 
+    // Hover hint: the shared trigger reports `tip` to the Help global,
+    // which the window-root overlay draws below the button.
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
+
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
         clicked => { root.clicked(); }
+        changed has-hover => {
+            if (self.has-hover) {
+                tip-trigger.hover-enter();
+            } else {
+                tip-trigger.hover-leave();
+            }
+        }
     }
 }
 

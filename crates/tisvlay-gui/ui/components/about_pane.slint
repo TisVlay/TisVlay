@@ -316,6 +316,7 @@ export component AboutPane inherits Rectangle {
                         }
                         UriBtn {
                             text: @tr("Report issue");
+                            tip: @tr("Open issue tracker");
                             accessible-id: "about-issue-button";
                             clicked => { root.report-issue-clicked(); }
                         }
