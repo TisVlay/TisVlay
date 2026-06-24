@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gettextrs::gettext;
+use gettextrs::pgettext;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tisvlay_core::{
@@ -237,26 +237,28 @@ pub(crate) const USER_FIELDS: &[FieldSpec] = &[
     },
 ];
 
-/// Translated label for `spec.wire`. Wrapped in `gettext` so the
-/// .pot extractor sees the literal English copy; the `match`
-/// guarantees a compile-time error if a field is added to the table
-/// but not labeled here.
+/// Translated label for `spec.wire`. Wrapped in `pgettext` with a
+/// "profile field" context so the .pot extractor sees the literal
+/// English copy and translators get a disambiguating context (the
+/// `On sleep` / `On wake` verbs are ambiguous out of context); the
+/// `match` guarantees a compile-time error if a field is added to the
+/// table but not labeled here.
 fn field_label(wire: &str) -> String {
     match wire {
-        "on_startup" => gettext("On startup"),
-        "on_shutdown" => gettext("On shutdown"),
-        "on_reboot" => gettext("On reboot"),
-        "on_sleep" => gettext("On sleep"),
-        "on_wake" => gettext("On wake"),
-        "on_dpms_off" => gettext("On DPMS off"),
-        "on_dpms_on" => gettext("On DPMS on"),
-        "automate_when" => gettext("Automate when"),
-        "on_session_lock" => gettext("On session lock"),
-        "on_session_unlock" => gettext("On session unlock"),
-        "on_lock_wake" => gettext("On lock wake"),
-        "on_idle_timeout" => gettext("On idle timeout"),
-        "on_idle_resume" => gettext("On idle resume"),
-        "idle_timeout_seconds" => gettext("Idle timeout"),
+        "on_startup" => pgettext("profile field", "On startup"),
+        "on_shutdown" => pgettext("profile field", "On shutdown"),
+        "on_reboot" => pgettext("profile field", "On reboot"),
+        "on_sleep" => pgettext("profile field", "On sleep"),
+        "on_wake" => pgettext("profile field", "On wake"),
+        "on_dpms_off" => pgettext("profile field", "On DPMS off"),
+        "on_dpms_on" => pgettext("profile field", "On DPMS on"),
+        "automate_when" => pgettext("profile field", "Automate when"),
+        "on_session_lock" => pgettext("profile field", "On session lock"),
+        "on_session_unlock" => pgettext("profile field", "On session unlock"),
+        "on_lock_wake" => pgettext("profile field", "On lock wake"),
+        "on_idle_timeout" => pgettext("profile field", "On idle timeout"),
+        "on_idle_resume" => pgettext("profile field", "On idle resume"),
+        "idle_timeout_seconds" => pgettext("profile field", "Idle timeout"),
         // Unknown wire keys flow through verbatim — should never
         // happen with the table-driven build path, but matches the
         // fall-through pattern in the wider GUI.

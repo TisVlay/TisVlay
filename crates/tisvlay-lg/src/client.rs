@@ -242,10 +242,10 @@ impl WebOsClient {
         let timeout = self.timeout;
         let response = self.conn()?.request(&request, timeout).await?;
 
-        if response.msg_type == ResponseType::Error {
-            if let Some(error) = response.error {
-                return Err(Error::TvError(error));
-            }
+        if response.msg_type == ResponseType::Error
+            && let Some(error) = response.error
+        {
+            return Err(Error::TvError(error));
         }
 
         Ok(response)
@@ -265,10 +265,10 @@ impl WebOsClient {
         let timeout = self.timeout;
         let response = self.conn()?.request(&request, timeout).await?;
 
-        if response.msg_type == ResponseType::Error {
-            if let Some(error) = &response.error {
-                tracing::warn!(uri, error, "Subscribe returned error");
-            }
+        if response.msg_type == ResponseType::Error
+            && let Some(error) = &response.error
+        {
+            tracing::warn!(uri, error, "Subscribe returned error");
         }
 
         Ok(response)

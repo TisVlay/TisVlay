@@ -1,9 +1,10 @@
-import { ScrollView, AboutSlint } from "std-widgets.slint";
+import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
 import { Clipboard } from "../globals/clipboard.slint";
 import { Icons } from "../globals/icons.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
 // (friendly name + monospace bus address in parens) above a rich
@@ -150,6 +151,7 @@ component ComponentRow {
                     if entry.bus_address != "": IconBtn {
                         source: Icons.folder-open;
                         label: @tr("Config");
+                        tip: @tr("Open component config");
                         enabled: entry.config_path != "";
                         opacity: entry.config_path != "" ? 1 : Design.opacity-disabled;
                         accessible-id: "about-component-" + entry.name + "-config-button";
@@ -203,7 +205,7 @@ export component AboutPane inherits Rectangle {
 
     background: Theme.surface-alt;
 
-    ScrollView {
+    HelpScrollView {
         VerticalLayout {
             width: 100%;
             padding-left: Design.pad-pane;
@@ -262,13 +264,32 @@ export component AboutPane inherits Rectangle {
                             spacing: 2px;
                             horizontal-stretch: 1;
                             alignment: center;
-                            Text {
-                                // Brand name; intentionally not translated.
-                                text: "TisVlay";
-                                font-size: Design.font-title-1;
-                                font-weight: 700;
-                                color: brand-touch.has-hover ? Theme.accent : Theme.text;
-                                animate color { duration: 150ms; }
+                            // Title line: brand name + a trailing
+                            // external-link glyph hinting the brand area
+                            // is a link. Both track the hover accent so
+                            // the affordance reads as one unit.
+                            HorizontalLayout {
+                                spacing: Design.gap-tight;
+                                alignment: start;
+                                Text {
+                                    // Brand name; intentionally not translated.
+                                    text: "TisVlay";
+                                    font-size: Design.font-title-1;
+                                    font-weight: 700;
+                                    color: brand-touch.has-hover ? Theme.accent : Theme.text;
+                                    animate color { duration: 150ms; }
+                                    vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: Icons.open-link;
+                                        width: Design.size-glyph;
+                                        height: Design.size-glyph;
+                                        colorize: brand-touch.has-hover ? Theme.accent : Theme.text;
+                                        animate colorize { duration: 150ms; }
+                                    }
+                                }
                             }
                             Text {
                                 text: @tr("TV Display control for Linux.");
@@ -277,9 +298,18 @@ export component AboutPane inherits Rectangle {
                             }
                         }
                     }
+                    // Hover hint for the brand-area "View source" target.
+                    brand-help := HelpTrigger {
+                        width: 100%;
+                        height: 100%;
+                        text: @tr("Open TisVlay website");
+                    }
                     brand-touch := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.view-source-clicked(); }
+                        changed has-hover => {
+                            brand-help.set-hover(self.has-hover);
+                        }
                     }
                 }
 
@@ -296,6 +326,7 @@ export component AboutPane inherits Rectangle {
                             // for the running build's identifier.
                             tone: "info";
                             interactive: true;
+                            tip: @tr("Open release notes");
                             accessible-id: "about-version-chip";
                             clicked => { root.view-release-clicked(); }
                         }
@@ -306,6 +337,7 @@ export component AboutPane inherits Rectangle {
                         IconBtn {
                             source: Clipboard.copy-icon;
                             label: @tr("Diagnostics");
+                            tip: @tr("Copy diagnostics to clipboard");
                             // Match the neighboring `Report issue`
                             // UriBtn's row height. Width auto-grows
                             // from the labeled-mode HorizontalLayout.
@@ -316,6 +348,8 @@ export component AboutPane inherits Rectangle {
                         }
                         UriBtn {
                             text: @tr("Report issue");
+                            tip: @tr("Open issue tracker");
+                            icon: Icons.open-link;
                             accessible-id: "about-issue-button";
                             clicked => { root.report-issue-clicked(); }
                         }
@@ -359,6 +393,8 @@ export component AboutPane inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                     UriBtn {
                         text: @tr("View third-party notices");
+                        tip: @tr("Open third-party notices");
+                        icon: Icons.open-link;
                         accessible-id: "about-notices-button";
                         clicked => { root.view-notices-clicked(); }
                     }

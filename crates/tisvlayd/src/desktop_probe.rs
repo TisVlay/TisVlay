@@ -187,15 +187,15 @@ pub(crate) fn identity_matches(tv: &HardwareId, edid: &HardwareId) -> bool {
 /// (they're expected in practice — see [`identity_matches`]).
 pub(crate) fn match_score(tv: &HardwareId, edid: &HardwareId) -> u32 {
     let mut score = 0;
-    if let (Some(a), Some(b)) = (&tv.model, &edid.model) {
-        if a == b {
-            score += 1;
-        }
+    if let (Some(a), Some(b)) = (&tv.model, &edid.model)
+        && a == b
+    {
+        score += 1;
     }
-    if let (Some(a), Some(b)) = (&tv.serial, &edid.serial) {
-        if a == b {
-            score += 2;
-        }
+    if let (Some(a), Some(b)) = (&tv.serial, &edid.serial)
+        && a == b
+    {
+        score += 2;
     }
     score
 }

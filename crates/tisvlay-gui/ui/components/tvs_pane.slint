@@ -16,7 +16,8 @@ import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pair
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
-import { DangerBtn, Chip, ConfirmDialog, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
+import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
 import { SchemaForm } from "schema_form.slint";
@@ -99,6 +100,9 @@ export struct TvViewModel {
 component FormRow {
     in property <string> label;
     in property <string> helper;
+    // Optional longer / optional help, revealed by a trailing "i"
+    // ContextualHelpButton.
+    in property <string> help;
     in property <length> label-width: Design.width-label-col;
 
     HorizontalLayout {
@@ -137,7 +141,18 @@ component FormRow {
             // fill their parent's available width by default, so the
             // explicit `width: 100%` is both unnecessary and harmful.
             HorizontalLayout {
+                spacing: Design.gap-row;
                 @children
+                // Trailing "i" toggletip (right of the control). Matches
+                // the PROFILES rows' trailing edit-pencil wrapper so all
+                // right-side row buttons share one layout + spacing.
+                if root.help != "": VerticalLayout {
+                    alignment: center;
+                    width: 24px;
+                    ContextualHelpButton {
+                        text: root.help;
+                    }
+                }
             }
 
             if root.helper != "": Text {
@@ -323,9 +338,25 @@ component TvList inherits Rectangle {
                         width: 100%;
                         height: 100%;
                     }
+                    // Hover hint: a bare "+" doesn't convey that it
+                    // pairs (network discovery), not just adds a row.
+                    pair-help := HelpTrigger {
+                        width: 100%;
+                        height: 100%;
+                        text: @tr("Pair a new TV — opens the pairing wizard.");
+                    }
                     pair-touch := TouchArea {
                         enabled: root.daemon-available;
-                        clicked => { Daemon.request-pair(); }
+                        // Clear on click: the click swaps to the pairing
+                        // wizard, removing this button before it could
+                        // dismiss its own tip.
+                        clicked => {
+                            Daemon.request-pair();
+                            pair-help.hover-leave();
+                        }
+                        changed has-hover => {
+                            pair-help.set-hover(self.has-hover);
+                        }
                     }
                 }
             }
@@ -555,13 +586,11 @@ component TvDetail inherits Rectangle {
             tv: root.tv;
         }
 
-        // Scrollable body. Pin viewport-width to visible-width so the
-        // content cannot scroll horizontally; without this, a row whose
-        // preferred width exceeds the visible viewport (e.g. a Slider
-        // stretched via FormRow) lets the viewport grow to fit and the
-        // overflow clips at the window edge instead of the card.
-        ScrollView {
-            viewport-width: self.visible-width;
+        // Scrollable body. HelpScrollView pins viewport-width (so a row
+        // wider than the viewport — e.g. a stretched Slider — clips at
+        // the card, not the window) and confines help bubbles to this
+        // viewport on scroll/resize. See globals/help.slint.
+        HelpScrollView {
             VerticalLayout {
                 width: 100%;
                 padding-left: Design.pad-pane;
@@ -635,7 +664,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Managed");
-                        // helper: "Participates in boot, sleep, and session automation.";
+                        help: @tr("Activate both System and User profile automation.");
                         HorizontalLayout {
                             spacing: 10px;
                             alignment: start;
@@ -662,8 +691,8 @@ component TvDetail inherits Rectangle {
                     // placement matches the INFO group's CopyBtn and
                     // the Profiles-pane field-row reset glyph.
                     FormRow {
-                        label: @tr("System");
-                        // helper: "Drives daemon lifecycle (boot/shutdown/sleep).";
+                        label: @tr("system profile" => "System");
+                        help: @tr("Drives daemon lifecycle (boot / shutdown / sleep).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ComboBox {
@@ -678,6 +707,7 @@ component TvDetail inherits Rectangle {
                                 IconBtn {
                                     source: Icons.edit;
                                     accessible-label: @tr("Edit system profile");
+                                    tip: @tr("Edit system profile");
                                     enabled: root.system-profiles.length > 0;
                                     clicked => {
                                         Profiles.open-profile-by-uuid(
@@ -691,8 +721,8 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
-                        label: @tr("User");
-                        // helper: "Drives session events (lock/unlock/idle).";
+                        label: @tr("user profile" => "User");
+                        help: @tr("Drives session events (lock / unlock / idle).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ComboBox {
@@ -707,6 +737,7 @@ component TvDetail inherits Rectangle {
                                 IconBtn {
                                     source: Icons.edit;
                                     accessible-label: @tr("Edit user profile");
+                                    tip: @tr("Edit user profile");
                                     enabled: root.user-profiles.length > 0;
                                     clicked => {
                                         Profiles.open-profile-by-uuid(
@@ -726,6 +757,7 @@ component TvDetail inherits Rectangle {
 
                     FormRow {
                         label: @tr("Backlight");
+                        help: @tr("Control power draw and/or reduce burn-in risk.");
                         OptimisticSlider {
                             model-value: root.tv.backlight;
                             enabled: root.tv.connected;
@@ -735,8 +767,8 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
-                        label: @tr("Screen");
-                        // helper: "Blanks the panel without powering off (OLED-safe, instant resume).";
+                        label: @tr("screen power" => "Screen");
+                        help: @tr("Blank screen without powering off (instant resume).");
                         HorizontalLayout {
                             alignment: start;
                             VerticalLayout {
@@ -780,7 +812,8 @@ component TvDetail inherits Rectangle {
                     title: @tr("INPUT");
 
                     FormRow {
-                        label: @tr("Current");
+                        label: @tr("current input" => "Current");
+                        help: @tr("Current input shown now; changing it switches the live input.");
                         ComboBox {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
@@ -791,8 +824,8 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
-                        label: @tr("Primary");
-                        // helper: "Which input this PC uses; affects on-primary automation.";
+                        label: @tr("primary input" => "Primary");
+                        help: @tr("Primary input gating automation; E.g. input used for display.");
                         ComboBox {
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input == "" ? "—" : root.tv.primary-input;
@@ -941,7 +974,7 @@ component TvDetail inherits Rectangle {
                     body-spacing: 0;
 
                     LabeledRow { label: @tr("TV ID"); value: root.tv.uuid; mono: true; }
-                    LabeledRow { label: @tr("Make"); value: root.tv.hw-manufacturer; }
+                    LabeledRow { label: @tr("manufacturer" => "Make"); value: root.tv.hw-manufacturer; }
                     LabeledRow { label: @tr("Model"); value: root.tv.hw-model; }
                     LabeledRow { label: @tr("Serial"); value: root.tv.hw-serial; mono: true; }
                     LabeledRow { label: @tr("Connector"); value: root.tv.desktop-connector; mono: true; }

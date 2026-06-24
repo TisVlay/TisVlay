@@ -297,12 +297,12 @@ async fn update_tv_cached_state(
             iface.connected = true;
             iface.connected_changed(emitter).await.ok();
         }
-        if let Some(ref input) = state.current_input {
-            if iface.current_input != *input {
-                iface.current_input = input.clone();
-                // Automated depends on current_input, signal it changed
-                iface.automated_changed(emitter).await.ok();
-            }
+        if let Some(ref input) = state.current_input
+            && iface.current_input != *input
+        {
+            iface.current_input = input.clone();
+            // Automated depends on current_input, signal it changed
+            iface.automated_changed(emitter).await.ok();
         }
     }
 
@@ -337,17 +337,17 @@ async fn update_tv_cached_state(
     if let Ok(iface_ref) = object_server.interface::<_, TvVolumeService>(path).await {
         let mut iface = iface_ref.get_mut().await;
         let emitter = iface_ref.signal_emitter();
-        if let Some(vol) = state.volume {
-            if iface.volume != vol {
-                iface.volume = vol;
-                iface.volume_changed(emitter).await.ok();
-            }
+        if let Some(vol) = state.volume
+            && iface.volume != vol
+        {
+            iface.volume = vol;
+            iface.volume_changed(emitter).await.ok();
         }
-        if let Some(muted) = state.muted {
-            if iface.muted != muted {
-                iface.muted = muted;
-                iface.muted_changed(emitter).await.ok();
-            }
+        if let Some(muted) = state.muted
+            && iface.muted != muted
+        {
+            iface.muted = muted;
+            iface.muted_changed(emitter).await.ok();
         }
     }
 
@@ -355,11 +355,11 @@ async fn update_tv_cached_state(
     if let Ok(iface_ref) = object_server.interface::<_, TvInputService>(path).await {
         let mut iface = iface_ref.get_mut().await;
         let emitter = iface_ref.signal_emitter();
-        if let Some(ref input) = state.current_input {
-            if iface.current_input != *input {
-                iface.current_input = input.clone();
-                iface.current_input_changed(emitter).await.ok();
-            }
+        if let Some(ref input) = state.current_input
+            && iface.current_input != *input
+        {
+            iface.current_input = input.clone();
+            iface.current_input_changed(emitter).await.ok();
         }
         if !state.inputs.is_empty() {
             let new_inputs: Vec<(String, String)> = state
@@ -375,16 +375,16 @@ async fn update_tv_cached_state(
     }
 
     // TvBacklightService
-    if let Ok(iface_ref) = object_server.interface::<_, TvBacklightService>(path).await {
-        if let Some(bl) = state.backlight {
-            let mut iface = iface_ref.get_mut().await;
-            if iface.backlight != bl {
-                iface.backlight = bl;
-                iface
-                    .backlight_changed(iface_ref.signal_emitter())
-                    .await
-                    .ok();
-            }
+    if let Ok(iface_ref) = object_server.interface::<_, TvBacklightService>(path).await
+        && let Some(bl) = state.backlight
+    {
+        let mut iface = iface_ref.get_mut().await;
+        if iface.backlight != bl {
+            iface.backlight = bl;
+            iface
+                .backlight_changed(iface_ref.signal_emitter())
+                .await
+                .ok();
         }
     }
 

@@ -19,8 +19,6 @@ on_idle_timeout = "screen_off"
 on_idle_resume = "screen_on"
 
 [discovery]
-# Source UDP port for SSDP discovery. 1901 is the built-in default when
-# omitted; set 0 for an OS-chosen ephemeral port (not firewall-targetable).
 bind_port = 1901
 poll_interval_ms = 8000
 
@@ -29,7 +27,7 @@ uuid = "9a3f1b22-c4d8-4e90-b21f-7f1a2c8e5b40"
 name = "office"
 vendor = "lg"
 primary_input = "HDMI_1"
-managed = true
+managed = false
 
 [tv.profile]
 system = "00000000-0000-0000-0000-000000005159"

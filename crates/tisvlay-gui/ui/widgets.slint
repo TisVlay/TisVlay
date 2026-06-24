@@ -10,6 +10,7 @@ import { Design } from "design.slint";
 import { Clipboard } from "globals/clipboard.slint";
 import { Icons } from "globals/icons.slint";
 import { ProfileKind } from "globals/profiles.slint";
+import { Help, HelpTrigger } from "globals/help.slint";
 
 // =============================================================================
 // Chip — small status pill (Connected, Managed, Unmanaged, etc.).
@@ -26,6 +27,9 @@ export component Chip inherits Rectangle {
     /// `false` keeps every existing decorative chip (online/offline,
     /// version-drift indicators, etc.) inert.
     in property <bool> interactive: false;
+    /// Optional hover hint (hover-only); requires `interactive` — it
+    /// shares the chip's TouchArea. Empty → no tip.
+    in property <string> tip;
     callback clicked();
 
     /// Slint 1.16 requires a constant `accessible-role`; chips read
@@ -78,9 +82,132 @@ export component Chip inherits Rectangle {
         }
     }
 
+    // Hover hint (interactive chips): the shared trigger reports `tip`
+    // to the Help global; the window-root overlay draws the bubble.
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
+    // The `if`-gated TouchArea below is removed when the chip stops being
+    // interactive, so it can't emit `has-hover = false` to dismiss its
+    // own bubble — clear it here instead.
+    changed interactive => {
+        if (!root.interactive) {
+            tip-trigger.hover-leave();
+        }
+    }
+
     if root.interactive: TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => {
+            root.clicked();
+            tip-trigger.hover-leave();
+        }
+        changed has-hover => {
+            tip-trigger.set-hover(self.has-hover);
+        }
+    }
+}
+
+// =============================================================================
+// ContextualHelpButton — KDE-style "i" toggletip for settings-row help.
+// =============================================================================
+//
+// A circled "i" glyph placed trailing a control. Click/tap latches the
+// help card open; hovering (after a short linger) also opens it
+// transiently. The glyph does NOT render the card — it reports its
+// content and absolute position to the `Help` global, and a single
+// HelpOverlay at the window root draws it (centered over the anchor,
+// edge-aware, no focus steal, dismissable). See globals/help.slint.
+export component ContextualHelpButton inherits Rectangle {
+    in property <string> text;
+    // Accessible name (the button's role label); the help copy itself
+    // rides on `accessible-description` so a screen-reader user who
+    // can't hover still hears it.
+    in property <string> name: @tr("Show help");
+
+    // Ghost style matching IconBtn: squarish, no resting border, dim
+    // glyph — so it sits naturally among the other right-side row
+    // buttons. Picks up the blue info tint only when hovered/engaged.
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-width: 24px;
+    min-height: 24px;
+    border-radius: Design.radius-control;
+    background: touch.has-hover || trigger.active ? Theme.info-soft : transparent;
+    animate background { duration: 150ms; }
+
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-description: root.text;
+    accessible-action-default => {
+        root.activate();
+    }
+
+    // A pinning click both toggles the bubble AND focuses this button,
+    // so losing that focus (clicking another control, or Tab) fires the
+    // focus-out dismiss in `fs` — the KDE mechanism, no blocking scrim.
+    function activate() {
+        trigger.toggle();
+        if (trigger.pinned-mine) {
+            fs.focus();
+        }
+    }
+
+    Image {
+        source: Icons.info;
+        width: Design.size-glyph;
+        height: Design.size-glyph;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        colorize: touch.has-hover || trigger.active ? Theme.info-text : Theme.text-dim;
+        // Dim at rest like IconBtn's ghost glyph; full on engage.
+        opacity: touch.has-hover || trigger.active ? 1.0 : 0.7;
+    }
+
+    // Shared id / anchor / hover-timer machinery (fills the button so
+    // its absolute-position tracks the glyph).
+    trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.text;
+    }
+
+    // Toggletip focus-out + Escape dismissal. Below `touch` in z-order,
+    // so the pointer/cursor still go to the TouchArea; this only tracks
+    // focus + Escape.
+    fs := FocusScope {
+        width: 100%;
+        height: 100%;
+        // Focus is taken explicitly on the pinning click, not on any click.
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape && trigger.pinned-mine) {
+                Help.dismiss();
+                return accept;
+            }
+            return reject;
+        }
+        changed has-focus => {
+            if (!self.has-focus && trigger.pinned-mine) {
+                Help.dismiss();
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: help;
+        clicked => {
+            root.activate();
+        }
+        changed has-hover => {
+            if (self.has-hover) {
+                trigger.hover-enter();
+            } else {
+                trigger.hover-leave();
+            }
+        }
     }
 }
 
@@ -130,6 +257,9 @@ export component LinkText inherits Rectangle {
     /// (e.g. `@tr("{}, automated", tv.name)` for a status-tinted
     /// span). Empty string falls back to `root.text`.
     in property <string> accessible-label-override;
+    // Optional hover hint, driven by the same TouchArea as the underline
+    // (so both fire together — the hover isn't "hijacked"). Empty → none.
+    in property <string> tip;
     callback clicked();
 
     horizontal-stretch: 0;
@@ -159,8 +289,21 @@ export component LinkText inherits Rectangle {
         height: 1px;
         background: touch.has-hover ? inner.color : transparent;
     }
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
     touch := TouchArea {
-        clicked => { root.clicked(); }
+        clicked => {
+            root.clicked();
+            tip-trigger.hover-leave();
+        }
+        // The same has-hover that the underline reads above also drives
+        // the tip — no separate TouchArea to intercept the hover.
+        changed has-hover => {
+            tip-trigger.set-hover(self.has-hover);
+        }
     }
 }
 
@@ -339,6 +482,10 @@ export component UriBtn inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
     in property <length> min-button-width: 80px;
+    // Optional hover hint (hover-only); empty → no tip. Mirrors IconBtn.
+    in property <string> tip;
+    // Optional leading glyph (e.g. external-link); empty → text only.
+    in property <image> icon;
     callback clicked();
 
     accessible-role: button;
@@ -369,7 +516,20 @@ export component UriBtn inherits Rectangle {
         height: 100%;
         padding-left: Design.gap-row;
         padding-right: Design.gap-row;
+        spacing: Design.gap-stack;
         alignment: center;
+        // Optional leading glyph in a centered wrapper (mirrors
+        // IconBtn — an Image's own vertical-alignment can't center it
+        // within the row). Colorized to the label, hidden when unset.
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
+                colorize: !root.enabled ? Theme.text-faint : Theme.text;
+            }
+        }
         Text {
             text: root.text;
             color: !root.enabled ? Theme.text-faint : Theme.text;
@@ -379,10 +539,33 @@ export component UriBtn inherits Rectangle {
         }
     }
 
+    // Hover hint: the shared trigger reports `tip` to the Help global,
+    // which the window-root overlay draws below the button.
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
+
+    // Clear the tip if the button is disabled while open (no pointer
+    // event would otherwise reset has-hover).
+    changed enabled => {
+        if (!root.enabled) {
+            tip-trigger.hover-leave();
+        }
+    }
+
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.clicked(); }
+        // Dismiss the tip on click too (parity with IconBtn).
+        clicked => {
+            root.clicked();
+            tip-trigger.hover-leave();
+        }
+        changed has-hover => {
+            tip-trigger.set-hover(self.has-hover);
+        }
     }
 }
 
@@ -943,8 +1126,8 @@ export component CopyBtn inherits Rectangle {
 
     Image {
         source: Clipboard.copy-icon;
-        width: 14px;
-        height: 14px;
+        width: Design.size-glyph;
+        height: Design.size-glyph;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         colorize: touch.has-hover ? Theme.text : Theme.text-dim;
@@ -992,6 +1175,9 @@ export component IconBtn inherits Rectangle {
     /// reads as a labeled action; when empty, behaves as a square
     /// icon-only button (the original 24×24 ghost style).
     in property <string> label: "";
+    /// Optional hover help. Especially useful for icon-only buttons
+    /// (label == ""), where the glyph alone doesn't name the action.
+    in property <string> tip;
     callback clicked();
 
     accessible-role: button;
@@ -1008,6 +1194,14 @@ export component IconBtn inherits Rectangle {
     }
 
     property <bool> interactive: root.enabled && !root.loading;
+    // A button disabled while its tip is open (enabled/loading flips
+    // with no pointer event) would strand the bubble; clear it the
+    // moment interactivity drops.
+    changed interactive => {
+        if (!root.interactive) {
+            tip-trigger.hover-leave();
+        }
+    }
     property <bool> has-label: root.label != "";
     /// Foreground (icon colorize + label color) at rest. Ghost mode
     /// dims at rest and brightens on hover — the dim-then-bright
@@ -1046,8 +1240,8 @@ export component IconBtn inherits Rectangle {
             alignment: center;
             Image {
                 source: root.source;
-                width: 14px;
-                height: 14px;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
                 colorize: root.fg;
                 // Ghost mode also fades icon opacity at rest. Framed
                 // mode stays fully opaque so the icon reads as a
@@ -1059,8 +1253,8 @@ export component IconBtn inherits Rectangle {
         if root.loading: VerticalLayout {
             alignment: center;
             SpinnerArc {
-                width: 14px;
-                height: 14px;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
             }
         }
 
@@ -1073,9 +1267,27 @@ export component IconBtn inherits Rectangle {
         }
     }
 
+    // Hover hint (hover-only): the shared trigger reports `tip` to the
+    // Help global, which the window-root overlay draws below the button.
+    // Empty `tip` → the trigger no-ops on hover.
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
+
     touch := TouchArea {
         enabled: root.interactive;
-        clicked => { root.clicked(); }
+        // Dismiss the tip on click as well: a click can destroy this
+        // button (an `if`-gated row glyph) before the TouchArea can emit
+        // `has-hover = false`, which would otherwise strand the bubble.
+        clicked => {
+            root.clicked();
+            tip-trigger.hover-leave();
+        }
+        changed has-hover => {
+            tip-trigger.set-hover(self.has-hover);
+        }
     }
 }
 
