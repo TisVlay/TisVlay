@@ -196,7 +196,7 @@ strip = "symbols"
 # `system-tray` feature so Slint pulls no `ksni`, leaving the tray daemon's
 # tokio `ksni` unconflicted.
 [patch.crates-io]
-slint = { git = "https://github.com/slint-ui/slint", rev = "a3b8095eb3c62dd0f1510eb6ec0c8d4ca08add7f" }
-slint-build = { git = "https://github.com/slint-ui/slint", rev = "a3b8095eb3c62dd0f1510eb6ec0c8d4ca08add7f" }
-i-slint-backend-selector = { git = "https://github.com/slint-ui/slint", rev = "a3b8095eb3c62dd0f1510eb6ec0c8d4ca08add7f" }
-i-slint-backend-testing = { git = "https://github.com/slint-ui/slint", rev = "a3b8095eb3c62dd0f1510eb6ec0c8d4ca08add7f" }
+slint = { git = "https://github.com/slint-ui/slint", rev = "915dd5f9d103fc53ca228dd32a50c569294efebe" }
+slint-build = { git = "https://github.com/slint-ui/slint", rev = "915dd5f9d103fc53ca228dd32a50c569294efebe" }
+i-slint-backend-selector = { git = "https://github.com/slint-ui/slint", rev = "915dd5f9d103fc53ca228dd32a50c569294efebe" }
+i-slint-backend-testing = { git = "https://github.com/slint-ui/slint", rev = "915dd5f9d103fc53ca228dd32a50c569294efebe" }
