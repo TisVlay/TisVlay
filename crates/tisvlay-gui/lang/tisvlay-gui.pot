@@ -1025,57 +1025,67 @@ msgctxt "PairingWizardPane"
 msgid "Back"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:152
+#: crates/tisvlay-gui/ui/components/about_pane.slint:153
 msgctxt "ComponentRow"
 msgid "Config"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:183
+#: crates/tisvlay-gui/ui/components/about_pane.slint:154
+msgctxt "ComponentRow"
+msgid "Open config via file browser"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/about_pane.slint:185
 msgctxt "ComponentRow"
 msgid "offline"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:274
+#: crates/tisvlay-gui/ui/components/about_pane.slint:276
 msgctxt "AboutPane"
 msgid "TV Display control for Linux."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:299
+#: crates/tisvlay-gui/ui/components/about_pane.slint:286
+msgctxt "AboutPane"
+msgid "Open TisVlay site via web browser"
+msgstr ""
+
+#: crates/tisvlay-gui/ui/components/about_pane.slint:314
 msgctxt "AboutPane"
 msgid "Open release notes via web browser"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:309
+#: crates/tisvlay-gui/ui/components/about_pane.slint:324
 msgctxt "AboutPane"
 msgid "Diagnostics"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:310
+#: crates/tisvlay-gui/ui/components/about_pane.slint:325
 msgctxt "AboutPane"
 msgid "Copy diagnostics to clipboard"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:320
+#: crates/tisvlay-gui/ui/components/about_pane.slint:335
 msgctxt "AboutPane"
 msgid "Report issue"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:321
+#: crates/tisvlay-gui/ui/components/about_pane.slint:336
 msgctxt "AboutPane"
 msgid "Open issue tracker via web browser"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:332
+#: crates/tisvlay-gui/ui/components/about_pane.slint:347
 msgctxt "AboutPane"
 msgid "COMPONENTS"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:344
+#: crates/tisvlay-gui/ui/components/about_pane.slint:359
 msgctxt "AboutPane"
 msgid "LICENSE"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/about_pane.slint:365
+#: crates/tisvlay-gui/ui/components/about_pane.slint:380
 msgctxt "AboutPane"
 msgid "View third-party notices"
 msgstr ""

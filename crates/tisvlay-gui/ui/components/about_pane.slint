@@ -4,6 +4,7 @@ import { Design } from "../design.slint";
 import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
 import { Clipboard } from "../globals/clipboard.slint";
 import { Icons } from "../globals/icons.slint";
+import { HelpTrigger } from "../globals/help.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
 // (friendly name + monospace bus address in parens) above a rich
@@ -278,9 +279,22 @@ export component AboutPane inherits Rectangle {
                             }
                         }
                     }
+                    // Hover hint for the brand-area "View source" target.
+                    brand-help := HelpTrigger {
+                        width: 100%;
+                        height: 100%;
+                        text: @tr("Open TisVlay site via web browser");
+                    }
                     brand-touch := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.view-source-clicked(); }
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                brand-help.hover-enter();
+                            } else {
+                                brand-help.hover-leave();
+                            }
+                        }
                     }
                 }
 
