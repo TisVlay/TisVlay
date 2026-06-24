@@ -151,7 +151,7 @@ component ComponentRow {
                     if entry.bus_address != "": IconBtn {
                         source: Icons.folder-open;
                         label: @tr("Config");
-                        tip: @tr("Open config via file browser");
+                        tip: @tr("Open component config");
                         enabled: entry.config_path != "";
                         opacity: entry.config_path != "" ? 1 : Design.opacity-disabled;
                         accessible-id: "about-component-" + entry.name + "-config-button";
@@ -302,7 +302,7 @@ export component AboutPane inherits Rectangle {
                     brand-help := HelpTrigger {
                         width: 100%;
                         height: 100%;
-                        text: @tr("Open TisVlay site via web browser");
+                        text: @tr("Open TisVlay website");
                     }
                     brand-touch := TouchArea {
                         mouse-cursor: pointer;
@@ -326,7 +326,7 @@ export component AboutPane inherits Rectangle {
                             // for the running build's identifier.
                             tone: "info";
                             interactive: true;
-                            tip: @tr("Open release notes via web browser");
+                            tip: @tr("Open release notes");
                             accessible-id: "about-version-chip";
                             clicked => { root.view-release-clicked(); }
                         }
@@ -348,7 +348,7 @@ export component AboutPane inherits Rectangle {
                         }
                         UriBtn {
                             text: @tr("Report issue");
-                            tip: @tr("Open issue tracker via web browser");
+                            tip: @tr("Open issue tracker");
                             icon: Icons.open-link;
                             accessible-id: "about-issue-button";
                             clicked => { root.report-issue-clicked(); }
@@ -393,7 +393,7 @@ export component AboutPane inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                     UriBtn {
                         text: @tr("View third-party notices");
-                        tip: @tr("Open third-party notices via web browser");
+                        tip: @tr("Open third-party notices");
                         icon: Icons.open-link;
                         accessible-id: "about-notices-button";
                         clicked => { root.view-notices-clicked(); }
