@@ -189,14 +189,3 @@ debug = "line-tables-only"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
-
-# INTERIM: track upstream Slint master for the 1.17 system-tray opt-in
-# (slint-ui/slint#12141) until 1.17 lands on crates.io. At release, drop this
-# block and the `1.17` version reqs resolve from crates.io. The GUI omits the
-# `system-tray` feature so Slint pulls no `ksni`, leaving the tray daemon's
-# tokio `ksni` unconflicted.
-[patch.crates-io]
-slint = { git = "https://github.com/slint-ui/slint", rev = "915dd5f9d103fc53ca228dd32a50c569294efebe" }
-slint-build = { git = "https://github.com/slint-ui/slint", rev = "915dd5f9d103fc53ca228dd32a50c569294efebe" }
-i-slint-backend-selector = { git = "https://github.com/slint-ui/slint", rev = "915dd5f9d103fc53ca228dd32a50c569294efebe" }
-i-slint-backend-testing = { git = "https://github.com/slint-ui/slint", rev = "915dd5f9d103fc53ca228dd32a50c569294efebe" }
