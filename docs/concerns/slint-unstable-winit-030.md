@@ -39,8 +39,7 @@ A caret `slint = "1.17"` constraint would let `cargo update` pick any future 1.1
 [slint-ui/slint#12141](https://github.com/slint-ui/slint/pull/12141), gating the
 tray/ksni backend behind a `system-tray` Cargo feature, released in 1.17.0. So
 `tisvlay-gui` builds `default-features = false` without `system-tray`, Slint pulls
-no `ksni`, and `tisvlay-tray` keeps its tokio backend. See
-[`docs/slint-systemtray-ksni-issue.md`](../slint-systemtray-ksni-issue.md).
+no `ksni`, and `tisvlay-tray` keeps its tokio backend.
 
 **1.16.1 → 1.17.0 audit (done).** The three `winit_030` call sites below compile
 unchanged against 1.17.0 (`just check` green); the module is still present and its
