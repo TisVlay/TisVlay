@@ -572,7 +572,7 @@ Slint propagates accessibility properties to descendants, so an `accessible-id` 
 
 ### Pin
 
-`i-slint-backend-testing` is pinned `=1.16.1` in both `tisvlay-gui` and `tisvlay-harness` Cargo.toml because the crate's README warns "preliminary API, no semver" and 1.17 already moved test helpers between modules ([slint-ui/slint#11516](https://github.com/slint-ui/slint/pull/11516) merged 2026-04-27).
+`i-slint-backend-testing` is pinned `=1.17.0` in both `tisvlay-gui` and `tisvlay-harness` Cargo.toml because the crate's README warns "preliminary API, no semver" — it moves test helpers between modules across minors (e.g. [slint-ui/slint#11516](https://github.com/slint-ui/slint/pull/11516)), so upstream bumps are treated as breaking and re-pinned deliberately.
 
 ## Test observability
 

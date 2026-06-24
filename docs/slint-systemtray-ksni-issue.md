@@ -1,9 +1,16 @@
-# Upstream issue draft — Slint `SystemTrayIcon` forces a hardcoded ksni `async-io` backend on all downstream ksni users
+# Slint `SystemTrayIcon` forces a hardcoded ksni `async-io` backend on all downstream ksni users
 
-Draft to file at <https://github.com/slint-ui/slint/issues>. Captures the
-coupling that forced `tisvlay-tray` onto ksni's `async-io` backend when we
-briefly migrated to Slint 1.17-pre (since reverted to 1.16.1 — see
-[`docs/concerns/slint-unstable-winit-030.md`](concerns/slint-unstable-winit-030.md)).
+> **Status: RESOLVED upstream.** Fixed by
+> [slint-ui/slint#12141](https://github.com/slint-ui/slint/pull/12141) — *"Gate
+> the SystemTrayIcon/ksni backend behind a Cargo feature"* — released in **Slint
+> 1.17.0**. `tisvlay-gui` builds `default-features = false` without `system-tray`,
+> so Slint pulls no `ksni` and `tisvlay-tray` keeps its default tokio backend.
+> Reproducer: <https://github.com/ruffsl/slint-ksni-tray-mre>. Kept as the record
+> of the coupling and the fix.
+
+Captures the coupling that forced `tisvlay-tray` onto ksni's `async-io` backend
+when `tisvlay-gui` adopted Slint's `SystemTrayIcon` — see
+[`docs/concerns/slint-unstable-winit-030.md`](concerns/slint-unstable-winit-030.md).
 
 ---
 
@@ -92,7 +99,9 @@ Slint's tray" and "I want Slint's tray, on my runtime."
 - ksni: 0.3.5 (the release that added the tokio+async-io compile guard)
 - Target: Linux (the ksni dep is `cfg(unix, !apple, !android)`-gated)
 
-## Workaround
+## Resolution
 
-Until this is addressed we stay on Slint 1.16.1 (no `SystemTrayIcon`, no ksni
-in `i-slint-core`), which lets `tisvlay-tray` keep ksni's default tokio backend.
+Landed in Slint 1.17.0 (slint-ui/slint#12141): the tray/ksni backend is now
+behind an opt-out `system-tray` Cargo feature. `tisvlay-gui` builds
+`default-features = false` without `system-tray`, so Slint pulls no `ksni` in
+`i-slint-core` and `tisvlay-tray` keeps ksni's default tokio backend.

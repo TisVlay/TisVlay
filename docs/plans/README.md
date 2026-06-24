@@ -15,16 +15,14 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-- [`slint-1.17-tooltip.md`](slint-1.17-tooltip.md) — **(migration reverted)**
-  briefly pinned Slint 1.17-pre for its native `Tooltip`; reverted to crates.io
-  1.16.1 once the help UI became our own overlay. Historical record; kept the
-  MSRV 1.92 + let-chain fixes.
-- [`tooltip-contextual-help.md`](tooltip-contextual-help.md) — **(as-built)**
-  KDE-style contextual help: inline helper text + an "i" `ContextualHelpButton`
-  toggletip, rendered by an in-window overlay (`Help` global + `HelpOverlay`)
-  with focus-out dismiss, shrink-to-fit width, anchor tracking, and
-  ScrollView-clamped placement. Scoped to the primitive + TVs pane; includes the
-  Slint `Tooltip`/`PopupWindow` evolution notes worth upstreaming.
+- [`tooltip-contextual-help.md`](tooltip-contextual-help.md) — **(as-built / merged)**
+  KDE-style contextual help: an "i" `ContextualHelpButton` toggletip + hover tips
+  on icon buttons / links / chips, drawn by an in-window overlay (`Help` global +
+  `HelpOverlay`) with focus-out dismiss, shrink-to-fit width, anchor tracking, and
+  ScrollView-clamped placement; rolled out across all panes. Consolidates the
+  earlier Slint 1.17 migration plan and folds in the 1.17.0 outcome (incl. the
+  upstream `system-tray` fix) plus the native `Tooltip`/`PopupWindow` evolution
+  notes worth upstreaming.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
