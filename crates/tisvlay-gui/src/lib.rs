@@ -494,13 +494,6 @@ pub fn run() -> Result<()> {
             warn!(error = %e, %url, "open browser failed");
         }
     });
-    app.on_view_docs_clicked(|| {
-        // Same site as "View source" for now; swap in a dedicated docs
-        // URL here later without touching the .slint affordance.
-        if let Err(e) = webbrowser::open(REPO_URL) {
-            warn!(error = %e, url = REPO_URL, "open browser failed");
-        }
-    });
     let supported_vendors_cache: SupportedVendorsCache =
         Arc::new(std::sync::RwLock::new(Vec::new()));
     {
