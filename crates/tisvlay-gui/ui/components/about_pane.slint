@@ -306,6 +306,7 @@ export component AboutPane inherits Rectangle {
                         IconBtn {
                             source: Clipboard.copy-icon;
                             label: @tr("Diagnostics");
+                            tip: @tr("Copy diagnostics to clipboard");
                             // Match the neighboring `Report issue`
                             // UriBtn's row height. Width auto-grows
                             // from the labeled-mode HorizontalLayout.
@@ -316,7 +317,7 @@ export component AboutPane inherits Rectangle {
                         }
                         UriBtn {
                             text: @tr("Report issue");
-                            tip: @tr("Open issue tracker");
+                            tip: @tr("Open issue tracker via web browser");
                             icon: Icons.open-link;
                             accessible-id: "about-issue-button";
                             clicked => { root.report-issue-clicked(); }
