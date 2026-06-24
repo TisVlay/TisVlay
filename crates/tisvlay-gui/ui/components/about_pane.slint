@@ -296,6 +296,7 @@ export component AboutPane inherits Rectangle {
                             // for the running build's identifier.
                             tone: "info";
                             interactive: true;
+                            tip: @tr("Open release notes via web browser");
                             accessible-id: "about-version-chip";
                             clicked => { root.view-release-clicked(); }
                         }
