@@ -36,15 +36,17 @@ jobs:
       - name: Setup
         uses: taiki-e/install-action@v2
         with:
-          # `cargo-about` deliberately omitted: tisvlay-gui's build.rs
-          # invokes it to embed THIRD-PARTY-LICENSES.html into the
-          # binary, but falls back to a stub blob when the tool is
-          # missing on $PATH. CI tests check About-pane structure, not
-          # the embedded content, so the stub is fine and we save
-          # cargo-about's ~workspace-wide license scan per cold build.
-          # Shipped distro builds run `just licenses-html` with the
-          # tool installed via the Nix dev shell.
+          # `cargo-about` is needed by the gated `licenses-html` prek
+          # hook, which runs `just licenses-html` (--all-features
+          # --fail) only when a dep or `about.toml`/`about.html.hbs`
+          # changes — the cheap path that catches a Slint-style bump
+          # pulling an unclarified crate into the all-features graph.
+          # tisvlay-gui's build.rs also invokes it to embed
+          # THIRD-PARTY-LICENSES.html, but falls back to a stub blob
+          # when the tool is missing, so the test build doesn't depend
+          # on it being here.
           tool: |
+            cargo-about
             cargo-deny
             cargo-llvm-cov
             cargo-nextest
