@@ -224,6 +224,25 @@ in
         client but does not yet blank anything.
       '';
     };
+
+    cec.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Enable HDMI-CEC TV control. The daemon opens the kernel CEC
+        character devices (`/dev/cecN`), so this relaxes the daemon's
+        `PrivateDevices` sandbox to expose them — narrowed straight back
+        down with `DeviceAllow=char-cec rw` so only the CEC char subsystem
+        is reachable at the cgroup level — and installs a udev rule
+        granting the tisvlay group read/write on `/dev/cec*`.
+
+        Off by default: it slightly loosens the daemon sandbox, so only
+        enable it on hosts that actually drive a TV over CEC (a CEC-capable
+        HDMI or USB adapter that exposes a `/dev/cecN` node — most GPU HDMI
+        ports do not). The CEC backend is always compiled in; this option
+        only governs device access.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -275,6 +294,13 @@ in
     services.dbus.packages = [
       (pkgs.writeTextDir "share/dbus-1/system.d/org.tisvlay.Daemon.conf" dbusPolicy)
     ];
+
+    # CEC device access: kernel CEC nodes are root-owned with no group by
+    # default, so grant the daemon's group read/write on them. Paired with
+    # the serviceConfig sandbox relaxation above, both gated on cec.enable.
+    services.udev.extraRules = lib.mkIf cfg.cec.enable ''
+      KERNEL=="cec[0-9]*", GROUP="${cfg.group}", MODE="0660"
+    '';
 
     # Make the CLI available system-wide. The GUI .desktop entry
     # and D-Bus session activation file ship with the package
@@ -334,7 +360,11 @@ in
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateTmp = true;
-        PrivateDevices = true;
+        # PrivateDevices gives a minimal private /dev with no /dev/cecN, so
+        # the CEC backend can't open its character device under it. Relaxed
+        # only when cec.enable is set; the DeviceAllow merge below then
+        # re-narrows access to the cec char subsystem.
+        PrivateDevices = !cfg.cec.enable;
         NoNewPrivileges = true;
 
         # Network: UNIX (D-Bus), INET{4,6} (WebSocket to TVs, WoL), NETLINK
@@ -386,6 +416,13 @@ in
         # Clean up any SysV IPC the daemon (or its future children)
         # might leak at shutdown.
         RemoveIPC = true;
+      }
+      // lib.optionalAttrs cfg.cec.enable {
+        # With PrivateDevices relaxed (above) so /dev/cecN is visible,
+        # scope the cgroup device policy to the cec char subsystem so the
+        # daemon can reach CEC adapters and nothing else new. The udev rule
+        # in the config block grants the tisvlay group rw on the nodes.
+        DeviceAllow = [ "char-cec rw" ];
       };
     };
 
