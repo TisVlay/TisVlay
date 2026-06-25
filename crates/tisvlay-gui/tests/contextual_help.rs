@@ -17,6 +17,14 @@ fn boot_with_tv_selected() -> AppWindow {
     let tv = TvViewModel {
         name: SharedString::from("Test TV"),
         connected: true,
+        // A fully-capable TV so the PICTURE / INPUT groups (whose
+        // FormRows carry the `help:` slots this test asserts on) render
+        // — they're now gated on the per-capability flags.
+        has_screen: true,
+        has_volume: true,
+        has_mute: true,
+        has_input: true,
+        has_backlight: true,
         ..Default::default()
     };
     app.set_tvs(ModelRc::new(VecModel::from(vec![tv])));

@@ -6,6 +6,16 @@ expression: sample_disconnected()
   "uuid": "22222222-2222-2222-2222-222222222222",
   "name": "Guest Room",
   "vendor": "lg",
+  "capabilities": [
+    "power",
+    "screen",
+    "volume",
+    "mute",
+    "input",
+    "backlight",
+    "wol",
+    "discovery"
+  ],
   "connected": false,
   "managed": false,
   "automated": false,

@@ -663,6 +663,11 @@ pub struct TvInfo {
     pub name: String,
     /// Vendor ID.
     pub vendor: String,
+    /// Feature capabilities this TV's backend supports (power, volume,
+    /// input, …). Static per vendor — populated whether or not the TV is
+    /// connected — so clients can gate affordances on what the device can
+    /// actually do (e.g. hide volume controls for a CEC TV).
+    pub capabilities: crate::Capabilities,
     /// Whether connected.
     pub connected: bool,
     /// Whether this TV participates in automated management.
@@ -1031,6 +1036,14 @@ impl DaemonClient {
                 .get("VendorInfo")
                 .and_then(|v: &OwnedValue| <Vec<(String, String)>>::try_from(v.clone()).ok())
                 .unwrap_or_default();
+            let capabilities = props
+                .get("Capabilities")
+                .and_then(|v: &OwnedValue| <Vec<String>>::try_from(v.clone()).ok())
+                .map(|strs| {
+                    let refs: Vec<&str> = strs.iter().map(String::as_str).collect();
+                    crate::Capabilities::from_strings(&refs)
+                })
+                .unwrap_or_default();
 
             // Helper to extract properties from a sub-interface.
             let get_iface_props = |iface_name: &str| -> Option<&HashMap<String, OwnedValue>> {
@@ -1093,6 +1106,7 @@ impl DaemonClient {
                 uuid,
                 name,
                 vendor,
+                capabilities,
                 connected,
                 managed,
                 automated,

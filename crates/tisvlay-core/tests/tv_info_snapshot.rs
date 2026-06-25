@@ -17,7 +17,7 @@
 
 #![cfg(feature = "dbus")]
 
-use tisvlay_core::{DesktopMapping, HardwareId, TvInfo};
+use tisvlay_core::{Capabilities, DesktopMapping, HardwareId, TvInfo};
 
 /// A minimal TvInfo for a connected, managed TV with a few inputs.
 fn sample_connected() -> TvInfo {
@@ -25,6 +25,7 @@ fn sample_connected() -> TvInfo {
         uuid: "11111111-1111-1111-1111-111111111111".to_string(),
         name: "Living Room G4".to_string(),
         vendor: "lg".to_string(),
+        capabilities: Capabilities::STOCK,
         connected: true,
         managed: true,
         automated: true,
@@ -61,6 +62,7 @@ fn sample_disconnected() -> TvInfo {
         uuid: "22222222-2222-2222-2222-222222222222".to_string(),
         name: "Guest Room".to_string(),
         vendor: "lg".to_string(),
+        capabilities: Capabilities::STOCK,
         connected: false,
         managed: false,
         automated: false,

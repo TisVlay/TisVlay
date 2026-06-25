@@ -3,7 +3,9 @@
 //! Builds snapshots from `TvInfo` (from `list_tvs()` via `GetManagedObjects`)
 //! which includes both identity and cached state properties.
 
-use tisvlay_core::{DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient, power_state_str_is_on};
+use tisvlay_core::{
+    Capabilities, DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient, power_state_str_is_on,
+};
 use tracing::debug;
 
 /// Snapshot of a single TV's state, cached locally for menu rendering.
@@ -25,6 +27,13 @@ pub(crate) struct CachedTvState {
     pub muted: Option<bool>,
     pub current_input: Option<String>,
     pub backlight: Option<u8>,
+    /// Per-capability flags from `Tv1.Capabilities`, used to omit menu
+    /// sections a backend can't drive — a CEC TV has no volume, mute,
+    /// backlight, or screen-blank. Static per vendor.
+    pub has_screen: bool,
+    pub has_volume: bool,
+    pub has_mute: bool,
+    pub has_backlight: bool,
     /// Available inputs as `(id, label)` pairs.
     pub inputs: Vec<(String, String)>,
     /// UUID of the user profile assigned to this TV, from
@@ -132,6 +141,10 @@ pub(crate) async fn fetch_all_state(
             } else {
                 None
             },
+            has_screen: tv.capabilities.contains(Capabilities::SCREEN),
+            has_volume: tv.capabilities.contains(Capabilities::VOLUME),
+            has_mute: tv.capabilities.contains(Capabilities::MUTE),
+            has_backlight: tv.capabilities.contains(Capabilities::BACKLIGHT),
             inputs: tv.inputs,
             user_profile_uuid,
             available_user_profiles: available_user_profiles.clone(),
@@ -240,6 +253,10 @@ mod tests {
             muted: Some(false),
             current_input: Some("HDMI_1".into()),
             backlight: Some(80),
+            has_screen: true,
+            has_volume: true,
+            has_mute: true,
+            has_backlight: true,
             inputs: vec![("HDMI_1".into(), "HDMI 1".into())],
             user_profile_uuid: Some(DEFAULT_USER_PROFILE_UUID.to_string()),
             available_user_profiles: user_profiles

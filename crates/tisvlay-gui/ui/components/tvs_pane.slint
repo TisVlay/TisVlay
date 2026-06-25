@@ -46,6 +46,16 @@ export struct TvViewModel {
     /// the only state where Power-on has no path to succeed.
     /// Sourced from `Tv1.Power.SupportsWake` D-Bus property.
     supports-wake: bool,
+    /// Per-capability flags from `Tv1.Capabilities`. Used to hide
+    /// controls a backend can't drive — a CEC TV, for instance, has no
+    /// volume, mute, backlight, or screen-blank. Static per vendor:
+    /// populated whether or not the TV is connected, so controls don't
+    /// flicker in and out as the connection comes and goes.
+    has-screen: bool,
+    has-volume: bool,
+    has-mute: bool,
+    has-input: bool,
+    has-backlight: bool,
     is-screen-on: bool,
     volume: int,
     muted: bool,
@@ -754,8 +764,10 @@ component TvDetail inherits Rectangle {
                 // -- Picture --
                 Group {
                     title: @tr("PICTURE");
+                    visible: root.tv.has-backlight || root.tv.has-screen;
 
                     FormRow {
+                        visible: root.tv.has-backlight;
                         label: @tr("Backlight");
                         help: @tr("Control power draw and/or reduce burn-in risk.");
                         OptimisticSlider {
@@ -767,6 +779,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
+                        visible: root.tv.has-screen;
                         label: @tr("screen power" => "Screen");
                         help: @tr("Blank screen without powering off (instant resume).");
                         HorizontalLayout {
@@ -786,8 +799,10 @@ component TvDetail inherits Rectangle {
                 // -- Audio --
                 Group {
                     title: @tr("AUDIO");
+                    visible: root.tv.has-volume || root.tv.has-mute;
 
                     FormRow {
+                        visible: root.tv.has-volume;
                         label: @tr("Volume");
                         OptimisticSlider {
                             model-value: root.tv.volume;
@@ -798,6 +813,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
+                        visible: root.tv.has-mute;
                         label: @tr("Mute");
                         Switch {
                             checked: root.tv.muted;
@@ -810,6 +826,7 @@ component TvDetail inherits Rectangle {
                 // -- Input --
                 Group {
                     title: @tr("INPUT");
+                    visible: root.tv.has-input;
 
                     FormRow {
                         label: @tr("current input" => "Current");

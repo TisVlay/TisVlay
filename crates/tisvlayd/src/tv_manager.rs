@@ -1924,10 +1924,23 @@ impl TvManager {
     }
 
     /// Get TV capabilities.
+    ///
+    /// Returns the live connection's capabilities when connected, and the
+    /// backend's statically-declared capabilities when not. A vendor's
+    /// feature set is intrinsic to the backend, not a property of the live
+    /// connection, so reporting it regardless of connection state lets
+    /// clients gate affordances (hide controls a backend can't drive)
+    /// consistently rather than flickering as the TV connects and drops.
     pub async fn get_capabilities(&self, tv_id: &str) -> Option<Capabilities> {
         let tv_arc = self.get_tv(tv_id).await.ok()?;
-        let tv = tv_arc.lock().await;
-        Some(tv.capabilities())
+        let (live, vendor) = {
+            let tv = tv_arc.lock().await;
+            (tv.capabilities(), tv.config.vendor.clone())
+        };
+        if !live.is_empty() {
+            return Some(live);
+        }
+        self.registry.get(&vendor).map(|b| b.backend.capabilities())
     }
 
     /// Get the TV's vendor-reported hardware identity, if known.

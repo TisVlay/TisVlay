@@ -465,127 +465,143 @@ fn build_connected_tv_menu(
         items.push(build_input_submenu(tv, cmd_tx));
     }
 
-    // Backlight section
-    items.push(MenuItem::Separator);
-    if let Some(bl) = tv.backlight {
-        items.push(
-            StandardItem {
-                label: gettext("Backlight: {0}").replace("{0}", &bl.to_string()),
-                icon_name: "high-brightness".into(),
-                enabled: false,
-                ..Default::default()
-            }
-            .into(),
-        );
+    // Picture section (backlight + screen). Omitted entirely for a
+    // backend that drives neither — e.g. a CEC TV.
+    if tv.has_backlight || tv.has_screen {
+        items.push(MenuItem::Separator);
     }
 
-    items.push(backlight_item(
-        gettext("Backlight Up (+10)"),
-        "high-brightness",
-        cmd_tx,
-        &id,
-        {
-            let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, 10)
-        },
-    ));
-    items.push(backlight_item(
-        gettext("Backlight Down (-10)"),
-        "low-brightness",
-        cmd_tx,
-        &id,
-        {
-            let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, -10)
-        },
-    ));
+    if tv.has_backlight {
+        if let Some(bl) = tv.backlight {
+            items.push(
+                StandardItem {
+                    label: gettext("Backlight: {0}").replace("{0}", &bl.to_string()),
+                    icon_name: "high-brightness".into(),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+
+        items.push(backlight_item(
+            gettext("Backlight Up (+10)"),
+            "high-brightness",
+            cmd_tx,
+            &id,
+            {
+                let id = id.clone();
+                move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, 10)
+            },
+        ));
+        items.push(backlight_item(
+            gettext("Backlight Down (-10)"),
+            "low-brightness",
+            cmd_tx,
+            &id,
+            {
+                let id = id.clone();
+                move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Backlight, -10)
+            },
+        ));
+    }
 
     // Screen blank/unblank (visual mute — OLED-safe)
-    if tv.is_screen_on {
-        items.push(backlight_item(
-            gettext("Screen Off"),
-            "view-hidden",
+    if tv.has_screen {
+        if tv.is_screen_on {
+            items.push(backlight_item(
+                gettext("Screen Off"),
+                "view-hidden",
+                cmd_tx,
+                &id,
+                {
+                    let id = id.clone();
+                    move || TrayCommand::ScreenOff(id.clone())
+                },
+            ));
+        } else {
+            items.push(backlight_item(
+                gettext("Screen On"),
+                "view-visible",
+                cmd_tx,
+                &id,
+                {
+                    let id = id.clone();
+                    move || TrayCommand::ScreenOn(id.clone())
+                },
+            ));
+        }
+    }
+
+    // Audio section (volume + mute). Omitted for a backend that drives
+    // neither — e.g. a CEC TV.
+    if tv.has_volume || tv.has_mute {
+        items.push(MenuItem::Separator);
+    }
+
+    if tv.has_volume {
+        if let Some(vol) = tv.volume {
+            let muted_str = if tv.muted == Some(true) {
+                gettext(" (muted)")
+            } else {
+                String::new()
+            };
+            items.push(
+                StandardItem {
+                    label: gettext("Volume: {0}{1}")
+                        .replace("{0}", &vol.to_string())
+                        .replace("{1}", &muted_str),
+                    icon_name: "audio-volume-medium".into(),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+
+        items.push(volume_item(
+            gettext("Volume Up (+10)"),
+            "audio-volume-high",
             cmd_tx,
             &id,
             {
                 let id = id.clone();
-                move || TrayCommand::ScreenOff(id.clone())
+                move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, 10)
             },
         ));
-    } else {
-        items.push(backlight_item(
-            gettext("Screen On"),
-            "view-visible",
+        items.push(volume_item(
+            gettext("Volume Down (-10)"),
+            "audio-volume-medium",
             cmd_tx,
             &id,
             {
                 let id = id.clone();
-                move || TrayCommand::ScreenOn(id.clone())
+                move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, -10)
             },
         ));
     }
 
-    // Volume section
-    items.push(MenuItem::Separator);
-    if let Some(vol) = tv.volume {
-        let muted_str = if tv.muted == Some(true) {
-            gettext(" (muted)")
-        } else {
-            String::new()
-        };
-        items.push(
-            StandardItem {
-                label: gettext("Volume: {0}{1}")
-                    .replace("{0}", &vol.to_string())
-                    .replace("{1}", &muted_str),
-                icon_name: "audio-volume-medium".into(),
-                enabled: false,
-                ..Default::default()
-            }
-            .into(),
-        );
+    if tv.has_mute {
+        let is_muted = tv.muted == Some(true);
+        items.push(volume_item(
+            if is_muted {
+                gettext("Unmute")
+            } else {
+                gettext("Mute")
+            },
+            if is_muted {
+                "audio-volume-high"
+            } else {
+                "audio-volume-muted"
+            },
+            cmd_tx,
+            &id,
+            {
+                let id = id.clone();
+                move || TrayCommand::ToggleMute(id.clone())
+            },
+        ));
     }
-
-    items.push(volume_item(
-        gettext("Volume Up (+10)"),
-        "audio-volume-high",
-        cmd_tx,
-        &id,
-        {
-            let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, 10)
-        },
-    ));
-    items.push(volume_item(
-        gettext("Volume Down (-10)"),
-        "audio-volume-medium",
-        cmd_tx,
-        &id,
-        {
-            let id = id.clone();
-            move || TrayCommand::ScrollBy(id.clone(), ScrollTarget::Volume, -10)
-        },
-    ));
-
-    let is_muted = tv.muted == Some(true);
-    items.push(volume_item(
-        if is_muted {
-            gettext("Unmute")
-        } else {
-            gettext("Mute")
-        },
-        if is_muted {
-            "audio-volume-high"
-        } else {
-            "audio-volume-muted"
-        },
-        cmd_tx,
-        &id,
-        {
-            let id = id.clone();
-            move || TrayCommand::ToggleMute(id.clone())
-        },
-    ));
 
     items
 }

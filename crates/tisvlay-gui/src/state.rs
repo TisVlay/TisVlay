@@ -17,8 +17,9 @@ use anyhow::Result;
 use gettextrs::gettext;
 use slint::SharedString;
 use tisvlay_core::{
-    DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient, SessionClient,
-    SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, references_of, user_references_of,
+    Capabilities, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID, DaemonClient,
+    SessionClient, SystemProfileBody, TvAssignment, TvInfo, UserProfileBody, references_of,
+    user_references_of,
 };
 use tracing::debug;
 use uuid::Uuid;
@@ -38,6 +39,16 @@ pub struct TvViewRaw {
     pub connected: bool,
     pub power_state: SharedString,
     pub supports_wake: bool,
+    /// Per-capability flags from `Tv1.Capabilities` (mirrors
+    /// [`TvInfo::capabilities`]), used to hide controls a backend can't
+    /// drive — a CEC TV has no volume, mute, backlight, or screen-blank.
+    /// Static per vendor, so controls don't flicker as the TV's
+    /// connection cycles.
+    pub has_screen: bool,
+    pub has_volume: bool,
+    pub has_mute: bool,
+    pub has_input: bool,
+    pub has_backlight: bool,
     pub is_screen_on: bool,
     pub volume: i32,
     pub muted: bool,
@@ -261,6 +272,11 @@ pub fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
             connected: tv.connected,
             power_state: SharedString::from(tv.power_state.as_str()),
             supports_wake: tv.supports_wake,
+            has_screen: tv.capabilities.contains(Capabilities::SCREEN),
+            has_volume: tv.capabilities.contains(Capabilities::VOLUME),
+            has_mute: tv.capabilities.contains(Capabilities::MUTE),
+            has_input: tv.capabilities.contains(Capabilities::INPUT),
+            has_backlight: tv.capabilities.contains(Capabilities::BACKLIGHT),
             is_screen_on: tv.is_screen_on,
             volume: tv.volume as i32,
             muted: tv.muted,
@@ -551,6 +567,7 @@ mod tests {
             uuid: uuid.into(),
             name: name.into(),
             vendor: "lg".into(),
+            capabilities: Capabilities::STOCK,
             connected: false,
             managed: false,
             automated: false,
@@ -654,6 +671,39 @@ mod tests {
         assert_eq!(row.hw_manufacturer.as_str(), "GSM");
         assert_eq!(row.hw_model.as_str(), "OLED65G4SUB");
         assert_eq!(row.hw_serial.as_str(), "XYZ123");
+    }
+
+    #[test]
+    fn capabilities_map_to_per_control_has_flags() {
+        // A sub-STOCK backend (CEC: power + input only) must surface
+        // the per-control flags the TVs-pane uses to hide the PICTURE /
+        // AUDIO controls it can't drive.
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000001", "CEC TV");
+        tv.capabilities = Capabilities::POWER | Capabilities::INPUT;
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        let row = &snap.tvs[0];
+        assert!(row.has_input);
+        assert!(!row.has_volume);
+        assert!(!row.has_mute);
+        assert!(!row.has_backlight);
+        assert!(!row.has_screen);
+
+        // A full STOCK backend lights every control up.
+        let mut tv = sample_tv("00000000-0000-0000-0000-000000000002", "LG TV");
+        tv.capabilities = Capabilities::STOCK;
+        let snap = convert_snapshot(SnapshotInputs {
+            tvs: vec![tv],
+            ..empty_inputs()
+        });
+        let row = &snap.tvs[0];
+        assert!(row.has_input);
+        assert!(row.has_volume);
+        assert!(row.has_mute);
+        assert!(row.has_backlight);
+        assert!(row.has_screen);
     }
 
     #[test]
