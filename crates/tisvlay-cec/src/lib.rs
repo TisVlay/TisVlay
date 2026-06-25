@@ -19,12 +19,14 @@ mod backend;
 mod config;
 mod connection;
 mod connector;
+mod discovery;
 mod link;
 
 pub use backend::CecBackend;
 pub use config::CecVendorConfig;
 pub use connection::CecConnection;
 pub use connector::CecConnector;
+pub use discovery::CecDiscovery;
 
 /// Vendor identifier for the CEC backend (the `[tv.cec]` config key).
 pub const VENDOR_ID: &str = "cec";

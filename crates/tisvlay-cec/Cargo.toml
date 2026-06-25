@@ -33,6 +33,8 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 # Interior mutability for the scripted FakeCecLink.
 parking_lot = { workspace = true }
+# Fixture directory of fake `cecN` nodes for the discovery tests.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

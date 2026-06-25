@@ -163,6 +163,9 @@ impl TvConnector for CecConnector {
             field_type: PairingFieldType::Path,
             required: true,
             placeholder: "/dev/cec0".into(),
+            // Pre-filled from the device picker: discovery emits
+            // `vendor_data["device"]` for each /dev/cecN node.
+            autofill: "discovery.device".into(),
             ..Default::default()
         }]
     }

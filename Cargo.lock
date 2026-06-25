@@ -5853,6 +5853,7 @@ dependencies = [
  "linux-cec",
  "parking_lot",
  "serde",
+ "tempfile",
  "tisvlay-core",
  "tokio",
  "toml",

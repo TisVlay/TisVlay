@@ -386,14 +386,21 @@ fn register_lg(registry: &mut BackendRegistry, discovery: &tisvlay_core::Discove
 
 /// Register the HDMI-CEC backend on an existing registry.
 ///
-/// CEC has no discovery yet (device enumeration lands in a later slice),
-/// so it registers with no discover function. Shared between the
-/// production and test registries so both wire CEC identically.
+/// CEC discovery is enumerating the host's `/dev/cecN` nodes — no network
+/// or SSDP — so it's wired unconditionally (not behind the `discovery`
+/// feature, which gates only the network backends' SSDP). Shared between
+/// the production and test registries so both wire CEC identically.
 fn register_cec(registry: &mut BackendRegistry) {
+    use tisvlay_core::TvDiscovery;
+    let discovery = Arc::new(tisvlay_cec::CecDiscovery::new());
+    let discover_fn: Arc<DiscoverFn> = Arc::new(move |timeout| {
+        let discovery = Arc::clone(&discovery);
+        Box::pin(async move { discovery.discover(timeout).await })
+    });
     registry.register(
         Arc::new(tisvlay_cec::CecBackend::new()),
         Arc::new(tisvlay_cec::CecConnector::new()),
-        None,
+        Some(discover_fn),
     );
 }
 
