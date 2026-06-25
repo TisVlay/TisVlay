@@ -164,3 +164,12 @@ accepted = ["MPL-2.0"]
 
 [libfuzzer-sys]
 accepted = ["NCSA"]
+
+# Valve's HDMI-CEC library + its proc-macro helper (tisvlay-cec backend).
+# LGPL-2.1 weak copyleft — see docs/licensing.md. linux-cec-sys (the ioctl
+# bindings) is BSD-3 and needs no entry.
+[linux-cec]
+accepted = ["LGPL-2.1-or-later"]
+
+[linux-cec-macros]
+accepted = ["LGPL-2.1-or-later"]

@@ -1,0 +1,38 @@
+[package]
+name = "tisvlay-cec"
+description = "HDMI-CEC vendor backend for tisvlay (Linux CEC subsystem via linux-cec)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tisvlay-core = { workspace = true }
+
+# Valve's Linux CEC userspace library (crates.io; LGPL-2.1-or-later — see
+# packaging/licensing). `async` pulls the tokio `AsyncDevice` wrapper.
+linux-cec = { workspace = true }
+
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+serde = { workspace = true }
+toml = { workspace = true }
+
+tracing = { workspace = true }
+
+[dev-dependencies]
+# `test-util` gives `#[tokio::test(start_paused = true)]` so the
+# wake-and-connect verify loop's sleeps run in virtual time.
+tokio = { workspace = true, features = ["test-util"] }
+# Interior mutability for the scripted FakeCecLink.
+parking_lot = { workspace = true }
+
+[lints]
+workspace = true

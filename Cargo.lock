@@ -524,6 +524,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
+name = "bitfield-struct"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8769c4854c5ada2852ddf6fd09d15cf43d4c2aaeccb4de6432f5402f08a6003b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2928,6 +2939,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "984fb35d06508d1e69fc91050cceba9c0b748f983e6739fa2c7a9237154c52c8"
 dependencies = [
  "linked-hash-map",
+]
+
+[[package]]
+name = "linux-cec"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "530f320b1dd118a642bc397865f591b5021cfcff9b1dfd902d500445a8ba9a3b"
+dependencies = [
+ "bitfield-struct",
+ "bitflags 2.13.0",
+ "linux-cec-macros",
+ "linux-cec-sys",
+ "nix 0.31.3",
+ "num_enum",
+ "strum",
+ "thiserror 2.0.18",
+ "tinyvec",
+ "tokio",
+]
+
+[[package]]
+name = "linux-cec-macros"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc54b7e23867f7522e2c6064eba37083f40f9d2c3c7a0030ac2e7e6be690aaf4"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "linux-cec-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72938508725e7cc6a2ab2f9569d8e9d750045a471e42e36db7437521724f53b8"
+dependencies = [
+ "bitflags 2.13.0",
+ "nix 0.31.3",
 ]
 
 [[package]]
@@ -5785,9 +5836,24 @@ dependencies = [
 name = "tisvlay-backends"
 version = "0.1.0"
 dependencies = [
+ "tisvlay-cec",
  "tisvlay-core",
  "tisvlay-lg",
  "tisvlay-mock",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "tisvlay-cec"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "linux-cec",
+ "parking_lot",
+ "serde",
+ "tisvlay-core",
  "tokio",
  "toml",
  "tracing",

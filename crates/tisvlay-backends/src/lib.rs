@@ -384,6 +384,19 @@ fn register_lg(registry: &mut BackendRegistry, discovery: &tisvlay_core::Discove
     );
 }
 
+/// Register the HDMI-CEC backend on an existing registry.
+///
+/// CEC has no discovery yet (device enumeration lands in a later slice),
+/// so it registers with no discover function. Shared between the
+/// production and test registries so both wire CEC identically.
+fn register_cec(registry: &mut BackendRegistry) {
+    registry.register(
+        Arc::new(tisvlay_cec::CecBackend::new()),
+        Arc::new(tisvlay_cec::CecConnector::new()),
+        None,
+    );
+}
+
 /// Register the mock backend (for production use) on an existing
 /// registry. The mock's state is private and inaccessible, so
 /// discovery returns an empty list.
@@ -415,6 +428,7 @@ pub fn create_registry(discovery: &tisvlay_core::DiscoveryConfig) -> BackendRegi
     let mut registry = BackendRegistry::new();
 
     register_lg(&mut registry, discovery);
+    register_cec(&mut registry);
 
     #[cfg(feature = "mock")]
     register_mock_production(&mut registry);
@@ -448,6 +462,7 @@ pub fn create_test_registry() -> (BackendRegistry, tisvlay_mock::MockHandle) {
     let mut registry = BackendRegistry::new();
 
     register_lg(&mut registry, &tisvlay_core::DiscoveryConfig::default());
+    register_cec(&mut registry);
 
     let (connector, discovery, handle) = tisvlay_mock::new_test_parts();
     let connector = Arc::new(connector);

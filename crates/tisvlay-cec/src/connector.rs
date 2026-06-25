@@ -1,0 +1,258 @@
+//! `CecConnector` — factory, wake, and (trivial) pairing for CEC TVs.
+//!
+//! The connector owns a [`CecLinkOpener`] so tests can swap a real
+//! `/dev/cecN` open for a scripted fake. Its defining quirk vs. a network
+//! backend: the bus reaches the TV even in standby, so `connect` must
+//! probe power and *refuse* when the TV is asleep — that is what routes
+//! the daemon's `power_on` into the wake path instead of a no-op direct
+//! connect.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use linux_cec::operand::PowerStatus;
+use tisvlay_core::{
+    Credentials, Error, PairingSession, PairingState, Result, Transport, TvConnection, TvConnector,
+};
+use tracing::instrument;
+
+use crate::config::CecVendorConfig;
+use crate::connection::CecConnection;
+use crate::link::{CecLinkOpener, LinuxCecLinkOpener};
+
+/// Delay between post-wake power-status probes, and how many to try before
+/// giving up. A CEC TV can take a second or more to report `On` after
+/// `Image View On`, so this is deliberately more patient than a network
+/// backend's verify loop.
+const WAKE_VERIFY_DELAY: Duration = Duration::from_millis(1500);
+const WAKE_VERIFY_ATTEMPTS: usize = 4;
+
+/// Factory for CEC TV connections.
+#[derive(Debug)]
+pub struct CecConnector {
+    opener: Arc<dyn CecLinkOpener>,
+}
+
+impl CecConnector {
+    /// Create a connector that opens real `/dev/cecN` devices.
+    pub fn new() -> Self {
+        Self {
+            opener: Arc::new(LinuxCecLinkOpener),
+        }
+    }
+
+    /// Construct with a custom link opener (tests inject a fake).
+    #[cfg(test)]
+    pub(crate) fn with_opener(opener: Arc<dyn CecLinkOpener>) -> Self {
+        Self { opener }
+    }
+}
+
+impl Default for CecConnector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Parse a `toml::Value` into a [`CecVendorConfig`], with a helpful error.
+fn parse_config(value: &toml::Value) -> Result<CecVendorConfig> {
+    value
+        .clone()
+        .try_into::<CecVendorConfig>()
+        .map_err(|e| Error::backend(crate::VENDOR_ID, format!("invalid CEC config: {e}")))
+}
+
+/// Whether a CEC power status means the TV is reachable for control —
+/// i.e. on, or transitioning on.
+fn reachable(status: PowerStatus) -> bool {
+    matches!(status, PowerStatus::On | PowerStatus::ToOn)
+}
+
+#[async_trait]
+impl TvConnector for CecConnector {
+    fn transport(&self) -> Transport {
+        Transport::Cec
+    }
+
+    #[instrument(skip(self, vendor_config))]
+    async fn connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
+        let config = parse_config(vendor_config)?;
+        let link = self.opener.open(&config.device).await?;
+        // The `/dev/cecN` handle opens whether or not the TV is on, so a
+        // bare open says nothing about reachability. Probe power and
+        // refuse the connection when the TV is in standby — that is what
+        // routes the daemon's `power_on` into the wake path.
+        let status = link.query_power().await?;
+        if !reachable(status) {
+            return Err(Error::backend(
+                crate::VENDOR_ID,
+                "TV is in standby — wake required",
+            ));
+        }
+        Ok(Box::new(CecConnection::new(link)))
+    }
+
+    fn supports_wake(&self, _vendor_config: &toml::Value) -> bool {
+        // The adapter is on the bus even when the TV sleeps, so we can
+        // always send Image View On — wake is supported for any
+        // configured device.
+        true
+    }
+
+    #[instrument(skip(self, vendor_config))]
+    async fn wake(&self, vendor_config: &toml::Value) -> Result<()> {
+        let config = parse_config(vendor_config)?;
+        let link = self.opener.open(&config.device).await?;
+        link.power_on().await
+    }
+
+    #[instrument(skip(self, vendor_config))]
+    async fn wake_and_connect(&self, vendor_config: &toml::Value) -> Result<Box<dyn TvConnection>> {
+        let config = parse_config(vendor_config)?;
+        let link = self.opener.open(&config.device).await?;
+        link.power_on().await?;
+        // Image View On is fire-and-forget; poll power until the TV
+        // reports it is on (or transitioning on). A non-responding TV
+        // mid-wake yields a transient error we simply retry past.
+        for _ in 0..WAKE_VERIFY_ATTEMPTS {
+            tokio::time::sleep(WAKE_VERIFY_DELAY).await;
+            if let Ok(status) = link.query_power().await
+                && reachable(status)
+            {
+                return Ok(Box::new(CecConnection::new(link)));
+            }
+        }
+        Err(Error::backend(
+            crate::VENDOR_ID,
+            "TV did not report power-on after Image View On",
+        ))
+    }
+
+    #[instrument(skip(self, vendor_config))]
+    fn start_pairing(&self, vendor_config: &toml::Value) -> Result<PairingSession> {
+        // CEC has no authentication — any device on the bus is reachable.
+        // Validate the config parses, then complete immediately with empty
+        // credentials (the trivial end of the pairing state machine).
+        let _config = parse_config(vendor_config)?;
+        let (session, _command_rx, state_tx) = PairingSession::create();
+        tokio::spawn(async move {
+            let _ = state_tx.send(PairingState::complete(Credentials::new("")));
+        });
+        Ok(session)
+    }
+
+    fn build_config_from_pairing(
+        &self,
+        pairing_params: &toml::Value,
+        _credentials: &Credentials,
+    ) -> Result<toml::Value> {
+        // No credentials to merge — echo the validated config back so the
+        // daemon persists a well-formed `[tv.cec]` entry.
+        let config = parse_config(pairing_params)?;
+        toml::Value::try_from(&config)
+            .map_err(|e| Error::backend(crate::VENDOR_ID, format!("serialize config: {e}")))
+    }
+
+    fn config_schema(&self) -> Vec<tisvlay_core::PairingField> {
+        use tisvlay_core::{PairingField, PairingFieldType};
+        vec![PairingField {
+            name: "device".into(),
+            label: "CEC device".into(),
+            helper: "Path to the kernel CEC character device (e.g. /dev/cec0).".into(),
+            field_type: PairingFieldType::Path,
+            required: true,
+            placeholder: "/dev/cec0".into(),
+            ..Default::default()
+        }]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::link::FakeCecLinkOpener;
+
+    fn cfg() -> toml::Value {
+        toml::Value::try_from(CecVendorConfig::default()).unwrap()
+    }
+
+    fn connector(initial: PowerStatus) -> CecConnector {
+        CecConnector::with_opener(Arc::new(FakeCecLinkOpener::new(initial)))
+    }
+
+    #[test]
+    fn transport_is_cec() {
+        assert_eq!(connector(PowerStatus::On).transport(), Transport::Cec);
+        assert!(
+            !connector(PowerStatus::On)
+                .transport()
+                .is_network_dependent()
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_succeeds_when_tv_is_on() {
+        let conn = connector(PowerStatus::On).connect(&cfg()).await;
+        assert!(conn.is_ok(), "connect should succeed when TV reports On");
+        assert!(conn.unwrap().is_connected());
+    }
+
+    #[tokio::test]
+    async fn connect_fails_when_tv_in_standby() {
+        // The device opens fine, but a standby TV must not yield a live
+        // connection — otherwise the daemon's power_on never wakes it.
+        let conn = connector(PowerStatus::Standby).connect(&cfg()).await;
+        assert!(conn.is_err(), "connect must fail when TV is in standby");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wake_and_connect_powers_on_then_connects() {
+        // Fake starts in standby; power_on flips it to On, and the verify
+        // loop then sees it reachable. `start_paused` makes the verify
+        // sleeps run in virtual time.
+        let conn = connector(PowerStatus::Standby)
+            .wake_and_connect(&cfg())
+            .await;
+        assert!(conn.is_ok(), "wake_and_connect should connect after wake");
+        assert!(conn.unwrap().is_connected());
+    }
+
+    #[test]
+    fn supports_wake_is_always_true() {
+        assert!(connector(PowerStatus::Standby).supports_wake(&cfg()));
+    }
+
+    #[tokio::test]
+    async fn start_pairing_completes_with_empty_credentials() {
+        let session = connector(PowerStatus::On)
+            .start_pairing(&cfg())
+            .expect("pairing session starts");
+        let mut rx = session.subscribe();
+        loop {
+            if let PairingState::Complete { credentials } = rx.borrow_and_update().clone() {
+                assert_eq!(credentials.data, "", "CEC pairs with empty credentials");
+                return;
+            }
+            rx.changed()
+                .await
+                .expect("pairing state channel stays open");
+        }
+    }
+
+    #[test]
+    fn invalid_config_is_rejected() {
+        let bad = toml::Value::String("not a table".into());
+        assert!(parse_config(&bad).is_err());
+    }
+
+    #[test]
+    fn config_schema_exposes_the_device_path() {
+        use tisvlay_core::PairingFieldType;
+        let schema = connector(PowerStatus::On).config_schema();
+        assert_eq!(schema.len(), 1);
+        assert_eq!(schema[0].name, "device");
+        assert_eq!(schema[0].field_type, PairingFieldType::Path);
+        assert!(schema[0].required);
+    }
+}
