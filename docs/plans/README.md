@@ -15,7 +15,11 @@ Working space for in-progress plan docs — anything substantial enough that a m
 
 ## Active plans
 
-_None in flight._
+> - [`cec-backend.md`](cec-backend.md) — a new `tisvlay-cec` vendor
+>   backend controlling TVs over HDMI-CEC (`/dev/cecN`) via Valve's
+>   `linux-cec` library; v1 scope is power + active-source input,
+>   built software-first against a fakeable seam since no real
+>   CEC link exists on the dev box yet.
 
 When a plan is in flight, list it here with a one-line summary
 of the work it covers:
