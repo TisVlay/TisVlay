@@ -2,7 +2,32 @@
 
 A new vendor backend that controls TVs over HDMI-CEC through the Linux CEC subsystem (`/dev/cecN`), using Valve's [`linux-cec`](https://gitlab.steamos.cloud/holo/linux-cec/) library. It is the first non-network, non-vendor-protocol backend — `Transport::Cec` — and the first whose capability set is well below `STOCK`, which (see § Cross-stack reality) is what makes it valuable *and* what surfaces several dormant assumptions in the rest of the stack.
 
-> Status: reviewed and settled — design / impl-correctness / maintainability passes folded in; the capability-gating scope is decided (gate properly, as a prerequisite slice). Ready to implement.
+> Status: **built and shipped to a draft PR** ([ruffsl/TisVlay#94](https://github.com/ruffsl/TisVlay/pull/94)). All five software slices are committed on `feat/cec-backend` and green (build · clippy `-D warnings` · 581 tests · `cargo-deny` · prek). Step 5 (real-hardware bring-up) is unstarted — gated on a USB CEC adapter. The design sections below are kept as the rationale of record; the § As built section reconciles them with what actually shipped.
+
+## As built (progress + deviations)
+
+| step | commit | |
+|---|---|---|
+| 0 — capability gating (prerequisite) | `8ba2aeb` | ✅ |
+| 1 — power + no-auth pairing | `b72744b` | ✅ |
+| 2 — active-source input | `fa92363` | ✅ |
+| 3 — discovery (`/dev/cecN`) | `4857a02` | ✅ |
+| 4 — NixOS/systemd + docs | `44c3140` | ✅ |
+| 5 — real-hardware bring-up | — | gated on a USB CEC adapter |
+
+Durable content has been migrated to [docs/cec/protocol.md](../cec/protocol.md) + [docs/cec/testing.md](../cec/testing.md) and [docs/licensing.md](../licensing.md); this plan deletes on merge (§ Migration on merge).
+
+### Deviations from the plan as written
+
+- **`linux-cec` is on crates.io after all** (`0.2`, LGPL-2.1). Locked decision 1's premise — "not on crates.io → git-pinned or vendored" — was wrong. We depend on the registry version (`{ version = "0.2", default-features = false, features = ["async"] }`), so `tisvlay-cec` / `tisvlay-backends` stay `publish = true` (no git-dep, no publish-flag churn). The LGPL deny/about/`docs/licensing.md` exceptions are still required and landed in step 1.
+- **Config field is `device`, not `address`.** The § Prerequisite "resolved default" suggested naming it `address` to ride the existing manual-entry autofill. We named it `device` (honest for a `/dev/cecN` path), gave it `autofill = "discovery.device"`, and made discovery non-optional so the device picker is the primary entry path. The network-shaped manual-entry "IP" label remains a follow-up.
+- **`verify_retry_config()` left at default.** The plan said override it for CEC bus latency, but its only consumer is the reliable `screen_on`/`screen_off` dispatch — which CEC doesn't support (no `SCREEN`), so the override would be dead config. `wake_and_connect` uses its own local verify loop (1.5 s × 4 attempts).
+- **Discovery is enumeration-only.** The plan said "read each adapter's connector/OSD/vendor"; we ship `/dev/cecN` listing only (no device open / OSD-name probe during a pre-pair scan, which would need device access the daemon — not the wizard — holds). Richer probing is deferred.
+- **NixOS device access is opt-in** (`services.tisvlay.cec.enable`, default off) — not specified in the plan. Default-off keeps the daemon's full `PrivateDevices` hardening for hosts that don't use CEC; enabling it installs the udev rule and relaxes the sandbox (`DeviceAllow=char-cec rw`). The shipped `.service` documents the same as a commented block rather than relaxing unconditionally.
+- **Capability gating went slightly wider than "PICTURE/AUDIO":** it also gates the GUI INPUT group and the CLI screen line, and makes per-TV caps **static** — `TvManager::get_capabilities` falls back to the backend's declared caps when disconnected — so controls don't flicker across connect/disconnect. The backend also advertises `DISCOVERY`.
+- **`CecLink` seam is semantic, not 1:1 with `AsyncDevice`.** It exposes `query_power` / `power_on` / `power_off` / `set_stream_path`; the device open + Playback-address claim live in the production opener, and `close` is handled by `Drop` (the connection's `close()` just flips a flag, staying non-blocking — the documented per-TV-mutex-join concern is satisfied by not joining in `close`).
+- **No mock-tier daemon test added.** The plan suggested pairing `FakeCecLink` with a mock-tier in-memory `TvConnection` to cover the forwarder/property-cache path; daemon-level coverage is left to the existing mock backend. Deferred.
+- **`get_connector_info()` identity hook unused in v1** — the config carries only `device`; no Diagnostic physical-address/connector field yet. Deferred with the multi-transport identity work.
 
 ## Goal & v1 scope
 
@@ -116,7 +141,7 @@ A second, smaller item rides along — the **pairing-wizard manual-entry step is
 
 ## Risks & deferred work
 
-- **Dependency provenance / LGPL** — pin `linux-cec` to a git rev or vendor it; the `cargo-deny` exception and `docs/licensing.md` entry are step-1 build-blockers (§ Locked decision 1).
+- **Dependency provenance / LGPL** — resolved: `linux-cec` ships on crates.io (`0.2`), so a plain registry dependency (§ As built corrects Locked decision 1). The `cargo-deny` / `about.toml` / `docs/licensing.md` LGPL exceptions landed in step 1.
 - **Weak input readback** — "switch the TV to our input" is the reliable op; current-input/input-list are best-effort (`Ok(None)`).
 - **DPMS-mirror may not engage for USB-CEC** — the watcher matches a TV to its *video* connector via EDID, while the CEC TV is reached over `/dev/cecN` on a separate cable; the CEC adapter's own connector info points elsewhere or is `None`. Known v1 limitation pending the identity-correlation work.
 - **Real-hardware lag** — validation waits on the USB adapter + NixOS module enablement; fake/mock-tier only until then.
@@ -127,6 +152,8 @@ A second, smaller item rides along — the **pairing-wizard manual-entry step is
 - **`.claude/CLAUDE.md`** — add `docs/cec/` to the Reference Documentation list once those docs carry content.
 
 ## Sequencing
+
+> Steps 0–4 are landed (commit hashes in § As built); step 5 remains. Kept here as the plan-of-record.
 
 Chunked so scaffolding lands with first use (no orphaned plumbing):
 
