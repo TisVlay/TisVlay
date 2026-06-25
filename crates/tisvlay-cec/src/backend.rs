@@ -33,13 +33,13 @@ impl TvBackend for CecBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // CEC reliably does power on/off and power-status readback.
-        // Active-source input switching lands next; volume over CEC is
-        // relative-only (deferred behind a future capability), and
-        // backlight / OLED screen-blank aren't CEC concepts. Declaring
+        // CEC reliably does power on/off + power-status readback, and can
+        // switch the TV to a given HDMI input (`Set Stream Path`). Volume
+        // over CEC is relative-only (deferred behind a future capability),
+        // and backlight / OLED screen-blank aren't CEC concepts. Declaring
         // neither IPV4 nor IPV6 is load-bearing beyond "not a network
         // transport": it stops the daemon's manual-entry enrichment from
         // ARP-probing a `/dev/cecN` path as if it were an IP address.
-        Capabilities::POWER
+        Capabilities::POWER | Capabilities::INPUT
     }
 }

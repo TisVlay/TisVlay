@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use linux_cec::device::{AsyncDevice, MessageData};
 use linux_cec::message::{Message, Opcode};
 use linux_cec::operand::PowerStatus;
-use linux_cec::{LogicalAddress, LogicalAddressType, Timeout};
+use linux_cec::{LogicalAddress, LogicalAddressType, PhysicalAddress, Timeout};
 use tisvlay_core::{Capabilities, Error, Result};
 
 use crate::VENDOR_ID;
@@ -40,6 +40,10 @@ pub(crate) trait CecLink: Send + Sync + std::fmt::Debug {
     async fn power_on(&self) -> Result<()>;
     /// Put the TV into standby (`Standby`).
     async fn power_off(&self) -> Result<()>;
+    /// Ask the TV to switch to the input at `address` (`Set Stream Path`,
+    /// a broadcast that tells whichever device owns that physical address
+    /// to become the active source).
+    async fn set_stream_path(&self, address: PhysicalAddress) -> Result<()>;
 }
 
 /// Production [`CecLinkOpener`] backed by `linux_cec::AsyncDevice`.
@@ -114,6 +118,18 @@ impl CecLink for LinuxCecLink {
             .await
             .map_err(map_cec_err)
     }
+
+    async fn set_stream_path(&self, address: PhysicalAddress) -> Result<()> {
+        // Set Stream Path is a broadcast message.
+        self.device
+            .tx_message(
+                &Message::SetStreamPath { address },
+                LogicalAddress::UnregisteredOrBroadcast,
+            )
+            .await
+            .map(|_seq| ())
+            .map_err(map_cec_err)
+    }
 }
 
 /// Map a `linux_cec::Error` onto the vendor-agnostic [`Error`].
@@ -164,6 +180,10 @@ mod fake {
 
         async fn power_off(&self) -> Result<()> {
             *self.power.lock() = PowerStatus::Standby;
+            Ok(())
+        }
+
+        async fn set_stream_path(&self, _address: PhysicalAddress) -> Result<()> {
             Ok(())
         }
     }

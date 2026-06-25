@@ -7,8 +7,8 @@
 //! command (`Image View On`) rather than Wake-on-LAN — and `connect`
 //! refuses a standby TV so the daemon's `power_on` takes the wake path.
 //!
-//! v1 capability surface is power (on/off/state). Active-source input
-//! switching is the next slice; volume over CEC is relative-only and
+//! v1 capability surface is power (on/off/state) and active-source input
+//! switching (`Set Stream Path`). Volume over CEC is relative-only and
 //! deferred; backlight and OLED screen-blank are not CEC concepts.
 //!
 //! The [`link`] module is the testability seam: production wraps

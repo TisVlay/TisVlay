@@ -1,13 +1,14 @@
 //! `CecConnection` — a live CEC control handle for one TV.
 //!
-//! v1 surface is power: report state, and turn off (power-on is the
-//! connector's wake path, since the bus reaches the TV even in standby).
-//! Active-source input switching lands in the next slice; everything else
+//! Surface: power (report state, turn off — power-on is the connector's
+//! wake path, since the bus reaches the TV even in standby) and
+//! active-source input switching (`Set Stream Path`). Everything else
 //! stays at the trait's `NotSupported` default.
 
 use async_trait::async_trait;
+use linux_cec::PhysicalAddress;
 use linux_cec::operand::PowerStatus;
-use tisvlay_core::{Capabilities, PowerState, Result, TvConnection, TvState};
+use tisvlay_core::{Capabilities, Error, InputInfo, PowerState, Result, TvConnection, TvState};
 
 use crate::link::CecLink;
 
@@ -44,6 +45,30 @@ pub(crate) fn map_power(status: PowerStatus) -> PowerState {
     }
 }
 
+/// The HDMI ports a CEC backend offers as switch targets. CEC has no
+/// portable input-enumeration query, so this is a fixed best-effort set
+/// (most TVs expose `HDMI 1`–`HDMI 4`); the IDs map to physical addresses
+/// in [`parse_hdmi_input`].
+fn default_inputs() -> Vec<InputInfo> {
+    (1..=4)
+        .map(|n| InputInfo {
+            id: format!("HDMI_{n}"),
+            label: format!("HDMI {n}"),
+            connected: true,
+        })
+        .collect()
+}
+
+/// Map an `HDMI_N` input id to the TV-relative physical address of that
+/// port. A TV — the bus root, `0.0.0.0` — addresses its HDMI port N as
+/// `N.0.0.0` = `N << 12`; valid ports are 1–15.
+fn parse_hdmi_input(input_id: &str) -> Option<PhysicalAddress> {
+    let n: u16 = input_id.strip_prefix("HDMI_")?.parse().ok()?;
+    (1..=15)
+        .contains(&n)
+        .then(|| PhysicalAddress::from(n << 12))
+}
+
 #[async_trait]
 impl TvConnection for CecConnection {
     fn vendor_id(&self) -> &'static str {
@@ -58,6 +83,9 @@ impl TvConnection for CecConnection {
         let status = self.link.query_power().await?;
         let mut state = TvState::new();
         state.update_power(map_power(status));
+        state.inputs = default_inputs();
+        // `current_input` stays `None`: CEC has no portable "which input
+        // is showing" query, so reporting unknown beats guessing.
         Ok(state)
     }
 
@@ -70,7 +98,7 @@ impl TvConnection for CecConnection {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::POWER
+        Capabilities::POWER | Capabilities::INPUT
     }
 
     async fn power_off(&mut self) -> Result<()> {
@@ -83,6 +111,26 @@ impl TvConnection for CecConnection {
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
         Ok(map_power(self.link.query_power().await?))
+    }
+
+    async fn switch_input(&mut self, input_id: &str) -> Result<()> {
+        let address = parse_hdmi_input(input_id).ok_or_else(|| {
+            Error::backend(
+                crate::VENDOR_ID,
+                format!("unknown CEC input {input_id:?} (expected HDMI_1..HDMI_15)"),
+            )
+        })?;
+        self.link.set_stream_path(address).await
+    }
+
+    async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> {
+        // Best-effort fixed set — CEC can't enumerate the TV's ports.
+        Ok(default_inputs())
+    }
+
+    async fn get_current_input(&mut self) -> Result<Option<String>> {
+        // Not portably readable over CEC; report unknown.
+        Ok(None)
     }
 }
 
@@ -104,15 +152,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_state_reports_live_power() {
+    async fn get_state_reports_live_power_and_inputs() {
         let mut conn = connection(PowerStatus::On);
         let state = conn.get_state().await.expect("state");
         assert_eq!(state.power_state, PowerState::Active);
         assert!(state.is_on);
-        // CEC v1 reports no volume/backlight — those Options stay None so
+        // CEC reports no volume/backlight — those Options stay None so
         // capability-gated clients hide the controls.
         assert_eq!(state.volume, None);
         assert_eq!(state.backlight, None);
+        // Inputs are the best-effort HDMI set; current input is unknown.
+        assert_eq!(state.inputs.len(), 4);
+        assert_eq!(state.current_input, None);
     }
 
     #[tokio::test]
@@ -135,8 +186,52 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_are_power_only_in_v1() {
+    fn capabilities_are_power_and_input() {
         let conn = connection(PowerStatus::On);
-        assert_eq!(conn.capabilities(), Capabilities::POWER);
+        assert_eq!(
+            conn.capabilities(),
+            Capabilities::POWER | Capabilities::INPUT
+        );
+    }
+
+    #[test]
+    fn parse_hdmi_input_maps_ports_to_physical_addresses() {
+        assert_eq!(
+            parse_hdmi_input("HDMI_1"),
+            Some(PhysicalAddress::from(0x1000))
+        );
+        assert_eq!(
+            parse_hdmi_input("HDMI_2"),
+            Some(PhysicalAddress::from(0x2000))
+        );
+        assert_eq!(
+            parse_hdmi_input("HDMI_4"),
+            Some(PhysicalAddress::from(0x4000))
+        );
+        // Out of range / malformed → no address.
+        assert_eq!(parse_hdmi_input("HDMI_0"), None);
+        assert_eq!(parse_hdmi_input("HDMI_16"), None);
+        assert_eq!(parse_hdmi_input("HDMI_x"), None);
+        assert_eq!(parse_hdmi_input("VGA_1"), None);
+    }
+
+    #[tokio::test]
+    async fn switch_input_accepts_hdmi_port() {
+        let mut conn = connection(PowerStatus::On);
+        assert!(conn.switch_input("HDMI_2").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn switch_input_rejects_unknown_input() {
+        let mut conn = connection(PowerStatus::On);
+        assert!(conn.switch_input("not-a-port").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_inputs_returns_the_hdmi_ports() {
+        let mut conn = connection(PowerStatus::On);
+        let inputs = conn.list_inputs().await.expect("inputs");
+        let ids: Vec<_> = inputs.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["HDMI_1", "HDMI_2", "HDMI_3", "HDMI_4"]);
     }
 }
